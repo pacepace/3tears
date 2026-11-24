@@ -29,14 +29,19 @@ query returned first, and the tile records that it was truncated.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+import math
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
+import shapely
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
-from threetears.geo.geometry import UndecodableGeometry
+from threetears.geo.attributes import coerce_attribute
+from threetears.geo.geometry import RowGeometries
 from threetears.geo.tiles import TileId
 from threetears.observe import get_logger
 
@@ -97,7 +102,7 @@ class BandResult:
     :param dropped: how many features the cap dropped
     :ptype dropped: int
     :param undecodable: how many source rows were left out because their geometry could not be
-        read (:class:`~threetears.geo.geometry.UndecodableGeometry`). a malformed row costs its
+        read (:attr:`~threetears.geo.geometry.RowGeometries.undecodable`). a malformed row costs its
         own feature, never the tile, and is counted here rather than passed off as absent; the
         encoded tile carries the count in its :data:`~threetears.geo.mvt.PARTIAL_LAYER_SUFFIX` layer
     :ptype undecodable: int
@@ -176,82 +181,50 @@ def simplification_tolerance(zoom: int) -> float:
     return _BASE_TOLERANCE_DEGREES / (1 << zoom)
 
 
-def feature_band(
-    rows: Iterable[dict[str, Any]],
-    *,
-    tile: TileId,
-    spec: FeatureSpec,
-    geometry_of: Callable[[dict[str, Any]], BaseGeometry | None],
-    attributes_of: Callable[[dict[str, Any], tuple[str, ...]], dict[str, Any]],
-) -> BandResult:
-    """build the individual-feature band for one tile.
+def feature_band(table: pa.Table, geometries: RowGeometries, *, tile: TileId, spec: FeatureSpec) -> BandResult:
+    """build the individual-feature band for one tile, over whole columns.
 
     simplifies each geometry to the zoom's tolerance, then applies the cap.
     the cap is applied *after* geometry work because ranking must consider
-    every candidate -- capping first would rank an arbitrary subset.
+    every candidate -- capping first would rank an arbitrary subset. only the
+    features kept become Python objects, as the MVT encoder takes them; the
+    candidates stay columns.
 
-    :param rows: candidate source rows, already bbox-filtered by the caller
-    :ptype rows: Iterable[dict[str, Any]]
+    :param table: candidate source rows, already bbox-filtered by the caller
+    :ptype table: pa.Table
+    :param geometries: every row's geometry (the layer's
+        :meth:`~threetears.geo.collection.LayerDefinition.geometries_of`)
+    :ptype geometries: RowGeometries
     :param tile: the tile being built
     :ptype tile: TileId
     :param spec: the layer's declared feature band
     :ptype spec: FeatureSpec
-    :param geometry_of: extracts geometry from a row (WKB column or lon/lat pair)
-    :ptype geometry_of: Callable[[dict[str, Any]], BaseGeometry | None]
-    :param attributes_of: projects declared columns into MVT-safe attributes
-    :ptype attributes_of: Callable[[dict[str, Any], tuple[str, ...]], dict[str, Any]]
     :return: the band's features plus truncation accounting
     :rtype: BandResult
     """
-    tolerance = simplification_tolerance(tile.z)
-    candidates: list[tuple[float, TileFeature]] = []
-    undecodable = 0
+    shapes = geometries.shapes
+    undecodable = int(np.count_nonzero(geometries.undecodable))
     first_undecodable: Any = None
-    for row in rows:
-        try:
-            geometry = geometry_of(row)
-        except UndecodableGeometry:
-            undecodable += 1
-            if first_undecodable is None:
-                first_undecodable = row.get(spec.feature_id_column) if spec.feature_id_column else None
-            continue
-        if geometry is None:
-            continue
-        simplified = geometry.simplify(tolerance, preserve_topology=True)
-        if simplified.is_empty:
-            # simplification can collapse a sliver entirely; that is the
-            # correct outcome at this zoom, not an error.
-            continue
-        feature_id = row.get(spec.feature_id_column) if spec.feature_id_column else None
-        attributes = attributes_of(row, spec.attributes)
-        if spec.feature_id_column is not None and feature_id is not None:
-            # the id always travels as a property, not only as the wire-level
-            # MVT id: that id is uint64 by specification, so a geoid or UUID
-            # cannot be carried there. a client binds volatile values via
-            # MapLibre's promoteId against this property.
-            attributes.setdefault(spec.feature_id_column, feature_id)
-        candidates.append(
-            (
-                _rank_of(row, spec.rank_column),
-                TileFeature(
-                    geometry=simplified,
-                    attributes=attributes,
-                    feature_id=feature_id,
-                ),
-            )
-        )
+    if undecodable and spec.feature_id_column is not None:
+        first_undecodable = _value_at(table, spec.feature_id_column, int(np.argmax(geometries.undecodable)))
+    drawn = ~shapely.is_missing(shapes)
+    simplified = np.full(len(shapes), None, dtype=object)
+    simplified[drawn] = shapely.simplify(shapes[drawn], simplification_tolerance(tile.z), preserve_topology=True)
+    # simplification can collapse a sliver entirely; that is the correct outcome at this zoom, not an error.
+    candidates = np.flatnonzero(drawn & ~shapely.is_empty(simplified))
 
     if len(candidates) <= spec.max_features_per_tile:
         return BandResult(
-            features=[feature for _, feature in candidates],
+            features=_tile_features(table, simplified, candidates, spec),
             undecodable=undecodable,
             first_undecodable=first_undecodable,
         )
 
-    # descending rank: keep the most important, drop the rest.
-    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    # descending rank, ties in source order (a stable sort of the negated rank): keep the most important
+    order = np.argsort(-_ranks(table, spec.rank_column)[candidates], kind="stable")
+    kept_rows = candidates[order[: spec.max_features_per_tile]]
     dropped = len(candidates) - spec.max_features_per_tile
-    kept = [feature for _, feature in candidates[: spec.max_features_per_tile]]
+    kept = _tile_features(table, simplified, kept_rows, spec)
     log.info(
         "tile %s: feature cap bound, kept %d of %d (ranked by %s)",
         tile,
@@ -264,18 +237,57 @@ def feature_band(
     )
 
 
-def aggregate_band(
-    rows: Iterable[dict[str, Any]],
-    *,
-    tile: TileId,
-    spec: AggregateSpec,
-    geometry_of: Callable[[dict[str, Any]], BaseGeometry | None],
-) -> BandResult:
-    """build the rollup band for one tile.
+def _tile_features(table: pa.Table, shapes: np.ndarray, rows: np.ndarray, spec: FeatureSpec) -> list[TileFeature]:
+    """the features of ``rows``, in their order: each one's geometry, attributes and id.
+
+    one Python object per KEPT feature, as the MVT encoder takes them; the rows' columns are read for these rows
+    only.
+    """
+    if not len(rows):
+        return []
+    picked = table.take(pa.array(rows, type=pa.int64()))
+    ids = _column_values(picked, spec.feature_id_column)
+    columns = [(name, _column_values(picked, name)) for name in spec.attributes]
+    features: list[TileFeature] = []
+    for position, row in enumerate(rows.tolist()):
+        feature_id = ids[position]
+        attributes: dict[str, Any] = {}
+        for name, values in columns:
+            coerced = coerce_attribute(values[position])
+            if coerced is not None:
+                attributes[name] = coerced
+        if spec.feature_id_column is not None and feature_id is not None:
+            # the id always travels as a property, not only as the wire-level
+            # MVT id: that id is uint64 by specification, so a geoid or UUID
+            # cannot be carried there. a client binds volatile values via
+            # MapLibre's promoteId against this property.
+            attributes.setdefault(spec.feature_id_column, feature_id)
+        features.append(TileFeature(geometry=shapes[row], attributes=attributes, feature_id=feature_id))
+    return features
+
+
+def _column_values(table: pa.Table, column: str | None) -> list[Any]:
+    """one column's values for the (few, picked) rows of ``table``; all ``None`` when it is not there."""
+    if column is None or column not in table.column_names:
+        return [None] * table.num_rows
+    values: list[Any] = table.column(column).to_pylist()
+    return values
+
+
+def _value_at(table: pa.Table, column: str, row: int) -> Any:
+    """one row's value of one column, ``None`` when the table has no such column."""
+    if column not in table.column_names:
+        return None
+    return table.column(column)[row].as_py()
+
+
+def aggregate_band(table: pa.Table, geometries: RowGeometries, *, tile: TileId, spec: AggregateSpec) -> BandResult:
+    """build the rollup band for one tile, over whole columns.
 
     groups rows by the declared coarser geography (or by the tile itself when
     none is declared), and emits one point feature per group at the group's
-    centroid, carrying the declared measures plus a ``count``.
+    centroid, carrying the declared measures plus a ``count``. groups come in
+    the order of their first row that has a geometry.
 
     a row whose geometry cannot be read is left out and counted against its bucket: the
     bucket's feature carries :data:`UNDECODABLE_PROPERTY`, so a total that undercounts says so
@@ -285,52 +297,60 @@ def aggregate_band(
 
     the centroid is the mean of member centroids rather than the centre of the
     tile, so a group's marker sits on its members instead of in whatever empty
-    space the tile happens to centre on.
+    space the tile happens to centre on. its means and sums add in row order as
+    Python's ``sum`` does (:func:`_python_sum`), so a tile is the same bytes it
+    was when the band read a row at a time.
 
-    :param rows: candidate source rows, already bbox-filtered by the caller
-    :ptype rows: Iterable[dict[str, Any]]
+    :param table: candidate source rows, already bbox-filtered by the caller
+    :ptype table: pa.Table
+    :param geometries: every row's geometry
+    :ptype geometries: RowGeometries
     :param tile: the tile being built
     :ptype tile: TileId
     :param spec: the layer's declared aggregate band
     :ptype spec: AggregateSpec
-    :param geometry_of: extracts geometry from a row
-    :ptype geometry_of: Callable[[dict[str, Any]], BaseGeometry | None]
     :return: one feature per group
     :rtype: BandResult
     """
-    groups: dict[Any, list[tuple[dict[str, Any], BaseGeometry]]] = {}
-    unread_by_bucket: dict[Any, int] = {}
-    undecodable = 0
+    shapes, unread = geometries.shapes, geometries.undecodable
+    codes, buckets = _bucket_codes(table, spec, tile)
+    undecodable = int(np.count_nonzero(unread))
     first_undecodable: Any = None
-    for row in rows:
-        bucket = row.get(spec.rollup_column) if spec.rollup_column else tile.key
-        try:
-            geometry = geometry_of(row)
-        except UndecodableGeometry:
-            undecodable += 1
-            unread_by_bucket[bucket] = unread_by_bucket.get(bucket, 0) + 1
-            if first_undecodable is None:
-                first_undecodable = row.get(spec.rollup_column) if spec.rollup_column else None
-            continue
-        if geometry is None:
-            continue
-        groups.setdefault(bucket, []).append((row, geometry))
+    if undecodable and spec.rollup_column is not None:
+        first_undecodable = buckets[int(codes[int(np.argmax(unread))])].as_py()
+    unread_by_bucket = np.bincount(codes[unread], minlength=len(buckets))
+
+    drawn = np.flatnonzero(~shapely.is_missing(shapes))
+    if not len(drawn):
+        return BandResult(features=[], undecodable=undecodable, first_undecodable=first_undecodable)
+    centroids = shapely.centroid(shapes[drawn])
+    xs, ys = shapely.get_x(centroids), shapely.get_y(centroids)
+    drawn_codes = codes[drawn]
+    # each group's members, in row order (a stable sort by group), and the groups in order of their first member
+    by_group = np.argsort(drawn_codes, kind="stable")
+    group_codes, starts = np.unique(drawn_codes[by_group], return_index=True)
+    member_runs = np.split(by_group, starts[1:])
+    firsts = np.array([run[0] for run in member_runs])
+    measures = [(column, how, _measure_column(table, column)) for column, how in spec.measures.items()]
 
     features: list[TileFeature] = []
-    for bucket, members in groups.items():
-        centroids = [geometry.centroid for _, geometry in members]
-        mean_x = sum(point.x for point in centroids) / len(centroids)
-        mean_y = sum(point.y for point in centroids) / len(centroids)
-        attributes: dict[str, Any] = {"count": len(members)}
+    for group in np.argsort(firsts, kind="stable").tolist():
+        members = member_runs[group]
+        code = int(group_codes[group])
+        bucket = buckets[code].as_py() if spec.rollup_column is not None else tile.key
+        count = len(members)
+        mean_x = _python_sum(xs[members]) / count
+        mean_y = _python_sum(ys[members]) / count
+        attributes: dict[str, Any] = {"count": count}
         if spec.rollup_column is not None:
             attributes[spec.rollup_column] = bucket
-        for column, how in spec.measures.items():
-            aggregated = _aggregate([row.get(column) for row, _ in members], how)
+        for column, how, (numbers, valid, numeric) in measures:
+            aggregated = _aggregate(numbers, valid, numeric, drawn[members], how)
             if aggregated is not None:
                 attributes[column] = aggregated
-        unread = unread_by_bucket.get(bucket, 0)
-        if unread:
-            attributes[UNDECODABLE_PROPERTY] = unread
+        lost = int(unread_by_bucket[code])
+        if lost:
+            attributes[UNDECODABLE_PROPERTY] = lost
         features.append(
             TileFeature(
                 geometry=Point(mean_x, mean_y),
@@ -343,30 +363,101 @@ def aggregate_band(
     return BandResult(features=features, undecodable=undecodable, first_undecodable=first_undecodable)
 
 
-def _rank_of(row: dict[str, Any], rank_column: str | None) -> float:
-    """numeric rank for cap ordering; unrankable rows sort last."""
+def _bucket_codes(table: pa.Table, spec: AggregateSpec, tile: TileId) -> tuple[np.ndarray, pa.Array]:
+    """each row's group, as an index into the groups' values: the rollup column dictionary-encoded (a null is a
+    group of its own; a table without the column is one null group), or one group when none is declared.
+
+    :return: ``(codes, values)``: int64 codes, one per row, and the groups' values
+    :rtype: tuple[np.ndarray, pa.Array]
+    """
+    rows = table.num_rows
+    if spec.rollup_column is None:
+        return np.zeros(rows, dtype=np.int64), pa.array([None])
+    if spec.rollup_column not in table.column_names:
+        return np.zeros(rows, dtype=np.int64), pa.array([None])
+    column = table.column(spec.rollup_column)
+    if pa.types.is_null(column.type):
+        return np.zeros(rows, dtype=np.int64), pa.array([None])
+    encoded = pc.dictionary_encode(column.combine_chunks(), null_encoding="encode")
+    return encoded.indices.to_numpy(zero_copy_only=False).astype(np.int64), encoded.dictionary
+
+
+def _measure_column(table: pa.Table, column: str) -> tuple[np.ndarray, np.ndarray, bool]:
+    """a measure column whole: its values as float64, which rows have one, and whether it is numeric.
+
+    a measure sums and averages only int and float values (never bool, decimal or text), as it always has; a
+    column of another type still counts its non-null rows.
+
+    :return: ``(numbers, valid, numeric)``
+    :rtype: tuple[np.ndarray, np.ndarray, bool]
+    """
+    rows = table.num_rows
+    if column not in table.column_names:
+        return np.full(rows, np.nan), np.zeros(rows, dtype=bool), False
+    values = table.column(column)
+    valid = pc.is_valid(values).to_numpy(zero_copy_only=False)
+    if not (pa.types.is_integer(values.type) or pa.types.is_floating(values.type)):
+        return np.full(rows, np.nan), valid, False
+    numbers = pc.fill_null(pc.cast(values, pa.float64(), safe=False), np.nan).to_numpy(zero_copy_only=False)
+    return numbers.astype(np.float64), valid, True
+
+
+def _ranks(table: pa.Table, rank_column: str | None) -> np.ndarray:
+    """every row's rank for cap ordering, as float64; unrankable rows (null, absent, not an int or float column)
+    rank -inf and sort last. with no rank column every row ranks 0, so the cap keeps source order."""
+    rows = table.num_rows
     if rank_column is None:
-        return 0.0
-    value = row.get(rank_column)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return float("-inf")
-    return float(value)
+        return np.zeros(rows)
+    if rank_column not in table.column_names:
+        return np.full(rows, -np.inf)
+    values = table.column(rank_column)
+    if not (pa.types.is_integer(values.type) or pa.types.is_floating(values.type)):
+        return np.full(rows, -np.inf)
+    ranked = pc.fill_null(pc.cast(values, pa.float64(), safe=False), -np.inf)
+    floats: np.ndarray = ranked.to_numpy(zero_copy_only=False).astype(np.float64)
+    return floats
 
 
-def _aggregate(values: Sequence[Any], how: str) -> float | int | None:
-    """apply one declared aggregation, ignoring nulls.
+def _python_sum(values: np.ndarray) -> float:
+    """``sum()`` of these floats exactly as Python 3.12+ adds them: in order, with Neumaier compensation.
+
+    the running total is a sequential cumulative sum; each step's lost low part is computed elementwise from the
+    totals either side of it, and those parts add sequentially, then onto the total when non-zero and finite --
+    CPython's own steps, so the answer is bit for bit what the band's ``sum`` gave (a pairwise numpy sum is not).
+    the running total starts at 0.0 as Python's does, so a leading -0.0 is +0.0.
+
+    :param values: float64, at least one
+    :ptype values: np.ndarray
+    :return: their sum
+    :rtype: float
+    """
+    with np.errstate(all="ignore"):
+        totals = np.cumsum(values) + 0.0
+        before = np.concatenate(([0.0], totals[:-1]))
+        lost = np.where(np.abs(before) >= np.abs(values), (before - totals) + values, (values - totals) + before)
+        compensation = float(np.cumsum(lost)[-1])
+    total = float(totals[-1])
+    if compensation and math.isfinite(compensation):
+        total += compensation
+    return total
+
+
+def _aggregate(numbers: np.ndarray, valid: np.ndarray, numeric: bool, rows: np.ndarray, how: str) -> float | int | None:
+    """apply one declared aggregation over ``rows`` of a measure column, ignoring nulls.
 
     nulls are skipped rather than counted as zero: a tract with no measurement
     must not drag a regional mean toward zero, which is the same reasoning
     that omits null attributes from a tile rather than encoding them.
     """
     if how == "count":
-        return sum(1 for value in values if value is not None)
-    numeric = [float(value) for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+        return int(np.count_nonzero(valid[rows]))
     if not numeric:
         return None
+    present = rows[valid[rows]]
+    if not len(present):
+        return None
     if how == "sum":
-        return sum(numeric)
+        return _python_sum(numbers[present])
     if how == "mean":
-        return sum(numeric) / len(numeric)
+        return _python_sum(numbers[present]) / len(present)
     raise ValueError(f"unknown aggregation {how!r}; expected one of sum/mean/count")

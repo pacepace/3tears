@@ -698,6 +698,23 @@ class TestShapeI:
 
         assert [v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))] == ["_lock"]
 
+    def test_a_test_base_is_the_one_its_own_file_defines(self, tmp_path: Path) -> None:
+        """two test files each define a helper of one name: the subclass's base is its own file's, not the other's.
+
+        the live case: acl's ``_CountingStore`` (a plain fake declaring ``_count``) and evals'
+        ``_CountingStore`` (over the in-memory store, whose state ``_count`` is) once merged by name.
+        """
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", "class Backend:\n    def __init__(self):\n        self._count = 0\n")
+        _write(tests / "test_z.py", "from pkg.backend import Backend\n\nclass Counting(Backend):\n    pass\n")
+        _write(
+            tests / "test_a.py",
+            "class Counting:\n    def _count(self):\n        return 1\n\n"
+            "class Leaf(Counting):\n    def go(self):\n        return self._count()\n",
+        )
+
+        assert shape_i_violations((tests,), tmp_path, (src,)) == []
+
     def test_a_base_defined_in_the_tests_is_the_tests_own(self, tmp_path: Path) -> None:
         tests = tmp_path / "tests"
         _write(

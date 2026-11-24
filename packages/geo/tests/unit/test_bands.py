@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+import pyarrow as pa
 import pytest
 from shapely.geometry import Point, Polygon
 
-from threetears.geo.attributes import coerce_attributes
-from threetears.geo.geometry import UndecodableGeometry
+from threetears.geo.attributes import coerce_attribute
+from threetears.geo.geometry import RowGeometries
 from threetears.geo.bands import (
     UNDECODABLE_PROPERTY,
     AggregateSpec,
@@ -31,6 +33,20 @@ def _point_of(row: dict[str, Any]) -> Point | None:
     return Point(row["lon"], row["lat"])
 
 
+def _table(rows: list[dict[str, Any]]) -> pa.Table:
+    """the rows as the band reads them, without the test's own geometry and marker keys."""
+    return pa.Table.from_pylist([{k: v for k, v in row.items() if k not in ("geom", "bad")} for row in rows])
+
+
+def _geometries(rows: list[dict[str, Any]]) -> RowGeometries:
+    """each row's point (or its ``geom``), and a row marked ``bad`` as one whose geometry could not be read."""
+    shapes = np.full(len(rows), None, dtype=object)
+    for index, row in enumerate(rows):
+        if not row.get("bad"):
+            shapes[index] = row["geom"] if "geom" in row else _point_of(row)
+    return RowGeometries(shapes=shapes, undecodable=np.array([bool(row.get("bad")) for row in rows], dtype=bool))
+
+
 def _rows(count: int, **extra: Any) -> list[dict[str, Any]]:
     return [{"id": n, "lon": -112.0 + n * 0.001, "lat": 33.4, **extra} for n in range(count)]
 
@@ -43,21 +59,14 @@ class TestSimplificationTolerance:
         assert simplification_tolerance(14) < simplification_tolerance(4)
 
 
-def _raising_point_of(row: dict[str, Any]) -> Point | None:
-    if row.get("bad"):
-        raise UndecodableGeometry("corrupt")
-    return _point_of(row)
-
-
 class TestUndecodableRows:
     def test_feature_band_counts_the_rows_it_could_not_read(self) -> None:
         rows = _rows(2) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
         result = feature_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=12, x=100, y=200),
             spec=FeatureSpec(attributes=("id",), feature_id_column="id"),
-            geometry_of=_raising_point_of,
-            attributes_of=coerce_attributes,
         )
         assert len(result.features) == 2
         assert result.undecodable == 1
@@ -65,10 +74,10 @@ class TestUndecodableRows:
     def test_aggregate_band_counts_the_rows_it_could_not_read(self) -> None:
         rows = _rows(2) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=5, x=6, y=12),
             spec=AggregateSpec(rollup_column="state"),
-            geometry_of=_raising_point_of,
         )
         assert result.undecodable == 1
 
@@ -82,10 +91,10 @@ class TestUndecodableRows:
             {"id": 4, "lon": -115.0, "lat": 36.0, "state": "32", "unreg": 50},
         ]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state", measures={"unreg": "sum"}),
-            geometry_of=_raising_point_of,
         )
         by_state = {f.attributes["state"]: f.attributes for f in result.features}
         assert by_state["04"]["unreg"] == 100
@@ -96,10 +105,10 @@ class TestUndecodableRows:
     def test_without_a_rollup_column_the_tile_bucket_is_marked(self) -> None:
         rows = _rows(3) + [{"id": 9, "lon": 0, "lat": 0, "bad": True}]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(),
-            geometry_of=_raising_point_of,
         )
         (feature,) = result.features
         assert feature.attributes["count"] == 3
@@ -112,10 +121,10 @@ class TestUndecodableRows:
             {"id": 2, "lon": 0, "lat": 0, "state": "32", "bad": True},
         ]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state"),
-            geometry_of=_raising_point_of,
         )
         assert [f.attributes["state"] for f in result.features] == ["04"]
         assert UNDECODABLE_PROPERTY not in result.features[0].attributes
@@ -134,11 +143,10 @@ class TestUndecodableRows:
 class TestFeatureBand:
     def test_emits_one_feature_per_row(self) -> None:
         result = feature_band(
-            _rows(3),
+            _table(_rows(3)),
+            _geometries(_rows(3)),
             tile=TileId(z=12, x=100, y=200),
             spec=FeatureSpec(attributes=("id",), feature_id_column="id"),
-            geometry_of=_point_of,
-            attributes_of=coerce_attributes,
         )
         assert len(result.features) == 3
         assert not result.truncated
@@ -147,11 +155,10 @@ class TestFeatureBand:
     def test_rows_without_geometry_are_skipped_not_fatal(self) -> None:
         rows = _rows(2) + [{"id": 99, "lon": None, "lat": None}]
         result = feature_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=12, x=100, y=200),
             spec=FeatureSpec(attributes=("id",)),
-            geometry_of=_point_of,
-            attributes_of=coerce_attributes,
         )
         assert len(result.features) == 2
 
@@ -160,11 +167,10 @@ class TestFeatureBand:
         # would keep an arbitrary subset and misrepresent a dense area.
         rows = [{"id": n, "lon": -112.0 + n * 0.001, "lat": 33.4, "score": n} for n in range(10)]
         result = feature_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=12, x=100, y=200),
             spec=FeatureSpec(attributes=("id", "score"), max_features_per_tile=3, rank_column="score"),
-            geometry_of=_point_of,
-            attributes_of=coerce_attributes,
         )
         assert result.truncated
         assert result.dropped == 7
@@ -173,22 +179,20 @@ class TestFeatureBand:
     def test_cap_reports_truncation(self) -> None:
         # a silently truncated tile reads as "this is all the data there is".
         result = feature_band(
-            _rows(50),
+            _table(_rows(50)),
+            _geometries(_rows(50)),
             tile=TileId(z=12, x=100, y=200),
             spec=FeatureSpec(attributes=("id",), max_features_per_tile=10),
-            geometry_of=_point_of,
-            attributes_of=coerce_attributes,
         )
         assert result.truncated
         assert result.dropped == 40
 
     def test_under_the_cap_is_not_marked_truncated(self) -> None:
         result = feature_band(
-            _rows(5),
+            _table(_rows(5)),
+            _geometries(_rows(5)),
             tile=TileId(z=12, x=100, y=200),
             spec=FeatureSpec(attributes=("id",), max_features_per_tile=10),
-            geometry_of=_point_of,
-            attributes_of=coerce_attributes,
         )
         assert not result.truncated
         assert result.dropped == 0
@@ -199,11 +203,10 @@ class TestFeatureBand:
         detailed = Polygon([(-112.0 + i * 0.0001, 33.4 + (i % 2) * 0.00001) for i in range(60)] + [(-112.0, 33.4)])
         rows = [{"id": 1, "geom": detailed}]
         result = feature_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=FeatureSpec(attributes=("id",)),
-            geometry_of=lambda row: row["geom"],
-            attributes_of=coerce_attributes,
         )
         simplified = result.features[0].geometry
         assert len(simplified.exterior.coords) < len(detailed.exterior.coords)
@@ -217,10 +220,10 @@ class TestAggregateBand:
             {"id": 3, "lon": -115.0, "lat": 36.0, "state": "32", "unreg": 50},
         ]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state", measures={"unreg": "sum"}),
-            geometry_of=_point_of,
         )
         by_state = {f.attributes["state"]: f.attributes for f in result.features}
         assert by_state["04"]["unreg"] == 300
@@ -232,10 +235,10 @@ class TestAggregateBand:
         # the feature band does.
         rows = [{"id": 1, "lon": -112.0, "lat": 33.4, "state": "04"}]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state"),
-            geometry_of=_point_of,
         )
         assert result.features[0].feature_id == "04"
 
@@ -246,10 +249,10 @@ class TestAggregateBand:
             {"id": 2, "lon": -112.2, "lat": 33.6, "state": "04"},
         ]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state"),
-            geometry_of=_point_of,
         )
         centroid = result.features[0].geometry
         assert centroid.x == pytest.approx(-112.1)
@@ -263,20 +266,20 @@ class TestAggregateBand:
             {"id": 2, "lon": -112.1, "lat": 33.5, "state": "04", "approval": None},
         ]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state", measures={"approval": "mean"}),
-            geometry_of=_point_of,
         )
         assert result.features[0].attributes["approval"] == pytest.approx(0.6)
 
     def test_all_null_measure_is_omitted_entirely(self) -> None:
         rows = [{"id": 1, "lon": -112.0, "lat": 33.4, "state": "04", "approval": None}]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state", measures={"approval": "mean"}),
-            geometry_of=_point_of,
         )
         assert "approval" not in result.features[0].attributes
 
@@ -286,19 +289,19 @@ class TestAggregateBand:
             {"id": 2, "lon": -112.1, "lat": 33.5, "state": "04", "approval": None},
         ]
         result = aggregate_band(
-            rows,
+            _table(rows),
+            _geometries(rows),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(rollup_column="state", measures={"approval": "count"}),
-            geometry_of=_point_of,
         )
         assert result.features[0].attributes["approval"] == 1
 
     def test_without_a_rollup_column_rows_group_by_tile(self) -> None:
         result = aggregate_band(
-            _rows(4),
+            _table(_rows(4)),
+            _geometries(_rows(4)),
             tile=TileId(z=4, x=3, y=6),
             spec=AggregateSpec(),
-            geometry_of=_point_of,
         )
         assert len(result.features) == 1
         assert result.features[0].attributes["count"] == 4
@@ -306,8 +309,74 @@ class TestAggregateBand:
     def test_unknown_aggregation_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="unknown aggregation"):
             aggregate_band(
-                _rows(2, state="04", v=1),
+                _table(_rows(2, state="04", v=1)),
+                _geometries(_rows(2, state="04", v=1)),
                 tile=TileId(z=4, x=3, y=6),
                 spec=AggregateSpec(rollup_column="state", measures={"v": "median"}),
-                geometry_of=_point_of,
             )
+
+
+class TestBandsReadColumns:
+    """the bands read whole columns: only the features a tile keeps become Python objects."""
+
+    def _polygons(self, count: int) -> tuple[pa.Table, RowGeometries]:
+        rows = [
+            {"id": n, "lon": -112.0 + n * 0.0001, "lat": 33.4, "score": n % 97, "state": f"{n % 3:02d}", "v": n}
+            for n in range(count)
+        ]
+        return _table(rows), _geometries(rows)
+
+    def test_a_capped_feature_band_reads_values_only_for_the_features_it_keeps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if the band reads its candidate rows' values a row at a time: 5,000 candidates under a cap of 10
+        coerce the attribute values of those 10 only."""
+        table, geometries = self._polygons(5_000)
+        coerced: list[Any] = []
+        real_coerce = coerce_attribute
+
+        def _coerce(value: Any) -> Any:
+            coerced.append(value)
+            return real_coerce(value)
+
+        monkeypatch.setattr("threetears.geo.bands.coerce_attribute", _coerce)
+        result = feature_band(
+            table,
+            geometries,
+            tile=TileId(z=12, x=100, y=200),
+            spec=FeatureSpec(attributes=("id", "score"), max_features_per_tile=10, rank_column="score"),
+        )
+        assert len(result.features) == 10 and result.dropped == 4_990
+        assert sorted(coerced[1::2]) == [96] * 10
+        assert len(coerced) == 10 * 2
+
+    def test_an_aggregate_band_reads_no_row_as_a_python_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if the rollup reads its rows a row at a time: 5,000 rows in 3 groups coerce no value."""
+
+        def _refuse(*_: Any) -> Any:
+            raise AssertionError("the aggregate band read rows as Python values")
+
+        monkeypatch.setattr("threetears.geo.bands.coerce_attribute", _refuse)
+        table, geometries = self._polygons(5_000)
+        result = aggregate_band(
+            table,
+            geometries,
+            tile=TileId(z=4, x=3, y=6),
+            spec=AggregateSpec(rollup_column="state", measures={"v": "sum"}),
+        )
+        assert sorted(f.attributes["count"] for f in result.features) == [1666, 1667, 1667]
+
+    def test_sums_add_as_python_s_sum_does(self) -> None:
+        """Flips if a measure's sum is a pairwise or plain running sum: Python's sum compensates, and the tile's bytes
+        carry its exact answer."""
+        values = [0.1, 1e16, 0.1, -1e16, 0.3, 1e-9, 7.7]
+        rows = [{"id": n, "lon": -112.0, "lat": 33.4, "state": "04", "v": value} for n, value in enumerate(values)]
+        result = aggregate_band(
+            _table(rows),
+            _geometries(rows),
+            tile=TileId(z=4, x=3, y=6),
+            spec=AggregateSpec(rollup_column="state", measures={"v": "sum"}),
+        )
+        # the case is one a running sum gets wrong (8.000000001, not 8.200000001)
+        assert sum(values) != float(np.cumsum(values)[-1])
+        assert result.features[0].attributes["v"] == sum(values)

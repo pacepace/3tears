@@ -29,7 +29,14 @@ from threetears.geo.collection import (
     ViewportRequest,
 )
 from threetears.geo.features import BOUNDS_COLUMNS, BoundsOf, FeatureCache, FeatureEntity, FeatureLoader
-from threetears.geo.geometry import UndecodableGeometry, decode_geometry, geometry_bounds, point_geometry
+from threetears.geo.geometry import (
+    UndecodableGeometry,
+    decode_geometry,
+    geometry_bounds,
+    point_bounds,
+    point_geometry,
+    wkb_bounds,
+)
 from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX, encode_tile, project_to_tile
 from threetears.geo.overlay import (
     KeyedFeature,
@@ -76,7 +83,9 @@ __all__ = [
     "encode_tile",
     "feature_band",
     "geometry_bounds",
+    "point_bounds",
     "point_geometry",
+    "wkb_bounds",
     "project_to_tile",
     "simplification_tolerance",
     "MVT_SCALAR_TYPES",

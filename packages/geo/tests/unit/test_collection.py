@@ -27,11 +27,19 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.geo.bands import UNDECODABLE_PROPERTY, AggregateSpec, FeatureSpec
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
 from threetears.geo.features import BOUNDS_COLUMNS, FeatureCache
-from threetears.geo.geometry import UndecodableGeometry, decode_geometry
+from threetears.geo.geometry import (
+    UndecodableGeometry,
+    decode_geometry,
+    point_bounds,
+    point_geometries,
+    wkb_bounds,
+    wkb_geometries,
+)
 from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.core.testing.loop_lateness import turn_holds
 
 _PHOENIX_LON = -112.07
 _PHOENIX_LAT = 33.45
@@ -602,6 +610,82 @@ class TestSerialization:
         collection, _ = _make_collection(tmp_path)
         row = {"layer": "l", "version": 1, "z": 0, "x": 0, "y": 0, "mvt": b""}
         assert collection.deserialize(collection.serialize(row)) == row
+
+
+class TestColumnsWhole:
+    """the whole-column readers agree with the row-at-a-time ones they replace."""
+
+    def test_wkb_geometries_read_as_decode_geometry_does(self) -> None:
+        box = Polygon([(0, 0), (1, 0), (1, 1)])
+        values = [box.wkb, b"\x01junk", b"", None, Polygon().wkb]
+        read = wkb_geometries(pa.table({"g": pa.array(values, pa.binary())}), "g")
+        assert [shape is not None and shape.equals(box) for shape in read.shapes] == [True, False, False, False, False]
+        assert read.undecodable.tolist() == [False, True, False, False, False]
+
+    def test_point_geometries_read_as_point_geometry_does(self) -> None:
+        table = pa.table({"lon": ["-112.5", " 3 ", "west", None, "1"], "lat": [33.4, 1.0, 2.0, 3.0, None]})
+        read = point_geometries(table, "lon", "lat")
+        assert [(s.x, s.y) if s is not None else None for s in read.shapes] == [
+            (-112.5, 33.4),
+            (3.0, 1.0),
+            None,
+            None,
+            None,
+        ]
+        assert read.undecodable.tolist() == [False, False, True, False, False]
+
+    def test_wkb_bounds_are_null_where_nothing_decodes(self) -> None:
+        box = Polygon([(-1, -2), (3, -2), (3, 4)])
+        table = pa.table({"g": pa.array([box.wkb, b"\x01junk", None, Polygon().wkb], pa.binary())})
+        assert wkb_bounds(table, "g").to_pydict() == {
+            "min_lon": [-1.0, None, None, None],
+            "min_lat": [-2.0, None, None, None],
+            "max_lon": [3.0, None, None, None],
+            "max_lat": [4.0, None, None, None],
+        }
+        assert wkb_bounds(table, "absent").column_names == list(BOUNDS_COLUMNS)
+
+    def test_point_bounds_need_both_coordinates_as_finite_numbers(self) -> None:
+        table = pa.table({"lon": ["1.5", "west", None, "inf", "2"], "lat": [2.5, 1.0, 1.0, 1.0, 3.0]})
+        found = point_bounds(table, "lon", "lat")
+        assert found.column("min_lon").to_pylist() == [1.5, None, None, None, 2.0]
+        assert found.column("max_lat").to_pylist() == [2.5, None, None, None, 3.0]
+        assert found.schema.types == [pa.float64()] * 4
+
+    def test_a_layer_s_bounds_of_reads_its_own_geometry_columns(self) -> None:
+        box = Polygon([(-1, -2), (3, -2), (3, 4)])
+        table = pa.table({"g": [box.wkb], "x": [5.0], "y": [6.0]})
+        wkb_layer = _tracts_layer(geometry_column="g")
+        point_layer = _tracts_layer(geometry_column=None, longitude_column="x", latitude_column="y")
+        assert wkb_layer.bounds_of(table).to_pylist() == [
+            {"min_lon": -1.0, "min_lat": -2.0, "max_lon": 3.0, "max_lat": 4.0}
+        ]
+        assert point_layer.bounds_of(table).to_pylist() == [
+            {"min_lon": 5.0, "min_lat": 6.0, "max_lon": 5.0, "max_lat": 6.0}
+        ]
+
+
+class TestTheLoopWaitsOnly:
+    async def test_a_tile_build_holds_no_turn_of_the_loop(self, tmp_path: Path) -> None:
+        """Flips if a tile's CPU (decoding, simplifying, projecting and encoding 3,000 polygons) runs on the event
+        loop: built on the loop it held one turn about 13 ms (columns) to far more (a row at a time); in a worker
+        process no turn of the loop passes 5 ms of its thread's CPU (the loop serialises the rows and waits)."""
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        step = (bounds.max_lon - bounds.min_lon) / 60
+        rows = [
+            _tract_row(f"t{n}", lon=bounds.min_lon + (n % 55) * step, lat=bounds.min_lat + (n // 55) * step / 2)
+            for n in range(3_000)
+        ]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+        # the first build starts the pool's processes; the one measured runs in a started worker
+        await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        with turn_holds() as holds:
+            built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+        assert built is not None
+        assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 3_000
+        longest, what = max(holds)
+        assert longest < 0.005, f"a turn of the loop held {longest * 1000:.1f} ms of CPU during a tile build: {what}"
 
 
 class TestThroughAFeatureCache:

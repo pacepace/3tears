@@ -34,7 +34,6 @@ from threetears.epoch.client import EpochClient, _is_durable
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
-    "LAST_SEEN_LIMIT",
     "BumpCallback",
     "EpochListener",
     "ResetCallback",
@@ -47,7 +46,7 @@ log = get_logger(__name__)
 #: active customer (hundreds). 4096 keeps every live subject with room to spare while a wildcard over an unbounded
 #: subject space stays bounded instead of leaking, and each change copies at most 4096 small entries. A subject pushed
 #: out is unseen again: its next broadcast is applied (one redundant reload at worst), never skipped.
-LAST_SEEN_LIMIT: Final = 4096
+_LAST_SEEN_LIMIT: Final = 4096
 
 
 BumpCallback = Callable[[int, dict[str, object] | None], Awaitable[None]]
@@ -101,7 +100,7 @@ class EpochListener:
     """
 
     def __init__(
-        self, nats_client: TypedSubscriber, epoch_client: EpochClient, *, last_seen_limit: int = LAST_SEEN_LIMIT
+        self, nats_client: TypedSubscriber, epoch_client: EpochClient, *, last_seen_limit: int = _LAST_SEEN_LIMIT
     ) -> None:
         """capture clients; no I/O.
 
@@ -110,7 +109,7 @@ class EpochListener:
         :param epoch_client: companion :class:`EpochClient` for
             cold-start priming
         :ptype epoch_client: EpochClient
-        :param last_seen_limit: the most subjects whose last-seen epoch is remembered (:data:`LAST_SEEN_LIMIT`)
+        :param last_seen_limit: the most subjects whose last-seen epoch is remembered (:data:`_LAST_SEEN_LIMIT`)
         :ptype last_seen_limit: int
         :return: nothing
         :rtype: None
@@ -241,7 +240,7 @@ class EpochListener:
         which is what a non-wildcard subscription already does.
 
         SECOND: ``_last_seen`` gains an entry per matched subject, up to
-        :data:`LAST_SEEN_LIMIT` (the least recently heard pushed out
+        :data:`_LAST_SEEN_LIMIT` (the least recently heard pushed out
         first). The growth removed from the subscription count
         reappears here as entries, bounded by how many subjects
         actually broadcast rather than by how many exist. For a

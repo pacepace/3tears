@@ -34,6 +34,7 @@ dropped when it is garbage-collected.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import weakref
 from collections.abc import Awaitable, Callable, Mapping
@@ -316,12 +317,12 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         :rtype: pa.Table
         """
         if self.l1_backend is None:
-            rows = self._prepared(layer, source_version, await self._loader(layer, source_version, bounds))
+            rows = await self._prepared(layer, source_version, await self._loader(layer, source_version, bounds))
             return _answer(rows, bounds)
         chunks = self._chunks_for(bounds)
         uncovered = sum(1 for chunk in chunks if (layer, source_version, chunk.key) not in self._chunks)
         if uncovered > self.max_chunk_reads:
-            rows = self._prepared(layer, source_version, await self._loader(layer, source_version, bounds))
+            rows = await self._prepared(layer, source_version, await self._loader(layer, source_version, bounds))
             self._hold_rectangle(layer, source_version, bounds, rows)
             self._evict()
             return _answer(rows, bounds)
@@ -337,7 +338,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                 if held is not None:
                     self._chunks = with_newest(self._chunks, marker, held)
                 else:
-                    loaded = self._prepared(
+                    loaded = await self._prepared(
                         layer, source_version, await self._loader(layer, source_version, tile_bounds(chunk))
                     )
                     log.debug(
@@ -384,7 +385,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         """the most row entries one read may hold: half the bound, so it never flushes the rest."""
         return max(1, self._row_limit // 2)
 
-    def _prepared(self, layer: str, source_version: int, table: pa.Table) -> pa.Table:
+    async def _prepared(self, layer: str, source_version: int, table: pa.Table) -> pa.Table:
         """a loader's ``table`` as the cache holds it: one row per feature, each with its key and bounds.
 
         a row with no feature id is dropped (a row with no identity is not a feature), and a feature
@@ -409,7 +410,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             ids = table.column(self.feature_id_column)
         if table.num_rows < loaded:
             log.debug("dropped %d source rows with no %s", loaded - table.num_rows, self.feature_id_column)
-        found = self._bounds_of(table)
+        # off the loop: a bounds read decodes a whole table's geometry (shapely's and Arrow's C loops, which let go of
+        # the interpreter lock); it is the caller's callable, so it cannot cross to a worker process
+        found = await asyncio.to_thread(self._bounds_of, table)
         if found.num_rows != table.num_rows or any(name not in found.column_names for name in BOUNDS_COLUMNS):
             raise ValueError(
                 f"bounds_of answered {found.num_rows} row(s) of {found.column_names} for {table.num_rows} row(s); "

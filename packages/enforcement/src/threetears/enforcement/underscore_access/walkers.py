@@ -46,7 +46,7 @@ import hashlib
 import io
 import re
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1434,14 +1434,38 @@ def shape_i_violations(
             facts = _module_facts(file)
             if facts is not None:
                 scanned.extend((cls, file) for cls in facts.classes)
-    # a test class's ancestors run through test-defined classes too (a harness over a harness)
-    test_bases = {cls.name: list(cls.generic_bases) for cls, _ in scanned}
-    test_declares = {cls.name: cls.defines for cls, _ in scanned}
+    # a test class's ancestors run through test-defined classes too (a harness over a harness). a base
+    # name is the class of that name in the same file when there is one: two test files may each define
+    # a helper of one name over different bases, and merging them by name alone read one's base for the other's
+    test_classes = _TestClasses(
+        local={(file, cls.name): (cls, file) for cls, file in scanned},
+        anywhere={cls.name: (cls, file) for cls, file in scanned},
+    )
     violations: list[Violation] = []
     for cls, file in scanned:
-        ancestry = _ancestors(cls, test_bases, production_bases)
-        violations.extend(_base_state_reaches(cls, file, ancestry, base_state, test_declares, repo_root))
+        ancestry = _ancestors(cls, file, test_classes, production_bases)
+        violations.extend(_base_state_reaches(cls, file, ancestry, base_state, repo_root))
     return violations
+
+
+@dataclass(frozen=True)
+class _TestClasses:
+    """the classes the scanned tests define: by ``(file, name)``, and by name alone (the last of a name).
+
+    :ivar local: a class by the file that defines it and its name
+    :ivar anywhere: a class by its name, for a base imported from another file
+    """
+
+    local: Mapping[tuple[Path, str], tuple[_ClassFacts, Path]]
+    anywhere: Mapping[str, tuple[_ClassFacts, Path]]
+
+    def resolve(self, name: str, context: Path) -> tuple[_ClassFacts, Path] | None:
+        """the test class ``name`` means in ``context``: the one that file defines, else any of that name.
+
+        :return: the class and its file, or None when no test defines ``name``
+        :rtype: tuple[_ClassFacts, Path] | None
+        """
+        return self.local.get((context, name)) or self.anywhere.get(name)
 
 
 def _collect_class_bases(src_roots: tuple[Path, ...]) -> dict[str, list[str]]:
@@ -1465,41 +1489,44 @@ def _collect_class_bases(src_roots: tuple[Path, ...]) -> dict[str, list[str]]:
 
 def _ancestors(
     cls: _ClassFacts,
-    test_bases: dict[str, list[str]],
+    file: Path,
+    test_classes: _TestClasses,
     production_bases: dict[str, list[str]],
-) -> tuple[list[str], list[str]]:
-    """every ancestor of ``cls`` by name, nearest first: those the tests define, and production ones.
+) -> tuple[list[_ClassFacts], list[str]]:
+    """every ancestor of ``cls``, nearest first: those the tests define, and production ones by name.
 
-    a name the tests define is followed through the tests' classes; any other through the
-    production classes. each name is visited once, so a cycle of same-named classes ends.
+    a name the tests define is followed through the tests' classes, resolved in the file that
+    names it (:meth:`_TestClasses.resolve`); any other through the production classes. each name
+    is visited once, so a cycle of same-named classes ends.
 
     :return: (test-defined ancestors, production ancestors)
-    :rtype: tuple[list[str], list[str]]
+    :rtype: tuple[list[_ClassFacts], list[str]]
     """
-    test_side: list[str] = []
+    test_side: list[_ClassFacts] = []
     production: list[str] = []
     seen = {cls.name}
-    pending = [name for name in cls.generic_bases if name != cls.name]
+    pending = [(name, file) for name in cls.generic_bases if name != cls.name]
     while pending:
-        name = pending.pop(0)
+        name, context = pending.pop(0)
         if name in seen:
             continue
         seen.add(name)
-        if name in test_bases:
-            test_side.append(name)
-            pending.extend(test_bases[name])
+        found = test_classes.resolve(name, context)
+        if found is not None:
+            base, base_file = found
+            test_side.append(base)
+            pending.extend((parent, base_file) for parent in base.generic_bases)
         else:
             production.append(name)
-            pending.extend(production_bases.get(name, []))
+            pending.extend((parent, context) for parent in production_bases.get(name, []))
     return test_side, production
 
 
 def _base_state_reaches(
     cls: _ClassFacts,
     file: Path,
-    ancestry: tuple[list[str], list[str]],
+    ancestry: tuple[list[_ClassFacts], list[str]],
     base_state: dict[str, dict[str, tuple[Path, int]]],
-    test_declares: dict[str, frozenset[str]],
     repo_root: Path,
 ) -> list[Violation]:
     """the shape-I violations of one class, against the state every production ancestor keeps.
@@ -1514,7 +1541,7 @@ def _base_state_reaches(
             inherited.setdefault(name, (base, where))
     if not inherited:
         return []
-    own = cls.defines.union(*(test_declares.get(name, frozenset()) for name in test_side))
+    own = cls.defines.union(*(base.defines for base in test_side))
     found: list[Violation] = []
     # owner_reaches holds only private names, which every inherited state name is
     for attr, line in cls.owner_reaches:

@@ -28,16 +28,24 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 import pyarrow as pa
 
 from threetears.core.collections.derived import DerivedCollection
 from threetears.core.entities.base import BaseEntity
-from threetears.geo.attributes import coerce_attributes
+from threetears.core.process_workers import ProcessWorkers
 from threetears.geo.bands import AggregateSpec, BandResult, FeatureSpec, aggregate_band, feature_band
-from threetears.geo.features import FeatureCache
-from threetears.geo.geometry import decode_geometry, point_geometry
+from threetears.geo.features import BoundsOf, FeatureCache
+from threetears.geo.geometry import (
+    RowGeometries,
+    decode_geometry,
+    point_bounds,
+    point_geometries,
+    point_geometry,
+    wkb_bounds,
+    wkb_geometries,
+)
 from threetears.geo.mvt import encode_tile
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
@@ -48,6 +56,19 @@ from shapely.geometry.base import BaseGeometry
 __all__ = ["LayerDefinition", "TileEntity", "TileCollection", "ViewportRequest"]
 
 log = get_logger(__name__)
+
+#: worker processes building tiles: a precompute pass's builds (its ``concurrency``) and a viewport's misses run
+#: side by side across them, the loop holding none of their CPU
+_TILE_WORKERS_COUNT: Final = 2
+
+#: the pool every tile build of this process past :data:`_INLINE_ROWS` runs in
+_TILE_WORKERS: Final = ProcessWorkers(workers=_TILE_WORKERS_COUNT, name="geo tile builds", process_name="3t-geo-tile")
+
+#: a tile over at most this many source rows builds on the loop. measured 2026-11-23 (M-series, CPython 3.14, z12
+#: feature band of random polygons): a build held the loop 0.15 ms at 1 row, 0.6 ms at 16, 1.1 ms at 32 and 13 ms at
+#: 3,000, while a worker's build held no turn of the loop past 0.01 ms (0.4-0.9 ms of wall time at these sizes). so a
+#: tile past 16 rows, which would hold the loop past half a millisecond, goes to a worker
+_INLINE_ROWS: Final = 16
 
 _MVT_CONTENT_TYPE = "application/vnd.mapbox-vector-tile"
 
@@ -162,6 +183,57 @@ class LayerDefinition:
             return decode_geometry(row.get(self.geometry_column))
         assert self.longitude_column is not None and self.latitude_column is not None  # noqa: S101 - __post_init__
         return point_geometry(row, self.longitude_column, self.latitude_column)
+
+    def geometries_of(self, table: pa.Table) -> RowGeometries:
+        """every row's geometry, from a whole table at once: :meth:`geometry_of` over columns.
+
+        :param table: source rows
+        :ptype table: pa.Table
+        :return: each row's geometry, and which rows have one that could not be read
+        :rtype: RowGeometries
+        """
+        if self.geometry_column is not None:
+            return wkb_geometries(table, self.geometry_column)
+        assert self.longitude_column is not None and self.latitude_column is not None  # noqa: S101 - __post_init__
+        return point_geometries(table, self.longitude_column, self.latitude_column)
+
+    @property
+    def bounds_of(self) -> BoundsOf:
+        """this layer's :data:`~threetears.geo.features.BoundsOf`, for its
+        :class:`~threetears.geo.features.FeatureCache`: every row's bounding rectangle, from a whole table at once,
+        null where the row's geometry is absent, empty or will not decode.
+
+        :return: :func:`~threetears.geo.geometry.wkb_bounds` or :func:`~threetears.geo.geometry.point_bounds` over
+            this layer's columns
+        :rtype: BoundsOf
+        """
+        return self._bounds
+
+    def _bounds(self, table: pa.Table) -> pa.Table:
+        """:attr:`bounds_of`'s answer for ``table``."""
+        if self.geometry_column is not None:
+            return wkb_bounds(table, self.geometry_column)
+        assert self.longitude_column is not None and self.latitude_column is not None  # noqa: S101 - __post_init__
+        return point_bounds(table, self.longitude_column, self.latitude_column)
+
+    def columns(self) -> tuple[str, ...]:
+        """every source column a build of this layer reads, once each, in declaration order.
+
+        :return: the column names
+        :rtype: tuple[str, ...]
+        """
+        named = (
+            self.feature_id_column,
+            self.geometry_column,
+            self.longitude_column,
+            self.latitude_column,
+            self.aggregate.rollup_column,
+            *self.aggregate.measures,
+            *self.features.attributes,
+            self.features.feature_id_column,
+            self.features.rank_column,
+        )
+        return tuple(dict.fromkeys(name for name in named if name is not None))
 
 
 class TileEntity(BaseEntity):
@@ -360,12 +432,20 @@ class TileCollection(DerivedCollection[TileEntity]):
 
         tile = TileId(z=z, x=x, y=y)
         rows = await self._features_for(definition, version, tile)
-        # the bands read a row at a time through the layer's geometry_of / attributes_of, which take
-        # a row mapping: this one tile's rows become mappings here, for this build only
-        band = self._build_band(rows.to_pylist(), tile=tile, definition=definition)
-        # both bands meet here, so this is where a tile built over unreadable rows is marked:
-        # the per-bucket property covers only buckets that kept a feature
-        payload = encode_tile({layer_name: band.features}, tile, undecodable={layer_name: band.undecodable})
+        # the build is CPU (decode, simplify, project, encode), so it runs in a worker process and the loop only
+        # waits; a tile of a few rows builds here, where the round trip would cost the loop more than the build
+        rows = rows.select([name for name in definition.columns() if name in rows.column_names])
+        payload, band = _built(
+            await _TILE_WORKERS.run(
+                _build_tile,
+                _table_bytes(rows),
+                _layer_plain(definition),
+                z,
+                x,
+                y,
+                inline=rows.num_rows <= _INLINE_ROWS,
+            )
+        )
 
         if band.undecodable:
             counter(
@@ -410,28 +490,6 @@ class TileCollection(DerivedCollection[TileEntity]):
             return await self._loader(definition.name, version, tile_bounds(tile))
         return await cache.features_in_bbox(definition.name, version, tile_bounds(tile))
 
-    def _build_band(self, rows: list[dict[str, Any]], *, tile: TileId, definition: LayerDefinition) -> BandResult:
-        """route a tile to the aggregate or feature band by zoom.
-
-        below the crossover a tile spans too much ground for individual
-        features to mean anything, so it carries rollups with real totals
-        instead of an arbitrary surviving sample.
-        """
-        if tile.z <= definition.crossover_zoom:
-            return aggregate_band(
-                rows,
-                tile=tile,
-                spec=definition.aggregate,
-                geometry_of=definition.geometry_of,
-            )
-        return feature_band(
-            rows,
-            tile=tile,
-            spec=definition.features,
-            geometry_of=definition.geometry_of,
-            attributes_of=coerce_attributes,
-        )
-
     # ------------------------------------------------------------------
     # serialization for L1 / L2
     # ------------------------------------------------------------------
@@ -464,3 +522,99 @@ class TileCollection(DerivedCollection[TileEntity]):
             "y": int(parts[4]),
             "mvt": parts[5],
         }
+
+
+# ----------------------------------------------------------------------
+# the build, as a worker process runs it: plain data in and out
+# ----------------------------------------------------------------------
+
+
+def _table_bytes(table: pa.Table) -> bytes:
+    """a table as one Arrow IPC stream, to cross to a worker."""
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    stream: bytes = sink.getvalue().to_pybytes()
+    return stream
+
+
+def _layer_plain(definition: LayerDefinition) -> tuple[Any, ...]:
+    """a layer as plain data, for :func:`_layer_of` in a worker."""
+    aggregate, features = definition.aggregate, definition.features
+    return (
+        definition.name,
+        definition.feature_id_column,
+        definition.geometry_column,
+        definition.longitude_column,
+        definition.latitude_column,
+        (aggregate.rollup_column, tuple(aggregate.measures.items())),
+        (features.attributes, features.feature_id_column, features.max_features_per_tile, features.rank_column),
+        definition.crossover_zoom,
+        definition.minzoom,
+        definition.maxzoom,
+    )
+
+
+def _layer_of(plain: tuple[Any, ...]) -> LayerDefinition:
+    """the layer :func:`_layer_plain` made plain."""
+    name, feature_id, geometry, longitude, latitude, aggregate, features, crossover, minzoom, maxzoom = plain
+    rollup, measures = aggregate
+    attributes, features_id, cap, rank = features
+    return LayerDefinition(
+        name=name,
+        feature_id_column=feature_id,
+        geometry_column=geometry,
+        longitude_column=longitude,
+        latitude_column=latitude,
+        aggregate=AggregateSpec(rollup_column=rollup, measures=dict(measures)),
+        features=FeatureSpec(
+            attributes=tuple(attributes), feature_id_column=features_id, max_features_per_tile=cap, rank_column=rank
+        ),
+        crossover_zoom=crossover,
+        minzoom=minzoom,
+        maxzoom=maxzoom,
+    )
+
+
+#: the values that cross back from a worker as they are; any other first-undecodable id crosses as its text
+_PLAIN_IDS: Final = (str, int, float, bool, bytes, type(None))
+
+
+def _build_tile(rows: bytes, layer: tuple[Any, ...], z: int, x: int, y: int) -> tuple[Any, ...]:
+    """build one tile from its source rows: the bands over whole columns, then the encoding.
+
+    a worker process's job (:data:`_TILE_WORKERS`), or the loop's for a tile of a few rows.
+
+    below the crossover a tile spans too much ground for individual
+    features to mean anything, so it carries rollups with real totals
+    instead of an arbitrary surviving sample.
+
+    :param rows: the tile's source rows, as an Arrow IPC stream
+    :ptype rows: bytes
+    :param layer: the layer, as :func:`_layer_plain` made it
+    :ptype layer: tuple[Any, ...]
+    :return: ``(mvt, truncated, dropped, undecodable, first_undecodable)``
+    :rtype: tuple[Any, ...]
+    """
+    definition = _layer_of(layer)
+    table = pa.ipc.open_stream(rows).read_all()
+    tile = TileId(z=z, x=x, y=y)
+    geometries = definition.geometries_of(table)
+    if tile.z <= definition.crossover_zoom:
+        band = aggregate_band(table, geometries, tile=tile, spec=definition.aggregate)
+    else:
+        band = feature_band(table, geometries, tile=tile, spec=definition.features)
+    # both bands meet here, so this is where a tile built over unreadable rows is marked:
+    # the per-bucket property covers only buckets that kept a feature
+    payload = encode_tile({definition.name: band.features}, tile, undecodable={definition.name: band.undecodable})
+    first = band.first_undecodable if isinstance(band.first_undecodable, _PLAIN_IDS) else str(band.first_undecodable)
+    return (payload, band.truncated, band.dropped, band.undecodable, first)
+
+
+def _built(answer: tuple[Any, ...]) -> tuple[bytes, BandResult]:
+    """a :func:`_build_tile` answer: the tile's bytes, and its band's accounting (no features: they stayed in the
+    worker)."""
+    payload, truncated, dropped, undecodable, first = answer
+    return payload, BandResult(
+        features=[], truncated=truncated, dropped=dropped, undecodable=undecodable, first_undecodable=first
+    )

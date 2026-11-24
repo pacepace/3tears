@@ -39,6 +39,9 @@ dependencies = [
     "shapely>=2.1",
     # MVT encoding, replacing ST_AsMVT for the same reason.
     "mapbox-vector-tile>=2.1",
+    # a tile's rows, bounds and band columns are Arrow and numpy arrays (geometry.py, bands.py, features.py)
+    "pyarrow>=17",
+    "numpy>=1.26",
 ]
 
 [project.urls]
