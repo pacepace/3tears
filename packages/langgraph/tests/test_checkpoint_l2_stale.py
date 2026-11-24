@@ -12,6 +12,7 @@ against a real NATS server and Postgres is ``integration/test_checkpoint_l2_over
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -702,32 +703,58 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
         await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
         assert l2.gets == ["t-1"]
 
-    async def test_a_failed_write_adds_one_chunk_and_never_copies_the_held_keys(self) -> None:
-        """the cost check: 4096 keys through repeated failed writes, each one appending a chunk.
-
-        A failed write builds the next tuple of chunks from the ones already held, by reference: every
-        chunk still held after it is the very object held before it, so no key is ever copied.
-        """
+    async def test_the_bypass_keeps_every_key_oldest_first_through_lifts_and_drops(self) -> None:
+        """across chunk merges, lifts and drops the bypass holds exactly what an oldest-first set would."""
         l2 = _DictL2Cache()
         l2.fail_put = RuntimeError("nats: timeout")
         l2.fail_delete = RuntimeError("nats: timeout")
-        limit = 4096
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+        expected: list[str] = []  # the model: test-local, oldest first
 
-        for n in range(limit + 2):
-            before = saver.l2_write_bypass
-            await saver.l2_put(f"t-{n}", "", b"cp")
-            after = saver.l2_write_bypass
-            assert isinstance(after, tuple) and after[-1] == (saver.l2_key(f"t-{n}", ""),), (
-                "one new chunk, holding the failed write's key"
-            )
-            if n % 512 and n < limit - 1:
-                continue  # the whole by-reference walk below is itself O(chunks); sampled, and every write past the cap
-            kept = after[:-1]
-            assert all(a is b for a, b in zip(kept, before[len(before) - len(kept) :], strict=True)), (
-                "the chunks already held are kept by reference, never rebuilt"
-            )
-        assert sum(len(chunk) for chunk in saver.l2_write_bypass) == limit
+        for n in range(5000):
+            thread = f"t-{(n * 7919) % 4500}"
+            if n % 5 == 4:
+                l2.fail_put = None  # this write lands, lifting its key
+                await saver.l2_put(thread, "", b"cp")
+                l2.fail_put = RuntimeError("nats: timeout")
+                key = saver.l2_key(thread, "")
+                expected = [k for k in expected if k != key]
+                continue
+            await saver.l2_put(thread, "", b"cp")
+            key = saver.l2_key(thread, "")
+            expected = [*(k for k in expected if k != key), key][-4096:]
+            if n % 997 == 0:
+                assert saver.l2_write_bypass == tuple(expected)
+        assert saver.l2_write_bypass == tuple(expected)
+
+    async def test_failed_writes_and_checks_cost_the_same_with_a_full_bypass_as_with_an_empty_one(self) -> None:
+        """the speed budget: 4096 keys through repeated failed writes, each a write and a read check.
+
+        Timed against the same writes and reads cycling over 8 keys, on the same machine in the same run, so the
+        ratio is what the bypass's size costs. A bypass whose write or check walks every key (the one-key-per-chunk
+        tuple, 1.74 s for 12,288 failed writes) runs far past it; O(log keys) chunks stay within it.
+        """
+
+        async def run(keys: int) -> float:
+            l2 = _DictL2Cache()
+            l2.fail_put = RuntimeError("nats: timeout")
+            l2.fail_delete = RuntimeError("nats: timeout")
+            saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+            started = time.perf_counter()
+            for n in range(3 * 4096):
+                thread = f"t-{n % keys}"
+                await saver.l2_put(thread, "", b"cp")
+                await saver.aget_tuple({"configurable": {"thread_id": thread, "checkpoint_ns": ""}})
+            return time.perf_counter() - started
+
+        # the failure logs are not what is timed: each failed write logs two WARNINGs with tracebacks
+        logging.disable(logging.CRITICAL)
+        try:
+            small = min([await run(8) for _ in range(2)])
+            full = min([await run(4096) for _ in range(2)])
+        finally:
+            logging.disable(logging.NOTSET)
+        assert full < 2 * small, f"{full:.3f}s with 4096 keys bypassed against {small:.3f}s with 8"
 
     async def test_a_reused_failure_does_not_grow_its_traceback(self) -> None:
         l2 = _DictL2Cache()
