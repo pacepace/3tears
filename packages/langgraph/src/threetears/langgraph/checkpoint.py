@@ -703,7 +703,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # purge: stored thread ids whose purge deleted L3 but could not clear a cache. an erased
         # thread is never served from cache, so only a purge of it that succeeds lifts this; a
         # write never does (a write cannot clear the namespaces a failed sweep left behind).
-        self._cache_bypassed_threads: set[str] = set()
+        # a frozenset replaced whole: changed only by a purge, never by a read or write
+        self._cache_bypassed_threads: frozenset[str] = frozenset()
         # write: L2 keys whose put and then delete both failed, so the key may still hold an older
         # checkpoint. lifted by the next put or delete of that key that lands; bounded by
         # _L2_WRITE_BYPASS_LIMIT, oldest first.
@@ -2203,9 +2204,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except CheckpointCacheError as exc:
             failures.append(exc)
         if len(failures) > failed_before:
-            self._cache_bypassed_threads.add(storage_thread_id)
-        else:
-            self._cache_bypassed_threads.discard(storage_thread_id)
+            self._cache_bypassed_threads = self._cache_bypassed_threads | {storage_thread_id}
+        elif storage_thread_id in self._cache_bypassed_threads:
+            self._cache_bypassed_threads = self._cache_bypassed_threads - {storage_thread_id}
         return swept or self._l2 is None
 
     async def aprune(  # type: ignore[override] # LangGraph's returns None; a caller ignoring the result is unaffected
