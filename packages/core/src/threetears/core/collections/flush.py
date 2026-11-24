@@ -17,7 +17,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.declared import whole_read
-from threetears.core.collections import packed_keys
+from threetears.core import packed_keys
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.backends.protocol import RowcountUnreadableError
@@ -128,18 +128,22 @@ class _Entry:
     :ivar state: :data:`_PENDING`, :data:`_CLAIMED`, :data:`_RECOVERED` or :data:`_GONE`
     :ivar write: the write, or ``None`` for a gone or recovered key
     :ivar first: the key's place in drain order: where it entered the buffer, kept while it stays in it
+    :ivar run: the run holding it, by place in the buffer's runs
+    :ivar row: its row in that run
     """
 
     state: int
     write: PendingWrite | None
     first: int
+    run: int = -1
+    row: int = -1
 
 
 @dataclass(frozen=True, slots=True)
 class _Run:
     """an immutable run of a :class:`WriteBuffer`'s entries, sorted by key text, one a key.
 
-    Columnar: the keys are one packed string (:mod:`~threetears.core.collections.packed_keys`) with each text's offset
+    Columnar: the keys are one packed string (:mod:`~threetears.core.packed_keys`) with each text's offset
     in one ``array('q')``, the states one ``bytes``, the drain places one ``array('q')``; only the writes -- the rows
     callers handed in -- are a tuple of their objects. A key is found by bisection, a text sliced a step.
 
@@ -164,7 +168,7 @@ class _Run:
         :return: the text
         :rtype: str
         """
-        return self.keys[self.offsets[row] + 1 : self.offsets[row + 1]]
+        return packed_keys.text_at(self.keys, self.offsets, row)
 
     def find(self, text: str) -> int:
         """the entry for the key whose text is ``text``, by bisection.
@@ -174,24 +178,7 @@ class _Run:
         :return: the entry's row, or ``-1`` when the run holds none for the key
         :rtype: int
         """
-        low, high = 0, len(self.writes)
-        while low < high:
-            middle = (low + high) // 2
-            if self.text(middle) < text:
-                low = middle + 1
-            else:
-                high = middle
-        return low if low < len(self.writes) and self.text(low) == text else -1
-
-    def entry(self, row: int) -> _Entry:
-        """entry ``row``.
-
-        :param row: the entry
-        :ptype row: int
-        :return: the entry
-        :rtype: _Entry
-        """
-        return _Entry(state=self.states[row], write=self.writes[row], first=self.firsts[row])
+        return packed_keys.find_sorted(self.keys, self.offsets, text)
 
 
 def _run_of(texts: Sequence[str], states: bytes, firsts: array[int], writes: tuple[PendingWrite | None, ...]) -> _Run:
@@ -208,12 +195,13 @@ def _run_of(texts: Sequence[str], states: bytes, firsts: array[int], writes: tup
     :return: the run
     :rtype: _Run
     """
-    offsets = array("q", [0])
-    at = 0
-    for text in texts:
-        at += len(text) + 1
-        offsets.append(at)
-    return _Run(keys=packed_keys.packed(texts), offsets=offsets, states=states, firsts=firsts, writes=writes)
+    return _Run(
+        keys=packed_keys.packed(texts),
+        offsets=packed_keys.offsets_of(texts),
+        states=states,
+        firsts=firsts,
+        writes=writes,
+    )
 
 
 #: the buffer's runs when it holds nothing
@@ -233,32 +221,40 @@ def _merged(older: _Run, newer: _Run, *, oldest: bool) -> _Run:
     :return: the run
     :rtype: _Run
     """
+    # each run's texts split once (C), so the merge compares strings, never slices them a step
+    old_texts, new_texts = packed_keys.texts(older.keys), packed_keys.texts(newer.keys)
     texts: list[str] = []
     states = bytearray()
     firsts = array("q")
     writes: list[PendingWrite | None] = []
-    old_count, new_count = len(older.writes), len(newer.writes)
+    old_count, new_count = len(old_texts), len(new_texts)
     i = j = 0
-    while i < old_count or j < new_count:
-        if j >= new_count:
-            run, row, i = older, i, i + 1
-        elif i >= old_count:
-            run, row, j = newer, j, j + 1
+    while i < old_count and j < new_count:
+        old_text, new_text = old_texts[i], new_texts[j]
+        if old_text < new_text:
+            run, row, text = older, i, old_text
+            i += 1
         else:
-            old_text, new_text = older.text(i), newer.text(j)
-            if old_text < new_text:
-                run, row, i = older, i, i + 1
-            else:
-                if old_text == new_text:
-                    i += 1
-                run, row, j = newer, j, j + 1
+            if old_text == new_text:
+                i += 1
+            run, row, text = newer, j, new_text
+            j += 1
         state = run.states[row]
         if oldest and state == _GONE:
             continue
-        texts.append(run.text(row))
+        texts.append(text)
         states.append(state)
         firsts.append(run.firsts[row])
         writes.append(run.writes[row])
+    for run, rest, start in ((older, old_texts, i), (newer, new_texts, j)):
+        for row in range(start, len(rest)):
+            state = run.states[row]
+            if oldest and state == _GONE:
+                continue
+            texts.append(rest[row])
+            states.append(state)
+            firsts.append(run.firsts[row])
+            writes.append(run.writes[row])
     return _run_of(texts, bytes(states), firsts, tuple(writes))
 
 
@@ -282,8 +278,8 @@ class WriteBuffer:
     never clobber that newer value (lost-update protection).
 
     **No state a key** (Pace, 2026-11-23). What the buffer holds is a tuple of immutable :class:`_Run` s, each sorted
-    by key, its keys one packed string (:mod:`~threetears.core.collections.packed_keys`) and its states one ``bytes``,
-    never a dict or set of keys. Every change -- an add, a claim's release, a removal -- appends a run of one entry,
+    by key, its keys one packed string (:mod:`~threetears.core.packed_keys`) and its states one ``bytes``,
+    never a dict or set of keys. An add or a retry appends a run of one entry (an ack or removal marks its entry gone),
     and the last two runs are merged (a sorted merge) while the older holds no more than twice the newer's entries, so
     the runs stay logarithmic in the keys held and an entry is copied a logarithmic number of times over its life,
     never every key at each change. A key's newest entry is the one in the newest run holding it, found by bisection
@@ -291,9 +287,9 @@ class WriteBuffer:
     entry is pending, which is what releases the claim. Every change replaces the tuple whole under the buffer's lock,
     with no await between its read and its replacement.
 
-    Measured (2026-11-23, M-series, one coroutine): at 10,000 keys an add costs 11 us (12 before), an ack 12 us (1.4)
-    and a drain 6 ms (2); at 100,000 keys an add 15 us (1.1), an ack 17 us (0.8), a drain 65 ms (21). The dict was
-    O(1) a change; this is O(log^2) with no per-key state, and the drains of a write-behind table are small.
+    Measured (2026-11-23, M-series, one coroutine; the dict it replaced in brackets): at 10,000 keys an add costs
+    9 us (1.2), an ack 3.5 us (0.5) and a drain 3.5 ms (1.1); at 100,000 keys an add 12 us (0.7), an ack 8 us (0.5), a
+    drain 36 ms (14). An ack or removal marks its entry gone in a copy of its run's state bytes; nothing is appended.
     """
 
     #: an older run is merged into the newer one behind it while it holds at most this many times as many entries
@@ -342,10 +338,12 @@ class WriteBuffer:
         :return: the entry, or ``None`` when no run holds one
         :rtype: _Entry | None
         """
-        for run in reversed(self._runs):
+        runs = self._runs
+        for at in range(len(runs) - 1, -1, -1):
+            run = runs[at]
             row = run.find(text)
             if row >= 0:
-                return run.entry(row)
+                return _Entry(state=run.states[row], write=run.writes[row], first=run.firsts[row], run=at, row=row)
         return None
 
     def _append(self, text: str, state: int, write: PendingWrite | None, first: int) -> None:
@@ -429,7 +427,13 @@ class WriteBuffer:
         """
         if newest.state in (_PENDING, _CLAIMED):
             self._held -= 1
-        self._append(text, _GONE, None, newest.first)
+        # the entry's state byte, in a copy of its run's states (one memcpy): no run appended, nothing merged. The run's
+        # write stays referenced until a merge into the oldest run drops the gone entry
+        runs = self._runs
+        run = runs[newest.run]
+        states = run.states[: newest.row] + bytes((_GONE,)) + run.states[newest.row + 1 :]
+        changed = _Run(keys=run.keys, offsets=run.offsets, states=states, firsts=run.firsts, writes=run.writes)
+        self._runs = (*runs[: newest.run], changed, *runs[newest.run + 1 :])
 
     async def add(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int = 0) -> None:
         """Add or replace a pending write for the given entity."""
@@ -469,6 +473,9 @@ class WriteBuffer:
             run = runs[-1] if runs else _run_of((), b"", array("q"), ())
             for at in range(len(runs) - 2, -1, -1):
                 run = _merged(runs[at], run, oldest=at == 0)
+            if len(runs) == 1 and _GONE in run.states:
+                # acks and removals mark their entries gone in place; a drain drops them
+                run = _merged(_run_of((), b"", array("q"), ()), run, oldest=True)
             states = bytearray(run.states)
             claimed: list[PendingWrite] = []
             recovered: list[str] = []

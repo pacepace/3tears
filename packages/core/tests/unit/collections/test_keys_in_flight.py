@@ -16,31 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from typing import Any
 
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections import packed_keys
+from threetears.core import packed_keys
 from threetears.core.collections.base import _FENCE_ERA_CHANGES, _L1Fence
 from threetears.core.collections.flush import WriteBuffer
-
-
-class TestPackedKeys:
-    def test_a_key_text_is_exact(self) -> None:
-        """Flips if two different keys share a text: a part holding the separator, or a key split differently."""
-        keys = [("a", "b"), ("a\x1fb",), ("a\x00b",), ("a", "\x1eb"), ("",), ("", ""), ("ab",), ()]
-        texts = [packed_keys.key_text(key) for key in keys]
-        assert len(set(texts)) == len(keys)
-        assert not any(packed_keys.SEP in text for text in texts)
-
-    def test_a_batch_names_its_keys_and_no_other(self) -> None:
-        """Flips if a batch names a key it does not hold: one holding another's text inside it."""
-        batch = packed_keys.packed([packed_keys.key_text(("ab", "c")), packed_keys.key_text(("x",))])
-        assert packed_keys.names(batch, packed_keys.key_text(("ab", "c")))
-        assert packed_keys.names(batch, packed_keys.key_text(("x",)))
-        for other in (("a",), ("b", "c"), ("ab",), ("c",), ("x", "y")):
-            assert not packed_keys.names(batch, packed_keys.key_text(other))
 
 
 def _state_types(owner: object, names: tuple[str, ...]) -> set[type]:
@@ -106,8 +90,9 @@ class TestTheFence:
         """Flips if a change recorded in a later era is missed, or eras outlive the tickets that need them."""
         fence = _L1Fence()
         held = fence.begin(("a",), writing=False)
+        # evictions of many keys are recorded whatever is held (one of a key no ticket holds is only counted)
         for i in range(10 * _FENCE_ERA_CHANGES):
-            fence.changed((f"other{i}",))
+            fence.changed_many(packed_keys.packed([packed_keys.key_text((f"other{i}",)), "x"]), 2)
         assert fence.still_newest(held)
         # an era's copy is bounded, so the changes run over eras
         assert list(fence.recorded) == [_FENCE_ERA_CHANGES] * 10
@@ -263,5 +248,26 @@ def test_a_bulk_eviction_is_one_change_and_one_search_a_check(count: int) -> Non
     assert fence.recorded == (1,)
     # the held keys the eviction names: (S<i>, i) for i < 50, where i % 50 == i
     assert [not fence.still_newest(ticket) for ticket in held] == [i < 50 for i in range(100)]
+    for ticket in held:
+        fence.end(ticket)
+
+
+def test_a_held_reads_check_after_1000_writes_of_other_keys_is_within_budget() -> None:
+    """Speed budget (Pace, 2026-11-23: a fence check runs on every cached read). 1,000 reads held while 1,000 writes of
+    other keys begin and end: nothing is recorded, and each held read's check costs at most 2 us. Recording every
+    write made each check walk them: 10 us (the record a key it replaced: 0.03 us; now 0.2 us)."""
+    fence = _L1Fence()
+    held = [fence.begin(("r", f"{i:07d}"), writing=False) for i in range(1_000)]
+    for i in range(1_000):
+        write = fence.begin(("w", f"{i:07d}"), writing=True)
+        fence.end(write)
+    assert fence.recorded == (0,)
+    best = math.inf
+    for _ in range(5):
+        started = time.perf_counter()
+        for ticket in held:
+            assert fence.still_newest(ticket)
+        best = min(best, (time.perf_counter() - started) / len(held))
+    assert best < 2e-6, f"a check cost {best * 1e6:.2f} us"
     for ticket in held:
         fence.end(ticket)

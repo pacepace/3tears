@@ -78,7 +78,7 @@ from threetears.core.collections.generation import (
     table_named_by_class,
     tables_with_write_generation,
 )
-from threetears.core.collections import packed_keys
+from threetears.core import packed_keys
 from threetears.core.collections.l2_degrade import degrade_l2
 from threetears.core.collections.l2_first import L2First, L2FirstEpochs, L2FirstSupport
 from threetears.core.collections.l2_order import (
@@ -633,8 +633,9 @@ class _L1Fence:
     The check and the L1 write run with no await between them.
 
     **No state a key** (Pace, 2026-11-23). The fence holds no record a key: one count of changes, the writes in flight
-    as one packed batch (:mod:`~threetears.core.collections.packed_keys`), and the changes recorded while any ticket is
-    held as a tuple of eras. Each is an immutable value the fence replaces whole, on the loop, with no await between
+    as one packed batch (:mod:`~threetears.core.packed_keys`), and the changes recorded while any ticket is
+    held as a tuple of eras, with the held tickets' keys as one packed batch so a write or eviction of one key no
+    ticket holds is only counted, never recorded. Each is an immutable value the fence replaces whole, on the loop, with no await between
     its read and its replacement. A ticket keeps the count as it left it; a change reaches it when the change was
     counted after that and names its key. Its own era's changes are walked one by one (at most
     :data:`_FENCE_ERA_CHANGES`); each later era -- begun after the ticket was taken -- is asked once, one substring
@@ -642,13 +643,14 @@ class _L1Fence:
     key text, so no change copies more than that, and is dropped whole once every ticket taken in it, or before it, is
     released; with no ticket held nothing is recorded but the count.
 
-    Measured (2026-11-23, M-series, against the record a key it replaced): a read's begin, check and end 0.7 us (0.6);
-    a write's begin and end with 1,000 reads held 2.1 us (0.6); a read's check after 1,000 writes of other keys 10 us
-    (0.03), its own era's changes walked; a 33,786-key eviction's batch made on its thread in 3.1 ms (1.0, the keys and
-    their set), recorded on the loop in 0.01 ms (0.01), and a held read's check after it 0.4 us (0.04).
+    Measured (2026-11-23, M-series, against the record a key it replaced): a read's begin, check and end 0.8 us (0.6);
+    a write's begin and end with 1,000 reads held 5.5 us (0.6), its key searched in the held tickets' batch; a held
+    read's check after 1,000 writes of other keys 0.2 us (0.03), nothing recorded for keys no ticket holds; a
+    33,786-key eviction's batch made on its thread in 3.2 ms (1.0, the keys and their set), recorded on the loop in
+    0.02 ms (0.01), and a held read's check after it 0.4 us (0.05).
     """
 
-    __slots__ = ("_changes", "_eras", "_first_era", "_held", "_held_by_era", "_writers", "_writing")
+    __slots__ = ("_changes", "_eras", "_first_era", "_held", "_held_by_era", "_holding", "_writers", "_writing")
 
     def __init__(self) -> None:
         """start with no ticket held.
@@ -665,6 +667,8 @@ class _L1Fence:
         # tickets held, and the changes they may yet be overtaken by, era by era with the tickets taken in each held;
         # _first_era numbers _eras[0]
         self._held = 0
+        # the keys of the tickets held, one entry a ticket: a change of one key no ticket holds is only counted
+        self._holding = packed_keys.NO_KEYS
         self._eras: tuple[_FenceEra, ...] = (_QUIET_ERA,)
         self._held_by_era: tuple[int, ...] = (0,)
         self._first_era = 0
@@ -734,12 +738,13 @@ class _L1Fence:
         contended = self._writers > 0 and packed_keys.names(self._writing, text)
         if writing:
             self._writers += 1
-            self._writing = f"{self._writing}{text}{packed_keys.SEP}"
+            self._writing = packed_keys.with_text(self._writing, text)
             # recorded before this ticket is held: its own change is not one it is overtaken by
-            self._record(1, keys=packed_keys.packed((text,)))
+            self._changed_one(text)
         held = self._held_by_era
         self._held_by_era = (*held[:-1], held[-1] + 1)
         self._held += 1
+        self._holding = packed_keys.with_text(self._holding, text)
         return _KeyTicket(
             key=key,
             text=text,
@@ -788,17 +793,17 @@ class _L1Fence:
         """
         if ticket.writing:
             self._writers -= 1
-            writing = self._writing
             # one of this ticket's key's entries (two writes of one key each hold one)
-            at = writing.index(f"{packed_keys.SEP}{ticket.text}{packed_keys.SEP}")
-            self._writing = writing[: at + 1] + writing[at + len(ticket.text) + 2 :]
+            self._writing = packed_keys.without_text(self._writing, ticket.text)
         self._held -= 1
         if self._held == 0:
+            self._holding = packed_keys.NO_KEYS
             # nothing held can be overtaken: every era goes, and the numbering moves past them
             self._first_era += len(self._eras)
             self._eras = (_QUIET_ERA,)
             self._held_by_era = (0,)
             return
+        self._holding = packed_keys.without_text(self._holding, ticket.text)
         at = ticket.era - self._first_era
         held = self._held_by_era
         held = (*held[:at], held[at] - 1, *held[at + 1 :])
@@ -821,7 +826,24 @@ class _L1Fence:
         if self._held == 0:
             self._changes += 1
             return
-        self._record(1, keys=packed_keys.packed((packed_keys.key_text(key),)))
+        self._changed_one(packed_keys.key_text(key))
+
+    def _changed_one(self, text: str) -> None:
+        """count a change of the key whose text is ``text``, recorded only while a held ticket is on that key.
+
+        A ticket taken later is not overtaken by it, so a change of a key no ticket holds has nothing to record:
+        recording every write of 1,000 other keys made each held read's check walk them all (10 us, against 0.03 us
+        with a record a key, 2026-11-23); now the checks find nothing to walk.
+
+        :param text: the key's text
+        :ptype text: str
+        :return: nothing
+        :rtype: None
+        """
+        if packed_keys.names(self._holding, text):
+            self._record(1, keys=packed_keys.packed((text,)))
+        else:
+            self._changes += 1
 
     def changed_many(self, keys: str, count: int) -> None:
         """:meth:`changed` of every key of the packed batch ``keys``, at once: one change recorded, whatever the
