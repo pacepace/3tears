@@ -251,6 +251,12 @@ def _rendered_rows(rows: Any, kinds: Sequence[tuple[str, str]]) -> tuple[Any, st
     return batched, " || ".join(pieces) if pieces else "''"
 
 
+#: fingerprinting is background work (a copy's drift check every 15 minutes, a fold's part write): one DuckDB thread,
+#: never every core the pod sees beside its serving process. Measured on a 337k x 15-column part: 268-274 ms at one
+#: thread against 63-67 ms at the default (all cores), well off the event loop either way (2026-11-24)
+_FINGERPRINT_THREADS: Final = 1
+
+
 def row_digests(rows: Any, kinds: Sequence[tuple[str, str]]) -> Any:
     """each row's hash, in the rows' order: the MD5 (hex) of its text (:func:`_rendered_rows`), computed in DuckDB a
     column at a time, never a row at a time in Python. The one per-row rule a full's fingerprint sums and the
@@ -264,7 +270,7 @@ def row_digests(rows: Any, kinds: Sequence[tuple[str, str]]) -> Any:
     :rtype: pyarrow.ChunkedArray
     """
     canonical, text = _rendered_rows(rows, kinds)
-    with duckdb.connect() as con:
+    with duckdb.connect(config={"threads": _FINGERPRINT_THREADS}) as con:
         # a projection over one Arrow scan keeps the rows' order (DuckDB's preserve_insertion_order, on by default)
         return con.from_arrow(canonical).select(f"md5({text}) AS digest").to_arrow_table().column("digest")
 
@@ -288,7 +294,7 @@ def rows_fingerprint(rows: Any, kinds: Sequence[tuple[str, str]] | None = None) 
     if kinds is None:
         kinds = fingerprint_kinds({field.name: field.type for field in rows.schema})
     canonical, text = _rendered_rows(rows, kinds)
-    with duckdb.connect() as con:
+    with duckdb.connect(config={"threads": _FINGERPRINT_THREADS}) as con:
         # one MD5 a row, its two halves summed apart (UBIGINT sums are exact HUGEINTs below 2**64 rows)
         summed = (
             con.from_arrow(canonical)
