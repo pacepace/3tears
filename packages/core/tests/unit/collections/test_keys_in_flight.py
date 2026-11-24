@@ -1,6 +1,6 @@
 """the keys in flight -- the L1 fence's and the write buffer's -- are immutable packed batches, never state a key.
 
-Pace, 2026-11-23: ``_L1Fence._keys`` (a mutable record a key in flight) and ``WriteBuffer._buf`` / ``_in_flight`` (a
+Pace, 2026-11-23: ``L1Fence._keys`` (a mutable record a key in flight) and ``WriteBuffer._buf`` / ``_in_flight`` (a
 dict and a set a pending write) were per-key Python objects and mutable shared state. Each is now immutable values its
 owner replaces whole: the fence a count, its writes in flight as one packed batch and its recorded changes as eras;
 the buffer a tuple of sorted runs, each its keys as one packed string. These tests pin the behaviour both kept (who
@@ -23,7 +23,7 @@ import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core import packed_keys
-from threetears.core.collections.base import _FENCE_ERA_CHANGES, _L1Fence
+from threetears.core.collections.l1_fence import FENCE_ERA_CHANGES, L1Fence
 from threetears.core.collections.flush import WriteBuffer
 
 
@@ -34,14 +34,14 @@ def _state_types(owner: object, names: tuple[str, ...]) -> set[type]:
 class TestTheFence:
     def test_the_fence_holds_no_dict_or_set(self) -> None:
         """Flips if the fence keeps a record a key: its state is counts, one packed batch and a tuple of eras."""
-        fence = _L1Fence()
+        fence = L1Fence()
         tickets = [fence.begin((f"k{i}",), writing=i % 2 == 0) for i in range(100)]
         assert _state_types(fence, fence.__slots__) <= {int, str, tuple}
         for ticket in tickets:
             fence.end(ticket)
 
     def test_a_read_is_overtaken_by_a_write_of_its_key_only(self) -> None:
-        fence = _L1Fence()
+        fence = L1Fence()
         read = fence.begin(("a",), writing=False)
         other = fence.begin(("b",), writing=False)
         write = fence.begin(("a",), writing=True)
@@ -52,7 +52,7 @@ class TestTheFence:
             fence.end(ticket)
 
     def test_a_read_taken_while_a_write_is_in_flight_is_contended_until_none_is(self) -> None:
-        fence = _L1Fence()
+        fence = L1Fence()
         first = fence.begin(("a",), writing=True)
         second = fence.begin(("a",), writing=True)
         assert not fence.still_newest(first) and not fence.still_newest(second)
@@ -66,7 +66,7 @@ class TestTheFence:
         fence.end(read)
 
     def test_an_eviction_batch_prefix_and_drop_reach_the_keys_they_name(self) -> None:
-        fence = _L1Fence()
+        fence = L1Fence()
         tickets = {key: fence.begin(key, writing=False) for key in (("s1", "g1"), ("s1", "g2"), ("s2", "g1"))}
         fence.changed_many(packed_keys.packed([packed_keys.key_text(("s1", "g2"))]), 1)
         assert [fence.still_newest(t) for t in tickets.values()] == [True, False, True]
@@ -78,7 +78,7 @@ class TestTheFence:
             fence.end(ticket)
 
     def test_a_change_before_a_ticket_does_not_reach_it(self) -> None:
-        fence = _L1Fence()
+        fence = L1Fence()
         holder = fence.begin(("x",), writing=False)
         fence.changed(("a",))
         read = fence.begin(("a",), writing=False)
@@ -88,21 +88,21 @@ class TestTheFence:
 
     def test_a_long_held_ticket_sees_a_change_many_eras_later_and_the_eras_go_with_it(self) -> None:
         """Flips if a change recorded in a later era is missed, or eras outlive the tickets that need them."""
-        fence = _L1Fence()
+        fence = L1Fence()
         held = fence.begin(("a",), writing=False)
         # evictions of many keys are recorded whatever is held (one of a key no ticket holds is only counted)
-        for i in range(10 * _FENCE_ERA_CHANGES):
+        for i in range(10 * FENCE_ERA_CHANGES):
             fence.changed_many(packed_keys.packed([packed_keys.key_text((f"other{i}",)), "x"]), 2)
         assert fence.still_newest(held)
         # an era's copy is bounded, so the changes run over eras
-        assert list(fence.recorded) == [_FENCE_ERA_CHANGES] * 10
+        assert list(fence.recorded) == [FENCE_ERA_CHANGES] * 10
         fence.changed(("a",))
         assert not fence.still_newest(held)
         fence.end(held)
         assert fence.recorded == (0,)
 
     def test_with_nothing_held_a_change_is_only_counted(self) -> None:
-        fence = _L1Fence()
+        fence = L1Fence()
         fence.changed(("a",))
         fence.changed_many(packed_keys.NO_KEYS, 33_786)
         assert fence.recorded == (0,)
@@ -111,7 +111,7 @@ class TestTheFence:
     async def test_a_read_racing_a_write_on_the_loop_declines_to_cache(self) -> None:
         """Two coroutines: a read awaits between its ticket and its check while a write of the key begins and ends.
         Holds on the old code too: no await inside either fence call, so no interleaving reaches a half-made change."""
-        fence = _L1Fence()
+        fence = L1Fence()
         read_may_cache: list[bool] = []
 
         async def read() -> None:
@@ -241,7 +241,7 @@ class TestTheWriteBuffer:
 def test_a_bulk_eviction_is_one_change_and_one_search_a_check(count: int) -> None:
     """At a commit's real size (33,786 keys, the WD2 bench): the eviction is one recorded change holding one batch, and a
     held ticket's check is one search of it."""
-    fence = _L1Fence()
+    fence = L1Fence()
     held = [fence.begin((f"S{i:02d}", f"{i:07d}"), writing=False) for i in range(100)]
     keys = [packed_keys.key_text((f"S{i % 50:02d}", f"{i:07d}")) for i in range(count)]
     fence.changed_many(packed_keys.packed(keys), count)
@@ -256,7 +256,7 @@ def test_a_held_reads_check_after_1000_writes_of_other_keys_is_within_budget() -
     """Speed budget (Pace, 2026-11-23: a fence check runs on every cached read). 1,000 reads held while 1,000 writes of
     other keys begin and end: nothing is recorded, and each held read's check costs at most 2 us. Recording every
     write made each check walk them: 10 us (the record a key it replaced: 0.03 us; now 0.2 us)."""
-    fence = _L1Fence()
+    fence = L1Fence()
     held = [fence.begin(("r", f"{i:07d}"), writing=False) for i in range(1_000)]
     for i in range(1_000):
         write = fence.begin(("w", f"{i:07d}"), writing=True)
