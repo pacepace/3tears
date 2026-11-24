@@ -114,7 +114,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final, Literal
+from typing import Annotated, Any, Final, Literal
 
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
@@ -149,8 +149,9 @@ from threetears.core.collections.schema_backed import Column, TableSchema, rail_
 from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
-from threetears.core.keyset import keyset_arrow_pages
+from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.core.collections.volume_fulls import (
     FullManifest,
     FullPart,
@@ -420,7 +421,7 @@ class FoldedTable:
     name: str
     key: tuple[str, ...]
     columns: tuple[str, ...]
-    scope: tuple[str, str] | None = None
+    scope: Annotated[tuple[str, str] | None, DeclaredScope] = None
     keep: type[DeltaKeepRule] | None = None
     kinds: tuple[tuple[str, str], ...] = ()
     delta_scope: str | None = None
@@ -1893,19 +1894,16 @@ async def _state_rows(
     :rtype: AsyncIterator[pyarrow.Table]
     """
     assert table.scope is not None  # noqa: S101 -- _table_scopes names states only of a scoped table
-    column, prefix = table.scope
-    kind = dict(table.kinds)[column]
-    cast = f"{sql_cast(kind)}[]"
-    values = [typed_text(kind, scope.removeprefix(prefix)) for scope in scopes]
-    selected = ", ".join(quote_identifier(name) for name in types)
-    async for page in keyset_arrow_pages(
+    kind = dict(table.kinds)[table.scope[0]]
+    async for page in keyset_scope_pages(
         reader.l3,
-        f"SELECT {selected} FROM {quote_identifier(table.name)}",  # noqa: S608 - trusted identifiers
-        (column, *(name for name in table.key if name != column)),
+        table.name,
+        table.key,
         types=types,
-        where_any={column: (cast, values)},
+        scope_column=table.scope[0],
+        scope_values=[typed_text(kind, scope.removeprefix(table.scope[1])) for scope in scopes],
+        scope_array=f"{sql_cast(kind)}[]",
         page_size=reader.page_size,
-        lead_array=cast,
     ):
         yield page
 

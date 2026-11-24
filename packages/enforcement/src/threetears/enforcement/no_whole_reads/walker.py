@@ -279,6 +279,10 @@ _KEYED_MODULES: Final = ("threetears.core.keyed", "threetears.interfaces.keyed")
 #: a local copy's read of one state, bounded only by a declared state column (:meth:`_ModuleWalk._judge_state_read`)
 _STATE_READ: Final = "read_state_arrow"
 
+#: L3's keyset read of the states a set names (:func:`threetears.core.keyset.keyset_scope_pages`), bounded only by a
+#: declared state column (:meth:`_ModuleWalk._judge_state_read`)
+_SCOPE_PAGES: Final = "keyset_scope_pages"
+
 #: the modules holding a keyed helper in :data:`KEYED_HELPER_CALLS`: :data:`_KEYED_PACKAGES` and the one the
 #: caller's grants filter (``visible_rows``, :mod:`threetears.agent.acl.visible_customers`); a statement over a
 #: helper's relation parameter there is judged at the helper's call sites (:func:`_helper_relations`)
@@ -3815,7 +3819,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         name = _final(node)
-        if name == _STATE_READ and not _on_an_object(node, self._module_names):
+        if name in (_STATE_READ, _SCOPE_PAGES) and not _on_an_object(node, self._module_names):
             self._judge_state_read(node)
             return
         if (
@@ -3835,10 +3839,12 @@ class _ModuleWalk(ast.NodeVisitor):
         self._judge_statements(node, self._flowed(node) if flowed else node)
 
     def _judge_state_read(self, node: ast.Call) -> None:
-        """judge a local copy's read of one state (:func:`threetears.core.keyed.read_state_arrow`): bounded when its
-        ``scope_column`` flows from a declared state-column source (``DeclaredScope``: the table's own declaration,
-        decision 36 of design-pod-delta-files); any other column is judged as the ``read_by_statement`` it sends,
-        ``WHERE t.<column> = $1``, a predicate the rule cannot see, exactly as before the helper existed.
+        """judge a read of the states a declared state column names: a local copy's read of one state
+        (:func:`threetears.core.keyed.read_state_arrow`) or L3's keyset read of a set of them
+        (:func:`threetears.core.keyset.keyset_scope_pages`). Bounded when its ``scope_column`` flows from a declared
+        state-column source (``DeclaredScope``: the table's own declaration, decision 36 of design-pod-delta-files);
+        any other column is judged as the ``read_by_statement`` it sends, ``WHERE t.<column> = $1``, a predicate the
+        rule cannot see, exactly as a hand-written read would be.
 
         :param node: the call
         :ptype node: ast.Call
@@ -3852,7 +3858,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 if len(node.args) > 1
                 else next((k.value for k in node.keywords if k.arg == "table"), ast.Constant(None))
             )
-            state = next((k.value for k in node.keywords if k.arg == "state"), ast.Constant(None))
+            state = next((k.value for k in node.keywords if k.arg in ("state", "scope_values")), ast.Constant(None))
             pinned = column if column is not None else ast.Name("unsourced", ast.Load())
             sent = ast.Call(
                 func=ast.Name("read_by_statement", ast.Load()),

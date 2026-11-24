@@ -100,6 +100,8 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "counts_by",
         # a local copy's read of one state: judged by its declared state column (walker._judge_state_read)
         "read_state_arrow",
+        # L3's keyset read of the states a set names: judged by its declared state column (walker._judge_state_read)
+        "keyset_scope_pages",
         "count_at_most",
         "holds_any",
         "read_after",

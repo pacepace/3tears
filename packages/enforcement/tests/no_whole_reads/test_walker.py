@@ -8253,3 +8253,55 @@ def test_a_local_state_read_is_bound_only_by_a_declared_state_column(tmp_path: P
     assert "Copy.declared_parameter" not in functions, found
     assert any(f == "Copy.undeclared_column" and s.startswith("unknown-schema") for f, s in found), found
     assert "Copy.scope_by_on_l3" in functions, found
+
+
+#: L3's keyset read of the states a set names (decision 31 of design-pod-delta-files): keyset_scope_pages pinned by a
+#: declared state column, beside the same call by an undeclared column and the read it replaces, written by hand
+_DECLARED_SCOPE_PAGES = """
+    from dataclasses import dataclass
+    from typing import Annotated
+
+    from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages
+    from threetears.core.sql_fragments import quote_identifier
+    from threetears.interfaces.keyed import DeclaredScope
+
+
+    @dataclass(frozen=True)
+    class Folded:
+        name: str
+        key: tuple[str, ...]
+        scope: Annotated[tuple[str, str] | None, DeclaredScope] = None
+
+
+    class Recovery:
+        async def state_rows(self, l3, table: Folded, types, states):
+            async for page in keyset_scope_pages(
+                l3, table.name, table.key, types=types, scope_column=table.scope[0], scope_values=states,
+                scope_array="text[]", page_size=100,
+            ):
+                yield page
+
+        async def undeclared_column(self, l3, table: Folded, column: str, types, states):
+            async for page in keyset_scope_pages(
+                l3, table.name, table.key, types=types, scope_column=column, scope_values=states,
+                scope_array="text[]", page_size=100,
+            ):
+                yield page
+
+        async def hand_written(self, l3, table: Folded, types, states):
+            async for page in keyset_arrow_pages(
+                l3, f"SELECT a FROM {quote_identifier(table.name)}", table.key, types=types, page_size=100,
+            ):
+                yield page
+"""
+
+
+def test_a_scope_page_read_is_bound_only_by_a_declared_state_column(tmp_path: Path) -> None:
+    """Flips if keyset_scope_pages pinned by a DeclaredScope column (``table.scope[0]``) is judged a whole read; if
+    the same call by an undeclared column passes instead of staying unknown-schema; or if a hand-written
+    ``SELECT ... FROM {table}`` pager beside it stops flagging."""
+    found = _symbols(_config(tmp_path, {"pkg/recovery.py": _DECLARED_SCOPE_PAGES}))
+    functions = {function for function, _ in found}
+    assert "Recovery.state_rows" not in functions, found
+    assert any(f == "Recovery.undeclared_column" and s.startswith("unknown-schema") for f, s in found), found
+    assert "Recovery.hand_written" in functions, found
