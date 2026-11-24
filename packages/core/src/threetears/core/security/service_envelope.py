@@ -29,6 +29,7 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, TypeVar
 
@@ -513,7 +514,8 @@ class InProcessEnvelopeLedger:
         """
         self._clock = clock if clock is not None else (lambda: datetime.now(UTC))
         self._retention = retention
-        self._spent: dict[str, datetime] = {}
+        #: a read-only snapshot replaced whole on each spend (decision 41), as it always was rebuilt
+        self._spent: Mapping[str, datetime] = MappingProxyType({})
 
     @property
     def retention(self) -> timedelta:
@@ -552,10 +554,11 @@ class InProcessEnvelopeLedger:
         if issued_at.tzinfo is None:
             raise ValueError("InProcessEnvelopeLedger.record_unique requires a timezone-aware issued_at")
         horizon = self._clock() - self._retention
-        self._spent = {key: when for key, when in self._spent.items() if when >= horizon}
-        fresh = nonce not in self._spent
+        kept = {key: when for key, when in self._spent.items() if when >= horizon}
+        fresh = nonce not in kept
         if fresh:
-            self._spent[nonce] = issued_at
+            kept[nonce] = issued_at
+        self._spent = MappingProxyType(kept)
         return fresh
 
 
