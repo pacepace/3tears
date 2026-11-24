@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.observe import contain, get_logger
 
 __all__ = [

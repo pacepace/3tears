@@ -22,7 +22,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.core.serialization import json_datetime
 from threetears.nats import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, Subjects
 from threetears.observe import contain, get_logger

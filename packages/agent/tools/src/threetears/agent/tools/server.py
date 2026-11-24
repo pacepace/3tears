@@ -20,7 +20,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 from datetime import timedelta
 
 from pydantic import BaseModel, ValidationError
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entries
+from threetears.core.frozen_state import frozen, with_entry, without_entries
 from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
 from threetears.core.tool_wire.context import CallContext, bind_log_context
 from threetears.core.tool_wire.messages import (

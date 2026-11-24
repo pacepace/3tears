@@ -30,7 +30,7 @@ from typing import Any, Generic, TypeVar
 from uuid import uuid7
 
 from threetears.agent.tools.base_tool import TearsTool
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.agent.tools.server import (
     ToolRegistrationRefused,
     ToolServer,

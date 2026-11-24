@@ -12,7 +12,7 @@ from threetears.observe.text_block import one_line, under
 from threetears.agent.memory.collections import MEMORY_REFS_PAGE, MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.text_window import window_text
-from threetears.core.collections.frozen_state import frozen, with_entries, with_entry
+from threetears.core.frozen_state import frozen, with_entries, with_entry
 from threetears.core.utils.local_time import render_local_time
 from threetears.observe import get_logger
 from threetears.langgraph.fence import explained_fence

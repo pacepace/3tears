@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entries
+from threetears.core.frozen_state import frozen, with_entry, without_entries
 from threetears.core.tool_wire import HeartbeatMessage
 from threetears.nats import Subjects
 from threetears.nats.errors import KvError

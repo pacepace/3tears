@@ -40,7 +40,7 @@ from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
-from threetears.core.collections.frozen_state import frozen, with_entry
+from threetears.core.frozen_state import frozen, with_entry
 from threetears.langgraph.tool_structure import StructuredToolResultFields
 
 __all__ = [

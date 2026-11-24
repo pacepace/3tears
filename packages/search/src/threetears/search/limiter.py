@@ -219,7 +219,7 @@ class InProcessRateLimiter:
         self._sleep = sleep
         # pair -> live bucket, per-process by nature: a read-only snapshot replaced whole when a
         # pair is first tracked or the full ones are evicted (soft-capped at max_tracked_keys), never
-        # per acquisition. (threetears.core.collections.frozen_state's shape, inline: this package
+        # per acquisition. (threetears.core.frozen_state's shape, inline: this package
         # does not depend on threetears.core.)
         self._buckets: Mapping[tuple[str, str], _Bucket] = MappingProxyType({})
 
