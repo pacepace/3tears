@@ -727,6 +727,16 @@ module = [
     "packages.datasources.tests.unit.test_query_arrow",
     "packages.datasources.tests.unit.test_query_client",
     "packages.epoch.tests.integration.test_change_notes_live",
+    # geo: a tile build's rows, its feature cache's chunks and its bounds are Arrow tables
+    "threetears.geo.features",
+    "threetears.geo.geometry",
+    "threetears.geo.bands",
+    "threetears.geo.collection",
+    "packages.geo.tests.unit.test_bands",
+    "packages.geo.tests.unit.test_cache_scope",
+    "packages.geo.tests.unit.test_collection",
+    "packages.geo.tests.unit.test_features",
+    "packages.geo.tests.integration.test_tile_three_tier",
 ]
 disable_error_code = ["import-untyped"]
 
