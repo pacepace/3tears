@@ -19,6 +19,7 @@ from typing import Any, Final
 __all__ = [
     "EMPTY",
     "frozen",
+    "with_chunk",
     "with_entries",
     "with_entry",
     "with_newest",
@@ -119,3 +120,24 @@ def without_entries[K, V](mapping: Mapping[K, V], keys: Iterable[K]) -> Mapping[
     if not gone & mapping.keys():
         return mapping
     return MappingProxyType({held: value for held, value in mapping.items() if held not in gone})
+
+
+def with_chunk[T](chunks: tuple[tuple[T, ...], ...], chunk: tuple[T, ...]) -> tuple[tuple[T, ...], ...]:
+    """``chunks`` with ``chunk`` after them, as a new tuple of tuples: an append-only log that grows with rows or
+    messages, replaced whole and never changed in place. The newest chunks are merged while the one before is no larger
+    (log-structured), so an entry appended one at a time is copied about log2(n) times over its life, never n, and the
+    log holds about log2(n) chunks. Read it in order with ``itertools.chain.from_iterable``.
+
+    :param chunks: the log so far, oldest chunk first
+    :ptype chunks: tuple[tuple[T, ...], ...]
+    :param chunk: the newest entries, in order
+    :ptype chunk: tuple[T, ...]
+    :return: the log with them (the same one when ``chunk`` is empty)
+    :rtype: tuple[tuple[T, ...], ...]
+    """
+    if not chunk:
+        return chunks
+    while chunks and len(chunks[-1]) <= len(chunk):
+        chunk = (*chunks[-1], *chunk)
+        chunks = chunks[:-1]
+    return (*chunks, chunk)

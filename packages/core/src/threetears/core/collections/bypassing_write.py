@@ -42,7 +42,8 @@ class BypassingWrite:
         """
         self._collection = collection
         self._transaction = transaction
-        self._keys: list[Any] = []
+        #: every key named so far, replaced whole on each :meth:`touches`
+        self._keys: tuple[Any, ...] = ()
         self._unchanged = False
 
     @property
@@ -52,7 +53,7 @@ class BypassingWrite:
         :return: the keys, each a pk value or a tuple of pk values in declared column order
         :rtype: tuple[Any, ...]
         """
-        return tuple(self._keys)
+        return self._keys
 
     @property
     def is_unchanged(self) -> bool:
@@ -74,10 +75,15 @@ class BypassingWrite:
         :return: nothing
         :rtype: None
         """
-        for entity_id in entity_ids:
-            self._keys.append(entity_id)
-            if self._transaction is not None:
-                self._transaction.enroll(self._collection, entity_id)
+        named = 0
+        try:
+            for entity_id in entity_ids:
+                named += 1
+                if self._transaction is not None:
+                    self._transaction.enroll(self._collection, entity_id)
+        finally:
+            # one new tuple per call, holding each key named before an enrolment that raised
+            self._keys = (*self._keys, *entity_ids[:named])
 
     def unchanged(self) -> None:
         """declare that the write is known to have changed no row -- a compare-and-swap that lost.

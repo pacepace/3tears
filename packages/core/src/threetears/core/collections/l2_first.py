@@ -49,7 +49,7 @@ import asyncio
 import time
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -320,7 +320,8 @@ _CARRY_CONCURRENCY: Final = 32
 class _Deferred:
     """the epochs a pass left once because their L3 refusal may be their own writer's, still settling."""
 
-    tokens: set[str] = field(default_factory=set)
+    #: replaced whole, never changed in place
+    tokens: frozenset[str] = frozenset()
 
 
 class L3Saver:
@@ -535,9 +536,9 @@ class L3Saver:
                     return True
                 if collection.waits_for_l3 and token not in self._deferred.tokens:
                     # a waiting writer may be withdrawing this very write: look again next pass
-                    self._deferred.tokens.add(token)
+                    self._deferred.tokens = self._deferred.tokens | {token}
                     return False
-                self._deferred.tokens.discard(token)
+                self._deferred.tokens = self._deferred.tokens - {token}
                 result.rejected += 1
                 _count(_REFUSED, table)
                 log.error(
@@ -576,7 +577,7 @@ class L3Saver:
         if await collection.l2_first_support.read_state("settled", incarnation, str(count)) is None:
             return False
         await collection.l2_first_support.drop_state("settled", incarnation, str(count))
-        self._deferred.tokens.discard(token)
+        self._deferred.tokens = self._deferred.tokens - {token}
         return True
 
 
