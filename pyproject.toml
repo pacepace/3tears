@@ -671,6 +671,8 @@ module = [
     "threetears.core.utils.cpu_quota",
     # and the shared-memory Arrow store, which writes and maps Arrow IPC files
     "threetears.core.shared_arrow",
+    # and its tally of the files its directories hold, one Arrow batch a directory
+    "threetears.core.held_files",
     # and a restore's keyed notes folded in a worker process (Arrow's CSV reader and compute)
     "threetears.core.change_note_fold",
     "threetears.core.change_note_fold_job",
@@ -701,6 +703,7 @@ module = [
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_column_tokens",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_eviction",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_handoff",
+    "packages.core.tests.unit.shared_arrow.test_shared_arrow_held_files",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_layout",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_let_go_loop",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_loop",

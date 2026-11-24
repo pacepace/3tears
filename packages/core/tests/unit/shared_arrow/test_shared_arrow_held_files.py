@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from threetears.core.shared_arrow import _files_batch, _HeldFiles
+from threetears.core.held_files import HeldFiles, files_batch
 
 VERSIONS = Path("/store/versions")
 HANDOFFS = Path("/store/handoffs")
@@ -33,13 +33,13 @@ PUBLISHED = 100
 
 
 def _batch(inodes: list[int], sizes: list[int], links: list[int]) -> pa.RecordBatch:
-    return _files_batch([7] * len(inodes), inodes, sizes, links)
+    return files_batch([7] * len(inodes), inodes, sizes, links)
 
 
 def test_the_tally_matches_a_recount_at_every_step() -> None:
     for seed in range(200):
         chance = random.Random(seed)
-        held = _HeldFiles(VERSIONS, HANDOFFS)
+        held = HeldFiles(VERSIONS, HANDOFFS)
         recorded: dict[Path, dict[int, int]] = {}
         newest: dict[int, int] = {}
         for _ in range(60):
@@ -78,7 +78,7 @@ def test_the_tally_matches_a_recount_at_every_step() -> None:
 
 
 def test_a_reused_number_is_counted_with_its_own_directory() -> None:
-    held = _HeldFiles(VERSIONS, HANDOFFS)
+    held = HeldFiles(VERSIONS, HANDOFFS)
     held.add(PARTS / "old", _batch([5, 6], [100, 50], [1, 1]))
     # the old file is gone and the system gave its number to a new one before the old directory was forgotten
     held.add(PARTS / "new", _batch([5], [300], [1]))
@@ -89,7 +89,7 @@ def test_a_reused_number_is_counted_with_its_own_directory() -> None:
 
 
 def test_a_linked_file_goes_with_its_last_directory() -> None:
-    held = _HeldFiles(VERSIONS, HANDOFFS)
+    held = HeldFiles(VERSIONS, HANDOFFS)
     held.add(SEGMENTS / "s-1", _batch([10, 11], [400, 40], [1, 1]))
     held.add(PARTS / "p", _batch([10, 12], [400, 20], [2, 1]))
     assert held.bytes == 460
@@ -104,7 +104,7 @@ def _publish_cost(files_per_directory: int) -> tuple[float, float]:
 
     :return: (plain, linked)
     """
-    held = _HeldFiles(VERSIONS, HANDOFFS)
+    held = HeldFiles(VERSIONS, HANDOFFS)
     for each in range(DIRECTORIES):
         low = each * files_per_directory
         inodes = list(range(low, low + files_per_directory))
