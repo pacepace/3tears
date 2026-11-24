@@ -60,9 +60,9 @@ class _L1Sizes:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         #: the label sets set by the last sample, so a table gone since reads 0 rather than its last size
-        self._exported: set[tuple[str, str]] = set()
+        self._exported: frozenset[tuple[str, str]] = frozenset()
         #: the tables already logged as undeclared, each logged once
-        self._undeclared: set[str] = set()
+        self._undeclared: frozenset[str] = frozenset()
 
     def watch(self, backend: object) -> None:
         """measure an L1 from now on (held weakly: a dropped backend is no longer measured), starting the sampling
@@ -150,11 +150,11 @@ class _L1Sizes:
         for table, policy_name in self._exported - exported:
             HELD_ENTRIES.labels(tier=Tier.L1.value, name=table, policy=policy_name).set(0)
             HELD_BYTES.labels(tier=Tier.L1.value, name=table, policy=policy_name).set(0)
-        self._exported = exported
+        self._exported = frozenset(exported)
 
     def _log_undeclared(self, table: str) -> None:
         if table not in self._undeclared:
-            self._undeclared.add(table)
+            self._undeclared = self._undeclared | {table}
             log.info(
                 "l1 sizes: a table with no declared eviction policy is measured but not exported",
                 extra={"extra_data": {"table": table}},
