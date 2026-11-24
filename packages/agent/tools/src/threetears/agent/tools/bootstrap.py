@@ -430,7 +430,7 @@ class _FirstFamilyWins:
         """
         self._registries = tuple(registries)
         self._service_name = service_name
-        self._reported: set[str] = set()
+        self._reported: frozenset[str] = frozenset()
 
     def collect(self) -> Iterator[Metric]:
         """yield each registry's families in order, skipping a name already yielded.
@@ -458,7 +458,7 @@ class _FirstFamilyWins:
         """
         if name in self._reported:
             return
-        self._reported.add(name)
+        self._reported = self._reported | {name}
         log.warning(
             "metric family %s is served twice by %s; the later copy is left out of /metrics",
             name,

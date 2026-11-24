@@ -33,13 +33,14 @@ events from tools, which use ``noun_verb`` with imperative verbs (e.g.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
+from threetears.core.collections.frozen_state import frozen, with_entry
 from threetears.langgraph.tool_structure import StructuredToolResultFields
 
 __all__ = [
@@ -354,7 +355,8 @@ class FrameworkEventRegistry:
 
     def __init__(self) -> None:
         """initialize an empty registry."""
-        self._by_name: dict[str, type[FrameworkEvent]] = {}
+        # a read-only snapshot, replaced whole on each register or clear
+        self._by_name: Mapping[str, type[FrameworkEvent]] = frozen()
         # Framework-default providers. Each one is a callable that takes
         # the registry and registers its package's event classes. Called
         # at provider-registration time (so the import-time
@@ -393,7 +395,7 @@ class FrameworkEventRegistry:
             raise ValueError(
                 f"event name '{name}' already registered to {existing.__name__}; cannot rebind to {event_cls.__name__}",
             )
-        self._by_name[name] = event_cls
+        self._by_name = with_entry(self._by_name, name, event_cls)
 
     def parse(
         self,
@@ -484,7 +486,7 @@ class FrameworkEventRegistry:
         :return: nothing
         :rtype: None
         """
-        self._by_name.clear()
+        self._by_name = frozen()
 
     def reset_to_framework_defaults(self) -> None:
         """clear, then re-register every framework default provider.
@@ -497,7 +499,7 @@ class FrameworkEventRegistry:
         :return: nothing
         :rtype: None
         """
-        self._by_name.clear()
+        self._by_name = frozen()
         for provider in self._framework_defaults:
             provider(self)
 

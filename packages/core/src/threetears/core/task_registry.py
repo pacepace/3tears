@@ -89,6 +89,22 @@ class KeyedTaskRegistry:
         if self._tasks.get(key) is task:
             self._tasks = without_entry(self._tasks, key)
 
+    async def drain(self) -> None:
+        """await every task registered now, then forget those tasks.
+
+        a task's failure or cancellation is returned by the wait, not raised: a drain at shutdown waits out the
+        work in flight and is not the place its faults are reported. a task registered while the drain waits is
+        not awaited and stays registered.
+
+        :return: nothing
+        :rtype: None
+        """
+        held = self._tasks
+        if not held:
+            return
+        await asyncio.gather(*held.values(), return_exceptions=True)
+        self._tasks = MappingProxyType({key: task for key, task in self._tasks.items() if held.get(key) is not task})
+
     def __len__(self) -> int:
         """number of tasks currently registered.
 

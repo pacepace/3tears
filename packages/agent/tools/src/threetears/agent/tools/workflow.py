@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import tzinfo
 from typing import Any
 
@@ -221,7 +222,7 @@ def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[s
     return "\n".join([f"Workflow declared. {was}", *plan_lines, "  Steps:", *step_list])
 
 
-def _plan_before(state: dict[str, Any]) -> str:
+def _plan_before(state: Mapping[str, Any]) -> str:
     """The plan a new declaration replaces: its name, its steps and how far it got."""
     steps = state.get("steps") or []
     done = min(int(state.get("current_step") or 0), len(steps))

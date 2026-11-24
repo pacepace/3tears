@@ -13,12 +13,14 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Final, Iterable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
 from pydantic import BaseModel, ValidationError
+from threetears.core.collections.frozen_state import frozen, with_entry, without_entries
 from threetears.core.collections.tier_reads import hold_tier_reads_timer, release_tier_reads_timer
 from threetears.core.tool_wire.context import CallContext, bind_log_context
 from threetears.core.tool_wire.messages import (
@@ -980,7 +982,7 @@ class ToolServer:
         # the causes of temporary refusals already logged in their current episode, so each is
         # logged once however many heartbeats and polls repeat it; a cause leaves the set when a
         # reply stops carrying it, so its next episode is logged too.
-        self._temporary_causes_logged: set[str] = set()
+        self._temporary_causes_logged: frozenset[str] = frozenset()
         # whether this pod has logged that the registry answering its discovery is older than it.
         self._older_registry_logged = False
         self._heartbeat_interval = heartbeat_interval
@@ -1014,14 +1016,15 @@ class ToolServer:
         # every per-call ToolCallScope so consuming tools resolve ids ambiently.
         self._object_resolver = object_resolver
         # the pod's two-tier resolution store, attached by the lifecycle owner once the
-        # collection stack exists (see attach_object_resolution_cache). None -> the
-        # self-provisioned resolver falls back to its own in-process cache.
+        # collection stack exists (see attach_object_resolution_cache). None -> no resolver is
+        # self-provisioned (there is no in-process fallback cache).
         self._object_resolution_cache: "ObjectResolutionCache | None" = None
         # the pod's single engagement-scope resolver; None here is self-provisioned
         # in serve() from the NATS client (needs no S3 creds), then installed on
         # every per-call ToolCallScope so tools re-authorize against the engagement.
         self._engagement_resolver = engagement_resolver
-        self._tools: dict[str, TearsTool] = {}
+        # a read-only snapshot keyed name@version, replaced whole on each register or unregister
+        self._tools: Mapping[str, TearsTool] = frozen()
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -1081,7 +1084,7 @@ class ToolServer:
         self._held_subscription: Any = None
         self._joining_held: asyncio.Task[None] | None = None
         # a subscription that completed after the task awaiting it was cancelled, being drained
-        self._dropping_subscriptions: set[asyncio.Task[Any]] = set()
+        self._dropping_subscriptions: frozenset[asyncio.Future[Any]] = frozenset()
         # lifecycle hooks the OWNER of this server registers before ``serve()``, run once the
         # connection exists and before anything is subscribed or registered. see
         # :meth:`add_connected_callback`.
@@ -1680,8 +1683,18 @@ class ToolServer:
         if self._nc is None:
             return
         dropping = asyncio.ensure_future(self._nc.drain(subscription, timeout=LEAVE_CALLS_SECONDS))
-        self._dropping_subscriptions.add(dropping)
-        dropping.add_done_callback(self._dropping_subscriptions.discard)
+        self._dropping_subscriptions = self._dropping_subscriptions | {dropping}
+        dropping.add_done_callback(self._dropped_subscription)
+
+    def _dropped_subscription(self, dropping: asyncio.Future[Any]) -> None:
+        """forget a drained subscription's task once it is done.
+
+        :param dropping: the finished drain
+        :ptype dropping: asyncio.Future[Any]
+        :return: nothing
+        :rtype: None
+        """
+        self._dropping_subscriptions = self._dropping_subscriptions - {dropping}
 
     async def handle_held_call(self, msg: IncomingMessage) -> None:
         """a call handed to the held group: answered when it names a control tool, else left to the call group.
@@ -1770,7 +1783,7 @@ class ToolServer:
                 tool_name=tool.mcp_name(),
             )
         key = f"{tool.mcp_name()}@{tool.mcp_version()}"
-        self._tools[key] = tool
+        self._tools = with_entry(self._tools, key, tool)
         log.info(
             "registered tool",
             extra={"extra_data": {"tool_key": key, "pod_id": self._pod_id}},
@@ -1795,8 +1808,7 @@ class ToolServer:
         """
         prefix = f"{mcp_name}@"
         matched_keys = [key for key in self._tools if key.startswith(prefix)]
-        for key in matched_keys:
-            del self._tools[key]
+        self._tools = without_entries(self._tools, matched_keys)
         removed = len(matched_keys) > 0
         if removed:
             log.info(
@@ -1940,16 +1952,17 @@ class ToolServer:
             # refresh + re-verify. only set when the pod self-provisions; an injected provider keeps
             # whatever (possibly None) trigger the constructor was given.
             self._jwks_refresh = owned.refresh_now
-        if self._object_resolver is None:
+        if self._object_resolver is None and self._object_resolution_cache is not None:
             # self-provision the object-id resolver over this connection so
             # consuming tools can turn an object id into its stored key. it
             # needs only NATS (the hub verifies the caller's identity_token +
             # owns the objects table), so -- unlike the object store -- the pod
             # does not have to be wired with S3 creds to resolve.
             #
-            # the resolution cache is whatever the lifecycle owner attached above --
-            # the pod's two-tier store when it has a collection stack, ``None`` when
-            # it does not, in which case the resolver keeps its own in-process cache.
+            # it caches in the pod's two-tier store the lifecycle owner attached above
+            # (ToolServerBootstrap attaches one on every pod). a server given none gets no
+            # resolver: there is no in-process fallback cache (decision 41), and a tool that
+            # needs one is refused by name (consume.resolve_object).
             self._object_resolver = HubObjectResolver(
                 self._nc,
                 request_timeout_seconds=get_object_resolve_request_timeout(),
@@ -2544,7 +2557,7 @@ class ToolServer:
         current_causes = set(temporary) | ({unexplained_cause} if unexplained_cause is not None else set())
         # an episode ends when a reply stops carrying its cause: forget it, so its return warns again
         cleared = self._temporary_causes_logged - current_causes
-        self._temporary_causes_logged &= current_causes
+        self._temporary_causes_logged = self._temporary_causes_logged & current_causes
         if cleared and not current_causes:
             log.info(
                 "the registry admitted this pod's tools after a temporary refusal",
@@ -2596,7 +2609,7 @@ class ToolServer:
         """
         if cause in self._temporary_causes_logged:
             return
-        self._temporary_causes_logged.add(cause)
+        self._temporary_causes_logged = self._temporary_causes_logged | {cause}
         log.warning(message, extra={"extra_data": {"pod_id": self._pod_id, "cause": cause}})
 
     def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:

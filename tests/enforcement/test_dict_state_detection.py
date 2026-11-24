@@ -135,16 +135,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/search/src/threetears/search/standalone.py",
-        class_name="_Breakers",
-        attr_name="_circuits",
-        rationale=(
-            "one live circuit-breaker state machine per failing upstream of this transport, guarded "
-            "by a lock and read off a monotonic clock; a breaker protects this process's own calls, "
-            "so state shared across pods or kept across a restart would trip one replica for another"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
         class_name="YugabytePoolRecycler",
         attr_name="_expired_at_by_trigger",
@@ -246,34 +236,10 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/server.py",
-        class_name="ToolServer",
-        attr_name="_tools",
-        rationale=("live TearsTool instances, non-serializable"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/registry.py",
-        class_name="ToolRegistry",
-        attr_name="_factories",
-        rationale=("static config, tool factories registered once at startup"),
-    ),
-    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py",
         class_name="AnalyzeMediaTool",
         attr_name="_analyzers",
         rationale=("constructor-injected config mapping, not cached state"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/object_resolver.py",
-        class_name="HubObjectResolver",
-        attr_name="_cache",
-        rationale=(
-            "per-instance memo of IMMUTABLE (customer_id, object_id)->ObjectHandle mappings (an "
-            "object id->key binding never changes once committed), FIFO-capped, tenant-keyed on "
-            "the VERIFIED customer so no cross-tenant reuse; genuinely ephemeral per-pod (no "
-            "cross-instance coherence needed precisely because the mappings are immutable). Its "
-            "sibling engagement resolver deliberately has NO cache because scope IS mutable"
-        ),
     ),
     DictStateAllowlistEntry(
         file="packages/langgraph/src/threetears/langgraph/checkpoint.py",
@@ -288,42 +254,6 @@ _ALLOWLIST = (
             "4096 keys (oldest dropped, with a WARNING); a restart forgets it and costs "
             "at most one read of a stale L2 entry per key, the state before the bypass existed. "
             "Kept apart from the purge bypass (a set), which only a successful purge lifts"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/relevance.py",
-        class_name="ToolRelevanceIndex",
-        attr_name="_cache",
-        rationale=(
-            "per-instance memo of tool-set-content-hash -> {tool_name: embedding vector}, LRU- "
-            "bounded (cache_size). Purely a performance optimization over re-embedding an "
-            "unchanged tool set — a cache miss (cold start, eviction, or content-hash change from "
-            "a live-discovered/admin-edited tool) just re-embeds via the batch embed call, so "
-            "correctness never depends on a hit. No cross-instance coherence needed for the same "
-            "reason: a pod that misses just pays one extra embedding call, same shape as the "
-            "already-allowlisted HubObjectResolver._cache above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/relevance.py",
-        class_name="ToolRelevanceIndex",
-        attr_name="_inflight",
-        rationale=(
-            "the asyncio tasks embedding a tool set right now, keyed by content hash and removed "
-            "when each finishes. Live task handles, non-serializable, meaningful only on the event "
-            "loop that owns them; they exist so the latency ceiling cancels a caller's wait rather "
-            "than the embedding, and so concurrent turns share one call. Nothing survives a task"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/search/src/threetears/search/standalone.py",
-        class_name="_GuardedRoutes",
-        attr_name="_proxied",
-        rationale=(
-            "live httpx transports -- open connection pools -- one per proxy URL a request's route "
-            "named, owned by one client and closed with it. They are objects holding sockets, not "
-            "data: an L1/L2/L3 backend stores values, cannot hold a connection, and a transport "
-            "rebuilt per request would defeat the pooling it exists for. Nothing outlives the client"
         ),
     ),
     DictStateAllowlistEntry(
@@ -475,38 +405,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
-        class_name="DynamicToolPod",
-        attr_name="_resources",
-        rationale=(
-            "live per-spec resource handles (drivers/clients) built by build_tools; non- "
-            "serializable and rebuilt from load_specs on restart — the same infrastructure shape "
-            "as the already-allowlisted ToolServer._tools, cannot live in an L1/L2/L3 backend"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
-        class_name="DynamicToolPod",
-        attr_name="_tool_names",
-        rationale=(
-            "per-run bookkeeping of spec_key -> registered tool mcp_names, held in lockstep with "
-            "the live ToolServer registrations so deregister_spec can unregister exactly what it "
-            "registered; ephemeral pod-local, no cross-instance coherence, rebuilt from "
-            "load_specs on restart"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
-        class_name="DynamicToolPod",
-        attr_name="_spec_locks",
-        rationale=(
-            "spec_key -> asyncio.Lock serializing register_spec / deregister_spec for one spec in "
-            "this process, so two overlapping rebuilds cannot overwrite each other's bookkeeping; "
-            "a lock is an in-process synchronisation primitive, not state -- it cannot be serialized "
-            "into an L1/L2/L3 backend, and it guards the pod-local _resources / _tool_names above"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/backends/sql.py",
         class_name="SqlL3Backend",
         attr_name="_schemas",
@@ -514,78 +412,6 @@ _ALLOWLIST = (
             "static config, table→TableSchema registered once at collection construction "
             "(startup); non-serializable (stores TableSchema dataclass refs, not data), read-only "
             "on the CRUD hot path"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/search/src/threetears/search/limiter.py",
-        class_name="InProcessRateLimiter",
-        attr_name="_buckets",
-        rationale=(
-            "the argued SR-O2 entry search-spec.md §3.9 said would arrive with the in-process "
-            "limiter (D8's second mechanism, for the deployment mode that has no bus to share a "
-            "bucket through). Four reasons it is an allowlist entry and not a migration: (a) the "
-            "state is a monotonic-clock reading plus a token count, which is not comparable "
-            "outside this process, so there is no serialisation another reader could use; (b) the "
-            "cross-instance version already exists as a DIFFERENT object -- core's NATS "
-            "TokenBucket, host-injected -- so this is not a backend-shaped thing built badly, it "
-            "is the half of the ruling that must hold where there is no backend to reach, and the "
-            "leaf may not import core anyway (SR-L7); (c) a restart forgetting the buckets is "
-            "correct, not a defect: every key resets to full, which is what an upstream would "
-            "infer from a process that had been making no calls, so the loss is bounded by one "
-            "burst; (d) it is bounded by construction -- keys are the host's configured "
-            "(instance, egress) pairs at two floats each, soft-capped at max_tracked_keys with "
-            "full buckets evicted first, and evicting a full bucket is unobservable because a "
-            "fresh key starts full"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/registry/src/threetears/registry/catalog.py",
-        class_name="ToolCatalog",
-        attr_name="_entries",
-        rationale=("synced from NATS KV on load, not a local-only cache"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/registry/src/threetears/registry/catalog.py",
-        class_name="ToolCatalog",
-        attr_name="_written",
-        rationale=(
-            "what THIS process last wrote to each catalog key and saw land, key -> content digest, so a "
-            "re-registration that changes nothing is not written again. it describes this process's own "
-            "writes, so no other replica may share it; it is cleared whenever a bucket is bound and dropped "
-            "per key on any failed write or delete, and a restart correctly starts it empty and writes once"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/registry/src/threetears/registry/health.py",
-        class_name="HeartbeatSubscriber",
-        attr_name="_heard_at",
-        rationale=(
-            "THIS registry's own liveness record of the pods it has heard, pod id -> when it last heard it. "
-            "it is the judgement that must survive an L2 outage, so a shared store is exactly what it must "
-            "not depend on, and an L1 backend adds nothing to a per-process view; a restart correctly "
-            "rebuilds it from the next heartbeats. keyed only by pods in the known-pods set and dropped with "
-            "a pod when it is deregistered"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/registry/src/threetears/registry/health.py",
-        class_name="HeartbeatSubscriber",
-        attr_name="_local_misses",
-        rationale=(
-            "THIS registry's own liveness record of the pods it has heard, pod id -> consecutive sweeps "
-            "missed. it is the judgement that must survive an L2 outage, so a shared store is exactly what it"
-            " must not depend on, and an L1 backend adds nothing to a per-process view; a restart correctly "
-            "rebuilds it from the next heartbeats. keyed only by pods in the known-pods set and dropped with "
-            "a pod when it is deregistered"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/langgraph/src/threetears/langgraph/events.py",
-        class_name="FrameworkEventRegistry",
-        attr_name="_by_name",
-        rationale=(
-            "static config, FrameworkEvent class objects registered once at import time; non- "
-            "serializable (stores Python class refs, not data)"
         ),
     ),
     DictStateAllowlistEntry(

@@ -12,6 +12,7 @@ from threetears.observe.text_block import one_line, under
 from threetears.agent.memory.collections import MEMORY_REFS_PAGE, MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.text_window import window_text
+from threetears.core.collections.frozen_state import frozen, with_entries, with_entry
 from threetears.core.utils.local_time import render_local_time
 from threetears.observe import get_logger
 from threetears.langgraph.fence import explained_fence
@@ -249,8 +250,8 @@ class ToolContextManager:
         # ``{item_id, item_type, short_desc, date_added}``.
         self._memory_refs_projection: list[dict[str, Any]] = []
 
-        # Workflow state (transient, single-turn, in-memory only)
-        self._workflow: dict[str, Any] | None = None
+        # Workflow state (transient, single-turn, in-memory only): a read-only snapshot replaced whole on each change
+        self._workflow: Mapping[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # Loading
@@ -775,32 +776,40 @@ class ToolContextManager:
     # Workflow
     # ------------------------------------------------------------------
 
-    def declare_workflow(self, plan: str, steps: list[str]) -> dict[str, Any]:
+    def declare_workflow(self, plan: str, steps: list[str]) -> Mapping[str, Any]:
         """Declare a new workflow with a plan and steps."""
-        self._workflow = {
-            "plan": plan,
-            "steps": steps,
-            "current_step": 0,
-            "status": "active",
-            "declared_at": datetime.now(UTC).isoformat(),
-        }
-        return self._workflow
+        workflow = frozen(
+            {
+                "plan": plan,
+                "steps": steps,
+                "current_step": 0,
+                "status": "active",
+                "declared_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self._workflow = workflow
+        return workflow
 
-    def advance_workflow_step(self) -> dict[str, Any] | None:
+    def advance_workflow_step(self) -> Mapping[str, Any] | None:
         """Advance to the next workflow step.  Returns updated state or ``None``."""
-        if self._workflow is None or self._workflow["status"] != "active":
+        current = self._workflow
+        if current is None or current["status"] != "active":
             return None
-        self._workflow["current_step"] += 1
-        if self._workflow["current_step"] >= len(self._workflow["steps"]):
-            self._workflow["status"] = "completed"
-        return self._workflow
+        step = current["current_step"] + 1
+        advanced: dict[str, Any] = {"current_step": step}
+        if step >= len(current["steps"]):
+            advanced["status"] = "completed"
+        workflow = with_entries(current, advanced)
+        self._workflow = workflow
+        return workflow
 
-    def complete_workflow(self) -> dict[str, Any] | None:
+    def complete_workflow(self) -> Mapping[str, Any] | None:
         """Mark the workflow as completed.  Returns final state or ``None``."""
         if self._workflow is None:
             return None
-        self._workflow["status"] = "completed"
-        return self._workflow
+        workflow = with_entry(self._workflow, "status", "completed")
+        self._workflow = workflow
+        return workflow
 
     @property
     def has_active_workflow(self) -> bool:
@@ -808,7 +817,7 @@ class ToolContextManager:
         return self._workflow is not None and self._workflow["status"] == "active"
 
     @property
-    def workflow_state(self) -> dict[str, Any] | None:
+    def workflow_state(self) -> Mapping[str, Any] | None:
         """Current workflow state, or ``None``."""
         return self._workflow
 
