@@ -1793,14 +1793,10 @@ class DeltaFolds:
                     # another commit's load or truncate in the bracket: the keys are not the reach
                     return "whole_table"
                 if page.keys:
-                    # the reader's page as Arrow, a text column a key column: the page's own size
-                    columns = list(zip(*page.keys, strict=True))
-                    keys = pa.table(
-                        {
-                            column: pa.array(values, pa.string())
-                            for column, values in zip(table.key, columns, strict=True)
-                        }
-                    )
+                    # the reader's page as its Arrow key batch (a text column a key column, off the loop), named by
+                    # the table's key: the page's own size, never a tuple a key here
+                    batch = await asyncio.to_thread(page.key_batch)
+                    keys = batch.rename_columns(list(table.key))
                     await asyncio.to_thread(sink.write, keys)
                     count += keys.num_rows
         return count
