@@ -32,9 +32,59 @@ from threetears.observe import cancel_and_wait, get_logger
 from threetears.epoch.generation import EpochGenerationReader
 from threetears.epoch.table_follow import TableFollower, follow_tables
 
-__all__ = ["RowFollower", "cold_read_generations", "follow_since"]
+__all__ = ["RowFollower", "cold_read_generations", "follow_since", "lead_slice_reads"]
 
 log = get_logger(__name__)
+
+#: one table's keyed read of the rows under one value of its key's lead column (a follower's row read)
+LeadRead = Callable[[str], Coroutine[Any, Any, None]]
+#: one table's keyed read of the rows under one key prefix (a follower's partition read)
+SliceRead = Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]
+
+
+def lead_slice_reads(reads: Mapping[str, LeadRead], leads: Mapping[str, str]) -> dict[str, SliceRead]:
+    """per table, the partition read of a follower whose row read takes its key's lead: that read, of the prefix's
+    lead value.
+
+    A load or a clear names a slice by a key prefix leading the key. Read by the prefix's lead value, it is a keyed
+    read of exactly the rows under it: the whole key, for a one-column key; the lead's rows, for a composite one
+    (a dataset's audience by ``dataset_id``). Nothing outside the slice is read or dropped (decision 33).
+
+    :param reads: per table, the keyed read of the rows under one lead value (the follower's row read)
+    :ptype reads: Mapping[str, LeadRead]
+    :param leads: per table, its primary key's lead column
+    :ptype leads: Mapping[str, str]
+    :return: per table, the partition read, for ``RowFollower(partition_reads=)``
+    :rtype: dict[str, SliceRead]
+    :raises ValueError: when a table read has no lead column named
+    """
+    unnamed = sorted(set(reads) - set(leads))
+    if unnamed:
+        raise ValueError(f"{unnamed} have no lead key column named: a slice is read by its key's lead")
+    return {table: _slice_read(table, read, leads[table]) for table, read in reads.items()}
+
+
+def _slice_read(table: str, read: LeadRead, lead: str) -> SliceRead:
+    """one table's partition read: ``read`` of the prefix's lead value.
+
+    :param table: the table, for the error
+    :ptype table: str
+    :param read: the table's read by its lead value
+    :ptype read: LeadRead
+    :param lead: the key's lead column
+    :ptype lead: str
+    :return: the partition read; it raises ``ValueError`` for a prefix that does not lead the key (decision 34: only
+        an older writer sends such)
+    :rtype: SliceRead
+    """
+
+    async def by_slice(prefix: Mapping[str, str]) -> None:
+        value = prefix.get(lead)
+        if value is None:
+            raise ValueError(f"{table}: a slice names a prefix leading the key ({lead}), got {dict(prefix)}")
+        await read(value)
+
+    return by_slice
 
 
 async def cold_read_generations(reader: EpochGenerationReader, tables: Sequence[str]) -> dict[str, str | None]:

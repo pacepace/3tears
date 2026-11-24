@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import pytest
 
 from threetears.core.collections.registry import CacheInvalidationMessage
-from threetears.epoch import RowFollower
+from threetears.epoch import RowFollower, lead_slice_reads
 
 
 def _message(table: str, key: str) -> CacheInvalidationMessage:
@@ -157,3 +157,41 @@ async def test_a_partition_read_may_name_a_whole_key_table() -> None:
     follower.on_partition("results", {"state": "TX"})
     await follower.settled()
     assert reached == [{"state": "TX"}]
+
+
+async def test_a_slice_is_read_by_its_key_s_lead_through_the_row_read() -> None:
+    """Flips if a lead slice read reads anything but the row read of the prefix's lead value."""
+    read: list[str] = []
+
+    async def by_lead(value: str) -> None:
+        read.append(value)
+
+    reads = {"audience": by_lead}
+    follower = RowFollower(
+        reads, lambda: None, name="test", partition_reads=lead_slice_reads(reads, {"audience": "dataset_id"})
+    )
+    follower.on_partition("audience", {"dataset_id": "d1"})
+    follower.on_partition("audience", {"dataset_id": "d2", "customer_id": "c1"})
+    await follower.settled()
+    assert sorted(read) == ["d1", "d2"]
+
+
+async def test_a_lead_slice_of_a_prefix_not_leading_the_key_is_refused() -> None:
+    """Flips if a prefix without the key's lead is read as something else (decision 34)."""
+
+    async def by_lead(value: str) -> None:
+        raise AssertionError(f"read {value}")
+
+    slices = lead_slice_reads({"audience": by_lead}, {"audience": "dataset_id"})
+    with pytest.raises(ValueError, match="leading the key"):
+        await slices["audience"]({"customer_id": "c1"})
+
+
+def test_a_lead_slice_read_names_every_table_s_lead() -> None:
+    """Flips if a table read with no lead column named gets a partition read anyway."""
+
+    async def by_lead(value: str) -> None:
+        return None
+
+    with pytest.raises(ValueError, match="no lead key column"):
+        lead_slice_reads({"audience": by_lead}, {})

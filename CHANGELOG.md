@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### epoch: a follower's partition reads made from its row reads by the key's lead
+
+**Added:** `threetears.epoch.lead_slice_reads(reads, leads)`: per table, the partition read `RowFollower` requires
+(decision 33) for a follower whose row read takes its key's lead: a slice is read by the prefix's lead value, and a
+prefix without it is refused. The hub's six followers build theirs with it.
+
 ### core: the writer rebuilds a missing or reset full from L3, and is told each commit's generations
 
 **Added:** `CallerTransaction.committed_generations`: the generation token the commit wrote per table, once it has

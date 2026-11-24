@@ -18,7 +18,8 @@ provides:
   over the epoch bucket, the catch-up pass and key watch that follow them,
   and :class:`TableFollower`, one supervised watch per table
 - :mod:`threetears.epoch.row_follower` -- :class:`RowFollower`, a cache kept by each changed row's key, followed
-  from its cold read's generation (:func:`cold_read_generations`, :func:`follow_since`)
+  from its cold read's generation (:func:`cold_read_generations`, :func:`follow_since`); :func:`lead_slice_reads`
+  makes its partition reads from row reads by a key's lead
 - :mod:`threetears.epoch.standing_rows` -- :class:`StandingRows`, a table's standing rows held by key: read cold
   once, then kept by each changed row
 """
@@ -61,7 +62,7 @@ from threetears.epoch.generation_tick import (
     quiet_pass_interval,
 )
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
-from threetears.epoch.row_follower import RowFollower, cold_read_generations, follow_since
+from threetears.epoch.row_follower import RowFollower, cold_read_generations, follow_since, lead_slice_reads
 from threetears.epoch.standing_rows import Standing, StandingRows
 from threetears.epoch.table_follow import (
     DEFAULT_STOP_TIMEOUT,
@@ -108,6 +109,7 @@ __all__ = [
     "StandingRows",
     "cold_read_generations",
     "follow_since",
+    "lead_slice_reads",
     "TableFollower",
     "follow_l2_kept_tables",
     "WatchHealth",
