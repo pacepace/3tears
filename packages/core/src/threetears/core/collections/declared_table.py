@@ -226,7 +226,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         """
         super().__init__(*args, **kwargs)
         #: the keys a write sent that landed on a row stored under another key, until its read back
-        self._sent_to_another_key: set[Any] = set()
+        self._sent_to_another_key: frozenset[Any] = frozenset()
         l1 = self.l1_backend
         if l1 is not None:
             try:
@@ -445,7 +445,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         key = tuple(data.get(column) for column in self.primary_key_columns)
         sent = key[0] if len(key) == 1 else key
         if sent in self._sent_to_another_key:
-            self._sent_to_another_key.discard(sent)
+            self._sent_to_another_key = self._sent_to_another_key - {sent}
             decided = tuple(column.name for column in self.schema.columns)
         else:
             decided = tuple(
@@ -478,7 +478,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         :rtype: None
         """
         if stored is not None and stored != sent:
-            self._sent_to_another_key.add(sent)
+            self._sent_to_another_key = self._sent_to_another_key | {sent}
             log.info(
                 "a natural-key upsert landed on a row stored under another key; that row is evicted",
                 extra={"extra_data": {"table": self.table_name, "sent": f"{sent}", "stored": f"{stored}"}},

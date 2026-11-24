@@ -143,6 +143,7 @@ from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
+from threetears.core.collections.frozen_state import with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
 from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types, sql_cast
@@ -387,35 +388,6 @@ class _LostFile:
 
 
 _Command = _Told | _Started | _Fresh | _LostFile
-
-
-def _with[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
-    """``mapping`` with ``key`` set to ``value``, as a new read-only snapshot: the fold's bookkeeping is never a dict
-    another call changes in place.
-
-    :param mapping: the snapshot
-    :ptype mapping: Mapping
-    :param key: the key
-    :ptype key: Any
-    :param value: its value
-    :ptype value: Any
-    :return: the new snapshot
-    :rtype: Mapping
-    """
-    return MappingProxyType({**mapping, key: value})
-
-
-def _without[K, V](mapping: Mapping[K, V], key: K) -> Mapping[K, V]:
-    """``mapping`` without ``key``, as a new read-only snapshot.
-
-    :param mapping: the snapshot
-    :ptype mapping: Mapping
-    :param key: the key
-    :ptype key: Any
-    :return: the new snapshot
-    :rtype: Mapping
-    """
-    return MappingProxyType({held: value for held, value in mapping.items() if held != key})
 
 
 @dataclass(frozen=True, slots=True)
@@ -899,7 +871,7 @@ class DeltaFolds:
             "a folded table starts fresh: it is rebuilt from L3 and its old files dropped",
             extra={"extra_data": {"table": table, "why": why, "detail": detail}},
         )
-        self._fresh = _with(self._fresh, table, why)
+        self._fresh = with_entry(self._fresh, table, why)
         self._recheck = True
         self._marked = True
 
@@ -921,7 +893,7 @@ class DeltaFolds:
             "files name, read from L3 by key",
             extra={"extra_data": {"table": table, "why": why, "detail": detail}},
         )
-        self._recover = _with(self._recover, table, why)
+        self._recover = with_entry(self._recover, table, why)
         self._recheck = True
         self._marked = True
 
@@ -961,8 +933,8 @@ class DeltaFolds:
         :rtype: None
         """
         table, epoch, file = lost.table, lost.epoch, lost.file
-        self._lost = _with(self._lost, table, _with(self._lost.get(table, MappingProxyType({})), file, epoch))
-        self._asked = _with(self._asked, table, self._asked.get(table, 0) + 1)
+        self._lost = with_entry(self._lost, table, with_entry(self._lost.get(table, MappingProxyType({})), file, epoch))
+        self._asked = with_entry(self._asked, table, self._asked.get(table, 0) + 1)
         if self._recover.get(table) is not None:
             # owed already (perhaps failed on this very file): tried again now, without reading it
             self._recheck = True
@@ -1001,7 +973,7 @@ class DeltaFolds:
                 self._apply_started(command)
             elif isinstance(command, _Fresh):
                 # an ask of the table: a rebuild that read its generation before it is owed again (:meth:`_fresh_fulls`)
-                self._asked = _with(self._asked, command.table, self._asked.get(command.table, 0) + 1)
+                self._asked = with_entry(self._asked, command.table, self._asked.get(command.table, 0) + 1)
                 self._owe_fresh(command.table, command.why)
             else:
                 self._apply_lost(command)
@@ -1430,9 +1402,9 @@ class DeltaFolds:
             if self._asked.get(name, 0) == asked[name]:
                 # nothing asked of the table since its generation was read: the rows hold every change asked of it, its
                 # leftover and lost files' too, so neither a rebuild nor a recovery is owed after it
-                self._fresh = _without(self._fresh, name)
-                self._recover = _without(self._recover, name)
-                self._lost = _without(self._lost, name)
+                self._fresh = without_entry(self._fresh, name)
+                self._recover = without_entry(self._recover, name)
+                self._lost = without_entry(self._lost, name)
             else:
                 # a reset, or a lost file whose epoch may be past the generation read, asked while the rebuild read:
                 # owed again, never dropped by a rebuild that could not hold it
@@ -1499,7 +1471,7 @@ class DeltaFolds:
             current = await asyncio.to_thread(current_full_manifest, self.root)
             if current is None or name not in current.tables:
                 # no full holds the table: the rebuild reads it whole, the one cold start, before the next round
-                self._recover = _without(self._recover, name)
+                self._recover = without_entry(self._recover, name)
                 self._recheck = True
                 continue
             if current.term > term:
@@ -1598,7 +1570,7 @@ class DeltaFolds:
         if outcome != "recovered":
             await asyncio.to_thread(_unlink_all, self.root, [file])
             if outcome == "no_full":
-                self._recover = _without(self._recover, name)
+                self._recover = without_entry(self._recover, name)
                 self._recheck = True
             else:
                 log.warning(
@@ -1607,7 +1579,7 @@ class DeltaFolds:
                 )
             return
         if self._asked.get(name, 0) == asked:
-            self._recover = _without(self._recover, name)
+            self._recover = without_entry(self._recover, name)
         else:
             # asked again while it ran (decision 29): that file's epoch may be past the generation read; owed again
             self._recheck = True
@@ -1615,9 +1587,9 @@ class DeltaFolds:
         if lost:
             left = {held: epoch for held, epoch in self._lost.get(name, {}).items() if held not in lost}
             if left:
-                self._lost = _with(self._lost, name, MappingProxyType(left))
+                self._lost = with_entry(self._lost, name, MappingProxyType(left))
             else:
-                self._lost = _without(self._lost, name)
+                self._lost = without_entry(self._lost, name)
         for lost_reach in named:
             _LOST_FILE_RECOVERIES.labels(table=name, why=lost_reach.why).inc()
             log.warning(

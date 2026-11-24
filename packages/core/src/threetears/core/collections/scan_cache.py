@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +58,7 @@ from threetears.core import keyed
 from threetears.core.keyed import Sort, inline_l1, run_inline
 from threetears.core.eviction import Declared, Policy
 from threetears.core.cache.l1_lru import L1_EVICTION_INFO
+from threetears.core.collections.frozen_state import frozen, with_entry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -231,7 +233,7 @@ class ScanCache:
         # THIS pod's evictions, and both happen in this process. Every pod's evictions
         # reach it through `drop_for_table` -- its own writes via `publish_invalidation`,
         # everyone else's via the listener -- so a local count sees all of them.
-        self._evictions: dict[str, int] = {}
+        self._evictions: Mapping[str, int] = frozen()
         self._dependents = None if self._l1 is None else _Dependents()
         if self._l1 is not None and not (
             self._l1.has_table("collection_scan_cache") and self._l1.has_table(_DEPS_TABLE)
@@ -367,7 +369,7 @@ class ScanCache:
         :return: how many entries were evicted
         :rtype: int
         """
-        self._evictions[table] = self._evictions.get(table, 0) + 1
+        self._evictions = with_entry(self._evictions, table, self._evictions.get(table, 0) + 1)
         dropped = 0
         if self._l1 is not None and self._dependents is not None and self._l1.has_table(_DEPS_TABLE):
             # a table no stored scan depends on has nothing to read (WHY and numbers at _Dependents)

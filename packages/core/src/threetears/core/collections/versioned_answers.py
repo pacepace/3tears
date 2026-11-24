@@ -93,6 +93,7 @@ from pydantic import ValidationError
 from sqlalchemy import MetaData
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.derived import BuildLock, BuildLockHeld, DerivedCollection
+from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
 from threetears.core.collections.generation import L2_WRITE_GENERATION, WriteGenerationDeclaration
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -1071,7 +1072,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         self._table_name = table_name
         self._purger = purger
         self._markers_kept_logged = False
-        self._background: set[asyncio.Task[None]] = set()
+        self._background: frozenset[asyncio.Task[None]] = frozenset()
         super().__init__(registry, config, nats_client, None, build_lock=build_lock)
         # no durable tier to pull through (a miss computes)
         self.l3_pool = None
@@ -1079,7 +1080,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             self._l1.initialize(_l1_metadata(_answers_schema(table_name)))
         self._index = _AnswerIndex(registry, config, nats_client, table_name=f"{table_name}_index")
         #: per scope, this replica's background retirement
-        self._retirements: dict[str, _Retirement] = {}
+        self._retirements: Mapping[str, _Retirement] = frozen()
 
     @property
     def table_name(self) -> str:
@@ -1211,8 +1212,18 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :rtype: None
         """
         task = asyncio.get_running_loop().create_task(self._awaited_in_background(work))
-        self._background.add(task)
-        task.add_done_callback(self._background.discard)
+        self._background = self._background | {task}
+        task.add_done_callback(self._background_done)
+
+    def _background_done(self, task: asyncio.Task[None]) -> None:
+        """forget a background task once it is done.
+
+        :param task: the task
+        :ptype task: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        """
+        self._background = self._background - {task}
 
     async def _awaited_in_background(self, work: Coroutine[Any, Any, None]) -> None:
         """await ``work``, recording what it raises: nothing else awaits a background task.
@@ -1260,7 +1271,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :rtype: None
         """
         del version
-        retirement = self._retirements.setdefault(scope, _Retirement())
+        retirement = self._retirements.get(scope)
+        if retirement is None:
+            retirement = _Retirement()
+            self._retirements = with_entry(self._retirements, scope, retirement)
         if retirement.wanted is not None and order <= retirement.wanted:
             return
         retirement.wanted = order
@@ -1368,7 +1382,8 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :raises KvError: when the index could not be read or changed
         :raises ConcurrentModificationError: when the index kept changing past the retry budget
         """
-        retirement = self._retirements.pop(scope, None)
+        retirement = self._retirements.get(scope)
+        self._retirements = without_entry(self._retirements, scope)
         if retirement is not None and retirement.task is not None:
             # its failures are recorded by itself: here only its end matters
             await asyncio.gather(retirement.task, return_exceptions=True)

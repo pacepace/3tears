@@ -69,14 +69,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_whole_left_out",
-        rationale=(
-            "the scopes a staged whole read left out because a write held them, with their rows, kept beside the stage they belong to: forgotten with it, and a restart stages its reads again"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/utils/write_ledger.py",
         class_name="WriteLedger",
         attr_name="_open",
@@ -98,221 +90,6 @@ _ALLOWLIST = (
         attr_name="_lost",
         rationale=(
             "the advances this process lost and retries, each a coroutine closure over its source: not serializable, and held in the watermark the backstop publishes, so a process that dies with some is recovered from NATS by another"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_whole",
-        rationale=(
-            "the tables to read whole at the next apply and why (a cold start, a reset, a schema change, an older writer's record): heard from the registry, which a restart hears again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staged_whole",
-        rationale=(
-            "the tables a pass staged whole and why, kept to put back if the stage is forgotten; the rows are in the copy's own DuckDB staging tables"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staged_scopes",
-        rationale=(
-            "the scopes each staged change holds rows of, to judge it against a write in progress; derived from the staged rows, which a restart reads again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_current_at",
-        rationale=(
-            "when each table was last current in this process, the start of its change-notes bracket if it falls behind; a restart starts from a checkpoint or L3"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
-        class_name="CopyCheckpoints",
-        attr_name="_touched",
-        rationale=(
-            "the (table, scope) parts changed since the last checkpoint, by table: what the next write rewrites; a restart writes in full"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
-        class_name="CopyCheckpoints",
-        attr_name="_priors",
-        rationale=(
-            "each table's checkpoint entry this replica's copy matched at its last load or write, by table: names of "
-            "objects the pointer bucket holds; a restart loads the newest checkpoint and takes them from it again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
-        class_name="CopyCheckpoints",
-        attr_name="_keys",
-        rationale=(
-            "the keys of each no-scope table changed since the last checkpoint: what the next write patches its part "
-            "by; they come from the epoch change log, and a restart loads the newest checkpoint and walks it again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
-        class_name="CopyCheckpoints",
-        attr_name="_whole_kinds",
-        rationale=(
-            "each table the follower read whole since the last checkpoint, onto the situation it read it in (cold "
-            "start, schema change, rolling upgrade): which declared whole write the next checkpoint makes of it; "
-            "cleared by that write, and a restart loads the newest checkpoint and starts empty"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_checkpoint.py",
-        class_name="CopyCheckpoints",
-        attr_name="_missing",
-        rationale=(
-            "each table the last load left out and why (cold start, schema change): read off the pointer's manifest "
-            "at the load, which a restart reads again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/scope_epochs.py",
-        class_name="ScopeEpochs",
-        attr_name="_rows",
-        rationale=(
-            "the writer's seqlock rows last read, by scope: the base the next read of what changed merges into; a restart reads them whole once"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_partitions_staged",
-        rationale=(
-            "the loads' partitions whose rows a pass staged and has not yet applied, kept to put back if the pass "
-            "fails; they come from the epoch change log, which a restart walks again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staged",
-        rationale=(
-            "each table's change staged beside the copy and not yet applied, by table: names of staging tables in the copy's own DuckDB, which holds the rows; a restart drops them and reads the keys again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staged_heard",
-        rationale=(
-            "each table's keyed stage as immutable Arrow batches (its keys at the epochs they were staged from), one entry a table: put back heard when the stage is forgotten, dropped once applied; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staged_scope_rows",
-        rationale=(
-            "each table's keyed stage's keys with their scopes, immutable Arrow batches, one entry a table: what a moved scope leaves out of the stage; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_leaving",
-        rationale=(
-            "the keys (one Arrow table a table) the last stamp check left out of the change, handed to the leave-out step of the same pass and emptied by it; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_noted",
-        rationale=(
-            "when the change notes last named keys of each table, one entry a table, handed to the checkpoint once an apply holds the table current; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_full_after",
-        rationale=(
-            "the full each table reset or recreated waits for (decisions 12, 14, 28), one entry a waiting table; the volume's full is the durable state; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_reloads",
-        rationale=(
-            "the task looking for each waiting table's full, one entry a waiting table; it reads the volume and hands the owner what it found; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_file_waits",
-        rationale=(
-            "the delta files each table waits for (decision 29), immutable waits replaced by the owner, one entry a waiting table; the writer recreates the files; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_file_tasks",
-        rationale=(
-            "the task looking for each waiting table's files, one entry a waiting table; it reads the volume and asks the writer, then hands the owner what it found; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_held_counts",
-        rationale=(
-            "how many changes each table waiting for a file holds (a count, one entry a waiting table), for HELD_WHILE_WAITING_CAP and its gauge; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_state_versions",
-        rationale=(
-            "the version the copy holds each (table, state) at (decision 32), one entry a state; read by the drift check under the pass lock; owned by the copy's owner (the pass lock's holder) and changed by it alone; everything else hands it messages on its inbox (decision 37 of design-pod-delta-files.md)"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staged_touched",
-        rationale=(
-            "the keys each staged change of a no-scope table replaces, handed to the checkpoint at the apply; they "
-            "come from the epoch change log and L3's rows of it, which a restart walks again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_stamps",
-        rationale=(
-            "the writer's stamp and epoch marks of each recent change applied, by the mark DuckDB commits with it: a reader's snapshot names its mark, and a restart starts from a checkpoint or L3"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_staging_marks",
-        rationale=(
-            "each table's epoch mark when a pass took its keys, held for the change that pass applies; read off the registry's own marks"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/copy_follower.py",
-        class_name="CopyFollower",
-        attr_name="_current_marks",
-        rationale=(
-            "each table's epoch mark the copy holds every key of, what a checkpoint of the copy records; set from the checkpoint at load and from each change applied, and a restart takes it from the checkpoint or walks the log again"
         ),
     ),
     DictStateAllowlistEntry(
@@ -449,16 +226,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/versioned_answers.py",
-        class_name="VersionedAnswers",
-        attr_name="_retirements",
-        rationale=(
-            "one background retirement task per scope this replica has been told the current version of; "
-            "the floors it drives are in L2 (the index's versions rows), and a restart that forgets the tasks "
-            "is asked again by the next read"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/door_proof.py",
         class_name="DoorProofModes",
         attr_name="_switches",
@@ -478,84 +245,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/registry.py",
-        class_name="CollectionRegistry",
-        attr_name="_collections",
-        rationale=("registry managing L1/L2/L3 backends, IS the infrastructure"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/registry.py",
-        class_name="CollectionRegistry",
-        attr_name="_watching",
-        rationale=(
-            "per-table callables saying whether THIS process's generation watch on the table is "
-            "running; describes this process's own watch tasks, so it cannot be shared across pods"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/registry.py",
-        class_name="CollectionRegistry",
-        attr_name="_behind",
-        rationale=(
-            "per-table reason THIS process is behind on a followed table: an epoch its own registry "
-            "could not apply, judged against its own marks, so it cannot be shared across pods"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/registry.py",
-        class_name="CollectionRegistry",
-        attr_name="_overrides",
-        rationale=("per-collection backend overrides, IS the infrastructure"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/registry.py",
-        class_name="CollectionRegistry",
-        attr_name="_derived_caches",
-        rationale=(
-            "per-table registrations of the caches derived from a collection table: pairs of "
-            "callables into in-process caches, wiring alongside _collections, IS the "
-            "infrastructure. not serializable, and a registration names a cache that exists only "
-            "in this process, so there is nothing a shared or durable copy could hold"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/registry.py",
-        class_name="CollectionRegistry",
-        attr_name="_notes_resolved",
-        rationale=(
-            "where the change notes the registry last named a table's keys from begin, one entry a table, taken by the "
-            "copy follower's next pass (take_notes_resolved); the notes are L3's, and a restart walks the log again"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/generation.py",
-        class_name="GenerationMarks",
-        attr_name="_tables",
-        rationale=(
-            "per followed table, the last write generation whose writes THIS process's caches "
-            "have accounted for. it describes this process's L1 and derived caches, which are "
-            "themselves per-process: another pod has heard different broadcasts and holds a "
-            "different mark, so a shared copy would vouch for caches it knows nothing about. a "
-            "restart correctly starts with no mark, which drops each followed table once at its "
-            "first pass, over a cache that is itself empty. keyed by followed table, and each "
-            "table's record of advances heard out of order is capped"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/scan_cache.py",
-        class_name="ScanCache",
-        attr_name="_evictions",
-        rationale=(
-            "per-table count of THIS process's scan-cache evictions, which a ScanReadToken is "
-            "compared against to refuse a result read before an eviction and stored after it. "
-            "it orders reads in this process against evictions in this process -- every pod's "
-            "writes reach it through drop_for_table, locally or via the listener -- so a shared "
-            "copy would count evictions of caches that are not this one. keyed by table name, "
-            "bounded by the tables the pod's scans depend on, and a restart correctly starts "
-            "from zero with an empty cache and no read in flight"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
         class_name="YugabytePoolRecycler",
         attr_name="_expired_at_by_trigger",
@@ -566,18 +255,6 @@ _ALLOWLIST = (
             "clock no other pod has. keyed by the recycler's fixed trigger set, so it never "
             "grows past the triggers it was built with, and a restart correctly starts with "
             "no expiry on record for a pool that is itself new"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/derived.py",
-        class_name="DerivedCollection",
-        attr_name="_inflight",
-        rationale=(
-            "live asyncio.Lock handles, one per key being derived — bound to a single event loop "
-            "and non-serializable, so they cannot live in an L1/L2/L3 backend by construction. "
-            "cross-POD single-flight is a separate mechanism and does use NATS "
-            "(nats_distributed_lock); this map is only the in-process half, and entries are "
-            "dropped as soon as nobody holds or awaits a key"
         ),
     ),
     DictStateAllowlistEntry(
@@ -1161,11 +838,44 @@ _KNOWN_VIOLATIONS = (
     ),
 )
 
+#: Where an object's dict or set state is never changed in place after ``__init__``: its owner assigns the next
+#: immutable value whole (threetears.core.collections.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,
+#: 2026-11-23: "small, owner-only, under the pass lock" is no exception).
+_IMMUTABLE_ROOTS = (_REPO_ROOT / "packages/core/src/threetears/core/collections",)
+
+#: Changes in place under _IMMUTABLE_ROOTS that are per key, where rebuilding the whole value at each change costs the
+#: keys in flight: each needs a redesign agreed first, named here. A debt list, audited for staleness.
+_IMMUTABLE_KNOWN_VIOLATIONS = (
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/base.py",
+        class_name="_L1Fence",
+        attr_name="_keys",
+        rationale=(
+            "one mutable activity record a key in flight, shared by identity with every ticket on the key; immutable it "
+            "needs a fence-wide sequence the tickets compare against, a redesign of the L1 fence to agree first"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/flush.py",
+        class_name="WriteBuffer",
+        attr_name="_buf",
+        rationale="one pending write a key: rebuilt whole a write it is quadratic; migrates to SQLiteBackend L1",
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/flush.py",
+        class_name="WriteBuffer",
+        attr_name="_in_flight",
+        rationale="the keys a drain claimed, one a pending write: migrates with _buf to SQLiteBackend L1",
+    ),
+)
+
 _CONFIG = DictStateConfig(
     repo_root=_REPO_ROOT,
     src_roots=_SRC_ROOTS,
     allowlist=_ALLOWLIST,
     known_violations=_KNOWN_VIOLATIONS,
+    immutable_roots=_IMMUTABLE_ROOTS,
+    immutable_known_violations=_IMMUTABLE_KNOWN_VIOLATIONS,
 )
 
 

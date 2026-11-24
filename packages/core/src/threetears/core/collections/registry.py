@@ -22,6 +22,7 @@ from threetears.core.collections.delta_files import (
     read_delta_file_keys,
     text_key_batch,
 )
+from threetears.core.collections.frozen_state import frozen, with_entries, with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
@@ -519,8 +520,9 @@ class CollectionRegistry:
         # It lives here rather than as a literal in ``base.py`` so one
         # deployment's bucket-ownership policy is not baked into the library.
         self._l2_create_if_missing: bool = True
-        self._collections: dict[str, Any] = {}  # table_name -> collection instance
-        self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
+        # table_name -> collection instance; every map below is an immutable value replaced whole on change
+        self._collections: Mapping[str, Any] = frozen()
+        self._overrides: Mapping[str, Mapping[str, Any]] = frozen()  # table_name -> {l1_backend, l2_client, l3_pool}
         # The write generation a negative-caching collection stamps its absences with. One per
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
@@ -529,10 +531,10 @@ class CollectionRegistry:
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
         # table -> every follower's answer to whether its generation watch is running now
-        self._watching: dict[str, list[Callable[[], bool]]] = {}
+        self._watching: Mapping[str, tuple[Callable[[], bool], ...]] = frozen()
         # table -> why this registry is behind on it: an epoch whose change it could not apply. It keeps
         # serving what it holds, its derived caches included, and says so (log, counter, gauge).
-        self._behind: dict[str, str] = {}
+        self._behind: Mapping[str, str] = frozen()
         # names the keys of an epoch whose writer named too many rows to record, from the change notes: the bus's
         # l3.noted_keys door, taken from an L3 transport that has one (:meth:`configure`), or set
         self._noted_keys: NotedKeysReader | None = None
@@ -540,9 +542,9 @@ class CollectionRegistry:
         # registry named from them (an epoch recorded keys unknown, or a table resolved from its notes) and a copy
         # follower has not taken yet (:meth:`take_notes_resolved`): a start from a checkpoint older than that epoch
         # needs those notes again, so the follower's checkpoint is due before they can be emptied
-        self._notes_resolved: dict[str, datetime] = {}
+        self._notes_resolved: Mapping[str, datetime] = frozen()
         # table_name -> the caches derived from it, in registration order.
-        self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
+        self._derived_caches: Mapping[str, tuple[DerivedCacheRegistration, ...]] = frozen()
         #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
         self._l2_caught_up_at: float | None = None
         # Per-registry (effectively per-pod) identity stamped on every
@@ -719,20 +721,21 @@ class CollectionRegistry:
                     f"a table has one write generation; give it one collection class, or declare "
                     f"the same write_generation on both"
                 )
-        self._collections[table] = collection
+        self._collections = with_entry(self._collections, table, collection)
         if getattr(collection, "keeps_write_generation_in_l2", False) is True:
             # its generation is in L2 beside its rows, watched (threetears.epoch.follow_l2_kept_tables) or
             # read on demand (catch_up_l2_generations): following it is what makes this registry count
             # the table's broadcasts and its own advances
             self.follow_generation(table)
         if l1_backend or l2_client or l3_pool:
-            self._overrides[table] = {}
+            given: dict[str, Any] = {}
             if l1_backend:
-                self._overrides[table]["l1_backend"] = l1_backend
+                given["l1_backend"] = l1_backend
             if l2_client:
-                self._overrides[table]["l2_client"] = l2_client
+                given["l2_client"] = l2_client
             if l3_pool:
-                self._overrides[table]["l3_pool"] = _as_l3_backend(l3_pool)
+                given["l3_pool"] = _as_l3_backend(l3_pool)
+            self._overrides = with_entry(self._overrides, table, frozen(given))
 
     def bind_table(
         self,
@@ -793,13 +796,16 @@ class CollectionRegistry:
                 f"under a key no per-principal grant can name. configure the registry first "
                 f"-- registry.configure(kv_key_scope=threetears.nats.kv_key_scope_for(...))"
             )
-        existing = self._overrides.setdefault(table_name, {})
+        given: dict[str, Any] = {}
         if l1_backend is not None:
-            existing["l1_backend"] = l1_backend
+            given["l1_backend"] = l1_backend
         if l2_client is not None:
-            existing["l2_client"] = l2_client
+            given["l2_client"] = l2_client
         if l3_pool is not None:
-            existing["l3_pool"] = _as_l3_backend(l3_pool)
+            given["l3_pool"] = _as_l3_backend(l3_pool)
+        self._overrides = with_entry(
+            self._overrides, table_name, with_entries(self._overrides.get(table_name, frozen()), given)
+        )
 
     def get_collection(self, table_name: str) -> Any | None:
         """Look up a registered collection by table name."""
@@ -1007,7 +1013,7 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        self._watching.setdefault(table_name, []).append(watching)
+        self._watching = with_entry(self._watching, table_name, (*self._watching.get(table_name, ()), watching))
 
     def not_watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
         """withdraw one follower's watch on ``table_name``, as given to :meth:`watched_by`. Idempotent.
@@ -1022,11 +1028,11 @@ class CollectionRegistry:
         followers = self._watching.get(table_name)
         if followers is None:
             return
-        remaining = [each for each in followers if each is not watching]
+        remaining = tuple(each for each in followers if each is not watching)
         if remaining:
-            self._watching[table_name] = remaining
+            self._watching = with_entry(self._watching, table_name, remaining)
         else:
-            del self._watching[table_name]
+            self._watching = without_entry(self._watching, table_name)
 
     def tables_trusted(self, table_names: Sequence[str]) -> bool:
         """whether every one of ``table_names`` is followed here and every watch on it is running.
@@ -1610,7 +1616,7 @@ class CollectionRegistry:
         :rtype: None
         """
         held = self._notes_resolved.get(table_name)
-        self._notes_resolved[table_name] = since if held is None else min(held, since)
+        self._notes_resolved = with_entry(self._notes_resolved, table_name, since if held is None else min(held, since))
 
     def take_notes_resolved(self, table_name: str) -> datetime | None:
         """the oldest time from which the change notes held the keys of an epoch this registry named from them since
@@ -1622,7 +1628,9 @@ class CollectionRegistry:
         :return: the start of the oldest such notes bracket (database clock); None when none was named since
         :rtype: datetime | None
         """
-        return self._notes_resolved.pop(table_name, None)
+        held = self._notes_resolved.get(table_name)
+        self._notes_resolved = without_entry(self._notes_resolved, table_name)
+        return held
 
     def behind_on(self, table_name: str) -> bool:
         """whether this registry is behind on ``table_name``: an epoch it has not been able to apply.
@@ -1686,7 +1694,7 @@ class CollectionRegistry:
         if self._behind.get(table_name) == reason:
             # said once when it began; the gauge says how long it lasts
             return
-        self._behind[table_name] = reason
+        self._behind = with_entry(self._behind, table_name, reason)
         _epochs_behind().labels(table=table_name, reason=reason).inc()
         _tables_behind().set(len(self._behind))
         log.error(
@@ -1715,7 +1723,8 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
-        if self._behind.pop(table_name, None) is not None:
+        if table_name in self._behind:
+            self._behind = without_entry(self._behind, table_name)
             _tables_behind().set(len(self._behind))
             log.info("caught up on a table after being behind", extra={"extra_data": {"table": table_name}})
 
@@ -1967,12 +1976,19 @@ class CollectionRegistry:
             on_file_wanted=on_file_wanted,
             on_keys=on_keys,
         )
-        registrations = self._derived_caches.setdefault(table_name, [])
-        registrations.append(registration)
+        self._derived_caches = with_entry(
+            self._derived_caches, table_name, (*self._derived_caches.get(table_name, ()), registration)
+        )
 
         def remove() -> None:
+            registrations = self._derived_caches.get(table_name, ())
             if registration in registrations:
-                registrations.remove(registration)
+                left = tuple(each for each in registrations if each is not registration)
+                self._derived_caches = (
+                    with_entry(self._derived_caches, table_name, left)
+                    if left
+                    else without_entry(self._derived_caches, table_name)
+                )
 
         return remove
 
@@ -2562,9 +2578,9 @@ class CollectionRegistry:
         idle one. Call :meth:`stop_invalidation_listener` alongside this in any
         teardown that started a listener.
         """
-        self._collections.clear()
-        self._overrides.clear()
-        self._derived_caches.clear()
+        self._collections = frozen()
+        self._overrides = frozen()
+        self._derived_caches = frozen()
         self._generation_marks = GenerationMarks()
-        self._watching = {}
-        self._notes_resolved = {}
+        self._watching = frozen()
+        self._notes_resolved = frozen()
