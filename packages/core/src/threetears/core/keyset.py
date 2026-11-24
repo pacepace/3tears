@@ -69,7 +69,7 @@ from dataclasses import dataclass, replace
 from typing import Annotated, Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.backends.dialect import known_on_yugabyte, l3_on_yugabyte
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed._filters import Fragment, narrowing
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
@@ -775,7 +775,7 @@ async def _hashed_lead(l3: Any, shape: _ReadShape, lead_array: str | None) -> st
     lead = shape.key[0]
     if lead in (shape.where or {}) or lead in (shape.where_any or {}):
         return None
-    return lead_array if await l3_on_yugabyte(l3) else None
+    return lead_array if await known_on_yugabyte(l3) else None
 
 
 async def _lead_walk(
