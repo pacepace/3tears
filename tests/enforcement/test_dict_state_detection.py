@@ -13,9 +13,9 @@ have gone stale the first time someone added an import. The shared domain keys o
 ``(file, class_name, attr)`` now, which is what the copy always did and what survives a
 refactor that does not move the attribute.
 
-**ALLOWLIST is forever, and there is no debt list.** The allowlist is state that genuinely
-cannot live in a backend -- live ``asyncio`` handles, the collection infrastructure itself --
-audited: an entry that stops matching a real violation is reported as stale. Nothing is
+**The allowlist is empty, and there is no debt list.** The last six entries (shared_arrow's
+evictable sizes and lent or mapped files, analyze_media's analyzers, the git TemplateLayout's
+tables) became read-only values replaced whole (Pace, decision 45). Nothing is
 tracked as an acknowledged violation (Pace, 2026-11-23: redesign it, never waive it); the
 last debts, the L1 fence's per-key records and the write buffer's dict and claim set, were
 redesigned as immutable packed batches and the lists deleted.
@@ -51,61 +51,9 @@ _SRC_ROOTS = (
     _REPO_ROOT / "packages/langgraph/src/threetears/langgraph",
 )
 
-#: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
-_ALLOWLIST = (
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_evictable",
-        rationale=(
-            "the versions the last sweep found held only by idle workers' flocks, with their bytes: re-derived from the locks at every sweep, so a restart reads it again from the directory"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="MappedTables",
-        attr_name="_by_inode",
-        rationale=(
-            "each memory-mapped file's Arrow table by device and inode, lent to the next version's mapping so it "
-            "maps only changed files; tables over this process's own address space, which no backend can hold, "
-            "and gone with the mapping"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowReader",
-        attr_name="_lend",
-        rationale=(
-            "the mapped tables of a let-go version that the current version shares, kept for its first read to "
-            "take instead of mapping again; memory maps of this process, which no backend can hold, and a "
-            "restart maps afresh"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py",
-        class_name="AnalyzeMediaTool",
-        attr_name="_analyzers",
-        rationale=("constructor-injected config mapping, not cached state"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/layout.py",
-        class_name="TemplateLayout",
-        attr_name="_tables",
-        rationale=(
-            "static config: the table layouts a product passes to the constructor, by table name, "
-            "built once and never changed after"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/layout.py",
-        class_name="TemplateLayout",
-        attr_name="_by_table",
-        rationale=(
-            "static config: the compiled path pattern of each table in _tables, built once in the "
-            "constructor from the same layouts"
-        ),
-    ),
-)
+#: Empty, and stays empty (Pace, decision 45): every attribute a 3tears object holds as a dict or set is a read-only
+#: value replaced whole (threetears.core.frozen_state), so there is nothing to excuse.
+_ALLOWLIST: tuple[DictStateAllowlistEntry, ...] = ()
 
 #: Where an object's dict or set state is never changed in place after ``__init__``: its owner assigns the next
 #: immutable value whole (threetears.core.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,

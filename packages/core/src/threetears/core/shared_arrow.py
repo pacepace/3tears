@@ -97,7 +97,7 @@ from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
-from threetears.core.frozen_state import EMPTY, with_entries, without_entries
+from threetears.core.frozen_state import EMPTY, frozen, with_entries, without_entries
 from threetears.core.held_files import HeldFiles, directory_bytes, directory_files, files_batch, files_bytes
 from threetears.core.eviction import (
     BUDGET_BYTES,
@@ -1300,7 +1300,7 @@ def _imported(flat: Path, part_dir: Path) -> _Manifest:
     return _parsed_manifest(_MANIFEST_HEADER + "".join(lines))
 
 
-def _shared_files(path: Path, mapped: Mapping[Any, Any]) -> dict[Any, Any]:
+def _shared_files(path: Path, mapped: Mapping[Any, Any]) -> Mapping[Any, Any]:
     """the mapped files that the version directory ``path`` holds too (:func:`_mapped_files` identifies each): what a
     mapping of it may take.
 
@@ -1308,8 +1308,8 @@ def _shared_files(path: Path, mapped: Mapping[Any, Any]) -> dict[Any, Any]:
     :ptype path: Path
     :param mapped: files mapped already, by identity
     :ptype mapped: Mapping[Any, pa.Table]
-    :return: those of them ``path`` holds; empty when it is gone
-    :rtype: dict[Any, pa.Table]
+    :return: those of them ``path`` holds, read-only; empty when it is gone
+    :rtype: Mapping[Any, pa.Table]
     """
     try:
         text = _manifest_text(path)
@@ -1321,8 +1321,8 @@ def _shared_files(path: Path, mapped: Mapping[Any, Any]) -> dict[Any, Any]:
             held = set(text.splitlines(keepends=True))
     except FileNotFoundError:
         # NOSILENT: the version is gone already: nothing to lend its first read
-        return {}
-    return {identity: table for identity, table in mapped.items() if identity in held}
+        return EMPTY
+    return frozen((identity, table) for identity, table in mapped.items() if identity in held)
 
 
 class _Pin:
@@ -1417,21 +1417,6 @@ def _free_in_turns(held: list[Any]) -> None:
         turns.take()
 
 
-def _free_lent(lent: dict[Any, Any]) -> None:
-    """free the files a :class:`SharedArrowReader` kept to lend its next version and let go of, in turns
-    (:func:`_free_in_turns`), after its lock is released: a table no version took is the last holder of its arrays.
-    The dictionary is the caller's alone and is emptied.
-
-    :param lent: the files, by identity
-    :ptype lent: dict[Any, pa.Table]
-    :return: nothing
-    :rtype: None
-    """
-    held = list(lent.values())
-    lent.clear()
-    _free_in_turns(held)
-
-
 class MappedTables:
     """Arrow tables memory-mapped read-only from a directory: every process mapping it shares its pages, and no row
     is copied into this one. Close it when done; a table kept past :meth:`close` keeps its pages mapped, and, mapped
@@ -1477,7 +1462,7 @@ class MappedTables:
         # and raises its own error; unset, the unmap raised AttributeError in its place (a runner out of descriptors
         # mapping a version's 2240 files was reported as a missing attribute, 2026-11-21)
         self.tables: Mapping[str, Any] = EMPTY
-        self._by_inode: dict[Any, Any] = {}
+        self._by_inode: Mapping[Any, Any] = EMPTY
         self._maps: list[Any] = []
         self._descriptor: int | None = None
         #: the cached lock a kept mapping holds in place of the read lock while it waits for its next read
@@ -1494,7 +1479,8 @@ class MappedTables:
             pinned = None if descriptor is None else _Pin(descriptor)
         #: each file's table, by the file's identity (:func:`_mapped_files`), for a later version's mapping to take
         #: (``reuse``): ``_by_inode``, set above
-        held = reuse or {}
+        held = reuse or EMPTY
+        by_inode: dict[Any, Any] = {}
         pieces: dict[str, list[Any]] = {}
         try:
             # sorted, so a table's schema file (``{table}@.arrow``) comes before its parts, and parts in name order
@@ -1508,11 +1494,14 @@ class MappedTables:
                         mapped = pa.memory_map(file, "r")
                         self._maps.append(mapped)
                         piece = ipc.open_file(mapped).read_all()
-                    self._by_inode[identity] = piece
+                    by_inode[identity] = piece
                     pieces.setdefault(table, []).append(piece)
         except BaseException:
+            self._by_inode = MappingProxyType(by_inode)
             self._unmap()
             raise
+        # read-only once built, never changed in place: a later version's mapping takes it (:attr:`by_inode`)
+        self._by_inode = MappingProxyType(by_inode)
         # a table in parts is its parts' chunks side by side: concatenating tables copies no buffer
         tables = {name: held[0] if len(held) == 1 else pa.concat_tables(held) for name, held in pieces.items()}
         self.tables = MappingProxyType(tables)
@@ -1526,7 +1515,7 @@ class MappedTables:
         :return: (device, inode) -> the file's table; empty once closed
         :rtype: Mapping[Any, pa.Table]
         """
-        return MappingProxyType(self._by_inode)
+        return self._by_inode
 
     def connect(self, *, schema: str | None = None, config: Mapping[str, Any] | None = None) -> Any:
         """a new in-memory DuckDB connection with every table as a view over its mapped Arrow, no row copied.
@@ -1560,7 +1549,7 @@ class MappedTables:
         # joined table still holds its arrays frees nothing, and the joined table freed last would free them all at once
         held = [*self._by_inode.values(), *self.tables.values()]
         self.tables = EMPTY
-        self._by_inode = {}
+        self._by_inode = EMPTY
         _free_in_turns(held)
         for mapped in self._maps:
             mapped.close()
@@ -2738,7 +2727,7 @@ class SharedArrowStore:
         weakref.finalize(self, _close_all, self._revokers)
         #: the versions held only cached (EVICTABLE: :data:`_Entry.VERSION_CACHED`) as of the last sweep, with the bytes
         #: each would free
-        self._evictable: dict[str, int] = {}
+        self._evictable: Mapping[str, int] = EMPTY
         self._evictions = 0
         self._evicted_bytes = 0
         #: the manifest of every version the directory holds under its name, by name: what a publish on it starts
@@ -3500,7 +3489,7 @@ class SharedArrowStore:
             dying = self._freed([manifests[name] for name in retired if name in manifests])
             if cached or self._evictable:
                 # nothing cached before or now (the usual sweep) changes no gauge: no work on a lease's release
-                self._evictable = {name: self._only_named(name) for name in cached}
+                self._evictable = frozen((name, self._only_named(name)) for name in cached)
                 self._held_changed(self._held.bytes)
             dying.extend(self._unremoved)
             self._unremoved = []
@@ -4505,7 +4494,9 @@ class SharedArrowReader:
         self._held: _HeldVersion | None = None
         #: the files of the version let go that the current one shares, by identity, for its first read to take
         #: (:class:`MappedTables`): mapped already, so keeping them keeps no page the current version does not hold
-        self._lend: dict[Any, Any] = {}
+        #: read-only, replaced whole; what it lets go goes to :func:`_free_in_turns` as a list of its tables, so they
+        #: are freed one at a time there, never with the mapping that held them
+        self._lend: Mapping[Any, Any] = EMPTY
         self._closed = False
         self._reads = 0
         self._mapped = 0
@@ -4549,7 +4540,7 @@ class SharedArrowReader:
     def _read(self) -> Iterator[SharedRead]:
         """:meth:`read`, its slot taken."""
         let_go: _HeldVersion | None = None
-        lent: dict[Any, Any] = {}
+        lent: list[Any] = []
         with self._lock:
             if self._closed:
                 raise RuntimeError("the shared Arrow reader is closed")
@@ -4560,9 +4551,16 @@ class SharedArrowReader:
             if held is None or held.name != current.name:
                 # the version it replaces (or what it left to lend) gives it every file the two share: only what
                 # changed is mapped
-                reuse = self._lend if held is None else held.mapped.by_inode
-                held = _HeldVersion(self._store.lease(), self._schema, self._config, self._prepare, reuse)
-                lent, self._lend = self._lend, {}
+                # no local keeps the lent mapping: its tables must go one at a time below, not with the mapping
+                held = _HeldVersion(
+                    self._store.lease(),
+                    self._schema,
+                    self._config,
+                    self._prepare,
+                    self._lend if held is None else held.mapped.by_inode,
+                )
+                lent = list(self._lend.values())
+                self._lend = EMPTY
                 self._mapped += 1
                 let_go = self._supersede()
                 self._held = held
@@ -4573,8 +4571,8 @@ class SharedArrowReader:
             except BaseException:
                 held.reads -= 1
                 raise
-        # what the new version did not take is freed in turns, out of the lock (:func:`_free_lent`)
-        _free_lent(lent)
+        # what the new version did not take is freed in turns, out of the lock (:func:`_free_in_turns`)
+        _free_in_turns(lent)
         if let_go is not None:
             let_go.close()
         clean = False
@@ -4601,21 +4599,20 @@ class SharedArrowReader:
         :return: nothing
         :rtype: None
         """
-        lent: dict[Any, Any] = {}
+        lent: list[Any] = []
         with self._lock:
             current = self._store.current
             let_go = None
             if self._held is not None and (current is None or self._held.name != current.name):
                 if current is not None:
-                    lent, self._lend = (
-                        self._lend,
-                        _shared_files(current.path, {**self._lend, **self._held.mapped.by_inode}),
-                    )
+                    lent = list(self._lend.values())
+                    self._lend = _shared_files(current.path, {**self._lend, **self._held.mapped.by_inode})
                 let_go = self._supersede()
             elif self._held is None and self._lend and current is not None:
-                lent, self._lend = self._lend, _shared_files(current.path, self._lend)
-        # what the current version no longer holds is freed in turns, out of the lock (:func:`_free_lent`)
-        _free_lent(lent)
+                lent = list(self._lend.values())
+                self._lend = _shared_files(current.path, self._lend)
+        # what the current version no longer holds is freed in turns, out of the lock (:func:`_free_in_turns`)
+        _free_in_turns(lent)
         if let_go is not None:
             let_go.close()
 
@@ -4627,9 +4624,10 @@ class SharedArrowReader:
         """
         with self._lock:
             self._closed = True
-            lent, self._lend = self._lend, {}
+            lent = list(self._lend.values())
+            self._lend = EMPTY
             let_go = self._supersede()
-        _free_lent(lent)
+        _free_in_turns(lent)
         if let_go is not None:
             let_go.close()
 

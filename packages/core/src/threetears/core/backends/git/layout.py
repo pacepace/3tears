@@ -27,6 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
 from threetears.core.backends.git.codec import RowCodec
+from threetears.core.frozen_state import frozen
 
 __all__ = ["Layout", "TableLayout", "TemplateLayout", "escape_value", "locate", "same_key", "unescape_value"]
 
@@ -276,15 +277,15 @@ class TemplateLayout:
         :rtype: None
         :raises ValueError: when a table is named twice
         """
-        self._tables: dict[str, TableLayout] = {}
-        self._patterns: list[tuple[TableLayout, re.Pattern[str]]] = []
-        self._by_table: dict[str, re.Pattern[str]] = {}
-        for layout in tables:
-            if layout.table in self._tables:
-                raise ValueError(f"table {layout.table!r} is laid out twice")
-            self._tables[layout.table] = layout
-            self._by_table[layout.table] = self._pattern(layout)
-            self._patterns.append((layout, self._by_table[layout.table]))
+        named = [layout.table for layout in tables]
+        for table in named:
+            if named.count(table) > 1:
+                raise ValueError(f"table {table!r} is laid out twice")
+        patterns = tuple((layout, self._pattern(layout)) for layout in tables)
+        # read-only, built whole here and never changed after (threetears.core.frozen_state)
+        self._tables: Mapping[str, TableLayout] = frozen((layout.table, layout) for layout in tables)
+        self._patterns: tuple[tuple[TableLayout, re.Pattern[str]], ...] = patterns
+        self._by_table: Mapping[str, re.Pattern[str]] = frozen((layout.table, pattern) for layout, pattern in patterns)
 
     @staticmethod
     def _pattern(layout: TableLayout) -> re.Pattern[str]:

@@ -24,6 +24,7 @@ Config keys (passed via the tool registry ``config`` dict):
 from __future__ import annotations
 
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import UUID
@@ -48,6 +49,7 @@ from threetears.agent.tools.protocols import (
     VisionProvider,
 )
 from threetears.agent.tools.text_window import find_in_text, window_text
+from threetears.core.frozen_state import frozen
 from threetears.langgraph.fence import explained_fence, mint_nonce
 from threetears.observe import contain, get_logger
 
@@ -395,7 +397,8 @@ class AnalyzeMediaTool(TearsTool):
         :ptype markdown: bool
         """
         self._storage = storage
-        self._analyzers = analyzers or {}
+        # read-only: the constructor's config, built whole here and never changed after (threetears.core.frozen_state)
+        self._analyzers: Mapping[str, AnalyzerConfig] = frozen(analyzers or ())
         self._user_id = user_id
         self._media_url_fn = media_url_fn
         self._on_analysis = on_analysis
