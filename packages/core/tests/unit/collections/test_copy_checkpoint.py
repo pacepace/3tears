@@ -202,6 +202,17 @@ def _votes(rows: Sequence[tuple[str, int, int]], *, share: bool = False) -> Any:
     return pa.table(columns)
 
 
+def _key_table(key: Sequence[str], keys: Iterable[Sequence[str]]) -> Any:
+    """touched keys as the follower hands them to ``applied``: one Arrow table of the key columns as text."""
+    held = list(keys)
+    return pa.table({column: pa.array([k[at] for k in held], pa.string()) for at, column in enumerate(key)})
+
+
+def _race_keys(*race_ids: int) -> Any:
+    """``races``' touched keys, by race id."""
+    return _key_table(_RACES_KEY, [(str(race_id),) for race_id in race_ids])
+
+
 def _races(rows: Sequence[tuple[int, str]]) -> Any:
     return pa.table(
         {"race_id": pa.array([r[0] for r in rows], pa.int64()), "name": pa.array([r[1] for r in rows], pa.string())}
@@ -385,7 +396,7 @@ async def test_a_table_the_newest_cannot_give_loads_from_the_previous_checkpoint
     first_votes = copy.held(_VOTES)
     copy.put(_VOTES, _votes(_state("VA", 50, votes=2) + _state("IL", 10)), "v2", 2)
     copy.put(_RACES, _races([(1, "gov"), (2, "sen")]), "r2", 2)
-    checkpoints.applied(53, {_VOTES: frozenset({"state:VA"}), _RACES: frozenset()}, {_RACES: [("3",)]})
+    checkpoints.applied(53, {_VOTES: frozenset({"state:VA"}), _RACES: frozenset()}, {_RACES: _race_keys(3)})
     assert await checkpoints.write(copy.read) is not None
     newest = (await checkpoints.newest())[0]
     for name, _, _ in newest.tables[_VOTES].parts:
@@ -441,7 +452,7 @@ async def test_a_touched_table_with_no_scope_is_patched_by_its_keys_and_untouche
     copy, checkpoints, store, _ = await _written_world()
     first = (await checkpoints.newest())[0]
     copy.put(_RACES, _races([(1, "gov"), (4, "ag")]), "r2", 2)
-    checkpoints.applied(2, {_RACES: frozenset()}, {_RACES: [("2",), ("3",), ("4",)]})
+    checkpoints.applied(2, {_RACES: frozenset()}, {_RACES: _race_keys(2, 3, 4)})
     second = await checkpoints.write(copy.read)
     assert second is not None
     assert second.tables[_VOTES].parts == first.tables[_VOTES].parts
@@ -576,7 +587,7 @@ async def test_two_code_versions_keep_each_others_tables_and_each_loads_what_it_
     assert checkpoints.due()
     # a checkpoint before it has read votes again keeps the old version's votes as it was
     new.put(_RACES, _races([(1, "gov")]), "r2", 2)
-    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",), ("3",)]})
+    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: _race_keys(2, 3)})
     kept = await checkpoints.write(new.read)
     assert kept is not None
     assert kept.tables[_VOTES] == kept.previous.tables[_VOTES]
@@ -610,7 +621,7 @@ async def test_a_writer_keeps_the_entry_of_a_table_it_does_not_follow() -> None:
     )
     copy.load(await only_races.stage())
     copy.put(_RACES, _races([(9, "mayor")]), "r2", 2)
-    only_races.applied(1, {_RACES: frozenset()}, {_RACES: [("1",), ("2",), ("3",), ("9",)]})
+    only_races.applied(1, {_RACES: frozenset()}, {_RACES: _race_keys(1, 2, 3, 9)})
     written = await only_races.write(copy.read)
     assert written is not None and written.previous is not None
     assert written.tables[_VOTES] == written.previous.tables[_VOTES]
@@ -623,7 +634,7 @@ async def test_a_one_key_change_to_a_table_with_no_scope_patches_its_part_by_tha
     copy, checkpoints, store, pointers = await _written_world()
     first = (await checkpoints.newest())[0]
     copy.put(_RACES, _races([(1, "gov"), (2, "senate"), (3, "house")]), "r2", 2)
-    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
+    checkpoints.applied(1, {_RACES: frozenset()}, {_RACES: _race_keys(2)})
     copy.statements.clear()
     second = await checkpoints.write(copy.read)
     assert second is not None
@@ -632,9 +643,10 @@ async def test_a_one_key_change_to_a_table_with_no_scope_patches_its_part_by_tha
     new = ipc.open_stream(store.objects[new_name]).read_all()
     old_rows, new_rows = set(zip(*old.to_pydict().values())), set(zip(*new.to_pydict().values()))
     assert old_rows - new_rows == {(2, "sen")} and new_rows - old_rows == {(2, "senate")}
-    # the copy was read by the one key alone; nothing of it whole
+    # the copy was read by the touched keys alone, handed over as Arrow (a relation the read semi-joins, never a
+    # Python list a key); nothing of it whole. That the read held key 2 alone is the part's change above
     copy_reads = [(sql, params) for sql, params in copy.statements if '"races"' in sql]
-    assert len(copy_reads) == 1 and "JOIN (SELECT unnest" in copy_reads[0][0] and copy_reads[0][1] == [["2"]]
+    assert len(copy_reads) == 1 and 'WHERE (t."race_id") IN (SELECT CAST(k1 AS bigint)' in copy_reads[0][0]
     assert not _whole_reads(copy, _RACES) and not _whole_reads(copy, _VOTES)
     loaded, _, _ = await _stage_fresh(store, pointers)
     assert loaded.held(_RACES) == copy.held(_RACES)
@@ -681,7 +693,7 @@ async def test_a_whole_read_is_counted_by_why_and_only_cold_start_schema_change_
 async def _rewrite_everything(copy: _Copy, checkpoints: Any, version: int) -> None:
     copy.put(_VOTES, _votes(_state("VA", 50, votes=version) + _state("IL", 10, votes=version)), f"v{version}", version)
     copy.put(_RACES, _races([(1, f"gov{version}"), (2, "sen"), (3, "house")]), f"r{version}", version)
-    checkpoints.applied(61, {_VOTES: frozenset({"state:VA", "state:IL"}), _RACES: frozenset()}, {_RACES: [("1",)]})
+    checkpoints.applied(61, {_VOTES: frozenset({"state:VA", "state:IL"}), _RACES: frozenset()}, {_RACES: _race_keys(1)})
     assert await checkpoints.write(copy.read) is not None
 
 
@@ -692,7 +704,7 @@ async def test_a_replica_whose_parts_the_newest_no_longer_names_writes_nothing_a
     await _rewrite_everything(copy, writer, 2)
     await _rewrite_everything(copy, writer, 3)
     other.put(_RACES, _races([(1, "gov"), (2, "sen")]), "r9", 9)
-    late.applied(1, {_RACES: frozenset()}, {_RACES: [("3",)]})
+    late.applied(1, {_RACES: frozenset()}, {_RACES: _race_keys(3)})
     skipped = _writes("incremental", "skipped")
     other.statements.clear()
     newest = (await late.newest())[0]
@@ -876,7 +888,7 @@ async def test_a_whole_write_is_reached_only_at_a_cold_start_a_schema_change_or_
     assert await patched.write(plain.read) is not None
     plain.statements.clear()
     plain.put(_RACES, _races([(1, "gov"), (2, "senate")]), "r2", 2)
-    patched.applied(1, {_RACES: frozenset()}, {_RACES: [("2",)]})
+    patched.applied(1, {_RACES: frozenset()}, {_RACES: _race_keys(2)})
     assert await patched.write(plain.read) is not None
     assert reached(plain) == []
 
@@ -999,7 +1011,9 @@ async def test_a_patched_part_holds_what_the_hand_written_anti_join_held(seed: i
     for name, rows in after.items():
         copy.put(name, rows, f"{name}2", 2)
     checkpoints.applied(
-        1, {name: frozenset() for name in after}, {name: sorted(keys) for name, keys in touched.items()}
+        1,
+        {name: frozenset() for name in after},
+        {table.name: _key_table(table.key, sorted(touched[table.name])) for table in tables},
     )
     second = await checkpoints.write(copy.read)
     assert second is not None

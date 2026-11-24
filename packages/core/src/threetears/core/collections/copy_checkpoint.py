@@ -72,7 +72,7 @@ from threetears.core.operator import operator_reset
 from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
-from threetears.core.cache.duckdb_binds import run_bound
+from threetears.core.cache.duckdb_binds import KEYS, run_joined
 from threetears.core.ddl.change_notes import DEFAULT_NOTE_FENCE
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
@@ -429,7 +429,7 @@ class _Taken:
 
     since: int
     touched: dict[str, set[str] | None]
-    keys: dict[str, set[tuple[str, ...]]]
+    keys: dict[str, tuple[Any, ...]]
     kinds: dict[str, str]
     due: bool
     whole: frozenset[str]
@@ -443,7 +443,8 @@ class _Plan:
     :ivar table: the table
     :ivar prior: the entry this replica's copy of it last matched, its objects still named; None when written whole
     :ivar scopes: a scoped table's scopes to read again from the copy (empty: every part named again)
-    :ivar keys: a table with no scope: the keys to patch its part by (empty: its part named again)
+    :ivar keys: a table with no scope: the keys to patch its part by, an Arrow table of its key columns as text, a
+        key perhaps more than once (None: its part named again)
     :ivar why: a :data:`_WHOLE_WRITES` why when the table is read whole from the copy; None otherwise
     :ivar kind: the situation a whole read is (``cold_start``, ``schema_change``, ``rolling_upgrade``), each read by its
         own declared function
@@ -452,7 +453,7 @@ class _Plan:
     table: FollowedTable
     prior: CheckpointTable | None
     scopes: frozenset[str] = frozenset()
-    keys: frozenset[tuple[str, ...]] = frozenset()
+    keys: Any = None
     why: str | None = None
     kind: str = ""
 
@@ -472,13 +473,38 @@ def _add_touched(into: dict[str, set[str] | None], table: str, scopes: Iterable[
         into[table] = held
 
 
-def _add_keys(into: dict[str, set[tuple[str, ...]]], table: str, keys: Iterable[tuple[str, ...]]) -> None:
-    """count a table's touched keys into ``into``.
+def _add_keys(into: dict[str, tuple[Any, ...]], table: str, keys: Iterable[Any]) -> None:
+    """count a table's touched keys into ``into``: each batch kept as it is (immutable Arrow, never a Python object a
+    key; decision 35), an empty one not at all.
 
+    :param into: each table's batches
+    :ptype into: dict[str, tuple[pyarrow.Table, ...]]
+    :param table: the table
+    :ptype table: str
+    :param keys: batches of its touched keys (its key columns as text)
+    :ptype keys: Iterable[pyarrow.Table]
     :return: nothing
     :rtype: None
     """
-    into.setdefault(table, set()).update(tuple(key) for key in keys)
+    batches = tuple(batch for batch in keys if batch.num_rows)
+    if batches:
+        into[table] = (*into.get(table, ()), *batches)
+
+
+def _touched_keys(batches: Sequence[Any], key: Sequence[str]) -> Any:
+    """a table's touched keys as one Arrow table of its key columns, a key perhaps more than once (the patch's semi
+    and anti steps each take a key once however often it is named); None when none was touched.
+
+    :param batches: the batches counted
+    :ptype batches: Sequence[pyarrow.Table]
+    :param key: the table's key columns
+    :ptype key: Sequence[str]
+    :return: the keys, or None
+    :rtype: pyarrow.Table | None
+    """
+    if not batches:
+        return None
+    return pa.concat_tables([batch.select(list(key)) for batch in batches])
 
 
 class CopyCheckpoints:
@@ -551,8 +577,9 @@ class CopyCheckpoints:
         self._priors: dict[str, CheckpointTable] = {}
         #: each table changed since, and the scopes of it changed (None: the table changed whole)
         self._touched: dict[str, set[str] | None] = {}
-        #: each table with no scope changed since, and the keys of it changed
-        self._keys: dict[str, set[tuple[str, ...]]] = {}
+        #: each table with no scope changed since, and the keys of it changed: immutable Arrow batches of its key
+        #: columns as text, one an apply (never a Python object a key)
+        self._keys: dict[str, tuple[Any, ...]] = {}
         #: a change was counted with no tables named: the next write writes every table
         #: each table the follower read whole since the last write, onto the situation it read it in
         self._whole_kinds: dict[str, str] = {}
@@ -789,7 +816,7 @@ class CopyCheckpoints:
         self,
         rows: int,
         touched: Mapping[str, frozenset[str] | None],
-        keys: Mapping[str, Iterable[tuple[str, ...]]] | None = None,
+        keys: Mapping[str, Any] | None = None,
         whys: Mapping[str, str] | None = None,
         noted: datetime | None = None,
     ) -> None:
@@ -801,9 +828,10 @@ class CopyCheckpoints:
         :param touched: each table the change touched, and the scopes of the rows it touched (for a table with no
             scope, any set); None for a table read whole
         :ptype touched: Mapping[str, frozenset[str] | None]
-        :param keys: each table with no scope the change touched (not whole), and the keys it touched, each its values
-            as text in key order: what the next checkpoint patches its part by
-        :ptype keys: Mapping[str, Iterable[tuple[str, ...]]] | None
+        :param keys: each table with no scope the change touched (not whole), and the keys it touched as one Arrow
+            table of its key columns as text (none, an empty one): what the next checkpoint patches its part by. Kept as
+            it is, never edited
+        :ptype keys: Mapping[str, pyarrow.Table] | None
         :param whys: each table read whole, onto why the follower read it (``cold_start``, ``reset``,
             ``schema_change``, ``legacy_whole_record``): the situation the checkpoint's whole read of it is
         :ptype whys: Mapping[str, str] | None
@@ -837,7 +865,7 @@ class CopyCheckpoints:
             self._whole_due = self._whole_due or table in self._whole
             _add_touched(self._touched, table, scopes)
             if scopes is not None and keys is not None and table in keys:
-                _add_keys(self._keys, table, keys[table])
+                _add_keys(self._keys, table, (keys[table],))
 
     def due(self) -> bool:
         """whether a checkpoint is due: none is known, a table the load left out is due, the rows applied since
@@ -970,7 +998,7 @@ class CopyCheckpoints:
         if name not in taken.touched:
             return _Plan(table, prior)
         if table.scope is None:
-            return _Plan(table, prior, keys=frozenset(taken.keys.get(name, set())))
+            return _Plan(table, prior, keys=_touched_keys(taken.keys.get(name, ()), table.key))
         return _Plan(table, prior, scopes=frozenset(taken.touched[name] or ()))
 
     def _plan_derived(self, table: FollowedTable, taken: _Taken, prior: CheckpointTable) -> _Plan:
@@ -1140,9 +1168,9 @@ class CopyCheckpoints:
             self._refuse_unscoped(table, parts)
             return tuple(parts)
         if table.scope is None:
-            if not plan.keys:
+            if plan.keys is None:
                 return prior.parts
-            patched = await self._patch(cursor, table, prior, sorted(plan.keys))
+            patched = await self._patch(cursor, table, prior, plan.keys)
             parts = await self._put_parts(iter([(None, patched)]), table.name, seq, pending, keys)
             self._refuse_unscoped(table, parts)
             return tuple(parts)
@@ -1171,9 +1199,7 @@ class CopyCheckpoints:
                 "declares no scope: give it the scope its rows belong to (FollowedTable.scope)"
             )
 
-    async def _patch(
-        self, cursor: Any, table: FollowedTable, prior: CheckpointTable, keys: Sequence[tuple[str, ...]]
-    ) -> Any:
+    async def _patch(self, cursor: Any, table: FollowedTable, prior: CheckpointTable, keys: Any) -> Any:
         """a table with no scope's one part, patched by key: read back from the Object Store, the touched keys'
         rows dropped and the copy's rows of them (a keyed read) added.
 
@@ -1188,8 +1214,7 @@ class CopyCheckpoints:
             old = await asyncio.to_thread(_decode_part, await self._store.get(object_name))
             if old.num_rows != rows:
                 raise ValueError(f"part {object_name} holds {old.num_rows} rows, its manifest says {rows}")
-        columns = [[key[i] for key in keys] for i in range(len(table.key))]
-        return await asyncio.to_thread(_patched_part, cursor, table, old, columns)
+        return await asyncio.to_thread(_patched_part, cursor, table, old, keys)
 
     async def _put_parts(
         self,
@@ -1534,7 +1559,7 @@ def _scope_rows(
         yield scope, batch
 
 
-def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Sequence[str]]) -> Any:
+def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Any) -> Any:
     """a table's one part with the touched keys' rows replaced: the old part's rows of every other key, and the copy's
     rows of those keys (a read by key on a read's cursor).
 
@@ -1544,33 +1569,34 @@ def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Se
     :ptype table: FollowedTable
     :param old: the part's rows as the checkpoint holds them; None for a table that held none
     :ptype old: pyarrow.Table | None
-    :param keys: each key column's touched values, as text, in key order
-    :ptype keys: Sequence[Sequence[str]]
+    :param keys: the touched keys, the table's key columns as text (a key perhaps more than once)
+    :ptype keys: pyarrow.Table
     :return: the rows
     :rtype: pyarrow.Table
     """
-    pk_unnest, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
-    # the keys bound through Arrow (run_bound): bound as Python lists, DuckDB probes each value, and 25,000 touched
-    # keys of a 250,000-row part took 22.7 s to read against 0.17 s through Arrow (DuckDB 1.5.6, 2026-11-15; the
-    # patch's real-size budget: test_copy_follower_whole_reads_live.py::test_checkpoint_patch_speed_at_real_size)
-    fresh = run_bound(
+    # the copy's rows of the keys: the keys one Arrow table the statement semi-joins (run_joined), as the copy's own
+    # keyed reads take them (CopyFollower's read by key). Bound as Python lists, DuckDB probes each value: 25,000
+    # touched keys of a 250,000-row part took 22.7 s to read against 0.17 s through Arrow (DuckDB 1.5.6, 2026-11-15;
+    # the patch's real-size budget: test_copy_follower_whole_reads_live.py::test_checkpoint_patch_speed_at_real_size)
+    named = ", ".join(f"t.{quote_identifier(column)}" for column in table.key)
+    cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(table.key))
+    fresh = run_joined(
         cursor,
-        f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
-        list(keys),
+        f"SELECT t.* FROM {quote_identifier(table.name)} AS t WHERE ({named}) IN (SELECT {cast} FROM ({KEYS}))",  # noqa: S608
+        [keys.column(column) for column in table.key],
         lambda result: result.fetch_arrow_table(),
     )
     if old is None:
         return fresh
     # the old part's rows no touched key names: keyed.anti over the part and the touched keys, each staged on the
-    # cursor (the keys as text, cast to each key column's type as the read above casts them). It was an ANTI JOIN to
-    # the keys unnested from parameters, written here; the step is the same NOT EXISTS over the same two relations
-    named = {f"k{place}": pa.array(list(values), pa.string()) for place, values in enumerate(keys)}
+    # cursor (the keys as text, cast to each key column's type as the read above casts them)
+    named_keys = {f"k{place}": keys.column(column) for place, column in enumerate(table.key)}
     typed = [
         keyed.Selected(f"CAST(t.k{place} AS {table.key_cast(column)})", column)
         for place, column in enumerate(table.key)
     ]
     cursor.register(_PART_STAGE, old)
-    cursor.register(_PART_KEYS_STAGE, pa.table(named))
+    cursor.register(_PART_KEYS_STAGE, pa.table(named_keys))
     try:
         step = keyed.anti(
             _PART_STAGE,

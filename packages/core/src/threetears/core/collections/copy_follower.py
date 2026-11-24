@@ -146,7 +146,6 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     sql_cast,
 )
-from threetears.core.arrow_keys import distinct_keys, key_codes
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.declared import whole_read
 from threetears.core.keyed import InlineDuckDB, KeyBatch, WholeReads, read_keyed_arrow, read_state_arrow, run_inline
@@ -164,6 +163,10 @@ try:
     import numpy as np
     import pyarrow as pa
     import pyarrow.compute as pc
+
+    # Arrow's own key kernels: a module of the Arrow extra, so imported with it (FollowedTable and typed_text, which
+    # the writer side imports, stay importable without it)
+    from threetears.core.arrow_keys import distinct_keys, key_codes
 except ImportError:  # NOSILENT: the snapshot extra is optional; a follower says so when built
     pa = None
 
@@ -3369,18 +3372,17 @@ class CopyFollower:
             and not any(queued for name, queued in self._cleared.items() if name not in waiting)
         )
 
-    def _touched_keys(self, touched: Mapping[str, frozenset[str] | None]) -> dict[str, frozenset[tuple[str, ...]]]:
+    def _touched_keys(self, touched: Mapping[str, frozenset[str] | None]) -> dict[str, Any]:
         """each table with no scope this apply touched (not whole), and the keys it replaced: what a checkpoint patches
-        its one part by. The checkpoint's interface takes the keys as tuples
-        (:meth:`~threetears.core.collections.copy_checkpoint.CopyCheckpoints.applied`), so they are made here, for
-        those tables alone, only when checkpoints are kept.
+        its one part by (:meth:`~threetears.core.collections.copy_checkpoint.CopyCheckpoints.applied`), as one Arrow
+        table of the key columns, each key once (an empty one: none replaced).
 
         :param touched: each table the apply touched, and its scopes (None: read whole)
         :ptype touched: Mapping[str, frozenset[str] | None]
         :return: the keys, by table
-        :rtype: dict[str, frozenset[tuple[str, ...]]]
+        :rtype: dict[str, pyarrow.Table]
         """
-        keys: dict[str, frozenset[tuple[str, ...]]] = {}
+        keys: dict[str, Any] = {}
         for name, scopes in touched.items():
             table = self._tables[name]
             if scopes is None or table.scope is not None:
@@ -3388,11 +3390,9 @@ class CopyFollower:
             batches = [batch.select(list(table.key)) for batch in self._staged_heard.get(name, ())]
             batches += [batch.select(list(table.key)) for batch in self._staged_touched.get(name, ())]
             if not batches:
-                keys[name] = frozenset()
+                keys[name] = _heard_schema(table.key).empty_table().select(list(table.key))
                 continue
-            replaced = _distinct(pa.concat_tables(batches), table.key)
-            # the checkpoint keeps keys as tuples (copy_checkpoint's interface): made only for a table with no scope
-            keys[name] = frozenset(zip(*(replaced.column(c).to_pylist() for c in table.key), strict=True))
+            keys[name] = _distinct(pa.concat_tables(batches), table.key)
         return keys
 
     async def _relabel(self, first: Any, label: Any, *, writing: bool, held: frozenset[str]) -> bool:
@@ -3470,7 +3470,7 @@ class CopyFollower:
         self,
         rows: int,
         touched: Mapping[str, frozenset[str] | None],
-        keys: Mapping[str, frozenset[tuple[str, ...]]],
+        keys: Mapping[str, Any],
         whys: Mapping[str, str],
         noted: datetime | None = None,
     ) -> None:
@@ -3480,8 +3480,8 @@ class CopyFollower:
         :ptype rows: int
         :param touched: each table the change applied and the scopes it touched; None for a table read whole
         :ptype touched: Mapping[str, frozenset[str] | None]
-        :param keys: each table with no scope the change applied (not whole), and the keys it replaced
-        :ptype keys: Mapping[str, frozenset[tuple[str, ...]]]
+        :param keys: each table with no scope the change applied (not whole), and the keys it replaced (Arrow)
+        :ptype keys: Mapping[str, pyarrow.Table]
         :param whys: each table read whole, onto why (``cold_start``, ``reset``, ``schema_change``,
             ``legacy_whole_record``)
         :ptype whys: Mapping[str, str]

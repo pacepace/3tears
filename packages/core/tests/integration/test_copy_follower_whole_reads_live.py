@@ -493,6 +493,8 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
     put(after)
     keys = [(s, str(g)) for s, g in touched + added]
     bound = [[s for s, _ in keys], [g for _, g in keys]]
+    # the touched keys as the follower hands them to the checkpoint: one Arrow table of the key columns as text
+    touched_keys = pa.table({column: pa.array(values, pa.string()) for column, values in zip(_KEY, bound, strict=True)})
     pk_unnest, pk_join = unnest_key_join(_KEY, [table.key_cast(column) for column in _KEY])
 
     def bare_patch() -> None:
@@ -530,7 +532,7 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
     async def patched() -> None:
         # each run patches the newest part by the same keys: the same rows read and written every time
         stamp[0] += 1
-        checkpoints.applied(len(keys), {_TABLE: frozenset()}, {_TABLE: keys})
+        checkpoints.applied(len(keys), {_TABLE: frozenset()}, {_TABLE: touched_keys})
         written = await checkpoints.write(read)
         assert written is not None and written.rows == _PART_ROWS + _PART_TOUCHED - changed
 
