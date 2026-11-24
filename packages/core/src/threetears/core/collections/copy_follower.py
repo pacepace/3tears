@@ -319,7 +319,7 @@ _FULL_ASKS = counter(
 )
 
 #: the writer's answers after which the copy does not ask again for the same file: it reads it, or waits for the full
-_ANSWERED: Final = frozenset({"recreated", "present", "recovering"})
+_ANSWERED: Final = frozenset({"recreated", "present", "recovering", "covered"})
 
 #: the waits whose file, though it reads, is read only once the writer answered for it: ``key_not_in_file`` (it lacks a
 #: key its record named) and ``file_unconfirmed`` (a load's file, named unconfirmed: it may hold rows L3 never took,
@@ -2933,12 +2933,20 @@ class CopyFollower:
         new = replace(wait, why=why, answer=answer)
         answered = asked and new.watch and answer in _ANSWERED
         recovering = new.watch or new.why == "record_missing"
-        if asked and recovering and answer == "recovering" and self._fulls is not None and table in self._fulls.tables:
+        covered = answer == "covered"
+        if (
+            asked
+            and (recovering or covered)
+            and answer in ("recovering", "covered")
+            and self._fulls is not None
+            and table in self._fulls.tables
+        ):
             # the writer recovers the table (decision 28: a commit too big to list, its keys only in the file, or a
-            # record the log lost): the file never comes, the recovery's full does
+            # record the log lost), or the file is gone because the current full covers it (decision 54: a fold that
+            # deletes took it): the file never comes, a full at or past its epoch holds its change. Never L3
             new = replace(new, watch=False)
             self._file_waits = with_entry(self._file_waits, table, with_entry(waits, wait.file, new))
-            self._wait_for_reload(table, "file_lost", wait.epoch, keep=True)
+            self._wait_for_reload(table, "file_covered" if covered else "file_lost", wait.epoch, keep=True)
         else:
             self._file_waits = with_entry(self._file_waits, table, with_entry(waits, wait.file, new))
         self._say_file_waits(table)

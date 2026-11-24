@@ -83,6 +83,7 @@ from threetears.core.collections.schema_backed import (  # noqa: E402
     collection_for_schema,
     rail_arrow_types,
 )
+from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.volume_fulls import FullTable, current_full_manifest, publish_full_manifest  # noqa: E402
 from threetears.core.config import DefaultCoreConfig  # noqa: E402
@@ -1230,7 +1231,11 @@ async def test_a_load_from_files_hands_each_committed_request_its_file_and_gener
     try:
         publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version=before)})
         folds = DeltaFolds(
-            _volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], retention="delete", workers=workers
+            _volume,
+            [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))],
+            retention="delete",
+            copies=NO_COPIES,
+            workers=workers,
         )
         for files, generations in told.commits:
             folds.committed(files, generations, version=2, in_flight_from=None)
@@ -1551,7 +1556,11 @@ async def test_a_fold_told_a_confirmed_file_holds_its_rows(_volume: Path) -> Non
     try:
         publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version="inc:0")})
         folds = DeltaFolds(
-            _volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], retention="delete", workers=workers
+            _volume,
+            [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))],
+            retention="delete",
+            copies=NO_COPIES,
+            workers=workers,
         )
         # the writer's own commit first, as under the lease: the fold's term is the writer's
         earlier = _save(_volume, "earlier", ("rows", [_row("VA", 99, 9, "new", _LATER)], list(_NAMES)))

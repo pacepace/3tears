@@ -50,6 +50,7 @@ from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, rail_ar
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
+from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections.volume_fulls import write_full_part  # noqa: E402
@@ -339,7 +340,10 @@ async def test_rebuild_speed_at_real_size(db: _Db, tmp_path: Path) -> None:
 
     async def rebuild() -> None:
         folds = DeltaFolds(
-            tmp_path / f"rebuild-{next(runs)}", [FoldedTable.of(schema, scope=("state", "state:"))], retention="delete"
+            tmp_path / f"rebuild-{next(runs)}",
+            [FoldedTable.of(schema, scope=("state", "state:"))],
+            retention="delete",
+            copies=NO_COPIES,
         )
         try:
             assert await folds.start(db.pool, _Generations(), changes=_Log(), version=1) == (_TABLE,)

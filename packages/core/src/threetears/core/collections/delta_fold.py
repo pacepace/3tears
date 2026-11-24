@@ -174,6 +174,7 @@ from threetears.core.collections.delta_files import (
     write_table_file,
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
+from threetears.core.collections.delta_copy_beats import CopyPositionsReader
 from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, EpochChangeReader
@@ -244,6 +245,23 @@ _REBUILDS = counter(
     "delta_fold_rebuilds_total",
     description="writer rebuilds of a table's full from L3 (its one whole read), by table, why and outcome",
     label_names=("table", "why", "outcome"),
+)
+
+#: covered delta files deleted once every copy was past them (decision 54), by table
+_DELETED = counter(
+    "delta_fold_deltas_deleted_total",
+    description="covered delta files the fold deleted (retention delete), by table: each covered by the current and "
+    "the previous full, and every live copy past it, its beats read right before",
+    label_names=("table",),
+)
+
+#: covered delta files kept at a delete's look, by table and why: ``behind`` (a copy lags it: that file kept),
+#: ``starting``, ``unreadable``, ``read_failed``, ``missing_table``, ``other_incarnation`` (every file kept that round)
+_DELETES_KEPT = counter(
+    "delta_fold_deltas_kept_total",
+    description="covered delta files the fold kept at a delete's look (retention delete), by table and why: behind "
+    "keeps the file; starting, unreadable, read_failed, missing_table, other_incarnation keep every file that round",
+    label_names=("table", "why"),
 )
 
 #: delta files a restarted writer re-learned from the epoch log (:meth:`DeltaFolds.start`), by table
@@ -563,7 +581,10 @@ class DeltaFolds:
     :ptype retention: DeltaRetention
     :param workers: the worker processes the rounds run in; None makes one worker of its own, shut by :meth:`close`
     :ptype workers: ProcessWorkers | None
-    :raises ValueError: when ``retention`` is neither
+    :param copies: the copies' positions (:class:`~threetears.core.collections.delta_copy_beats.CopyBeats`), required
+        with ``retention="delete"``: a covered delta file is deleted only once every live copy is past it (decision 54)
+    :ptype copies: CopyPositionsReader | None
+    :raises ValueError: when ``retention`` is neither, or ``"delete"`` comes with no ``copies``
     """
 
     def __init__(
@@ -573,11 +594,21 @@ class DeltaFolds:
         *,
         retention: DeltaRetention,
         workers: ProcessWorkers | None = None,
+        copies: CopyPositionsReader | None = None,
     ) -> None:
         if not _PYARROW:
             raise ImportError("a fold needs pyarrow: install 3tears[snapshot]")
         if retention not in DELTA_RETENTIONS:
             raise ValueError(f"a fold's retention is one of {DELTA_RETENTIONS}, not {retention!r}")
+        if retention == "delete" and copies is None:
+            # decision 54: a fold that deletes must know where every copy is, or it deletes files a lagging copy needs
+            raise ValueError(
+                "a fold that deletes its delta files (retention='delete') needs the copies' positions: pass "
+                "copies=CopyBeats(lease) (threetears.core.collections.delta_copy_beats) over the pod's lease factory, "
+                "and have each copy register and beat (CopyBeats.register/beat); or run retention='keep'"
+            )
+        #: where every copy of the tables is (decision 54): read immediately before each delete; None when keeping
+        self._copies = copies
         self.root = root
         #: what becomes of a delta file once a full covers it: every round, rebuild and recovery is handed it
         self.retention: Final[DeltaRetention] = retention
@@ -600,6 +631,9 @@ class DeltaFolds:
         self._pending: tuple[_Share, ...] = ()
         self._reused: tuple[str, ...] = ()
         self._doomed: tuple[str, ...] = ()
+        #: each doomed file's epoch, where the fold heard it (a commit told): what every copy must be past before it goes
+        #: (decision 54). A read-only snapshot replaced whole, of the doomed files alone
+        self._doomed_epochs: Mapping[str, str] = MappingProxyType({})
         self._round: asyncio.Task[None] | None = None
         #: fold rounds failed in a row: past :data:`_FAILED_ROUNDS_CAP` their tables are recovered by key
         self._failed_rounds = 0
@@ -668,17 +702,19 @@ class DeltaFolds:
 
     def _folded_below(self) -> int | None:
         """the write version below which a full this fold publishes now claims every delta file folded, but those it
-        lists open (decision 53): the writer's term (the newest write told), or the oldest write it had a commit in
-        flight of when lower. Every commit of an older write has ended: told (so held unfolded, and listed open, until
-        folded), or never landed (an orphan, no change to hold). A commit begun since the newest told is of the term's
-        write or a later one, so at or above it: never claimed. None before any commit is told: nothing is claimed.
+        lists open (decision 53): the oldest write the writer still had open (begun, not committed) or a commit in
+        flight of, as the newest commit told said; past the writer's term (the newest write told) when none was. Every
+        commit of an older write has ended: told (so held unfolded, and listed open, until folded), or never landed (an
+        orphan, no change to hold). A write begun since the newest told is past the term: never claimed. A writer's
+        start holds its own write open until a commit told says otherwise. None before a start or a commit: nothing is
+        claimed.
 
         :return: the version, or None
         :rtype: int | None
         """
         if self._term is None:
             return None
-        return self._term if self._in_flight_from is None else min(self._term, self._in_flight_from)
+        return self._term + 1 if self._in_flight_from is None else min(self._term + 1, self._in_flight_from)
 
     def _open_files(self, table: str, *, covered: frozenset[str] = frozenset()) -> tuple[str, ...]:
         """the delta files of ``table`` a full published now does not hold (decision 53's ``open``): queued, in the
@@ -766,11 +802,11 @@ class DeltaFolds:
         :param version: the write's version (:meth:`~threetears.core.collections.scope_epochs.ScopeEpochs.begin`),
             taken under the write lease: the writer's term (module docstring)
         :ptype version: int
-        :param in_flight_from: the oldest write version the writer has a commit in flight of (begun, not yet ended)
-            beside this one, or this one's own while it is counted in flight; None when none is. A full the fold
-            publishes claims every delta file below the lower of it and ``version`` folded but those it lists open
-            (decision 53), so a file of a commit still in flight is never claimed: a recovery reads it, a fold that
-            deletes never takes it. A version, never a time: no clock is compared (the volume's is not the writer's).
+        :param in_flight_from: the oldest write version the writer may still save a delta file for: a write still open
+            (begun with ``ScopeEpochs.begin``, not yet committed; this commit's own while its write goes on) or a
+            commit in flight; None when no write is open. A full the fold publishes claims every delta file below it
+            (or past ``version`` when None) folded but those it lists open (decision 53), so a file a write may still
+            save is never claimed: a recovery reads it, a fold that deletes never takes it. A version, never a time: no clock is compared (the volume's is not the writer's).
             Required, no default: a writer that left it out would have a file of a commit still in flight claimed
             covered, so a consumer must say it at the call
         :ptype in_flight_from: int | None
@@ -897,6 +933,10 @@ class DeltaFolds:
         self._changes = started.changes
         self._notes = started.notes
         self._term = started.version if self._term is None else max(self._term, started.version)
+        # the start is called within the write it began: that write is open until a commit told says otherwise
+        self._in_flight_from = (
+            started.version if self._in_flight_from is None else min(self._in_flight_from, started.version)
+        )
         self._recheck = True
         if self._starting is None:
             self._starting = ()
@@ -1432,6 +1472,7 @@ class DeltaFolds:
                 self._marked = False
                 await self._fresh_fulls(self._reader)
                 await self._recoveries(self._reader)
+                await self._delete_covered()
                 self._drain()
                 if self._relearning:
                     continue
@@ -1441,6 +1482,7 @@ class DeltaFolds:
                 return
             taken, self._queued = self._queued, ()
             self._taken = tuple(taken)
+            pending = self._pending
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
             self._round_term = term
@@ -1490,6 +1532,9 @@ class DeltaFolds:
             self._failed_rounds = 0
             _ROUND_SECONDS.labels(outcome=answer[3]).observe(time.monotonic() - began)
             self._took(answer)
+            # each folded file's epoch, as told: what every copy must be past before it goes (decision 54)
+            self._doom((), {file: token for _, file, token in taken} | {share[2]: share[3] for share in pending})
+            await self._delete_covered()
 
     async def _relearned(self) -> bool:
         """walk the epoch log for each start applied (:meth:`_relearn`). A walk that fails answers every start waiting
@@ -1691,8 +1736,9 @@ class DeltaFolds:
                 exc_info=error,
             )
             return
-        outcome, manifest, rebuilt, deleted, full_bytes = answer
+        outcome, manifest, rebuilt, deleted, full_bytes, covered = answer
         self._measured_fulls(full_bytes)
+        self._doom(covered, {})
         # every ask posted while the rebuild read and published, judged against the generation each table's read began at
         self._drain()
         for name, token, rows in rebuilt:
@@ -1892,8 +1938,9 @@ class DeltaFolds:
         except BaseException:
             await asyncio.to_thread(_unlink_all, self.root, [file])
             raise
-        outcome, manifest, states, deleted, full_bytes = answer
+        outcome, manifest, states, deleted, full_bytes, covered = answer
         self._measured_fulls(full_bytes)
+        self._doom(covered, {})
         # every ask posted while the recovery read and published, judged against the generation it read
         self._drain()
         _RECOVERIES.labels(table=name, why=why, outcome=outcome).inc()
@@ -2161,6 +2208,91 @@ class DeltaFolds:
                     count += keys.num_rows
         return count
 
+    def _doom(self, files: Sequence[str], tokens: Mapping[str, str]) -> None:
+        """remember ``files`` as covered delta files to delete once every copy is past them (decision 54), and each
+        doomed or reused file's epoch where ``tokens`` names it. Kept (``retention="keep"``), nothing is remembered.
+
+        :param files: the files newly covered
+        :ptype files: Sequence[str]
+        :param tokens: file -> the epoch its commit was told at, where known
+        :ptype tokens: Mapping[str, str]
+        :return: nothing
+        :rtype: None
+        """
+        if self.retention != "delete":
+            return
+        if files:
+            self._doomed = tuple(sorted(set(self._doomed) | set(files)))
+        held = set(self._doomed) | set(self._reused)
+        epochs = {file: epoch for file, epoch in self._doomed_epochs.items() if file in held}
+        epochs.update({file: tokens[file] for file in held if file not in epochs and file in tokens})
+        self._doomed_epochs = MappingProxyType(epochs)
+
+    async def _delete_covered(self) -> None:
+        """delete each covered delta file no copy can still need (decision 54; its first rule: when in doubt, keep).
+        A file goes only when the current and the previous full both cover it by its name (decision 53), no manifest in
+        use names it, it is not in flight (told and unfolded, waiting to be confirmed, or a save of this process not
+        ended), and every live copy's beat, read again immediately before this delete, is at or past its epoch in the
+        same incarnation (its told epoch; else the previous full's version of the table, which is at or past it). A copy
+        behind keeps that file; a copy starting, a beat unreadable, lacking the table or of another incarnation, or a
+        read that fails keeps every file this round. Idempotent (a file gone already is no error) and logged per file
+        with the beats that allowed it.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self.retention != "delete" or self._copies is None:
+            return
+        candidates = tuple(sorted(set(self._doomed) | set(self._reused)))
+        if not candidates:
+            return
+        current, previous = await asyncio.to_thread(_current_and_previous, self.root)
+        if current is None or previous is None:
+            return
+        named = current.files() | previous.files()
+        busy = self._told() | OWN_DELTA_SAVES.in_flight | {file for _, file in self._unconfirmed}
+        gone: set[str] = set()
+        for file in candidates:
+            table = file.split("/", 1)[0]
+            now, before = current.tables.get(table), previous.tables.get(table)
+            if (
+                file in named
+                or file in busy
+                or now is None
+                or before is None
+                or not (now.covers(file) and before.covers(file))
+            ):
+                continue
+            epoch = self._doomed_epochs.get(file, before.version)
+            # read again right before each delete, never once a round: a copy that started meanwhile keeps it
+            positions = await self._copies.positions()
+            verdict = positions.judge(table, epoch)
+            if verdict == "behind":
+                _DELETES_KEPT.labels(table=table, why=verdict).inc()
+                continue
+            if verdict != "delete":
+                _DELETES_KEPT.labels(table=table, why=verdict).inc()
+                log.info(
+                    "the fold deletes no delta file this round: a copy's position is not known",
+                    extra={
+                        "extra_data": {"table": table, "file": file, "why": verdict, "beats": positions.said(table)}
+                    },
+                )
+                break
+            await asyncio.to_thread(_unlink_all, self.root, [file])
+            gone.add(file)
+            _DELETED.labels(table=table).inc()
+            log.info(
+                "a covered delta file deleted: every copy is past it",
+                extra={"extra_data": {"table": table, "file": file, "epoch": epoch, "beats": positions.said(table)}},
+            )
+        if gone:
+            self._doomed = tuple(file for file in self._doomed if file not in gone)
+            self._reused = tuple(file for file in self._reused if file not in gone)
+            self._doomed_epochs = MappingProxyType(
+                {file: epoch for file, epoch in self._doomed_epochs.items() if file not in gone}
+            )
+
     def _drop_covered(self, table: str, token: str, known: frozenset[str]) -> None:
         """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
         at or below its count; of another, one told before the generation was read: a commit of the lost log): a copy
@@ -2188,12 +2320,14 @@ class DeltaFolds:
 
         dropped = {file for name, file, share_token in self._queued if covered(name, file, share_token)}
         dropped |= {share[2] for share in self._pending if covered(share[0], share[2], share[3])}
+        # each dropped file's epoch, as told, before the queue lets it go
+        told_tokens = {file: share_token for name, file, share_token in self._queued if file in dropped}
+        told_tokens.update({share[2]: share[3] for share in self._pending if share[2] in dropped})
         self._queued = tuple(item for item in self._queued if not covered(*item))
         self._pending = tuple(share for share in self._pending if not covered(share[0], share[2], share[3]))
         left = {item[1] for item in self._queued} | {share[2] for share in self._pending}
-        if self.retention == "delete":
-            # kept (decision 51): nothing is remembered to delete
-            self._doomed = tuple(sorted(set(self._doomed) | (dropped - left)))
+        # kept (decision 51): nothing is remembered to delete (_doom keeps nothing)
+        self._doom(tuple(sorted(dropped - left)), told_tokens)
         self._measure()
 
 
@@ -2494,6 +2628,21 @@ def _not_confirmed(root: Path, table: str, files: Sequence[str]) -> list[str]:
     return waiting
 
 
+def _current_and_previous(root: Path) -> tuple[FullManifest | None, FullManifest | None]:
+    """the current full's manifest and the one it replaced, each a reader may hold; blocking.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :return: both; either None when not on the volume
+    :rtype: tuple[FullManifest | None, FullManifest | None]
+    """
+    current = current_full_manifest(root)
+    if current is None or current.previous is None:
+        return current, None
+    path = root / ".fulls" / "manifests" / current.previous
+    return current, FullManifest.decode(path.read_bytes()) if path.is_file() else None
+
+
 def _present(root: Path, files: Sequence[str]) -> list[str]:
     """each of ``files`` that is on the volume, in order; blocking. Each is opened by its name, never listed.
 
@@ -2565,9 +2714,10 @@ def rebuild_round(
         unversioned name is never dropped here: no name says its commit ended, and no clock is compared (the volume's
         is not the writer's)
     :ptype retention: DeltaRetention
-    :return: ``(outcome, manifest, rebuilt, deleted, full_bytes)``: ``"rebuilt"`` or ``"stale"``, the manifest
-        published (or the current one), each table as ``(table, generation, rows)``, the files deleted, and each
-        rebuilt table's ``(table, bytes of its parts)`` (none when stale)
+    :return: ``(outcome, manifest, rebuilt, deleted, full_bytes, covered)``: ``"rebuilt"`` or ``"stale"``, the
+        manifest published (or the current one), each table as ``(table, generation, rows)``, the fulls' files
+        deleted, each rebuilt table's ``(table, bytes of its parts)`` (none when stale), and, deleting, the old delta
+        files it covers, for the owner to delete once every copy is past them (decision 54)
     :rtype: tuple
     """
     base = Path(root)
@@ -2579,7 +2729,7 @@ def rebuild_round(
     try:
         current = current_full_manifest(base)
         if current is not None and current.term > term:
-            return ("stale", current.name, rebuilt, 0, ())
+            return ("stale", current.name, rebuilt, 0, (), ())
         tables_now = dict(current.tables) if current is not None else {}
         for name, file, token, _ in staged:
             parts = _parts_of_rows(base, config[name], _read_rows_file(base / file), token)
@@ -2593,7 +2743,7 @@ def rebuild_round(
             # a later writer published since this one looked: its parts are this writer's alone, named by none
             _unlink_all(base, written)
             stale = current_full_manifest(base)
-            return ("stale", stale.name if stale is not None else "", rebuilt, 0, ())
+            return ("stale", stale.name if stale is not None else "", rebuilt, 0, (), ())
     except BaseException:
         _unlink_all(base, written)
         raise
@@ -2615,7 +2765,9 @@ def rebuild_round(
             if path.is_file() and file not in named and (entry.covers(file) or file in told_of.get(name, ())):
                 old.append(file)
     deleted = 0
-    for file in deletable_full_files(base, covered_deltas=sorted(old)):
+    # the fulls' own files only: the old delta files are handed back, deleted by the owner once every copy is past them
+    # (decision 54)
+    for file in deletable_full_files(base):
         try:
             (base / file).unlink(missing_ok=True)
         except OSError as error:  # NOSILENT: logged; the file is listed again by the next round
@@ -2625,7 +2777,7 @@ def rebuild_round(
             )
             continue
         deleted += 1
-    return ("rebuilt", published.name, rebuilt, deleted, _full_bytes(base, published, config))
+    return ("rebuilt", published.name, rebuilt, deleted, _full_bytes(base, published, config), tuple(sorted(old)))
 
 
 def _leftover_delta_files(root: Path, table: str, told: Collection[str]) -> tuple[list[str], int]:
@@ -3087,18 +3239,19 @@ def recovery_round(
     :param open_files: the table's files the recovery does not hold (told after its generation was read, waiting to
         be confirmed, saved for a commit not yet ended)
     :ptype open_files: tuple[str, ...]
-    :return: ``(outcome, manifest, states, deleted, full_bytes)``: ``"recovered"``, ``"stale"`` or ``"no_full"``; the
-        manifest published (or the current one); the states folded; the files deleted; the table's ``(table, bytes of
-        its parts)`` once recovered
+    :return: ``(outcome, manifest, states, deleted, full_bytes, covered)``: ``"recovered"``, ``"stale"`` or
+        ``"no_full"``; the manifest published (or the current one); the states folded; the fulls' files deleted; the
+        table's ``(table, bytes of its parts)`` once recovered; and, deleting, the delta files it covers, for the owner
+        to delete once every copy is past them (decision 54)
     :rtype: tuple
     """
     base = Path(root)
     table = _Folding.of(plain)
     current = current_full_manifest(base)
     if current is None or table.name not in current.tables:
-        return ("no_full", current.name if current is not None else "", 0, 0, ())
+        return ("no_full", current.name if current is not None else "", 0, 0, (), ())
     if current.term > term:
-        return ("stale", current.name, 0, 0, ())
+        return ("stale", current.name, 0, 0, (), ())
     entry = current.tables[table.name]
     sizes = {part.scope: (base / part.file).stat().st_size for part in entry.parts}
     by_scope: dict[str | None, list[_Share]] = {}
@@ -3128,11 +3281,12 @@ def recovery_round(
     except StaleTermError:
         _unlink_all(base, written)
         stale = current_full_manifest(base)
-        return ("stale", stale.name if stale is not None else "", 0, 0, ())
+        return ("stale", stale.name if stale is not None else "", 0, 0, (), ())
     deleted = 0
-    # kept (decision 51): only the fulls' own old manifests and parts go, never a delta file
-    covered = sorted({*doomable, file}) if retention == "delete" else ()
-    for doomed in deletable_full_files(base, covered_deltas=covered):
+    # the fulls' own files only: kept (decision 51) no delta file goes; deleting, the leftovers it covers and its own
+    # delta are handed back, deleted by the owner once every copy is past them (decision 54)
+    covered = tuple(sorted({*doomable, file})) if retention == "delete" else ()
+    for doomed in deletable_full_files(base):
         try:
             (base / doomed).unlink(missing_ok=True)
         except OSError as error:  # NOSILENT: logged; a later round lists it again
@@ -3142,7 +3296,7 @@ def recovery_round(
             )
             continue
         deleted += 1
-    return ("recovered", published.name, len(by_scope), deleted, _full_bytes(base, published, (table.name,)))
+    return ("recovered", published.name, len(by_scope), deleted, _full_bytes(base, published, (table.name,)), covered)
 
 
 def _parts_of_rows(root: Path, table: _Folding, rows: Any, token: str) -> tuple[FullPart, ...]:
@@ -3348,8 +3502,9 @@ def fold_round(
     left = {share[2] for share in shares}
     covered = {share[2] for share in folded_shares} - left
     kept_reused = set(reused) | set(named_parts) if deletes else set()
-    # kept (decision 51): only the fulls' own old manifests and parts go, never a delta file
-    listed = deletable_full_files(base, covered_deltas=sorted(covered | set(doomed) | kept_reused) if deletes else ())
+    # only the fulls' own old manifests and parts go here: a delta file never (kept, decision 51; deleting, the owner
+    # deletes each covered one once every copy is past it, reading the copies' beats right before, decision 54)
+    listed = deletable_full_files(base)
     deleted: set[str] = set()
     for file in listed:
         try:
