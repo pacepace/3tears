@@ -62,7 +62,13 @@ from threetears.core.collections.copy_follower import CopyFollower, FollowedTabl
 from threetears.core.collections.delta_files import TableDelta, read_delta_file_keys, write_delta_file  # noqa: E402
 from threetears.core.collections.delta_recreate import DeltaRecreator  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
-from threetears.core.backends.broker_generation import named_delta_files, note_load_answer  # noqa: E402
+from threetears.core.backends.broker_generation import (  # noqa: E402
+    GENERATIONS_REPLY_FIELD,
+    named_delta_files,
+    note_load_answer,
+    record_reply_generations,
+)
+from threetears.core.collections.base import NO_L2  # noqa: E402
 from threetears.core.backends.protocol import DurableStore, FileLoad, LoadFile, LoadResult  # noqa: E402
 from threetears.core.collections import WRITE_GENERATION  # noqa: E402
 from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
@@ -309,12 +315,13 @@ def _world(
     notes: _Notes | None = None,
     recreate: Any = None,
     key: tuple[str, ...] = _KEY,
+    registry: CollectionRegistry | None = None,
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
     _OPENED.append(backend.reset)
     backend.initialize(_metadata())
-    registry = CollectionRegistry()
+    registry = CollectionRegistry() if registry is None else registry
     registry.follow_generation(_TABLE)
     registry.set_noted_keys_reader(notes)
     follower = CopyFollower(
@@ -1023,6 +1030,58 @@ async def test_a_load_from_files_saves_its_file_before_the_load_and_the_copy_app
     assert _same(backend, l3)
     assert l3.statements == 0
     assert follower.stamp.epochs == lock.epochs
+
+
+class _BrokerStore(_Store):
+    """L3 as a pod reaches it: its broker loads the request, advances the table, records the epoch naming the
+    request's file and its prefixes, and names the epoch in its reply (``record_reply_generations``)."""
+
+    def __init__(self, l3: _L3, volume: Path, log: _Log) -> None:
+        super().__init__(l3, volume)
+        self.log = log
+
+    async def load_files(self, table: str, files: Sequence[LoadFile], **kwargs: Any) -> LoadResult:
+        result = await super().load_files(table, files, **kwargs)
+        prefixes = [{column: str(value) for column, value in prefix.items()} for prefix in kwargs["key_prefixes"]]
+        token = await self.log.advance_with_change(
+            table, None, prefixes=prefixes, delta_file=named_delta_files().get(table)
+        )
+        record_reply_generations({GENERATIONS_REPLY_FIELD: {table: token}}, ends_write=True)
+        return result
+
+
+def _refused_prefixes() -> float:
+    return REGISTRY.get_sample_value("copy_follower_partition_refused_total", {"table": _TABLE}) or 0.0
+
+
+async def test_a_pods_own_load_reaches_its_own_copy_from_the_file_its_broker_named(_volume: Path) -> None:
+    """Flips if a writing pod's own copy is told its own load's prefixes with no file: a collection that advances no
+    generation of its own (a pod's table built without L2, its broker advancing it) dropped the prefixes here, and the
+    pod's copy of a table that opts in refused them (and with fulls, waited for the next full) on every load it made
+    (2026-11-24, reports' LSF loads). The epoch the broker's reply names is applied here from the file, accounted as
+    this pod's own: no refusal, no L3 statement, the copy equal to L3 once the pass runs."""
+    registry = CollectionRegistry()
+    world = _world(registry=registry)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    results = _Results(registry, DefaultCoreConfig(), NO_L2)
+    store = _BrokerStore(l3, _volume, log)
+    results.l3_pool = store
+    file, rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    refused = _refused_prefixes()
+
+    await results.load_files(
+        [file],
+        columns=[name for name in _NAMES if name != "state"],
+        constants={"state": "VA"},
+        delta=LoadDelta(rows=[rows]),
+    )
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+
+    assert _refused_prefixes() == refused, "the pod's own copy refused its own load's prefixes"
+    assert _same(backend, l3)
+    assert l3.statements == 0
 
 
 async def test_a_load_that_replaces_a_prefix_clears_the_copys_rows_under_it_with_no_l3_statement(
