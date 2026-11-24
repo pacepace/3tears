@@ -169,8 +169,16 @@ class StandingRows:
         self._since: dict[str, str | None] | None = None
         self._held: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._missed: set[tuple[Any, ...]] = set()
+        #: slices whose read failed, each as its prefix's items: read again before the next question, as a missed row is
+        self._missed_slices: tuple[tuple[tuple[str, str], ...], ...] = ()
         self._cold_reads = 0
-        self._rows = RowFollower({}, self.on_table_dropped, name=name, key_reads={standing.table: self._on_key})
+        self._rows = RowFollower(
+            {},
+            self.on_table_dropped,
+            name=name,
+            key_reads={standing.table: self._on_key},
+            partition_reads={standing.table: self._on_slice},
+        )
 
     @property
     def standing(self) -> Standing:
@@ -280,6 +288,9 @@ class StandingRows:
         """
         if not self._loaded:
             await self._load()
+        for named in self._missed_slices:
+            await self._apply_slice(named)
+            self._missed_slices = self._missed_slices[1:]
         for key in sorted(self._missed):
             await self._apply(key)
             self._missed.discard(key)
@@ -330,6 +341,7 @@ class StandingRows:
         rows = await self._cold()
         self._held = {standing.key_of(row): dict(row) for row in rows if standing.member(row)}
         self._missed.clear()
+        self._missed_slices = ()
         self._loaded = True
         self._cold_reads += 1
         log.info("standing rows read cold: set=%s table=%s rows=%d", self._name, standing.table, len(self._held))
@@ -349,10 +361,24 @@ class StandingRows:
             keys=KeyBatch(standing.key, [key], standing.key_types),
             columns=standing.columns,
         )
-        stands = [row for row in found if standing.member(row)]
+        self._hold(key, found[0] if found else None)
+
+    def _hold(self, key: tuple[Any, ...], row: Mapping[str, Any] | None) -> None:
+        """hold one row as read, or let it go when it is gone or no longer stands, and tell the caller a change.
+        Under the lock.
+
+        :param key: the row's key
+        :ptype key: tuple[Any, ...]
+        :param row: the row as read; None when the read found none
+        :ptype row: Mapping[str, Any] | None
+        :return: nothing
+        :rtype: None
+        """
+        standing = self._standing
         before = self._held.get(key)
         # what is held is the key and held columns, as the cold read holds them, so a row re-read unchanged is no change
-        after = {column: stands[0][column] for column in standing.columns} if stands else None
+        stands = row is not None and standing.member(row)
+        after = {column: row[column] for column in standing.columns} if row is not None and stands else None
         if after is not None:
             self._held[key] = after
         else:
@@ -411,6 +437,69 @@ class StandingRows:
                         what="standing row not read; the next question reads it first",
                         extra={"set": self._name, "table": self._standing.table, "key": list(named)},
                     )
+
+    async def _on_slice(self, prefix: Mapping[str, str]) -> None:
+        """a load or a clear reached a slice of the table (a key prefix): its rows read by that prefix (a keyed read:
+        the prefix leads the key) and each held or let go as it now stands, and a row held under it the read no longer
+        finds let go. Nothing else held is touched (decision 33). Before the cold start nothing is held, and nothing is
+        read; a failed read is kept for the next question, which reads the slice again first.
+
+        :param prefix: the key prefix, column onto its value as text
+        :ptype prefix: Mapping[str, str]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the prefix does not lead the key (decision 34: only an older writer sent such)
+        """
+        lead = self._standing.key[: len(prefix)]
+        if not prefix or set(prefix) != set(lead):
+            raise ValueError(
+                f"{self._standing.table}: a slice names a prefix leading the key {self._standing.key}, got {dict(prefix)}"
+            )
+        named = tuple((column, prefix[column]) for column in lead)
+        async with self._lock:
+            if self._loaded:
+                try:
+                    await self._apply_slice(named)
+                except Exception as exc:
+                    self._missed_slices = (*self._missed_slices, named)
+                    contain(
+                        exc,
+                        log=log,
+                        what="standing rows of a slice not read; the next question reads it first",
+                        extra={"set": self._name, "table": self._standing.table, "prefix": dict(named)},
+                    )
+
+    async def _apply_slice(self, named: tuple[tuple[str, str], ...]) -> None:
+        """read one slice's rows by its prefix and hold each as it now stands; a row held under it and not read is let
+        go. Under the lock.
+
+        :param named: the prefix's columns, leading the key in key order, each with its value as text
+        :ptype named: tuple[tuple[str, str], ...]
+        :return: nothing
+        :rtype: None
+        """
+        standing = self._standing
+        width = len(named)
+        values = tuple(
+            _PARSE[kind](value) for kind, (_column, value) in zip(standing.key_types[:width], named, strict=True)
+        )
+        if width == len(standing.key):
+            # the whole key: one row, read by it
+            await self._apply(values)
+            return
+        # the slice's rows by the key's leading part (read_keyed takes a leading part of the key): a keyed read
+        lead = standing.key[:width]
+        rows = await read_keyed(
+            self._pool,
+            standing.table,
+            keys=KeyBatch(lead, [values], standing.key_types[:width]),
+            columns=standing.columns,
+        )
+        found = {standing.key_of(row): row for row in rows}
+        # the rows held under the slice: what is held is the set's own (a few thousand standing rows at most)
+        under = [key for key in self._held if key[:width] == values]
+        for key in sorted({*under, *found}):
+            self._hold(key, found.get(key))
 
     def on_table_dropped(self) -> None:
         """the table was dropped whole (an operator's reset): nothing held stands, and the next question reads cold,

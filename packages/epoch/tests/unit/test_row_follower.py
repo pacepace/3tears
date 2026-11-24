@@ -14,6 +14,10 @@ def _message(table: str, key: str) -> CacheInvalidationMessage:
     return CacheInvalidationMessage(table=table, ids=[key])
 
 
+async def _no_slice(reach: Mapping[str, str]) -> None:
+    raise AssertionError(f"no slice is read here: {dict(reach)}")
+
+
 async def test_a_changed_row_is_read_by_its_key() -> None:
     """Flips if a row message reaches no read, the wrong table's, or a read of the table whole."""
     read: list[tuple[str, str]] = []
@@ -25,7 +29,12 @@ async def test_a_changed_row_is_read_by_its_key() -> None:
         read.append(("providers", key))
 
     dropped: list[str] = []
-    follower = RowFollower({"models": models, "providers": providers}, lambda: dropped.append("dropped"), name="test")
+    follower = RowFollower(
+        {"models": models, "providers": providers},
+        lambda: dropped.append("dropped"),
+        name="test",
+        partition_reads={"models": _no_slice, "providers": _no_slice},
+    )
     follower.on_row("models", _message("models", "m1"))
     follower.on_row("providers", _message("providers", "p1"))
     follower.on_row("models", CacheInvalidationMessage(table="models", ids=[]))
@@ -71,7 +80,13 @@ async def test_a_composite_key_table_s_row_is_read_by_its_whole_key() -> None:
     async def providers(key: str) -> None:
         lead.append(key)
 
-    follower = RowFollower({"providers": providers}, lambda: None, name="test", key_reads={"agents": agents})
+    follower = RowFollower(
+        {"providers": providers},
+        lambda: None,
+        name="test",
+        key_reads={"agents": agents},
+        partition_reads={"agents": _no_slice, "providers": _no_slice},
+    )
     follower.on_row("agents", CacheInvalidationMessage(table="agents", ids=["customer-1", "agent-9"]))
     follower.on_row("providers", _message("providers", "p1"))
     follower.on_row("agents", CacheInvalidationMessage(table="agents", ids=[]))
@@ -89,7 +104,13 @@ async def test_a_follower_of_whole_keys_alone_follows_and_drops_as_any() -> None
     async def models(key: tuple[str, ...]) -> None:
         whole.append(key)
 
-    follower = RowFollower({}, lambda: dropped.append("dropped"), name="test", key_reads={"models": models})
+    follower = RowFollower(
+        {},
+        lambda: dropped.append("dropped"),
+        name="test",
+        key_reads={"models": models},
+        partition_reads={"models": _no_slice},
+    )
     follower.on_row("models", _message("models", "m1"))
     await follower.settled()
     assert whole == [("m1",)]
@@ -104,9 +125,20 @@ def test_a_table_given_both_a_lead_read_and_a_whole_key_read_is_refused() -> Non
         return None
 
     with pytest.raises(ValueError, match="each take one row read"):
-        RowFollower({"agents": lead}, lambda: None, name="test", key_reads={"agents": whole})
+        RowFollower({"agents": lead}, lambda: None, name="test", key_reads={"agents": whole}, partition_reads={})
     with pytest.raises(ValueError, match="at least one table"):
-        RowFollower({}, lambda: None, name="test", key_reads={})
+        RowFollower({}, lambda: None, name="test", key_reads={}, partition_reads={})
+
+
+def test_a_table_with_no_partition_read_is_refused() -> None:
+    """Flips if a follower is built with a table whose slices it could not read (a load or a clear would then drop the
+    cache whole, which decision 33 removed)."""
+
+    async def row(key: str) -> None:
+        return None
+
+    with pytest.raises(ValueError, match=r"\['b'\] have no partition read"):
+        RowFollower({"a": row, "b": row}, lambda: None, name="test", partition_reads={"a": _no_slice})
 
 
 async def test_a_partition_read_may_name_a_whole_key_table() -> None:

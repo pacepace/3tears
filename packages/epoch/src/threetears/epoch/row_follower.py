@@ -8,7 +8,8 @@ run each row's keyed read as a task, so the synchronous row callback never block
 
 The cache's one whole read is its cold start, at the process's start, ledgered where the cache writes it. A table
 dropped whole (an operator's reset) goes to ``on_table_dropped``, which never reads whole: the reset's refill reaches
-the cache row by row. A load from files names its reach (``on_partition``), read by that prefix.
+the cache row by row. A load or a clear names its reach (a key prefix): every table's ``partition_reads`` reads that
+slice by its prefix, and nothing else of the cache goes (decision 33: no cache is dropped whole for a slice).
 
 A cold read taken before the follow starts (a process's start reads its caches long before it follows them) is followed
 from the generation it was read at: :func:`cold_read_generations` reads each table's generation just BEFORE the cold
@@ -90,9 +91,9 @@ class RowFollower:
     :ptype on_table_dropped: Callable[[], None]
     :param name: the cache's name, for task names and logs
     :ptype name: str
-    :param partition_reads: per table, the keyed read of a load's reach (its key prefix, column -> value), in place
-        of dropping the cache; a table without one drops it (``on_table_dropped``)
-    :ptype partition_reads: Mapping[str, Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]] | None
+    :param partition_reads: per table, the keyed read of a slice a load or a clear reaches (its key prefix, column ->
+        value, leading the key): every table followed names one (decision 33), so a slice never drops the cache
+    :ptype partition_reads: Mapping[str, Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]]
     :param key_reads: per table, the keyed read of one changed row given its WHOLE primary key, every column in the
         key's declared order (``tuple(message.ids)``): a composite-key table whose cache applies a row by its full key
         (a tenant's row by ``(customer_id, id)``), never its tenant's rows. A table is in ``reads`` or here, not both
@@ -105,15 +106,15 @@ class RowFollower:
         on_table_dropped: Callable[[], None],
         *,
         name: str,
-        partition_reads: Mapping[str, Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]] | None = None,
+        partition_reads: Mapping[str, Callable[[Mapping[str, str]], Coroutine[Any, Any, None]]],
         key_reads: Mapping[str, Callable[[tuple[str, ...]], Coroutine[Any, Any, None]]] | None = None,
     ) -> None:
         """bind the reads; no I/O.
 
         :return: nothing
         :rtype: None
-        :raises ValueError: when no table is read, a table is given both a lead read and a whole-key read, or a
-            partition read names a table with no row read
+        :raises ValueError: when no table is read, a table is given both a lead read and a whole-key read, a
+            partition read names a table with no row read, or a table followed has no partition read
         """
         whole_keys = dict(key_reads or {})
         if not reads and not whole_keys:
@@ -121,13 +122,19 @@ class RowFollower:
         both = sorted(set(reads) & set(whole_keys))
         if both:
             raise ValueError(f"{name}: {both} each take one row read, by its key's lead or by its whole key")
-        unknown = sorted(set(partition_reads or {}) - set(reads) - set(whole_keys))
+        unknown = sorted(set(partition_reads) - set(reads) - set(whole_keys))
         if unknown:
             raise ValueError(f"{name}: partition reads of {unknown} name tables it does not follow")
+        unsliced = sorted((set(reads) | set(whole_keys)) - set(partition_reads))
+        if unsliced:
+            raise ValueError(
+                f"{name}: {unsliced} have no partition read: a slice a load or a clear reaches is read by its key "
+                "prefix, never dropped whole (decision 33)"
+            )
         self._reads_by_table = dict(reads)
         self._key_reads_by_table = whole_keys
         self._tables = (*self._reads_by_table, *self._key_reads_by_table)
-        self._partition_reads = dict(partition_reads or {})
+        self._partition_reads = dict(partition_reads)
         self._on_table_dropped = on_table_dropped
         self._name = name
         self._tasks: set[asyncio.Task[None]] = set()
@@ -226,7 +233,7 @@ class RowFollower:
                 table,
                 on_row=self._row_of(table),
                 on_table_dropped=self._on_table_dropped,
-                on_partition=self._partition_of(table) if table in self._partition_reads else None,
+                on_partition=self._partition_of(table),
             )
             for table in self._tables
         ]

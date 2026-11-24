@@ -2013,6 +2013,10 @@ class CopyFollower:
     def _on_stamp_moved(self, message: CacheInvalidationMessage) -> None:
         self._poked.set()
 
+    def _on_stamp_slice(self, prefix: Mapping[str, str]) -> None:
+        # a slice of the stamp table moved: a pass reads the stamp, as for a row of it (nothing of the table is kept)
+        self._poked.set()
+
     # --- the owner: applying the messages ---------------------------------------------------------------------------
 
     def _drain(self) -> None:
@@ -2865,7 +2869,10 @@ class CopyFollower:
             # table itself is read or kept
             self._removers.append(
                 self._registry.register_derived_cache(
-                    self._stamp_table, on_row=self._on_stamp_moved, on_table_dropped=self.poke
+                    self._stamp_table,
+                    on_row=self._on_stamp_moved,
+                    on_table_dropped=self.poke,
+                    on_partition=self._on_stamp_slice,
                 )
             )
 

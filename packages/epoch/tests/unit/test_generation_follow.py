@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, Literal
@@ -579,11 +579,18 @@ class _PersonCache:
     def __init__(self, registry: CollectionRegistry, people: tuple[str, ...]) -> None:
         self.entries = {person: f"access-of-{person}" for person in people}
         self.emptied = 0
-        registry.register_derived_cache(_TABLE, on_row=self._on_row, on_table_dropped=self._on_table_dropped)
+        self.slices: list[dict[str, str]] = []
+        registry.register_derived_cache(
+            _TABLE, on_row=self._on_row, on_table_dropped=self._on_table_dropped, on_partition=self._on_slice
+        )
 
     def _on_row(self, message: CacheInvalidationMessage) -> None:
         assert message.columns is not None
         self.entries.pop(str(message.columns["member_id"]), None)
+
+    def _on_slice(self, prefix: Mapping[str, str]) -> None:
+        # a slice of rows keyed by id: this cache, keyed by the person, holds no entry it can place under it
+        self.slices.append(dict(prefix))
 
     def _on_table_dropped(self) -> None:
         self.emptied += 1

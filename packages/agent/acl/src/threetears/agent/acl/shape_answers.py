@@ -249,6 +249,8 @@ class ShapeDependencies:
                     table,
                     on_row=functools.partial(self._on_row, table),
                     on_table_dropped=functools.partial(self._on_dropped, table),
+                    # a slice is the row its prefix makes: it reaches what its columns say, else the table (decision 33)
+                    on_partition=self._registry.slice_as_row(table, functools.partial(self._on_row, table)),
                     on_caught_up=functools.partial(self._on_caught_up, table),
                     on_first_sight=functools.partial(self._on_first_sight, table),
                 )

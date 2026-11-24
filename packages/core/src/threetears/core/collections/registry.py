@@ -342,6 +342,22 @@ class CacheInvalidationMessage(BaseModel):
             )
         return rows
 
+    @classmethod
+    def of_slice(cls, table: str, prefix: Mapping[str, str]) -> CacheInvalidationMessage:
+        """a slice a load or a clear reaches (a key prefix) as the row message its columns make: the prefix's columns
+        and values as :attr:`columns`, no key. A derived cache whose row handler evicts by declared columns hands it the
+        slice (``on_partition``) and drops the entries under it alone; a handler that needs the row's key drops as for
+        a row that does not say what it reaches, as it already does.
+
+        :param table: the table
+        :ptype table: str
+        :param prefix: the key prefix, column onto its value as text
+        :ptype prefix: Mapping[str, str]
+        :return: the message
+        :rtype: CacheInvalidationMessage
+        """
+        return cls(table=table, ids=[], columns=dict(prefix))
+
 
 @dataclass(frozen=True, slots=True)
 class _L2KeptChanges:
@@ -394,7 +410,9 @@ class DerivedCacheRegistration:
     :ivar on_partition: called, in place of :attr:`on_table_dropped`, when a whole-table change is a load or a clear
         whose reach the record names (:attr:`~threetears.core.collections.epoch_change.EpochChange.prefixes`, or an
         older writer's :attr:`~threetears.core.collections.epoch_change.EpochChange.partition`): once per key prefix,
-        the columns its rows hold and their values. ``None`` drops the table as for any whole-table change
+        the columns its rows hold and their values. Every derived cache takes it (decision 33): it drops only what is
+        under the slice, never everything derived from the table. A cache that evicts by a row's declared columns can
+        hand the slice to its row handler as :meth:`CacheInvalidationMessage.of_slice` makes it
     :ivar on_table_reset: called, in place of :attr:`on_table_dropped`, when the table is reset by an operator (a
         record naming :data:`~threetears.core.collections.epoch_change.RESET_REASON`): a copy reads it again as on a
         first start. It is given the reset's generation token when the record named it, else None (a reset made in
@@ -418,9 +436,9 @@ class DerivedCacheRegistration:
 
     on_row: Callable[[CacheInvalidationMessage], None]
     on_table_dropped: Callable[[], None]
+    on_partition: Callable[[Mapping[str, str]], None]
     on_caught_up: Callable[[], None] | None = None
     on_first_sight: Callable[[], None] | None = None
-    on_partition: Callable[[Mapping[str, str]], None] | None = None
     on_table_reset: Callable[[str | None], None] | None = None
     on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None
     on_file_wanted: Callable[[WantedFile], None] | None = None
@@ -1773,8 +1791,8 @@ class CollectionRegistry:
 
         A load's rows all hold its constants (:attr:`~threetears.core.collections.epoch_change.EpochChange.partition`),
         so a cache that keeps the table whole (a copy follower) reads those rows again rather than the table. The
-        collection's own L1, its cached scans and every derived cache without ``on_partition`` drop as
-        :meth:`drop_table` drops them.
+        collection's own L1 and its cached scans drop as :meth:`drop_table` drops them; every derived cache is told the
+        partition (``on_partition``).
 
         :param table_name: the table
         :ptype table_name: str
@@ -1827,11 +1845,10 @@ class CollectionRegistry:
             elif cleared is not None and registration.on_file_prefixes is not None:
                 if cleared[0]:
                     registration.on_file_prefixes(cleared[0], cleared[1])
-            elif registration.on_partition is not None:
+            else:
+                # every derived cache takes a slice (decision 33): only what is under each prefix leaves it
                 for prefix in prefixes:
                     registration.on_partition(dict(prefix))
-            else:
-                registration.on_table_dropped()
         log.info(
             "a load's partition reached this process: its rows under the reach left L1, derived copies read it again",
             extra={
@@ -1850,15 +1867,37 @@ class CollectionRegistry:
             },
         )
 
+    @staticmethod
+    def slice_as_row(
+        table_name: str, on_row: Callable[[CacheInvalidationMessage], None]
+    ) -> Callable[[Mapping[str, str]], None]:
+        """an ``on_partition`` for a derived cache whose row handler evicts by a row's declared columns: each slice is
+        handed to ``on_row`` as the row message its prefix makes (:meth:`CacheInvalidationMessage.of_slice`), so the
+        entries under it go and nothing else; a handler that cannot place it drops as for a row that does not say
+        what it reaches, as it already does.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param on_row: the cache's row handler
+        :ptype on_row: Callable[[CacheInvalidationMessage], None]
+        :return: the slice handler
+        :rtype: Callable[[Mapping[str, str]], None]
+        """
+
+        def on_slice(prefix: Mapping[str, str]) -> None:
+            on_row(CacheInvalidationMessage.of_slice(table_name, prefix))
+
+        return on_slice
+
     def register_derived_cache(
         self,
         table_name: str,
         *,
         on_row: Callable[[CacheInvalidationMessage], None],
         on_table_dropped: Callable[[], None],
+        on_partition: Callable[[Mapping[str, str]], None],
         on_caught_up: Callable[[], None] | None = None,
         on_first_sight: Callable[[], None] | None = None,
-        on_partition: Callable[[Mapping[str, str]], None] | None = None,
         on_table_reset: Callable[[str | None], None] | None = None,
         on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None,
         on_file_wanted: Callable[[WantedFile], None] | None = None,
@@ -1896,9 +1935,10 @@ class CollectionRegistry:
         :param on_first_sight: told when the registry first sights the table and takes its mark, so a cache
             keeping its own marks starts them there; ``None`` uses ``on_caught_up``. A first sight drops nothing
         :ptype on_first_sight: Callable[[], None] | None
-        :param on_partition: told, in place of ``on_table_dropped``, the reach of a load from files the record names
-            (the columns its rows hold and their values), so the cache drops only those rows; ``None`` drops it all
-        :ptype on_partition: Callable[[Mapping[str, str]], None] | None
+        :param on_partition: told, in place of ``on_table_dropped``, each key prefix a load or a clear reaches (the
+            columns its rows hold and their values), so the cache drops only the rows under it (decision 33: every
+            derived cache takes slices; none is dropped whole for one)
+        :ptype on_partition: Callable[[Mapping[str, str]], None]
         :param on_table_reset: told, in place of ``on_table_dropped``, an operator's reset of the table, so a copy
             reads it again as on a first start, given the reset's generation token when known (else None); ``None``
             drops it all

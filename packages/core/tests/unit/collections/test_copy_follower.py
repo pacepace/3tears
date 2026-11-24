@@ -740,14 +740,18 @@ async def test_a_partition_neither_the_copy_nor_l3_holds_a_row_of_names_no_stage
     assert _copy(backend) == l3.held()
 
 
-async def test_a_follower_without_partitions_reads_the_record_as_the_whole_table() -> None:
+async def test_a_derived_cache_is_told_a_records_partition_and_never_dropped_whole_for_it() -> None:
+    """Flips if a load's partition drops a derived cache whole (decision 33: every derived cache takes slices) instead
+    of telling it the slice."""
     registry = CollectionRegistry()
-    dropped: list[str] = []
-    registry.register_derived_cache(_TABLE, on_row=lambda message: None, on_table_dropped=lambda: dropped.append("all"))
+    heard: list[Any] = []
+    registry.register_derived_cache(
+        _TABLE, on_row=lambda message: None, on_table_dropped=lambda: heard.append("all"), on_partition=heard.append
+    )
     await registry.apply_epoch_change(
         EpochChange(table=_TABLE, token="inc:1", whole_table=True, partition={"state": "OH"})
     )
-    assert dropped == ["all"]
+    assert heard == [{"state": "OH"}]
 
 
 async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it() -> None:

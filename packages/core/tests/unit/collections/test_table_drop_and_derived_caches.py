@@ -14,7 +14,7 @@ Two registries on one in-process bus stand in for two pods. The contract this pi
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import asyncio
 import json
@@ -198,7 +198,14 @@ class _PersonCache:
         self.entries = {person: f"access-of-{person}" for person in people}
         self.dropped_all = 0
         self.unmapped: list[CacheInvalidationMessage] = []
-        registry.register_derived_cache(_TABLE, on_row=self._on_row, on_table_dropped=self._on_table_dropped)
+        self.slices: list[dict[str, str]] = []
+        registry.register_derived_cache(
+            _TABLE, on_row=self._on_row, on_table_dropped=self._on_table_dropped, on_partition=self._on_slice
+        )
+
+    def _on_slice(self, prefix: Mapping[str, str]) -> None:
+        # a slice of rows keyed by id: this cache, keyed by the person, holds no entry it can place under it
+        self.slices.append(dict(prefix))
 
     def _on_row(self, message: CacheInvalidationMessage) -> None:
         if message.columns is None:
@@ -350,7 +357,10 @@ class TestAHeardRowIsEvictedCountedAndPassedOnRowByRow:
         writer = _Pod(bus, {}, source, scope="writer")
         heard: list[str] = []
         remove = writer.registry.register_derived_cache(
-            _TABLE, on_row=lambda message: heard.append(message.ids[0]), on_table_dropped=lambda: heard.append("ALL")
+            _TABLE,
+            on_row=lambda message: heard.append(message.ids[0]),
+            on_table_dropped=lambda: heard.append("ALL"),
+            on_partition=lambda _prefix: heard.append("SLICE"),
         )
         await _save(writer, "m1", "ada")
         remove()
@@ -747,7 +757,9 @@ class TestADerivedCacheThatFails:
         def broken(message: CacheInvalidationMessage) -> None:
             raise RuntimeError("a bug in a derived cache")
 
-        reader.registry.register_derived_cache(_TABLE, on_row=broken, on_table_dropped=lambda: None)
+        reader.registry.register_derived_cache(
+            _TABLE, on_row=broken, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+        )
         with pytest.raises(RuntimeError, match="derived cache"):
             await _save(writer, "m1", "grace")
 

@@ -23,7 +23,9 @@ class _Heard:
             self.applied.append((message.table, tuple(message.ids), message.l2_current_scope, message.columns))
 
         # every row applied reaches the caches derived from its table, in order
-        registry.register_derived_cache("results", on_row=apply, on_table_dropped=lambda: None)
+        registry.register_derived_cache(
+            "results", on_row=apply, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+        )
         marks = registry.generation_marks
         real_hear = type(marks).hear
 
@@ -80,7 +82,9 @@ async def test_a_batch_from_this_registry_is_not_applied_here() -> None:
     registry = CollectionRegistry()
     registry.batch_invalidations = True
     applied: list[Any] = []
-    registry.register_derived_cache("results", on_row=applied.append, on_table_dropped=lambda: None)
+    registry.register_derived_cache(
+        "results", on_row=applied.append, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+    )
     await registry.start_invalidation_listener(bus)
     messages = [registry.row_message("results", ("a", "b")) for _ in range(3)]
     await registry.publish_invalidations(bus, "results", messages)

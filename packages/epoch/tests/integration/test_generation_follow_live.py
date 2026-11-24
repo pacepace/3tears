@@ -130,7 +130,10 @@ class _Pod:
         # every row message this pod's listener has handled, so a test can wait for one to arrive
         self.heard: list[str] = []
         self.registry.register_derived_cache(
-            _TABLE, on_row=lambda message: self.heard.append(message.ids[0]), on_table_dropped=lambda: None
+            _TABLE,
+            on_row=lambda message: self.heard.append(message.ids[0]),
+            on_table_dropped=lambda: None,
+            on_partition=lambda _prefix: None,
         )
 
     async def has_heard(self, *entity_ids: str) -> None:
@@ -300,7 +303,10 @@ async def test_a_key_watcher_is_pushed_each_advance_and_applies_only_a_missed_br
         marks = follower.registry.generation_marks
         emptied: list[str] = []
         follower.registry.register_derived_cache(
-            _TABLE, on_row=lambda message: None, on_table_dropped=lambda: emptied.append("ALL")
+            _TABLE,
+            on_row=lambda message: None,
+            on_table_dropped=lambda: emptied.append("ALL"),
+            on_partition=lambda _prefix: emptied.append("SLICE"),
         )
         watcher = asyncio.create_task(
             follow_generation_key(follower.registry, follower.reader, _TABLE, grace=timedelta(seconds=2))

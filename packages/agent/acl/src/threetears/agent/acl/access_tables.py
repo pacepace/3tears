@@ -255,18 +255,19 @@ def bind_acl_cache_to_access_tables(
         else:
             cache.invalidate_namespace(namespace_id)
 
-    removers = (
+    # a slice a load or a clear reaches is handed to the table's row handler as the row its prefix makes: the entries
+    # under it go, and nothing else (decision 33)
+    removers = tuple(
         registry.register_derived_cache(
-            _GROUP_MEMBERS, on_row=on_group_member, on_table_dropped=cache.drop_membership_layer
-        ),
-        registry.register_derived_cache(
-            _ROLE_ASSIGNMENTS, on_row=on_role_assignment, on_table_dropped=cache.drop_assignment_layers
-        ),
-        registry.register_derived_cache(_ROLES, on_row=on_role, on_table_dropped=cache.drop_assignment_layers),
-        registry.register_derived_cache(_GROUPS, on_row=on_group, on_table_dropped=cache.invalidate_all),
-        registry.register_derived_cache(
-            _NAMESPACES, on_row=on_namespace, on_table_dropped=cache.drop_assignment_layers
-        ),
+            table, on_row=on_row, on_table_dropped=dropped, on_partition=registry.slice_as_row(table, on_row)
+        )
+        for table, on_row, dropped in (
+            (_GROUP_MEMBERS, on_group_member, cache.drop_membership_layer),
+            (_ROLE_ASSIGNMENTS, on_role_assignment, cache.drop_assignment_layers),
+            (_ROLES, on_role, cache.drop_assignment_layers),
+            (_GROUPS, on_group, cache.invalidate_all),
+            (_NAMESPACES, on_namespace, cache.drop_assignment_layers),
+        )
     )
     log.debug("acl cache bound to the access tables' row broadcasts", extra={"extra_data": {"tables": ACCESS_TABLES}})
 
