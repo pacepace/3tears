@@ -32,10 +32,13 @@ that pod.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from threetears.core.frozen_state import EMPTY, with_entry
 from threetears.observe import cancel_and_wait, contain, get_logger
 
 if TYPE_CHECKING:
@@ -52,8 +55,9 @@ _DEFAULT_FLUSH_INTERVAL_SECONDS: float = 30.0
 _DEFAULT_FLUSH_THRESHOLD_MESSAGES: int = 100
 
 
+@dataclass(frozen=True, slots=True)
 class _ConversationDelta:
-    """accumulating delta for one conversation between flushes.
+    """the running delta for one conversation between flushes: a value, replaced whole by :meth:`merged`.
 
     captures the running ``message_count`` increment, the most recent
     ``date_last_message`` timestamp, and the role of the most recent
@@ -61,38 +65,21 @@ class _ConversationDelta:
     ``conversation_id`` into one delta; on flush, one ``save_entity``
     call applies all of them at once.
 
-    :param conversation_id: conversation UUID this delta belongs to
-    :ptype conversation_id: UUID
-    :param agent_id: agent partition the conversation lives in
-    :ptype agent_id: UUID
+    :ivar agent_id: agent partition the conversation lives in
+    :ivar conversation_id: conversation UUID this delta belongs to
+    :ivar increment: messages observed since the last flush
+    :ivar latest_at: the newest message's timestamp, ``None`` before the first
+    :ivar latest_role: the newest message's role, ``None`` before the first
     """
 
-    __slots__ = (
-        "agent_id",
-        "conversation_id",
-        "increment",
-        "latest_at",
-        "latest_role",
-    )
+    agent_id: UUID
+    conversation_id: UUID
+    increment: int = 0
+    latest_at: datetime | None = None
+    latest_role: str | None = None
 
-    def __init__(self, agent_id: UUID, conversation_id: UUID) -> None:
-        """initialize an empty delta for the given partition + conversation.
-
-        :param agent_id: agent partition the conversation lives in
-        :ptype agent_id: UUID
-        :param conversation_id: conversation UUID this delta belongs to
-        :ptype conversation_id: UUID
-        :return: nothing
-        :rtype: None
-        """
-        self.agent_id = agent_id
-        self.conversation_id = conversation_id
-        self.increment = 0
-        self.latest_at: datetime | None = None
-        self.latest_role: str | None = None
-
-    def merge(self, at: datetime, role: str) -> None:
-        """fold one observed message into the running delta.
+    def merged(self, at: datetime, role: str) -> _ConversationDelta:
+        """this delta with one observed message folded in.
 
         increments the counter, advances ``latest_at`` only when
         ``at`` is newer than the prior entry (out-of-order arrivals
@@ -103,13 +90,17 @@ class _ConversationDelta:
         :ptype at: datetime
         :param role: short actor token (``user`` / ``assistant`` / ...)
         :ptype role: str
-        :return: nothing
-        :rtype: None
+        :return: the next delta
+        :rtype: _ConversationDelta
         """
-        self.increment += 1
-        if self.latest_at is None or at > self.latest_at:
-            self.latest_at = at
-            self.latest_role = role
+        newer = self.latest_at is None or at > self.latest_at
+        return _ConversationDelta(
+            self.agent_id,
+            self.conversation_id,
+            self.increment + 1,
+            at if newer else self.latest_at,
+            role if newer else self.latest_role,
+        )
 
 
 class ConversationWriteBuffer:
@@ -167,7 +158,8 @@ class ConversationWriteBuffer:
         self._collection = collection
         self._flush_interval_seconds = flush_interval_seconds
         self._flush_threshold = flush_threshold_messages
-        self._deltas: dict[tuple[UUID, UUID], _ConversationDelta] = {}
+        # at most the flush threshold's entries (100 by default), so each message rebuilds a small snapshot whole
+        self._deltas: Mapping[tuple[UUID, UUID], _ConversationDelta] = EMPTY
         self._lock = asyncio.Lock()
         self._running_count = 0
         self._timer_task: asyncio.Task[None] | None = None
@@ -244,11 +236,8 @@ class ConversationWriteBuffer:
         normalized = at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
         key = (agent_id, conversation_id)
         async with self._lock:
-            delta = self._deltas.get(key)
-            if delta is None:
-                delta = _ConversationDelta(agent_id, conversation_id)
-                self._deltas[key] = delta
-            delta.merge(normalized, role)
+            delta = self._deltas.get(key) or _ConversationDelta(agent_id, conversation_id)
+            self._deltas = with_entry(self._deltas, key, delta.merged(normalized, role))
             self._running_count += 1
             should_flush = self._running_count >= self._flush_threshold
         if should_flush:
@@ -274,7 +263,7 @@ class ConversationWriteBuffer:
         """
         async with self._lock:
             pending = self._deltas
-            self._deltas = {}
+            self._deltas = EMPTY
             self._running_count = 0
         if not pending:
             return
