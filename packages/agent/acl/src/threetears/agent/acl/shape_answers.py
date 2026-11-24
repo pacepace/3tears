@@ -56,6 +56,7 @@ from threetears.core.collections.generation import (
 from threetears.core.collections.schema_backed import DATETIMETZ_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.entities.base import BaseEntity
+from threetears.core.frozen_state import EMPTY, frozen, with_entries, with_entry, without_entries, without_entry
 from threetears.observe import contain, get_logger
 
 from threetears.agent.acl.access_shapes import (
@@ -192,9 +193,12 @@ class ShapeDependencies:
         self._degraded = degraded if degraded is not None else DegradedEvictions()
         self._tables: tuple[str, ...] = tuple(dict.fromkeys(tables))
         self._marks = GenerationMarks()
-        self._floor: dict[str, _Generation | None] = dict.fromkeys(self._tables)
-        # dep -> table -> the newest generation of a row of that table reaching it
-        self._changed: dict[str, dict[str, _Generation]] = {}
+        # per table: a few, so each change rebuilds the snapshot whole
+        self._floor: Mapping[str, _Generation | None] = frozen(dict.fromkeys(self._tables))
+        # dep -> table -> the newest generation of a row of that table reaching it. One per group, role or agent
+        # some heard row reached (a person's own membership reaches none), each an access-table write: rarely
+        # changed, so each change rebuilds the snapshots whole
+        self._changed: Mapping[str, Mapping[str, _Generation]] = EMPTY
         self._fence = 0
         self._listeners: list[Callable[[frozenset[str] | None], None]] = []
         self._watching: Callable[[], bool] | None = None
@@ -291,9 +295,10 @@ class ShapeDependencies:
         """
         self._marks.adopt(table, self._registry.generation_marks)
         floor = _generation(self._marks.highest_heard(table))
-        self._floor[table] = floor if floor is None or not past_now else (floor[0], floor[1] + 1)
-        for tables in self._changed.values():
-            tables.pop(table, None)
+        self._floor = with_entry(
+            self._floor, table, floor if floor is None or not past_now else (floor[0], floor[1] + 1)
+        )
+        self._changed = frozen((dep, without_entry(tables, table)) for dep, tables in self._changed.items())
 
     def _on_row(self, table: str, message: CacheInvalidationMessage) -> None:
         """record what one row reaches, at its generation, and count it toward its advance.
@@ -318,13 +323,16 @@ class ShapeDependencies:
                     newest = _generation(self._marks.highest_heard(table))
                     changed_at = None if newest is None else (newest[0], newest[1] + 1)
                 if changed_at is None:
-                    self._floor[table] = None
+                    self._floor = with_entry(self._floor, table, None)
                 else:
+                    moved: dict[str, Mapping[str, _Generation]] = {}
                     for dep in deps:
-                        tables = self._changed.setdefault(dep, {})
+                        tables = self._changed.get(dep, EMPTY)
                         held = tables.get(table)
                         if held is None or held[0] != changed_at[0] or held[1] < changed_at[1]:
-                            tables[table] = changed_at
+                            moved[dep] = with_entry(tables, table, changed_at)
+                    if moved:
+                        self._changed = with_entries(self._changed, moved)
             if message.generation is not None and message.bump_rows is not None:
                 self._marks.hear(table, message.generation, message.bump_rows)
         if deps:
@@ -581,9 +589,12 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         self._actors = actors
         self._dependencies = dependencies
         # key -> its deps, and dep -> keys, for the entries this replica holds in L1
-        self._held: dict[tuple[str, str], frozenset[str]] = {}
-        self._by_dep: dict[str, set[tuple[str, str]]] = {}
-        self._background: set[asyncio.Task[None]] = set()
+        # (one per shape held: shapes are few, as people share them; each is changed on an L1 store or a
+        # heard change, never a read, and rebuilt whole)
+        self._held: Mapping[tuple[str, str], frozenset[str]] = EMPTY
+        self._by_dep: Mapping[str, frozenset[tuple[str, str]]] = EMPTY
+        # the L2 deletions in flight
+        self._background: frozenset[asyncio.Task[None]] = frozenset()
         super().__init__(registry, config, nats_client, None, build_lock=build_lock)
         self.l3_pool = None
         if self._l1 is not None:
@@ -805,25 +816,26 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
         :return: nothing
         :rtype: None
         """
-        self._unindex(key)
-        self._held[key] = deps
-        for dep in deps:
-            self._by_dep.setdefault(dep, set()).add(key)
+        self._unindex((key,))
+        self._held = with_entry(self._held, key, deps)
+        self._by_dep = with_entries(self._by_dep, {dep: self._by_dep.get(dep, frozenset()) | {key} for dep in deps})
 
-    def _unindex(self, key: tuple[str, str]) -> None:
-        """forget an L1 entry's deps.
+    def _unindex(self, keys: Collection[tuple[str, str]]) -> None:
+        """forget L1 entries' deps, in one rebuild of each index.
 
-        :param key: the entry's key
-        :ptype key: tuple[str, str]
+        :param keys: the entries' keys
+        :ptype keys: Collection[tuple[str, str]]
         :return: nothing
         :rtype: None
         """
-        for dep in self._held.pop(key, frozenset()):
-            keys = self._by_dep.get(dep)
-            if keys is not None:
-                keys.discard(key)
-                if not keys:
-                    del self._by_dep[dep]
+        gone = frozenset(keys)
+        held = self._held
+        shrunk = {dep: self._by_dep.get(dep, frozenset()) - gone for key in gone for dep in held.get(key, ())}
+        self._held = without_entries(held, gone)
+        self._by_dep = without_entries(
+            with_entries(self._by_dep, {dep: left for dep, left in shrunk.items() if left}),
+            [dep for dep, left in shrunk.items() if not left],
+        )
 
     def _on_change(self, deps: frozenset[str] | None) -> None:
         """evict the L1 entries a change reaches, and delete their L2 entries once stale.
@@ -837,8 +849,8 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
             reached = set(self._held)
         else:
             reached = {key for dep in deps for key in self._by_dep.get(dep, ())}
+        self._unindex(reached)
         for key in reached:
-            self._unindex(key)
             self.evict_from_cache_sync(key)
         if reached:
             try:
@@ -847,8 +859,18 @@ class AccessShapeAnswers(DerivedCollection[ShapeAnswerRow]):
                 # NOSILENT: no loop to delete L2 entries on (a synchronous caller); the stamp keeps them unserved
                 return
             task = loop.create_task(self._delete_stale(tuple(reached)))
-            self._background.add(task)
-            task.add_done_callback(self._background.discard)
+            self._background = self._background | {task}
+            task.add_done_callback(self._forget_background)
+
+    def _forget_background(self, task: asyncio.Task[None]) -> None:
+        """drop a finished L2 deletion from those in flight.
+
+        :param task: the finished task
+        :ptype task: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        """
+        self._background = self._background - {task}
 
     async def _delete_stale(self, keys: tuple[tuple[str, str], ...]) -> None:
         """delete each key's L2 entry when it is stale here, at the revision read: a newer one stands.

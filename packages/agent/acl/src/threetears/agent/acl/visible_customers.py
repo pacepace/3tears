@@ -18,11 +18,12 @@ evaluator, which authorizes any action a bucket holds. Read without its role, an
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 from uuid import UUID
 
+from threetears.core.frozen_state import EMPTY, with_entry
 from threetears.core.keyed import AnyOf, Const, Fragment, Joined, Sort, keyset_rows, read_reached
 from threetears.core.sql_fragments import quote_identifier
 
@@ -299,7 +300,8 @@ class _CustomerWall:
         self._named: frozenset[UUID] = frozenset(
             named for links in self._edges.values() for _, named in links if named is not None
         )
-        self._reached: dict[UUID | None, frozenset[UUID]] = {}
+        # one per customer the call meets: a small snapshot, replaced whole
+        self._reached: Mapping[UUID | None, frozenset[UUID]] = EMPTY
 
     def _reached_for(self, customer: UUID | None) -> frozenset[UUID]:
         """the groups the caller reaches through edges that admit ``customer``.
@@ -323,7 +325,7 @@ class _CustomerWall:
                 }
                 frontier = admitted - reached
                 reached |= frontier
-            self._reached[customer] = frozenset(reached)
+            self._reached = with_entry(self._reached, customer, frozenset(reached))
         return self._reached[customer]
 
     def passes(self, row: dict[str, Any], customer: UUID | None) -> bool:

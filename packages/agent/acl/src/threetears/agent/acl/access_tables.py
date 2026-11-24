@@ -25,10 +25,10 @@ follows the tables in one call; that is what a consumer calls.
 from __future__ import annotations
 
 import time
-from collections import Counter
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from threetears.core.frozen_state import EMPTY, with_entry
 from threetears.observe import get_logger
 
 from threetears.agent.acl.collections import (
@@ -41,7 +41,7 @@ from threetears.agent.acl.collections import (
 from threetears.agent.acl.types import MemberType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 
@@ -98,8 +98,9 @@ class DegradedEvictions:
         :return: nothing
         :rtype: None
         """
-        self._counts: Counter[str] = Counter()
-        self._last_logged: dict[str, float] = {}
+        # per table (a handful of access tables), so each change rebuilds a small snapshot whole
+        self._counts: Mapping[str, int] = EMPTY
+        self._last_logged: Mapping[str, float] = EMPTY
 
     @property
     def counts(self) -> dict[str, int]:
@@ -120,11 +121,11 @@ class DegradedEvictions:
         :return: nothing
         :rtype: None
         """
-        self._counts[table] += 1
+        self._counts = with_entry(self._counts, table, self._counts.get(table, 0) + 1)
         now = time.monotonic()
         last = self._last_logged.get(table)
         if last is None or now - last >= _DEGRADED_LOG_INTERVAL_SECONDS:
-            self._last_logged[table] = now
+            self._last_logged = with_entry(self._last_logged, table, now)
             log.warning(
                 "an access-table row did not say what it reaches; the layer derived from the table was emptied",
                 extra={"extra_data": {"table": table, "reason": reason, "count": self._counts[table]}},

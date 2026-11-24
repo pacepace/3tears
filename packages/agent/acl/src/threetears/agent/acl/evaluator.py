@@ -123,6 +123,7 @@ from threetears.agent.acl.types import (
     RoleAssignment,
     Trail,
 )
+from threetears.core.frozen_state import EMPTY, with_entry
 from threetears.core.namespaces import build_agent_namespace_name
 from threetears.observe import get_logger, traced
 
@@ -611,7 +612,8 @@ class _GroupSetPlanner:
         :rtype: None
         """
         self._cache = cache
-        self._planned: dict[tuple[str, UUID, UUID | None], tuple[UUID, ...]] = {}
+        # one call's working set, a few sides per customer: a small snapshot, replaced whole
+        self._planned: Mapping[tuple[str, UUID, UUID | None], tuple[UUID, ...]] = EMPTY
 
     async def plan(self, ctx: EvaluationContext) -> _SidePlan:
         """the groups each side of ``ctx`` reaches.
@@ -659,7 +661,7 @@ class _GroupSetPlanner:
                     cache=self._cache,
                 )
             planned = await _expand_group_parents(direct_group_ids=direct, namespace=namespace, cache=self._cache)
-            self._planned[key] = planned
+            self._planned = with_entry(self._planned, key, planned)
         return planned
 
 
