@@ -15,11 +15,15 @@ drive the interleavings a flush and a save, or a read and a write, really take, 
 from __future__ import annotations
 
 import asyncio
+import math
+from typing import Any
 
 import pytest
 
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import packed_keys
 from threetears.core.collections.base import _FENCE_ERA_CHANGES, _L1Fence
+from threetears.core.collections.flush import WriteBuffer
 
 
 class TestPackedKeys:
@@ -138,6 +142,113 @@ class TestTheFence:
         await asyncio.gather(read(), write())
         assert read_may_cache == [False]
         assert not fence.watched and not fence.begin_scan().contended
+
+
+def _write(i: int) -> dict[str, Any]:
+    return {"id": i}
+
+
+class TestTheWriteBuffer:
+    async def test_the_buffer_holds_no_dict_or_set_and_replaces_its_runs_whole(self) -> None:
+        """Flips if the buffer keeps a dict or set a key, or changes a run in place."""
+        buffer = WriteBuffer()
+        for i in range(50):
+            await buffer.add("t", i, _write(i))
+        before = vars(buffer)["_runs"]
+        held = [(run.keys, run.states) for run in before]
+        await buffer.add("t", 3, _write(99))
+        await buffer.drain()
+        assert [(run.keys, run.states) for run in before] == held
+        state = {name: value for name, value in vars(buffer).items() if name != "_lock"}
+        assert not any(isinstance(value, (dict, set)) for value in state.values())
+
+    async def test_a_drain_claims_in_the_order_keys_entered_and_a_rewrite_keeps_its_place(self) -> None:
+        buffer = WriteBuffer()
+        for key in ("c", "a", "b"):
+            await buffer.add("t", key, {"v": 1})
+        await buffer.add("t", "c", {"v": 2})
+        claimed = await buffer.drain()
+        assert [(w.entity_id, w.data["v"]) for w in claimed] == [("c", 2), ("a", 1), ("b", 1)]
+        assert await buffer.re_enqueue("t", "a", {"v": 3}, retries=1)
+        await buffer.add("t", "d", {"v": 1})
+        assert [(w.entity_id, w.data["v"]) for w in await buffer.drain()] == [("a", 3), ("d", 1)]
+
+    async def test_a_write_landing_during_a_flush_survives_its_ack_and_its_retry(self) -> None:
+        buffer = WriteBuffer()
+        await buffer.add("t", 1, _write(1))
+        await buffer.add("t", 2, _write(2))
+        claimed = await buffer.drain()
+        assert len(claimed) == 2 and await buffer.drain() == []
+        await buffer.add("t", 1, {"id": 1, "newer": True})
+        await buffer.ack("t", 1)
+        assert not await buffer.re_enqueue("t", 1, _write(1), retries=1)
+        await buffer.ack("t", 2)
+        assert buffer.pending_count() == 1
+        assert [w.data for w in await buffer.drain()] == [{"id": 1, "newer": True}]
+
+    async def test_remove_drops_pending_and_claimed_writes(self) -> None:
+        buffer = WriteBuffer()
+        await buffer.add("t", 1, _write(1))
+        await buffer.drain()
+        await buffer.add("t", 2, _write(2))
+        assert await buffer.remove("t", 1) and await buffer.remove("t", 2)
+        assert not await buffer.remove("t", 3)
+        assert buffer.pending_count() == 0 and await buffer.drain() == []
+        await buffer.ack("t", 1)  # its claim went with it
+        assert buffer.pending_count() == 0
+
+    async def test_a_restarts_durable_rows_are_claimed_once_and_acked(self) -> None:
+        l1 = SQLiteBackend(":memory:")
+        first = WriteBuffer(l1)
+        await first.add("t", "a", {"id": "a"})
+        await first.add("t", "b", {"id": "b"})
+        after = WriteBuffer(l1)
+        claimed = await after.drain()
+        assert sorted(w.entity_id for w in claimed) == ["a", "b"]
+        assert await after.drain() == [] and after.pending_count() == 0
+        assert await after.re_enqueue("t", "a", {"id": "a", "retry": 1}, retries=1)
+        await after.ack("t", "b")
+        assert after.pending_count() == 1
+        assert [w.entity_id for w in await after.drain()] == ["a"]
+
+    async def test_the_runs_stay_logarithmic_and_a_drain_leaves_one(self) -> None:
+        """Flips if a change copies every key (one run rebuilt whole) or runs pile up a key each."""
+        buffer = WriteBuffer()
+        count = 5_000
+        for i in range(count):
+            await buffer.add("t", i, _write(i))
+            assert len(buffer.run_sizes()) <= 2 * math.log2(i + 2) + 2
+        assert buffer.pending_count() == count
+        claimed = await buffer.drain()
+        assert buffer.run_sizes() == (count,) and len(claimed) == count
+        for write in claimed:
+            await buffer.ack(write.table_name, write.entity_id)
+        assert buffer.pending_count() == 0
+        await buffer.drain()
+        assert buffer.run_sizes() == ()
+
+    async def test_a_flush_and_saves_racing_on_the_loop_lose_no_newer_write(self) -> None:
+        """Two coroutines: a flush drains and acks write by write, yielding between, while saves rewrite the same keys.
+        Every newer write is still buffered after the flush. Holds on the old code too: each method runs under the
+        buffer's lock with no await inside, so no interleaving reaches a half-made change."""
+        buffer = WriteBuffer()
+        for i in range(200):
+            await buffer.add("t", i, {"id": i, "v": 0})
+
+        async def flush() -> None:
+            for write in await buffer.drain():
+                await asyncio.sleep(0)
+                await buffer.ack(write.table_name, write.entity_id)
+
+        async def saves() -> None:
+            for i in range(0, 200, 3):
+                await asyncio.sleep(0)
+                await buffer.add("t", i, {"id": i, "v": 1})
+
+        await asyncio.gather(flush(), saves())
+        left = await buffer.drain()
+        assert left and all(write.data["v"] == 1 for write in left)
+        assert buffer.pending_count() == len(left)
 
 
 @pytest.mark.parametrize("count", [33_786])

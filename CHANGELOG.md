@@ -16,6 +16,14 @@ the changes recorded while a ticket is held as eras of at most 64 changes, each 
 A 33,786-key eviction is one recorded change, its batch made on the thread. Who may cache is unchanged;
 `_L1Fence.changed_many` takes the packed batch and its count.
 
+### core: the write buffer holds no dict or set a key, and the dict_state rule has no exceptions
+
+**Changed:** `WriteBuffer` kept a dict of pending writes and a set of claimed keys. It now holds a tuple of immutable
+runs sorted by key (keys one packed string, states one `bytes`), merged logarithmically, a key found by bisection, a
+claim the entry's state byte; each change replaces the tuple whole under the buffer's lock. What a drain claims, its
+order, and the claim's version guard are unchanged. The dict_state rule's two known-violation lists are deleted: it
+passes with no exception.
+
 ### core: keyed reads of several key columns are read by their keys alone on YugabyteDB
 
 **Changed:** `read_keyed` and `read_keyed_arrow` no longer bound a batch of several key columns to each column's
