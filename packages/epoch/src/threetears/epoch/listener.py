@@ -21,9 +21,9 @@ deserialization, programming errors propagate.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Final
 
-from threetears.core.frozen_state import EMPTY, with_entry, without_entries, without_entry
+from threetears.core.frozen_state import EMPTY, with_entry, with_newest, without_entries, without_entry
 
 from threetears.nats import TypedSubscriber
 from threetears.nats.errors import SubscribeError
@@ -34,12 +34,20 @@ from threetears.epoch.client import EpochClient, _is_durable
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
+    "LAST_SEEN_LIMIT",
     "BumpCallback",
     "EpochListener",
     "ResetCallback",
 ]
 
 log = get_logger(__name__)
+
+#: the most subjects an :class:`EpochListener` remembers a last-seen epoch for, the least recently heard pushed out
+#: first. One entry per subject heard: a pod's concrete subjects (tens) plus, under a per-customer wildcard, one per
+#: active customer (hundreds). 4096 keeps every live subject with room to spare while a wildcard over an unbounded
+#: subject space stays bounded instead of leaking, and each change copies at most 4096 small entries. A subject pushed
+#: out is unseen again: its next broadcast is applied (one redundant reload at worst), never skipped.
+LAST_SEEN_LIMIT: Final = 4096
 
 
 BumpCallback = Callable[[int, dict[str, object] | None], Awaitable[None]]
@@ -92,7 +100,9 @@ class EpochListener:
     :ptype epoch_client: EpochClient
     """
 
-    def __init__(self, nats_client: TypedSubscriber, epoch_client: EpochClient) -> None:
+    def __init__(
+        self, nats_client: TypedSubscriber, epoch_client: EpochClient, *, last_seen_limit: int = LAST_SEEN_LIMIT
+    ) -> None:
         """capture clients; no I/O.
 
         :param nats_client: connected client that subscribes typed callbacks
@@ -100,13 +110,16 @@ class EpochListener:
         :param epoch_client: companion :class:`EpochClient` for
             cold-start priming
         :ptype epoch_client: EpochClient
+        :param last_seen_limit: the most subjects whose last-seen epoch is remembered (:data:`LAST_SEEN_LIMIT`)
+        :ptype last_seen_limit: int
         :return: nothing
         :rtype: None
         """
         self._nats = nats_client
+        self._last_seen_limit = last_seen_limit
         self._epoch_client = epoch_client
         # read-only snapshots replaced whole on a change (decision 41): one entry per subject heard, one list per
-        # subscribed path
+        # subscribed path; last-seen is bounded newest-first at last_seen_limit subjects
         self._last_seen: Mapping[str, int] = EMPTY
         # Every registered subscription, so a reset can reach ALL of them.
         # Without this the callbacks live only as closure arguments to
@@ -227,14 +240,15 @@ class EpochListener:
         afford it should subscribe per concrete subject and prime each,
         which is what a non-wildcard subscription already does.
 
-        SECOND: ``_last_seen`` gains an entry per matched subject and
-        never evicts one. The growth removed from the subscription
-        count reappears here as dict entries, bounded by how many
-        subjects actually broadcast rather than by how many exist. For
-        a per-customer epoch that is one entry per active customer,
-        which is the point -- but it is not free, and a wildcard over
-        an unbounded subject space is a leak rather than a
-        convenience.
+        SECOND: ``_last_seen`` gains an entry per matched subject, up to
+        :data:`LAST_SEEN_LIMIT` (the least recently heard pushed out
+        first). The growth removed from the subscription count
+        reappears here as entries, bounded by how many subjects
+        actually broadcast rather than by how many exist. For a
+        per-customer epoch that is one entry per active customer. A
+        subject pushed out is unseen again, so its next broadcast is
+        applied, never skipped: over an unbounded subject space that is
+        a redundant reload per returning subject, not a leak.
 
         THIRD, and the one that changes behaviour for an EXISTING
         wildcard subscriber: a wildcard subscribe needs a wildcard
@@ -272,7 +286,7 @@ class EpochListener:
             fails to register
         """
         primed = primed_epoch if primed_epoch is not None else await self._epoch_client.current(subject)
-        self._last_seen = with_entry(self._last_seen, subject.path, primed)
+        self._last_seen = with_newest(self._last_seen, subject.path, primed, limit=self._last_seen_limit)
 
         log.debug(
             "epoch listener primed last-seen",
@@ -320,7 +334,7 @@ class EpochListener:
                     },
                 )
                 return
-            self._last_seen = with_entry(self._last_seen, dedupe_path, message.epoch)
+            self._last_seen = with_newest(self._last_seen, dedupe_path, message.epoch, limit=self._last_seen_limit)
             await on_bump(message.epoch, message.payload)
 
         try:
@@ -623,7 +637,7 @@ class EpochListener:
             await self.signal_reset(subject)
             return current
         if current > last_seen:
-            self._last_seen = with_entry(self._last_seen, subject.path, current)
+            self._last_seen = with_newest(self._last_seen, subject.path, current, limit=self._last_seen_limit)
             await on_bump(current, None)
         return current
 
