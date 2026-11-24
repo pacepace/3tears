@@ -101,8 +101,9 @@ class _ChangeChunk:
     at: Mapping[RowKey, int]
 
 
-def _chunk(writes: Mapping[RowKey, Change]) -> _ChangeChunk:
-    """a chunk of ``writes``, in their order.
+def change_chunk(writes: Mapping[RowKey, Change]) -> _ChangeChunk:
+    """a chunk of ``writes``, in their order: the one place a set builds a chunk, a batch's or a merge's, so the rows
+    passing through it are the rows the set copies (the cost check's count; not exported).
 
     :param writes: row identity to write, in first-written order
     :ptype writes: Mapping[RowKey, Change]
@@ -125,7 +126,7 @@ def _merged(older: _ChangeChunk, newer: _ChangeChunk) -> _ChangeChunk:
     """
     writes = dict(zip(older.keys, older.changes, strict=True))
     writes.update(zip(newer.keys, newer.changes, strict=True))
-    return _chunk(writes)
+    return change_chunk(writes)
 
 
 @dataclass
@@ -215,7 +216,7 @@ class ChangeSet:
             batch[key] = change if first is None else replace(change, cas=first.cas, on_conflict=first.on_conflict)
         if not batch:
             return
-        newest = _chunk(batch)
+        newest = change_chunk(batch)
         chunks = self._chunks
         while chunks and len(chunks[-1].keys) <= len(newest.keys):
             newest = _merged(chunks[-1], newest)
