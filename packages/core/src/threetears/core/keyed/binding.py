@@ -36,6 +36,8 @@ try:
     import pyarrow as pa
     import pyarrow.compute as pc
 
+    from threetears.core.arrow_keys import distinct_keys
+
     _ARROW = True
 except ImportError:  # NOSILENT: the arrow extra is optional; with no pyarrow a batch binds its plain lists
     _ARROW = False
@@ -185,10 +187,10 @@ class _ArrowKeys:
         if len(columns) == 1:
             return (_unique(columns[0]),)
         names = [f"k{index}" for index in range(len(columns))]
-        # grouped on one thread: the groups come out in the order first named. An extension column (a UUID) is
-        # grouped by its storage and made its own type again
+        # by Arrow's hash kernels, never Acero's group_by (:mod:`threetears.core.arrow_keys`): the keys come out in
+        # the order first named. An extension column (a UUID) is coded by its storage and made its own type again
         stored = [column.storage if isinstance(column, pa.ExtensionArray) else column for column in columns]
-        grouped = pa.table(stored, names=names).group_by(names, use_threads=False).aggregate([])
+        grouped = distinct_keys(pa.table(stored, names=names), names)
         return tuple(
             pa.ExtensionArray.from_storage(column.type, grouped.column(name).combine_chunks())
             if isinstance(column, pa.ExtensionArray)
