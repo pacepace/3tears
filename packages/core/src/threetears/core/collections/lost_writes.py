@@ -46,6 +46,7 @@ from typing import Any, Final, Protocol
 
 from uuid import uuid7
 
+from threetears.nats.subject_permissions import WRITER_BEAT_KEY_SCOPE
 from threetears.observe import contain, get_logger
 from threetears.observe.periodic import PeriodicTask
 from threetears.observe.metrics import counter, gauge
@@ -80,8 +81,9 @@ _BEAT_SECONDS: Final = 5.0
 #: cut off from NATS that long is announced too, which costs one extra advance of the tables it wrote, never a miss
 _STALE_SECONDS: Final = 30.0
 
-#: the KV key prefix a writer's beat is kept under, then its database (the ring's schema) and its process
-_BEAT_PREFIX: Final = "write-ledger"
+#: the KV key prefix a writer's beat is kept under, then its database (the ring's schema) and its process: the key
+#: scope a tool pod opted in to delta files is granted to read them by, so the two never drift
+_BEAT_PREFIX: Final = WRITER_BEAT_KEY_SCOPE
 
 #: the lease one recoverer holds for a pass, and how long a dead holder's hold lasts
 _LEASE_KEY: Final = "write-ledger-recovery"

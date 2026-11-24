@@ -21,7 +21,7 @@ import asyncpg
 import pyarrow as pa
 import pytest
 
-from threetears.core.keyed import Increment, KeyBatch, binding, delete_keyed, read_keyed, update_keyed
+from threetears.core.keyed import Increment, KeyBatch, delete_keyed, read_keyed, update_keyed
 from threetears.core.testing.calibrate import best_cpu_seconds
 from threetears.core.testing.plans import PlanRecorder, StatementPlan, explain_write, on_yugabyte, plan_uses_index
 
@@ -121,9 +121,7 @@ async def _rows(conn: Any, composite: KeyBatch, ids: KeyBatch) -> tuple[list[tup
 
 
 @pytest.mark.parametrize("count", _COUNTS)
-async def test_arrow_mode_plans_as_the_plain_lists_plan_and_reads_by_the_key(
-    seeded: _Seeded, count: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_arrow_mode_plans_as_the_plain_lists_plan_and_reads_by_the_key(seeded: _Seeded, count: int) -> None:
     """Flips if an Arrow-mode statement (each key column one text, split back in SQL) plans other than the same
     statement bound as plain lists (another scan, join or index: its array is a custom plan's constant in both) unless
     it reads by the key's index where they scanned, names other rows, or, on YugabyteDB (the platform's database),
@@ -134,7 +132,7 @@ async def test_arrow_mode_plans_as_the_plain_lists_plan_and_reads_by_the_key(
     rows: dict[bool, Any] = {}
     counts: dict[bool, tuple[int, int]] = {}
     for arrow in (True, False):
-        monkeypatch.setattr(binding, "_ARROW", arrow)
+        # plain lists bind as plain lists whether or not pyarrow imports (binder_for)
         keys = _arrow(composite, ids) if arrow else _plain(composite, ids)
         recorder = PlanRecorder(seeded.conn)
         rows[arrow] = await _rows(recorder, *keys)
@@ -180,18 +178,16 @@ def _nodes(node: Any) -> list[tuple[str, str]]:
 
 
 @pytest.mark.loop_timing
-async def test_arrow_mode_costs_the_serving_process_less_cpu(seeded: _Seeded, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_arrow_mode_costs_the_serving_process_less_cpu(seeded: _Seeded) -> None:
     """Flips if Arrow mode's 50,000-key read spends more than its :data:`_ARROW_CPU_SHARE` of the CPU the plain lists'
     read spends in this process (binding, the driver's encoding, the answer), composite or UUID-keyed: the speed
     budget Arrow mode keeps."""
     composite, ids = await _keys(seeded.conn, 50_000)
     arrow_keys, plain_keys = _arrow(composite, ids), _plain(composite, ids)
     for at, table, columns in ((0, "kc", ["v"]), (1, "ku", ["v"])):
-        monkeypatch.setattr(binding, "_ARROW", True)
         arrow = await best_cpu_seconds(
             lambda: read_keyed(seeded.conn, table, keys=arrow_keys[at], columns=columns, records=True)
         )
-        monkeypatch.setattr(binding, "_ARROW", False)
         plain = await best_cpu_seconds(
             lambda: read_keyed(seeded.conn, table, keys=plain_keys[at], columns=columns, records=True)
         )

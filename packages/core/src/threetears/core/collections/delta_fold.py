@@ -175,6 +175,8 @@ try:
     import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
 
+    from threetears.core.arrow_keys import key_codes
+
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; a fold refuses without it, saying so
     _PYARROW = False
@@ -1539,7 +1541,7 @@ class DeltaFolds:
         :rtype: tuple[str, int]
         """
         types = _table_types(table)
-        file = f"{_REBUILD_DIR}/{table.name}/{uuid.uuid4().hex}.arrow"
+        file = f"{_REBUILD_DIR}/{table.name}/{uuid.uuid7().hex}.arrow"
         sink = await asyncio.to_thread(_RowsFile, self.root / file, pa.schema(list(types.items())))
         try:
             async for page in pages:
@@ -1639,7 +1641,7 @@ class DeltaFolds:
             return
         leftovers = await asyncio.to_thread(_leftover_delta_files, self.root, name)
         # the recovery's own files beside the fulls: the keys reached, the notes' keys, the rows read; never held whole
-        work = f"{_REBUILD_DIR}/{name}/{uuid.uuid4().hex}"
+        work = f"{_REBUILD_DIR}/{name}/{uuid.uuid7().hex}"
         try:
             file, rows, markers, named, replaced, keyed = await self._recovery_delta(
                 reader, table, work, [file for file, _ in leftovers if file not in lost], lost
@@ -2424,16 +2426,21 @@ def _first_each(rows: Any, scope: str | None) -> Any:
     :return: the keys, each once
     :rtype: pyarrow.Table
     """
-    at = rows.append_column("_3tears_at", pa.array(np.arange(rows.num_rows, dtype=np.int64)))
-    aggregates: list[tuple[str, str]] = [("_3tears_at", "min")]
+    if not rows.num_rows:
+        return rows
+    # by Arrow's hash kernels and NumPy over the codes, never Acero's group_by (:mod:`threetears.core.arrow_keys`)
+    (codes,) = key_codes([rows], [_TEXT])
+    _, at, each = np.unique(codes, return_index=True, return_inverse=True)
+    order = np.argsort(at, kind="stable")
+    first = rows.take(pa.array(at[order]))
     if scope is not None:
-        aggregates.append((scope, "last"))
-    grouped = at.group_by(_TEXT, use_threads=False).aggregate(aggregates)
-    order = pc.sort_indices(grouped.column("_3tears_at_min"))
-    grouped = grouped.take(order)
-    first = rows.take(grouped.column("_3tears_at_min"))
-    if scope is not None:
-        first = first.set_column(first.schema.get_field_index(scope), scope, grouped.column(f"{scope}_last"))
+        # each key's last row carrying a state (a row of none carries no state; a key of none, none)
+        carried = np.flatnonzero(rows.column(scope).is_valid().to_numpy(zero_copy_only=False))
+        last = np.full(len(at), -1, dtype=np.int64)
+        np.maximum.at(last, each[carried], carried)
+        picked = last[order]
+        states = pc.take(rows.column(scope), pa.array(picked, pa.int64(), mask=picked < 0))
+        first = first.set_column(first.schema.get_field_index(scope), scope, states)
     return first
 
 
@@ -2658,7 +2665,7 @@ def recovery_delta_job(
     if rows.num_rows:
         segments.append(("typed", rows, list(types)))
     segments.append(("deleted", marked))
-    write_id = f"{_RECOVERY_WRITE}-{uuid.uuid4().hex}"
+    write_id = f"{_RECOVERY_WRITE}-{uuid.uuid7().hex}"
     built = build_file_table(
         table.name, types, table.key, {}, [dict(prefix) for prefix in prefixes], segments, write_id
     )

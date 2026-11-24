@@ -169,6 +169,33 @@ def _split_text(values: Any) -> tuple[str, SplitText] | None:
     return _join(texts, free[0]), SplitText(free[0], null)
 
 
+#: the most distinct keys a combined code counts before it is coded again, so it never passes an int64
+_CODE_ROOM: Final = 1 << 62
+
+
+def _first_of_each(columns: Sequence[Any]) -> Any:
+    """the row number of each distinct key's first row, in the order first named: each column dictionary-encoded and
+    the codes combined into one int64 a row, made distinct (``unique``, first-seen order) and found again
+    (``index_in`` answers a value's first place). Arrow's hash kernels on Arrow's memory alone, never Acero's
+    ``group_by`` (:mod:`threetears.core.arrow_keys`'s account) and never a NumPy buffer a key: a real-size batch's
+    binding allocates its literals alone (``test_keyed_binding``)."""
+    combined: Any = None
+    count = 1
+    for column in columns:
+        encoded = pc.dictionary_encode(column, null_encoding="encode")
+        codes = encoded.indices.cast(pa.int64())
+        size = max(len(encoded.dictionary), 1)
+        if combined is None:
+            combined, count = codes, size
+            continue
+        if count * size >= _CODE_ROOM:
+            recoded = pc.dictionary_encode(combined)
+            combined, count = recoded.indices.cast(pa.int64()), max(len(recoded.dictionary), 1)
+        combined = pc.add(pc.multiply(combined, pa.scalar(size, pa.int64())), codes)
+        count *= size
+    return pc.index_in(pc.unique(combined), value_set=combined)
+
+
 class _ArrowKeys:
     """:class:`~threetears.interfaces.keyed.rows.KeyBinder` of Arrow columns: distinct keys by Arrow's hash
     kernels, chunks as zero-copy slices, each column bound as ONE text split back in SQL (:class:`SplitText`; the
@@ -185,10 +212,9 @@ class _ArrowKeys:
         if len(columns) == 1:
             return (_unique(columns[0]),)
         names = [f"k{index}" for index in range(len(columns))]
-        # grouped on one thread: the groups come out in the order first named. An extension column (a UUID) is
-        # grouped by its storage and made its own type again
+        # An extension column (a UUID) is coded by its storage and made its own type again
         stored = [column.storage if isinstance(column, pa.ExtensionArray) else column for column in columns]
-        grouped = pa.table(stored, names=names).group_by(names, use_threads=False).aggregate([])
+        grouped = pa.table(stored, names=names).take(_first_of_each(stored))
         return tuple(
             pa.ExtensionArray.from_storage(column.type, grouped.column(name).combine_chunks())
             if isinstance(column, pa.ExtensionArray)

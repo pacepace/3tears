@@ -4,6 +4,8 @@ way in."""
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import tracemalloc
 import uuid
 from collections.abc import Iterator, Sequence
@@ -20,14 +22,13 @@ from threetears.core.keyed import (
     InlineDuckDB,
     KeyBatch,
     ThreadedDuckDB,
-    binding,
     delete_keyed,
     read_keyed,
     read_keyed_arrow,
     run_inline,
     update_keyed,
 )
-from threetears.core.keyed.binding import _arrow_literal, binder_for
+from threetears.core.keyed.binding import binder_for
 from threetears.interfaces.keyed.rows import PLAIN_KEYS, read_keyed_statements
 
 #: a batch whose column arrives as Arrow: a serving path's keys, bound in Arrow mode
@@ -36,6 +37,37 @@ _ARROW_KEYS = KeyBatch(("k",), [pa.array(["a"])])
 #: keys a real-size read names: a page of a night's changed rows
 _REAL_KEYS = 50_000
 _STATES, _GEOS, _IDS = 50, 200, 30
+
+
+#: a process refusing pyarrow and NumPy, binding a batch of plain columns: prints ``plain`` once bound as plain lists
+_NO_ARROW_BINDS_PLAIN = """
+import importlib.abc, sys
+class _Refuse(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in ("pyarrow", "numpy"):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return None
+sys.meta_path.insert(0, _Refuse())
+from threetears.core.keyed import KeyBatch
+from threetears.core.keyed.binding import binder_for
+from threetears.interfaces.keyed.rows import PLAIN_KEYS
+assert binder_for(object(), KeyBatch(("k",), [["a"]])) is PLAIN_KEYS
+print("plain")
+"""
+
+
+class _DuckListReader:
+    """a reader naming DuckDB: its binder writes a key column as the array's literal in DuckDB's list form."""
+
+    sql_dialect = Dialect.DUCKDB
+
+
+def _arrow_literal(values: Any, brackets: bool = False) -> str:
+    """an Arrow column's literal as the front door binds it: a reader naming DuckDB's (``[...]``), or PostgreSQL's
+    (``{...}``) for a column its split text cannot carry (one holding every delimiter it tries)."""
+    bound, kind = binder_for(_DuckListReader() if brackets else object(), _ARROW_KEYS).array(values, "text", False)
+    assert kind == "literal", (kind, bound)
+    return str(bound)
 
 
 def _duck_list(conn: duckdb.DuckDBPyConnection, literal: str, cast: str) -> list[Any]:
@@ -47,11 +79,13 @@ class TestTheLiteral:
     def test_a_literal_reads_back_as_the_values_it_was_written_from(self) -> None:
         """Flips if a value holding a quote, a backslash, a comma, a brace, the word NULL or nothing is read back as
         anything but itself, or a null as anything but a null; the PostgreSQL form is the same body in braces."""
-        values = ['a"b', "c\\d", "e,f", "{g}", "NULL", "", "Peña ✓ 選挙", None, " lead and trail "]
+        # the last value holds every code point a split text is joined by, so PostgreSQL's binder writes the literal
+        every_delimiter = "".join(chr(code) for code in range(24, 32))
+        values = ['a"b', "c\\d", "e,f", "{g}", "NULL", "", "Peña ✓ 選挙", None, " lead and trail ", every_delimiter]
         conn = duckdb.connect()
         assert _duck_list(conn, _arrow_literal(pa.array(values), brackets=True), "text") == values
         assert _arrow_literal(pa.array(values)) == "{" + _arrow_literal(pa.array(values), brackets=True)[1:-1] + "}"
-        assert _arrow_literal(pa.array([], pa.string())) == "{}"
+        assert _arrow_literal(pa.array([], pa.string()), brackets=True) == "[]"
 
     def test_a_uuid_a_date_a_time_and_a_number_are_written_as_their_types_read_them(self) -> None:
         """Flips if a UUID (Arrow's UUID type, sliced, a null among them) is not written as its 32 digits, or a date,
@@ -151,9 +185,7 @@ class TestArrowModeBindsOneTextAColumn:
         assert kind == "text" and isinstance(bound, pa.Array)
         assert binder_for(ThreadedDuckDB(conn), _ARROW_KEYS) is binder
 
-    def test_the_binder_follows_the_connection_the_columns_and_whether_arrow_imports(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_the_binder_follows_the_connection_the_columns_and_whether_arrow_imports(self) -> None:
         """Flips if a reader naming DuckDB is sent PostgreSQL's literal, a batch of plain columns (a key list program
         logic holds) is made Arrow where pyarrow imports (Pace's option A: it read 2,000 UUIDs at 1.3x the native bind
         so), one arriving as Arrow is not, or a process with no Arrow binds other than plain lists."""
@@ -167,8 +199,11 @@ class TestArrowModeBindsOneTextAColumn:
         assert binder_for(object(), plain) is PLAIN_KEYS and binder_for(object(), None) is PLAIN_KEYS
         mixed = KeyBatch(("a", "b"), [pa.array(["x"]), [1]], ("text", "bigint"))
         assert binder_for(object(), mixed) is binder_for(object(), _ARROW_KEYS) is not PLAIN_KEYS
-        monkeypatch.setattr(binding, "_ARROW", False)
-        assert binder_for(object(), _ARROW_KEYS) is PLAIN_KEYS
+        # a process where pyarrow does not import binds plain lists
+        done = subprocess.run(
+            [sys.executable, "-c", _NO_ARROW_BINDS_PLAIN], capture_output=True, text=True, check=False
+        )
+        assert done.returncode == 0 and done.stdout.strip() == "plain", done.stderr
 
     def test_the_plain_binder_refuses_an_arrow_column(self) -> None:
         """Flips if the pure builders' plain binder takes an Arrow column value by value (a Python object a key)."""
@@ -219,18 +254,15 @@ async def _read_both(
 
 
 class TestArrowModeReadsWhatPlainModeReads:
-    async def test_real_size_reads_and_writes_name_the_same_rows(
-        self, real: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_real_size_reads_and_writes_name_the_same_rows(self, real: duckdb.DuckDBPyConnection) -> None:
         """Flips if Arrow mode reads, or writes, other rows than the plain lists name for 50,000 keys (a repeat among
         them, composite and UUID-keyed), on DuckDB in process."""
         composite, ids = _picks(real)
         arrow_read = await _read_both(real, composite, ids, arrow=True)
-        monkeypatch.setattr(binding, "_ARROW", False)
+        # plain lists bind as plain lists whether or not pyarrow imports (binder_for)
         plain_read = await _read_both(real, composite, ids, arrow=False)
         assert arrow_read == plain_read
         assert len(arrow_read[0]) == len(arrow_read[1]) == arrow_read[2] == _REAL_KEYS
-        monkeypatch.setattr(binding, "_ARROW", True)
         reader = InlineDuckDB(real)
         columns = [pa.array(composite[0]), pa.array(composite[1]), pa.array(composite[2], pa.int64())]
         keys = KeyBatch(("state", "geo", "id"), columns, ("text", "text", "bigint"))

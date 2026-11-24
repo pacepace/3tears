@@ -197,17 +197,17 @@ async def test_a_failed_savepoint_puts_back_the_chunks_it_opened_on(make_repo: A
 async def test_adding_rows_in_batches_is_never_quadratic(make_repo: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """the cost check: a 100k-row commit in 1k-row batches copies each row O(log batches) times.
 
-    Every chunk the set builds, a batch's or a merge's, passes its rows through ``_chunk``; counting them
+    Every chunk the set builds, a batch's or a merge's, passes its rows through ``change_chunk``; counting them
     bounds the work. Rebuilding the whole index per batch, the quadratic shape, would pass ~5M rows.
     """
     built = [0]
-    build = vars(change_module)["_chunk"]
+    build = change_module.change_chunk
 
     def counting(writes: Any) -> Any:
         built[0] += len(writes)
         return build(writes)
 
-    monkeypatch.setattr(change_module, "_chunk", counting)
+    monkeypatch.setattr(change_module, "change_chunk", counting)
     rows, batch = 100_000, 1_000
     change_set = ChangeSet(await make_repo(), "m")
     for start in range(0, rows, batch):
