@@ -69,3 +69,9 @@ def test_a_sorted_batch_finds_each_text_by_bisection() -> None:
         assert packed_keys.find_sorted(batch, offsets, missing) == -1
     empty = packed_keys.packed([])
     assert packed_keys.find_sorted(empty, packed_keys.offsets_of([]), "a") == -1
+
+
+def test_a_key_comes_back_whole_from_its_text() -> None:
+    keys = [("a",), ("a", "b"), ("",), ("", ""), (), ("x\x00y",), ("x\x1fy", "z"), ("\x1ehead",), ("it's", 'q"')]
+    for key in keys:
+        assert packed_keys.parts_of(packed_keys.key_text(key)) == key

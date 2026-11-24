@@ -14,9 +14,20 @@ under one byte budget:
   recently used first across every such table of the process. An eviction is a cache miss, never a wrong answer:
   a row evicted is a row the next read refills, and invalidation by epochs is unchanged (no TTLs).
 
-**Recency, cheaply.** No write per read: each ``EVICTABLE`` table keeps an in-memory ``OrderedDict`` of its keys
-(key -> [estimated bytes, tick]); a hit moves its key to the end under one lock. Eviction takes the least recent head
-across the tables (a handful of tables, so a scan of heads). ``KEEP`` tables keep nothing in memory.
+**Recency, cheaply, and columnar** (Pace 2026-11-23: no per-row Python objects, no shared state a thread changes).
+No write per read, and no lock on the hot path: a read hit, a write and a delete each hand the ledger's thread one
+immutable hand-off (the keys as one packed batch, :mod:`threetears.core.packed_keys`, their bytes and the clock) on a
+queue, and touch nothing else. The thread alone owns each ``EVICTABLE`` table's recency: its rows least recent first,
+as one packed batch of key texts beside parallel ``array`` columns (estimated bytes, last use, order of use), and the
+hand-offs not yet folded in as a tuple of such batches. It folds them (latest use of a key wins) when the tuple grows
+past a bound, and before it picks evictions; the least recent rows are then the front of each table's batch, taken
+across the tables in order of use. Every value is replaced whole, never changed in place. At 1M cached rows this holds
+about 40 bytes a row where the ``OrderedDict`` it replaces held about 300 (``test_l1_lru.py`` measures both).
+``KEEP`` tables keep nothing in memory.
+
+The ledger decides on an upper bound of its bytes between folds (a rewrite counts its row's bytes again, a delete
+frees none until the fold), so a bound under the allowance needs no fold; past it the ledger folds, and its exact
+bytes decide, as before.
 
 **Bytes, estimated then measured.** A row's bytes are estimated on write from its serialized values; a thread
 measures each table's real pages (``dbstat``) every :data:`_MEASURE_SECONDS` and scales the estimate by what it
@@ -34,15 +45,16 @@ stated tolerance of that measurement by a test (``test_l1_lru.py``).
 
 from __future__ import annotations
 
+import ast
 import enum
 import os
 import queue
 import threading
 import time
 import weakref
-from collections import OrderedDict
-from collections.abc import Callable, Hashable, Mapping, Sequence
-from dataclasses import dataclass, field
+from array import array
+from collections.abc import Hashable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Protocol
@@ -61,6 +73,7 @@ from threetears.core.eviction import (
     policy_declare,
     policies_declared,
 )
+from threetears.core.packed_keys import NO_KEYS, key_text, packed, parts_of, texts
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -87,8 +100,18 @@ _EVICT_TO: Final = 0.9
 #: the first measure scales it
 _ROW_OVERHEAD: Final = 48
 _TIER: Final = Tier.L1.value
-#: rows a write records under one hold of the ledger's lock, so a big batch never holds it long
-_LOCK_ROWS: Final = 256
+#: rows of a write checked against the budget at a time, so a big batch evicts as it crosses it, as one row would
+_SLICE_ROWS: Final = 256
+#: a table folds its hand-offs into its recency past this many rows of them, or past a quarter of its rows if more:
+#: a fold copies the table's columns (C), so each row is copied a few times over its life, never once a hand-off
+_FOLD_ROWS: Final = 4096
+#: a table's hand-offs are joined into one batch past this many (a read's hand-off is one row)
+_HANDOFF_BATCHES: Final = 32
+#: a hand-off row's bytes when it is a read's touch, or a delete
+_TOUCH: Final = -1
+_REMOVED: Final = -2
+#: tags a key part that is not text, in its key text: the part's type, then its spelling
+_TAG: Final = "\x1d"
 #: advanced by every L1 declaration, so a backend that read its tables' policies sees a table become KEEP
 POLICY_EPOCH: list[int] = [0]
 
@@ -202,14 +225,188 @@ class TableCounters:
     misses: Any
 
 
-@dataclass
+def _part_text(part: Any) -> str:
+    """a key part's text: text as itself (tagged when it starts with :data:`_TAG`), anything else tagged by type.
+
+    :param part: a serialized key part (text, an integer, a float or None, as SQLite binds them)
+    :ptype part: Any
+    :return: its text
+    :rtype: str
+    """
+    if type(part) is str:
+        return _TAG + "s" + part if part.startswith(_TAG) else part
+    if part is None:
+        return _TAG + "n"
+    if type(part) is int:
+        return _TAG + "i" + str(part)
+    if type(part) is float:
+        return _TAG + "f" + repr(part)
+    return _TAG + "r" + repr(part)
+
+
+def _part_of(text: str) -> Any:
+    """the key part whose text is ``text``: the inverse of :func:`_part_text`.
+
+    :param text: a part's text
+    :ptype text: str
+    :return: the part
+    :rtype: Any
+    """
+    if not text.startswith(_TAG):
+        return text
+    kind, spelled = text[1], text[2:]
+    if kind == "s":
+        return spelled
+    if kind == "n":
+        return None
+    if kind == "i":
+        return int(spelled)
+    if kind == "f":
+        return float(spelled)
+    return ast.literal_eval(spelled)
+
+
+def _key_text(key: Sequence[Any]) -> str:
+    """a serialized key's text in a packed batch: exact, and :func:`_key_of` gives the key back.
+
+    :param key: the serialized key
+    :ptype key: Sequence[Any]
+    :return: its text
+    :rtype: str
+    """
+    for part in key:
+        if type(part) is not str or part.startswith(_TAG):
+            return key_text([_part_text(each) for each in key])
+    return key_text(key)
+
+
+def _key_of(text: str) -> tuple[Any, ...]:
+    """the serialized key whose text is ``text``.
+
+    :param text: a key's :func:`_key_text`
+    :ptype text: str
+    :return: the key
+    :rtype: tuple[Any, ...]
+    """
+    return tuple(_part_of(part) for part in parts_of(text))
+
+
+@dataclass(frozen=True)
+class _Rows:
+    """rows of a table's recency as columns: a packed batch of key texts and, row for row, the estimated bytes (in a
+    hand-off :data:`_TOUCH` or :data:`_REMOVED` for a read or a delete), the clock at the use and the use's place in
+    the ledger's order. Never changed: replaced whole."""
+
+    texts: str
+    sizes: array[int]
+    ticks: array[float]
+    seqs: array[int]
+
+    def __len__(self) -> int:
+        return len(self.sizes)
+
+
+_NO_ROWS: Final = _Rows(NO_KEYS, array("q"), array("d"), array("q"))
+
+
+def _joined(batches: Sequence[_Rows]) -> _Rows:
+    """batches end to end, as one.
+
+    :param batches: the batches
+    :ptype batches: Sequence[_Rows]
+    :return: one batch
+    :rtype: _Rows
+    """
+    return _Rows(
+        NO_KEYS + "".join(batch.texts[1:] for batch in batches),
+        array("q", b"".join(batch.sizes.tobytes() for batch in batches)),
+        array("d", b"".join(batch.ticks.tobytes() for batch in batches)),
+        array("q", b"".join(batch.seqs.tobytes() for batch in batches)),
+    )
+
+
+@dataclass(frozen=True)
 class _Table:
-    """one ``EVICTABLE`` table's recency: key -> [estimated bytes, tick], least recent first."""
+    """one ``EVICTABLE`` table's recency, owned by the ledger's thread and replaced whole.
+
+    ``held``: its rows, distinct, least recently used first; ``estimated`` their bytes. ``pending``: the hand-offs not
+    yet folded in, oldest first; ``unsettled`` the bytes their writes name (a rewrite counted again).
+    """
 
     store: weakref.ReferenceType[Any]
     name: str
-    order: OrderedDict[Hashable, list[int | float]] = field(default_factory=OrderedDict)
+    held: _Rows = _NO_ROWS
     estimated: int = 0
+    pending: tuple[_Rows, ...] = ()
+    pending_rows: int = 0
+    unsettled: int = 0
+
+
+def _folded(table: _Table) -> _Table:
+    """``table`` with its hand-offs folded into its rows: a key's latest use wins, a read's touch moves a held row (and
+    is dropped for a row not held), a delete takes it out; the rows a hand-off names leave their place and follow the
+    rest in order of use. Columns are copied in slices (C); the loops are over the hand-offs' rows and one pass over
+    the held keys' texts.
+
+    :param table: the table
+    :ptype table: _Table
+    :return: the table, folded
+    :rtype: _Table
+    """
+    if not table.pending:
+        return table
+    # function-local: each named key's latest use, (bytes, tick, order); _TOUCH waits for the held row's bytes
+    latest: dict[str, tuple[int, float, int]] = {}
+    for batch in table.pending:
+        for text, size, tick, seq in zip(texts(batch.texts), batch.sizes, batch.ticks, batch.seqs, strict=True):
+            if size != _TOUCH:
+                latest[text] = (size, tick, seq)
+                continue
+            before = latest.get(text)
+            if before is None or before[0] == _TOUCH:
+                latest[text] = (_TOUCH, tick, seq)
+            elif before[0] != _REMOVED:
+                latest[text] = (before[0], tick, seq)
+    held = table.held
+    names = texts(held.texts)
+    cuts = [row for row, text in enumerate(names) if text in latest]
+    kept: list[str] = []
+    sizes, ticks, seqs = array("q"), array("d"), array("q")
+    start = 0
+    for cut in [*cuts, len(names)]:
+        kept += names[start:cut]
+        sizes += held.sizes[start:cut]
+        ticks += held.ticks[start:cut]
+        seqs += held.seqs[start:cut]
+        start = cut + 1
+    for cut in cuts:
+        use = latest[names[cut]]
+        if use[0] == _TOUCH:
+            latest[names[cut]] = (held.sizes[cut], use[1], use[2])
+    # the hand-offs' rows are in order of use already: each key follows the rest at its latest use (a walk, never a
+    # sort, which would hold the GIL in C for the whole of it)
+    for batch in table.pending:
+        for text, seq in zip(texts(batch.texts), batch.seqs, strict=True):
+            use = latest[text]
+            if use[2] == seq and use[0] >= 0:
+                kept.append(text)
+                sizes.append(use[0])
+                ticks.append(use[1])
+                seqs.append(seq)
+    return replace(
+        table,
+        held=_Rows(packed(kept), sizes, ticks, seqs),
+        estimated=sum(sizes),
+        pending=(),
+        pending_rows=0,
+        unsettled=0,
+    )
+
+
+#: a hand-off: ("w", store, table, packed texts, bytes, tick), ("t", store, table, text, tick),
+#: ("r", store, table, packed texts), ("e", store, table), ("l", store id) or ("s", event, fold): set once those before
+#: it are taken (and every table folded, when ``fold``)
+_HandOff = tuple[Any, ...]
 
 
 class L1Ledger:
@@ -217,8 +414,9 @@ class L1Ledger:
 
     :param budget: bytes; ``None`` reads it from the environment when the first store joins
     :ptype budget: int | None
-    :param thread: whether evictions and measures run on the ledger's own thread; ``False`` leaves them queued for
-        :meth:`drain` and :meth:`measure` (a test's ledger, run step by step)
+    :param thread: whether hand-offs, evictions and measures run on the ledger's own thread; ``False`` leaves the
+        hand-offs queued for :meth:`drain`, :meth:`measure` and :meth:`status` to run on the caller (a test's ledger,
+        run step by step)
     :ptype thread: bool
     """
 
@@ -226,16 +424,20 @@ class L1Ledger:
         self._threaded = thread
         self._lock = threading.Lock()
         self._budget = budget
-        #: per (store, table), replaced whole under the lock; a reader takes it without the lock
+        #: per (store, table), replaced whole by the ledger's thread alone
         self._tables: Mapping[tuple[int, str], _Table] = MappingProxyType({})
         self._stores: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
+        #: the exact bytes of every table's held rows, and the bytes their hand-offs' writes name; the ledger's thread's
         self._estimated = 0
+        self._unsettled = 0
+        #: the ledger's order of use, given each hand-off row as the thread takes it
+        self._seq = 0
         #: measured real bytes per estimated byte of the EVICTABLE tables
         self._scale = 1.0
         self._kept = 0
         self._overhead = 0
         self._sizing_failed = False
-        self._jobs: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
+        self._handoffs: queue.SimpleQueue[_HandOff] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
         #: per (store, table), replaced whole
         self._counters: Mapping[tuple[int, str], TableCounters] = MappingProxyType({})
@@ -243,7 +445,7 @@ class L1Ledger:
     # --- joining ---
 
     def join(self, store: Any, directory: Path) -> None:
-        """a backend joins the process's budget; the first starts the measuring thread.
+        """a backend joins the process's budget; the first starts the ledger's thread.
 
         :param store: the backend
         :ptype store: Any
@@ -271,11 +473,7 @@ class L1Ledger:
         """
         with self._lock:
             self._stores.pop(id(store), None)
-            self._estimated -= sum(held.estimated for key, held in self._tables.items() if key[0] == id(store))
-            self._tables = MappingProxyType({key: held for key, held in self._tables.items() if key[0] != id(store)})
-            self._counters = MappingProxyType(
-                {key: bound for key, bound in self._counters.items() if key[0] != id(store)}
-            )
+        self._handoffs.put(("l", id(store)))
 
     @property
     def budget(self) -> int:
@@ -319,7 +517,7 @@ class L1Ledger:
             self._counters = MappingProxyType({**self._counters, key: bound})
         return bound
 
-    # --- the hot path ---
+    # --- the hot path: each hands the ledger's thread one immutable hand-off, and touches nothing else ---
 
     def touched(self, store: Any, table: str, key: Hashable) -> None:
         """a read hit ``key``: it is now the most recent.
@@ -333,21 +531,10 @@ class L1Ledger:
         :return: nothing
         :rtype: None
         """
-        held = self._tables.get((id(store), table))
-        # a read never waits for the ledger: while a writer's batch or an eviction holds it, this touch is skipped
-        # and the key keeps its older place (recency is a heuristic; an eviction is a miss, never a wrong answer)
-        if held is None or not self._lock.acquire(blocking=False):
-            return
-        try:
-            entry = held.order.get(key)
-            if entry is not None:
-                entry[1] = time.monotonic()
-                held.order.move_to_end(key)
-        finally:
-            self._lock.release()
+        self._handoffs.put(("t", store, table, _key_text(key), time.monotonic()))  # type: ignore[arg-type]
 
     def written(self, store: Any, table: str, sized: Sequence[tuple[Hashable, int]]) -> None:
-        """rows of an ``EVICTABLE`` table were written; evict past the budget.
+        """rows of an ``EVICTABLE`` table were written; the ledger's thread evicts past the budget.
 
         :param store: the backend
         :ptype store: Any
@@ -358,43 +545,11 @@ class L1Ledger:
         :return: nothing
         :rtype: None
         """
-        now = time.monotonic()
-        for start in range(0, len(sized), _LOCK_ROWS):
-            self._written(store, table, sized[start : start + _LOCK_ROWS], now)
-
-    def _written(self, store: Any, table: str, sized: Sequence[tuple[Hashable, int]], now: float) -> None:
-        """:meth:`written` for one slice of rows, under the lock once.
-
-        :param store: the backend
-        :ptype store: Any
-        :param table: the table
-        :ptype table: str
-        :param sized: the slice's keys and estimated bytes
-        :ptype sized: Sequence[tuple[Hashable, int]]
-        :param now: the monotonic clock at the write
-        :ptype now: float
-        :return: nothing
-        :rtype: None
-        """
-        with self._lock:
-            held = self._tables.get((id(store), table))
-            if held is None:
-                held = _Table(store=weakref.ref(store), name=table)
-                self._tables = MappingProxyType({**self._tables, (id(store), table): held})
-            for key, size in sized:
-                entry = held.order.get(key)
-                if entry is None:
-                    held.order[key] = [size, now]
-                    delta = size
-                else:
-                    delta = size - int(entry[0])
-                    entry[0], entry[1] = size, now
-                    held.order.move_to_end(key)
-                held.estimated += delta
-                self._estimated += delta
-            victims = self._over_budget(now)
-        if victims:
-            self._jobs.put(lambda: self._evict(victims))
+        if not sized:
+            return
+        batch = packed([_key_text(key) for key, _size in sized])  # type: ignore[arg-type]
+        sizes = array("q", [size for _key, size in sized])
+        self._handoffs.put(("w", store, table, batch, sizes, time.monotonic()))
 
     def removed(self, store: Any, table: str, keys: Sequence[Hashable]) -> None:
         """rows left the table (a delete, an invalidation): they leave its recency.
@@ -408,15 +563,8 @@ class L1Ledger:
         :return: nothing
         :rtype: None
         """
-        held = self._tables.get((id(store), table))
-        if held is None:
-            return
-        with self._lock:
-            for key in keys:
-                entry = held.order.pop(key, None)
-                if entry is not None:
-                    held.estimated -= int(entry[0])
-                    self._estimated -= int(entry[0])
+        if keys:
+            self._handoffs.put(("r", store, table, packed([_key_text(key) for key in keys])))  # type: ignore[arg-type]
 
     def emptied(self, store: Any, table: str) -> None:
         """every row of the table left it.
@@ -428,11 +576,159 @@ class L1Ledger:
         :return: nothing
         :rtype: None
         """
-        with self._lock:
-            held = self._tables.get((id(store), table))
-            if held is not None:
-                self._tables = MappingProxyType({key: kept for key, kept in self._tables.items() if kept is not held})
-                self._estimated -= held.estimated
+        self._handoffs.put(("e", store, table))
+
+    # --- the ledger's thread: hand-offs in, recency folded, evictions out ---
+
+    def _settle(self, first: _HandOff | None = None) -> None:
+        """take the hand-offs queued now (``first`` already taken), in order, into the tables' recency; evict past the
+        budget as a write crosses it. The ledger's thread (or a step-by-step ledger's caller) alone.
+
+        :param first: a hand-off already taken from the queue
+        :ptype first: _HandOff | None
+        :return: nothing
+        :rtype: None
+        """
+        # function-local: each table's rows handed off in this pass, as columns, until they join its hand-offs
+        local: dict[tuple[int, str], tuple[list[str], array[int], array[float], array[int]]] = {}
+        written: dict[tuple[int, str], int] = {}
+        count = self._handoffs.qsize()  # those queued now: a busy reader never keeps a drain from ending
+        taken = 0
+        while True:
+            if first is not None:
+                handoff, first = first, None
+            elif taken < count:
+                try:
+                    handoff = self._handoffs.get_nowait()
+                except queue.Empty:  # NOSILENT: the queue ran dry before its count; the pass is done
+                    break
+                taken += 1
+            else:
+                break
+            op = handoff[0]
+            if op in ("e", "l", "s"):
+                self._join_local(local, written)
+                local, written = {}, {}
+                if op == "s":
+                    if handoff[2]:
+                        self._fold_all()
+                    handoff[1].set()
+                else:
+                    self._drop(handoff)
+                continue
+            key = (id(handoff[1]), handoff[2])
+            if key not in self._tables:
+                if op != "w":
+                    continue  # a read or delete of a table the ledger holds nothing of
+                self._tables = MappingProxyType(
+                    {**self._tables, key: _Table(store=weakref.ref(handoff[1]), name=handoff[2])}
+                )
+            columns = local.get(key)
+            if columns is None:
+                columns = local[key] = ([], array("q"), array("d"), array("q"))
+            if op == "t":
+                columns[0].append(handoff[3])
+                columns[1].append(_TOUCH)
+                columns[2].append(handoff[4])
+                columns[3].append(self._seq)
+                self._seq += 1
+            elif op == "r":
+                names = texts(handoff[3])
+                columns[0].extend(names)
+                columns[1].extend([_REMOVED] * len(names))
+                columns[2].extend([0.0] * len(names))
+                columns[3].extend(range(self._seq, self._seq + len(names)))
+                self._seq += len(names)
+            else:
+                names, sizes, tick = texts(handoff[3]), handoff[4], handoff[5]
+                for start in range(0, len(names), _SLICE_ROWS):
+                    part = sizes[start : start + _SLICE_ROWS]
+                    columns[0].extend(names[start : start + _SLICE_ROWS])
+                    columns[1].extend(part)
+                    columns[2].extend([tick] * len(part))
+                    columns[3].extend(range(self._seq, self._seq + len(part)))
+                    self._seq += len(part)
+                    added = sum(part)
+                    written[key] = written.get(key, 0) + added
+                    self._unsettled += added
+                    if self._over_bound():
+                        self._join_local(local, written)
+                        self._evict_over()
+                        local, written = {}, {}
+                        columns = local[key] = ([], array("q"), array("d"), array("q"))
+        self._join_local(local, written)
+
+    def _join_local(
+        self,
+        local: Mapping[tuple[int, str], tuple[list[str], array[int], array[float], array[int]]],
+        written: Mapping[tuple[int, str], int],
+    ) -> None:
+        """a pass's rows join their tables' hand-offs, one batch a table; a table past its bound folds.
+
+        :param local: each table's rows of the pass, as columns
+        :ptype local: Mapping
+        :param written: each table's bytes its writes of the pass name
+        :ptype written: Mapping[tuple[int, str], int]
+        :return: nothing
+        :rtype: None
+        """
+        if not local:
+            return
+        tables = dict(self._tables)  # function-local: the next snapshot, assigned whole below
+        for key, (names, sizes, ticks, seqs) in local.items():
+            table = tables.get(key)
+            if table is None or not names:
+                continue
+            batch = _Rows(packed(names), sizes, ticks, seqs)
+            pending = (*table.pending, batch)
+            if len(pending) > _HANDOFF_BATCHES:
+                pending = (_joined(pending),)
+            table = replace(
+                table,
+                pending=pending,
+                pending_rows=table.pending_rows + len(batch),
+                unsettled=table.unsettled + written.get(key, 0),
+            )
+            if table.pending_rows > max(_FOLD_ROWS, len(table.held) // 4):
+                table = self._fold(table)
+            tables[key] = table
+        self._tables = MappingProxyType(tables)
+
+    def _fold(self, table: _Table) -> _Table:
+        """``table`` folded (:func:`_folded`), with the ledger's tallies moved to match.
+
+        :param table: the table
+        :ptype table: _Table
+        :return: it, folded
+        :rtype: _Table
+        """
+        done = _folded(table)
+        self._estimated += done.estimated - table.estimated
+        self._unsettled -= table.unsettled
+        return done
+
+    def _fold_all(self) -> None:
+        """fold every table: the ledger's bytes are then exact."""
+        self._tables = MappingProxyType({key: self._fold(table) for key, table in self._tables.items()})
+
+    def _drop(self, handoff: _HandOff) -> None:
+        """a table emptied (``e``) or a store left (``l``): their recency goes.
+
+        :param handoff: the hand-off
+        :ptype handoff: _HandOff
+        :return: nothing
+        :rtype: None
+        """
+        if handoff[0] == "e":
+            gone = {(id(handoff[1]), handoff[2])}
+        else:
+            gone = {key for key in self._tables if key[0] == handoff[1]}
+        for key in gone:
+            table = self._tables.get(key)
+            if table is not None:
+                self._estimated -= table.estimated
+                self._unsettled -= table.unsettled
+        self._tables = MappingProxyType({key: table for key, table in self._tables.items() if key not in gone})
 
     # --- the budget ---
 
@@ -440,13 +736,23 @@ class L1Ledger:
         """what is left for ``EVICTABLE`` rows: the budget less what ``KEEP`` holds and the files' overhead."""
         return (self._budget or 0) - self._kept - self._overhead
 
-    def _over_budget(self, now: float) -> list[tuple[_Table, Hashable, int, float]]:
-        """pick the least recent rows past the allowance, taking them out of the recency; under the lock.
+    def _over_bound(self) -> bool:
+        """whether the upper bound of the rows' bytes passes the allowance (then a fold says whether they do)."""
+        return self._budget is not None and (self._estimated + self._unsettled) * self._scale > self._allowance()
 
-        :param now: the monotonic clock now
-        :ptype now: float
-        :return: the victims: table, key, estimated bytes, last use
-        :rtype: list[tuple[_Table, Hashable, int, float]]
+    def _evict_over(self) -> None:
+        """fold every table, and evict the least recent rows past the allowance, if its exact bytes pass it."""
+        self._fold_all()
+        victims = self._over_budget()
+        if victims:
+            self._evict(victims)
+
+    def _over_budget(self) -> list[tuple[_Table, list[str], int, float]]:
+        """pick the least recent rows past the allowance across the (folded) tables, in order of use, taking them out
+        of the recency.
+
+        :return: each table's victims: the table, their key texts, their estimated bytes, the last one's last use
+        :rtype: list[tuple[_Table, list[str], int, float]]
         """
         if self._budget is None:
             return []
@@ -454,62 +760,78 @@ class L1Ledger:
         if self._estimated * self._scale <= allowance:
             return []
         target = max(0.0, allowance * _EVICT_TO) / self._scale
-        victims: list[tuple[_Table, Hashable, int, float]] = []
-        while self._estimated > target:
-            oldest: _Table | None = None
-            oldest_tick = now + 1
-            for held in self._tables.values():
-                if held.order:
-                    head = next(iter(held.order.values()))
-                    if head[1] < oldest_tick:
-                        oldest, oldest_tick = held, float(head[1])
-            if oldest is None:
+        keys = list(self._tables)  # function-local
+        rows = [self._tables[key].held for key in keys]
+        fronts = [0] * len(keys)
+        estimated = self._estimated
+        last = (-1, 0.0)
+        while estimated > target:
+            oldest = -1
+            for at, held in enumerate(rows):
+                if fronts[at] < len(held) and (oldest < 0 or held.seqs[fronts[at]] < rows[oldest].seqs[fronts[oldest]]):
+                    oldest = at
+            if oldest < 0:
                 break
-            key, (size, tick) = oldest.order.popitem(last=False)
-            oldest.estimated -= int(size)
-            self._estimated -= int(size)
-            victims.append((oldest, key, int(size), float(tick)))
+            estimated -= rows[oldest].sizes[fronts[oldest]]
+            last = (oldest, rows[oldest].ticks[fronts[oldest]])
+            fronts[oldest] += 1
+        victims: list[tuple[_Table, list[str], int, float]] = []
+        tables = dict(self._tables)  # function-local: the next snapshot, assigned whole below
+        for at, key in enumerate(keys):
+            taken = fronts[at]
+            if not taken:
+                continue
+            table, held = tables[key], rows[at]
+            names = texts(held.texts)
+            freed = sum(held.sizes[:taken])
+            tables[key] = replace(
+                table,
+                held=_Rows(packed(names[taken:]), held.sizes[taken:], held.ticks[taken:], held.seqs[taken:]),
+                estimated=table.estimated - freed,
+            )
+            victims.append((table, names[:taken], freed, last[1] if last[0] == at else held.ticks[taken - 1]))
+        self._tables = MappingProxyType(tables)
+        self._estimated = estimated
+        if last[0] >= 0:
+            # the newest victim's last use, as the age metric reads it: moved to the end
+            victims.sort(key=lambda victim: victim[3])
         return victims
 
-    def _evict(self, victims: list[tuple[_Table, Hashable, int, float]]) -> None:
+    def _evict(self, victims: list[tuple[_Table, list[str], int, float]]) -> None:
         """delete the victims' rows, a table at a time, on the ledger's thread; count them.
 
         :param victims: from :meth:`_over_budget`
-        :ptype victims: list[tuple[_Table, Hashable, int, float]]
+        :ptype victims: list[tuple[_Table, list[str], int, float]]
         :return: nothing
         :rtype: None
         """
-        by_table: dict[int, tuple[_Table, list[Any]]] = {}
-        for held, key, _size, _tick in victims:
-            by_table.setdefault(id(held), (held, []))[1].append(key)
-        for held, keys in by_table.values():
-            store = held.store()
+        for table, names, size, _tick in victims:
+            store = table.store()
             if store is None:
                 continue
             try:
-                store.evict_keys(held.name, keys)
+                store.evict_keys(table.name, [_key_of(text) for text in names])
             except Exception as exc:  # noqa: BLE001  # NOSILENT: a failed eviction leaves rows cached, a miss later at worst; said
-                contain(exc, log=log, what=f"L1 eviction of {held.name} failed; its rows stay cached")
+                contain(exc, log=log, what=f"L1 eviction of {table.name} failed; its rows stay cached")
                 continue
-            freed = round(sum(size for victim, _k, size, _t in victims if victim is held) * self._scale)
-            EVICTIONS.labels(tier=_TIER, name=held.name).inc(len(keys))
-            EVICTED_BYTES.labels(tier=_TIER, name=held.name).inc(freed)
+            EVICTIONS.labels(tier=_TIER, name=table.name).inc(len(names))
+            EVICTED_BYTES.labels(tier=_TIER, name=table.name).inc(round(size * self._scale))
         if victims:
             EVICTED_AGE_SECONDS.labels(tier=_TIER, name="").set(time.monotonic() - victims[-1][3])
 
     # --- the thread ---
 
     def _run(self) -> None:
-        """the ledger's thread: run evictions as they come, and measure every :data:`_MEASURE_SECONDS`."""
+        """the ledger's thread: take hand-offs as they come, and measure every :data:`_MEASURE_SECONDS`."""
         next_measure = time.monotonic() + _MEASURE_SECONDS
         while True:
             try:
-                job = self._jobs.get(timeout=max(0.0, next_measure - time.monotonic()))
+                first: _HandOff | None = self._handoffs.get(timeout=max(0.0, next_measure - time.monotonic()))
             except queue.Empty:
-                job = None
+                first = None
             try:
-                if job is not None:
-                    job()
+                if first is not None:
+                    self._settle(first)
                 if time.monotonic() >= next_measure:
                     next_measure = time.monotonic() + _MEASURE_SECONDS
                     self.measure()
@@ -517,11 +839,13 @@ class L1Ledger:
                 contain(exc, log=log, what="L1 ledger pass failed; the next pass tries again")
 
     def measure(self) -> dict[str, int]:
-        """measure every store's tables, set the gauges, rescale the estimate, and evict if over; blocking.
+        """take the queued hand-offs, measure every store's tables, set the gauges, fold and rescale the estimate, and
+        evict if over; blocking, on the ledger's thread (or a step-by-step ledger's caller).
 
         :return: the process's held bytes by policy (``keep``, ``evictable``) and its files' ``overhead``
         :rtype: dict[str, int]
         """
+        self._settle()
         kept = evictable = overhead = 0
         for store in list(self._stores.values()):
             policies = store.table_policies()
@@ -536,12 +860,12 @@ class L1Ledger:
                 else:
                     evictable += size
             overhead += store.side_bytes()
-        with self._lock:
-            self._kept, self._overhead = kept, overhead
-            if self._estimated > 0 and evictable > 0:
-                self._scale = evictable / self._estimated
-            failed = self._budget is not None and kept > self._budget
-            victims = self._over_budget(time.monotonic())
+        self._fold_all()
+        self._kept, self._overhead = kept, overhead
+        if self._estimated > 0 and evictable > 0:
+            self._scale = evictable / self._estimated
+        failed = self._budget is not None and kept > self._budget
+        victims = self._over_budget()
         if failed and not self._sizing_failed:
             SIZING_FAILURES.labels(tier=_TIER, name="").inc()
             log.error(
@@ -556,23 +880,56 @@ class L1Ledger:
     def status(self) -> dict[str, int]:
         """the tallies, for autosize (:class:`threetears.core.shm_autosize.ShmAutosize`): never the file system.
 
+        ``evictable_bytes`` is the ledger's upper bound: exact after a fold (every measure folds), above it by the
+        bytes of rows rewritten or deleted since.
+
         :return: ``kept_bytes`` (``KEEP``, last measured), ``max_bytes`` (the budget) and ``evictable_bytes``
         :rtype: dict[str, int]
         """
+        if not self._threaded:
+            self._settle()
         return {
             "kept_bytes": self._kept,
             "max_bytes": self._budget or 0,
-            "evictable_bytes": round(self._estimated * self._scale),
+            "evictable_bytes": round((self._estimated + self._unsettled) * self._scale),
         }
 
-    def drain(self) -> None:
-        """run every queued eviction now, on the calling thread (tests, and a measure that must see them done)."""
-        while True:
-            try:
-                job = self._jobs.get_nowait()
-            except queue.Empty:  # NOSILENT: an empty queue is the end of the drain, not a failure
-                return
-            job()
+    def held(self, store: Any, table: str) -> tuple[tuple[Any, ...], ...]:
+        """the keys the ledger holds of a table, least recently used first, once every hand-off queued now is taken and
+        every table folded (its bytes, :meth:`status`, are then exact); tests and diagnostics.
+
+        :param store: the backend
+        :ptype store: Any
+        :param table: the table
+        :ptype table: str
+        :return: the keys, serialized
+        :rtype: tuple[tuple[Any, ...], ...]
+        """
+        self.drain(fold=True)
+        held = self._tables.get((id(store), table))
+        return () if held is None else tuple(_key_of(text) for text in texts(held.held.texts))
+
+    def drain(self, timeout: float = 30.0, *, fold: bool = False) -> None:
+        """every hand-off queued now taken, evicting as they pass the budget: on the calling thread for a step-by-step
+        ledger, else waiting for the ledger's thread to reach them (tests, and a caller that must see them done).
+
+        :param timeout: seconds to wait for the ledger's thread
+        :ptype timeout: float
+        :param fold: fold every table too, so the ledger's bytes are exact
+        :ptype fold: bool
+        :return: nothing
+        :rtype: None
+        :raises TimeoutError: when the ledger's thread did not reach them in ``timeout``
+        """
+        if not self._threaded:
+            self._settle()
+            if fold:
+                self._fold_all()
+            return
+        reached = threading.Event()
+        self._handoffs.put(("s", reached, fold))
+        if not reached.wait(timeout):
+            raise TimeoutError(f"the L1 ledger's thread took no hand-offs in {timeout}s")
 
 
 _LEDGER: list[L1Ledger] = []

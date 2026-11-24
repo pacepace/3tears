@@ -14,6 +14,7 @@ search never matches across two texts.
 
 from __future__ import annotations
 
+import ast
 from array import array
 from collections.abc import Sequence
 from typing import Final
@@ -26,6 +27,7 @@ __all__ = [
     "names",
     "offsets_of",
     "packed",
+    "parts_of",
     "text_at",
     "texts",
     "with_text",
@@ -63,6 +65,21 @@ def key_text(key: Sequence[str]) -> str:
     if SEP in text or _ESCAPED in text or text.count(_PART) != len(key) - 1:
         return _ESCAPED + repr(tuple(key))
     return text
+
+
+def parts_of(text: str) -> tuple[str, ...]:
+    """the key whose text is ``text``: the inverse of :func:`key_text`, so a holder of a batch hands a key back whole
+    (the L1 ledger's evictions delete rows by the keys they were written with).
+
+    :param text: a key's :func:`key_text`
+    :ptype text: str
+    :return: the key's parts
+    :rtype: tuple[str, ...]
+    """
+    if text.startswith(_ESCAPED):
+        parts: tuple[str, ...] = ast.literal_eval(text[1:])
+        return parts
+    return tuple(text.split(_PART))
 
 
 def packed(texts: Sequence[str]) -> str:
