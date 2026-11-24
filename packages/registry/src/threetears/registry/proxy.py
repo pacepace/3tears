@@ -9,6 +9,7 @@ NATS request-reply.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
@@ -16,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid7
 
+from threetears.core.task_registry import KeyedTaskRegistry
 from threetears.core.wire import TolerantWireModel
 from pydantic import (
     BaseModel,
@@ -484,7 +486,8 @@ class CallProxy:
         self._inflight_gauge = inflight_gauge or InflightRequestsGauge("threetears_registry_inflight_requests")
         self._nc: CallProxyTransport | None = None
         self._sub: SubscriptionHandle | None = None
-        self._active_tasks: set[asyncio.Task[None]] = set()
+        # one strong reference per in-flight call (asyncio holds tasks weakly), keyed by a uuid per call
+        self._active_tasks = KeyedTaskRegistry()
 
     @property
     def subscription_active(self) -> bool:
@@ -547,8 +550,7 @@ class CallProxy:
                 "draining in-flight tool call tasks",
                 extra={"extra_data": {"count": len(self._active_tasks)}},
             )
-            await asyncio.gather(*self._active_tasks, return_exceptions=True)
-            self._active_tasks.clear()
+            await self._active_tasks.drain()
         log.info("call proxy stopped")
 
     async def handle_call(self, msg: IncomingMessage) -> None:
@@ -566,11 +568,12 @@ class CallProxy:
         :param msg: incoming wrapper envelope containing call request
         :ptype msg: IncomingMessage
         """
+        key = uuid7()
         task = asyncio.create_task(self._process_call(msg))
-        self._active_tasks.add(task)
-        task.add_done_callback(self._call_finished)
+        self._active_tasks.register(key, task)
+        task.add_done_callback(functools.partial(self._call_finished, key))
 
-    def _call_finished(self, task: "asyncio.Task[None]") -> None:
+    def _call_finished(self, key: UUID, task: "asyncio.Task[None]") -> None:
         """forget a finished call task.
 
         a fault that ended it was recorded by :meth:`_process_call`, with the call's identity, before
@@ -578,10 +581,12 @@ class CallProxy:
         rather than reported a second time, without that identity, as asyncio's "exception was never
         retrieved".
 
+        :param key: the call's key in the in-flight registry
+        :ptype key: UUID
         :param task: the finished call task
         :ptype task: asyncio.Task[None]
         """
-        self._active_tasks.discard(task)
+        self._active_tasks.discard(key, task)
         if not task.cancelled():
             task.exception()
 
