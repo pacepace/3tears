@@ -37,6 +37,7 @@ from threetears.core.collections import delta_files, delta_fold  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
+    RESET_REASON,
     ChangedRow,
     EpochChange,
     EpochWalk,
@@ -893,6 +894,58 @@ async def test_a_reset_drops_the_table_s_files_and_rebuilds_it_at_the_writer_s_t
     assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8) + _votes("NC", range(3, 400), 9))
     assert not any((tmp_path / file).exists() for file in old_parts | set(old_deltas))
     await folds.close()
+
+
+async def test_a_column_added_in_place_starts_the_table_fresh_once_at_the_writer_s_start(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a writer whose newer table list added a column in place (the hub adds it with no recreate and no reset
+    record) keeps the full made over the old columns instead of starting the table fresh (decision 12): one read of it
+    from L3, counted as a schema change, its parts holding the new column; and if a later start rebuilds it again."""
+    old = _votes_schema()
+    l3, generations = _L3({"votes": _VOTES_ROWS}, {"votes": ("state", "geo_id")}), _Generations({"votes": "inc:7"})
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(old, scope=_SCOPE)], workers=workers)
+    assert await folds.start(l3, generations, changes=_Log(), version=5) == ("votes",)
+    await folds.close()
+    added = dataclasses.replace(old, columns=[*old.columns, Column("source", STRING_TYPE, nullable=True)])
+    l3.tables["votes"] = [{**row, "source": f"s{row['geo_id']}"} for row in _VOTES_ROWS]
+    rebuilt = _rebuilds("schema_change")
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(added, scope=_SCOPE)], workers=workers)
+    assert await folds.start(l3, generations, changes=_Log(), version=6) == ("votes",)
+    await folds.close()
+    assert l3.statements == Counter({"votes": 2}), "one read of the table for its fresh start, nothing else"
+    assert _rebuilds("schema_change") == rebuilt + 1
+    assert _held(tmp_path, "votes") == _sorted(l3.tables["votes"]), "the parts hold the new column"
+    again = DeltaFolds(tmp_path, [FoldedTable.of(added, scope=_SCOPE)], workers=workers)
+    assert await again.start(l3, generations, changes=_Log(), version=7) == (), "started fresh once, not at each start"
+    await again.close()
+    assert l3.statements == Counter({"votes": 2})
+
+
+async def test_a_reset_record_met_by_a_restarted_writer_starts_the_table_fresh_never_a_recovery_by_key(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a writer restarting past a reset (its record names no delta file, by design) reads it as a lost log
+    and recovers the table by key (decision 28) instead of starting it fresh (decision 12): one read from L3, counted
+    as a reset, the full holding the table as the reset left it."""
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    log = _Log()
+    await writer.commit(_votes("TX", range(500), 1))
+    log.append("votes", "inc:1", writer.files[-1])
+    await writer.commit(_votes("TX", range(3), 2))
+    log.append("votes", "inc:2", writer.files[-1])
+    await writer.folds.close()
+    # an operator resets votes and reloads it while no writer runs: the reset's record names no file
+    log.records[("votes", "inc:3")] = EpochChange(table="votes", token="inc:3", whole_table=True, reason=RESET_REASON)
+    l3 = _L3({"votes": _votes("NC", range(4), 8)}, {"votes": ("state", "geo_id")})
+    fresh, recovered = _rebuilds("reset"), _recoveries("log_lost")
+    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    assert await writer.folds.start(l3, _Generations({"votes": "inc:3"}), changes=log, version=6) == ("votes",)
+    await writer.folds.close()
+    assert _rebuilds("reset") == fresh + 1 and _recoveries("log_lost") == recovered
+    assert l3.statements == Counter({"votes": 1})
+    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(4), 8))
 
 
 # --- a restarted writer re-learns its unfolded deltas (decision 24) ----------------------------------------------

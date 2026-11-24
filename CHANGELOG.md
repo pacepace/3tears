@@ -27,6 +27,14 @@ claim the entry's state byte, an ack or removal a copy of its run's state bytes;
 under the buffer's lock. What a drain claims, its
 order, and the claim's version guard are unchanged. The dict_state rule's two known-violation lists are deleted: it
 passes with no exception.
+### core: a folded table whose columns changed in place starts fresh; a reset record is a fresh start, not a lost log
+
+**Fixed:** a newer table list that adds (or drops) a column in place, with no recreate and no reset record, left the
+volume's full over the old columns: the writer kept folding onto it and copies took it. Now `DeltaFolds`' start starts
+such a table fresh (`why="schema_change"`, one read from L3) when its parts' fingerprints name other columns
+(`other_columns_parts`, `columns_hash`), and a copy's start from the volume waits for that fresh full, reading no L3
+(`volume_fulls_other_columns_total`, logged once per reason). A restarted writer meeting a reset record in the epoch
+log starts the table fresh (`why="reset"`) instead of recovering it by key as a lost log.
 
 ### core: keyed reads of several key columns are read by their keys alone on YugabyteDB
 

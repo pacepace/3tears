@@ -65,6 +65,7 @@ from threetears.observe.metrics import counter, histogram
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.delta_files import DeltaFileUnreadableError, read_volume_file, write_volume_file
 from threetears.core.collections.generation import split_generation_token
+from threetears.core.collections.schema_backed import rail_arrow_types
 
 if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable, FollowerBackend
@@ -97,11 +98,13 @@ __all__ = [
     "VolumeFulls",
     "current_full_manifest",
     "deletable_full_files",
+    "columns_hash",
     "fingerprint_columns",
     "fingerprint_comparable",
     "fingerprint_ipc",
     "fingerprint_kinds",
     "full_table_floor",
+    "other_columns_parts",
     "publish_full_manifest",
     "read_full_part",
     "row_digests",
@@ -138,6 +141,15 @@ _PART_CHECK_SECONDS = histogram(
     description="seconds of a copy's check of one part of the full it loads (read off the volume, checksum verified, "
     "rows counted), by outcome",
     label_names=("outcome",),
+)
+
+#: a copy's looks at a full holding one of its tables over other columns than the table's schema (a column added or
+#: dropped in place by a newer table list, decision 12): the copy waits for the writer's fresh full, reading no L3
+_OTHER_COLUMNS = counter(
+    "volume_fulls_other_columns_total",
+    description="a copy's looks at a full whose parts of a table were made over other columns than the table's "
+    "schema: it waits for the writer's fresh full of the table, reading nothing from L3",
+    label_names=("table",),
 )
 
 #: the fulls' directory under the delta files' root: a name no table's directory can take (a table is an identifier)
@@ -363,6 +375,50 @@ def fingerprint_columns(kinds: Sequence[tuple[str, str]]) -> str:
     """
     named = ",".join(f"{name}:{kind}" for name, kind in kinds)
     return hashlib.blake2b(named.encode(), digest_size=4).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class _ColumnKind:
+    """a column's name and type tag: all :func:`~threetears.core.collections.schema_backed.rail_arrow_types` reads."""
+
+    name: str
+    column_type: str
+
+
+def columns_hash(kinds: Sequence[tuple[str, str]]) -> str:
+    """the column hash (:func:`fingerprint_columns`) a part of a table made over these columns, typed as the L3 rail
+    answers them, is fingerprinted with: what a full's part is compared with to tell a table whose columns changed in
+    place (a newer table list adds them, with no reset and no recreate) from one at its schema (decision 12).
+
+    :param kinds: every column of the table and its type tag, ``(column, column_type)``
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: 8 hex digits
+    :rtype: str
+    :raises ValueError: for a column the rail does not answer as one Arrow type
+    """
+    return fingerprint_columns(fingerprint_kinds(rail_arrow_types([_ColumnKind(name, kind) for name, kind in kinds])))
+
+
+def other_columns_parts(entry: FullTable, kinds: Sequence[tuple[str, str]]) -> tuple[FullPart, ...]:
+    """the parts of a table's full made over other columns than ``kinds``: by each part's fingerprint, whose column
+    hash names the columns its rows were written with (decision 32). A part with no fingerprint of this format (an
+    older writer's) cannot tell, and is not named.
+
+    :param entry: the table in the full
+    :ptype entry: FullTable
+    :param kinds: every column of the table now and its type tag, ``(column, column_type)``
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: the parts over other columns; empty when every comparable part is over these
+    :rtype: tuple[FullPart, ...]
+    """
+    opening = f"{FINGERPRINT_FORMAT}:{columns_hash(kinds)}-"
+    return tuple(
+        part
+        for part in entry.parts
+        if part.fingerprint is not None
+        and fingerprint_comparable(part.fingerprint)
+        and not part.fingerprint.startswith(opening)
+    )
 
 
 def fingerprint_ipc(ipc: bytes, kinds: tuple[tuple[str, str], ...]) -> str:
@@ -866,6 +922,17 @@ class VolumeFulls:
         missing = sorted(set(self.tables) - set(manifest.tables))
         if missing:
             return FullAbsent(f"full {manifest.name} does not hold {missing} yet; the writer publishes one that does")
+        for name, table in self.tables.items():
+            # a table whose columns changed in place (decision 12): its parts hold the old columns, so the copy waits
+            # for the writer's fresh full, as for a missing one, never reading L3
+            kinds = table.l3_kinds or tuple((column.name, column.column_type) for column in table.columns)
+            other = other_columns_parts(manifest.tables[name], kinds)
+            if other:
+                _OTHER_COLUMNS.labels(table=name).inc()
+                return FullAbsent(
+                    f"full {manifest.name} holds {name} over other columns than its schema ({len(other)} parts, "
+                    f"{other[0].fingerprint}); the writer starts it fresh and publishes one over its columns"
+                )
         versions: dict[str, dict[str | None, str]] = {}
         marks: dict[str, str] = {}
         changes: list[StagedChange] = []
