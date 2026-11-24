@@ -353,7 +353,7 @@ async def test_a_crash_before_the_commit_leaves_an_orphan_the_sweep_removes_and_
     past = time.time() - 3600  # files the volume stamps long ago: a clock compare would take every one
     for name in (in_flight, "results/other.arrow", orphan, kept):
         os.utime(root / name, (past, past))
-    swept = sweep_orphan_delta_files(root, orphans=OWN_DELTA_SAVES.orphans, named={kept})
+    swept = sweep_orphan_delta_files(root, orphans=OWN_DELTA_SAVES.orphans, named={kept}, retention="delete")
     OWN_DELTA_SAVES.swept(swept)
     OWN_DELTA_SAVES.settled([in_flight], landed=True)
     assert orphan in swept and not (root / orphan).exists()
@@ -392,7 +392,7 @@ def test_the_rename_keeps_a_partly_written_file_invisible(tmp_path: Path, monkey
     (tmp_path / "results" / ".w3.partial").write_bytes(b"ARROW1 half")
     [w3] = OWN_DELTA_SAVES.saving(["results"], "w3")
     OWN_DELTA_SAVES.settled([w3], landed=False)
-    assert sweep_orphan_delta_files(tmp_path, orphans=[w3], named={name}) == ["results/w3.arrow"]
+    assert sweep_orphan_delta_files(tmp_path, orphans=[w3], named={name}, retention="delete") == ["results/w3.arrow"]
     OWN_DELTA_SAVES.swept([w3])
     assert sorted(p.name for p in (tmp_path / "results").iterdir()) == ["w1.arrow"]
 

@@ -397,7 +397,7 @@ async def test_a_waiting_copy_loads_the_writer_s_rebuild_and_never_reads_l3(tmp_
         name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
     )
     writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=("state", "state:"))])
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=("state", "state:"))], retention="delete")
     try:
         # a writer with no full yet has no delta to re-learn: the epoch log is read, and holds nothing for it
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=3) == (_TABLE,)
@@ -466,7 +466,7 @@ async def test_a_column_added_in_place_makes_the_writer_start_fresh_once_and_the
         name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
     )
     writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(old_schema, scope=("state", "state:"))])
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(old_schema, scope=("state", "state:"))], retention="delete")
     try:
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=3) == (_TABLE,)
     finally:
@@ -497,7 +497,7 @@ async def test_a_column_added_in_place_makes_the_writer_start_fresh_once_and_the
     assert _other_columns() > looks and copy_l3.statements == 0
     # the writer restarts on the new table list: the table starts fresh, read from L3 once
     writer_l3.rows = [{"state": "VA", "geo_id": g, "votes": 1, "source": f"s{g}"} for g in range(3)]
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(_ADDED, scope=("state", "state:"))])
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(_ADDED, scope=("state", "state:"))], retention="delete")
     try:
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=4) == (_TABLE,)
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=5) == ()

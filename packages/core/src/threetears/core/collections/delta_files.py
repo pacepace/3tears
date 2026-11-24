@@ -52,8 +52,8 @@ row.
 **Saved before the commit, under a unique name, atomically.** The file is written under a temporary name in its
 table's directory, flushed to disk, then renamed to its own name, and the directory flushed: a reader that opens the
 name sees the whole file or nothing, never part of one. A crash before the commit leaves a file no committed record
-names (an orphan, which :func:`sweep_orphan_delta_files` removes); a crash after it leaves the file in place, so every
-committed version has its file.
+names (an orphan, which :func:`sweep_orphan_delta_files` removes when the fold deletes, :data:`DeltaRetention`; only its
+temporary name when it keeps); a crash after it leaves the file in place, so every committed version has its file.
 
 **A checksum closes every file** (decision 29 depends on it). The IPC bytes are followed by their sha256 and a mark
 (:data:`_CHECKSUM_MARK`); every reader of the volume's files (this module's, the fold's, a full's parts) verifies it
@@ -75,7 +75,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Final
+from typing import Any, BinaryIO, Final, Literal
 
 from threetears.core.backends.arrow_reply import _rail_value
 from threetears.core.collections.epoch_change import key_text
@@ -97,7 +97,9 @@ __all__ = [
     "DeltaChange",
     "DeltaFileRefusedError",
     "DeltaFileUnreadableError",
+    "DELTA_RETENTIONS",
     "DeltaKeys",
+    "DeltaRetention",
     "DeltaTable",
     "HeldDeltaRows",
     "LoadDelta",
@@ -125,6 +127,17 @@ log = get_logger(__name__)
 #: names the directory delta files go in: the shared volume's mount path in a pod. Unset, no delta file can be saved,
 #: so a write to a table that opts in is refused rather than committed without its file
 _DELTA_FILES_DIR_ENV: Final = "THREETEARS_DELTA_FILES_DIR"
+
+#: what the writer does with a delta file once a full covers it, or once its commit did not land
+#: (:class:`~threetears.core.collections.delta_fold.DeltaFolds`' ``retention``, required, no default): ``"keep"``, never
+#: deleted by anything (``design-pod-delta-files.md`` decision 51: the history a copy that lags its writer still reads,
+#: the front end's time travel; a later plan moves old ones to cold storage), or ``"delete"``, deleted as the fold covers
+#: them. Why no default: which a deployment runs changes what a lagging copy finds on the volume, so each consumer says
+#: it (the reports pod: ``"keep"``)
+DeltaRetention = Literal["keep", "delete"]
+
+#: every :data:`DeltaRetention`, for a check at the fold's construction
+DELTA_RETENTIONS: Final[tuple[DeltaRetention, ...]] = ("keep", "delete")
 
 #: the column that marks a row as a deleted key: true for a delete marker, false for a row written
 _DELETED_COLUMN: Final = "_3tears_deleted"
@@ -1646,7 +1659,8 @@ class _OwnDeltaSaves:
         """the commit of ``names`` ended: landed, they are named by its records and leave; not, they are orphans.
 
         A commit whose outcome is unknown (its reply lost) is settled as not landed, as the sweep always took it: a
-        record naming a file swept so is the lost-file path's (decision 29), which recreates it.
+        record naming a file swept so is the lost-file path's (decision 29), which recreates it. A fold that keeps its
+        delta files (:data:`DeltaRetention` ``"keep"``) sweeps only the temporary file, so such a record finds its file.
 
         :param names: the files
         :ptype names: Collection[str]
@@ -1717,20 +1731,28 @@ def _partial_name(name: str) -> str:
     return f"{table}/.{file.removesuffix(_SUFFIX)}{_PARTIAL_SUFFIX}"
 
 
-def sweep_orphan_delta_files(root: Path, *, orphans: Collection[str], named: Collection[str]) -> list[str]:
-    """remove each of ``orphans`` (files this process saved whose commit did not land, :class:`_OwnDeltaSaves`) that
-    ``named`` (every file a committed record or a full in use names) does not hold, and the temporary file of each,
-    left when its write died before its rename. Blocking.
+def sweep_orphan_delta_files(
+    root: Path, *, orphans: Collection[str], named: Collection[str], retention: DeltaRetention
+) -> list[str]:
+    """remove the temporary file of each of ``orphans`` (files this process saved whose commit did not land,
+    :class:`_OwnDeltaSaves`), left when its write died before its rename; and, when ``retention`` is ``"delete"``, each
+    orphan itself that ``named`` (every file a committed record or a full in use names) does not hold. Blocking.
+
+    Kept (``"keep"``, decision 51), an orphan's delta file stays: a commit whose reply was lost is settled as not landed
+    yet may have landed, and a record naming its file must find it. The temporary file goes in either mode: the commit
+    has ended, so its save is over, and no record or manifest names a temporary name.
 
     Each is opened by its name: no directory is listed and no file's time read, so the sweep cannot take a file of
     work still in flight, this process's or another's.
 
     :param root: the delta files' directory
     :ptype root: Path
-    :param orphans: the files to remove, relative to ``root``
+    :param orphans: the files to sweep, relative to ``root``
     :ptype orphans: Collection[str]
     :param named: every file name a committed record or a full in use names: never removed
     :ptype named: Collection[str]
+    :param retention: ``"keep"``: only temporary files are removed; ``"delete"``: the orphans too
+    :ptype retention: DeltaRetention
     :return: the orphans handled (removed, or already gone), relative to ``root``: forget them
     :rtype: list[str]
     """
@@ -1740,7 +1762,8 @@ def sweep_orphan_delta_files(root: Path, *, orphans: Collection[str], named: Col
         if name in named:
             handled.append(name)  # named after all: no orphan
             continue
-        for path in (root / name, root / _partial_name(name)):
+        paths = (root / name, root / _partial_name(name)) if retention == "delete" else (root / _partial_name(name),)
+        for path in paths:
             try:
                 path.unlink()
                 removed += 1
@@ -1750,6 +1773,6 @@ def sweep_orphan_delta_files(root: Path, *, orphans: Collection[str], named: Col
     if removed:
         log.info(
             "orphan delta files swept",
-            extra={"extra_data": {"files": removed, "first": handled[0] if handled else None}},
+            extra={"extra_data": {"files": removed, "retention": retention, "first": handled[0] if handled else None}},
         )
     return handled

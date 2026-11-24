@@ -28,6 +28,7 @@ duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.collections.delta_files import (  # noqa: E402
     OWN_DELTA_SAVES,
+    DeltaRetention,
     TableDelta,
     read_volume_file,
     write_delta_file,
@@ -226,9 +227,13 @@ def _first_full(root: Path, *tables: str) -> FullManifest:
     return publish_full_manifest(root, term=1, tables={name: FullTable(version="inc:0") for name in tables})
 
 
-def _writer(root: Path, schema: TableSchema, workers: ProcessWorkers) -> _Writer:
+def _writer(
+    root: Path, schema: TableSchema, workers: ProcessWorkers, *, retention: DeltaRetention = "delete"
+) -> _Writer:
     _first_full(root, schema.name)
-    return _Writer(root, schema, DeltaFolds(root, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers))
+    return _Writer(
+        root, schema, DeltaFolds(root, [FoldedTable.of(schema, scope=_SCOPE)], retention=retention, workers=workers)
+    )
 
 
 def _part(root: Path, table: str, scope: str) -> FullPart | None:
@@ -558,6 +563,111 @@ async def test_covered_deltas_and_unnamed_files_are_deleted_and_the_previous_ful
     await writer.folds.close()
 
 
+async def test_a_fold_that_keeps_deletes_no_delta_file_and_still_drops_the_fulls_old_files(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a fold that keeps its delta files (``retention="keep"``, design-pod-delta-files decision 51) deletes
+    any: a delta a full covers, one a manifest named as a part and no longer names, or an orphan whose commit did not
+    land (a commit whose reply was lost may have landed); or if it stops dropping its own scratch: the parts and
+    manifests no manifest in use names, and an orphan's temporary file."""
+    writer = _writer(tmp_path, _votes_schema(), workers, retention="keep")
+    await writer.commit(_votes("GA", range(2000), 1))
+    shared = await writer.commit(_votes("TX", range(3), 1) + _votes("GA", range(3), 2))
+    tx1 = _part(tmp_path, "votes", "state:TX")
+    assert tx1 is not None
+    orphan = writer.save(_votes("TX", range(5), 5))
+    writer.files.remove(orphan)
+    partial = tmp_path / "votes" / ".w0003.partial"
+    partial.write_bytes(b"a save that died before its rename")
+    OWN_DELTA_SAVES.settled([orphan], landed=False)
+    await writer.commit(_votes("TX", range(2), 3))
+    await writer.commit(_votes("TX", range(3), 4))
+    await writer.commit(_votes("GA", range(3000, 5000), 9))
+    assert all((tmp_path / file).exists() for file in writer.files), "every committed delta file is kept"
+    assert (tmp_path / shared).exists() and (tmp_path / orphan).exists(), "covered and orphan deltas are kept"
+    assert not partial.exists() and orphan not in OWN_DELTA_SAVES.orphans, "the orphan's temporary file is swept"
+    assert not (tmp_path / tx1.file).exists(), "a part neither the current nor the previous manifest names goes"
+    current = current_full_manifest(tmp_path)
+    assert current is not None and current.previous is not None
+    assert sorted(p.name for p in (tmp_path / ".fulls" / "manifests").iterdir()) == sorted(
+        [current.previous, current.name]
+    )
+    await writer.folds.close()
+    # a delta named as a part (decision 16) is kept once no manifest names it
+    runs_root = tmp_path / "runs-volume"
+    runs_root.mkdir()
+    runs = _writer(runs_root, _runs_schema(_NewestRun), workers, retention="keep")
+    named = [
+        await runs.commit([{"state": "TX", "race": race, "run": run, "votes": run} for race in "abc"])
+        for run in (1, 2, 3)
+    ]
+    assert _part(runs_root, "runs", "state:TX") is not None
+    assert all((runs_root / file).exists() for file in named), "a delta once named as a part is kept"
+    await runs.folds.close()
+
+
+async def test_a_reset_rebuild_of_a_fold_that_keeps_leaves_every_old_delta_file(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a rebuild from L3 (a reset) by a fold that keeps its delta files deletes the table's old delta files
+    (decision 51), or stops publishing the table as L3 holds it and dropping its old parts."""
+    l3, generations = _l3(), _Generations({"votes": "inc:0", "runs": "inc:3"})
+    folds = DeltaFolds(
+        tmp_path,
+        [FoldedTable.of(_votes_schema(), scope=_SCOPE), FoldedTable.of(_runs_schema(_NewestRun), scope=_SCOPE)],
+        retention="keep",
+        workers=workers,
+    )
+    await folds.start(l3, generations, changes=_Log(), version=5)
+    writer = _Writer(tmp_path, _votes_schema(), folds)
+    writer.version = 5
+    await writer.commit(_votes("TX", range(100, 500), 1))
+    await writer.commit(_votes("TX", range(3), 3))
+    old = current_full_manifest(tmp_path)
+    assert old is not None
+    old_parts = {part.file for part in old.tables["votes"].parts}
+    l3.tables["votes"] = _votes("NC", range(3), 8)
+    generations.tokens["votes"] = f"inc:{len(writer.files)}"
+    folds.start_fresh("votes", why="reset")
+    await folds.wait()
+    assert _held(tmp_path, "votes") == _sorted(_votes("NC", range(3), 8))
+    assert all((tmp_path / file).exists() for file in writer.files), "every old delta file is kept"
+    await writer.commit(_votes("NC", range(3, 400), 9))
+    await writer.commit(_votes("NC", range(400, 900), 9))
+    assert not any((tmp_path / file).exists() for file in old_parts), "the old parts still go"
+    assert all((tmp_path / file).exists() for file in writer.files)
+    await folds.close()
+
+
+async def test_a_recovery_of_a_fold_that_keeps_leaves_every_leftover_delta_file(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a lost log's recovery (decision 28) by a fold that keeps its delta files deletes the leftover files it
+    read, or no longer recovers the full L3 holds by key."""
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers, retention="keep")
+    l3: dict[tuple[str, int], dict[str, Any]] = {}
+    # a part of varied rows, many times the size of the small delta after it, which stays unfolded: the recovery's
+    big: list[dict[str, Any]] = [
+        {"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"} for g in range(5000)
+    ]
+    for rows in (big, _votes("TX", range(1000, 1008), 2)):
+        await writer.commit(rows)
+        l3.update({(row["state"], row["geo_id"]): row for row in rows})
+    await writer.folds.close()
+    _no_whole_read(monkeypatch)
+    before = _recoveries("log_lost")
+    reader = _KeyedL3(list(l3.values()))
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="keep", workers=workers)
+    assert await folds.start(
+        reader, _Generations({"votes": f"inc:{len(writer.files)}"}), changes=_Log(), version=6
+    ) == ("votes",)
+    assert _recoveries("log_lost") == before + 1
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
+    assert all((tmp_path / file).exists() for file in writer.files), "every leftover delta file is kept"
+    await folds.close()
+
+
 async def test_a_stale_writer_s_fold_publishes_nothing(tmp_path: Path, workers: ProcessWorkers) -> None:
     """Flips if the term fence goes (decision 15): a writer whose lease another took (a later write's version is the
     current full's term) publishing its fold, or deleting a file of the current writer's full."""
@@ -716,6 +826,7 @@ def _folds(root: Path, workers: ProcessWorkers) -> DeltaFolds:
     return DeltaFolds(
         root,
         [FoldedTable.of(_votes_schema(), scope=_SCOPE), FoldedTable.of(_runs_schema(_NewestRun), scope=_SCOPE)],
+        retention="delete",
         workers=workers,
     )
 
@@ -905,19 +1016,19 @@ async def test_a_column_added_in_place_starts_the_table_fresh_once_at_the_writer
     from L3, counted as a schema change, its parts holding the new column; and if a later start rebuilds it again."""
     old = _votes_schema()
     l3, generations = _L3({"votes": _VOTES_ROWS}, {"votes": ("state", "geo_id")}), _Generations({"votes": "inc:7"})
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(old, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(old, scope=_SCOPE)], retention="delete", workers=workers)
     assert await folds.start(l3, generations, changes=_Log(), version=5) == ("votes",)
     await folds.close()
     added = dataclasses.replace(old, columns=[*old.columns, Column("source", STRING_TYPE, nullable=True)])
     l3.tables["votes"] = [{**row, "source": f"s{row['geo_id']}"} for row in _VOTES_ROWS]
     rebuilt = _rebuilds("schema_change")
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(added, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(added, scope=_SCOPE)], retention="delete", workers=workers)
     assert await folds.start(l3, generations, changes=_Log(), version=6) == ("votes",)
     await folds.close()
     assert l3.statements == Counter({"votes": 2}), "one read of the table for its fresh start, nothing else"
     assert _rebuilds("schema_change") == rebuilt + 1
     assert _held(tmp_path, "votes") == _sorted(l3.tables["votes"]), "the parts hold the new column"
-    again = DeltaFolds(tmp_path, [FoldedTable.of(added, scope=_SCOPE)], workers=workers)
+    again = DeltaFolds(tmp_path, [FoldedTable.of(added, scope=_SCOPE)], retention="delete", workers=workers)
     assert await again.start(l3, generations, changes=_Log(), version=7) == (), "started fresh once, not at each start"
     await again.close()
     assert l3.statements == Counter({"votes": 2})
@@ -941,7 +1052,7 @@ async def test_a_reset_record_met_by_a_restarted_writer_starts_the_table_fresh_n
     log.records[("votes", "inc:3")] = EpochChange(table="votes", token="inc:3", whole_table=True, reason=RESET_REASON)
     l3 = _L3({"votes": _votes("NC", range(4), 8)}, {"votes": ("state", "geo_id")})
     fresh, recovered = _rebuilds("reset"), _recoveries("log_lost")
-    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     assert await writer.folds.start(l3, _Generations({"votes": "inc:3"}), changes=log, version=6) == ("votes",)
     await writer.folds.close()
     assert _rebuilds("reset") == fresh + 1 and _recoveries("log_lost") == recovered
@@ -982,7 +1093,7 @@ async def test_a_restarted_writer_relearns_its_unfolded_deltas_from_the_epoch_lo
 
     # the writer restarts: a new fold, knowing nothing, re-learns from the log alone
     l3 = _L3({"votes": []}, {"votes": ("state", "geo_id")})
-    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     assert await writer.folds.start(l3, _Generations({"votes": "inc:5"}), changes=log, version=6) == ()
     assert l3.statements == Counter(), "re-learned from the epoch log, never from L3"
     assert writer.folds.unfolded == set(unfolded), "exactly the unfolded deltas"
@@ -1035,7 +1146,7 @@ async def test_a_restarted_writer_relearns_a_load_whose_intent_record_its_confir
     await writer.folds.close()
 
     l3 = _L3({"votes": []}, {"votes": ("state", "geo_id")})
-    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     assert await writer.folds.start(l3, _Generations({"votes": "inc:3"}), changes=log, version=6) == ()
     assert l3.statements == Counter()
     assert loaded in writer.folds.unfolded, "a load its confirmed record names is folded, whatever its intent said"
@@ -1081,7 +1192,7 @@ async def test_a_table_keyed_without_its_state_files_a_delete_marker_under_the_s
         {"results": [row for race, state in races.items() for row in _results(state, race, range(2), 1)]},
         {"results": ("office_key", "candidate")},
     )
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=scope)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=scope)], retention="delete", workers=workers)
     assert await folds.start(l3, _Generations({"results": "inc:0"}), changes=_Log(), version=5) == ("results",)
     manifest = current_full_manifest(tmp_path)
     assert manifest is not None
@@ -1233,7 +1344,7 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
     _no_whole_read(monkeypatch)
     before, rebuilt_before = _recoveries("log_lost"), _rebuilds("cold_start")
     reader = _KeyedL3(list(l3.values()))
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     token = f"inc:{len(writer.files)}"
     assert await folds.start(reader, _Generations({"votes": token}), changes=_Log(), version=6) == ("votes",)
 
@@ -1286,7 +1397,7 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     reader = _KeyedL3(list(held.values()))
     generations = _Generations({"votes": "new:1"})
     await writer.folds.close()
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     log = _Log()
     for index, file in enumerate(writer.files):
         log.append("votes", f"inc:{index + 1}", file)
@@ -1367,7 +1478,7 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
         log.append("votes", f"inc:{index + 1}", file)
     epoch = f"inc:{writer.files.index(lost) + 1}"
     token = f"inc:{len(writer.files)}"  # a commit since the lost one: the generation read is past its epoch
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
     await folds.wait()
     before = (
@@ -1495,7 +1606,7 @@ async def test_a_table_with_numeric_and_enum_columns_folds_rebuilds_and_recovers
     # the rebuild of a full from L3: no full on the volume
     rebuilt_root = tmp_path / "rebuilt"
     rebuilt_root.mkdir()
-    rebuild = DeltaFolds(rebuilt_root, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    rebuild = DeltaFolds(rebuilt_root, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     whole = _L3({"shares": list(l3.values())}, {"shares": ("state", "geo_id")})
     assert await rebuild.start(whole, _Generations({"shares": "inc:1"}), changes=_Log(), version=7) == ("shares",)
     assert whole.statements["shares"] == 1, "one whole read: the cold start"
@@ -1510,7 +1621,7 @@ async def test_a_table_with_numeric_and_enum_columns_folds_rebuilds_and_recovers
     await writer.folds.close()
     _no_whole_read(monkeypatch)
     reader = _SharesL3(list(l3.values()))
-    recovery = DeltaFolds(folded_root, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    recovery = DeltaFolds(folded_root, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     labels = {"table": "shares", "why": "log_lost", "outcome": "recovered"}
     before = REGISTRY.get_sample_value("delta_fold_recoveries_total", labels) or 0.0
     token = f"inc:{len(writer.files)}"
@@ -1647,7 +1758,7 @@ async def test_a_lost_big_file_within_the_notes_window_is_recovered_from_the_key
     writer, lost, epoch, held, log = await _big_commit_lost(tmp_path, workers)
     reader = _NotedL3(list(held.values()), _NOTED, covered=True)
     token = f"inc:{len(writer.files)}"
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], retention="delete", workers=workers)
     assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
     before = (_lost_file_recoveries("notes"), _lost_file_recoveries("states"))
 
@@ -1684,7 +1795,7 @@ async def test_a_lost_big_file_past_the_notes_window_is_recovered_by_reading_onl
     assert ga is not None
     reader = _NotedL3(list(held.values()), _NOTED, covered=False)
     token = f"inc:{len(writer.files)}"
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], retention="delete", workers=workers)
     assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
     before = (_lost_file_recoveries("notes"), _lost_file_recoveries("states"))
 
@@ -1744,7 +1855,7 @@ async def test_close_within_a_bound_cuts_a_long_round_and_keeps_its_files_for_th
     running, or publishes the cut round's part; and if the next writer cannot fold what the cut round held."""
     schema = _votes_schema(_SlowOnce)
     _first_full(tmp_path, "votes")
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)])  # its own worker
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete")  # its own worker
     writer = _Writer(tmp_path, schema, folds)
     mark = tmp_path / "slow.mark"
     file = writer.save(_votes("TX", range(3), 1, note=str(mark)))
@@ -1761,7 +1872,7 @@ async def test_close_within_a_bound_cuts_a_long_round_and_keeps_its_files_for_th
     assert folds.unfolded == {file} and (tmp_path / file).exists(), "the cut round's file is kept, queued"
     assert _part(tmp_path, "votes", "state:TX") is None, "the cut round published nothing"
     # the next writer folds it (the mark is there: its keep rule runs at once)
-    after = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    after = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     after.committed({"votes": file}, {"votes": "inc:1"}, version=6)
     await after.wait()
     part = _part(tmp_path, "votes", "state:TX")
@@ -1775,7 +1886,7 @@ async def test_a_newer_term_s_start_never_waits_on_this_process_s_round_of_an_ol
     runs); or if the cut round's file is lost instead of folded at the new term."""
     schema = _votes_schema(_SlowOnce)
     _first_full(tmp_path, "votes")
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)])  # its own worker
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete")  # its own worker
     writer = _Writer(tmp_path, schema, folds)
     mark = tmp_path / "slow.mark"
     file = writer.save(_votes("TX", range(3), 1, note=str(mark)))
@@ -1820,7 +1931,7 @@ async def test_straight_failed_rounds_hand_their_queue_to_a_recovery_by_key(
         held.update({(row["state"], row["geo_id"]): row for row in chunk})
     l3 = _KeyedL3(list(held.values()))
     generations = _Generations({"votes": "inc:0"})
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     assert await folds.start(l3, generations, changes=_Log(), version=6) == ()
     writer = _Writer(tmp_path, schema, folds)
     writer.version = 6
@@ -1882,7 +1993,7 @@ async def test_a_recovery_builds_its_delta_in_a_worker_and_writes_l3_s_pages_bes
 
     monkeypatch.setattr(delta_fold, "read_keyed_arrow", beside)
     reader = _KeyedL3(list(held.values()))
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     token = f"inc:{len(writer.files)}"
     assert await folds.start(reader, _Generations({"votes": token}), changes=_Log(), version=6) == ("votes",)
 
@@ -1920,7 +2031,7 @@ async def test_a_lost_file_asked_during_a_rebuild_s_read_is_recovered_after_the_
     which may be older than the lost file's epoch, so a copy waiting for that epoch would wait forever."""
     schema = _votes_schema()
     l3 = _KeyedL3(_votes("TX", range(5), 3))
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
     asked: list[asyncio.Task[None]] = []
 
     class _AskedDuringTheRead(_Generations):
@@ -1953,7 +2064,7 @@ async def test_a_commit_told_while_a_restarted_writer_relearns_is_folded_once_in
     schema = _votes_schema()
     _first_full(tmp_path, "votes")
     counting = _CountingWorkers(workers)
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=counting)  # type: ignore[arg-type]
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=counting)  # type: ignore[arg-type]
     writer = _Writer(tmp_path, schema, folds)
     log = _Log()
     for step in range(4):
