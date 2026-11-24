@@ -201,7 +201,7 @@ async def test_a_pods_deregistration_sweep_over_many_tools_counts_once() -> None
     catalog, bucket = await _bound_catalog()
     for index in range(WRITE_FAILURE_THRESHOLD + 2):
         entry = _entry(f"tool.n{index}")
-        entry.endpoints.append(ToolEndpoint(pod_id="pod-002", status="available"))
+        entry.add_endpoint(ToolEndpoint(pod_id="pod-002", status="available"))
         await catalog.register(entry)
     bucket.become_unreachable(KvError("nats: connection closed"))
 

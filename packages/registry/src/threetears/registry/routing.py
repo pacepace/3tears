@@ -17,7 +17,7 @@ chooses among what that selection leaves.
 from __future__ import annotations
 
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -91,11 +91,11 @@ class RoutingStrategy(Protocol):
     filtering to available-only candidates.
     """
 
-    def select(self, endpoints: list[ToolEndpoint]) -> ToolEndpoint | None:
+    def select(self, endpoints: Sequence[ToolEndpoint]) -> ToolEndpoint | None:
         """select single endpoint from candidates.
 
         :param endpoints: list of all endpoints for a tool
-        :ptype endpoints: list[ToolEndpoint]
+        :ptype endpoints: Sequence[ToolEndpoint]
         :return: selected endpoint, or None if no viable endpoint
         :rtype: ToolEndpoint | None
         """
@@ -124,7 +124,7 @@ class LeastConnectionsStrategy:
     without any cross-replica coordination.
     """
 
-    def select(self, endpoints: list[ToolEndpoint]) -> ToolEndpoint | None:
+    def select(self, endpoints: Sequence[ToolEndpoint]) -> ToolEndpoint | None:
         """select available endpoint with lowest in_flight count.
 
         among the available endpoints tied for the lowest ``in_flight``
@@ -132,7 +132,7 @@ class LeastConnectionsStrategy:
         replicas do not all converge on the same pod (see class docstring).
 
         :param endpoints: list of all endpoints for a tool
-        :ptype endpoints: list[ToolEndpoint]
+        :ptype endpoints: Sequence[ToolEndpoint]
         :return: endpoint with fewest in-flight calls, or None if none available
         :rtype: ToolEndpoint | None
         """
