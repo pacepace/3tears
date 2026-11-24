@@ -32,6 +32,7 @@ statement reached L3" are both checked. The contract this pins:
 from __future__ import annotations
 
 import asyncio
+import logging
 import tracemalloc
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
@@ -1501,7 +1502,7 @@ async def test_a_hub_crash_after_one_commit_leaves_the_intent_copies_wait_with_n
 
 
 async def test_a_normal_load_writes_the_intent_then_its_confirmed_record_and_is_applied_once_from_the_later_record(
-    _volume: Path, monkeypatch: pytest.MonkeyPatch
+    _volume: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Flips if the hub's confirmed record does not supersede its intent: the copy waiting for the hub's death (for
     ever, the hub being alive), the writer reading L3 or rewriting the hub's own file, or the file applied twice (once
@@ -1512,23 +1513,9 @@ async def test_a_normal_load_writes_the_intent_then_its_confirmed_record_and_is_
     world, writer_l3, _ = _intent_world(beats, answers, folds)
     l3, log, lock, backend, follower = world
     await _warmed(world)
-    # the two places a load's file is heard by a copy: from a waited-for file, and from the record the registry applies
-    heard: list[str] = []
-    hear_file = CopyFollower.__dict__["_hear_file"]
-
-    def hearing(self: CopyFollower, table: str, wait: Any, reach: Any) -> None:
-        heard.append(wait.epoch)
-        hear_file(self, table, wait, reach)
-
-    monkeypatch.setattr(CopyFollower, "_hear_file", hearing)
-    applied: list[str] = []
-    apply_file_prefixes = CollectionRegistry.__dict__["_apply_file_prefixes"]
-
-    async def applying(self: CollectionRegistry, change: EpochChange, **kwargs: Any) -> bool:
-        applied.append(change.token)
-        return bool(await apply_file_prefixes(self, change, **kwargs))
-
-    monkeypatch.setattr(CollectionRegistry, "_apply_file_prefixes", applying)
+    # the two places a load's file is heard by a copy, read from what each logs: a waited-for file read (its wait
+    # ends "the file reads"), and the record the registry applies from its file
+    caplog.set_level(logging.INFO, logger="threetears.core.collections")
     sent = [_row("VA", 100, 1, "new", _LATER), _row("VA", 101, 2, "new", _LATER)]
     file = _load_file(_volume, "whole", sent)
     intent = await log.advance_with_change(
@@ -1546,6 +1533,11 @@ async def test_a_normal_load_writes_the_intent_then_its_confirmed_record_and_is_
     assert _same(backend, l3)
     assert l3.statements == 0 and writer_l3.statements == 0
     assert answers[-1] == "superseded"
+    said = [(record.getMessage(), getattr(record, "extra_data", {})) for record in caplog.records]
+    applied = [
+        data["epoch"] for message, data in said if message.startswith("a load's or a clear's epoch applied from")
+    ]
+    heard = [data["epoch"] for message, data in said if data.get("why") == "the file reads"]
     assert applied == [confirmed] and heard == [], "the file is applied once, at the confirmed record"
     assert not read_delta_file_keys(_volume / file).confirmed, "the hub's own file, left as it is"
     assert folds.told == [] and intent != confirmed
