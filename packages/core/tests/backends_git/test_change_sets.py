@@ -17,6 +17,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.backends.git import Change, ChangeConflictError, ChangeSet, GitDurableStore, HandEditPendingError
+from threetears.core.backends.git import change as change_module
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
@@ -149,6 +150,78 @@ async def test_a_set_that_raises_commits_nothing(make_repo: Any) -> None:
             raise RuntimeError("the caller gave up")
     assert commits(repo) == 0
     assert not (repo.config.work_tree / "aria").exists()
+
+
+# ---------------------------------------------------------------- the set's own bookkeeping
+
+
+def _row(n: int, *, cas: datetime | None = None, value: str = "v") -> Change:
+    return Change("t", {"id": n}, {"id": n, "value": value}, cas)
+
+
+async def test_a_row_written_again_in_a_later_batch_keeps_its_place_and_first_cas(make_repo: Any) -> None:
+    change_set = ChangeSet(await make_repo(), "m")
+    change_set.add_many([_row(n, cas=T0) for n in range(5)])
+    change_set.add(_row(9))
+    change_set.add_many([_row(2, value="newer"), _row(7), _row(2, value="newest")])
+
+    assert [c.pk["id"] for c in change_set.changes] == [0, 1, 2, 3, 4, 9, 7], "one per row, first-written order"
+    held = change_set.pending("t", {"id": 2})
+    assert held is not None and held.row == {"id": 2, "value": "newest"} and held.cas == T0
+    assert change_set.changes[2] == held
+    assert change_set.pending("t", {"id": 8}) is None
+
+
+async def test_a_failed_savepoint_puts_back_the_chunks_it_opened_on(make_repo: Any) -> None:
+    change_set = ChangeSet(await make_repo(), "m")
+    change_set.add_many([_row(n) for n in range(4)])
+    with pytest.raises(RuntimeError):
+        async with change_set.transaction():
+            async with change_set.transaction():
+                change_set.add_many([_row(1, value="inner"), _row(5)])
+                raise RuntimeError("boom")
+    assert change_set.changes == (), "the outer level ended by raising too, so nothing is left"
+
+    change_set.add_many([_row(n) for n in range(4)])
+    before = change_set.changes
+    with pytest.raises(LookupError):
+        async with change_set.transaction():
+            with pytest.raises(RuntimeError):
+                async with change_set.transaction():
+                    change_set.add_many([_row(1, value="inner"), _row(5)])
+                    raise RuntimeError("boom")
+            assert change_set.changes == before, "only the inner level's writes are dropped"
+            raise LookupError("end the outer level without committing")
+
+
+async def test_adding_rows_in_batches_is_never_quadratic(make_repo: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """the cost check: a 100k-row commit in 1k-row batches copies each row O(log batches) times.
+
+    Every chunk the set builds, a batch's or a merge's, passes its rows through ``_chunk``; counting them
+    bounds the work. Rebuilding the whole index per batch, the quadratic shape, would pass ~5M rows.
+    """
+    built = [0]
+    build = vars(change_module)["_chunk"]
+
+    def counting(writes: Any) -> Any:
+        built[0] += len(writes)
+        return build(writes)
+
+    monkeypatch.setattr(change_module, "_chunk", counting)
+    rows, batch = 100_000, 1_000
+    change_set = ChangeSet(await make_repo(), "m")
+    for start in range(0, rows, batch):
+        change_set.add_many([_row(n) for n in range(start, start + batch)])
+
+    assert len(change_set.changes) == rows
+    assert change_set.pending("t", {"id": 0}) is not None and change_set.pending("t", {"id": rows - 1}) is not None
+    assert built[0] <= rows * 9, f"{built[0]} rows built for {rows}: log2(100 batches) + 2 copies each at most"
+
+    built[0] = 0
+    one_by_one = ChangeSet(await make_repo(), "m")
+    for n in range(rows):
+        one_by_one.add(_row(n))
+    assert built[0] <= rows * 19, f"{built[0]} rows built for {rows} single writes: log2(rows) + 2 copies each"
 
 
 # ---------------------------------------------------------------- collections on the store

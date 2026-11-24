@@ -18,10 +18,11 @@ opens both for you::
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.core.backends.git.git import Author
@@ -82,6 +83,51 @@ class CommitResult:
     pushed: bool = False
 
 
+#: one row's identity, as :func:`change_key` gives it
+RowKey = tuple[str, tuple[tuple[str, str], ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class _ChangeChunk:
+    """some of a set's writes, never changed once built: one per row, in first-written order.
+
+    :ivar keys: each write's row identity, in first-written order
+    :ivar changes: the writes, in the same order
+    :ivar at: each row identity's position in both, read-only
+    """
+
+    keys: tuple[RowKey, ...]
+    changes: tuple[Change, ...]
+    at: Mapping[RowKey, int]
+
+
+def _chunk(writes: Mapping[RowKey, Change]) -> _ChangeChunk:
+    """a chunk of ``writes``, in their order.
+
+    :param writes: row identity to write, in first-written order
+    :ptype writes: Mapping[RowKey, Change]
+    :return: the chunk
+    :rtype: _ChangeChunk
+    """
+    keys = tuple(writes)
+    return _ChangeChunk(keys, tuple(writes.values()), MappingProxyType({key: at for at, key in enumerate(keys)}))
+
+
+def _merged(older: _ChangeChunk, newer: _ChangeChunk) -> _ChangeChunk:
+    """one chunk of two: a row in both keeps its place in ``older`` and takes the write in ``newer``.
+
+    :param older: the earlier chunk
+    :ptype older: _ChangeChunk
+    :param newer: the later chunk
+    :ptype newer: _ChangeChunk
+    :return: the merged chunk
+    :rtype: _ChangeChunk
+    """
+    writes = dict(zip(older.keys, older.changes, strict=True))
+    writes.update(zip(newer.keys, newer.changes, strict=True))
+    return _chunk(writes)
+
+
 @dataclass
 class ChangeSet:
     """the writes of one commit, gathered until the transaction on it ends.
@@ -104,10 +150,41 @@ class ChangeSet:
     author: Author | None = None
     trailers: Mapping[str, str] = field(default_factory=dict)
     date: datetime | None = None
-    changes: list[Change] = field(default_factory=list)
     result: CommitResult | None = None
     _depth: int = field(default=0, init=False, repr=False)
-    _index: dict[tuple[str, tuple[tuple[str, str], ...]], int] = field(default_factory=dict, init=False, repr=False)
+    # the writes as immutable chunks, oldest first, replaced whole: a batch of writes appends one
+    # chunk, and a chunk no bigger than the one after it is merged into it, so the set holds
+    # O(log rows) chunks and each row is copied O(log rows) times -- adding rows stays n log n,
+    # never quadratic. A row is looked up newest chunk first; a savepoint keeps the tuple itself.
+    _chunks: tuple[_ChangeChunk, ...] = field(default=(), init=False, repr=False)
+
+    @property
+    def changes(self) -> tuple[Change, ...]:
+        """the writes so far, one per row, in first-written order.
+
+        :return: the writes
+        :rtype: tuple[Change, ...]
+        """
+        if not self._chunks:
+            return ()
+        merged = self._chunks[0]
+        for chunk in self._chunks[1:]:
+            merged = _merged(merged, chunk)
+        return merged.changes
+
+    def _held(self, key: RowKey) -> Change | None:
+        """this set's write of a row, newest chunk first.
+
+        :param key: the row's identity
+        :ptype key: RowKey
+        :return: the write, or ``None`` when the set has not written the row
+        :rtype: Change | None
+        """
+        for chunk in reversed(self._chunks):
+            at = chunk.at.get(key)
+            if at is not None:
+                return chunk.changes[at]
+        return None
 
     def add(self, change: Change) -> None:
         """record a write.
@@ -118,16 +195,32 @@ class ChangeSet:
         :rtype: None
         :raises RuntimeError: when the set has already been committed
         """
+        self.add_many((change,))
+
+    def add_many(self, changes: Iterable[Change]) -> None:
+        """record a batch of writes, as one chunk.
+
+        :param changes: the writes, in order
+        :ptype changes: Iterable[Change]
+        :return: None
+        :rtype: None
+        :raises RuntimeError: when the set has already been committed
+        """
         if self.result is not None:
             raise RuntimeError("this change set was already committed; open another")
-        key = change_key(change.table, change.pk)
-        at = self._index.get(key)
-        if at is None:
-            self._index[key] = len(self.changes)
-            self.changes.append(change)
-        else:
-            first = self.changes[at]
-            self.changes[at] = replace(change, cas=first.cas, on_conflict=first.on_conflict)
+        batch: dict[RowKey, Change] = {}
+        for change in changes:
+            key = change_key(change.table, change.pk)
+            first = batch[key] if key in batch else self._held(key)
+            batch[key] = change if first is None else replace(change, cas=first.cas, on_conflict=first.on_conflict)
+        if not batch:
+            return
+        newest = _chunk(batch)
+        chunks = self._chunks
+        while chunks and len(chunks[-1].keys) <= len(newest.keys):
+            newest = _merged(chunks[-1], newest)
+            chunks = chunks[:-1]
+        self._chunks = (*chunks, newest)
 
     def pending(self, table: str, pk: Mapping[str, Any]) -> Change | None:
         """this set's write of a row, so a read inside the set sees it.
@@ -139,19 +232,7 @@ class ChangeSet:
         :return: the write, or ``None`` when the set has not written the row
         :rtype: Change | None
         """
-        at = self._index.get(change_key(table, pk))
-        return None if at is None else self.changes[at]
-
-    def _restore(self, saved: list[Change]) -> None:
-        """put the writes back as they were when a savepoint opened.
-
-        :param saved: the writes then, rows a later write replaced included
-        :ptype saved: list[Change]
-        :return: None
-        :rtype: None
-        """
-        self.changes[:] = saved
-        self._index = {change_key(c.table, c.pk): i for i, c in enumerate(self.changes)}
+        return self._held(change_key(table, pk))
 
     def transaction(self, **options: Any) -> AbstractAsyncContextManager[ChangeSet]:
         """the transaction ``CallerTransaction(cs)`` opens: committed as one commit when the outermost ends.
@@ -172,14 +253,14 @@ class ChangeSet:
         :rtype: AsyncIterator[ChangeSet]
         :raises ChangeConflictError: when the outermost level commits and a row changed since read
         """
-        # a copy, not a length: a write inside the savepoint may replace a row written before it
-        saved = list(self.changes)
+        # the chunks themselves: never changed, so a write inside the savepoint cannot reach them
+        saved = self._chunks
         self._depth += 1
         try:
             yield self
         except BaseException:
             self._depth -= 1
-            self._restore(saved if self._depth > 0 else [])
+            self._chunks = saved if self._depth > 0 else ()
             raise
         self._depth -= 1
         if self._depth == 0:

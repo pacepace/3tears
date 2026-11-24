@@ -300,8 +300,7 @@ class GitDurableStore:
         changes = [Change(table, {column: row[column] for column in columns}, dict(row)) for row in rows]
         change_set = self._change_set(conn)
         if change_set is not None:
-            for change in changes:
-                change_set.add(change)
+            change_set.add_many(changes)
         elif changes:
             await self.repo.commit(changes, f"{table}: save {len(changes)} rows")
         return len(changes)
@@ -332,8 +331,7 @@ class GitDurableStore:
         changes = [Change(table, dict(zip(columns, values, strict=True)), None) for values in keys]
         change_set = self._change_set(conn)
         if change_set is not None:
-            for change in changes:
-                change_set.add(change)
+            change_set.add_many(changes)
         elif changes:
             await self.repo.commit(changes, f"{table}: delete {len(changes)} rows")
         return len(changes)

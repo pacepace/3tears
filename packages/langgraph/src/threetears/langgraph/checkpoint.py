@@ -55,14 +55,15 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from array import array
 from dataclasses import dataclass, replace
 from operator import itemgetter
 from typing import Any, Final, cast
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
+from threetears.core import packed_keys
 from threetears.core.keyed import (
     AnyOf,
     Count,
@@ -187,6 +188,251 @@ _DEFAULT_L2_BUCKET = "checkpoints"
 #: delete of it lands. During a long NATS outage every written key lands here; past this many the
 #: oldest is dropped with a WARNING naming it, and reads of it may again meet what L2 still holds.
 _L2_WRITE_BYPASS_LIMIT: Final = 4096
+
+
+#: a bypass chunk of at most this many keys is searched as one substring (C, a few KB); a bigger one by bisection
+_BYPASS_SCAN_ROWS: Final = 32
+
+
+@dataclass(frozen=True, slots=True)
+class _BypassChunk:
+    """some of the write bypass's keys as packed batches (:mod:`threetears.core.packed_keys`), never changed once built.
+
+    A key is not cut out of the batches when it leaves: the oldest leave by ``head`` moving past them, any other by
+    being named in ``lifted``; the chunk is rebuilt from its live keys once fewer than half are left.
+
+    :ivar order: the keys' texts, oldest first
+    :ivar order_offsets: :func:`~threetears.core.packed_keys.offsets_of` of ``order``
+    :ivar by_text: the same texts sorted, searched by bisection
+    :ivar by_text_offsets: :func:`~threetears.core.packed_keys.offsets_of` of ``by_text``
+    :ivar order_rows: each sorted text's row in ``order``
+    :ivar head: the rows of ``order`` before this have left
+    :ivar lifted: texts at or past ``head`` that have left
+    :ivar dead: how many those are
+    """
+
+    order: str
+    order_offsets: array[int]
+    by_text: str
+    by_text_offsets: array[int]
+    order_rows: array[int]
+    head: int = 0
+    lifted: str = packed_keys.NO_KEYS
+    dead: int = 0
+
+    @property
+    def rows(self) -> int:
+        """how many texts the chunk was built with.
+
+        :return: the count
+        :rtype: int
+        """
+        return len(self.order_offsets) - 1
+
+    @property
+    def live(self) -> int:
+        """how many of the chunk's keys are still bypassed.
+
+        :return: the count
+        :rtype: int
+        """
+        return self.rows - self.head - self.dead
+
+    def holds(self, text: str) -> bool:
+        """whether the chunk still bypasses the key whose text is ``text``.
+
+        :param text: the key's :func:`~threetears.core.packed_keys.key_text`
+        :ptype text: str
+        :return: ``True`` when it does
+        :rtype: bool
+        """
+        if self.rows <= _BYPASS_SCAN_ROWS:
+            found = packed_keys.names(self.order[self.order_offsets[self.head] :], text)
+        else:
+            at = packed_keys.find_sorted(self.by_text, self.by_text_offsets, text)
+            found = at >= 0 and self.order_rows[at] >= self.head
+        return found and (self.dead == 0 or not packed_keys.names(self.lifted, text))
+
+    def live_texts(self) -> list[str]:
+        """the texts still bypassed, oldest first (a list for the caller's own use).
+
+        :return: the texts
+        :rtype: list[str]
+        """
+        every = packed_keys.texts(self.order)[self.head :]
+        if self.dead == 0:
+            return every
+        gone = frozenset(packed_keys.texts(self.lifted))
+        return [text for text in every if text not in gone]
+
+    def settled(self) -> _BypassChunk | None:
+        """this chunk, rebuilt from its live keys once fewer than half are left; ``None`` once none is.
+
+        :return: the chunk, or ``None``
+        :rtype: _BypassChunk | None
+        """
+        if self.live == 0:
+            return None
+        return _bypass_chunk(self.live_texts()) if 2 * self.live < self.rows else self
+
+    def without(self, text: str) -> _BypassChunk | None:
+        """this chunk with ``text`` lifted.
+
+        :param text: a text the chunk holds
+        :ptype text: str
+        :return: the new chunk, or ``None`` once none is left
+        :rtype: _BypassChunk | None
+        """
+        return replace(self, lifted=packed_keys.with_text(self.lifted, text), dead=self.dead + 1).settled()
+
+    def appended(self, text: str) -> _BypassChunk:
+        """this small chunk (no sorted index) with ``text`` its newest key.
+
+        :param text: a key text it does not hold
+        :ptype text: str
+        :return: the new chunk
+        :rtype: _BypassChunk
+        """
+        offsets = array("q", self.order_offsets)
+        offsets.append(len(self.order) + len(text))
+        return replace(self, order=packed_keys.with_text(self.order, text), order_offsets=offsets)
+
+    def oldest(self) -> tuple[str, _BypassChunk | None]:
+        """the oldest text still bypassed, and this chunk with it dropped.
+
+        :return: the text and the chunk without it (``None`` once none is left)
+        :rtype: tuple[str, _BypassChunk | None]
+        """
+        head, lifted, dead = self.head, self.lifted, self.dead
+        text = packed_keys.text_at(self.order, self.order_offsets, head)
+        while dead and packed_keys.names(lifted, text):
+            lifted = packed_keys.without_text(lifted, text)
+            dead -= 1
+            head += 1
+            text = packed_keys.text_at(self.order, self.order_offsets, head)
+        return text, replace(self, head=head + 1, lifted=lifted, dead=dead).settled()
+
+
+def _bypass_chunk(texts: list[str]) -> _BypassChunk:
+    """a chunk of ``texts``, oldest first.
+
+    :param texts: distinct key texts, oldest first
+    :ptype texts: list[str]
+    :return: the chunk
+    :rtype: _BypassChunk
+    """
+    if len(texts) <= _BYPASS_SCAN_ROWS:
+        # searched as one substring: no sorted index
+        return _BypassChunk(
+            packed_keys.packed(texts), packed_keys.offsets_of(texts), packed_keys.NO_KEYS, array("q"), array("q")
+        )
+    rows = sorted(range(len(texts)), key=texts.__getitem__)
+    by_text = [texts[row] for row in rows]
+    return _BypassChunk(
+        packed_keys.packed(texts),
+        packed_keys.offsets_of(texts),
+        packed_keys.packed(by_text),
+        packed_keys.offsets_of(by_text),
+        array("q", rows),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _WriteBypass:
+    """the L2 keys a saver reads from L3 alone, oldest first, as immutable chunks replaced whole.
+
+    A key added joins the newest chunk while that is small (searched as one substring); a full one is sealed with a
+    sorted index and merged log-structured -- a chunk no bigger than the one after it is merged into it -- so the
+    bypass holds O(log keys) chunks and a check is a bisection of each. Past ``limit`` keys the oldest is dropped.
+
+    :ivar chunks: the chunks, oldest first
+    :ivar held: how many keys they still bypass
+    """
+
+    chunks: tuple[_BypassChunk, ...] = ()
+    held: int = 0
+
+    def _holding(self, text: str) -> int:
+        """which chunk still bypasses ``text``, newest first.
+
+        :param text: a key text
+        :ptype text: str
+        :return: the chunk's place, or ``-1``
+        :rtype: int
+        """
+        for at in range(len(self.chunks) - 1, -1, -1):
+            if self.chunks[at].holds(text):
+                return at
+        return -1
+
+    def holds(self, key: str) -> bool:
+        """whether ``key`` is bypassed.
+
+        :param key: an L2 key
+        :ptype key: str
+        :return: ``True`` when it is
+        :rtype: bool
+        """
+        return bool(self.chunks) and self._holding(packed_keys.key_text((key,))) >= 0
+
+    def without(self, key: str) -> _WriteBypass:
+        """the bypass with ``key`` lifted; this one when it does not hold it.
+
+        :param key: an L2 key
+        :ptype key: str
+        :return: the bypass
+        :rtype: _WriteBypass
+        """
+        if not self.chunks:
+            return self
+        text = packed_keys.key_text((key,))
+        at = self._holding(text)
+        if at < 0:
+            return self
+        kept = self.chunks[at].without(text)
+        chunks = (*self.chunks[:at], *((kept,) if kept is not None else ()), *self.chunks[at + 1 :])
+        return _WriteBypass(chunks, self.held - 1)
+
+    def with_newest(self, key: str, limit: int) -> tuple[_WriteBypass, list[str]]:
+        """the bypass with ``key`` its newest key (held once), and the oldest dropped past ``limit``.
+
+        :param key: an L2 key
+        :ptype key: str
+        :param limit: the most keys it holds
+        :ptype limit: int
+        :return: the bypass and the texts it dropped, oldest first (a list for the caller's own use)
+        :rtype: tuple[_WriteBypass, list[str]]
+        """
+        lifted = self.without(key)
+        chunks = lifted.chunks
+        text = packed_keys.key_text((key,))
+        if chunks and chunks[-1].rows < _BYPASS_SCAN_ROWS and not chunks[-1].dead:
+            newest = chunks[-1].appended(text)
+            chunks = chunks[:-1]
+        else:
+            newest = _bypass_chunk([text])
+        if newest.rows >= _BYPASS_SCAN_ROWS:
+            while chunks and chunks[-1].live <= newest.live:
+                newest = _bypass_chunk([*chunks[-1].live_texts(), *newest.live_texts()])
+                chunks = chunks[:-1]
+        chunks = (*chunks, newest)
+        held = lifted.held + 1
+        dropped: list[str] = []
+        while held > limit:
+            text, rest = chunks[0].oldest()
+            dropped.append(text)
+            chunks = (*((rest,) if rest is not None else ()), *chunks[1:])
+            held -= 1
+        return _WriteBypass(chunks, held), dropped
+
+    def keys(self) -> tuple[str, ...]:
+        """every bypassed key's text, oldest first (status and tests; O(keys)).
+
+        :return: the texts
+        :rtype: tuple[str, ...]
+        """
+        return tuple(text for chunk in self.chunks for text in chunk.live_texts())
+
 
 #: separates the customer from the caller's own thread id inside a stored
 #: ``thread_id``. a UUID's text form contains no ``/``, so the split point is
@@ -707,8 +953,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._cache_bypassed_threads: frozenset[str] = frozenset()
         # write: L2 keys whose put and then delete both failed, so the key may still hold an older
         # checkpoint. lifted by the next put or delete of that key that lands; bounded by
-        # _L2_WRITE_BYPASS_LIMIT, oldest first.
-        self._l2_write_bypassed: OrderedDict[str, None] = OrderedDict()
+        # _L2_WRITE_BYPASS_LIMIT, oldest first. Immutable packed chunks replaced whole, merged
+        # log-structured, so a change or a check costs O(log keys) and a reader holding it never
+        # sees it change.
+        self._l2_write_bypassed = _WriteBypass()
         if l2_cache is not None and not isinstance(l2_cache, CheckpointL2RevisionCache):
             # said once per saver, not per read: such a cache is never refilled from an L3 read
             log.info(
@@ -728,6 +976,17 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: CheckpointScope
         """
         return self._scope
+
+    @property
+    def l2_write_bypass(self) -> tuple[str, ...]:
+        """the L2 keys this saver reads from L3 alone after their write and delete both failed, oldest first.
+
+        Built on each call from the immutable bypass (O(keys)): for status and tests, not a hot path.
+
+        :return: the bypassed L2 keys' texts
+        :rtype: tuple[str, ...]
+        """
+        return self._l2_write_bypassed.keys()
 
     def customer_for_config(self, config: Mapping[str, Any] | None) -> UUID | None:
         """the customer a config-bearing call addresses, per this saver's scope.
@@ -1028,7 +1287,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 contain(exc, log=log, what="L2 checkpoint write failed; deleting the cached entry so readers use L3")
             else:
                 # the key now holds the newest checkpoint
-                self._l2_write_bypassed.pop(key, None)
+                self._l2_write_bypassed = self._l2_write_bypassed.without(key)
                 return
         try:
             await self.l2_delete(thread_id, checkpoint_ns, customer=customer)
@@ -1048,10 +1307,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :return: nothing
         :rtype: None
         """
-        self._l2_write_bypassed[key] = None
-        self._l2_write_bypassed.move_to_end(key)
-        if len(self._l2_write_bypassed) > _L2_WRITE_BYPASS_LIMIT:
-            dropped, _ = self._l2_write_bypassed.popitem(last=False)
+        # a key already bypassed moves to the newest end, held once
+        self._l2_write_bypassed, gone = self._l2_write_bypassed.with_newest(key, _L2_WRITE_BYPASS_LIMIT)
+        for dropped in gone:
             log.warning(
                 "L2 write bypass is full; the oldest key returns to the caches and may meet an older checkpoint",
                 extra={"l2_bucket": self._l2_bucket, "l2_key": dropped, "limit": _L2_WRITE_BYPASS_LIMIT},
@@ -1087,7 +1345,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except Exception as exc:
             raise CheckpointCacheError(f"L2 checkpoint delete failed ({type(exc).__name__})") from exc
         # the key holds nothing now, so nothing older can be read from it
-        self._l2_write_bypassed.pop(key, None)
+        self._l2_write_bypassed = self._l2_write_bypassed.without(key)
 
     async def l2_delete_prefix(self, prefix: str) -> bool:
         """sweep every L2 key under ``prefix``, reporting whether it happened.
@@ -1263,9 +1521,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         # a thread whose purge could not clear a cache is read from L3 alone: what the cache
         # still holds is the erased thread
-        bypassed = (
-            self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
-            or self.l2_key(thread_id, checkpoint_ns, customer=customer) in self._l2_write_bypassed
+        l2_key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
+        bypassed = self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads or (
+            self._l2_write_bypassed.holds(l2_key)
         )
         # the L2 key's revision as read BEFORE the L3 query; the refill after that query lands
         # only if the key is unchanged since (:meth:`_refill_l2`). None: no refill.
