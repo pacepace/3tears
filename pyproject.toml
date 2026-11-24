@@ -714,6 +714,8 @@ module = [
     "packages.core.tests.unit.test_keyed_binding",
     "packages.core.tests.integration.test_keyed_binding_live",
     "packages.core.tests.integration.test_keyed_helpers_live",
+    "packages.core.tests.unit.test_keyed_null_safe",
+    "packages.core.tests.integration.test_keyed_null_safe_live",
     "packages.datasources.tests.integration.test_warehouse_arrow_types_live",
     "packages.datasources.tests.unit.test_counted_partitioned_export",
     "packages.datasources.tests.unit.test_export_read",

@@ -17,8 +17,8 @@ Pure: :func:`keyed_read_statement` renders a batch's text and binds, :func:`key_
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import Annotated, Any, Final, Literal, Protocol, TypeAlias
 
@@ -30,6 +30,7 @@ from threetears.interfaces.keyed.filters import (
     Selected,
     batched_join_hint,
     by_conditions,
+    each_placeholder,
     narrowing,
     quote_identifier,
     relation,
@@ -47,8 +48,11 @@ __all__ = [
     "KeyBinder",
     "KeyChunk",
     "KeyTooWide",
+    "NullGroup",
     "key_chunks",
     "keyed_read_statement",
+    "null_pattern_code",
+    "null_split",
     "read_keyed_statements",
 ]
 
@@ -182,8 +186,9 @@ class KeyBatch:
     :ptype keys: Sequence[pyarrow.Array | Sequence[Any]]
     :param casts: each column's SQL type its text is cast back to; ``text`` for every column when empty
     :ptype casts: tuple[str, ...]
-    :param null_safe: a ``None`` in a key matches the rows holding none in that column (``IS NOT DISTINCT FROM``):
-        a scope column's NULL bucket
+    :param null_safe: a ``None`` in a key matches the rows holding none in that column (as ``IS NOT DISTINCT FROM``
+        would): a scope column's NULL bucket. Sent split by which parts are NULL (:func:`null_split`), each NULL part
+        pinned ``IS NULL`` beside equality on the rest, so the key's index reads every key
     :ptype null_safe: bool
     :param as_list: bind the keys as a list of placeholders (``(c1, c2) IN (($1, $2), ...)``), each value as it is,
         for a database with no arrays (Redshift, SQLite); a statement's text then follows its batch's size. Its
@@ -273,6 +278,22 @@ class KeyBinder(Protocol):
         """one key column's values as Python values, a placeholder each (``as_list``: the driver binds them so)."""
         ...
 
+    def null_groups(self, chunk: KeyChunk) -> list[tuple[int, KeyChunk]]:
+        """``chunk``'s keys grouped by which of their parts are NULL (:func:`null_pattern_code`), each group its code
+        and its keys (every column; a NULL part's column all None), in no promised order."""
+        ...
+
+
+def null_pattern_code(nulls: Sequence[bool]) -> int:
+    """which parts of a key are NULL, as one number: bit ``i`` set when part ``i`` is (``0``: no part NULL).
+
+    :param nulls: each part's NULL-ness, in key order
+    :ptype nulls: Sequence[bool]
+    :return: the code
+    :rtype: int
+    """
+    return sum(1 << index for index, null in enumerate(nulls) if null)
+
 
 def _text(value: Any) -> str | None:
     """a key value as the text its array binds: its ISO form for a date or time, ``str`` otherwise."""
@@ -311,6 +332,15 @@ class _PlainKeys:
     def listed(self, values: Sequence[Any]) -> list[Any]:
         return list(self._plain(values))
 
+    def null_groups(self, chunk: KeyChunk) -> list[tuple[int, KeyChunk]]:
+        columns = [self._plain(column) for column in chunk]
+        if not any(value is None for column in columns for value in column):
+            return [(0, chunk)]
+        groups: dict[int, list[tuple[Any, ...]]] = {}
+        for key in zip(*columns, strict=True):
+            groups.setdefault(null_pattern_code([value is None for value in key]), []).append(key)
+        return [(code, tuple(map(list, zip(*keys, strict=True)))) for code, keys in groups.items()]
+
     @staticmethod
     def _plain(values: Sequence[Any]) -> Sequence[Any]:
         if hasattr(values, "to_pylist"):
@@ -322,6 +352,101 @@ class _PlainKeys:
 
 #: the binder of plain sequences, the one a pure statement builder uses when given none
 PLAIN_KEYS: Final[KeyBinder] = _PlainKeys()
+
+
+@dataclass(frozen=True)
+class NullGroup:
+    """one NULL pattern's keys of a null-safe batch (:func:`null_split`).
+
+    :param nulled: the key columns its keys hold NULL in, each pinned ``IS NULL``
+    :ptype nulled: tuple[str, ...]
+    :param keys: its keys' other columns, a batch named by equality as any is (its own chunk: distinct, one
+        statement's); None when every part is NULL
+    :ptype keys: KeyBatch | None
+    """
+
+    nulled: tuple[str, ...]
+    keys: KeyBatch | None
+
+
+def null_split(keys: KeyBatch, chunk: KeyChunk, binder: KeyBinder = PLAIN_KEYS) -> list[NullGroup]:
+    """a null-safe batch's chunk as the statements against PostgreSQL and YugabyteDB name it: grouped by which parts
+    of each key are NULL, the keys with none first, then each pattern in :func:`null_pattern_code` order (the order a
+    locked read takes the patterns' locks, alike in every reader). Each pattern's NULL parts are pinned ``IS NULL``
+    and its keys' other parts named by equality, so the index reads every pattern by its own condition; together
+    they name exactly the rows ``IS NOT DISTINCT FROM`` each key would. The one split of a null-safe batch: keyed
+    reads, keyed writes and the changed-rows read's warehouse keys (``threetears.core.keyed.changed``).
+
+    :param keys: the batch's shape (its columns and casts)
+    :ptype keys: KeyBatch
+    :param chunk: one statement's keys, one sequence a key column, every column of the batch
+    :ptype chunk: KeyChunk
+    :param binder: how the key columns are read (:data:`PLAIN_KEYS`, or ``threetears.core.keyed``'s Arrow binder)
+    :ptype binder: KeyBinder
+    :return: the patterns, each its pinned columns and its batch of the rest
+    :rtype: list[NullGroup]
+    """
+    width = len(keys.columns)
+    split: list[NullGroup] = []
+    for code, grouped in sorted(binder.null_groups(chunk), key=lambda group: group[0]):
+        present = [index for index in range(width) if not code >> index & 1]
+        nulled = tuple(keys.columns[index] for index in range(width) if code >> index & 1)
+        batch = (
+            KeyBatch(
+                columns=tuple(keys.columns[index] for index in present),
+                keys=[grouped[index] for index in present],
+                casts=tuple(keys.cast(index) for index in present) if keys.casts else (),
+            )
+            if present
+            else None
+        )
+        split.append(NullGroup(nulled, batch))
+    return split
+
+
+def _united(branches: Sequence[tuple[str, tuple[Any, ...]]], *, locked: bool) -> tuple[str, tuple[Any, ...]]:
+    """several reads as one statement: each renumbered past the binds before it, joined by ``UNION ALL`` (a locked
+    read's each a ``WITH`` query, read in turn: a union takes no lock), the join hint they carry said once, first
+    (YugabyteDB applies it to every branch's join).
+
+    :param branches: each read's text and binds, in the order read
+    :ptype branches: Sequence[tuple[str, tuple[Any, ...]]]
+    :param locked: whether the reads lock their rows
+    :ptype locked: bool
+    :return: the statement and its binds
+    :rtype: tuple[str, tuple[Any, ...]]
+    """
+    if len(branches) == 1:
+        return branches[0]
+    hint = ""
+    texts: list[str] = []
+    params: list[Any] = []
+    for sql, bound in branches:
+        text = sql
+        if text.startswith(_HINT_OPEN):
+            end = text.index(_HINT_CLOSE) + len(_HINT_CLOSE)
+            hint, text = text[:end], text[end:]
+        texts.append(each_placeholder(text, _past(len(params))))
+        params += bound
+    if locked:
+        named = ", ".join(f"b{index} AS ({text})" for index, text in enumerate(texts))
+        read = " UNION ALL ".join(f"SELECT * FROM b{index}" for index in range(len(texts)))
+        return f"{hint}WITH {named} {read}", tuple(params)
+    return hint + " UNION ALL ".join(texts), tuple(params)
+
+
+def _past(before: int) -> Callable[[int], str]:
+    """a placeholder's number moved past the ``before`` parameters bound ahead of it."""
+
+    def moved(number: int) -> str:
+        return f"${number + before}"
+
+    return moved
+
+
+#: how a statement's leading hint opens and closes (:func:`batched_join_hint`)
+_HINT_OPEN: Final = "/*+ "
+_HINT_CLOSE: Final = "*/ "
 
 
 def _typed_array(place: int, cast: str, kind: BindKind, once: bool = False) -> str:
@@ -397,6 +522,8 @@ class _KeyedRead:
         :return: the statement, and its parameters
         :rtype: tuple[str, tuple[Any, ...]]
         """
+        if self.keys.null_safe:
+            return self._null_split(chunk, natively)
         width = len(self.keys.columns)
         count = len(chunk[0])
         if self.keys.as_list:
@@ -426,7 +553,7 @@ class _KeyedRead:
         arrays = tuple(value for value, _ in bound)
         kinds = tuple(kind for _, kind in bound)
         tight: tuple[tuple[Any, BindKind], ...] = ()
-        if width > 1 and not self.keys.null_safe:
+        if width > 1:
             tight = self._tight_values(chunk, count, natively)
         guarded = [param for fragment in self.where for param in fragment.params]
         # the statement's text follows only its shape (how each column binds, whether bounded): rendered once a
@@ -438,6 +565,29 @@ class _KeyedRead:
             sql = self._array_text(kinds, tight_kinds)
             _remember(shape, sql)
         return sql, (*arrays, *self._by[1], *(value for value, _ in tight), *guarded)
+
+    def _null_split(self, chunk: KeyChunk, natively: bool) -> tuple[str, tuple[Any, ...]]:
+        """a null-safe batch's statement: its keys a NULL pattern at a time (:func:`null_split`), each pattern's NULL
+        parts pinned ``IS NULL`` and the rest named by equality as any batch's keys are, the patterns' reads one
+        statement (``UNION ALL``; each locked one a ``WITH`` query of its own, as a union takes no lock).
+
+        Never ``IS NOT DISTINCT FROM`` a joined key: no index reads by it, so PostgreSQL and YugabyteDB read the
+        table whole once a key (1,000 keys against 200,000 rows: 3.9 s on PostgreSQL, 5.3 s on YugabyteDB; split, 3-13 ms); pinned ``IS NULL`` beside the rest, each
+        pattern is its index's own condition (test_keyed_null_safe_live).
+        """
+        branches: list[tuple[str, tuple[Any, ...]]] = []
+        for group in null_split(self.keys, chunk, self.binder):
+            by = {**self.by, **dict.fromkeys(group.nulled)}
+            if group.keys is None:
+                # every part NULL: the pins alone name the key's rows
+                conditions, pinned = by_conditions(by, alias="t")
+                guards, guarded = self._guards(len(pinned))
+                where = " AND ".join([*conditions, *guards])
+                head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
+                branches.append((self._locked(f"{head} WHERE {where}"), (*pinned, *guarded)))
+                continue
+            branches.append(replace(self, keys=group.keys, by=by).render(tuple(group.keys.keys), natively))
+        return _united(branches, locked=self.lock is not None)
 
     def _text_list(self, head: str, listed: Sequence[list[Any]], count: int) -> tuple[str, tuple[Any, ...]]:
         """a list batch spelled as text (:attr:`KeyBatch.as_text`): the key's length-marked text in one scalar ``IN``
@@ -471,25 +621,18 @@ class _KeyedRead:
         )
 
     def _array_text(self, kinds: tuple[BindKind, ...], tight: tuple[BindKind, ...]) -> str:
-        """the array statement's text: ``= ANY`` for one key column, else the keys joined as rows (null-safe, or by
-        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``tight`` names their binds)."""
+        """the array statement's text: ``= ANY`` for one key column, else the keys joined as rows by
+        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``tight`` names their binds."""
         width = len(self.keys.columns)
         head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
         typed = [_typed_array(index + 1, self.keys.cast(index), kinds[index]) for index in range(width)]
         conditions, pinned = self._by
         columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
-        if width == 1 and not self.keys.null_safe:
+        if width == 1:
             guards, _ = self._guards(width + len(pinned))
             where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions, *guards])
             return self._locked(f"{head} WHERE {where}")
         unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
-        if self.keys.null_safe:
-            # a NULL bucket matches only by IS NOT DISTINCT FROM, which = ANY cannot say: joined to the keys
-            joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
-            guards, _ = self._guards(width + len(pinned))
-            kept = [*conditions, *guards]
-            clause = f" WHERE {' AND '.join(kept)}" if kept else ""
-            return self._locked(f"{head} JOIN (SELECT {unnested}) AS k ON {joined}{clause}")
         # the keys joined to the table as rows: a nested loop over the key's index, each key one lookup. Never a
         # column = ANY its values beside it: those name the values' cross product (600 keys over 50 states, 200
         # geographies and 30 ids name the whole table), and the planner reads it whole. YugabyteDB is told to batch

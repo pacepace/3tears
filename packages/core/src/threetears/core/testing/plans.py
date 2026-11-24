@@ -370,6 +370,14 @@ _DEFAULT_PAGED_SHARE = 0.5
 #: next page follows, and a row or two the walk passes at its edge
 _LIMIT_SLACK_ROWS: Final = 2
 
+#: a key matched ``IS NOT DISTINCT FROM`` a set of keys (a joined or unnested key, a column): no index reads by it,
+#: so PostgreSQL and YugabyteDB read the table whole once a key (1,000 null-safe keys against 200,000 rows: 3.9-5.3 s). A
+#: null-safe batch is sent split instead (``threetears.interfaces.keyed.rows.null_split``). One bound value (``$n``:
+#: a compare-and-swap fence on the row its key already names) is no key match
+_NULL_SAFE_KEY_MATCH: Final = re.compile(
+    r"\bIS\s+NOT\s+DISTINCT\s+FROM\s+(?!\$\d+\b(?!\s*::\s*\w+\s*\[))", re.IGNORECASE
+)
+
 #: an index walk with no index condition, which reads the index whole unless a ``Limit`` stops it
 _INDEX_WALK = "with no index condition"
 
@@ -521,6 +529,8 @@ class WholeScanGuard:
       ``Limit`` (a keyset listing's first page) is analysed too, in a transaction rolled back: the walk is a page
       when it read at most the rows the ``Limit`` answered plus two, whole when its filter read far past them;
     - a ``TRUNCATE``;
+    - a key matched ``IS NOT DISTINCT FROM`` a set of keys, which no index reads by (a null-safe batch is sent split
+      by its NULL parts, :func:`threetears.interfaces.keyed.rows.null_split`);
     - reads by key that, page after page, return ``paged_share`` or more of such a table: a whole read through a
       keyset pager, whose every page alone looks keyed.
 
@@ -606,6 +616,10 @@ class WholeScanGuard:
         words = sql.lstrip().split(None, 1)
         first = words[0].upper() if words else ""
         relations: list[str] = []
+        if _NULL_SAFE_KEY_MATCH.search(sql):
+            self._problems.append(
+                f"a key matched IS NOT DISTINCT FROM, which no index reads by: {' '.join(sql.split())[:200]}"
+            )
         if first == "TRUNCATE":
             self._problems.append(f"TRUNCATE on a load path: {' '.join(sql.split())[:200]}")
         elif first in {"SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "VALUES", "TABLE"}:

@@ -52,6 +52,7 @@ from threetears.core.keyed.page import Sort, keyset_rows
 from threetears.core.keyed.rows import KeyBatch, read_keyed, read_keyed_arrow
 from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.rows import null_split
 from threetears.interfaces.keyed.changed import (
     ROW_HASH_COLUMN,
     ChangedRows,
@@ -668,10 +669,11 @@ async def _read_changed(
     read_columns = [*columns, *(column for column in key_columns if column not in named)]
     cap = getattr(conn, "rows_per_statement", None) if row_cap is None else row_cap
     # a key with a NULL part is never named by equality: the keys are read a NULL pattern at a time, each NULL part
-    # pinned IS NULL beside the batch of the rest (as a keyset page's NULL leg), so no changed row is left unread
-    patterns: dict[tuple[bool, ...], list[tuple[Any, ...]]] = {}
-    for wanted_key in wanted:
-        patterns.setdefault(tuple(value is None for value in wanted_key), []).append(wanted_key)
+    # pinned IS NULL beside the batch of the rest (null_split, as every null-safe keyed batch is), so no changed row
+    # is left unread
+    wanted_columns = tuple(list(column) for column in zip(*wanted, strict=True))
+    casts = tuple(order[at].cast or "text" for at in range(len(key_columns)))
+    patterns = null_split(KeyBatch(tuple(key_columns), wanted_columns, casts, null_safe=True), wanted_columns)
     rows: list[Mapping[str, Any]] = []
     # of an Arrow read: the columns asked and the row's hash, each statement's table
     arrow_types = (
@@ -683,15 +685,15 @@ async def _read_changed(
     read_types = None if not stamps or types is None else {name: types[name] for name in _names(read_columns)}
     arrow_columns = read_columns if stamps else [*columns, hashed]
     tables: list[Any] = []
-    for nulls, pattern_keys in patterns.items():
-        present = [at for at, null in enumerate(nulls) if not null]
-        pinned = {**(by or {}), **{key_columns[at]: None for at, null in enumerate(nulls) if null}}
-        if not present and arrow_types is not None:
+    for pattern in patterns:
+        present = [at for at, column in enumerate(key_columns) if column not in pattern.nulled]
+        pinned = {**(by or {}), **dict.fromkeys(pattern.nulled)}
+        if pattern.keys is None and arrow_types is not None:
             # a key with every part NULL (none of a production key's): its few rows made the table on a thread
             nulled = await keyset_rows(conn, relation, columns=arrow_columns, by=pinned, order=order, where=where)
             tables.append(await asyncio.to_thread(_rail_arrow_table, nulled, read_types or arrow_types))
             continue
-        if not present:
+        if pattern.keys is None:
             rows.extend(await keyset_rows(conn, relation, columns=read_columns, by=pinned, order=order, where=where))
             continue
         spelled = [_key_part_text(kinds[at], order[at]) for at in present]
@@ -700,24 +702,16 @@ async def _read_changed(
             # writes it, Python's by key_text), where Redshift plans a list of tuples key by key (528 four-column
             # keys: 4.4 s of planning against 0.11 s). The parts are NULL-free: a NULL part is pinned above
             KeyBatch(
-                columns=tuple(key_columns[at] for at in present),
+                columns=pattern.keys.columns,
                 keys=[
-                    list(column)
-                    for column in zip(
-                        *(tuple(str(texts[at]) for at in present) for texts in map(canonical, pattern_keys)),
-                        strict=True,
-                    )
+                    [str(key_text(value, kinds[at].kind, kinds[at].scale)) for value in values]
+                    for at, values in zip(present, pattern.keys.keys, strict=True)
                 ],
                 as_list=True,
                 as_text=tuple(text for text in spelled if text is not None),
             )
             if dialect is Dialect.REDSHIFT and len(present) > 1 and None not in spelled
-            else KeyBatch(
-                columns=tuple(key_columns[at] for at in present),
-                keys=[[key[at] for key in pattern_keys] for at in present],
-                casts=tuple(order[at].cast or "text" for at in present),
-                as_list=dialect is Dialect.REDSHIFT,
-            )
+            else replace(pattern.keys, as_list=dialect is Dialect.REDSHIFT)
         )
         if arrow_types is not None:
             tables += await read_keyed_arrow(
