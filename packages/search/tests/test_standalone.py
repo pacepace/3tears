@@ -461,7 +461,7 @@ async def test_loopback_is_refused_by_default() -> None:
             await StandaloneTransport(max_attempts=1).request("GET", f"{server.base_url}/search")
 
     assert "allow_private_addresses" in (raised.value.remediation or "")
-    assert server.requests == [], "the refusal happens before a socket is opened"
+    assert server.requests == (), "the refusal happens before a socket is opened"
 
 
 async def test_a_private_address_is_reachable_only_by_deployment_config() -> None:
@@ -962,7 +962,7 @@ async def test_a_private_address_literal_is_refused_even_through_a_proxy(no_prox
         with pytest.raises(TransportFailed, match="non-public address"):
             await StandaloneTransport(max_attempts=1).request("GET", "http://10.0.0.5/admin")
 
-    assert proxy.requests == [], "the refusal happens before anything is sent"
+    assert proxy.requests == (), "the refusal happens before anything is sent"
 
 
 @pytest.mark.parametrize("host", ["localhost", "api.localhost"])
@@ -973,7 +973,7 @@ async def test_localhost_is_refused_even_through_a_proxy(no_proxy_env: pytest.Mo
         with pytest.raises(TransportFailed, match="non-public"):
             await StandaloneTransport(max_attempts=1).request("GET", f"http://{host}/admin")
 
-    assert proxy.requests == []
+    assert proxy.requests == ()
 
 
 async def test_a_host_the_proxy_bypass_names_is_still_resolved_and_guarded(no_proxy_env: pytest.MonkeyPatch) -> None:
@@ -984,7 +984,7 @@ async def test_a_host_the_proxy_bypass_names_is_still_resolved_and_guarded(no_pr
         with pytest.raises(TransportFailed, match="non-public address"):
             await StandaloneTransport(max_attempts=1).request("GET", f"{server.base_url}/search")
 
-    assert server.requests == []
+    assert server.requests == ()
 
 
 @pytest.mark.parametrize(
@@ -1000,7 +1000,7 @@ async def test_every_spelling_of_loopback_is_refused_through_a_proxy(
         with pytest.raises(TransportFailed, match="non-public"):
             await StandaloneTransport(max_attempts=1).request("GET", f"http://{host}/admin")
 
-    assert proxy.requests == [], "the refusal happens before anything is sent"
+    assert proxy.requests == (), "the refusal happens before anything is sent"
 
 
 async def test_a_name_that_resolves_locally_is_checked_even_through_a_proxy(
@@ -1018,7 +1018,7 @@ async def test_a_name_that_resolves_locally_is_checked_even_through_a_proxy(
                 "GET", "http://rebinds-to-loopback.example/admin"
             )
 
-    assert proxy.requests == []
+    assert proxy.requests == ()
 
 
 async def test_an_unresolvable_name_on_a_direct_route_still_fails(no_proxy_env: pytest.MonkeyPatch) -> None:
@@ -1165,7 +1165,7 @@ async def test_the_connection_goes_to_the_address_the_guard_checked(no_proxy_env
         transport = _guarded(_resolver({"rebind.example": (_PUBLIC,)}, asked))
         response = await transport.request("GET", "http://rebind.example/admin")
 
-    assert internal.requests == [], "the connect resolved the name again and reached the rebound address"
+    assert internal.requests == (), "the connect resolved the name again and reached the rebound address"
     assert response.status_code == 200
     assert network.connected == [_PUBLIC]
     assert asked == ["rebind.example"], "one lookup per hop: the guard's, and no other"
@@ -1189,7 +1189,7 @@ async def test_a_redirect_is_resolved_checked_and_pinned_on_its_own(no_proxy_env
         resolve = _resolver({"first.example": (_PUBLIC,), "second.example": (_OTHER_PUBLIC,)}, asked)
         response = await _guarded(resolve, max_redirects=1).request("GET", "http://first.example/start")
 
-    assert internal.requests == []
+    assert internal.requests == ()
     assert response.status_code == 200
     assert response.final_url == "http://second.example/landed"
     assert network.connected == [_PUBLIC, _OTHER_PUBLIC]
@@ -1295,7 +1295,7 @@ async def test_a_host_no_proxy_exempts_goes_direct_and_pinned(no_proxy_env: pyte
         )
 
     assert response.status_code == 200
-    assert proxy.requests == [] and internal.requests == []
+    assert proxy.requests == () and internal.requests == ()
     assert network.connected == [_PUBLIC]
 
 
@@ -1350,7 +1350,7 @@ async def test_a_proxied_request_goes_to_the_proxy_not_to_the_checked_address(no
         )
 
     assert response.status_code == 200
-    assert checked.requests == []
+    assert checked.requests == ()
     assert network.connected == ["proxy.example"]
     assert proxy.requests[0].startswith("GET http://public.example/page ")
 
@@ -1509,7 +1509,7 @@ async def test_tls_is_verified_against_the_name_while_the_socket_goes_to_the_pin
     assert network.connected == [_PUBLIC]
     assert server.server_names == ["secure.example"]
     assert "host: secure.example" in server.requests[0].lower()
-    assert internal.requests == []
+    assert internal.requests == ()
 
 
 async def test_a_certificate_for_another_name_is_still_refused_at_the_pinned_address(
@@ -1784,7 +1784,7 @@ async def test_loopback_is_refused_to_a_stream_by_default() -> None:
                 "POST", f"{server.base_url}/s", max_bytes=1024
             )
 
-    assert server.requests == [], "the refusal happens before a socket is opened"
+    assert server.requests == (), "the refusal happens before a socket is opened"
     assert raised.value.egress == "warp", "a guard refusal leaves stamped, like any other"
 
 
@@ -1797,7 +1797,7 @@ async def test_a_stream_connects_to_the_address_the_guard_checked(no_proxy_env: 
         async with await transport.stream("POST", "http://rebind.example/s", max_bytes=1024) as response:
             assert await _body(response) == b"checked"
 
-    assert internal.requests == [], "the connect resolved the name again and reached the rebound address"
+    assert internal.requests == (), "the connect resolved the name again and reached the rebound address"
     assert network.connected == [_PUBLIC]
     assert asked == ["rebind.example"]
 

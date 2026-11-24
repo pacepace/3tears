@@ -390,7 +390,7 @@ async def test_a_refused_call_reaches_neither_the_limiter_nor_the_provider() -> 
         await search(SearchRequest(query="capybara"), provider=provider, budget=budget, limiter=limiter)
 
     assert provider.requests == []
-    assert limiter.acquisitions == []
+    assert limiter.acquisitions == ()
 
 
 async def test_a_refusal_carries_the_decisions_own_facts() -> None:
@@ -435,7 +435,7 @@ async def test_a_refused_call_records_nothing() -> None:
     with pytest.raises(LocalCapExceeded):
         await search(SearchRequest(query="capybara"), provider=_WiringProvider(), budget=budget)
 
-    assert budget.records == []
+    assert budget.records == ()
 
 
 # --- pacing (D8, D20) -----------------------------------------------------
@@ -516,8 +516,8 @@ async def test_a_denied_call_bills_nothing_and_records_nothing() -> None:
     assert raised.value.spend.money == Decimal(0)
     assert raised.value.spend.bytes_transferred == 0
     assert raised.value.spend.wall_clock_seconds >= 0.0
-    assert budget.records == []
-    assert budget.checks != [], "the budget was still asked -- the refusal came from pacing, not from it"
+    assert budget.records == ()
+    assert budget.checks != (), "the budget was still asked -- the refusal came from pacing, not from it"
 
 
 # --- pacing a host configured so that nothing can pass (SR-J1, D5) --------
@@ -548,7 +548,7 @@ async def test_a_burst_smaller_than_one_call_refuses_typed_and_names_the_cap() -
     assert raised.value.provider_instance == "wiring-1"
     assert raised.value.egress == EGRESS_DIRECT
     assert provider.requests == [], "the call was never made"
-    assert budget.records == [], "and a call nobody attempted has no bill (D4)"
+    assert budget.records == (), "and a call nobody attempted has no bill (D4)"
 
 
 async def test_a_negative_ask_stays_the_programming_error_it_is() -> None:
