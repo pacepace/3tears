@@ -205,7 +205,9 @@ class TestEveryFamilyReadsReadingsAsResults:
         many it handed out."""
         handed: list[str] = []
 
-        def whole(result: EvalResult, shared: SharedValues | None = None) -> EvalResult:
+        def whole(
+            result: EvalResult, shared: SharedValues | None = None, texts: dict[str, str] | None = None
+        ) -> EvalResult:
             handed.append(result.id)
             return result
 
