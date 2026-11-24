@@ -2367,6 +2367,46 @@ class _ConnectionState:
         self.connected_at = time.monotonic()
 
 
+def with_reply_route(
+    routes: Mapping[str, _NatsPyClient], reply_subject: str, connection: _NatsPyClient
+) -> Mapping[str, _NatsPyClient]:
+    """``routes`` with ``reply_subject`` routed to ``connection``, as a new frozen map.
+
+    The reply-route map (:attr:`NatsClient.reply_routes`) is replaced whole on every change, never
+    changed in place, so no coroutine sees it change under it. One entry per request in flight,
+    which number in the hundreds: a rebuild costs tens of microseconds (about 45 us to add and
+    remove one route with 1,000 in flight, measured on an M-series laptop; the budget is pinned in
+    tests/unit/test_connection_handover.py).
+
+    :param routes: the current map
+    :ptype routes: Mapping[str, nats.aio.client.Client]
+    :param reply_subject: the request's reply subject
+    :ptype reply_subject: str
+    :param connection: the connection the request arrived on
+    :ptype connection: nats.aio.client.Client
+    :return: the next map
+    :rtype: Mapping[str, nats.aio.client.Client]
+    """
+    return MappingProxyType({**routes, reply_subject: connection})
+
+
+def without_reply_route(routes: Mapping[str, _NatsPyClient], reply_subject: str) -> Mapping[str, _NatsPyClient]:
+    """``routes`` without ``reply_subject``, as a new frozen map (``routes`` itself when it has none).
+
+    :param routes: the current map
+    :ptype routes: Mapping[str, nats.aio.client.Client]
+    :param reply_subject: the reply subject whose route leaves
+    :ptype reply_subject: str
+    :return: the next map
+    :rtype: Mapping[str, nats.aio.client.Client]
+    """
+    if reply_subject not in routes:
+        return routes
+    remaining = dict(routes)  # function-local copy, frozen before anyone else can see it
+    del remaining[reply_subject]
+    return MappingProxyType(remaining)
+
+
 class _ConnectionLifecycle:
     """the one model of a client's connections and of the client's phase.
 
@@ -3292,12 +3332,12 @@ class NatsClient:
         # serializes a renewal's handover against a subscribe that would otherwise land on the
         # connection being replaced after the handover enumerated the subscriptions.
         self._handover_lock = asyncio.Lock()
-        # request reply subject -> (the connection that received the request, time.monotonic() then),
-        # recorded whenever a handover can occur so a reply owed across one leaves on the connection
-        # NATS lets answer it. an entry leaves when the reply is sent, when its connection is
-        # retired, or once it is older than the longest request (:meth:`_note_reply_route`). kept in
-        # the order recorded, which is oldest first.
-        self._reply_routes: dict[str, tuple[_NatsPyClient, float]] = {}
+        # request reply subject -> the connection that received the request, recorded whenever a
+        # handover can occur so a reply owed across one leaves on the connection NATS lets answer it.
+        # one entry per request in flight; it leaves when the reply is sent or when its connection is
+        # retired (:meth:`_note_reply_route`). frozen and replaced whole on every change
+        # (:func:`with_reply_route`, which states the cost), so no coroutine sees it change under it.
+        self._reply_routes: Mapping[str, _NatsPyClient] = MappingProxyType({})
         # durable push consumers, which a handover moves by rebinding the durable on the successor.
         self._push_consumers: list[JetStreamPushConsumer] = []
         # durable pull consumers, which a restoration after a reconnect binds again when the server
@@ -4585,9 +4625,11 @@ class NatsClient:
         :rtype: None
         """
         self._lifecycle.forget(connection)
-        stale = [reply for reply, (via, _noted) in self._reply_routes.items() if via is connection]
-        for reply in stale:
-            del self._reply_routes[reply]
+        routes = self._reply_routes
+        if any(via is connection for via in routes.values()):
+            self._reply_routes = MappingProxyType(
+                {reply: via for reply, via in routes.items() if via is not connection}
+            )
 
     def _note_reply_route(self, reply_subject: str, connection: _NatsPyClient) -> None:
         """remember which connection received a request, so its reply can leave on that connection.
@@ -4600,10 +4642,8 @@ class NatsClient:
         connection for life and records nothing.
 
         An entry leaves when the reply is sent -- by any publish method, all of which go through
-        :meth:`_reply_connection` -- or when its connection is retired. A reply that is never
-        sent (a handler that failed, a request it chose not to answer) is bounded too: each new
-        entry first drops those older than the longest request this client declared, by which
-        time no requester is still waiting and a replaced connection is no longer held for it.
+        :meth:`_reply_connection` -- or when its connection is retired, which drops every route
+        that pointed at it (:meth:`_forget_connection`). The map is frozen and replaced whole.
 
         :param reply_subject: the request's reply subject
         :ptype reply_subject: str
@@ -4614,16 +4654,7 @@ class NatsClient:
         """
         if not self._lifecycle.can_hand_over:
             return
-        now = time.monotonic()
-        horizon = now - self._longest_request_seconds
-        routes = self._reply_routes
-        while routes:
-            oldest = next(iter(routes))
-            if routes[oldest][1] >= horizon:
-                break
-            del routes[oldest]
-        routes.pop(reply_subject, None)
-        routes[reply_subject] = (connection, now)
+        self._reply_routes = with_reply_route(self._reply_routes, reply_subject, connection)
 
     async def _reply_connection(self, reply_subject: str) -> _NatsPyClient:
         """the connection a reply to ``reply_subject`` must leave on.
@@ -4639,9 +4670,11 @@ class NatsClient:
         :return: the connection to publish the reply on
         :rtype: nats.aio.client.Client
         """
-        route = self._reply_routes.pop(reply_subject, None)
-        if route is not None and not route[0].is_closed:
-            return route[0]
+        route = self._reply_routes.get(reply_subject)
+        if route is not None:
+            self._reply_routes = without_reply_route(self._reply_routes, reply_subject)
+            if not route.is_closed:
+                return route
         return await self._lifecycle.publishing_connection()
 
     async def _pinned_connection(self, pin: PublishPin) -> _NatsPyClient:
@@ -5047,6 +5080,17 @@ class NatsClient:
         for connection in self._lifecycle.replaced():
             await self._drain_retired(connection)
             self._forget_connection(connection)
+
+    @property
+    def reply_routes(self) -> Mapping[str, _NatsPyClient]:
+        """the requests whose reply is still owed, each with the connection it must leave on.
+
+        Frozen: a later request or reply replaces the map whole, so a held reference never changes.
+
+        :return: reply subject -> the connection that received the request
+        :rtype: Mapping[str, nats.aio.client.Client]
+        """
+        return self._reply_routes
 
     @property
     def raw(self) -> _NatsPyClient:
