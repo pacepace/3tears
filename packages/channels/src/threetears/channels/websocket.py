@@ -28,7 +28,7 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from uuid import UUID, uuid7
@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from threetears.agent.acl import AccessDenied, authorize_on_entity
 from threetears.channels.frames import Frame, OpRejected, RoomAccessRequest
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
@@ -431,7 +432,8 @@ class ConnectionRegistry:
 
     def __init__(self) -> None:
         """initialize the empty, lock-guarded connection map."""
-        self._connections: dict[str, list[Any]] = {}
+        # a read-only snapshot of tuples, replaced whole under the lock (threetears.core.frozen_state)
+        self._connections: Mapping[str, tuple[Any, ...]] = EMPTY
         self._lock = threading.Lock()
 
     def register(self, user_id: str, websocket: Any) -> None:
@@ -445,7 +447,8 @@ class ConnectionRegistry:
         :rtype: None
         """
         with self._lock:
-            self._connections.setdefault(user_id, []).append(websocket)
+            held = self._connections.get(user_id, ())
+            self._connections = with_entry(self._connections, user_id, (*held, websocket))
 
     def unregister(self, user_id: str, websocket: Any) -> None:
         """remove a user's live socket handle.
@@ -465,9 +468,11 @@ class ConnectionRegistry:
             connections = self._connections.get(user_id)
             if connections is None:
                 return
-            try:
-                connections.remove(websocket)
-            except ValueError:
+            if websocket in connections:
+                # the first equal handle goes, as list.remove did
+                at = connections.index(websocket)
+                connections = (*connections[:at], *connections[at + 1 :])
+            else:
                 # Not in this user's list: a double-unregister, or a socket registered under a
                 # different user_id. Falls through to the empty-list cleanup below rather than
                 # returning early, which used to strand an empty list keyed by user_id forever.
@@ -475,8 +480,10 @@ class ConnectionRegistry:
                     "unregister for a socket that was not in the user's connection list",
                     extra={"extra_data": {"user_id": user_id}},
                 )
-            if not connections:
-                del self._connections[user_id]
+            if connections:
+                self._connections = with_entry(self._connections, user_id, connections)
+            else:
+                self._connections = without_entry(self._connections, user_id)
 
     def get_connections(self, user_id: str) -> list[Any]:
         """return a snapshot of a user's live socket handles.
@@ -491,7 +498,7 @@ class ConnectionRegistry:
         :rtype: list[Any]
         """
         with self._lock:
-            return list(self._connections.get(user_id, []))
+            return list(self._connections.get(user_id, ()))
 
 
 async def _stop_both(tasks: tuple[asyncio.Task[None], ...]) -> None:
@@ -674,7 +681,8 @@ class WebSocketHandler:
         # connection_id -> the live connection's identity + joined rooms, so a
         # room's members can be evicted from outside their message loops.
         # guarded like ``ConnectionRegistry``: reads take a snapshot.
-        self._connections: dict[str, _RoomConnection] = {}
+        # a read-only snapshot replaced whole under the lock (threetears.core.frozen_state)
+        self._connections: Mapping[str, _RoomConnection] = EMPTY
         self._connections_lock = threading.Lock()
 
     async def handle_connection(self, websocket: Any) -> None:
@@ -728,7 +736,7 @@ class WebSocketHandler:
             websocket=websocket, user_id=user_id, customer_id=customer_id, expires_at=expires_at
         )
         with self._connections_lock:
-            self._connections[connection_id] = connection
+            self._connections = with_entry(self._connections, connection_id, connection)
 
         try:
             # resume-on-connect (design T3-D4): if the client carries a resume
@@ -738,7 +746,7 @@ class WebSocketHandler:
             await self._serve(websocket, user_id, customer_id, connection_id, connection)
         finally:
             with self._connections_lock:
-                self._connections.pop(connection_id, None)
+                self._connections = without_entry(self._connections, connection_id)
             self.registry.unregister(user_id, websocket)
             # under the room lock, so an eviction in flight finishes first and
             # a room it already left is not left a second time.

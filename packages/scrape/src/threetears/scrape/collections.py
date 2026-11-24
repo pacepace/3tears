@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any, ClassVar, Literal, cast, get_args
 
 from threetears.core.backends.protocol import DurableStore
@@ -41,6 +42,7 @@ from threetears.core.collections.base import (
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.observe import contain, get_logger
 from uuid_utils import uuid7
 
@@ -720,7 +722,8 @@ class ScrapeCollection(BaseCollection[EntityT]):
         :return: nothing
         :rtype: None
         """
-        self._rows: dict[Any, dict[str, Any]] = {}
+        # the no-L3 fallback (unit tests, local dev): a read-only snapshot replaced whole
+        self._rows: Mapping[Any, dict[str, Any]] = EMPTY
         super().__init__(registry, config, nats_client)
 
     @property
@@ -834,7 +837,7 @@ class ScrapeCollection(BaseCollection[EntityT]):
             pk_value = data.get(pk_column)
             if pk_value is None:
                 raise ValueError(f"{type(self).__name__}: save_to_store() row is missing its primary key {pk_column!r}")
-            self._rows[pk_value] = dict(data)
+            self._rows = with_entry(self._rows, pk_value, dict(data))
             result = 1
         return result
 
@@ -844,7 +847,7 @@ class ScrapeCollection(BaseCollection[EntityT]):
         if store is not None:
             await store.delete(self.table_name, {self._single_pk_column(): entity_id})
             return
-        self._rows.pop(entity_id, None)
+        self._rows = without_entry(self._rows, entity_id)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Serialize a row dict to JSON bytes for the L2 (NATS KV) cache tier."""
