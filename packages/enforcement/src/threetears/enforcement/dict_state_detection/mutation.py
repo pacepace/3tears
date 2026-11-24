@@ -47,7 +47,7 @@ from threetears.enforcement.common import Violation, iter_python_files, parse_py
 from threetears.enforcement.dict_state_detection.call_scope import call_scoped_classes
 from threetears.enforcement.dict_state_detection.config import DictStateAllowlistEntry
 
-__all__ = ["find_mutated_state_violations", "find_stale_immutable_debts"]
+__all__ = ["find_mutated_state_violations", "find_stale_immutable_debts", "is_non_serving"]
 
 _CATEGORY = "dict_state_detection.mutated_in_place"
 _STALE_CATEGORY = "dict_state_detection.stale_immutable_debt"
@@ -510,8 +510,26 @@ def _scan_module(tree: ast.Module, module_path: Path, rules: _Rules) -> list[Vio
     return unique
 
 
+def is_non_serving(path: Path, non_serving: tuple[Path, ...]) -> bool:
+    """whether ``path`` lies under (or is) one of the non-serving roots.
+
+    :param path: the module
+    :ptype path: Path
+    :param non_serving: the non-serving roots (directories or modules)
+    :ptype non_serving: tuple[Path, ...]
+    :return: whether it does
+    :rtype: bool
+    """
+    resolved = path.resolve()
+    return any(resolved == root.resolve() or resolved.is_relative_to(root.resolve()) for root in non_serving)
+
+
 def find_mutated_state_violations(
-    roots: tuple[Path, ...], repo_root: Path, *, widened: bool = False
+    roots: tuple[Path, ...],
+    repo_root: Path,
+    *,
+    widened: bool = False,
+    non_serving: tuple[Path, ...] = (),
 ) -> list[Violation]:
     """every change in place of an object's dict or set state outside ``__init__`` under ``roots``.
 
@@ -522,6 +540,9 @@ def find_mutated_state_violations(
     :param widened: also count public attributes, lists and deques, class-body fields, and changes made through
         another object in the same module, except the state of call-scoped classes (Pace's rulings of 2026-11-24)
     :ptype widened: bool
+    :param non_serving: roots that are not serving code (:attr:`DictStateConfig.non_serving_roots`): no site under one
+        is reported, though their modules still count as places a class is built or kept
+    :ptype non_serving: tuple[Path, ...]
     :return: the violations, root-major, then file, then line
     :rtype: list[Violation]
     """
@@ -536,7 +557,8 @@ def find_mutated_state_violations(
                 parsed.append((module_path, tree))
     violations: list[Violation] = []
     for module_path, tree in parsed:
-        violations.extend(_scan_module(tree, module_path, rules))
+        if not is_non_serving(module_path, non_serving):
+            violations.extend(_scan_module(tree, module_path, rules))
     if not widened:
         return violations
     scoped = call_scoped_classes(tree for _, tree in parsed)
@@ -563,6 +585,7 @@ def find_stale_immutable_debts(
     repo_root: Path,
     *,
     widened: bool = False,
+    non_serving: tuple[Path, ...] = (),
 ) -> list[Violation]:
     """each tracked change in place that no longer happens: the redesign landed, so the entry goes.
 
@@ -574,6 +597,8 @@ def find_stale_immutable_debts(
     :ptype repo_root: Path
     :param widened: the walk the debts are tracked under (see :func:`find_mutated_state_violations`)
     :ptype widened: bool
+    :param non_serving: the roots that are not serving code (see :func:`find_mutated_state_violations`)
+    :ptype non_serving: tuple[Path, ...]
     :return: one violation a stale entry
     :rtype: list[Violation]
     """
@@ -581,7 +606,7 @@ def find_stale_immutable_debts(
         return []
     real = {
         (relative_posix_path(violation.file, repo_root), violation.symbol)
-        for violation in find_mutated_state_violations(roots, repo_root, widened=widened)
+        for violation in find_mutated_state_violations(roots, repo_root, widened=widened, non_serving=non_serving)
     }
     return [
         Violation(

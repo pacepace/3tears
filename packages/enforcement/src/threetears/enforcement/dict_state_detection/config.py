@@ -182,6 +182,11 @@ class DictStateConfig:
         (public attributes, lists and deques, class-body fields, changes through another object in the same module;
         :mod:`~threetears.enforcement.dict_state_detection.mutation`). Off until a repo's widened sites are paid or
         tracked, so turning it on is that repo's own change.
+    :ivar non_serving_roots: trees (directories or modules) that are not serving code: the rule engine, test helpers,
+        command-line and operator tooling reached only from a console script, never from a serving process (Pace,
+        2026-11-24: the dict rule's scope is serving code, and non-serving code is declared by root, never per site).
+        Neither walk reports a site under one, the ``__init__`` walk included. Anything a serving path imports is
+        serving, whatever its name.
     """
 
     repo_root: Path
@@ -193,3 +198,4 @@ class DictStateConfig:
     immutable_roots: tuple[Path, ...] = ()
     immutable_known_violations: tuple[DictStateAllowlistEntry, ...] = ()
     immutable_widened: bool = False
+    non_serving_roots: tuple[Path, ...] = ()

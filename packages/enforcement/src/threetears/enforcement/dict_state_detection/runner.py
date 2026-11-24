@@ -46,6 +46,7 @@ from threetears.enforcement.dict_state_detection.config import (
 from threetears.enforcement.dict_state_detection.mutation import (
     find_mutated_state_violations,
     find_stale_immutable_debts,
+    is_non_serving,
 )
 from threetears.enforcement.dict_state_detection.walkers import (
     filter_against_allowlist,
@@ -87,6 +88,9 @@ def run_dict_state_enforcement(
 
     if walker in {"detect", "all"}:
         detection = find_dict_state_violations(src_roots, config.repo_root)
+        detection = [
+            violation for violation in detection if not is_non_serving(violation.file, config.non_serving_roots)
+        ]
         true_violations, _allowed = filter_against_allowlist(
             detection,
             config.allowlist,
@@ -96,7 +100,10 @@ def run_dict_state_enforcement(
         aggregated.extend(true_violations)
         if config.immutable_roots:
             mutated = find_mutated_state_violations(
-                config.immutable_roots, config.repo_root, widened=config.immutable_widened
+                config.immutable_roots,
+                config.repo_root,
+                widened=config.immutable_widened,
+                non_serving=config.non_serving_roots,
             )
             changed, _tracked = filter_against_allowlist(
                 mutated, (), config.immutable_known_violations, config.repo_root
@@ -110,6 +117,7 @@ def run_dict_state_enforcement(
                 config.immutable_known_violations,
                 config.repo_root,
                 widened=config.immutable_widened,
+                non_serving=config.non_serving_roots,
             )
         )
         aggregated.extend(

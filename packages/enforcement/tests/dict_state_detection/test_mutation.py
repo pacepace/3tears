@@ -495,3 +495,42 @@ def run(batches, totals):
     assert _widened(tmp_path, source) == []
     kept = source + "\n\nclass Keeper:\n    def keep(self, batches):\n        self.planned, _ = plan(batches)\n"
     assert {symbol for _, symbol in _widened(tmp_path / "kept", kept)} >= {"ApplyReport.created"}
+
+
+def _two_modules(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """a serving module and a tooling one holding the same change in place."""
+    repo, root = _module(tmp_path, _OLD_FOLLOWER)
+    tooling = root / "pkg" / "cli"
+    tooling.mkdir()
+    (tooling / "report.py").write_text(_PUBLIC_STORE.replace("self.documents", "self._documents"))
+    (repo / "pyproject.toml").write_text('[project]\nname = "synthetic"\n')
+    return repo, root, tooling
+
+
+def test_non_serving_roots_are_skipped_by_the_narrow_and_the_widened_walks(tmp_path: Path) -> None:
+    repo, root, tooling = _two_modules(tmp_path)
+    for widened in (False, True):
+        everything = find_mutated_state_violations((root,), repo, widened=widened)
+        assert {violation.file.name for violation in everything} == {"mod.py", "report.py"}
+        serving = find_mutated_state_violations((root,), repo, widened=widened, non_serving=(tooling,))
+        assert {violation.file.name for violation in serving} == {"mod.py"}
+        single = find_mutated_state_violations((root,), repo, widened=widened, non_serving=(tooling / "report.py",))
+        assert {violation.file.name for violation in single} == {"mod.py"}
+
+
+def test_the_runner_honours_non_serving_roots_in_every_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DICT_STATE_ENFORCEMENT_MODE", "strict")
+    repo, root, tooling = _two_modules(tmp_path)
+    (repo / "src" / "pkg" / "mod.py").write_text("class Quiet:\n    def __init__(self):\n        self._x = ()\n")
+    for widened in (False, True):
+        config = DictStateConfig(repo_root=repo, src_roots=(root,), immutable_roots=(root,), immutable_widened=widened)
+        with pytest.raises(pytest.fail.Exception, match="InMemoryDocumentStore._documents"):
+            run_dict_state_enforcement(config)
+        scoped = DictStateConfig(
+            repo_root=repo,
+            src_roots=(root,),
+            immutable_roots=(root,),
+            immutable_widened=widened,
+            non_serving_roots=(tooling,),
+        )
+        run_dict_state_enforcement(scoped)
