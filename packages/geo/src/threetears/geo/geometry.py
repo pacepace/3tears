@@ -133,7 +133,7 @@ def point_geometry(row: dict[str, Any], longitude_column: str, latitude_column: 
 
 #: a coordinate written as text that reads as a number, as ``float()`` reads one (after trimming): digits with an
 #: optional point and exponent, or inf / infinity / nan in any case
-_NUMERIC_TEXT: Final = r"(?i)^[+-]?((\d+\.?\d*|\.\d+)(e[+-]?\d+)?|inf|infinity|nan)$"
+_NUMERIC_TEXT: Final = r"(?i)^[+-]?(inf|infinity|nan|(\d+\.?\d*|\.\d+)(e[+-]?\d+)?)$"
 
 
 @dataclass(frozen=True, slots=True)
