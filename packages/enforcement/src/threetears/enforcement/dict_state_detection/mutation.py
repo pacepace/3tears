@@ -32,7 +32,9 @@ The widened walk (``widened=True``; Pace's ruling of 2026-11-24, opt-in per repo
   private attribute of a class there.
 
 Immutable values (tuple, frozenset, ``MappingProxyType``, ``Mapping`` / ``Sequence`` annotations) never count, and
-neither does a function-local container.
+neither does a function-local container. Nor, in the widened walk, does the state of a call-scoped class (Pace,
+2026-11-24: function-local and call-scoped mutation is safe): one whose every instance lives and dies inside one call,
+as :mod:`.call_scope` decides across all the walked trees, so no other coroutine or thread can reach it.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from threetears.enforcement.common import Violation, iter_python_files, parse_python_file, relative_posix_path
+from threetears.enforcement.dict_state_detection.call_scope import call_scoped_classes
 from threetears.enforcement.dict_state_detection.config import DictStateAllowlistEntry
 
 __all__ = ["find_mutated_state_violations", "find_stale_immutable_debts"]
@@ -517,22 +520,41 @@ def find_mutated_state_violations(
     :param repo_root: the repo's root (kept for parity with the sibling walkers)
     :ptype repo_root: Path
     :param widened: also count public attributes, lists and deques, class-body fields, and changes made through
-        another object in the same module (Pace's ruling of 2026-11-24)
+        another object in the same module, except the state of call-scoped classes (Pace's rulings of 2026-11-24)
     :ptype widened: bool
     :return: the violations, root-major, then file, then line
     :rtype: list[Violation]
     """
     _ = repo_root
     rules = _WIDE if widened else _NARROW
-    violations: list[Violation] = []
+    parsed: list[tuple[Path, ast.Module]] = []
     for root in roots:
         modules = [root] if root.is_file() else list(iter_python_files(root))
         for module_path in modules:
             tree = parse_python_file(module_path)
-            if tree is None:
-                continue
-            violations.extend(_scan_module(tree, module_path, rules))
-    return violations
+            if tree is not None:
+                parsed.append((module_path, tree))
+    violations: list[Violation] = []
+    for module_path, tree in parsed:
+        violations.extend(_scan_module(tree, module_path, rules))
+    if not widened:
+        return violations
+    scoped = call_scoped_classes(tree for _, tree in parsed)
+    return [violation for violation in violations if not _call_scoped(violation.symbol, scoped)]
+
+
+def _call_scoped(symbol: str, scoped: frozenset[str]) -> bool:
+    """whether every class holding ``symbol``'s state (``A.x``, or ``A/B.x`` by a shared field name) is call-scoped.
+
+    :param symbol: the violation's ``Class.attr``
+    :ptype symbol: str
+    :param scoped: the call-scoped classes
+    :ptype scoped: frozenset[str]
+    :return: whether they all are
+    :rtype: bool
+    """
+    holders = symbol.rsplit(".", 1)[0].split("/")
+    return all(holder in scoped for holder in holders)
 
 
 def find_stale_immutable_debts(

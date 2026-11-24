@@ -375,3 +375,123 @@ def test_the_runner_walks_widened_only_when_a_repo_opts_in(tmp_path: Path, monke
     stale = find_stale_immutable_debts((root,), (debt,), repo)
     assert [violation.symbol for violation in stale] == ["InMemoryDocumentStore.documents"]
     assert find_stale_immutable_debts((root,), (debt,), repo, widened=True) == []
+
+
+#: call-scoped state (Pace, 2026-11-24): a CLI report built in one call and filled by helpers
+_REPORT = """\
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ApplyReport:
+    created: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+
+    def note(self, name):
+        self.counts[name] = self.counts.get(name, 0) + 1
+
+
+def _apply_providers(report: ApplyReport, names):
+    for name in names:
+        report.created.append(name)
+        report.note(name)
+
+
+def _apply_models(report, names):
+    report.skipped.extend(names)
+
+
+def apply(names):
+    report = ApplyReport()
+    _apply_providers(report, names)
+    _apply_models(report=report, names=names)
+    print(report.created)
+    return report
+
+
+def main(names):
+    result = apply(names)
+    print(len(result.created))
+"""
+
+
+def test_call_scoped_a_report_built_and_filled_inside_one_call_passes(tmp_path: Path) -> None:
+    assert _widened(tmp_path, _REPORT) == []
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "class Runner:\n    def run(self, names):\n        report = ApplyReport()\n        _apply_providers(report, names)\n"
+        "        self._last = report\n",
+        "LAST = ApplyReport()\n",
+        "def keep(names):\n    held = apply(names)\n    REGISTRY.append(held)\n",
+        "def later(names):\n    report = ApplyReport()\n    return lambda: report\n",
+        "def spawn(loop, names):\n    report = ApplyReport()\n    loop.create_task(fill(report, names))\n",
+        "class Store:\n    report: ApplyReport = field(default_factory=ApplyReport)\n",
+    ],
+    ids=["stored-on-self", "module-state", "returned-to-a-keeper", "closure", "task", "field-factory"],
+)
+def test_call_scoped_the_same_report_kept_beyond_its_call_is_refused(tmp_path: Path, escape: str) -> None:
+    found = _widened(tmp_path, f"{_REPORT}\n\n{escape}")
+    assert {symbol for _, symbol in found} >= {"ApplyReport.created", "ApplyReport.counts"}
+
+
+def test_call_scoped_a_dataclass_cache_on_a_service_is_refused(tmp_path: Path) -> None:
+    source = """\
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Cache:
+    entries: dict[str, bytes] = field(default_factory=dict)
+
+
+class Service:
+    def __init__(self):
+        self._cache = Cache()
+
+    def put(self, key, value):
+        self._cache.entries[key] = value
+"""
+    assert _widened(tmp_path, source) == [(14, "Cache.entries")]
+
+
+def test_call_scoped_a_class_never_built_in_the_trees_is_refused(tmp_path: Path) -> None:
+    source = """\
+class Visitor:
+    def __init__(self):
+        self.found = []
+
+    def visit(self, node):
+        self.found.append(node)
+"""
+    assert _widened(tmp_path, source) == [(6, "Visitor.found")]
+    built = source + "\n\ndef walk(tree):\n    visitor = Visitor()\n    visitor.visit(tree)\n    return visitor.found\n"
+    assert _widened(tmp_path / "built", built) == []
+
+
+def test_call_scoped_reports_gathered_in_a_local_list_and_returned_in_a_tuple_pass(tmp_path: Path) -> None:
+    source = (
+        _REPORT
+        + """
+
+def plan(batches):
+    planned = []
+    for names in batches:
+        report = ApplyReport()
+        _apply_providers(report, names)
+        planned.append(report)
+    return planned, len(planned)
+
+
+def run(batches, totals):
+    planned, count = plan(batches)
+    totals.update(planned[0].counts)
+    return count
+"""
+    )
+    assert _widened(tmp_path, source) == []
+    kept = source + "\n\nclass Keeper:\n    def keep(self, batches):\n        self.planned, _ = plan(batches)\n"
+    assert {symbol for _, symbol in _widened(tmp_path / "kept", kept)} >= {"ApplyReport.created"}
