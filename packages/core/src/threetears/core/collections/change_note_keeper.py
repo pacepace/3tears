@@ -2214,7 +2214,8 @@ class ChangeNoteKeeper:
             floor = _seq_under(ring.fence_seq, incarnation)
         if floor is None or seen is None or seen[0] != incarnation:
             return ScrubPass()
-        start = max(floor, self._scrubbed[1] if self._scrubbed and self._scrubbed[0] == incarnation else floor)
+        began = self._scrubbed
+        start = max(floor, began[1] if began and began[0] == incarnation else floor)
         start = max(start, state.first_seq - 1)
         end = min(seen[1], start + self._scrub_batch)
         if end <= start:
@@ -2256,7 +2257,10 @@ class ChangeNoteKeeper:
                     }
                 },
             )
-        self._scrubbed = (incarnation, end)
+        if self._scrubbed is began:
+            # nothing reset or moved the position during the awaits above (a restore sets it to None): advance it.
+            # Otherwise the next scrub starts from where that left it, so a reset is never undone
+            self._scrubbed = (incarnation, end)
         _SCRUB_BEHIND.set(max(0, state.last_seq - end))
         return result
 

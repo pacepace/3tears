@@ -3000,10 +3000,9 @@ class _ConnectionOpener:
 
         async def _dispatch_error(exc: Exception) -> None:
             """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
-            # count the violation BEFORE the await: _on_error may suspend, and if a _dispatch_reconnected
-            # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
-            # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
-            # run of failures; the next successful reconnect always resets it to 0. Only the CURRENT
+            # count the violation first: the callback never suspends now (_on_error is synchronous), and
+            # counting before the logging keeps the counter honest within a run of failures; the next
+            # successful reconnect always resets it to 0. Only the CURRENT
             # connection's refusals count: a retiring connection's say nothing about whether the
             # current credential is wedged, and neither does a renewal candidate's -- the current
             # connection is still valid, and is kept until it expires.
@@ -3012,7 +3011,8 @@ class _ConnectionOpener:
             violation = _permissions_violation(exc)
             if violation is not None and violation.operation == "publish" and violation.subject:
                 health.note_refused(violation.subject.lower())
-            self._error_log_times = await _on_error(exc, self._error_log_times)
+            # read, rebuilt and assigned with no await between: two callbacks never lose each other's update
+            self._error_log_times = _on_error(exc, self._error_log_times)
 
         return _dispatch_error
 
@@ -7652,8 +7652,11 @@ def _is_connection_loss(exc: Exception) -> bool:
     return isinstance(exc, (OSError, TimeoutError)) and not isinstance(exc, _NatsError)
 
 
-async def _on_error(exc: Exception, last_logged: Mapping[str, float]) -> Mapping[str, float]:
-    """nats-py error callback with rate-limited logging.
+def _on_error(exc: Exception, last_logged: Mapping[str, float]) -> Mapping[str, float]:
+    """the rate-limited logging of one nats-py error callback.
+
+    Synchronous on purpose: its owner (the connection's ``error_cb``) reads the map, hands it here and assigns the
+    answer back, and only with no await between that read and that write does no other callback's update get lost.
 
     A CONNECTION LOSS (:func:`_is_connection_loss`) is logged at WARNING, naming the error's type
     and its text: the client is already reconnecting, and a broker restart that heals itself in

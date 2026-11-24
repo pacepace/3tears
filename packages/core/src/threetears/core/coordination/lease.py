@@ -1504,7 +1504,9 @@ class KVLease:
             # the swap was refused, so this payload was never written -- but the earlier write that
             # went unanswered may have landed between the read above and the swap. If the entry is
             # exactly that write, it is this handle's own: renew from it, once.
-            handle.in_flight_value = unanswered
+            if handle.in_flight_value is payload:
+                # still this refresh's own mark (no await since the check): nothing else has moved it on
+                handle.in_flight_value = unanswered
             landed = await bucket.get_entry(key=handle.key)
             if landed is not None and landed[0] == unanswered:
                 handle.revision = landed[1]
@@ -1522,7 +1524,10 @@ class KVLease:
             raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh", reason=LeaseLossReason.TAKEN)
         handle.in_flight_value = None
         handle.revision = new_revision
-        handle.ttl_seconds = effective_ttl
+        if ttl_seconds is not None:
+            # only a TTL this refresh was given is written: writing back the one read before the awaits would undo
+            # one set meanwhile
+            handle.ttl_seconds = ttl_seconds
 
     async def retake_handle(self, handle: LeaseHandle) -> bool:
         """implementation of :meth:`LeaseHandle.retake`, public for the reason :meth:`refresh_handle` is.

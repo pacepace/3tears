@@ -1190,10 +1190,10 @@ def load_wake_schedule_update_tool(
             skill_change = (None, False)
 
         # context_from_schedule_id change.
-        new_context_from: UUID | None
+        # what the schedule's own context_from becomes, only when it changes: an unchanged one is never written back
+        new_context_from: UUID | None = None
         context_from_changed = False
         if detach_context_from:
-            new_context_from = None
             context_from_changed = True
         elif context_from_schedule_id is not None:
             new_context_from = parse_schedule_id(context_from_schedule_id)
@@ -1203,8 +1203,6 @@ def load_wake_schedule_update_tool(
                     f"invalid context_from_schedule_id {context_from_schedule_id!r}",
                 )
             context_from_changed = True
-        else:
-            new_context_from = entity.context_from_schedule_id
 
         if context_from_changed and new_context_from is not None:
             resolver = _make_chain_resolver(schedules_collection, agent_id)
