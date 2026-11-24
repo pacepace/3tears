@@ -138,6 +138,7 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "delete_prefixes": "a bulk delete of key prefixes in one statement; must reach every row of them whatever the filter says",
     "settle_prefixes": "settles L1 and the copy for prefixes a delete removed; reads and returns no row",
     "delete_l2_entry": "drops one L2 cache entry by key; touches no stored row",
+    "drop_cached_prefixes": "evicts this process's cached rows under key prefixes a change reached; reads and returns no row",
     "invalidate_cache": "evicts one key from the cache tiers; returns nothing",
     "invalidate_cache_many": "evicts many keys from the cache tiers; returns nothing",
     "l2_cas_mutate": "a compare-and-set on one L2 cache entry the writer holds; no SQL read",
