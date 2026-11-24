@@ -11,6 +11,8 @@ every statement in the form it had.
 from __future__ import annotations
 
 import weakref
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Final
 
 import asyncpg
@@ -31,7 +33,7 @@ _INDEX_HINT_UNAVAILABLE: Final = "threetears_yb_index_hint_unavailable"
 _HINT_SETTING_SQL: Final = "SELECT current_setting('pg_hint_plan.enable_hint', true) AS enabled"
 
 #: whether this process has logged a missing pg_hint_plan already: one error a process, the gauge every connection
-_HINT_MISSING_LOGGED: list[bool] = [False]
+_HINT_MISSING_LOGGED: bool = False
 
 #: the method (``async def answers_from_yugabyte(self) -> bool``) a reader standing in front of another defines to say
 #: which database the one behind it is, so no ``SELECT version()`` passes through it (a recorder would record it)
@@ -74,7 +76,7 @@ _ASKED: Final[weakref.WeakKeyDictionary[Any, bool]] = weakref.WeakKeyDictionary(
 #: every service's L3 -- paid a ``SELECT version()`` round trip (plus the pool's reset on release). Held strongly, a
 #: pool's id cannot be reused while it is here; a closed pool is dropped when the next pool is asked, so the map holds
 #: the process's live pools (one or two) and never grows with closed ones. (test_known_dialect, 3tears work/h4-dialect)
-_ASKED_POOLS: Final[dict[int, tuple[asyncpg.Pool, bool]]] = {}
+_ASKED_POOLS: Mapping[int, tuple[asyncpg.Pool, bool]] = MappingProxyType({})
 
 
 async def known_on_yugabyte(l3: Any) -> bool:
@@ -115,13 +117,13 @@ async def _pool_on_yugabyte(pool: asyncpg.Pool) -> bool:
     :return: whether its database is YugabyteDB
     :rtype: bool
     """
+    global _ASKED_POOLS
     held = _ASKED_POOLS.get(id(pool))
     if held is not None and held[0] is pool:
         return held[1]
     answer = await l3_on_yugabyte(pool)
-    for key in [key for key, (other, _) in _ASKED_POOLS.items() if other.is_closing()]:
-        del _ASKED_POOLS[key]
-    _ASKED_POOLS[id(pool)] = (pool, answer)
+    live = {key: other for key, other in _ASKED_POOLS.items() if not other[0].is_closing()}
+    _ASKED_POOLS = MappingProxyType({**live, id(pool): (pool, answer)})
     return answer
 
 
@@ -148,8 +150,9 @@ async def check_index_hints(conn: Any) -> bool | None:
     gauge(_INDEX_HINT_UNAVAILABLE, description="1 when a YugabyteDB connection has no pg_hint_plan loaded").set(
         0 if loaded else 1
     )
-    if not loaded and not _HINT_MISSING_LOGGED[0]:
-        _HINT_MISSING_LOGGED[0] = True
+    global _HINT_MISSING_LOGGED
+    if not loaded and not _HINT_MISSING_LOGGED:
+        _HINT_MISSING_LOGGED = True
         log.error(
             "pg_hint_plan is not loaded on this YugabyteDB: the keyed helpers' index hints are ignored and a page may "
             "be planned off its declared index; add pg_hint_plan to ysql_pg_conf shared_preload_libraries",

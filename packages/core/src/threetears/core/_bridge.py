@@ -61,7 +61,19 @@ _ONLY = "only"
 # ``create_task``. asyncio keeps only a weak reference to such tasks, so an
 # unreferenced task can be garbage-collected mid-flight, silently dropping the
 # coroutine. holding the task here until it completes prevents that.
-_pending_tasks: set[asyncio.Task[Any]] = set()
+_pending_tasks: frozenset[asyncio.Task[Any]] = frozenset()
+
+
+def _forget_pending(task: asyncio.Task[Any]) -> None:
+    """drop a finished task from :data:`_pending_tasks`, replaced whole (never changed in place).
+
+    :param task: the finished task
+    :ptype task: asyncio.Task[Any]
+    :return: nothing
+    :rtype: None
+    """
+    global _pending_tasks
+    _pending_tasks = _pending_tasks - {task}
 
 
 def _start_loop() -> _BridgeLoop:
@@ -139,8 +151,9 @@ def fire_and_forget(coro: Coroutine[Any, Any, Any]) -> None:
         asyncio.run_coroutine_threadsafe(coro, bg_loop)
     else:
         task = loop.create_task(coro)
-        _pending_tasks.add(task)
-        task.add_done_callback(_pending_tasks.discard)
+        global _pending_tasks
+        _pending_tasks = _pending_tasks | {task}
+        task.add_done_callback(_forget_pending)
 
 
 def drain() -> None:

@@ -133,7 +133,7 @@ __all__ = [
 log = get_logger(__name__)
 
 #: tables whose class declares no tenancy and that already logged it: one WARNING per table per process
-_UNDECLARED_TENANCY_WARNED: set[str] = set()
+_UNDECLARED_TENANCY_WARNED: frozenset[str] = frozenset()
 
 
 def _undeclared_tenancy_records() -> Any:
@@ -169,10 +169,11 @@ def _note_undeclared_tenancy(table: str) -> None:
     :param table: the table
     :ptype table: str
     """
+    global _UNDECLARED_TENANCY_WARNED
     _undeclared_tenancy_records().labels(table=table).inc()
     if table in _UNDECLARED_TENANCY_WARNED:
         return
-    _UNDECLARED_TENANCY_WARNED.add(table)
+    _UNDECLARED_TENANCY_WARNED = _UNDECLARED_TENANCY_WARNED | {table}
     log.warning(
         "collection class declares no tenancy; its change records go on the change log's _all key, readable by "
         "every reader of the table. Declare tenancy = TENANT_BY_SCHEMA, tenant_column(...) or no_tenant(reason)",
@@ -181,7 +182,7 @@ def _note_undeclared_tenancy(table: str) -> None:
 
 
 #: tables whose change-log keys this process's pod was refused and that already said so: one ERROR per table
-_REFUSED_CHANGE_LOG_SAID: set[str] = set()
+_REFUSED_CHANGE_LOG_SAID: frozenset[str] = frozenset()
 
 
 class PrefixNotLeadingError(ValueError):
@@ -236,10 +237,11 @@ def _note_refused_change_log(exc: ChangeLogKeyRefusedError) -> None:
     :param exc: the refusal
     :ptype exc: ChangeLogKeyRefusedError
     """
+    global _REFUSED_CHANGE_LOG_SAID
     _refused_change_log_reads().labels(table=exc.table).inc()
     if exc.table in _REFUSED_CHANGE_LOG_SAID:
         return
-    _REFUSED_CHANGE_LOG_SAID.add(exc.table)
+    _REFUSED_CHANGE_LOG_SAID = _REFUSED_CHANGE_LOG_SAID | {exc.table}
     log.error(
         "this pod cannot read the table's change-log keys, so its write generation is never readable and every "
         "absence goes to L3. The host grants a tool pod s-<its schema>.> (and an agent's pod s-<its agent schema>.>); "

@@ -30,8 +30,9 @@ from typing import NoReturn
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from pydantic import SecretStr
 from threetears.observe import get_logger
@@ -161,14 +162,16 @@ def _resolve_unimplemented(scheme: str) -> SecretResolutionError:
 # registered schemes. value is either a resolver callable or ``None``
 # (recognised-but-unimplemented -- raises a clear error rather than the
 # generic 'unknown scheme' so config authors know the scheme is on the
-# roadmap).
-_BACKENDS: dict[str, Resolver | None] = {
-    "env": _resolve_env,
-    "k8s": _resolve_k8s,
-    "vault": None,
-    "aws-secretsmanager": None,
-    "gcp-sm": None,
-}
+# roadmap). replaced whole by register_scheme, never changed in place.
+_BACKENDS: Mapping[str, Resolver | None] = MappingProxyType(
+    {
+        "env": _resolve_env,
+        "k8s": _resolve_k8s,
+        "vault": None,
+        "aws-secretsmanager": None,
+        "gcp-sm": None,
+    }
+)
 
 
 def register_scheme(scheme: str, resolver: Resolver) -> None:
@@ -184,6 +187,7 @@ def register_scheme(scheme: str, resolver: Resolver) -> None:
     :ptype resolver: Resolver
     :raises ValueError: when ``scheme`` is malformed or already registered
     """
+    global _BACKENDS
     if not _SCHEME_NAME_RE.match(scheme):
         raise ValueError(
             f"invalid secret scheme name {scheme!r}: must match {_SCHEME_NAME_RE.pattern!r}.",
@@ -192,7 +196,7 @@ def register_scheme(scheme: str, resolver: Resolver) -> None:
         raise ValueError(
             f"secret scheme {scheme!r} is already registered; refusing to overwrite it.",
         )
-    _BACKENDS[scheme] = resolver
+    _BACKENDS = MappingProxyType({**_BACKENDS, scheme: resolver})
 
 
 def validate_ref(ref: str) -> str:

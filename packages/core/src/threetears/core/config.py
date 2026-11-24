@@ -9,6 +9,7 @@ __all__ = [
     "DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS",
     "DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS",
     "DEFAULT_HTTP_TIMEOUT_SECONDS",
+    "DEFAULT_L1_LEDGER_DRAIN_TIMEOUT_SECONDS",
     "DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS",
     "DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS",
     "POOL_START_RETRY_FIRST_DELAY_SECONDS",
@@ -59,6 +60,11 @@ POOL_START_RETRY_MAX_DELAY_SECONDS = 4.0
 # healthy start takes milliseconds; the bound exists so a loop that never starts is an
 # error naming itself, not a caller hung forever holding the lock every later caller needs.
 DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS = 30.0
+
+# how long :meth:`threetears.core.cache.l1_lru.L1Ledger.drain` waits for the ledger's thread to take the hand-offs
+# queued when it was called. A hand-off takes microseconds; the bound exists so a ledger thread that stopped is an
+# error naming itself, not a test or a caller hung forever.
+DEFAULT_L1_LEDGER_DRAIN_TIMEOUT_SECONDS = 30.0
 
 
 @runtime_checkable

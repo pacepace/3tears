@@ -70,8 +70,8 @@ _watching = threading.Event()
 #: held while the server's preload is set and the server started
 _server_lock = threading.Lock()
 
-#: the modules the server was asked to preload by the first start here (one entry); empty before
-_server_preload: list[frozenset[str]] = []
+#: the modules the server was asked to preload by the first start here; None before (rebound under :data:`_server_lock`)
+_server_preload: frozenset[str] | None = None
 
 
 def _alive(pid: int) -> bool:
@@ -176,17 +176,18 @@ def start_worker_server(preload: Sequence[str] = ()) -> multiprocessing.context.
     :return: the context every pool's workers start in (:data:`_WORKER_START`)
     :rtype: multiprocessing.context.BaseContext
     """
+    global _server_preload
     context = multiprocessing.get_context(_WORKER_START)
     wanted = frozenset(preload)
     with _server_lock:
-        if not _server_preload:
+        if _server_preload is None:
             if wanted:
                 context.set_forkserver_preload(["__main__", *sorted(wanted)])
-            _server_preload.append(wanted)
-        elif not wanted <= _server_preload[0]:
+            _server_preload = wanted
+        elif not wanted <= _server_preload:
             log.info(
                 "worker fork server already started: its workers import these modules themselves",
-                extra={"extra_data": {"modules": sorted(wanted - _server_preload[0])}},
+                extra={"extra_data": {"modules": sorted(wanted - _server_preload)}},
             )
         resource_tracker.ensure_running()
         forkserver.ensure_running()

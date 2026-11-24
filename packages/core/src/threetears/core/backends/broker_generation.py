@@ -389,7 +389,7 @@ class _Committed:
 
 
 #: tables a broker that advances nothing has been reported for, so the warning is logged once each
-_WARNED_UNADVANCED: set[str] = set()
+_WARNED_UNADVANCED: frozenset[str] = frozenset()
 
 
 _COMMITTED: ContextVar[_Committed | None] = ContextVar("threetears_broker_committed_generations", default=None)
@@ -505,6 +505,7 @@ def _take_committed_generation(table_name: str) -> str | None:
         named generations and none for it, or nothing this task committed wrote anything; or when
         the commit's token was already handed to an advance
     """
+    global _WARNED_UNADVANCED
     held = _COMMITTED.get()
     if held is not None:
         token = held.tokens.get(table_name)
@@ -526,7 +527,7 @@ def _take_committed_generation(table_name: str) -> str | None:
             )
         if not held.names_generations:
             if table_name not in _WARNED_UNADVANCED:
-                _WARNED_UNADVANCED.add(table_name)
+                _WARNED_UNADVANCED = _WARNED_UNADVANCED | {table_name}
                 _logger.warning(
                     "the L3 broker advanced no write generation for a switched-on table: its hub is older "
                     "than write generations or does not hold the table's class switched on yet; this pod's "

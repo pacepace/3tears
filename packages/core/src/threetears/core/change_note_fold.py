@@ -94,7 +94,32 @@ _STORE_BYTES: Final = 48 << 20
 _WORKER_PRIVATE_BYTES: Final = 512 << 20
 
 #: each folder's shutdown still running (:meth:`RestoreFolder.close`): held here so none is collected mid-way
-_CLOSING: set[asyncio.Task[None]] = set()
+_CLOSING: frozenset[asyncio.Task[None]] = frozenset()
+
+
+def _hold_closing(task: asyncio.Task[None]) -> None:
+    """hold a folder's shutdown in :data:`_CLOSING` until it is done, the set replaced whole each time.
+
+    :param task: the shutdown
+    :ptype task: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    global _CLOSING
+    _CLOSING = _CLOSING | {task}
+    task.add_done_callback(_forget_closing)
+
+
+def _forget_closing(task: asyncio.Task[None]) -> None:
+    """drop a finished shutdown from :data:`_CLOSING`, replaced whole.
+
+    :param task: the finished shutdown
+    :ptype task: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    global _CLOSING
+    _CLOSING = _CLOSING - {task}
 
 
 class RestoreFolder:
@@ -271,8 +296,7 @@ class RestoreFolder:
         """
         if self._closing is None:
             self._closing = asyncio.get_running_loop().create_task(self._shut())
-            _CLOSING.add(self._closing)
-            self._closing.add_done_callback(_CLOSING.discard)
+            _hold_closing(self._closing)
 
     async def closed(self) -> None:
         """wait until the shutdown :meth:`close` started has ended: the worker exited and the store is gone. A caller

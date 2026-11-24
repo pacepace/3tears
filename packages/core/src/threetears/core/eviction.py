@@ -104,7 +104,7 @@ class _UndeclaredError(LookupError):
 
 #: each tier's declared kinds, by kind name: what :func:`policies_declared` reads, written by :func:`policy_declare` as each tier's
 #: module is imported (code, never data: a restart declares them again)
-_DECLARED: dict[Tier, Mapping[str, Declared]] = {}
+_DECLARED: Mapping[Tier, Mapping[str, Declared]] = MappingProxyType({})
 
 
 def policy_declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K, Declared]) -> Mapping[str, Declared]:
@@ -122,6 +122,7 @@ def policy_declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K
     :raises LookupError: when a kind has no policy
     :raises ValueError: when a policy names a kind that is not one of ``kinds``
     """
+    global _DECLARED
     missing = [kind for kind in kinds if kind not in policies]
     if missing:
         raise _UndeclaredError(f"{tier} kinds declare no eviction policy (EVICTABLE or KEEP, with why): {missing}")
@@ -129,7 +130,7 @@ def policy_declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K
     if stray:
         raise ValueError(f"{tier} policies name kinds that are not {kinds.__name__}: {stray}")
     merged = {**_DECLARED.get(tier, {}), **{str(kind.value): each for kind, each in policies.items()}}
-    _DECLARED[tier] = MappingProxyType(merged)
+    _DECLARED = MappingProxyType({**_DECLARED, tier: MappingProxyType(merged)})
     return _DECLARED[tier]
 
 
