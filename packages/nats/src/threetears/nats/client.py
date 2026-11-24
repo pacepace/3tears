@@ -76,7 +76,7 @@ import uuid
 from collections.abc import Mapping
 from enum import StrEnum
 from datetime import UTC, datetime, timedelta
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
 
 from nats.aio.client import (
@@ -715,10 +715,11 @@ class _SubscriptionFeed:
         self._subject = subject
         self._note_reply = note_reply
         self._current: Any = None
-        self._receivers: set[asyncio.Task[None]] = set()
+        # frozensets replaced whole (one or two receivers per feed): a reader holding one never sees it change
+        self._receivers: frozenset[asyncio.Task[None]] = frozenset()
         #: the nats-py subscriptions a receiver runs for (the objects, never their ids: an id is reused once its
         #: object is gone, and a new subscription taken for an old one would get no receiver)
-        self._receiving: set[Any] = set()
+        self._receiving: frozenset[Any] = frozenset()
 
     def receive_from(self, raw_subscription: Any, connection: Any) -> None:
         """start receiving from ``raw_subscription`` into the backlog, without making it current.
@@ -736,14 +737,26 @@ class _SubscriptionFeed:
         """
         if raw_subscription in self._receiving:
             return
-        self._receiving.add(raw_subscription)
+        self._receiving = self._receiving | {raw_subscription}
         task = asyncio.create_task(
             self._receive(raw_subscription, connection),
             name=f"nats-receive:{self._subject.path}",
         )
-        self._receivers.add(task)
-        task.add_done_callback(self._receivers.discard)
-        task.add_done_callback(lambda _: self._receiving.discard(raw_subscription))
+        self._receivers = self._receivers | {task}
+        task.add_done_callback(lambda done: self._receiver_ended(done, raw_subscription))
+
+    def _receiver_ended(self, task: asyncio.Task[None], raw_subscription: Any) -> None:
+        """forget a receiver that ended and the subscription it ran for.
+
+        :param task: the receiver that ended
+        :ptype task: asyncio.Task[None]
+        :param raw_subscription: the nats-py subscription it received from
+        :ptype raw_subscription: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._receivers = self._receivers - {task}
+        self._receiving = self._receiving - {raw_subscription}
 
     def attach(self, raw_subscription: Any, connection: Any) -> None:
         """make ``raw_subscription`` the current receiver, receiving from it if it is not already.
@@ -2409,7 +2422,8 @@ class _ConnectionLifecycle:
         self._opener = opener
         self._phase = _Phase.RUNNING
         self._current = current
-        self._connections: dict[_NatsPyClient, _ConnectionState] = {current: state}
+        # read-only snapshots replaced whole (a current, a candidate, a few retiring): a reader never sees one change
+        self._connections: Mapping[_NatsPyClient, _ConnectionState] = MappingProxyType({current: state})
         # closed for the instant a handover takes to prove that everything already published on the
         # replaced connection reached the server, so nothing published on the successor overtakes it.
         self._publish_gate = asyncio.Event()
@@ -2417,7 +2431,7 @@ class _ConnectionLifecycle:
         # the task opening a renewal's candidate, so abandon() can stop a refused connect retrying.
         self._opening: asyncio.Task[_NatsPyClient] | None = None
         # replaced connections waiting out the work they carry, then drained.
-        self._retirements: set[asyncio.Task[None]] = set()
+        self._retirements: frozenset[asyncio.Task[None]] = frozenset()
 
     @property
     def phase(self) -> _Phase:
@@ -2525,7 +2539,7 @@ class _ConnectionLifecycle:
         if self._phase is not _Phase.RENEWING:
             return False
         state.role = _Role.CANDIDATE
-        self._connections[connection] = state
+        self._connections = MappingProxyType({**self._connections, connection: state})
         return True
 
     def promote(self, candidate: _NatsPyClient) -> _NatsPyClient:
@@ -2558,8 +2572,10 @@ class _ConnectionLifecycle:
         :rtype: list[nats.aio.client.Client]
         """
         stranded = [c for c, s in self._connections.items() if s.role is _Role.CANDIDATE]
-        for connection in stranded:
-            del self._connections[connection]
+        if stranded:
+            self._connections = MappingProxyType(
+                {c: s for c, s in self._connections.items() if s.role is not _Role.CANDIDATE}
+            )
         if self._phase is _Phase.RENEWING:
             self._phase = _Phase.RUNNING
         return stranded
@@ -2572,8 +2588,18 @@ class _ConnectionLifecycle:
         :return: nothing
         :rtype: None
         """
-        self._retirements.add(retirement)
-        retirement.add_done_callback(self._retirements.discard)
+        self._retirements = self._retirements | {retirement}
+        retirement.add_done_callback(self._retirement_ended)
+
+    def _retirement_ended(self, retirement: asyncio.Task[None]) -> None:
+        """stop holding a retirement that ended.
+
+        :param retirement: the task
+        :ptype retirement: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        """
+        self._retirements = self._retirements - {retirement}
 
     def take_retirements(self) -> list[asyncio.Task[None]]:
         """cancel every pending retirement and hand the tasks back to be awaited.
@@ -2594,8 +2620,8 @@ class _ConnectionLifecycle:
         :return: nothing
         :rtype: None
         """
-        if connection is not self._current:
-            self._connections.pop(connection, None)
+        if connection is not self._current and connection in self._connections:
+            self._connections = MappingProxyType({c: s for c, s in self._connections.items() if c is not connection})
 
     def abandon(self) -> list[_NatsPyClient]:
         """-> ABANDONED: stop opening, stop retiring, and hand back every connection to close.
@@ -2646,6 +2672,52 @@ class _ConnectionLifecycle:
         return self._current
 
 
+class _ConnectionHealth:
+    """the signals :attr:`NatsClient.is_healthy` and :meth:`NatsClient.publish_refused_since` read, shared by
+    every connection's error/reconnect dispatchers and the client that adopts them.
+
+    ``auth_violations`` counts consecutive Authorization-Violation errors since the last successful
+    (re)connect; ``overflow_events`` (resilience-task-03) consecutive outbound-buffer overflows at the publish
+    boundary since the last successful publish/(re)connect. ``refused_publishes`` is each subject the server
+    refused a publish (a request) on, lowercased, with when it last did (time.monotonic), oldest first, at most
+    :data:`_REFUSED_PUBLISHES_KEPT`: a read-only snapshot replaced whole, so a reader never sees it change.
+    """
+
+    __slots__ = ("auth_violations", "overflow_events", "refused_publishes")
+
+    def __init__(self) -> None:
+        """start healthy, with nothing refused.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.auth_violations = 0
+        self.overflow_events = 0
+        self.refused_publishes: Mapping[str, float] = MappingProxyType({})
+
+    def clear(self) -> None:
+        """a fresh credential took over: clear the wedged-auth and overflow signals and every refusal heard.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.auth_violations = 0
+        self.overflow_events = 0
+        self.refused_publishes = MappingProxyType({})
+
+    def note_refused(self, subject: str) -> None:
+        """record that the server refused a publish on ``subject`` now, dropping the oldest past the limit.
+
+        :param subject: the refused subject, lowercased
+        :ptype subject: str
+        :return: nothing
+        :rtype: None
+        """
+        kept = [(held, when) for held, when in self.refused_publishes.items() if held != subject]
+        kept = kept[max(0, len(kept) + 1 - _REFUSED_PUBLISHES_KEPT) :]
+        self.refused_publishes = MappingProxyType({**dict(kept), subject: time.monotonic()})
+
+
 class _ConnectionOpener:
     """opens a connection the way :meth:`NatsClient.connect` opened the first one.
 
@@ -2674,8 +2746,7 @@ class _ConnectionOpener:
         "_establish",
         "_error_log_times",
         "reconnect_callbacks",
-        "health_state",
-        "refused_publishes",
+        "health",
         "lame_duck_handler",
     )
 
@@ -2717,14 +2788,10 @@ class _ConnectionOpener:
         # :meth:`NatsClient.add_reconnect_callback` is dispatched on every reconnect of every
         # current connection.
         self.reconnect_callbacks: list[ReconnectCallback] = []
-        # shared by every connection's error/reconnect dispatchers and read by
-        # :attr:`NatsClient.is_healthy`. resilience-task-03: ``overflow_events`` beside
-        # ``auth_violations``.
-        self.health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
-        # each subject the server refused a publish (a request) on, lowercased, with when it last did
-        # (time.monotonic), shared by every connection and read by :meth:`NatsClient.publish_refused_since`:
-        # a refused request is never answered, so its caller's deadline is the only other sign of it
-        self.refused_publishes: dict[str, float] = {}
+        # shared by every connection's error/reconnect dispatchers and read by :attr:`NatsClient.is_healthy`
+        # and :meth:`NatsClient.publish_refused_since`: a refused request is never answered, so its caller's
+        # deadline is the only other sign of it
+        self.health = _ConnectionHealth()
         # what the client does when the server under its current connection enters lame-duck mode
         # (:meth:`NatsClient._move_off_lame_duck_server`). the first connection is opened before the
         # client exists, so each connection's callback reads this when the server says so.
@@ -2756,9 +2823,8 @@ class _ConnectionOpener:
         :return: the callback
         :rtype: Callable[[], Awaitable[None]]
         """
-        health_state = self.health_state
+        health = self.health
         reconnect_callbacks = self.reconnect_callbacks
-        refused_publishes = self.refused_publishes
 
         async def _dispatch_reconnected() -> None:
             """fan a reconnect out to the wrapper log + every consumer-registered callback."""
@@ -2773,12 +2839,10 @@ class _ConnectionOpener:
                     "a NATS connection that is not current reconnected", extra={"extra_data": {"role": state.role}}
                 )
                 return
-            health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
-            # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
-            # the transport is healthy again, so any buffered-full streak is stale.
-            health_state["overflow_events"] = 0
-            # a fresh credential may name what the last one did not: a refusal it heard says nothing of this one
-            refused_publishes.clear()
+            # a successful (re)connect clears the wedged-auth signal; resilience-task-03: and the outbound-overflow
+            # signal -- the transport is healthy again, so any buffered-full streak is stale. a fresh credential may
+            # name what the last one did not: a refusal it heard says nothing of this one
+            health.clear()
             await _on_reconnected()
             for callback in list(reconnect_callbacks):
                 try:
@@ -2861,9 +2925,8 @@ class _ConnectionOpener:
         :return: the callback
         :rtype: Callable[[Exception], Awaitable[None]]
         """
-        health_state = self.health_state
+        health = self.health
         error_log_times = self._error_log_times
-        refused_publishes = self.refused_publishes
 
         async def _dispatch_error(exc: Exception) -> None:
             """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
@@ -2875,14 +2938,10 @@ class _ConnectionOpener:
             # current credential is wedged, and neither does a renewal candidate's -- the current
             # connection is still valid, and is kept until it expires.
             if state.role is _Role.CURRENT and _is_authorization_violation(exc):
-                health_state["auth_violations"] += 1
+                health.auth_violations += 1
             violation = _permissions_violation(exc)
             if violation is not None and violation.operation == "publish" and violation.subject:
-                subject = violation.subject.lower()
-                refused_publishes.pop(subject, None)
-                refused_publishes[subject] = time.monotonic()
-                while len(refused_publishes) > _REFUSED_PUBLISHES_KEPT:
-                    del refused_publishes[next(iter(refused_publishes))]
+                health.note_refused(violation.subject.lower())
             await _on_error(exc, error_log_times)
 
         return _dispatch_error
@@ -3193,8 +3252,7 @@ class NatsClient:
         "_buckets",
         "_kv_locks",
         "_reconnect_callbacks",
-        "_health_state",
-        "_refused_publishes",
+        "_health",
         "_renewal_task",
         "_handover_lock",
         "_reply_routes",
@@ -3252,22 +3310,25 @@ class NatsClient:
         # memory storage, and on Kubernetes a restart can lose file storage too (the volume goes with
         # the pod); nothing but the declarer can put either back. :meth:`_restore_once` re-creates each
         # after every reconnect, and a create of a stream that survived is a no-op.
-        self._declarations: dict[str, _NatsStreamConfig] = {}
+        # this and the other per-stream and per-bucket registries below are read-only snapshots replaced whole
+        # (tens of streams and buckets, changed at declaration): a restoration iterating one across an await
+        # never sees it change
+        self._declarations: Mapping[str, _NatsStreamConfig] = MappingProxyType({})
         # the backing stream name -> the ownership of every remembered KV declaration whose declarer
         # owns the bucket's whole shape (``ensure_kv_bucket(owns_bucket=True)``), with the permission
         # to drop a live file bucket it was given. a restoration finding one of these live with another
         # configuration reconciles it, as the declaration did, rather than leaving it as it is
         # (:meth:`_redeclare_stream`).
-        self._owned_buckets: dict[str, _OwnedBucket] = {}
+        self._owned_buckets: Mapping[str, _OwnedBucket] = MappingProxyType({})
         # the backing stream name -> the declarer's answer to "is this still wanted?", for a
         # declaration whose owner can go away (a tool pod deleted, perhaps on another replica). a
         # restoration asks it first and FORGETS a declaration no longer wanted rather than putting it
         # back (:meth:`_restore_once`).
-        self._declaration_guards: dict[str, Callable[[], Awaitable[bool]]] = {}
+        self._declaration_guards: Mapping[str, Callable[[], Awaitable[bool]]] = MappingProxyType({})
         # the backing stream name -> the refill of every remembered KV declaration given an
         # ``on_restored`` (``ensure_kv_bucket``). a bucket created again comes back EMPTY, and its
         # entries are the declarer's to write back; this is how the declarer learns it is owed that.
-        self._kv_refills: dict[str, _KvRefill] = {}
+        self._kv_refills: Mapping[str, _KvRefill] = MappingProxyType({})
         # the task running owed refills until none is owed (:meth:`_refill_until_complete`), held so
         # it is not collected mid-flight and so shutdown and abandon stop it.
         self._refilling: asyncio.Task[None] | None = None
@@ -3286,26 +3347,20 @@ class NatsClient:
         # states when the owner arms it.
         self._longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS
         self._subscriptions: list[Subscription] = []
-        self._buckets: dict[str, NatsKvBucket] = {}
+        self._buckets: Mapping[str, NatsKvBucket] = MappingProxyType({})
         # one lock PER BUCKET NAME, serializing the opens of that bucket only: a bind-only open of an
         # absent bucket waits for its declarer (up to KvTimings.bind_wait_for_declarer_seconds), and a
         # single client-wide lock held across that wait stalled every other bucket open in the
         # process behind it, cache hits included.
-        self._kv_locks: dict[str, asyncio.Lock] = {}
+        self._kv_locks: Mapping[str, asyncio.Lock] = MappingProxyType({})
         # consumer-registered post-reconnect hooks. nats-py exposes a SINGLE reconnect callback slot
         # (wired in :meth:`connect` to a dispatcher that fans out to this list), so the wrapper owns
         # the fan-out here. :meth:`connect` rebinds this to the same list the dispatcher closes over.
         self._reconnect_callbacks: list[ReconnectCallback] = []
-        # liveness signal for a PERSISTENT auth-violation reconnect loop (see :meth:`is_healthy`).
-        # ``auth_violations`` counts consecutive Authorization-Violation errors since the last
-        # successful (re)connect; :meth:`connect` rebinds this to the dict its error/reconnect
-        # dispatchers close over, so the count reflects the live connection.
-        # resilience-task-03: ``overflow_events`` counts consecutive outbound-buffer overflows at the
-        # publish boundary since the last successful publish/(re)connect; folded into :meth:`is_healthy`.
-        self._health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
-        # the subjects the server refused a publish on, and when (:meth:`publish_refused_since`); :meth:`connect`
-        # rebinds this to the dict its connections' error callbacks write
-        self._refused_publishes: dict[str, float] = {}
+        # the liveness signals (:meth:`is_healthy`) and refused subjects (:meth:`publish_refused_since`);
+        # :meth:`connect` rebinds this to the one its connections' error/reconnect dispatchers write, so
+        # the counts reflect the live connection
+        self._health = _ConnectionHealth()
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -3524,8 +3579,7 @@ class NatsClient:
         # ``add_reconnect_callback`` append is dispatched on the next reconnect and
         # :attr:`is_healthy` reads the live counts.
         client._reconnect_callbacks = opener.reconnect_callbacks
-        client._health_state = opener.health_state
-        client._refused_publishes = opener.refused_publishes
+        client._health = opener.health
         # FIRST in the list, ahead of every consumer hook: what a NATS restart wiped is put back
         # before anything registered later runs against it. it only starts a task, so it never
         # holds up the hooks after it.
@@ -3723,10 +3777,16 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        self._declarations.pop(stream, None)
-        self._owned_buckets.pop(stream, None)
-        self._kv_refills.pop(stream, None)
-        self._declaration_guards.pop(stream, None)
+        self._declarations = MappingProxyType(
+            {held: kept for held, kept in self._declarations.items() if held != stream}
+        )
+        self._owned_buckets = MappingProxyType(
+            {held: kept for held, kept in self._owned_buckets.items() if held != stream}
+        )
+        self._kv_refills = MappingProxyType({held: kept for held, kept in self._kv_refills.items() if held != stream})
+        self._declaration_guards = MappingProxyType(
+            {held: kept for held, kept in self._declaration_guards.items() if held != stream}
+        )
 
     async def _redeclare_stream(self, js: Any, config: _NatsStreamConfig) -> None:
         """create one declared stream again, exactly as declared; reconcile a live one only when its declarer owns it.
@@ -4061,8 +4121,8 @@ class NatsClient:
         :rtype: bool
         """
         return (
-            self._health_state["auth_violations"] < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
-            and self._health_state["overflow_events"] < _OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD
+            self._health.auth_violations < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
+            and self._health.overflow_events < _OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD
         )
 
     def publish_refused_since(self, fragment: str, since: float) -> str | None:
@@ -4083,7 +4143,7 @@ class NatsClient:
         :rtype: str | None
         """
         wanted = fragment.lower()
-        for subject, when in list(self._refused_publishes.items()):
+        for subject, when in self._health.refused_publishes.items():
             if when >= since and wanted in subject:
                 return subject
         return None
@@ -4101,7 +4161,7 @@ class NatsClient:
         :return: consecutive outbound-overflow count since the last successful publish/connect
         :rtype: int
         """
-        return self._health_state["overflow_events"]
+        return self._health.overflow_events
 
     async def ping(self, *, timeout: float = 2.0) -> bool:
         """force a server round-trip to verify the broker is responsive.
@@ -4397,10 +4457,8 @@ class NatsClient:
                 # a freshly authenticated connection clears the wedged-auth and outbound-overflow
                 # signals, exactly as a successful reconnect does: a refusal before this one said
                 # nothing about the credential now in use.
-                self._health_state["auth_violations"] = 0
-                self._health_state["overflow_events"] = 0
                 # the successor's credential may name what the old one's did not
-                self._refused_publishes.clear()
+                self._health.clear()
                 # each old half stays in its group until its hold is over
                 handovers = [
                     sub.move_to(raw_sub, successor, hold=min(hold, retire_after).total_seconds())
@@ -5123,7 +5181,7 @@ class NatsClient:
         # ordered after everything already sent, and safe to time out (see _round_trip).
         await _round_trip(self._raw, timeout=timeout)
         # resilience-task-03: a successful flush drained the outbound buffer -- clear the overflow streak.
-        self._health_state["overflow_events"] = 0
+        self._health.overflow_events = 0
 
     def _note_publish_success(self) -> None:
         """clear the outbound-overflow streak after a successful publish (resilience-task-03).
@@ -5135,7 +5193,7 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        self._health_state["overflow_events"] = 0
+        self._health.overflow_events = 0
 
     def _note_if_outbound_overflow(self, exc: Exception) -> None:
         """count an outbound-buffer overflow raised synchronously at the publish boundary (resilience-task-03).
@@ -5154,13 +5212,13 @@ class NatsClient:
         :rtype: None
         """
         if _is_outbound_overflow(exc):
-            self._health_state["overflow_events"] += 1
+            self._health.overflow_events += 1
             log.warning(
                 "NATS outbound buffer overflow at publish boundary",
                 extra={
                     "extra_data": {
                         "client_name": self._client_name,
-                        "overflow_events": self._health_state["overflow_events"],
+                        "overflow_events": self._health.overflow_events,
                     }
                 },
             )
@@ -5991,6 +6049,23 @@ class NatsClient:
     # JetStream KV
     # ------------------------------------------------------------------
 
+    def _kv_lock(self, full_name: str) -> asyncio.Lock:
+        """the lock serializing the opens of bucket ``full_name``, made on its first open.
+
+        one per bucket name, kept as long as the client (as its bucket is): the buckets a client opens are few
+        and named in code. no await between the look and the store, so two openers on the loop share one.
+
+        :param full_name: the bucket's full name
+        :ptype full_name: str
+        :return: its lock
+        :rtype: asyncio.Lock
+        """
+        lock = self._kv_locks.get(full_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._kv_locks = MappingProxyType({**self._kv_locks, full_name: lock})
+        return lock
+
     async def kv_bucket(
         self,
         *,
@@ -6050,7 +6125,7 @@ class NatsClient:
         cached = self._buckets.get(full_name)
         if cached is not None:
             return cached
-        async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
+        async with self._kv_lock(full_name):
             cached = self._buckets.get(full_name)
             if cached is not None:
                 return cached
@@ -6065,7 +6140,7 @@ class NatsClient:
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
                 replicas=replicas,
             )
-            self._buckets[full_name] = bucket
+            self._buckets = MappingProxyType({**self._buckets, full_name: bucket})
         return bucket
 
     def change_log(self, name: str) -> NatsChangeLog:
@@ -6280,7 +6355,7 @@ class NatsClient:
             replicas=replicas,
         )
         stream = declared.name or full_name
-        async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
+        async with self._kv_lock(full_name):
             bucket = await NatsKvBucket.open(
                 client=self,
                 full_name=full_name,
@@ -6296,30 +6371,43 @@ class NatsClient:
                 max_bytes=max_bytes,
                 replicas=replicas,
             )
-            self._buckets[full_name] = bucket
+            self._buckets = MappingProxyType({**self._buckets, full_name: bucket})
         if create_if_missing:
             # a DECLARATION: a NATS restart can delete the bucket (memory storage always, file storage
             # when the restart lost its volume), and a process that only binds it waits for its
             # declarer -- so the declarer puts it back after every reconnect (:meth:`_restore_once`),
             # with the same backing-stream config created here.
-            self._declarations[stream] = declared
+            self._declarations = MappingProxyType({**self._declarations, stream: declared})
             if still_wanted is None:
-                self._declaration_guards.pop(stream, None)
+                self._declaration_guards = MappingProxyType(
+                    {held: kept for held, kept in self._declaration_guards.items() if held != stream}
+                )
             else:
-                self._declaration_guards[stream] = still_wanted
+                self._declaration_guards = MappingProxyType({**self._declaration_guards, stream: still_wanted})
             # the LATEST declaration is the one remembered, its ownership of the bucket included:
             # a re-declaration without it gives the ownership up.
             if owns_bucket:
-                self._owned_buckets[stream] = _OwnedBucket(full_name=full_name, drop_file_storage=drop_file_storage)
+                self._owned_buckets = MappingProxyType(
+                    {
+                        **self._owned_buckets,
+                        stream: _OwnedBucket(full_name=full_name, drop_file_storage=drop_file_storage),
+                    }
+                )
             else:
-                self._owned_buckets.pop(stream, None)
+                self._owned_buckets = MappingProxyType(
+                    {held: kept for held, kept in self._owned_buckets.items() if held != stream}
+                )
             # and its refill: a re-declaration without one gives it up, and one that keeps it keeps
             # whatever refill is still owed.
             refill = self._kv_refills.get(stream)
             if on_restored is None:
-                self._kv_refills.pop(stream, None)
+                self._kv_refills = MappingProxyType(
+                    {held: kept for held, kept in self._kv_refills.items() if held != stream}
+                )
             elif refill is None:
-                self._kv_refills[stream] = _KvRefill(full_name=full_name, on_restored=on_restored)
+                self._kv_refills = MappingProxyType(
+                    {**self._kv_refills, stream: _KvRefill(full_name=full_name, on_restored=on_restored)}
+                )
             else:
                 refill.on_restored = on_restored
         return bucket
@@ -6458,10 +6546,10 @@ class NatsClient:
                         }
                     },
                 )
-                self._declarations[full_name] = dataclasses.replace(config)
+                self._declarations = MappingProxyType({**self._declarations, full_name: dataclasses.replace(config)})
                 return full_name
             await js.update_stream(config)
-        self._declarations[full_name] = dataclasses.replace(config)
+        self._declarations = MappingProxyType({**self._declarations, full_name: dataclasses.replace(config)})
         log.info(
             "jetstream stream ensured: stream=%s subjects=%s storage=%s replicas=%s",
             full_name,
@@ -6584,11 +6672,13 @@ class NatsClient:
                     }
                 },
             )
-        self._declarations[stream] = dataclasses.replace(config)
+        self._declarations = MappingProxyType({**self._declarations, stream: dataclasses.replace(config)})
         if still_wanted is None:
-            self._declaration_guards.pop(stream, None)
+            self._declaration_guards = MappingProxyType(
+                {held: kept for held, kept in self._declaration_guards.items() if held != stream}
+            )
         else:
-            self._declaration_guards[stream] = still_wanted
+            self._declaration_guards = MappingProxyType({**self._declaration_guards, stream: still_wanted})
         log.info(
             "object store ensured",
             extra={
@@ -6649,7 +6739,7 @@ class NatsClient:
         :raises NatsClientError: when the delete is refused
         """
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
-        self._buckets.pop(full_name, None)
+        self._buckets = MappingProxyType({held: kept for held, kept in self._buckets.items() if held != full_name})
         await self._withdraw(kv_stream_name(full_name))
 
     async def jetstream_publish(
