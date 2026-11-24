@@ -34,21 +34,19 @@ import pyarrow as pa
 
 from threetears.core.collections.derived import DerivedCollection
 from threetears.core.entities.base import BaseEntity
-from threetears.core.process_workers import ProcessWorkers
 from threetears.geo.bands import AggregateSpec, BandResult, FeatureSpec, aggregate_band, feature_band
-from threetears.geo.features import BoundsOf, FeatureCache
+from threetears.geo.features import FeatureCache
 from threetears.geo.geometry import (
     RowGeometries,
     decode_geometry,
-    point_bounds,
     point_geometries,
     point_geometry,
-    wkb_bounds,
     wkb_geometries,
 )
 from threetears.geo.mvt import encode_tile
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
+from threetears.geo.workers import INLINE_ROWS, GeometryColumns, mapped_rows, ran_inline, rows_of, run_over_rows
 from threetears.interfaces.media.keys import build_object_key
 from threetears.observe import counter, get_logger, traced
 from shapely.geometry.base import BaseGeometry
@@ -56,19 +54,6 @@ from shapely.geometry.base import BaseGeometry
 __all__ = ["LayerDefinition", "TileEntity", "TileCollection", "ViewportRequest"]
 
 log = get_logger(__name__)
-
-#: worker processes building tiles: a precompute pass's builds (its ``concurrency``) and a viewport's misses run
-#: side by side across them, the loop holding none of their CPU
-_TILE_WORKERS_COUNT: Final = 2
-
-#: the pool every tile build of this process past :data:`_INLINE_ROWS` runs in
-_TILE_WORKERS: Final = ProcessWorkers(workers=_TILE_WORKERS_COUNT, name="geo tile builds", process_name="3t-geo-tile")
-
-#: a tile over at most this many source rows builds on the loop. measured 2026-11-23 (M-series, CPython 3.14, z12
-#: feature band of random polygons): a build held the loop 0.15 ms at 1 row, 0.6 ms at 16, 1.1 ms at 32 and 13 ms at
-#: 3,000, while a worker's build held no turn of the loop past 0.01 ms (0.4-0.9 ms of wall time at these sizes). so a
-#: tile past 16 rows, which would hold the loop past half a millisecond, goes to a worker
-_INLINE_ROWS: Final = 16
 
 _MVT_CONTENT_TYPE = "application/vnd.mapbox-vector-tile"
 
@@ -198,23 +183,16 @@ class LayerDefinition:
         return point_geometries(table, self.longitude_column, self.latitude_column)
 
     @property
-    def bounds_of(self) -> BoundsOf:
+    def bounds_of(self) -> GeometryColumns:
         """this layer's :data:`~threetears.geo.features.BoundsOf`, for its
         :class:`~threetears.geo.features.FeatureCache`: every row's bounding rectangle, from a whole table at once,
-        null where the row's geometry is absent, empty or will not decode.
+        null where the row's geometry is absent, empty or will not decode. plain data, so the cache reads it in a
+        worker process.
 
-        :return: :func:`~threetears.geo.geometry.wkb_bounds` or :func:`~threetears.geo.geometry.point_bounds` over
-            this layer's columns
-        :rtype: BoundsOf
+        :return: this layer's geometry columns
+        :rtype: GeometryColumns
         """
-        return self._bounds
-
-    def _bounds(self, table: pa.Table) -> pa.Table:
-        """:attr:`bounds_of`'s answer for ``table``."""
-        if self.geometry_column is not None:
-            return wkb_bounds(table, self.geometry_column)
-        assert self.longitude_column is not None and self.latitude_column is not None  # noqa: S101 - __post_init__
-        return point_bounds(table, self.longitude_column, self.latitude_column)
+        return GeometryColumns(self.geometry_column, self.longitude_column, self.latitude_column)
 
     def columns(self) -> tuple[str, ...]:
         """every source column a build of this layer reads, once each, in declaration order.
@@ -432,20 +410,16 @@ class TileCollection(DerivedCollection[TileEntity]):
 
         tile = TileId(z=z, x=x, y=y)
         rows = await self._features_for(definition, version, tile)
-        # the build is CPU (decode, simplify, project, encode), so it runs in a worker process and the loop only
-        # waits; a tile of a few rows builds here, where the round trip would cost the loop more than the build
+        # the build is CPU (decode, simplify, project, encode), so it runs in a worker process over a shared-memory
+        # hand-off of the rows and the loop only waits; a tile of a few rows builds here, where the round trip would
+        # cost the loop more than the build (threetears.geo.workers)
         rows = rows.select([name for name in definition.columns() if name in rows.column_names])
-        payload, band = _built(
-            await _TILE_WORKERS.run(
-                _build_tile,
-                _table_bytes(rows),
-                _layer_plain(definition),
-                z,
-                x,
-                y,
-                inline=rows.num_rows <= _INLINE_ROWS,
-            )
-        )
+        if rows.num_rows <= INLINE_ROWS:
+            ran_inline("tile")
+            answer = _build(rows, definition, tile)
+        else:
+            answer = await run_over_rows(_build_tile, rows, _layer_plain(definition), z, x, y, work="tile")
+        payload, band = _built(answer)
 
         if band.undecodable:
             counter(
@@ -529,15 +503,6 @@ class TileCollection(DerivedCollection[TileEntity]):
 # ----------------------------------------------------------------------
 
 
-def _table_bytes(table: pa.Table) -> bytes:
-    """a table as one Arrow IPC stream, to cross to a worker."""
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    stream: bytes = sink.getvalue().to_pybytes()
-    return stream
-
-
 def _layer_plain(definition: LayerDefinition) -> tuple[Any, ...]:
     """a layer as plain data, for :func:`_layer_of` in a worker."""
     aggregate, features = definition.aggregate, definition.features
@@ -580,25 +545,38 @@ def _layer_of(plain: tuple[Any, ...]) -> LayerDefinition:
 _PLAIN_IDS: Final = (str, int, float, bool, bytes, type(None))
 
 
-def _build_tile(rows: bytes, layer: tuple[Any, ...], z: int, x: int, y: int) -> tuple[Any, ...]:
-    """build one tile from its source rows: the bands over whole columns, then the encoding.
+def _build_tile(
+    handoff: tuple[str, str, tuple[str, ...], int], layer: tuple[Any, ...], z: int, x: int, y: int
+) -> tuple[Any, ...]:
+    """build one tile in a worker process, from its rows mapped out of the shared-memory hand-off.
 
-    a worker process's job (:data:`_TILE_WORKERS`), or the loop's for a tile of a few rows.
+    :param handoff: the rows' hand-off (:func:`~threetears.geo.workers.run_over_rows`)
+    :ptype handoff: tuple[str, str, tuple[str, ...], int]
+    :param layer: the layer, as :func:`_layer_plain` made it
+    :ptype layer: tuple[Any, ...]
+    :return: as :func:`_build`
+    :rtype: tuple[Any, ...]
+    """
+    with mapped_rows(handoff) as mapped:
+        return _build(rows_of(mapped), _layer_of(layer), TileId(z=z, x=x, y=y))
+
+
+def _build(table: pa.Table, definition: LayerDefinition, tile: TileId) -> tuple[Any, ...]:
+    """build one tile from its source rows: the bands over whole columns, then the encoding.
 
     below the crossover a tile spans too much ground for individual
     features to mean anything, so it carries rollups with real totals
     instead of an arbitrary surviving sample.
 
-    :param rows: the tile's source rows, as an Arrow IPC stream
-    :ptype rows: bytes
-    :param layer: the layer, as :func:`_layer_plain` made it
-    :ptype layer: tuple[Any, ...]
-    :return: ``(mvt, truncated, dropped, undecodable, first_undecodable)``
+    :param table: the tile's source rows
+    :ptype table: pa.Table
+    :param definition: the layer
+    :ptype definition: LayerDefinition
+    :param tile: the tile
+    :ptype tile: TileId
+    :return: ``(mvt, truncated, dropped, undecodable, first_undecodable)``: plain data
     :rtype: tuple[Any, ...]
     """
-    definition = _layer_of(layer)
-    table = pa.ipc.open_stream(rows).read_all()
-    tile = TileId(z=z, x=x, y=y)
     geometries = definition.geometries_of(table)
     if tile.z <= definition.crossover_zoom:
         band = aggregate_band(table, geometries, tile=tile, spec=definition.aggregate)

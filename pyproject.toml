@@ -732,6 +732,8 @@ module = [
     "threetears.geo.geometry",
     "threetears.geo.bands",
     "threetears.geo.collection",
+    "threetears.geo.bounds",
+    "threetears.geo.workers",
     "packages.geo.tests.unit.test_bands",
     "packages.geo.tests.unit.test_cache_scope",
     "packages.geo.tests.unit.test_collection",

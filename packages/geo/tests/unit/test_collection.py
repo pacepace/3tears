@@ -40,6 +40,8 @@ from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 from threetears.core.testing.loop_lateness import turn_holds
+from threetears.core.process_workers import ProcessWorkers
+from threetears.geo.workers import read_bounds
 
 _PHOENIX_LON = -112.07
 _PHOENIX_LAT = 33.45
@@ -686,6 +688,74 @@ class TestTheLoopWaitsOnly:
         assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 3_000
         longest, what = max(holds)
         assert longest < 0.005, f"a turn of the loop held {longest * 1000:.1f} ms of CPU during a tile build: {what}"
+
+
+def _runs(work: str, where: str) -> float:
+    """the current value of ``geo_worker_runs_total`` for a kind of work and where it ran."""
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value("geo_worker_runs_total", {"work": work, "where": where}) or 0.0
+
+
+def _plain_bytes(value: Any) -> int:
+    """the most bytes any one bytes value inside ``value`` (nested tuples and lists) holds."""
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, (tuple, list)):
+        return max((_plain_bytes(item) for item in value), default=0)
+    return 0
+
+
+class TestRowsCrossThroughSharedMemory:
+    async def test_a_big_tile_hands_its_rows_over_shared_memory_never_as_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a tile's rows cross to the worker pickled (IPC bytes or the table): 3,000 rows (about a MiB of
+        WKB) go as a hand-off's name, no argument of the job holding more than a few bytes."""
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        step = (bounds.max_lon - bounds.min_lon) / 4_000
+        rows = [_tract_row(f"t{n}", lon=bounds.min_lon + step * n, lat=bounds.min_lat + 0.001) for n in range(3_000)]
+        collection, _ = _make_collection(tmp_path, rows=rows)
+        crossed: list[tuple[Any, ...]] = []
+        real_run = ProcessWorkers.run
+
+        async def _run(self: ProcessWorkers, job: Any, *args: Any, inline: bool = False) -> Any:
+            crossed.append(args)
+            return await real_run(self, job, *args, inline=inline)
+
+        monkeypatch.setattr(ProcessWorkers, "run", _run)
+        before = _runs("tile", "worker")
+        built = await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y))
+
+        assert built is not None
+        assert len(mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]) == 3_000
+        assert _runs("tile", "worker") == before + 1
+        assert len(crossed) == 1 and _plain_bytes(crossed[0]) < 64, crossed
+        handoff = crossed[0][0]
+        assert handoff[2] == ("rows",) and handoff[3] > 3_000 * 90, "the hand-off holds the rows"
+
+    async def test_a_few_rows_build_on_the_loop(self, tmp_path: Path) -> None:
+        tile = TileId(z=12, x=812, y=1620)
+        bounds = tile_bounds(tile)
+        collection, _ = _make_collection(tmp_path, rows=[_tract_row("a", lon=bounds.min_lon, lat=bounds.min_lat)])
+        before = _runs("tile", "inline")
+        assert await collection.compute(("census_tracts", 3, tile.z, tile.x, tile.y)) is not None
+        assert _runs("tile", "inline") == before + 1
+
+    async def test_a_layer_s_own_bounds_read_runs_in_a_worker_any_other_on_a_thread(self) -> None:
+        """Flips if geo's own bounds read leaves the worker, or a caller's callable is sent to one (it cannot be)."""
+        box = Polygon([(-1, -2), (3, -2), (3, 4)])
+        table = pa.table({"geometry_wkb": [box.wkb] * 40, "geoid": [str(n) for n in range(40)]})
+        layer = _tracts_layer()
+        worker, thread = _runs("bounds", "worker"), _runs("bounds", "thread")
+
+        own = await read_bounds(layer.bounds_of, table)
+        theirs = await read_bounds(lambda rows: wkb_bounds(rows, "geometry_wkb"), table)
+
+        assert own.equals(theirs) and own.num_rows == 40
+        assert own.column("max_lat").to_pylist() == [4.0] * 40
+        assert (_runs("bounds", "worker"), _runs("bounds", "thread")) == (worker + 1, thread + 1)
 
 
 class TestThroughAFeatureCache:

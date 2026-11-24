@@ -28,7 +28,7 @@ from shapely.errors import ShapelyError
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
-from threetears.geo.features import BOUNDS_COLUMNS
+from threetears.geo.bounds import BOUNDS_COLUMNS
 from threetears.geo.tiles import BoundingBox
 from threetears.observe import get_logger
 
