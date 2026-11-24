@@ -32,7 +32,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
-from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, called_in_turns, stepped
+from threetears.core.loop_turns import LoopTurns, called_in_turns, stepped
 from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3Backend, L3PoolLike
 from threetears.core.cache import MISSING
@@ -78,6 +78,7 @@ from threetears.core.collections.generation import (
     table_named_by_class,
     tables_with_write_generation,
 )
+from threetears.core.collections import packed_keys
 from threetears.core.collections.l2_degrade import degrade_l2
 from threetears.core.collections.l2_first import L2First, L2FirstEpochs, L2FirstSupport
 from threetears.core.collections.l2_order import (
@@ -477,20 +478,11 @@ class _L2BeforeWrite:
     revision: int | None
 
 
-@dataclass(slots=True)
-class _KeyActivity:
-    """what this process is doing to one key, tracked only while something is watching it.
-
-    :ivar changes: how many writes have begun on the key, and evictions of it have landed, since
-        it was first watched
-    :ivar writers: writes of the key in flight
-    :ivar holders: tickets outstanding on the key, reads and writes both; the entry is dropped when
-        the last is released, so the map holds only keys with work in flight
-    """
-
-    changes: int = 0
-    writers: int = 0
-    holders: int = 0
+#: the most changes one era of :class:`_L1Fence` records, and the most key text its batch holds, before the next era
+#: begins. An era's changes and its batch are rebuilt whole at each change it records, so these bound that copy; a
+#: ticket's check walks its own era's changes one by one and searches each later era's batch once.
+_FENCE_ERA_CHANGES: Final = 64
+_FENCE_ERA_TEXT: Final = 1 << 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,15 +490,17 @@ class _KeyTicket:
     """one read's or one write's claim on a key, taken before its first await.
 
     :ivar key: the key, as the pk values' string forms
-    :ivar activity: the key's shared record
-    :ivar seen: ``activity.changes`` as this ticket left it
+    :ivar text: the key's text in a packed batch (:func:`packed_keys.key_text`)
+    :ivar seen: the fence's count of changes as this ticket left it (its own write's included)
+    :ivar era: the fence era the ticket was taken in; the changes it may be overtaken by are in it or later ones
     :ivar contended: whether a write of the key was already in flight when this ticket was taken
     :ivar writing: whether the ticket is a write's
     """
 
     key: tuple[str, ...]
-    activity: _KeyActivity
+    text: str
     seen: int
+    era: int
     contended: bool
     writing: bool
 
@@ -527,6 +521,101 @@ class ScanReadTicket:
     contended: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _FenceChange:
+    """one change :class:`_L1Fence` recorded while a ticket was held: a write begun or an eviction landed.
+
+    :ivar seq: the fence's count of changes once this one was counted
+    :ivar keys: the keys it names, as one packed batch
+    :ivar under: for an eviction by key prefix, each key position and its value; ``None`` otherwise
+    :ivar every: whether it names every key (a table's drop)
+    """
+
+    seq: int
+    keys: str
+    under: tuple[tuple[int, str], ...] | None
+    every: bool
+
+
+def _under_names(under: tuple[tuple[int, str], ...], key: tuple[str, ...]) -> bool:
+    """whether the key prefix ``under`` (each key position and its value) reaches ``key``.
+
+    :param under: each key position and its value
+    :ptype under: tuple[tuple[int, str], ...]
+    :param key: the key
+    :ptype key: tuple[str, ...]
+    :return: ``True`` when it does
+    :rtype: bool
+    """
+    return all(index < len(key) and key[index] == value for index, value in under)
+
+
+@dataclass(frozen=True, slots=True)
+class _FenceEra:
+    """a run of :class:`_L1Fence`'s changes.
+
+    :ivar changes: the changes recorded in it, in order
+    :ivar keys: every key its changes name, as one packed batch (their batches end to end)
+    :ivar under: every key prefix its changes name
+    :ivar every: whether a change of it names every key
+    """
+
+    changes: tuple[_FenceChange, ...]
+    keys: str
+    under: tuple[tuple[tuple[int, str], ...], ...]
+    every: bool
+
+    def names(self, ticket: _KeyTicket) -> bool:
+        """whether any change of this era reaches ``ticket``'s key (an era begun after the ticket was taken).
+
+        :param ticket: the ticket
+        :ptype ticket: _KeyTicket
+        :return: ``True`` when one does
+        :rtype: bool
+        """
+        if self.every or packed_keys.names(self.keys, ticket.text):
+            return True
+        return any(_under_names(under, ticket.key) for under in self.under)
+
+    def names_since(self, ticket: _KeyTicket) -> bool:
+        """whether a change of this era recorded after ``ticket`` was taken reaches its key (the ticket's own era).
+
+        :param ticket: the ticket
+        :ptype ticket: _KeyTicket
+        :return: ``True`` when one does
+        :rtype: bool
+        """
+        for change in self.changes:
+            if change.seq <= ticket.seen:
+                continue
+            if change.every or packed_keys.names(change.keys, ticket.text):
+                return True
+            if change.under is not None and _under_names(change.under, ticket.key):
+                return True
+        return False
+
+    def with_change(self, change: _FenceChange) -> _FenceEra:
+        """this era with ``change`` recorded.
+
+        :param change: the change
+        :ptype change: _FenceChange
+        :return: the era
+        :rtype: _FenceEra
+        """
+        keys = self.keys if change.keys == packed_keys.NO_KEYS else self.keys + change.keys
+        under = self.under if change.under is None else (*self.under, change.under)
+        return _FenceEra(
+            changes=(*self.changes, change),
+            keys=keys,
+            under=under,
+            every=self.every or change.every,
+        )
+
+
+#: the era a fence starts in, and returns to whenever no ticket is held
+_QUIET_ERA: Final = _FenceEra(changes=(), keys=packed_keys.NO_KEYS, under=(), every=False)
+
+
 class _L1Fence:
     """orders this process's L1 writes of a key against every other write and eviction of it.
 
@@ -542,21 +631,94 @@ class _L1Fence:
     key was in flight when it began. Two overlapping writes can reach L3 in either order, so neither
     knows it is the later one; both drop the key, and the next read takes whichever row L3 kept.
     The check and the L1 write run with no await between them.
+
+    **No state a key** (Pace, 2026-11-23). The fence holds no record a key: one count of changes, the writes in flight
+    as one packed batch (:mod:`~threetears.core.collections.packed_keys`), and the changes recorded while any ticket is
+    held as a tuple of eras. Each is an immutable value the fence replaces whole, on the loop, with no await between
+    its read and its replacement. A ticket keeps the count as it left it; a change reaches it when the change was
+    counted after that and names its key. Its own era's changes are walked one by one (at most
+    :data:`_FENCE_ERA_CHANGES`); each later era -- begun after the ticket was taken -- is asked once, one substring
+    search of its batch. An era ends after :data:`_FENCE_ERA_CHANGES` changes or :data:`_FENCE_ERA_TEXT` characters of
+    key text, so no change copies more than that, and is dropped whole once every ticket taken in it, or before it, is
+    released; with no ticket held nothing is recorded but the count.
+
+    Measured (2026-11-23, M-series, against the record a key it replaced): a read's begin, check and end 0.7 us (0.6);
+    a write's begin and end with 1,000 reads held 2.1 us (0.6); a read's check after 1,000 writes of other keys 10 us
+    (0.03), its own era's changes walked; a 33,786-key eviction's batch made on its thread in 3.1 ms (1.0, the keys and
+    their set), recorded on the loop in 0.01 ms (0.01), and a held read's check after it 0.4 us (0.04).
     """
 
-    __slots__ = ("_changes", "_keys", "_writers")
+    __slots__ = ("_changes", "_eras", "_first_era", "_held", "_held_by_era", "_writers", "_writing")
 
     def __init__(self) -> None:
-        """start with no key watched.
+        """start with no ticket held.
 
         :return: nothing
         :rtype: None
         """
-        self._keys: dict[tuple[str, ...], _KeyActivity] = {}
-        # every write begun and eviction landed on any key, and the writes in flight on any key:
-        # what a scan, which cannot name its keys before it reads, is fenced by
+        # every write begun and eviction landed on any key: what a ticket's seen is read against, and what a scan,
+        # which cannot name its keys before it reads, is fenced by
         self._changes = 0
+        # the writes in flight on any key (a scan's contention), and their keys as one packed batch, a key a write
         self._writers = 0
+        self._writing = packed_keys.NO_KEYS
+        # tickets held, and the changes they may yet be overtaken by, era by era with the tickets taken in each held;
+        # _first_era numbers _eras[0]
+        self._held = 0
+        self._eras: tuple[_FenceEra, ...] = (_QUIET_ERA,)
+        self._held_by_era: tuple[int, ...] = (0,)
+        self._first_era = 0
+
+    @property
+    def watched(self) -> bool:
+        """whether any ticket is held, so a change must be recorded rather than only counted.
+
+        :return: ``True`` while a ticket is held
+        :rtype: bool
+        """
+        return self._held > 0
+
+    @property
+    def recorded(self) -> tuple[int, ...]:
+        """how many changes each era holds, oldest first: what the fence keeps while tickets are held.
+
+        :return: each era's count of changes
+        :rtype: tuple[int, ...]
+        """
+        return tuple(len(era.changes) for era in self._eras)
+
+    def _record(
+        self,
+        count: int,
+        *,
+        keys: str = packed_keys.NO_KEYS,
+        under: tuple[tuple[int, str], ...] | None = None,
+        every: bool = False,
+    ) -> None:
+        """count ``count`` changes, and record them as one while a ticket is held.
+
+        :param count: how many changes to count (an eviction's keys)
+        :ptype count: int
+        :param keys: the keys they name, as one packed batch
+        :ptype keys: str
+        :param under: for an eviction by key prefix, each key position and its value
+        :ptype under: tuple[tuple[int, str], ...] | None
+        :param every: whether they name every key
+        :ptype every: bool
+        :return: nothing
+        :rtype: None
+        """
+        self._changes += count
+        if self._held == 0:
+            return
+        change = _FenceChange(seq=self._changes, keys=keys, under=under, every=every)
+        eras = self._eras
+        era = eras[-1]
+        if len(era.changes) < _FENCE_ERA_CHANGES and len(era.keys) < _FENCE_ERA_TEXT:
+            self._eras = (*eras[:-1], era.with_change(change))
+        else:
+            self._eras = (*eras, _QUIET_ERA.with_change(change))
+            self._held_by_era = (*self._held_by_era, 0)
 
     def begin(self, key: tuple[str, ...], *, writing: bool) -> _KeyTicket:
         """take a ticket on ``key`` before the first await of a read or write of it.
@@ -568,21 +730,26 @@ class _L1Fence:
         :return: the ticket
         :rtype: _KeyTicket
         """
-        activity = self._keys.get(key)
-        if activity is None:
-            activity = _KeyActivity()
-            self._keys[key] = activity
-        contended = activity.writers > 0
+        text = packed_keys.key_text(key)
+        contended = self._writers > 0 and packed_keys.names(self._writing, text)
         if writing:
-            activity.writers += 1
-            activity.changes += 1
             self._writers += 1
-            self._changes += 1
-        activity.holders += 1
-        return _KeyTicket(key=key, activity=activity, seen=activity.changes, contended=contended, writing=writing)
+            self._writing = f"{self._writing}{text}{packed_keys.SEP}"
+            # recorded before this ticket is held: its own change is not one it is overtaken by
+            self._record(1, keys=packed_keys.packed((text,)))
+        held = self._held_by_era
+        self._held_by_era = (*held[:-1], held[-1] + 1)
+        self._held += 1
+        return _KeyTicket(
+            key=key,
+            text=text,
+            seen=self._changes,
+            era=self._first_era + len(held) - 1,
+            contended=contended,
+            writing=writing,
+        )
 
-    @staticmethod
-    def still_newest(ticket: _KeyTicket) -> bool:
+    def still_newest(self, ticket: _KeyTicket) -> bool:
         """whether the row ``ticket``'s holder is about to cache is still the newest this process knows.
 
         :param ticket: the holder's ticket
@@ -590,10 +757,9 @@ class _L1Fence:
         :return: ``True`` when no write overlapped the ticket and no eviction landed since it was taken
         :rtype: bool
         """
-        return not ticket.contended and ticket.activity.changes == ticket.seen
+        return not ticket.contended and self.unchanged_since(ticket)
 
-    @staticmethod
-    def unchanged_since(ticket: _KeyTicket) -> bool:
+    def unchanged_since(self, ticket: _KeyTicket) -> bool:
         """whether no write of ``ticket``'s key began, and no eviction of it landed, since it was taken.
 
         :meth:`still_newest` without its check that no write was in flight when the ticket was
@@ -602,26 +768,47 @@ class _L1Fence:
 
         :param ticket: the holder's ticket
         :ptype ticket: _KeyTicket
-        :return: ``True`` when the key's record has not moved since the ticket was taken
+        :return: ``True`` when nothing recorded since the ticket was taken names its key
         :rtype: bool
         """
-        return ticket.activity.changes == ticket.seen
+        if self._changes == ticket.seen:
+            return True
+        eras = self._eras[ticket.era - self._first_era :]
+        if eras[0].names_since(ticket):
+            return False
+        return not any(era.names(ticket) for era in eras[1:])
 
     def end(self, ticket: _KeyTicket) -> None:
-        """release ``ticket``, dropping the key's record once nothing holds it.
+        """release ``ticket``; an era no held ticket can be overtaken by any more is dropped whole.
 
         :param ticket: the ticket to release
         :ptype ticket: _KeyTicket
         :return: nothing
         :rtype: None
         """
-        activity = ticket.activity
         if ticket.writing:
-            activity.writers -= 1
             self._writers -= 1
-        activity.holders -= 1
-        if activity.holders == 0 and self._keys.get(ticket.key) is activity:
-            del self._keys[ticket.key]
+            writing = self._writing
+            # one of this ticket's key's entries (two writes of one key each hold one)
+            at = writing.index(f"{packed_keys.SEP}{ticket.text}{packed_keys.SEP}")
+            self._writing = writing[: at + 1] + writing[at + len(ticket.text) + 2 :]
+        self._held -= 1
+        if self._held == 0:
+            # nothing held can be overtaken: every era goes, and the numbering moves past them
+            self._first_era += len(self._eras)
+            self._eras = (_QUIET_ERA,)
+            self._held_by_era = (0,)
+            return
+        at = ticket.era - self._first_era
+        held = self._held_by_era
+        held = (*held[:at], held[at] - 1, *held[at + 1 :])
+        # the leading eras no ticket is held in: a ticket taken later was taken after all of their changes
+        drop = 0
+        while drop < len(held) - 1 and held[drop] == 0:
+            drop += 1
+        self._first_era += drop
+        self._eras = self._eras[drop:]
+        self._held_by_era = held[drop:]
 
     def changed(self, key: tuple[str, ...]) -> None:
         """record that ``key`` was evicted or rewritten, so no ticket taken before now may cache it.
@@ -631,55 +818,46 @@ class _L1Fence:
         :return: nothing
         :rtype: None
         """
-        self._changes += 1
-        activity = self._keys.get(key)
-        if activity is not None:
-            activity.changes += 1
+        if self._held == 0:
+            self._changes += 1
+            return
+        self._record(1, keys=packed_keys.packed((packed_keys.key_text(key),)))
 
-    def changed_many(self, keys: Sequence[tuple[str, ...]], among: set[tuple[str, ...]]) -> None:
-        """:meth:`changed` of each of ``keys``, at once: only the keys with work in flight are touched, so it costs
-        the keys watched, not the keys changed.
+    def changed_many(self, keys: str, count: int) -> None:
+        """:meth:`changed` of every key of the packed batch ``keys``, at once: one change recorded, whatever the
+        batch's size, and nothing walked a key.
 
         A commit's eviction of 33,786 keys called :meth:`changed` a key on the event loop: 33,786 calls, 3-5 ms with
-        the loop held, against none when nothing reads those keys at the time (the WD2 bench, 2026-11-16).
+        the loop held (the WD2 bench, 2026-11-16). The batch is made off the loop (:meth:`BaseCollection
+        ._packed_fence_keys`), and a ticket's check searches it once.
 
-        :param keys: the keys, as the pk values' string forms
-        :ptype keys: Sequence[tuple[str, ...]]
-        :param among: the same keys as a set, made where ``keys`` were (off the loop)
-        :ptype among: set[tuple[str, ...]]
+        :param keys: the keys, as one packed batch (:func:`packed_keys.packed`)
+        :ptype keys: str
+        :param count: how many keys the batch names
+        :ptype count: int
         :return: nothing
         :rtype: None
         """
-        self._changes += len(keys)
-        for key, activity in self._keys.items():
-            if key in among:
-                activity.changes += 1
+        self._record(count, keys=keys)
 
     def changed_under(self, positions: Sequence[tuple[int, str]]) -> None:
         """record that every key whose values at ``positions`` are those values was evicted: a ticket on such a key
-        taken before now may not cache what it read, and no scan's either. Only keys with work in flight are walked.
+        taken before now may not cache what it read, and no scan's either.
 
         :param positions: each key position and its value's string form (a key prefix, by position)
         :ptype positions: Sequence[tuple[int, str]]
         :return: nothing
         :rtype: None
         """
-        self._changes += 1
-        for key, activity in self._keys.items():
-            if all(index < len(key) and key[index] == value for index, value in positions):
-                activity.changes += 1
+        self._record(1, under=tuple(positions))
 
     def changed_all(self) -> None:
         """record that every key was evicted, so no ticket taken before now may cache what it read.
 
-        Only keys with work in flight are tracked, and only those can cache anything afterwards.
-
         :return: nothing
         :rtype: None
         """
-        self._changes += 1
-        for activity in self._keys.values():
-            activity.changes += 1
+        self._record(1, every=True)
 
     def begin_scan(self) -> ScanReadTicket:
         """take a ticket on every key, before the first await of a scan.
@@ -2837,8 +3015,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         if not entity_ids:
             return
         fence = self._l1_fence
-        for entity_id in entity_ids:
-            fence.changed(self._fence_key(entity_id))
+        if fence.watched:
+            fence.changed_many(self._packed_fence_keys(entity_ids), len(entity_ids))
+        else:
+            # nothing held to be overtaken: the count is all a change leaves, so no key's text is made
+            fence.changed_many(packed_keys.NO_KEYS, len(entity_ids))
         try:
             l1 = self._l1_holding_table()
             if l1 is not None:
@@ -2882,9 +3063,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
-        fence_keys = await asyncio.to_thread(self._fence_keys_and_set, entity_ids, asyncio.get_running_loop())
-        # every key fenced at once (no await): the fence's work is the keys in flight, not these
-        self._l1_fence.changed_many(*fence_keys)
+        fence_keys = await asyncio.to_thread(self._packed_fence_keys, entity_ids, asyncio.get_running_loop())
+        # every key fenced at once (no await): one change recorded, its keys one packed batch, none walked
+        self._l1_fence.changed_many(fence_keys, len(entity_ids))
         try:
             l1 = self._l1_holding_table()
             if l1 is not None:
@@ -2927,27 +3108,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return [self.changed_row(entity_id, row) for entity_id, row in zip(entity_ids, rows, strict=True)]
 
-    def _fence_keys_and_set(
-        self, entity_ids: Sequence[Any], loop: asyncio.AbstractEventLoop | None = None
-    ) -> tuple[list[tuple[str, ...]], set[tuple[str, ...]]]:
-        """every key's :meth:`_fence_key`, in order, and the same keys as a set, for :meth:`_L1Fence.changed_many`;
-        pure, for a thread, which takes turns with the caller's loop (33,786 keys' texts made at once held it 15 ms at
-        a time under the default switch interval, the WD2 bench, 2026-11-16).
+    def _packed_fence_keys(self, entity_ids: Sequence[Any], loop: asyncio.AbstractEventLoop | None = None) -> str:
+        """every key's :meth:`_fence_key` text, as one packed key batch for :meth:`_L1Fence.changed_many`; pure, for a
+        thread, which takes turns with the caller's loop (33,786 keys' texts made at once held it 15 ms at a time under
+        the default switch interval, the WD2 bench, 2026-11-16). Each text lives only until the batch is joined.
 
         :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
         :ptype entity_ids: Sequence[Any]
         :param loop: the caller's event loop, handed the thread's turns; None off any loop
         :ptype loop: asyncio.AbstractEventLoop | None
-        :return: the fence keys, in order, and as a set
-        :rtype: tuple[list[tuple[str, ...]], set[tuple[str, ...]]]
+        :return: the keys' packed batch
+        :rtype: str
         """
         turns = LoopTurns(loop)
-        keys = [self._fence_key(entity_id) for entity_id in stepped(entity_ids, turns)]
-        held: set[tuple[str, ...]] = set()
-        for start in range(0, len(keys), STEP_ITEMS):
-            held.update(keys[start : start + STEP_ITEMS])
-            turns.take()
-        return keys, held
+        texts = [packed_keys.key_text(self._fence_key(entity_id)) for entity_id in stepped(entity_ids, turns)]
+        return packed_keys.packed(texts)
 
     def _delete_l1_rows(self, l1: Any, entity_ids: Sequence[Any]) -> None:
         """delete ``entity_ids``' rows from ``l1`` in one backend write; blocking (:meth:`_evict_l1_many_off_loop`).

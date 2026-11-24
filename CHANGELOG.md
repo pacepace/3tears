@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the L1 fence holds no state a key
+
+**Changed:** the L1 fence (`_L1Fence`) kept a mutable activity record a key in flight, shared by every ticket on the
+key: per-key Python objects and mutable shared state (Pace, 2026-11-23: redesign, never waive). It now holds immutable
+values it replaces whole: a count of changes, its writes in flight as one packed batch
+(`threetears.core.collections.packed_keys`: one string a batch of keys, `NUL text NUL ...`; core imports no Arrow), and
+the changes recorded while a ticket is held as eras of at most 64 changes, each dropped whole once no ticket needs it.
+A 33,786-key eviction is one recorded change, its batch made on the thread. Who may cache is unchanged;
+`_L1Fence.changed_many` takes the packed batch and its count.
+
 ### core: keyed reads of several key columns are read by their keys alone on YugabyteDB
 
 **Changed:** `read_keyed` and `read_keyed_arrow` no longer bound a batch of several key columns to each column's

@@ -258,18 +258,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/base.py",
-        class_name="_L1Fence",
-        attr_name="_keys",
-        rationale=(
-            "the reads and writes of each key in flight in THIS process, ordering this process's "
-            "own L1 writes against each other: L1 is per-process, so the state ordering writes to "
-            "it is too, and a shared or durable copy would order writes to a cache no other pod "
-            "has. the L2 revision is the cross-pod half of the same fence. an entry lives only "
-            "while an operation on its key is in flight and is dropped when the last one ends"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/task_registry.py",
         class_name="KeyedTaskRegistry",
         attr_name="_tasks",
@@ -846,15 +834,6 @@ _IMMUTABLE_ROOTS = (_REPO_ROOT / "packages/core/src/threetears/core/collections"
 #: Changes in place under _IMMUTABLE_ROOTS that are per key, where rebuilding the whole value at each change costs the
 #: keys in flight: each needs a redesign agreed first, named here. A debt list, audited for staleness.
 _IMMUTABLE_KNOWN_VIOLATIONS = (
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/base.py",
-        class_name="_L1Fence",
-        attr_name="_keys",
-        rationale=(
-            "one mutable activity record a key in flight, shared by identity with every ticket on the key; immutable it "
-            "needs a fence-wide sequence the tickets compare against, a redesign of the L1 fence to agree first"
-        ),
-    ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/flush.py",
         class_name="WriteBuffer",
