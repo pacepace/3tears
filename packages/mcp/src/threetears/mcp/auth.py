@@ -36,6 +36,7 @@ import asyncio
 import os
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -534,8 +535,10 @@ class LocalGrantAuthorizer:
         # each grant by its key -> the (principal_id, permission) it gives, and how many grants
         # give each pair: two grants for two tools can give one permission, and revoking one of
         # them must not take the permission away. presence is the grant; absence is default-deny.
-        self._grants: dict[UUID, tuple[UUID, str]] = {}
-        self._held: dict[tuple[UUID, str], int] = {}
+        # each a read-only snapshot replaced whole on a change (decision 41; this package does not depend on
+        # threetears.core, so its frozen_state is spelled inline): one entry per grant, tens to hundreds
+        self._grants: Mapping[UUID, tuple[UUID, str]] = MappingProxyType({})
+        self._held: Mapping[tuple[UUID, str], int] = MappingProxyType({})
         # reads (a fill's, a key's) overlap, so each is numbered when it STARTS. a read lands only
         # when nothing that started later has already landed for what it read, and clears what is
         # owed only when it started after the failure that owed it: otherwise a slow read that
@@ -547,11 +550,11 @@ class LocalGrantAuthorizer:
         self._fill_failed_generation = 0
         self._fill_owed = False
         # per grant: the newest keyed read landed, and a failed one still owed
-        self._key_landed: dict[UUID, int] = {}
-        self._keys_owed: dict[UUID, int] = {}
+        self._key_landed: Mapping[UUID, int] = MappingProxyType({})
+        self._keys_owed: Mapping[UUID, int] = MappingProxyType({})
         # the keyed reads (and a whole-table change's fill) the registry's synchronous callbacks
         # started, held so stop() can end them
-        self._reads: set[asyncio.Task[None]] = set()
+        self._reads: frozenset[asyncio.Task[None]] = frozenset()
         self._unregister: Callable[[], None] | None = None
         self._follower: TableFollower | None = None
         self._started = False
@@ -669,7 +672,7 @@ class LocalGrantAuthorizer:
         task, self._retry_task = self._retry_task, None
         if task is not None:
             await task.stop()
-        reads, self._reads = self._reads, set()
+        reads, self._reads = self._reads, frozenset()
         for read in reads:
             await cancel_and_wait(read)
 
@@ -730,8 +733,18 @@ class LocalGrantAuthorizer:
         :rtype: None
         """
         task = spawn_background(read, name=name, logger=log)
-        self._reads.add(task)
-        task.add_done_callback(self._reads.discard)
+        self._reads = self._reads | {task}
+        task.add_done_callback(self._forget_read)
+
+    def _forget_read(self, task: asyncio.Task[None]) -> None:
+        """drop a finished read from those :meth:`stop` ends.
+
+        :param task: the finished read
+        :ptype task: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        """
+        self._reads = self._reads - {task}
 
     async def _retry_owed(self) -> None:
         """one retry pass: the fill when it is owed, then every grant whose keyed read is owed, by key.
@@ -803,16 +816,20 @@ class LocalGrantAuthorizer:
         :return: nothing
         :rtype: None
         """
-        before = self._grants.pop(grant_id, None)
+        grants = dict(self._grants)
+        counts = dict(self._held)
+        before = grants.pop(grant_id, None)
         if before is not None:
-            remaining = self._held[before] - 1
+            remaining = counts[before] - 1
             if remaining:
-                self._held[before] = remaining
+                counts[before] = remaining
             else:
-                del self._held[before]
+                del counts[before]
         if held is not None:
-            self._grants[grant_id] = held
-            self._held[held] = self._held.get(held, 0) + 1
+            grants[grant_id] = held
+            counts[held] = counts.get(held, 0) + 1
+        self._grants = MappingProxyType(grants)
+        self._held = MappingProxyType(counts)
 
     async def _apply_grant(self, grant_id: UUID) -> None:
         """read one grant by key and put it in the cache: inserted, updated, or removed when gone.
@@ -840,13 +857,15 @@ class LocalGrantAuthorizer:
             # name. the read is owed whatever it raised, and the error goes on to the caller's
             # boundary (the read's task, the retry pass), which logs it.
             if not landed and generation > max(self._key_landed.get(grant_id, 0), self._filled_generation):
-                self._keys_owed[grant_id] = max(self._keys_owed.get(grant_id, 0), generation)
+                self._keys_owed = MappingProxyType(
+                    {**self._keys_owed, grant_id: max(self._keys_owed.get(grant_id, 0), generation)}
+                )
         if generation < max(self._key_landed.get(grant_id, 0), self._filled_generation):
             return
-        self._key_landed[grant_id] = generation
+        self._key_landed = MappingProxyType({**self._key_landed, grant_id: generation})
         self._put(grant_id, held)
         if generation > self._keys_owed.get(grant_id, 0):
-            self._keys_owed.pop(grant_id, None)
+            self._keys_owed = MappingProxyType({key: at for key, at in self._keys_owed.items() if key != grant_id})
 
     async def _fill(self) -> None:
         """read every grant into the cache: the cold start, or the fill after a whole-table change.
@@ -879,12 +898,14 @@ class LocalGrantAuthorizer:
                     filled.pop(grant_id, None)
                 else:
                     filled[grant_id] = newer
-        self._grants = {}
-        self._held = {}
-        for grant_id, held in filled.items():
-            self._put(grant_id, held)
-        self._key_landed = {key: at for key, at in self._key_landed.items() if at > generation}
-        self._keys_owed = {key: at for key, at in self._keys_owed.items() if at > generation}
+        # what each (principal, permission) is given by, counted once over the whole fill
+        counts: dict[tuple[UUID, str], int] = {}
+        for held in filled.values():
+            counts[held] = counts.get(held, 0) + 1
+        self._grants = MappingProxyType(filled)
+        self._held = MappingProxyType(counts)
+        self._key_landed = MappingProxyType({key: at for key, at in self._key_landed.items() if at > generation})
+        self._keys_owed = MappingProxyType({key: at for key, at in self._keys_owed.items() if at > generation})
         self._filled_generation = generation
         if generation > self._fill_failed_generation:
             self._fill_owed = False

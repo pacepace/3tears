@@ -401,6 +401,36 @@ class TestEpochListenerWildcardSubscription:
         assert listener.last_seen(_subject("app.tenant.bbb.epoch")) == 1
 
     @pytest.mark.asyncio
+    async def test_last_seen_is_bounded_and_a_pushed_out_subject_is_applied_again(self) -> None:
+        """past the limit the least recently heard subject is forgotten; its next broadcast is applied, not skipped."""
+        nats, callbacks = _capture_subscribe_typed()
+        client = _StubEpochClient(nats, epoch=0)
+        listener = EpochListener(nats, client, last_seen_limit=3)
+        wildcard = _subject("app.tenant.*.epoch")
+        consumer_cb = AsyncMock()
+
+        await listener.subscribe(wildcard, consumer_cb)  # primes the wildcard's own path: one of the three
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.aaa.epoch", epoch=5))
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.bbb.epoch", epoch=7))
+        # hearing aaa again keeps it newest, so the wildcard's primed path is the one pushed out next
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.aaa.epoch", epoch=6))
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.ccc.epoch", epoch=2))
+        assert listener.last_seen(wildcard) == 0
+        assert listener.last_seen(_subject("app.tenant.aaa.epoch")) == 6
+        # ddd pushes out bbb, the least recently heard
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.ddd.epoch", epoch=1))
+        assert listener.last_seen(_subject("app.tenant.bbb.epoch")) == 0
+        assert consumer_cb.await_count == 5
+
+        # bbb's redelivered epoch is unseen now: applied (a redundant reload at worst), never skipped
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.bbb.epoch", epoch=7))
+        assert consumer_cb.await_count == 6
+        assert listener.last_seen(_subject("app.tenant.bbb.epoch")) == 7
+        # a subject still held keeps its dedupe
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.ddd.epoch", epoch=1))
+        assert consumer_cb.await_count == 6
+
+    @pytest.mark.asyncio
     async def test_dedupe_still_holds_within_one_matched_subject(self) -> None:
         """per-subject counters must not cost the redelivery protection."""
         _seeded = 0

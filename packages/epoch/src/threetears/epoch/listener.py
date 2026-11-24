@@ -20,7 +20,10 @@ deserialization, programming errors propagate.
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from collections.abc import Mapping
+from typing import Awaitable, Callable, Final
+
+from threetears.core.frozen_state import EMPTY, with_entry, with_newest, without_entries, without_entry
 
 from threetears.nats import TypedSubscriber
 from threetears.nats.errors import SubscribeError
@@ -31,12 +34,20 @@ from threetears.epoch.client import EpochClient, _is_durable
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
+    "LAST_SEEN_LIMIT",
     "BumpCallback",
     "EpochListener",
     "ResetCallback",
 ]
 
 log = get_logger(__name__)
+
+#: the most subjects an :class:`EpochListener` remembers a last-seen epoch for, the least recently heard pushed out
+#: first. One entry per subject heard: a pod's concrete subjects (tens) plus, under a per-customer wildcard, one per
+#: active customer (hundreds). 4096 keeps every live subject with room to spare while a wildcard over an unbounded
+#: subject space stays bounded instead of leaking, and each change copies at most 4096 small entries. A subject pushed
+#: out is unseen again: its next broadcast is applied (one redundant reload at worst), never skipped.
+LAST_SEEN_LIMIT: Final = 4096
 
 
 BumpCallback = Callable[[int, dict[str, object] | None], Awaitable[None]]
@@ -89,7 +100,9 @@ class EpochListener:
     :ptype epoch_client: EpochClient
     """
 
-    def __init__(self, nats_client: TypedSubscriber, epoch_client: EpochClient) -> None:
+    def __init__(
+        self, nats_client: TypedSubscriber, epoch_client: EpochClient, *, last_seen_limit: int = LAST_SEEN_LIMIT
+    ) -> None:
         """capture clients; no I/O.
 
         :param nats_client: connected client that subscribes typed callbacks
@@ -97,12 +110,17 @@ class EpochListener:
         :param epoch_client: companion :class:`EpochClient` for
             cold-start priming
         :ptype epoch_client: EpochClient
+        :param last_seen_limit: the most subjects whose last-seen epoch is remembered (:data:`LAST_SEEN_LIMIT`)
+        :ptype last_seen_limit: int
         :return: nothing
         :rtype: None
         """
         self._nats = nats_client
+        self._last_seen_limit = last_seen_limit
         self._epoch_client = epoch_client
-        self._last_seen: dict[str, int] = {}
+        # read-only snapshots replaced whole on a change (decision 41): one entry per subject heard, one list per
+        # subscribed path; last-seen is bounded newest-first at last_seen_limit subjects
+        self._last_seen: Mapping[str, int] = EMPTY
         # Every registered subscription, so a reset can reach ALL of them.
         # Without this the callbacks live only as closure arguments to
         # ``subscribe`` and ``catch_up``, and whichever call happened to
@@ -118,7 +136,7 @@ class EpochListener:
         # One entry per path would give both consumers bumps and only the last
         # one resets: the same permanent staleness, one scope smaller and
         # considerably harder to notice.
-        self._registrations: dict[str, list[tuple[Subject, BumpCallback, ResetCallback | None]]] = {}
+        self._registrations: Mapping[str, tuple[tuple[Subject, BumpCallback, ResetCallback | None], ...]] = EMPTY
         # The identity of the bucket this listener's numbers were counted in.
         # ``None`` until first observed; compared for EQUALITY only.
         self._bucket_identity: str | None = None
@@ -222,14 +240,15 @@ class EpochListener:
         afford it should subscribe per concrete subject and prime each,
         which is what a non-wildcard subscription already does.
 
-        SECOND: ``_last_seen`` gains an entry per matched subject and
-        never evicts one. The growth removed from the subscription
-        count reappears here as dict entries, bounded by how many
-        subjects actually broadcast rather than by how many exist. For
-        a per-customer epoch that is one entry per active customer,
-        which is the point -- but it is not free, and a wildcard over
-        an unbounded subject space is a leak rather than a
-        convenience.
+        SECOND: ``_last_seen`` gains an entry per matched subject, up to
+        :data:`LAST_SEEN_LIMIT` (the least recently heard pushed out
+        first). The growth removed from the subscription count
+        reappears here as entries, bounded by how many subjects
+        actually broadcast rather than by how many exist. For a
+        per-customer epoch that is one entry per active customer. A
+        subject pushed out is unseen again, so its next broadcast is
+        applied, never skipped: over an unbounded subject space that is
+        a redundant reload per returning subject, not a leak.
 
         THIRD, and the one that changes behaviour for an EXISTING
         wildcard subscriber: a wildcard subscribe needs a wildcard
@@ -267,7 +286,7 @@ class EpochListener:
             fails to register
         """
         primed = primed_epoch if primed_epoch is not None else await self._epoch_client.current(subject)
-        self._last_seen[subject.path] = primed
+        self._last_seen = with_newest(self._last_seen, subject.path, primed, limit=self._last_seen_limit)
 
         log.debug(
             "epoch listener primed last-seen",
@@ -315,7 +334,7 @@ class EpochListener:
                     },
                 )
                 return
-            self._last_seen[dedupe_path] = message.epoch
+            self._last_seen = with_newest(self._last_seen, dedupe_path, message.epoch, limit=self._last_seen_limit)
             await on_bump(message.epoch, message.payload)
 
         try:
@@ -336,7 +355,11 @@ class EpochListener:
         # one registration and gets one reset callback, however many concrete
         # subjects it later matches. dedupe stays keyed on the message path,
         # because those counters are independent numbers.
-        self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
+        self._registrations = with_entry(
+            self._registrations,
+            subject.path,
+            (*self._registrations.get(subject.path, ()), (subject, on_bump, on_reset)),
+        )
         # from here every broadcast on the subject reaches the client's ``observe_broadcast``, so
         # the client may keep a cached ``versions`` copy for what this subscription hears
         self._epoch_client.observe_subscription(subject)
@@ -405,10 +428,10 @@ class EpochListener:
         :return: how many registrations were dropped
         :rtype: int
         """
-        entries = self._registrations.get(subject.path, [])
+        entries = self._registrations.get(subject.path, ())
         if on_bump is None:
             dropped = len(entries)
-            self._registrations.pop(subject.path, None)
+            self._registrations = without_entry(self._registrations, subject.path)
         else:
             # Equality, NOT identity. A bound method is built fresh on every
             # attribute access, so ``self._on_x is self._on_x`` is False and an
@@ -416,12 +439,12 @@ class EpochListener:
             # production caller (``LocalGrantAuthorizer.stop``) passes it.
             # ``a.m == a.m`` is True because a bound method compares on
             # ``(__func__, __self__)``.
-            keep = [e for e in entries if e[1] != on_bump]
+            keep = tuple(e for e in entries if e[1] != on_bump)
             dropped = len(entries) - len(keep)
             if keep:
-                self._registrations[subject.path] = keep
+                self._registrations = with_entry(self._registrations, subject.path, keep)
             else:
-                self._registrations.pop(subject.path, None)
+                self._registrations = without_entry(self._registrations, subject.path)
 
         # Only once nobody is left on the path. Clearing while another consumer
         # is still registered would re-fire its next bump as new.
@@ -433,7 +456,7 @@ class EpochListener:
         # package does not have, and a stale entry only suppresses a bump whose
         # epoch the counter already passed, which is the correct answer anyway.
         if not self._registrations.get(subject.path):
-            self._last_seen.pop(subject.path, None)
+            self._last_seen = without_entry(self._last_seen, subject.path)
         return dropped
 
     async def signal_reset(self, subject: Subject | None = None) -> None:
@@ -500,8 +523,8 @@ class EpochListener:
             # that detected the problem the only one not reset by it, wedged
             # permanently while every ephemeral consumer reloaded on every tick
             # because the condition never cleared.
-            self._last_seen.pop(subject.path, None)
-            scoped = list(self._registrations.get(subject.path, []))
+            self._last_seen = without_entry(self._last_seen, subject.path)
+            scoped = list(self._registrations.get(subject.path, ()))
             through_bump, scoped_error = await _reset_each(scoped)
             log.warning(
                 "epoch counter for one subject read backwards; that subject reset",
@@ -516,8 +539,9 @@ class EpochListener:
             if scoped_error is not None:
                 raise scoped_error
             return
-        for path in [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]:
-            del self._last_seen[path]
+        self._last_seen = without_entries(
+            self._last_seen, [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]
+        )
         # Record the identity we are announcing, AFTER the clear. Only the
         # bucket-wide path reaches here: a scoped reset returns above, because
         # one subject's counter reading backwards is not a claim about the
@@ -613,7 +637,7 @@ class EpochListener:
             await self.signal_reset(subject)
             return current
         if current > last_seen:
-            self._last_seen[subject.path] = current
+            self._last_seen = with_newest(self._last_seen, subject.path, current, limit=self._last_seen_limit)
             await on_bump(current, None)
         return current
 

@@ -16,8 +16,9 @@ enforcement test forbids ``required_permission=None`` in production
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 import jsonschema
@@ -177,7 +178,8 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         """initialize an empty registry."""
-        self._tools: dict[str, McpTool] = {}
+        # a read-only snapshot replaced whole on a change (decision 41); one entry per tool
+        self._tools: Mapping[str, McpTool] = MappingProxyType({})
 
     def register(self, tool: McpTool) -> None:
         """add a tool to the registry; raises on duplicate name.
@@ -193,7 +195,7 @@ class ToolRegistry:
             raise ValueError(
                 f"tool name conflict: {tool.name!r} already registered",
             )
-        self._tools[tool.name] = tool
+        self._tools = MappingProxyType({**self._tools, tool.name: tool})
 
     def get(self, name: str) -> McpTool | None:
         """look up a tool by name.
