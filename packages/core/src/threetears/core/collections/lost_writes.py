@@ -62,7 +62,8 @@ from threetears.core.ddl.session import ConnectionSession
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.ddl.write_marks import MARK_FUNCTION, WRITE_MARK_TRIGGER, WRITE_MARKS_CONTRACT_RELEASE
 from threetears.core.sql_fragments import quote_identifier
-from threetears.core.tenancy import TENANCY_UNDECLARED, schema_tenant
+from threetears.core.collections.undeclared_tables import is_undeclared_table
+from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, schema_tenant
 from threetears.core.utils.write_ledger import CLOCK_SKEW, WRITE_GRACE, WriteLedger, process_write_ledger
 
 __all__ = [
@@ -223,7 +224,9 @@ async def _switched_tables(pool: SqlConnection) -> dict[str, tuple[str, ...]]:
     found: dict[str, list[str]] = {}
     for row in await pool.fetch(_ALL_SWITCHED_SQL, NOTE_TRIGGER):
         table = str(row["table_name"])
-        if not written_l2_first(table):
+        # a table no class declares (a tool pod's own, switched on by its trigger alone) is never written L2-first:
+        # asked of no registry, so no undeclared lookup is reported for it (:data:`_TRIGGER_ONLY`)
+        if is_undeclared_table(table) or not written_l2_first(table):
             found.setdefault(table, []).append(str(row["table_schema"]))
     return {table: tuple(schemas) for table, schemas in found.items()}
 
@@ -260,15 +263,39 @@ class _TableAnnounced:
     records: tuple[Mapping[str, Any], ...]
 
 
-def _tenants(table: str, schemas: Sequence[str], *, platform_schema: str, schema: str | None) -> tuple[str | None, ...]:
-    """the tenants a rowless advance of ``table`` goes under.
+#: the scope a lost write's recovery gives a table it knows only from its change-note trigger (no class declares it:
+#: a tool pod's own table, undeclared on purpose): every tenant it may be read under -- each schema holding it (its
+#: pods' key, were their class to declare it by schema) and ``_all`` (every other declaration's followers read it).
+#: The conservative scope: a broader invalidation never misses a follower. Passed explicitly in place of a tenancy, so
+#: recovery asks no registry for the table and reports no undeclared lookup (``threetears_undeclared_table_total``
+#: stays at zero for it, and next release's refusal of an undeclared lookup never breaks recovery)
+_TRIGGER_ONLY: Final = "trigger_only"
 
-    For an agent-schema table, each schema holding it (``schema`` alone, when the window is one schema's: a migration
-    run's); ``_all`` for any other table. A table no class here declares, switched on by its trigger alone (a tool
-    pod's own table), lives in its pod's schema; one in the platform schema stays on ``_all``.
+
+def _tenancy_of(table: str) -> Tenancy | str:
+    """what a lost write's recovery advances ``table`` under: its declared tenancy, or :data:`_TRIGGER_ONLY` for a
+    table no class declares (asked quietly, :func:`~threetears.core.collections.undeclared_tables.is_undeclared_table`).
 
     :param table: the table
     :ptype table: str
+    :return: the tenancy, or :data:`_TRIGGER_ONLY`
+    :rtype: Tenancy | str
+    """
+    return _TRIGGER_ONLY if is_undeclared_table(table) else tenancy_of_table(table)
+
+
+def _tenants(
+    tenancy: Tenancy | str, schemas: Sequence[str], *, platform_schema: str, schema: str | None
+) -> tuple[str | None, ...]:
+    """the tenants a rowless advance of a table of ``tenancy`` goes under.
+
+    For an agent-schema table, each schema holding it (``schema`` alone, when the window is one schema's: a migration
+    run's); ``_all`` for any other declared table. A table known only from its trigger (:data:`_TRIGGER_ONLY`) goes
+    under each pod schema holding it and ``_all``: every tenant. A table the registry answers undeclared for (the
+    startup loader never ran) lives in its pod's schema; one in the platform schema stays on ``_all``.
+
+    :param tenancy: the table's tenancy, or :data:`_TRIGGER_ONLY` (:func:`_tenancy_of`)
+    :ptype tenancy: Tenancy | str
     :param schemas: the schemas holding it with its trigger
     :ptype schemas: Sequence[str]
     :param platform_schema: the platform schema (the ring's)
@@ -278,13 +305,17 @@ def _tenants(table: str, schemas: Sequence[str], *, platform_schema: str, schema
     :return: the tenants, ``None`` for ``_all``
     :rtype: tuple[str | None, ...]
     """
-    kind = tenancy_of_table(table).kind
-    if kind not in ("schema", TENANCY_UNDECLARED.kind):
-        return (None,)
+    kind = tenancy if isinstance(tenancy, str) else tenancy.kind
     held = [each for each in schemas if schema is None or each == schema]
-    if kind != "schema" and (not held or platform_schema in held):
-        return (None,)
-    return tuple(schema_tenant(each) for each in held) or (None,)
+    pods = tuple(schema_tenant(each) for each in held if each != platform_schema)
+    tenants: tuple[str | None, ...] = (None,)
+    if kind == _TRIGGER_ONLY:
+        tenants = (*pods, None)
+    elif kind == "schema":
+        tenants = tuple(schema_tenant(each) for each in held) or (None,)
+    elif kind == TENANCY_UNDECLARED.kind and held and platform_schema not in held:
+        tenants = pods
+    return tenants
 
 
 async def _changes_of(
@@ -388,7 +419,7 @@ async def _announce_table_window(
     :rtype: _TableAnnounced
     :raises GenerationUnavailableError: when an advance failed; the advances before it stand
     """
-    tenants = _tenants(table, schemas, platform_schema=notes_schema, schema=schema)
+    tenants = _tenants(_tenancy_of(table), schemas, platform_schema=notes_schema, schema=schema)
     tokens: list[str | None] = []
     records: list[Mapping[str, Any]] = []
     for advance in await _changes_of(

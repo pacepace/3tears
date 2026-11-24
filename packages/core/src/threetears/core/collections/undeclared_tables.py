@@ -24,6 +24,7 @@ from threetears.observe import BuildOnce, get_logger
 from threetears.observe.metrics import counter
 
 __all__ = [
+    "is_undeclared_table",
     "record_declared_tables",
     "report_undeclared_table",
 ]
@@ -83,6 +84,23 @@ def _report(table: str, lookup: str, loaded: bool) -> bool:
     )
     _UNDECLARED.labels(table=table, lookup=lookup).inc()
     return True
+
+
+def is_undeclared_table(table: str) -> bool:
+    """whether the startup loader ran and no module it imported declares ``table``: asked quietly, no report.
+
+    For a reader that meets tables by the database's catalogue (a lost write's recovery walks every trigger-switched
+    table, tool pods' own tables among them, undeclared on purpose) and handles one no class declares explicitly,
+    instead of asking a registry whose fallback reports it. Before the loader ran nothing is known undeclared: the
+    registries are asked, and report the loader missing.
+
+    :param table: the table
+    :ptype table: str
+    :return: whether it is known undeclared
+    :rtype: bool
+    """
+    declared = _DECLARED.peek(None)
+    return declared is not None and table not in declared
 
 
 def report_undeclared_table(table: str, lookup: str) -> None:
