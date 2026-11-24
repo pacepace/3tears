@@ -50,7 +50,7 @@ table waits for the writer's recovery full (decision 28) when it starts from the
 
 **No full is asked for too** (Pace's ruling of 2026-11-24). A copy starting from the volume whose current full lacks
 an opted-in table (none published: a new or emptied volume) asks the writer for it through the same request
-(:class:`FullRecreate`, ``DeltaRecreateRequester.full``) at each look while it waits, one table a look (the writer's
+(:class:`_FullRecreate`, ``DeltaRecreateRequester.full``) at each look while it waits, one table a look (the writer's
 rebuild publishes every table its full lacks), and reads nothing from L3 meanwhile. Why: a writer whose load has nothing
 new to write never begins a write, and its fold, started at a write's begin, never rebuilt the full; every copy waited
 for ever. Counted (``copy_follower_full_requests_total``) and logged at WARNING when the answer changes.
@@ -193,7 +193,6 @@ __all__ = [
     "FollowerPhase",
     "FileRecreate",
     "FollowerStatus",
-    "FullRecreate",
     "PartialStamp",
     "require_generation_by_trigger",
     "typed_text",
@@ -1153,7 +1152,7 @@ class FileRecreate(Protocol):
 
 
 @runtime_checkable
-class FullRecreate(Protocol):
+class _FullRecreate(Protocol):
     """asks the writer for a table's full the volume's current full lacks: the copy's side of
     :meth:`~threetears.core.collections.delta_recreate.DeltaRecreateRequester.full`. A ``recreate`` that has it is
     asked while a start waits for the full (module docstring, "No full is asked for too"); one without it asks nothing.
@@ -3282,7 +3281,7 @@ class CopyFollower:
                     extra={"extra_data": {"reason": found.reason}},
                 )
             reason = found.reason
-            if found.lacking and isinstance(self._recreate, FullRecreate):
+            if found.lacking and isinstance(self._recreate, _FullRecreate):
                 # the writer may never begin a write (its load has nothing new), so its fold would never rebuild the
                 # full: asked at every look, one table (its rebuild publishes every table lacking), never read from L3
                 answer = await self._ask_full(self._recreate, found.lacking[0])
@@ -3303,15 +3302,15 @@ class CopyFollower:
         return staged
 
     @staticmethod
-    async def _ask_full(asks: FullRecreate, table: str) -> str:
+    async def _ask_full(asks: _FullRecreate, table: str) -> str:
         """ask the writer once for ``table``'s full; counted by outcome. The requester answers every way a request can
-        fail (``no_writer``, ``failed``) and never raises for one (:class:`FullRecreate`), so nothing is caught here.
+        fail (``no_writer``, ``failed``) and never raises for one (:class:`_FullRecreate`), so nothing is caught here.
 
         :param asks: the requester
-        :ptype asks: FullRecreate
+        :ptype asks: _FullRecreate
         :param table: the table
         :ptype table: str
-        :return: the writer's answer (:class:`FullRecreate`)
+        :return: the writer's answer (:class:`_FullRecreate`)
         :rtype: str
         """
         answer = await asks.full(table)

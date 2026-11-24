@@ -834,7 +834,7 @@ async def test_only_the_replica_serving_under_the_lease_answers_and_with_none_th
 
 
 class _Fulls:
-    """the writer's fold as the recreator asks it for a table's full (``MissingFulls``): the full it lacks is
+    """the writer's fold as the recreator asks it for a table's full (``_MissingFulls``): the full it lacks is
     published from L3's rows at the ask, standing in for the fold's rebuild (the cold start
     ``test_delta_fold.test_a_copys_ask_for_a_full_has_a_started_fold_rebuild_it_with_no_commit_told`` proves); each
     ask recorded."""
