@@ -759,7 +759,7 @@ class ScopeEpochs:
             :data:`WHOLE`
         """
         named = _named(scopes)
-        CallerTransaction.join(conn, writer="ScopeEpochs.touch")
+        transaction = CallerTransaction.join(conn, writer="ScopeEpochs.touch")
         await self._bound_idle(conn)
         # the row's share lock, held to the end of the data transaction: it conflicts with begin's
         # FOR UPDATE NOWAIT and commit's UPDATE, not with this write's other data transactions
@@ -775,6 +775,8 @@ class ScopeEpochs:
             raise ValueError(
                 f"write {version} is no longer in progress (a later write began); its data write is refused"
             )
+        # the transaction's delta files are named by this version (decision 53): a full then covers them exactly
+        transaction.note_write_version(version)
         await self._mark_pending(version, named, conn=conn)
 
     async def _mark_pending(self, version: int, scopes: list[str], *, conn: Any) -> None:

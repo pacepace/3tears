@@ -70,6 +70,7 @@ from threetears.core.collections.delta_files import (
     DeltaFileRefusedError,
     TableDelta,
     delta_files_root,
+    versioned_write_id,
 )
 from threetears.core.collections.delta_save import save_in_worker
 from threetears.core.collections.epoch_change import ChangedRow, recordable_scopes
@@ -350,6 +351,7 @@ class CallerTransaction:
         "_scopes",
         "_token",
         "_transaction",
+        "_write_version",
         "conn",
     )
 
@@ -385,6 +387,9 @@ class CallerTransaction:
         # the scopes (states) the writer's seqlock touched in this transaction (ScopeEpochs.touch), each once: its
         # commit names them beside its delta files (decision 31)
         self._scopes: frozenset[str] = frozenset()
+        # the write's version its data writes took their turn at (ScopeEpochs.touch): its delta files are named by it
+        # (decision 53); None for a transaction no fenced write joined, whose files keep the older, unversioned name
+        self._write_version: int | None = None
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -625,6 +630,26 @@ class CallerTransaction:
         """
         self._scopes = self._scopes | frozenset(scopes)
 
+    def note_write_version(self, version: int) -> None:
+        """record the write version this transaction's data writes took their turn at
+        (:meth:`~threetears.core.collections.scope_epochs.ScopeEpochs.touch`): its delta files are named by it
+        (:func:`~threetears.core.collections.delta_files.versioned_write_id`, decision 53), so a full's manifest covers
+        them exactly. One version a transaction: a second, different one is refused (a transaction fenced at two writes
+        would name its files by neither).
+
+        :param version: the write's version
+        :ptype version: int
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the transaction already noted another version
+        """
+        if self._write_version is not None and self._write_version != version:
+            raise ValueError(
+                f"a transaction's data writes took their turn at write {self._write_version}, not {version}: its delta "
+                f"files are named by one write's version"
+            )
+        self._write_version = version
+
     def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
         """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those
         prefixes when it ends: the table's caches dropped and its generation advanced once, its epoch naming the
@@ -838,7 +863,7 @@ class CallerTransaction:
         else:
             # a key a row of a commit of 33,786 rows: counted off the loop, as settling groups them
             owed = await asyncio.to_thread(_owed_deltas, enrolled, reaches, deltas)
-        return await save_delta_files(owed)
+        return await save_delta_files(owed, version=self._write_version)
 
     async def _settle_collecting(
         self, *, committed: bool
@@ -981,7 +1006,7 @@ def _owed_deltas(
     return {table: deltas[table] for table in (*counts, *reached)}
 
 
-async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
+async def save_delta_files(deltas: Mapping[str, TableDelta], *, version: int | None) -> dict[str, str]:
     """save each table's delta file before the commit that wrote it, one write id for them all, in a worker process
     (:func:`~threetears.core.collections.delta_save.save_in_worker`).
 
@@ -990,6 +1015,10 @@ async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
 
     :param deltas: table -> what the write wrote to it
     :ptype deltas: Mapping[str, TableDelta]
+    :param version: the write's version (``ScopeEpochs.begin``), which names the files (decision 53: a full covers
+        every file below a version, exactly); None names them in the older, unversioned form, which a recovery always
+        reads (decision 53's expand step). Required, no default: a writer under a lease says its version at the call
+    :ptype version: int | None
     :return: table -> its file's name under the delta files' directory, as the commit's epoch record names it
     :rtype: dict[str, str]
     :raises DeltaFileRefusedError: when no delta files directory is configured
@@ -1003,7 +1032,7 @@ async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
             f"{sorted(deltas)}: the table opts in to delta files and no delta files directory is configured "
             f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
         )
-    write_id = uuid.uuid7().hex
+    write_id = uuid.uuid7().hex if version is None else versioned_write_id(version, uuid.uuid7().hex)
     # in flight from here until the commit settles (:data:`~threetears.core.collections.delta_files.OWN_DELTA_SAVES`): what the orphan sweep goes by
     names = OWN_DELTA_SAVES.saving(list(deltas), write_id)
     try:

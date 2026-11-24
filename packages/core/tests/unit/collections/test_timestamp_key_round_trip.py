@@ -223,6 +223,7 @@ def test_a_recovery_of_a_timestamp_keyed_table_reaches_and_recovers_its_leftover
         (),
         (),
         False,
+        7,
     )
     assert (rows, markers) == (2, 1), "L3's two rows and one delete marker: the key L3 no longer holds"
     recovered = read_delta_file_keys(tmp_path / file, table="result_snapshots_by_id")

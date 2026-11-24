@@ -14,6 +14,7 @@ The contract this pins (:mod:`threetears.core.collections.volume_fulls`, ``desig
 from __future__ import annotations
 
 import asyncio
+import json
 import dataclasses
 import os
 import shutil
@@ -150,6 +151,32 @@ async def test_a_manifest_being_written_is_never_read_and_one_renamed_into_place
     manifests = tmp_path / ".fulls" / "manifests"
     (manifests / ".full-00000000000000000009-00000000000000000001.json.dead.partial").write_bytes(b"{")
     assert current_full_manifest(tmp_path).seq == 2  # type: ignore[union-attr]
+
+
+def test_a_full_s_coverage_round_trips_and_a_manifest_of_an_older_writer_claims_nothing(tmp_path: Path) -> None:
+    """Flips if a full's coverage (decision 53: every delta file below a version folded, but those listed open) is lost
+    on its way through the manifest, claims a file at or above its version, one listed open, or one of the older,
+    unversioned name; or if a manifest an older writer published (no coverage) stops being read, or claims any file."""
+    covered = FullTable(version="inc:3").covered_as(
+        folded_below=9, open_files=["votes/v4-a.arrow", "votes/v9-b.arrow", "votes/old.arrow"]
+    )
+    assert covered.open == ("votes/v4-a.arrow",), "only versioned files below the claim are listed open"
+    published = publish_full_manifest(tmp_path, term=2, tables={_TABLE: covered})
+    read = current_full_manifest(tmp_path)
+    assert read is not None and read.tables[_TABLE] == published.tables[_TABLE] == covered
+    entry = read.tables[_TABLE]
+    assert entry.covers("votes/v8-x.arrow") and entry.covers("votes/v0-recovery-y.arrow")
+    assert not entry.covers("votes/v9-x.arrow"), "the claim's own version is never covered"
+    assert not entry.covers("votes/v4-a.arrow"), "a file listed open is not folded"
+    assert not entry.covers("votes/0190a1b2.arrow"), "an unversioned name is read as before"
+    older = json.loads((tmp_path / ".fulls" / "manifests" / read.name).read_bytes())
+    for body in older["tables"].values():
+        body.pop("folded_below")
+        body.pop("open")
+    (tmp_path / ".fulls" / "manifests" / read.name).write_bytes(json.dumps(older).encode())
+    again = current_full_manifest(tmp_path)
+    assert again is not None and again.tables[_TABLE].folded_below is None
+    assert not again.tables[_TABLE].covers("votes/v1-x.arrow"), "an older writer's manifest claims nothing"
 
 
 async def test_the_highest_term_wins_over_an_older_terms_newer_sequence(tmp_path: Path) -> None:

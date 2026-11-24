@@ -31,6 +31,7 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaRetention,
     TableDelta,
     read_volume_file,
+    versioned_write_id,
     write_delta_file,
 )
 from threetears.core.testing.delta_files import apply_delta_row, read_delta_file
@@ -197,7 +198,8 @@ class _Writer:
             list(written) if written is not None else [c.name for c in self.schema.columns if c.name not in key],
         )
         delta.deletes(list(deletes), scope=delete_scope)
-        file = write_delta_file(self.root, delta, f"w{self.count:04d}")
+        # named by the write's version, as a write under the lease names it (decision 53)
+        file = write_delta_file(self.root, delta, versioned_write_id(self.version, f"w{self.count:04d}"))
         self.files.append(file)
         return file
 
@@ -205,7 +207,7 @@ class _Writer:
         """the commit landed: the fold hears its file and the generation it wrote."""
         token = f"inc:{self.files.index(file) + 1}"
         self.folds.committed(
-            {self.schema.name: file}, {self.schema.name: token}, version=self.version, in_flight_since=None
+            {self.schema.name: file}, {self.schema.name: token}, version=self.version, in_flight_from=None
         )
 
     async def commit(self, rows: Sequence[Mapping[str, Any]] = (), **kwargs: Any) -> str:
@@ -579,7 +581,7 @@ async def test_a_fold_that_keeps_deletes_no_delta_file_and_still_drops_the_fulls
     assert tx1 is not None
     orphan = writer.save(_votes("TX", range(5), 5))
     writer.files.remove(orphan)
-    partial = tmp_path / "votes" / ".w0003.partial"
+    partial = tmp_path / "votes" / ".v5-w0003.partial"
     partial.write_bytes(b"a save that died before its rename")
     OWN_DELTA_SAVES.settled([orphan], landed=False)
     await writer.commit(_votes("TX", range(2), 3))
@@ -1324,7 +1326,7 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
     writer.count += 1
     cleared = TableDelta(name="votes", types=rail_arrow_types(schema.columns), key=("state", "geo_id"))
     cleared.clears([{"state": "GA"}])
-    leftovers.append(write_delta_file(tmp_path, cleared, f"w{writer.count:04d}"))
+    leftovers.append(write_delta_file(tmp_path, cleared, versioned_write_id(writer.version, f"w{writer.count:04d}")))
     writer.files.append(leftovers[-1])
     leftovers.append(writer.save(_votes("GA", range(500, 503), 9)))
     for key in [key for key in l3 if key[0] == "GA"]:
@@ -1375,10 +1377,98 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
         {"votes": writer.save(_votes("TX", range(1000, 1004), 3))},
         {"votes": f"inc:{len(writer.files)}"},
         version=6,
-        in_flight_since=None,
+        in_flight_from=None,
     )
     await folds.wait()
     assert len(reader.statements) == 2, "a commit after the recovery reads nothing"
+    await folds.close()
+
+
+async def test_a_lost_log_s_recovery_reads_only_the_files_its_kept_full_does_not_cover_never_the_kept_history(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a recovery after a lost epoch log (decision 28) reads a delta file its kept full covers by name
+    (decision 53: below the full's version claim and not listed open), so a writer that keeps every delta (decision 51)
+    rereads its whole history at every loss and a damaged old file fails the recovery every time. Many versioned
+    files are kept below the claim, the oldest damaged; the recovery reads exactly the files at or above the claim and
+    the ones listed open (the keys bound are theirs alone), skips the rest unopened, and succeeds."""
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers, retention="keep")
+    l3: dict[tuple[str, int], dict[str, Any]] = {}
+    # a part many times a delta's size, so the later small deltas stay pending, unfolded: listed open
+    writer.version = 2
+    big: list[dict[str, Any]] = [
+        {"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"n{g * 31 % 997}"} for g in range(5000)
+    ]
+    await writer.commit(big)
+    l3.update({(row["state"], row["geo_id"]): row for row in big})
+    kept: list[str] = []
+    for index in range(12):
+        writer.version = 3 + index  # one write each, as each load of the night is
+        # two small TX deltas first, too small to fold beside TX's part, then GA's, which fold at their own pace
+        rows = (
+            _votes("TX", range(9000 + index, 9001 + index), 1)
+            if index < 2
+            else _votes("GA", range(index * 40, index * 40 + 40), index)
+        )
+        kept.append(await writer.commit(rows))
+        l3.update({(row["state"], row["geo_id"]): row for row in rows})
+    current = current_full_manifest(tmp_path)
+    assert current is not None
+    entry = current.tables["votes"]
+    assert entry.folded_below is not None and entry.folded_below >= 7, "the claim: below the write told at its publish"
+    assert all(delta_files.delta_file_version(file) is not None for file in writer.files), "named by their versions"
+    covered = [file for file in writer.files if entry.covers(file)]
+    unread = [file for file in writer.files if not entry.covers(file)]
+    assert len(covered) >= 5 and kept[-1] in unread, "the newest write's file is never claimed, nor any open one"
+    assert set(entry.open) <= set(unread) and entry.open, "the small TX deltas pending a fold are listed open"
+    # the writer dies with a load of write 15 saved, never told; the oldest covered file is damaged on the volume
+    writer.version = 15
+    died = writer.save(_votes("NC", range(3), 5))
+    l3.update({(row["state"], row["geo_id"]): row for row in _votes("NC", range(3), 5)})
+    # a file a full names as its part (decision 16) is the full's own, read by any fold: the damaged one is history only
+    history = [file for file in covered if file not in current.files()]
+    assert len(history) >= 5
+    damaged = tmp_path / history[0]
+    raw = bytearray(damaged.read_bytes())
+    raw[len(raw) // 2] ^= 0x5A
+    damaged.write_bytes(bytes(raw))
+    await writer.folds.close()
+
+    _no_whole_read(monkeypatch)
+    before, failed = (
+        _recoveries("log_lost"),
+        REGISTRY.get_sample_value(
+            "delta_fold_recoveries_total", {"table": "votes", "why": "log_lost", "outcome": "failed"}
+        )
+        or 0.0,
+    )
+    reader = _KeyedL3(list(l3.values()))
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="keep", workers=workers)
+    assert await folds.start(
+        reader, _Generations({"votes": f"inc:{len(writer.files)}"}), changes=_Log(), version=16
+    ) == ("votes",), "recovered despite the damaged old file"
+    assert _recoveries("log_lost") == before + 1
+    assert (
+        REGISTRY.get_sample_value(
+            "delta_fold_recoveries_total", {"table": "votes", "why": "log_lost", "outcome": "failed"}
+        )
+        or 0.0
+    ) == failed
+    expected = {
+        (change.row["state"], str(change.row["geo_id"]))
+        for file in [*unread, died]
+        for change in read_delta_file(tmp_path / file).changes
+    }
+    (by_key,) = reader.statements
+    assert sorted(_bound_keys(by_key)) == sorted(expected), (
+        "exactly the keys of the files the kept full does not cover, and of the one never told"
+    )
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
+    assert all((tmp_path / file).exists() for file in writer.files), "kept: no delta file deleted"
+    recovered = current_full_manifest(tmp_path)
+    assert recovered is not None and recovered.tables["votes"].folded_below == 16
+    assert recovered.tables["votes"].covers(died), "the recovery's full covers the file it read"
     await folds.close()
 
 
@@ -1423,7 +1513,7 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     reader.db.execute("UPDATE votes SET votes = 77 WHERE geo_id = 4")
     generations.tokens["votes"] = "again:1"
     later = writer.save([{"state": "TX", "geo_id": 4, "votes": 77}], written=["votes"])
-    folds.committed({"votes": later}, {"votes": "again:1"}, version=6, in_flight_since=None)
+    folds.committed({"votes": later}, {"votes": "again:1"}, version=6, in_flight_from=None)
     await folds.wait()
     assert _recoveries("new_incarnation") == before + 2
     assert _bound_keys(reader.statements[-1]) == [("TX", "4")], "the new incarnation's delta read back by its one key"
@@ -1433,7 +1523,7 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     # a later commit of that incarnation folds onto the recovered parts with no read
     reads = len(reader.statements)
     folds.committed(
-        {"votes": writer.save(_votes("NC", range(3, 400), 9))}, {"votes": "again:2"}, version=6, in_flight_since=None
+        {"votes": writer.save(_votes("NC", range(3, 400), 9))}, {"votes": "again:2"}, version=6, in_flight_from=None
     )
     await folds.wait()
     assert len(reader.statements) == reads
@@ -1880,7 +1970,7 @@ async def test_close_within_a_bound_cuts_a_long_round_and_keeps_its_files_for_th
     assert _part(tmp_path, "votes", "state:TX") is None, "the cut round published nothing"
     # the next writer folds it (the mark is there: its keep rule runs at once)
     after = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
-    after.committed({"votes": file}, {"votes": "inc:1"}, version=6, in_flight_since=None)
+    after.committed({"votes": file}, {"votes": "inc:1"}, version=6, in_flight_from=None)
     await after.wait()
     part = _part(tmp_path, "votes", "state:TX")
     assert part is not None and part.rows == 3
@@ -2097,7 +2187,7 @@ async def test_a_commit_told_while_a_restarted_writer_relearns_is_folded_once_in
     )
     await walking.wait()
     # the newest commit lands and is told while the walk that also names it runs
-    folds.committed({"votes": writer.files[3]}, {"votes": "inc:4"}, version=6, in_flight_since=None)
+    folds.committed({"votes": writer.files[3]}, {"votes": "inc:4"}, version=6, in_flight_from=None)
     await asyncio.sleep(0)
     release.set()
     await started

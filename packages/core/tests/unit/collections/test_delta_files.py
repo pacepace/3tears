@@ -4,6 +4,7 @@ is refused; an orphan of a commit that never happened is swept; a file being wri
 from __future__ import annotations
 
 import os
+import re
 import time
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator
@@ -222,7 +223,7 @@ async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
     assert rows.nbytes > 8 << 20, "past the inline bound (8 MiB)"
     load = collection.table_delta()
     load.load([rows], [count], {})
-    files = await save_delta_files({"results": load})
+    files = await save_delta_files({"results": load}, version=None)
     held = read_volume_file(root / files["results"])
     assert held.num_rows == count and held.column("geo_id")[count - 1].as_py() == f"{count - 1:060d}"
     assert _saves("worker") == before + 2
@@ -243,9 +244,50 @@ async def test_a_load_whose_constant_is_a_timestamp_is_saved_in_the_worker_with_
         key=("office_key", "geo_id"),
     )
     load.load([rows], [2], {"loaded_at": at})
-    files = await save_delta_files({"results": load})
+    files = await save_delta_files({"results": load}, version=None)
     held = read_volume_file(root / files["results"])
     assert held.column("loaded_at").to_pylist() == [at, at]
+
+
+async def test_a_transaction_fenced_at_a_write_names_its_files_by_that_write_s_version(root: Path) -> None:
+    """Flips if a transaction whose data writes took their turn at a write's version (``ScopeEpochs.touch`` notes it,
+    decision 53) saves its files under any other name than ``v<version>-<unique>``, or if a transaction fenced at two
+    writes' versions is let save files named by either."""
+    results, conn = _collection(), _Conn(root)
+    async with CallerTransaction(conn) as transaction:
+        transaction.note_write_version(12)
+        transaction.note_write_version(12)
+        await results.save_rows(_rows(2), conn=conn)
+    (file,) = transaction.delta_files.values()
+    assert delta_files.delta_file_version(file) == 12 and file.startswith("results/v12-"), file
+    with pytest.raises(ValueError, match="one write's version"):
+        async with CallerTransaction(_Conn(root)) as other:
+            other.note_write_version(12)
+            other.note_write_version(13)
+
+
+async def test_a_save_under_a_write_s_version_is_named_by_it_and_an_older_name_carries_none(root: Path) -> None:
+    """Flips if a save given its write's version (``ScopeEpochs.begin``'s, decision 53) is not named ``v<version>-...``,
+    or the name does not read back as that version; or if a file of the older, unversioned name (a bare id, a
+    recovery's) reads as having one, which would let a full claim to cover it."""
+    rows = pa.table({"office_key": pa.array(["sn_NC1"]), "geo_id": pa.array(["00000"])})
+    load = TableDelta(
+        name="results", types={"office_key": pa.string(), "geo_id": pa.string()}, key=("office_key", "geo_id")
+    )
+    load.load([rows], [1], {})
+    files = await save_delta_files({"results": load}, version=7)
+    assert re.fullmatch(r"results/v7-[0-9a-f]{32}\.arrow", files["results"]), files
+    assert delta_files.delta_file_version(files["results"]) == 7
+    assert read_volume_file(root / files["results"]).num_rows == 1, "read back by the name its record holds"
+    for older in (
+        "results/0190a1b2c3d4e5f60718293a4b5c6d7e.arrow",
+        "results/recovery-0190a1b2.arrow",
+        "results/w0001.arrow",
+    ):
+        assert delta_files.delta_file_version(older) is None
+    assert delta_files.versioned_write_id(12, "recovery-ab") == "v12-recovery-ab"
+    with pytest.raises(ValueError):
+        delta_files.versioned_write_id(-1, "ab")
 
 
 async def test_without_a_hand_off_directory_a_large_part_is_saved_on_a_thread_counted(
@@ -262,7 +304,7 @@ async def test_without_a_hand_off_directory_a_large_part_is_saved_on_a_thread_co
     load.load([rows], [count], {})
     before = _saves("thread")
     timed, spent = _save_seconds("thread")
-    files = await save_delta_files({"results": load})
+    files = await save_delta_files({"results": load}, version=None)
     assert read_volume_file(root / files["results"]).num_rows == count
     assert _saves("thread") == before + 1
     assert _save_seconds("thread")[0] == timed + 1 and _save_seconds("thread")[1] > spent, "its seconds observed too"

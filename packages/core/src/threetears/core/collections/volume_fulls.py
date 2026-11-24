@@ -56,7 +56,7 @@ import re
 import time
 import uuid
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
@@ -64,7 +64,12 @@ from threetears.observe import get_logger
 from threetears.observe.metrics import counter, histogram
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
-from threetears.core.collections.delta_files import DeltaFileUnreadableError, read_volume_file, write_volume_file
+from threetears.core.collections.delta_files import (
+    DeltaFileUnreadableError,
+    delta_file_version,
+    read_volume_file,
+    write_volume_file,
+)
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.schema_backed import rail_arrow_types
 
@@ -492,10 +497,33 @@ class FullTable:
 
     :ivar version: the generation token the table as a whole is current to: a state with no part holds no rows at it
     :ivar parts: its parts, one a state
+    :ivar folded_below: the write version below which every delta file of the table whose commit landed is folded into
+        this full, but those :attr:`open` names (``design-pod-delta-files.md`` decision 53): a file's name carries its
+        write's version (:func:`~threetears.core.collections.delta_files.delta_file_version`). None for a manifest an
+        older writer published, which claims nothing: every file is then read as before
+    :ivar open: the delta files below :attr:`folded_below` not folded into this full (told and not yet due, or waiting
+        for the writer to confirm them), sorted
     """
 
     version: str
     parts: tuple[FullPart, ...] = ()
+    folded_below: int | None = None
+    open: tuple[str, ...] = ()
+
+    def covers(self, file: str) -> bool:
+        """whether this full holds the change of ``file``, a delta file of the table, exactly by its name: its write's
+        version below :attr:`folded_below` and not :attr:`open`. A file of the older, unversioned name, or any file
+        under a full that claims nothing, is never covered (it is read as before).
+
+        :param file: the file, under the root
+        :ptype file: str
+        :return: whether it is covered
+        :rtype: bool
+        """
+        if self.folded_below is None:
+            return False
+        version = delta_file_version(file)
+        return version is not None and version < self.folded_below and file not in self.open
 
     def encode(self) -> dict[str, Any]:
         """the table as the manifest's JSON holds it.
@@ -503,18 +531,54 @@ class FullTable:
         :return: the body
         :rtype: dict[str, Any]
         """
-        return {"version": self.version, "parts": [part.encode() for part in self.parts]}
+        body: dict[str, Any] = {"version": self.version, "parts": [part.encode() for part in self.parts]}
+        if self.folded_below is not None:
+            # left out when unknown: a manifest an older reader takes holds only the fields it knows
+            body["folded_below"] = self.folded_below
+            body["open"] = list(self.open)
+        return body
 
     @classmethod
     def decode(cls, body: Mapping[str, Any]) -> FullTable:
-        """a table from the manifest's JSON.
+        """a table from the manifest's JSON; a manifest an older writer published names no coverage (decision 53's
+        expand step: read, and claiming nothing).
 
         :param body: the body :meth:`encode` wrote
         :ptype body: Mapping[str, Any]
         :return: the table
         :rtype: FullTable
         """
-        return cls(version=str(body["version"]), parts=tuple(FullPart.decode(part) for part in body["parts"]))
+        below = body.get("folded_below")
+        return cls(
+            version=str(body["version"]),
+            parts=tuple(FullPart.decode(part) for part in body["parts"]),
+            folded_below=None if below is None else int(below),
+            open=tuple(sorted(_relative_file(str(file)) for file in body.get("open", ()))),
+        )
+
+    def covered_as(self, *, folded_below: int | None, open_files: Iterable[str]) -> FullTable:
+        """this table with the coverage a publish claims (decision 53): every file below ``folded_below`` but
+        ``open_files`` folded. A file of the older name, or at or above ``folded_below``, is never listed open.
+
+        :param folded_below: the version; None claims nothing
+        :ptype folded_below: int | None
+        :param open_files: the table's delta files not folded into the full
+        :ptype open_files: Iterable[str]
+        :return: the table
+        :rtype: FullTable
+        """
+        if folded_below is None:
+            return replace(self, folded_below=None, open=())
+        listed = tuple(
+            sorted(
+                {
+                    file
+                    for file in open_files
+                    if (version := delta_file_version(file)) is not None and version < folded_below
+                }
+            )
+        )
+        return replace(self, folded_below=folded_below, open=listed)
 
 
 @dataclass(frozen=True, slots=True)
