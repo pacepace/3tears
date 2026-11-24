@@ -61,3 +61,8 @@ branches kept):
 
 **2026-11-24.** The extract fix's Critic verify pass may run with `--force`: the worktree had no
 session marker, and the suite had run on that exact tree.
+
+**2026-11-24.** On Discodon moving its 3tears pins to tag `discodon-search-extract.1` (1830f1c06: evals/main
+cf1fb6585 plus the search extract fix, #1306) now, before a release carries #1306, the owner said: "Yes agreed". That
+moves search, interfaces, observe and models from PyPI 0.77.0 to that one git commit and replaces `media-contracts`
+with `interfaces`. In the same answer the owner agreed to push the 2026-11-24 rulings onto #1305's branch.
