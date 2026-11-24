@@ -343,7 +343,8 @@ class _Driver:
 
     def __init__(self, plan: Generator[_Step, ModelResponse | None, ExtendedModelResponse]) -> None:
         self._plan = plan
-        self._spent: list[ModelResponse] = []
+        # one response per model call of the step (a few, bounded by its retries): a tuple replaced whole
+        self._spent: tuple[ModelResponse, ...] = ()
         self.result: ExtendedModelResponse | None = None
         self._step: _Step | None = None
         self._advance(lambda: next(plan))
@@ -380,7 +381,7 @@ class _Driver:
         :return: nothing
         :rtype: None
         """
-        self._spent.append(response)
+        self._spent = (*self._spent, response)
         self._advance(lambda: self._plan.send(response))
 
     def survives(self, exc: Exception) -> bool:

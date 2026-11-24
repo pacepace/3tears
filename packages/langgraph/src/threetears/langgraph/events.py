@@ -362,7 +362,8 @@ class FrameworkEventRegistry:
         # at provider-registration time (so the import-time
         # populate-on-load behavior is unchanged) AND retained for
         # :meth:`reset_to_framework_defaults` to rerun.
-        self._framework_defaults: list[Callable[["FrameworkEventRegistry"], None]] = []
+        # small and bounded (a provider per framework): a tuple replaced whole, never changed in place (decision 45)
+        self._framework_defaults: tuple[Callable[["FrameworkEventRegistry"], None], ...] = ()
 
     def register(self, event_cls: type[FrameworkEvent]) -> None:
         """register one typed event class by its ``type`` discriminator.
@@ -470,7 +471,7 @@ class FrameworkEventRegistry:
         :return: nothing
         :rtype: None
         """
-        self._framework_defaults.append(provider)
+        self._framework_defaults = (*self._framework_defaults, provider)
         provider(self)
 
     def clear(self) -> None:
