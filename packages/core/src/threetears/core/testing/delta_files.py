@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from collections.abc import Mapping
 
 from threetears.core.collections.delta_files import DeltaChange, read_delta_table
 
-__all__ = ["read_delta_file"]
+__all__ = ["apply_delta_row", "read_delta_file"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,3 +61,30 @@ def read_delta_file(path: Path, *, table: str | None = None) -> _DeltaFile:
         )
     ]
     return _DeltaFile(table=read.table, write=read.write, key=read.key, changes=changes, prefixes=read.prefixes)
+
+
+def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
+    """the row L3 holds after a delta file's change, from the row it held before: merged as its upsert merged it.
+
+    A delete leaves no row. A row L3 did not hold is the row as the write inserted it, every column as the file shows
+    it (a column it left out is its fixed database default, or null). A row L3 held keeps every column the write did not set, its key and its ``date_created``
+    (immutable, never set by an upsert) among them, and takes the file's value of each column the write set
+    (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`); a write that set none (a table that ignores
+    conflicts) leaves it as it was. Pure: the rule the copy and the fold apply a file by, in Arrow
+    (:class:`~threetears.core.collections.delta_files.HeldDeltaRows`), here a row at a time as the tests' reference.
+
+    :param held: the row held before the change, keyed by column; None when there was none
+    :ptype held: Mapping[str, Any] | None
+    :param change: the file's change (a delta file's change, :class:`~threetears.core.collections.delta_files.DeltaChange`)
+    :ptype change: DeltaChange
+    :return: the row held after it, keyed by column; None when the change deleted it
+    :rtype: dict[str, Any] | None
+    """
+    if change.deleted:
+        return None
+    if held is None:
+        return dict(change.row)
+    merged = dict(held)
+    for name in change.written:
+        merged[name] = change.row[name]
+    return merged

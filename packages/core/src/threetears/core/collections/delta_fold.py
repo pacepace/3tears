@@ -13,7 +13,7 @@ rows. Once a state's bytes since its last fold reach half its part's size on the
 no part yet folds at its first delta.
 
 **How a state folds** (decisions 9 and 19). The old part's rows, then each delta's rows of the state in commit order,
-merged as L3 merged them (:func:`~threetears.core.collections.delta_files.apply_delta_row`: a column the write left out
+merged as L3 merged them (:func:`~threetears.core.testing.delta_files.apply_delta_row`: a column the write left out
 keeps its value, ``date_created`` keeps the held row's, a delete marker deletes), the newest per key. A delta that
 clears key prefixes (a load that replaced them, a key-prefix delete; decision 23) first takes every row of the state
 under each out, then its own rows apply: a state a prefix names by its scope column shares the file, and every state
@@ -128,13 +128,15 @@ from threetears.core.collections.delta_files import (
     _WRITTEN_METADATA,
     _key_texts,
     _text_column,
+    _under_texts,
     read_volume_file,
-    DeltaChange,
-    apply_delta_row,
+    DeltaTable,
     OWN_DELTA_SAVES,
     build_file_table,
+    fold_delta_tables,
+    joined_key_texts,
+    key_text_table,
     sweep_orphan_delta_files,
-    under_prefix,
     write_table_file,
 )
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
@@ -2246,14 +2248,7 @@ def _under_prefixes(texts: Mapping[str, Any], count: int, prefixes: Sequence[Map
     :return: one flag a row
     :rtype: pyarrow.Array
     """
-    under = np.zeros(count, dtype=bool)
-    for prefix in prefixes:
-        within = np.ones(count, dtype=bool)
-        for column, value in prefix.items():
-            equal = pc.equal(texts[column], pa.scalar(value, pa.string()))
-            within &= np.asarray(pc.fill_null(equal, False).to_numpy(zero_copy_only=False), dtype=bool)
-        under |= within
-    return pa.array(under)
+    return pa.array(_under_texts(texts, count, prefixes))
 
 
 def _first_each(rows: Any, scope: str | None) -> Any:
@@ -2942,7 +2937,10 @@ def _shares(
     if table.scope_column is None:
         return [(table.name, None, file, token, max(1, size))]
     rows = _read_ipc(root / file)
-    counts = Counter(table.scope_of(value) for value in rows.column(table.scope_column).to_pylist())
+    # each distinct value's rows (a delta's few states), counted in Arrow
+    counts: Counter[str] = Counter()
+    for counted in pc.value_counts(rows.column(table.scope_column)).to_pylist():
+        counts[table.scope_of(counted["values"])] += counted["counts"]
     total = max(1, rows.num_rows)
     shared = {scope: max(1, size * count // total) for scope, count in counts.items()}
     held = dict(sizes or {})
@@ -2966,13 +2964,6 @@ def _cleared_prefixes(delta: Any) -> list[dict[str, str]]:
     return [dict(prefix) for prefix in json.loads(named)] if named else []
 
 
-@dataclass(frozen=True, slots=True)
-class _Cleared:
-    """a step of a fold: every row under the prefixes leaves, before the delta's own changes apply."""
-
-    prefixes: tuple[dict[str, str], ...]
-
-
 def _held_rows(path: Path, columns: Sequence[str]) -> Any:
     """a part's rows: its table's columns, a delta file named as the part read without its delete markers.
 
@@ -2985,7 +2976,7 @@ def _held_rows(path: Path, columns: Sequence[str]) -> Any:
     """
     rows = _read_ipc(path)
     if _DELETED_COLUMN in rows.column_names:
-        rows = rows.filter(pa.array([not deleted for deleted in rows.column(_DELETED_COLUMN).to_pylist()], pa.bool_()))
+        rows = rows.filter(pc.invert(pc.fill_null(rows.column(_DELETED_COLUMN), False)))
     return rows.select(list(columns)).replace_schema_metadata(None)
 
 
@@ -3019,119 +3010,93 @@ def _fold_state(
     :raises ValueError: when a delta's generation is of another incarnation than the part's (a reset: the rebuild's)
     """
     schema: Any = None
-    changes: list[DeltaChange | _Cleared] = []
-    last_rows: list[dict[str, Any]] = []
+    deltas: list[DeltaTable] = []
+    last: Any = None
     last_only_state = False
     for index, (_, _, file, _, _) in enumerate(shares):
         delta = _read_ipc(root / file)
         if schema is None:
             schema = pa.schema([delta.schema.field(name).with_nullable(True) for name in table.columns])
-        sets = [frozenset(named) for named in json.loads(delta.schema.metadata[_WRITTEN_METADATA])]
-        mine = delta
-        if scope is not None:
-            assert table.scope_column is not None  # noqa: S101 -- a scoped share is a scoped table's
-            mask = [table.scope_of(value) == scope for value in delta.column(table.scope_column).to_pylist()]
-            mine = delta.filter(pa.array(mask, pa.bool_()))
-        is_last = index == len(shares) - 1
-        if is_last:
+        mine = delta if scope is None else _of_state(table, scope, delta)
+        if index == len(shares) - 1:
             last_only_state = mine.num_rows == delta.num_rows
-            last_rows = []
-        cleared = _cleared_prefixes(delta)
-        if cleared:
-            changes.append(_Cleared(tuple(cleared)))
-        for row in mine.to_pylist():
-            deleted, written = row.pop(_DELETED_COLUMN), row.pop(_WRITTEN_COLUMN)
-            change = DeltaChange(
-                row={name: row[name] for name in table.columns}, deleted=deleted, written=sets[written]
+            last = mine.filter(pc.invert(pc.fill_null(mine.column(_DELETED_COLUMN), False)))
+        deltas.append(
+            DeltaTable(
+                table=table.name,
+                write=file,
+                key=table.key,
+                rows=mine.select(list(table.columns)),
+                deleted=mine.column(_DELETED_COLUMN),
+                written=mine.column(_WRITTEN_COLUMN),
+                sets=tuple(frozenset(named) for named in json.loads(delta.schema.metadata[_WRITTEN_METADATA])),
+                prefixes=tuple(_cleared_prefixes(delta)),
             )
-            changes.append(change)
-            if is_last and not deleted:
-                last_rows.append(change.row)
+        )
     held = schema.empty_table() if part is None else _held_rows(root / part.file, table.columns).cast(schema)
     version = shares[-1][3]
     if part is not None and not across:
         # refused across a reset: the part and the delta must be of one incarnation
         _newest(table.name, [part.version, version])
-    folded = _applied(table, schema, held, changes)
+    folded = fold_delta_tables(table.key, held, deltas, {field.name: field.type for field in schema})
     if table.keep is not None:
         folded = table.keep.keep(folded)
-    if last_only_state and _same_rows(table, folded, last_rows):
+    if last_only_state and last is not None and _same_rows(table, schema, folded, last):
         last_file = shares[-1][2]
         # the delta named as the part is fingerprinted as a written part is (decision 32): by its rows, here
         fingerprint = rows_fingerprint(folded.select(list(table.columns)))
         return FullPart(
-            scope=scope, file=last_file, version=version, rows=len(last_rows), fingerprint=fingerprint
+            scope=scope, file=last_file, version=version, rows=last.num_rows, fingerprint=fingerprint
         ), "reused"
     return write_full_part(root, table.name, scope, folded.select(list(table.columns)), version), "written"
 
 
-def _applied(table: _Folding, schema: Any, held: Any, changes: Sequence[DeltaChange | _Cleared]) -> Any:
-    """the held rows with every change applied in order, merged as L3 merged it (:func:`apply_delta_row`), and every
-    row under a cleared prefix taken out where the clear falls among them.
+def _of_state(table: _Folding, scope: str, rows: Any) -> Any:
+    """the rows of one state: those whose scope column's value names it (:meth:`_Folding.scope_of`), judged once a
+    distinct value (a delta's few states), the rows filtered in Arrow.
 
-    Rows no change names and no cleared prefix holds stay as Arrow; only the rest are merged a row at a time.
+    :param table: the table, which has a scope column
+    :ptype table: _Folding
+    :param scope: the state
+    :ptype scope: str
+    :param rows: a delta's rows
+    :ptype rows: pyarrow.Table
+    :return: the state's rows
+    :rtype: pyarrow.Table
+    """
+    assert table.scope_column is not None  # noqa: S101 -- a scoped share is a scoped table's
+    values = rows.column(table.scope_column)
+    distinct = pc.unique(values)
+    named = [value for value in distinct.to_pylist() if table.scope_of(value) == scope]
+    return rows.filter(pc.is_in(values, value_set=pa.array(named, distinct.type)))
+
+
+def _same_rows(table: _Folding, schema: Any, folded: Any, rows: Any) -> bool:
+    """whether the folded rows are exactly ``rows`` (a delta's rows written), one a key: compared in Arrow, each side in
+    its keys' order.
 
     :param table: the table
     :ptype table: _Folding
     :param schema: the part's schema
     :ptype schema: pyarrow.Schema
-    :param held: the old part's rows
-    :ptype held: pyarrow.Table
-    :param changes: the deltas' changes of the state, and their clears, in order
-    :ptype changes: Sequence[DeltaChange | _Cleared]
-    :return: the folded rows
-    :rtype: pyarrow.Table
-    """
-
-    def key_of(row: Mapping[str, Any]) -> tuple[Any, ...]:
-        return tuple(row[name] for name in table.key)
-
-    def under(key: tuple[Any, ...], prefixes: Sequence[Mapping[str, str]]) -> bool:
-        return under_prefix(dict(zip(table.key, key, strict=True)), prefixes)
-
-    touched = {key_of(change.row) for change in changes if isinstance(change, DeltaChange)}
-    every_cleared = [prefix for change in changes if isinstance(change, _Cleared) for prefix in change.prefixes]
-    held_keys = list(zip(*(held.column(name).to_pylist() for name in table.key), strict=True))
-    hit = [key in touched or (bool(every_cleared) and under(key, every_cleared)) for key in held_keys]
-    merged: dict[tuple[Any, ...], dict[str, Any]] = {
-        key_of(row): row for row in held.filter(pa.array(hit, pa.bool_())).to_pylist()
-    }
-    for change in changes:
-        if isinstance(change, _Cleared):
-            merged = {key: row for key, row in merged.items() if not under(key, change.prefixes)}
-            continue
-        key = key_of(change.row)
-        after = apply_delta_row(merged.get(key), change)
-        if after is None:
-            merged.pop(key, None)
-        else:
-            merged[key] = after
-    untouched = held.filter(pa.array([not h for h in hit], pa.bool_()))
-    return pa.concat_tables([untouched, pa.Table.from_pylist(list(merged.values()), schema=schema)])
-
-
-def _same_rows(table: _Folding, folded: Any, rows: Sequence[Mapping[str, Any]]) -> bool:
-    """whether the folded rows are exactly ``rows`` (a delta's rows written), one a key.
-
-    :param table: the table
-    :ptype table: _Folding
     :param folded: the rows a part would hold
     :ptype folded: pyarrow.Table
     :param rows: the last delta's rows written
-    :ptype rows: Sequence[Mapping[str, Any]]
+    :ptype rows: pyarrow.Table
     :return: whether they are the same rows
     :rtype: bool
     """
-    if folded.num_rows != len(rows):
+    if folded.num_rows != rows.num_rows:
         return False
-    by_key = {tuple(row[name] for name in table.key): dict(row) for row in rows}
-    if len(by_key) != len(rows):
+    written = joined_key_texts(key_text_table(rows, table.key), table.key)
+    if pc.count_distinct(written).as_py() != rows.num_rows:
         # a key written twice in one commit: the file holds both rows, a part may hold only one
         return False
-    for row in folded.select(list(table.columns)).to_pylist():
-        if by_key.get(tuple(row[name] for name in table.key)) != row:
-            return False
-    return True
+    held = joined_key_texts(key_text_table(folded, table.key), table.key)
+    columns = list(table.columns)
+    ours = folded.select(columns).cast(schema).take(pc.sort_indices(held)).combine_chunks()
+    theirs = rows.select(columns).cast(schema).take(pc.sort_indices(written)).combine_chunks()
+    return bool(ours.equals(theirs))
 
 
 def _newest(table: str, tokens: Sequence[str]) -> str:

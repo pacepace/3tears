@@ -22,7 +22,7 @@ writer whose last data transaction commits the stamp itself races that transacti
 **From delta files, for a table that opts in** (:attr:`FollowedTable.delta_files`). Each key heard keeps the epoch
 it was heard at; the epoch's record names the commit's delta file (``EpochChange.delta_file``), read off the shared
 volume (``THREETEARS_DELTA_FILES_DIR``), and the key's row is the row the copy holds with each of its epochs' changes
-applied in order, merged as L3 merged them (:func:`~threetears.core.collections.delta_files.apply_delta_row`): no
+applied in order, merged as L3 merged them (:func:`~threetears.core.testing.delta_files.apply_delta_row`): no
 statement reaches L3, however many pods follow (``design-pod-delta-files.md``, decisions 3, 4 and 19). The scope rules
 are the same: a key left out of a change keeps its epochs and is staged again from its files. A key whose epoch names
 no file (an older writer's record) is read from L3 by key as for any table, counted by why

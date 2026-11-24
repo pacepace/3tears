@@ -27,7 +27,9 @@ its write set: :data:`_WRITTEN_COLUMN` is an index into the distinct column sets
 (:data:`_WRITTEN_METADATA`), one per kind of write. A bulk write's rows share one set and a single row's names its
 own, so a file holds a handful of sets however many rows, and an index a row that zstd packs to almost nothing: a
 bitmask or a list a row would cost bytes a row (an LSF table has 179 columns) for what a handful of sets says.
-:func:`apply_delta_row` merges a row as L3 did, so a copy or a fold that applies the file ends exactly as L3 does.
+Applied as L3 merged each row (:class:`HeldDeltaRows`, :func:`fold_delta_tables`; the rule a row at a time is
+:func:`~threetears.core.testing.delta_files.apply_delta_row`, the tests' reference), a copy or a fold ends exactly as L3
+does.
 
 **A fixed default is written in; anything the database decides is refused** (decision 20). A column with a
 ``server_default`` that a write leaves out is left out of its ``INSERT``, so a new row takes the default. When the
@@ -99,10 +101,10 @@ __all__ = [
     "LoadDelta",
     "OWN_DELTA_SAVES",
     "TableDelta",
-    "apply_delta_row",
     "build_file_table",
     "check_delta_scope",
     "delta_files_root",
+    "fold_delta_tables",
     "joined_key_texts",
     "key_text_table",
     "read_delta_file_keys",
@@ -997,32 +999,6 @@ def _first_written(texts: Any, key: Sequence[str]) -> Any:
     return texts.take(pa.array(np.sort(first)))
 
 
-def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict[str, Any] | None:
-    """the row L3 holds after a delta file's change, from the row it held before: merged as its upsert merged it.
-
-    A delete leaves no row. A row L3 did not hold is the row as the write inserted it, every column as the file shows
-    it (a column it left out is its fixed database default, or null). A row L3 held keeps every column the write did not set, its key and its ``date_created``
-    (immutable, never set by an upsert) among them, and takes the file's value of each column the write set
-    (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`); a write that set none (a table that ignores
-    conflicts) leaves it as it was. Pure: the copy and the fold apply a file through this one rule.
-
-    :param held: the row held before the change, keyed by column; None when there was none
-    :ptype held: Mapping[str, Any] | None
-    :param change: the file's change (a delta file's change, :class:`DeltaChange`)
-    :ptype change: DeltaChange
-    :return: the row held after it, keyed by column; None when the change deleted it
-    :rtype: dict[str, Any] | None
-    """
-    if change.deleted:
-        return None
-    if held is None:
-        return dict(change.row)
-    merged = dict(held)
-    for name in change.written:
-        merged[name] = change.row[name]
-    return merged
-
-
 #: the separator between a key's parts in its one text (:func:`_key_texts`): a control character no key value holds
 _KEY_SEPARATOR: Final = "\x1e"
 
@@ -1060,7 +1036,7 @@ def _key_texts(columns: Sequence[Any]) -> Any:
 
 class HeldDeltaRows:
     """some keys' rows as Arrow, each held or not, with delta files' changes applied in order exactly as
-    :func:`apply_delta_row` applies one, a column at a time over every key a file changes: never a Python row built.
+    :func:`~threetears.core.testing.delta_files.apply_delta_row` applies one, a column at a time over every key a file changes: never a Python row built.
 
     Why: a copy applied a file by turning it into Python rows (``to_pylist``, about ten times its Arrow: 291 MB for a
     200,000-row file of 15 text columns) and merging each key's row in a Python loop, every epoch's file held so through
@@ -1171,14 +1147,7 @@ class HeldDeltaRows:
         :return: one flag a key
         :rtype: numpy.ndarray
         """
-        under = np.zeros(self._count, dtype=bool)
-        for prefix in prefixes:
-            within = np.ones(self._count, dtype=bool)
-            for column, value in prefix.items():
-                equal = pc.equal(self._key_columns[column], pa.scalar(value, pa.string()))
-                within &= np.asarray(equal.to_numpy(zero_copy_only=False), dtype=bool)
-            under |= within
-        return under
+        return _under_texts(self._key_columns, self._count, prefixes)
 
     def apply(self, delta: DeltaTable, positions: Any) -> Any:
         """apply one file to the keys at ``positions`` (those that reach it at its epoch): each under a prefix it clears
@@ -1258,6 +1227,82 @@ class HeldDeltaRows:
         index = pa.array(positions)
         schema = pa.schema(list(self._types.items()))
         return pa.table([self._columns[name].take(index) for name in self._types], schema=schema), positions
+
+
+def _under_texts(columns: Mapping[str, Any], count: int, prefixes: Sequence[Mapping[str, str]]) -> Any:
+    """which of ``count`` keys, their key columns as text, lie under one of ``prefixes`` (:func:`under_prefix`).
+
+    :param columns: each key column's texts (``key_text``'s spelling)
+    :ptype columns: Mapping[str, pyarrow.Array | pyarrow.ChunkedArray]
+    :param count: the keys
+    :ptype count: int
+    :param prefixes: the prefixes, as a delta file names them
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :return: one flag a key
+    :rtype: numpy.ndarray
+    """
+    under = np.zeros(count, dtype=bool)
+    for prefix in prefixes:
+        within = np.ones(count, dtype=bool)
+        for column, value in prefix.items():
+            equal = pc.equal(columns[column], pa.scalar(value, pa.string()))
+            within &= np.asarray(pc.fill_null(equal, False).to_numpy(zero_copy_only=False), dtype=bool)
+        under |= within
+    return under
+
+
+def fold_delta_tables(key: Sequence[str], held: Any, deltas: Sequence[DeltaTable], types: Mapping[str, Any]) -> Any:
+    """a part's rows with delta files' changes applied in order, exactly as :func:`~threetears.core.testing.delta_files.apply_delta_row` applies each (a
+    prefix a file clears taking out every row under it before the file's own changes): in Arrow, a column at a time.
+    The writer's fold of a state (:mod:`~threetears.core.collections.delta_fold`). CPU: run it in a worker process.
+
+    Only the held rows a file changes or clears, and the keys the files add, are merged (:class:`HeldDeltaRows`); every
+    other held row is kept as it was read, first, in its order. Why (0.95 audit): the fold turned each changed row into
+    a Python dict (``to_pylist``) and merged them in a Python loop, in the worker, at every fold of every state.
+    Measured 2026-11-23 (macOS arm64, Python 3.14): a 337,000-row state part and four deltas (95,000 changes, a
+    cleared prefix) merged in 0.70 s, now 0.11 s; a 337,000-row, 15-column part and two 60,000-row deltas peaked at
+    254 MB of Python, now 7.1 MB (``test_delta_fold_merge``).
+
+    :param key: the table's key columns, in key order
+    :ptype key: Sequence[str]
+    :param held: the part's rows, typed as ``types``
+    :ptype held: pyarrow.Table
+    :param deltas: the files' changes of the part's state, in commit order
+    :ptype deltas: Sequence[DeltaTable]
+    :param types: each column the part holds, onto its Arrow type, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: the folded rows, typed as ``types``
+    :rtype: pyarrow.Table
+    :raises ImportError: without pyarrow
+    """
+    if not _PYARROW:
+        raise ImportError("a fold needs pyarrow: install 3tears[snapshot]")
+    schema = pa.schema(list(types.items()))
+    prefixes = [prefix for delta in deltas for prefix in delta.prefixes]
+    changed = [key_text_table(delta.rows, key) for delta in deltas if delta.rows.num_rows]
+    if not changed and not prefixes:
+        return held
+    held_keys = key_text_table(held, key)
+    hit = np.zeros(held.num_rows, dtype=bool)
+    if changed:
+        touched = pc.unique(joined_key_texts(pa.concat_tables(changed), key))
+        named = pc.is_in(joined_key_texts(held_keys, key), value_set=touched)
+        hit |= np.asarray(named.to_numpy(zero_copy_only=False), dtype=bool)
+    if prefixes and held.num_rows:
+        columns = {column: held_keys.column(column) for column in key}
+        hit |= _under_texts(columns, held.num_rows, prefixes)
+    if not hit.any() and not changed:
+        return held
+    kept = pa.array(~hit)
+    merged = pa.array(hit)
+    keys = _first_written(pa.concat_tables([held_keys.filter(merged), *changed]), key)
+    rows = HeldDeltaRows(key, keys, types)
+    rows.hold(held.filter(merged))
+    everyone = np.arange(keys.num_rows, dtype=np.int64)
+    for delta in deltas:
+        rows.apply(delta, everyone)
+    folded, _ = rows.rows()
+    return pa.concat_tables([held.filter(kept).cast(schema), folded])
 
 
 def _typed(rows: Any, types: Mapping[str, Any], defaults: Mapping[str, Any]) -> Any:

@@ -29,10 +29,9 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     OWN_DELTA_SAVES,
     TableDelta,
     read_volume_file,
-    apply_delta_row,
     write_delta_file,
 )
-from threetears.core.testing.delta_files import read_delta_file
+from threetears.core.testing.delta_files import apply_delta_row, read_delta_file
 from threetears.core.testing.keyed_statements import bound_values
 from threetears.core.collections import delta_files, delta_fold  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402

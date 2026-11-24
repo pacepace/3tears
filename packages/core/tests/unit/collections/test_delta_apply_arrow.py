@@ -30,12 +30,11 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaChange,
     HeldDeltaRows,
     TableDelta,
-    apply_delta_row,
     read_delta_table,
     under_prefix,
     write_delta_file,
 )
-from threetears.core.testing.delta_files import read_delta_file
+from threetears.core.testing.delta_files import apply_delta_row, read_delta_file
 
 _KEY = ("state", "geo_id")
 _NAMES = ("state", "geo_id", "votes", "note", "kind")
