@@ -145,7 +145,7 @@ from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
-from threetears.core.collections.frozen_state import with_entry, without_entry
+from threetears.core.frozen_state import with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
 from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types, sql_cast

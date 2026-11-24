@@ -55,14 +55,6 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="SharedArrowStore",
-        attr_name="_revokers",
-        rationale=(
-            "open file descriptors holding each live version's revoke flock in this process: an OS handle per version, never data; the lock is the cross-process state and dies with the process, which is what lets kept mappings go"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
         attr_name="_evictable",
         rationale=(
             "the versions the last sweep found held only by idle workers' flocks, with their bytes: re-derived from the locks at every sweep, so a restart reads it again from the directory"
@@ -114,79 +106,6 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="_KeptVersions",
-        attr_name="_kept",
-        rationale=(
-            "the memory map a worker process holds of the version it read last, per store directory; a map is "
-            "an open handle on this process's own address space, which no backend can hold, and a restart "
-            "maps again on its next read"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_slots",
-        rationale=(
-            "the result slots this process reserved for its own worker processes and has not yet claimed or "
-            "discarded, each with the bytes it may take; a slot names files in this pod's own memory-backed "
-            "directory that a worker of this process is writing, so another pod has nothing to do with it, and a "
-            "restart takes the directory over and removes every result in it"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_pieces",
-        rationale=(
-            "the pieces of each result slot this process reserved in pieces for its own worker processes and has "
-            "not yet claimed or discarded (each piece also in _slots); they name files in this pod's own "
-            "memory-backed directory, so another pod has nothing to do with them, and a restart takes the "
-            "directory over and removes every result in it, as _slots"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_claimed_bytes",
-        rationale=(
-            "the bytes each result this process claimed still holds in its own memory-backed directory, until "
-            "the sweep removes its files; it counts this pod's own files against this process's byte cap, so "
-            "another pod has nothing to do with it, and a restart takes the directory over and removes every "
-            "result in it, as _slots"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_handing",
-        rationale=(
-            "the hand-offs this process is writing now into its own memory-backed directory for its own worker "
-            "processes, each with the bytes it may take; another pod has nothing to do with them, and a restart "
-            "takes the directory over and removes every hand-off in it, as _slots"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_handed_bytes",
-        rationale=(
-            "the bytes each hand-off this process wrote still holds in its own memory-backed directory, until the "
-            "sweep removes its files; it counts this pod's own files against this process's byte cap, as "
-            "_claimed_bytes"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_manifests",
-        rationale=(
-            "the manifest of each version directory in this process's own memory-backed store, so a publish starts "
-            "from its base's without reading it and a sweep finds the part files a retired version alone named; "
-            "another pod has nothing to do with them, and a restart reads afresh the manifests the directory holds"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="SharedArrowStore",
         attr_name="_part_keys",
         rationale=(
@@ -226,25 +145,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/security/door_proof.py",
-        class_name="DoorProofModes",
-        attr_name="_switches",
-        rationale=(
-            "one live DoorProofSwitch object per door in this process, built on first use; the "
-            "switches hold a lock and a clock and are not data, so there is nothing to serialize"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/security/door_proof.py",
-        class_name="DoorProofSwitch",
-        attr_name="_absent",
-        rationale=(
-            "this replica's tally of unverified sender claims, for an operator reading the "
-            "process; nothing decides on it (a window ends by its date), and the record that "
-            "outlives the process is the door_proof_absent prometheus counter and the decision log"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
         class_name="YugabytePoolRecycler",
         attr_name="_expired_at_by_trigger",
@@ -267,15 +167,6 @@ _ALLOWLIST = (
             "it is too, and a shared or durable copy would order writes to a cache no other pod "
             "has. the L2 revision is the cross-pod half of the same fence. an entry lives only "
             "while an operation on its key is in flight and is dropped when the last one ends"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/task_registry.py",
-        class_name="KeyedTaskRegistry",
-        attr_name="_tasks",
-        rationale=(
-            "live asyncio.Task handles — per-worker + non-serializable; the cancel registry IS "
-            "the ephemeral infrastructure, cannot live in an L1/L2/L3 backend"
         ),
     ),
     DictStateAllowlistEntry(
@@ -584,17 +475,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/security/service_envelope.py",
-        class_name="InProcessEnvelopeLedger",
-        attr_name="_spent",
-        rationale=(
-            "spent envelope ids for a door ONE process consumes (a runner's own inbox): only this "
-            "process can be replayed to, a restart brings a new identity generation a replayed refusal "
-            "does not name, and each id is forgotten once its envelope expires (65s), so a shared or "
-            "durable store would add a round trip and protect nothing"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
         class_name="DynamicToolPod",
         attr_name="_resources",
@@ -839,7 +719,7 @@ _KNOWN_VIOLATIONS = (
 )
 
 #: Where an object's dict or set state is never changed in place after ``__init__``: its owner assigns the next
-#: immutable value whole (threetears.core.collections.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,
+#: immutable value whole (threetears.core.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,
 #: 2026-11-23: "small, owner-only, under the pass lock" is no exception).
 _IMMUTABLE_ROOTS = (_REPO_ROOT / "packages/core/src/threetears/core/collections",)
 

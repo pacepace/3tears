@@ -111,7 +111,7 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.core.declared import whole_read
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
-from threetears.core.collections.frozen_state import frozen, with_entries
+from threetears.core.frozen_state import frozen, with_entries
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     DATETIMETZ_TYPE,

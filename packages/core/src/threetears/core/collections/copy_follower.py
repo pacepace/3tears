@@ -121,7 +121,7 @@ from threetears.core.collections.delta_files import (
     read_delta_table,
 )
 from threetears.core.collections.epoch_change import key_text
-from threetears.core.collections.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
+from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.registry import CacheInvalidationMessage, WantedFile
 from threetears.core.collections.scope_epochs import ScopeEpochs

@@ -33,12 +33,14 @@ branches on whether egress is configured at all.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from threetears.observe import contain, get_logger
 
 from .config import DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS
+from .frozen_state import frozen, with_entry
 
 try:
     import httpx
@@ -332,13 +334,12 @@ class EgressRegistry:
         :param drivers: named drivers; ``direct`` is always available and cannot be removed
         :ptype drivers: dict[str, EgressDriver] | None
         """
-        self._drivers: dict[str, EgressDriver] = {"direct": DirectEgress()}
-        if drivers:
-            self._drivers.update(drivers)
+        # a read-only snapshot replaced whole on each change (decision 41)
+        self._drivers: Mapping[str, EgressDriver] = frozen({"direct": DirectEgress(), **(drivers or {})})
 
     def register(self, driver: EgressDriver) -> None:
         """Add or replace a driver under its own name."""
-        self._drivers[driver.name] = driver
+        self._drivers = with_entry(self._drivers, driver.name, driver)
 
     def get(self, name: str) -> EgressDriver:
         """The driver called *name*.

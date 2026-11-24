@@ -58,7 +58,7 @@ from threetears.core import keyed
 from threetears.core.keyed import Sort, inline_l1, run_inline
 from threetears.core.eviction import Declared, Policy
 from threetears.core.cache.l1_lru import L1_EVICTION_INFO
-from threetears.core.collections.frozen_state import frozen, with_entry
+from threetears.core.frozen_state import frozen, with_entry
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

@@ -22,7 +22,7 @@ from threetears.core.collections.delta_files import (
     read_delta_file_keys,
     text_key_batch,
 )
-from threetears.core.collections.frozen_state import frozen, with_entries, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
