@@ -2075,9 +2075,17 @@ class CollectionRegistry:
             # evict OTHER pods, which carry a different origin.
             if message.origin is not None and message.origin == self._origin_id:
                 return
-            # a message naming many rows is heard as one message a row, in order
-            for row in message.each_row() if message.more_rows else (message,):
-                await self._apply_row_message(row)
+            # a message naming many rows is heard as one message a row, in order; a cache that takes key batches (a
+            # copy, ``on_keys``) is told them once, as Arrow, at the advance they share (decision 35: no Python object
+            # a key in the copy). A one-row message is the row message the copy coalesces with its neighbours
+            rows = message.each_row() if message.more_rows else (message,)
+            batched = self._key_batch_takers(message.table) if message.more_rows else []
+            if batched:
+                keys = text_key_batch([row.ids for row in rows])
+                for registration in batched:
+                    registration.on_keys(keys, message.generation)  # type: ignore[misc]  # narrowed by _key_batch_takers
+            for row in rows:
+                await self._apply_row_message(row, batched=bool(batched))
                 # Counted as heard only once everything above has run to the end: a row whose
                 # eviction raised part-way is one this registry cannot vouch for, and leaving it
                 # uncounted is what makes the next catch-up apply its epoch's change record. A message naming no

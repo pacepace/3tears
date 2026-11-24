@@ -86,3 +86,40 @@ async def test_a_batch_from_this_registry_is_not_applied_here() -> None:
     await registry.publish_invalidations(bus, "results", messages)
     await registry.stop_invalidation_listener()
     assert len(applied) == 3
+
+
+async def test_a_batch_reaches_a_cache_taking_key_batches_as_one_arrow_batch_a_message() -> None:
+    """Flips if a batched broadcast reaches a cache that takes key batches (a copy, ``on_keys``) as a row message a
+    key (a Python object a key in the copy, decision 35) instead of one Arrow batch a message at its advance, or if
+    a cache taking only rows stops hearing each of them."""
+    pa = pytest.importorskip("pyarrow")
+    bus = FakeNatsClient()
+    sender, receiver = CollectionRegistry(), CollectionRegistry()
+    sender.batch_invalidations = True
+    batches: list[tuple[Any, str | None]] = []
+    copy_rows: list[Any] = []
+    rows: list[Any] = []
+    receiver.register_derived_cache(
+        "results",
+        on_row=copy_rows.append,
+        on_table_dropped=lambda: None,
+        on_partition=lambda _prefix: None,
+        on_keys=lambda keys, epoch: batches.append((keys, epoch)),
+    )
+    receiver.register_derived_cache(
+        "results", on_row=rows.append, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+    )
+    await receiver.start_invalidation_listener(bus)
+    messages = [
+        sender.row_message("results", (f"r{n % 7}", f"g{n}"), generation="inc:9", bump_rows=_ROWS) for n in range(_ROWS)
+    ]
+    await sender.publish_invalidations(bus, "results", messages)
+    await receiver.stop_invalidation_listener()
+
+    assert copy_rows == [], "no row message a key to a cache that takes batches"
+    assert len(batches) == 3 and all(isinstance(keys, pa.Table) and epoch == "inc:9" for keys, epoch in batches)
+    heard = pa.concat_tables([keys for keys, _ in batches])
+    assert list(zip(heard.column("k0").to_pylist(), heard.column("k1").to_pylist(), strict=True)) == [
+        (f"r{n % 7}", f"g{n}") for n in range(_ROWS)
+    ]
+    assert len(rows) == _ROWS, "a cache taking rows hears each"
