@@ -231,6 +231,23 @@ async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
     assert not any(handoff.rglob("*.arrow")), "the hand-off is released once the worker is done"
 
 
+async def test_a_load_whose_constant_is_a_timestamp_is_saved_in_the_worker_with_it(root: Path) -> None:
+    """Flips if a load's constants cross to the worker as Python values: a ``datetime`` constant (an LSF run's
+    timestamp) is not plain data, so the worker refused the save and every such load from files failed (2026-11-24).
+    Saved, each row carries the constant as the column's instant."""
+    at = datetime(2026, 11, 4, 3, 0, tzinfo=UTC)
+    rows = pa.table({"office_key": pa.array(["sn_NC1", "sn_NC2"]), "geo_id": pa.array(["00000", "00001"])})
+    load = TableDelta(
+        name="results",
+        types={"office_key": pa.string(), "geo_id": pa.string(), "loaded_at": pa.timestamp("us", tz="UTC")},
+        key=("office_key", "geo_id"),
+    )
+    load.load([rows], [2], {"loaded_at": at})
+    files = await save_delta_files({"results": load})
+    held = read_volume_file(root / files["results"])
+    assert held.column("loaded_at").to_pylist() == [at, at]
+
+
 async def test_without_a_hand_off_directory_a_large_part_is_saved_on_a_thread_counted(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
