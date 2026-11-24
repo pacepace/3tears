@@ -91,7 +91,7 @@ class PackageMigrations:
         self._descriptions: Mapping[int, str] = MappingProxyType({})
         self._step_names: frozenset[str] = frozenset()
         self._downgrades: Mapping[int, MigrationFunc] = MappingProxyType({})
-        self._write_generation_tables: list[str] = []
+        self._write_generation_tables: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -120,14 +120,14 @@ class PackageMigrations:
         """
         for table in tables:
             if isinstance(table, str):
-                self._write_generation_tables.append(table)
+                self._write_generation_tables = (*self._write_generation_tables, table)
                 continue
             if not isinstance(getattr(table, "write_generation", None), WriteGeneration):
                 raise ValueError(
                     f"{getattr(table, 'name', table)!r} is marked by package {self._name!r} but its schema does "
                     "not declare write_generation=True; the class and the migration would disagree"
                 )
-            self._write_generation_tables.append(str(table.name))
+            self._write_generation_tables = (*self._write_generation_tables, str(table.name))
 
     @property
     def write_generation_tables(self) -> tuple[str, ...]:
@@ -136,7 +136,7 @@ class PackageMigrations:
         :return: the table names, as declared
         :rtype: tuple[str, ...]
         """
-        return tuple(self._write_generation_tables)
+        return self._write_generation_tables
 
     @property
     def scope(self) -> MigrationScope:

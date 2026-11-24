@@ -895,7 +895,8 @@ class _LeadValues:
     def __init__(self, reads: _DictReads | _ArrowReads, shape: _ReadShape, after: Sequence[Any] | None) -> None:
         self._reads = reads
         self._shape = shape
-        self._held: list[Any] = []
+        #: the values read and not yet taken, a page at most; replaced whole
+        self._held: tuple[Any, ...] = ()
         self._ended = False
         self._past: Any = None if after is None else after[0]
         self._first = after is not None
@@ -911,7 +912,7 @@ class _LeadValues:
         while len(self._held) < count and not self._ended:
             await self._read()
         taken, self._held = self._held[:count], self._held[count:]
-        return taken
+        return list(taken)
 
     async def _read(self) -> None:
         shape = self._shape
@@ -928,7 +929,7 @@ class _LeadValues:
             f"ORDER BY {quoted} LIMIT {shape.page_size}"
         )
         values = await self._reads.values(query, params, lead)
-        self._held.extend(values)
+        self._held = (*self._held, *values)
         self._ended = len(values) < shape.page_size
         if values:
             self._past = values[-1]
@@ -953,7 +954,8 @@ class _GivenLeads:
         self._shape = shape
         self._array = array
         self._values = list(values)
-        self._held: list[Any] = []
+        #: the values read and not yet taken, a page at most; replaced whole
+        self._held: tuple[Any, ...] = ()
         self._ended = not self._values
         self._past: Any = None if after is None else after[0]
         self._first = after is not None
@@ -969,7 +971,7 @@ class _GivenLeads:
         while len(self._held) < count and not self._ended:
             await self._read()
         taken, self._held = self._held[:count], self._held[count:]
-        return taken
+        return list(taken)
 
     async def _read(self) -> None:
         """the next page of the distinct non-NULL values (``= ANY`` never matches a NULL), in the database's order of
@@ -987,7 +989,7 @@ class _GivenLeads:
             f"WHERE {quoted} IS NOT NULL{clause} ORDER BY {quoted} LIMIT {shape.page_size}"
         )
         values = await self._reads.values(query, params, lead)
-        self._held.extend(values)
+        self._held = (*self._held, *values)
         self._ended = len(values) < shape.page_size
         if values:
             self._past = values[-1]

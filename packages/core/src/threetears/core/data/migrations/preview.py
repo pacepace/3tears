@@ -31,7 +31,7 @@ and render it for human review (see ``3tears.hub.migrations.__main__``
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
@@ -81,25 +81,24 @@ class PreviewStore:
 
     :ivar underlying: the wrapped DataStore-shape used for read-only
         delegation of bookkeeping queries
-    :ivar captured: list of captured statements, in the order the
-        runner would have issued them
+    :ivar captured: the captured statements, in the order the
+        runner would have issued them; replaced whole on each capture
     """
 
     underlying: Any
-    captured: list[CapturedStatement] = field(default_factory=list)
+    captured: tuple[CapturedStatement, ...] = ()
 
     def captured_statements(self) -> list[CapturedStatement]:
         """
         return the ordered list of captured statements.
 
-        the returned list is the live mutable list; callers that need
-        a snapshot should ``list(...)`` it themselves. preview output
-        is one-shot; mutating after the apply call is not supported.
+        the returned list is the caller's own, a copy of what was
+        captured so far.
 
         :return: ordered list of captured statements
         :rtype: list[CapturedStatement]
         """
-        result = self.captured
+        result = list(self.captured)
         return result
 
     def captured_ddl(self) -> list[str]:
@@ -130,7 +129,7 @@ class PreviewStore:
         normalized = " ".join(sql.split()).upper()
         is_bookkeeping = any(normalized.startswith(p) for p in _BOOKKEEPING_PREFIXES)
         kind = "BOOKKEEPING" if is_bookkeeping else "DDL"
-        self.captured.append(CapturedStatement(sql=sql, params=tuple(params), kind=kind))
+        self.captured = (*self.captured, CapturedStatement(sql=sql, params=tuple(params), kind=kind))
         result = "PREVIEW"
         return result
 

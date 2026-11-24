@@ -31,7 +31,7 @@ about it.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from threetears.observe import get_logger
@@ -407,8 +407,10 @@ def parse_ddl_to_expected(statements: list[str]) -> dict[str, ExpectedTable]:
                 name = _extract_table_name(add_match.group("table_ref"))
                 col = add_match.group("col")
                 col_type = _normalize_type(add_match.group("type"))
-                table = expected.setdefault(name, ExpectedTable(name=name))
-                table.columns[col] = col_type
+                # replaced whole: a table's expected shape is never changed in place
+                held = expected.get(name)
+                table = ExpectedTable(name=name) if held is None else held
+                expected[name] = replace(table, columns={**table.columns, col: col_type})
                 continue
             drop_match = _RE_DROP_COLUMN.match(stmt)
             if drop_match is not None:
@@ -416,7 +418,10 @@ def parse_ddl_to_expected(statements: list[str]) -> dict[str, ExpectedTable]:
                 col = drop_match.group("col")
                 existing_table = expected.get(name)
                 if existing_table is not None:
-                    existing_table.columns.pop(col, None)
+                    expected[name] = replace(
+                        existing_table,
+                        columns={held: kind for held, kind in existing_table.columns.items() if held != col},
+                    )
                 continue
             log.debug("drift: ALTER TABLE shape not recognized: %s", stmt[:120])
         # CREATE INDEX / DROP INDEX do not contribute to column-level
@@ -485,7 +490,6 @@ def diff_expected_live(
     :return: structured drift report
     :rtype: DriftReport
     """
-    report = DriftReport()
     if current_schema is not None:
         scoped_expected = {
             name: tbl for name, tbl in expected.items() if tbl.schema is None or tbl.schema == current_schema
@@ -494,20 +498,24 @@ def diff_expected_live(
         scoped_expected = expected
     expected_names = set(scoped_expected.keys())
     live_names = set(live.keys())
-    for missing in sorted(expected_names - live_names):
-        report.missing_tables.append(missing)
-    for extra in sorted(live_names - expected_names):
-        report.extra_tables.append(extra)
+    # built here, then handed back whole in the report
+    missing_columns: list[tuple[str, str]] = []
+    extra_columns: list[tuple[str, str, str]] = []
+    type_mismatches: list[tuple[str, str, str, str]] = []
     for table_name in sorted(expected_names & live_names):
         exp_cols = scoped_expected[table_name].columns
         live_cols = live[table_name]
-        for col in sorted(set(exp_cols) - set(live_cols)):
-            report.missing_columns.append((table_name, col))
-        for col in sorted(set(live_cols) - set(exp_cols)):
-            report.extra_columns.append((table_name, col, live_cols[col]))
+        missing_columns.extend((table_name, col) for col in sorted(set(exp_cols) - set(live_cols)))
+        extra_columns.extend((table_name, col, live_cols[col]) for col in sorted(set(live_cols) - set(exp_cols)))
         for col in sorted(set(exp_cols) & set(live_cols)):
             expected_type = exp_cols[col]
             actual_type = live_cols[col]
             if expected_type != actual_type:
-                report.type_mismatches.append((table_name, col, expected_type, actual_type))
-    return report
+                type_mismatches.append((table_name, col, expected_type, actual_type))
+    return DriftReport(
+        missing_tables=sorted(expected_names - live_names),
+        extra_tables=sorted(live_names - expected_names),
+        missing_columns=missing_columns,
+        extra_columns=extra_columns,
+        type_mismatches=type_mismatches,
+    )
