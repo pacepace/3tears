@@ -17,6 +17,8 @@ routes a cancel to whichever worker holds the task.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from types import MappingProxyType
 from uuid import UUID
 
 __all__ = ["KeyedTaskRegistry"]
@@ -31,7 +33,8 @@ class KeyedTaskRegistry:
     """
 
     def __init__(self) -> None:
-        self._tasks: dict[UUID, asyncio.Task[object]] = {}
+        # a read-only snapshot replaced whole on each change (decision 41); one entry per running task, not per row
+        self._tasks: Mapping[UUID, asyncio.Task[object]] = MappingProxyType({})
 
     def register(self, key: UUID, task: asyncio.Task[object]) -> None:
         """register a running task so it can later be cancelled by key.
@@ -42,7 +45,7 @@ class KeyedTaskRegistry:
         :ptype task: asyncio.Task[object]
         :rtype: None
         """
-        self._tasks[key] = task
+        self._tasks = MappingProxyType({**self._tasks, key: task})
 
     def pop(self, key: UUID) -> asyncio.Task[object] | None:
         """remove and return a key's task, if any (pop-before-cancel).
@@ -56,7 +59,10 @@ class KeyedTaskRegistry:
         :return: the registered task, or ``None`` if none is active
         :rtype: asyncio.Task[object] | None
         """
-        return self._tasks.pop(key, None)
+        task = self._tasks.get(key)
+        if task is not None:
+            self._tasks = MappingProxyType({held: each for held, each in self._tasks.items() if held != key})
+        return task
 
     def get(self, key: UUID) -> asyncio.Task[object] | None:
         """return a key's task without removing it.
@@ -81,7 +87,7 @@ class KeyedTaskRegistry:
         :rtype: None
         """
         if self._tasks.get(key) is task:
-            del self._tasks[key]
+            self._tasks = MappingProxyType({held: each for held, each in self._tasks.items() if held != key})
 
     def __len__(self) -> int:
         """number of tasks currently registered.

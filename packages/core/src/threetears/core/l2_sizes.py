@@ -278,9 +278,9 @@ class L2Sizes:
         #: the (kind, policy) label sets the last sample set, so a kind gone since reads 0 rather than its last size
         self._exported: set[tuple[str, str]] = set()
         #: what has been logged once already: undeclared kinds, file streams, unbounded memory streams
-        self._logged: set[tuple[str, str]] = set()
+        self._logged: frozenset[tuple[str, str]] = frozenset()
         #: the budgets KEEP alone has reached, counted once on reaching rather than every sample after
-        self._failing: set[str] = set()
+        self._failing: frozenset[str] = frozenset()
 
     async def read(self) -> list[_StreamSize]:
         """every stream of the account, one ``STREAM.LIST`` page at a time.
@@ -378,11 +378,11 @@ class L2Sizes:
         :rtype: None
         """
         if budget <= 0 or kept < budget:
-            self._failing.discard(name)
+            self._failing = self._failing - {name}
             return
         if name in self._failing:
             return
-        self._failing.add(name)
+        self._failing = self._failing | {name}
         SIZING_FAILURES.labels(tier=Tier.L2.value, name=name).inc()
         log.error(
             "l2 sizes: what must be kept has reached its budget (a sizing failure, never an eviction)",
@@ -391,7 +391,7 @@ class L2Sizes:
 
     def _log_once(self, why: str, stream: str, what: str) -> None:
         if (why, stream) not in self._logged:
-            self._logged.add((why, stream))
+            self._logged = self._logged | {(why, stream)}
             log.warning(what, extra={"extra_data": {"stream": stream}})
 
     def start(self) -> None:
