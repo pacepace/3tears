@@ -27,11 +27,12 @@ without a conflict — exactly what the etag exists to prevent.
 
 from __future__ import annotations
 
+import copy
 import itertools
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final, NamedTuple
 
 from threetears.evals.schema.store_port import (
     GroupMeasure,
@@ -46,10 +47,76 @@ from threetears.evals.schema.store_port import (
     order_and_page,
 )
 
-__all__ = ["InMemoryDocumentStore"]
+__all__ = ["MAX_DOCUMENTS", "InMemoryDocumentStore"]
+
+#: The most documents one in-memory store holds. It is for tests, examples and quick runs, never a host's evidence:
+#: the largest test writes 60,001 documents (``test_reads_past_fifty_thousand``), and a quick run's few thousand fit
+#: far below it. A write past it is refused, naming a real adapter: past it, a store belongs in one.
+MAX_DOCUMENTS: Final = 250_000
+
+#: How many writes the newest layer takes before it is sealed into the layers below. Each write rebuilds the newest
+#: layer whole, so it is kept small; sealed layers merge two of a size into one (log-structured), so a document is
+#: copied about log2(n / this) times over its life and 60,000 writes take well under a second, where rebuilding one
+#: map of every document per write took 68s.
+_FRESH_LIMIT: Final = 32
 
 #: The fields that locate a document, which :meth:`InMemoryDocumentStore.merge_fields` refuses to set.
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
+
+
+class _Entry(NamedTuple):
+    """One write of a document: what it stored, or its deletion; and whether it takes a new place in the store's
+    insertion order (a first write, a write after a deletion, or a deletion) rather than keeping the one it had."""
+
+    document: dict[str, Any] | None
+    etag: str | None
+    placed: bool
+
+
+type _Key = tuple[str, str]
+type _Layer = Mapping[_Key, _Entry]
+
+
+def _merged(older: _Layer, newer: _Layer, *, bottom: bool) -> _Layer:
+    """``newer`` laid over ``older``, as one layer, in the store's insertion order: an entry that keeps its place keeps
+    ``older``'s, one ``placed`` anew follows every entry of ``older``. At the bottom, deletions are dropped: nothing
+    below is left for them to hide.
+
+    The dicts here are this function's own, built and frozen before it returns.
+    """
+    moved = frozenset(key for key, entry in newer.items() if entry.placed)
+    merged = {key: entry for key, entry in older.items() if key not in moved}
+    for key, entry in newer.items():
+        below = merged.get(key)
+        merged[key] = entry if below is None else entry._replace(placed=below.placed)
+    if bottom:
+        merged = {key: entry for key, entry in merged.items() if entry.document is not None}
+    return MappingProxyType(merged)
+
+
+class _DocumentsView(Mapping[_Key, dict[str, Any]]):
+    """The stored documents, read-only, in insertion order: what :attr:`InMemoryDocumentStore.documents` hands out.
+    A deep copy is a plain dict, so a test can hold what the store held and compare it later."""
+
+    __slots__ = ("_documents",)
+
+    def __init__(self, documents: Mapping[_Key, dict[str, Any]]) -> None:
+        self._documents = documents
+
+    def __getitem__(self, key: _Key) -> dict[str, Any]:
+        return self._documents[key]
+
+    def __iter__(self) -> Iterator[_Key]:
+        return iter(self._documents)
+
+    def __len__(self) -> int:
+        return len(self._documents)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({dict(self._documents)!r})"
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> dict[_Key, dict[str, Any]]:
+        return copy.deepcopy(dict(self._documents), memo)
 
 
 def _stored_equal(stored: Any, wanted: Any) -> bool:
@@ -64,22 +131,74 @@ def _stored_equal(stored: Any, wanted: Any) -> bool:
 
 
 class InMemoryDocumentStore:
-    """A :class:`~threetears.evals.schema.store_port.DocumentStore` over one dict.
+    """A :class:`~threetears.evals.schema.store_port.DocumentStore` over frozen layers of writes.
 
-    :ivar documents: The stored documents, keyed by ``(scope_id, id)``. The store's own state, exposed
-        so a test can inspect what was written; a reader goes through the port's methods.
+    Each document is kept beside its etag, keyed by ``(scope_id, id)``, in layers that are never changed in place: a
+    write rebuilds the small newest layer whole (:data:`_FRESH_LIMIT`), which is sealed into the layers below when it
+    fills, two of a size merging into one. It holds at most :data:`MAX_DOCUMENTS`.
     """
 
     def __init__(self) -> None:
         """Start empty."""
-        self.documents: dict[tuple[str, str], dict[str, Any]] = {}
-        self._etags: dict[tuple[str, str], str] = {}
+        # The sealed layers, oldest first, and the newest one; each frozen, replaced whole under the lock.
+        self._layers: tuple[_Layer, ...] = ()
+        self._fresh: _Layer = MappingProxyType({})
+        self._count = 0
+        # The documents as one read-only view, built on the first read after a write.
+        self._view: _DocumentsView | None = None
         self._etag_counter = itertools.count(1)
         self._lock = threading.RLock()
 
-    def _mint_etag(self, key: tuple[str, str]) -> None:
-        """Give the document at ``key`` a token no earlier write of it carried."""
-        self._etags[key] = f"etag-{next(self._etag_counter)}"
+    @property
+    def documents(self) -> Mapping[tuple[str, str], dict[str, Any]]:
+        """The stored documents, keyed by ``(scope_id, id)``, in insertion order, read-only: so a test can inspect
+        what was written; a reader goes through the port's methods, a writer through :meth:`upsert`,
+        :meth:`merge_fields` and :meth:`delete`."""
+        with self._lock:
+            if self._view is None:
+                whole: _Layer = MappingProxyType({})
+                for layer in (*self._layers, self._fresh):
+                    whole = _merged(whole, layer, bottom=True)
+                # Compacted: the next read until a write reads the one layer.
+                self._layers, self._fresh = (whole,), MappingProxyType({})
+                self._view = _DocumentsView(
+                    MappingProxyType(
+                        {key: entry.document for key, entry in whole.items() if entry.document is not None}
+                    )
+                )
+            return self._view
+
+    def _entry(self, key: _Key) -> _Entry | None:
+        """The live entry stored under ``key``, newest layer first; None when absent or deleted."""
+        for layer in (self._fresh, *reversed(self._layers)):
+            if (entry := layer.get(key)) is not None:
+                return entry if entry.document is not None else None
+        return None
+
+    def _put(self, key: _Key, document: dict[str, Any] | None) -> None:
+        """Write ``document`` under ``key`` (``None`` deletes it), with a fresh etag, under the lock: the newest layer
+        rebuilt whole, sealed into the layers below when it fills.
+
+        :raises RuntimeError: The write would hold more than :data:`MAX_DOCUMENTS`.
+        """
+        live = self._entry(key) is not None
+        if document is not None and not live and self._count >= MAX_DOCUMENTS:
+            raise RuntimeError(
+                f"an in-memory store holds at most {MAX_DOCUMENTS} documents, and this write would hold more: "
+                "it is for tests and quick runs; use a real store adapter"
+            )
+        if document is None:
+            entry = _Entry(None, None, placed=True)
+        else:
+            entry = _Entry(document, f"etag-{next(self._etag_counter)}", placed=not live)
+        self._fresh = _merged(self._fresh, MappingProxyType({key: entry}), bottom=False)
+        self._count += (1 if document is not None else -1) if live != (document is not None) else 0
+        self._view = None
+        if len(self._fresh) > _FRESH_LIMIT:
+            layers = (*self._layers, self._fresh)
+            while len(layers) > 1 and len(layers[-2]) <= 2 * len(layers[-1]):
+                layers = (*layers[:-2], _merged(layers[-2], layers[-1], bottom=len(layers) == 2))
+            self._layers, self._fresh = layers, MappingProxyType({})
 
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
         """Return one document by id within a scope, or ``None`` if absent.
@@ -92,8 +211,8 @@ class InMemoryDocumentStore:
         :rtype: dict[str, Any] | None
         """
         with self._lock:
-            document = self.documents.get((scope_id, doc_id))
-            return copy_json(document) if document is not None else None
+            entry = self._entry((scope_id, doc_id))
+            return copy_json(entry.document) if entry is not None and entry.document is not None else None
 
     def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         """Return one document plus the token a conditional write must present.
@@ -107,10 +226,10 @@ class InMemoryDocumentStore:
         """
         key = (scope_id, doc_id)
         with self._lock:
-            document = self.documents.get(key)
-            if document is None:
+            entry = self._entry(key)
+            if entry is None or entry.document is None:
                 return None, None
-            return copy_json(document), self._etags[key]
+            return copy_json(entry.document), entry.etag
 
     def get_many(
         self,
@@ -143,7 +262,8 @@ class InMemoryDocumentStore:
             found = [
                 document
                 for doc_id in dict.fromkeys(doc_ids)
-                if (document := self.documents.get((scope_id, doc_id))) is not None
+                if (entry := self._entry((scope_id, doc_id))) is not None
+                and (document := entry.document) is not None
                 and document.get("doc_type") == doc_type
             ]
             return [copy_json(keep_fields(d, keep) if keep else omit_paths(d, exclude)) for d in found]
@@ -210,8 +330,9 @@ class InMemoryDocumentStore:
     ) -> list[dict[str, Any]]:
         """The documents a typed read selects, in insertion order: one pass over the stored documents.
 
-        Each is a shallow copy taken under the lock, so a later :meth:`merge_fields` (which sets top-level fields in
-        place) never reaches a snapshot; nested values are never changed in place, so sharing them is safe.
+        Each is a shallow copy taken under the lock, so a caller changing a row never reaches the stored document; a
+        write stores a new document rather than changing one, and nested values are never changed in place, so sharing
+        them is safe.
 
         :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: A ``field_in`` entry is a string, or holds a value that is not a scalar.
@@ -355,12 +476,12 @@ class InMemoryDocumentStore:
         key = (scope_id, doc_id)
         stored = copy_json(document)
         with self._lock:
-            if if_match is not None and self._etags.get(key) != if_match:
+            held = self._entry(key)
+            if if_match is not None and (held.etag if held is not None else None) != if_match:
                 raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}")
-            if create_only and key in self.documents:
+            if create_only and held is not None:
                 raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} already exists")
-            self.documents[key] = stored
-            self._mint_etag(key)
+            self._put(key, stored)
 
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
         """Set top-level fields on one stored document, leaving every other field as stored.
@@ -382,11 +503,10 @@ class InMemoryDocumentStore:
         key = (scope_id, doc_id)
         merged = copy_json(fields)
         with self._lock:
-            document = self.documents.get(key)
-            if document is None:
+            held = self._entry(key)
+            if held is None or held.document is None:
                 return False
-            document.update(merged)
-            self._mint_etag(key)
+            self._put(key, {**held.document, **merged})
             return True
 
     def delete(self, doc_id: str, scope_id: str) -> bool:
@@ -401,5 +521,7 @@ class InMemoryDocumentStore:
         """
         key = (scope_id, doc_id)
         with self._lock:
-            self._etags.pop(key, None)
-            return self.documents.pop(key, None) is not None
+            if self._entry(key) is None:
+                return False
+            self._put(key, None)
+            return True

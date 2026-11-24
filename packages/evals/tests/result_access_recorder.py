@@ -444,7 +444,9 @@ def recording_results() -> Iterator[None]:
         _record(result, "", result.id)
         return result
 
-    def served_whole(result: EvalResult, shared: SharedValues | None = None) -> EvalResult:
+    def served_whole(
+        result: EvalResult, shared: SharedValues | None = None, texts: dict[str, str] | None = None
+    ) -> EvalResult:
         return result
 
     with (

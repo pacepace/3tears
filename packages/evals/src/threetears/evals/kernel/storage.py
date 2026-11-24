@@ -3344,6 +3344,8 @@ class EvalStorage:
         ``get_many`` a page, without the fields no reading carries, counted before it is made. The store's time and the
         hydration's are charged inside each page's reads, never around a ``yield``."""
         shared = SharedValues()
+        # The read's interned texts: this function's own, grown with its results and gone with it (held_text).
+        texts: dict[str, str] = {}
         for start in range(0, len(keys), READINGS_PAGE):
             page = keys[start : start + READINGS_PAGE]
             place = {key.id: index for index, key in enumerate(page)}
@@ -3354,7 +3356,7 @@ class EvalStorage:
             with charged("hydrate"):
                 results = self._hydrate_all(EvalResult, items)
                 results.sort(key=lambda result: place.get(result.id, len(place)))
-                readings = [ResultReading.of(result, shared) for result in results]
+                readings = [ResultReading.of(result, shared, texts) for result in results]
             # Dropped before the walk goes on, so the next page is read with only this one's readings held.
             del items, results
             yield 0, readings
@@ -3386,6 +3388,8 @@ class EvalStorage:
                 field_in=_runs_in(runs),
             )
         shared = SharedValues()
+        # The read's interned texts: this function's own, grown with its results and gone with it (held_text).
+        texts: dict[str, str] = {}
         by_run: dict[str, list[ResultReading]] | None = None
         if runs is not None and len(runs) > 1 and not in_store_order:
             by_run = {run_id: [] for run_id in runs}
@@ -3398,7 +3402,9 @@ class EvalStorage:
                 if not items:
                     break
                 with charged("hydrate"):
-                    readings = [ResultReading.of(result, shared) for result in self._hydrate_all(EvalResult, items)]
+                    readings = [
+                        ResultReading.of(result, shared, texts) for result in self._hydrate_all(EvalResult, items)
+                    ]
                 del items
                 if asked is not None:
                     stray = next((reading for reading in readings if reading.eval_run_id not in asked), None)

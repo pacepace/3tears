@@ -392,6 +392,22 @@ class ResultView(Protocol):
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self: ...
 
 
+def held_text[T: str | None](texts: dict[str, str], value: T) -> T:
+    """``value``, or the equal text ``texts`` already holds: ``texts`` is the reading function's own dict, built where
+    the read is and passed down, never held on an object (:class:`SharedValues`).
+
+    :param texts: The read's texts so far; ``value`` is added when new.
+    :ptype texts: dict[str, str]
+    :param value: The text.
+    :ptype value: T
+    :return: The text held.
+    :rtype: T
+    """
+    if value is None:
+        return value
+    return cast(T, texts.setdefault(value, value))
+
+
 class SharedValues:
     """The values one read's readings hold once: each repeated text, and each distinct request-settings model.
 
@@ -405,12 +421,15 @@ class SharedValues:
     **A mapping it holds is shared by every reading that holds an equal one** (:meth:`names`, an empty
     :meth:`mapping`), so a reading's mappings are read and never changed in place: a reader that needs a changed
     reading copies it with the change (:meth:`ResultReading.model_copy`), as it would a stored result.
+
+    The texts are interned in a dict of the read's own (:func:`held_text`), built in the function that reads and
+    passed down beside this, never held here: it grows with the read's results (fingerprints, case ids), so it lives
+    and dies with the one function that reads.
     """
 
-    __slots__ = ("_texts", "_tuples", "_names", "_empty", "_settings")
+    __slots__ = ("_tuples", "_names", "_empty", "_settings")
 
     def __init__(self) -> None:
-        self._texts: dict[str, str] = {}
         # The tuples, name mappings and settings are the read's vocabulary (a run's roles, its judge configs, its
         # settings models: a handful), so each is a frozen map rebuilt whole on a new entry.
         self._tuples: Mapping[tuple[str, ...], tuple[str, ...]] = MappingProxyType({})
@@ -418,36 +437,30 @@ class SharedValues:
         self._empty: dict[str, Any] = {}
         self._settings: Mapping[tuple[object, ...], tuple[ClientRequestSettings, ...]] = MappingProxyType({})
 
-    def text[T: str | None](self, value: T) -> T:
-        """``value``, or the equal text already held."""
-        if value is None:
-            return value
-        return cast(T, self._texts.setdefault(value, value))
-
-    def texts(self, values: Iterable[str]) -> tuple[str, ...]:
-        """``values`` as a tuple, the equal tuple already held if there is one."""
-        held = tuple(self.text(value) for value in values)
+    def texts(self, values: Iterable[str], texts: dict[str, str]) -> tuple[str, ...]:
+        """``values`` as a tuple, the equal tuple already held if there is one; each text held in ``texts``."""
+        held = tuple(held_text(texts, value) for value in values)
         found = self._tuples.get(held)
         if found is None:
             self._tuples = MappingProxyType({**self._tuples, held: held})
             return held
         return found
 
-    def names(self, mapping: Mapping[str, str]) -> Mapping[str, str]:
+    def names(self, mapping: Mapping[str, str], texts: dict[str, str]) -> Mapping[str, str]:
         """A mapping of text to text (a result's judge configs by dimension), the equal one already held if there is
         one."""
         key = tuple(mapping.items())
         held = self._names.get(key)
         if held is None:
-            held = {self.text(name): self.text(value) for name, value in key}
+            held = {held_text(texts, name): held_text(texts, value) for name, value in key}
             self._names = MappingProxyType({**self._names, key: held})
         return held
 
-    def mapping[V](self, mapping: Mapping[str, V]) -> Mapping[str, V]:
+    def mapping[V](self, mapping: Mapping[str, V], texts: dict[str, str]) -> Mapping[str, V]:
         """``mapping`` with its keys held once, in its order: the one empty mapping when it is empty."""
         if not mapping:
             return cast(dict[str, V], self._empty)
-        return {self.text(name): value for name, value in mapping.items()}
+        return {held_text(texts, name): value for name, value in mapping.items()}
 
     def settings[S: ClientRequestSettings | None](self, value: S) -> S:
         """``value``, or an equal settings model already held."""
@@ -477,18 +490,18 @@ class ScoreReading:
     criterion_fingerprint: str | None
 
     @classmethod
-    def of(cls, score: RubricScore, shared: SharedValues) -> ScoreReading:
+    def of(cls, score: RubricScore, shared: SharedValues, texts: dict[str, str]) -> ScoreReading:
         """The reading of a stored score, its repeated values held once in ``shared``."""
         return cls(
-            dim=shared.text(score.dim),
-            scale=shared.text(score.scale),
-            axis=shared.text(score.axis),
+            dim=held_text(texts, score.dim),
+            scale=held_text(texts, score.scale),
+            axis=held_text(texts, score.axis),
             score=score.score,
-            served_model=shared.text(score.served_model),
+            served_model=held_text(texts, score.served_model),
             judge_temperature=score.judge_temperature,
             judge_sent_settings=shared.settings(score.judge_sent_settings),
-            output_fingerprint=shared.text(score.output_fingerprint),
-            criterion_fingerprint=shared.text(score.criterion_fingerprint),
+            output_fingerprint=held_text(texts, score.output_fingerprint),
+            criterion_fingerprint=held_text(texts, score.criterion_fingerprint),
         )
 
     @property
@@ -519,10 +532,12 @@ class GoalReading:
     detail: str
 
     @classmethod
-    def of(cls, outcome: GoalStateOutcome, shared: SharedValues) -> GoalReading:
+    def of(cls, outcome: GoalStateOutcome, shared: SharedValues, texts: dict[str, str]) -> GoalReading:
         """The reading of a stored outcome."""
         return cls(
-            expression=shared.text(outcome.expression), passed=outcome.passed, detail=shared.text(outcome.detail)
+            expression=held_text(texts, outcome.expression),
+            passed=outcome.passed,
+            detail=held_text(texts, outcome.detail),
         )
 
 
@@ -535,12 +550,12 @@ class PreconditionReading:
     detail: str
 
     @classmethod
-    def of(cls, outcome: PreconditionOutcome, shared: SharedValues) -> PreconditionReading:
+    def of(cls, outcome: PreconditionOutcome, shared: SharedValues, texts: dict[str, str]) -> PreconditionReading:
         """The reading of a stored outcome."""
         return cls(
-            expression=shared.text(outcome.expression),
-            presumes=shared.text(outcome.presumes),
-            detail=shared.text(outcome.detail),
+            expression=held_text(texts, outcome.expression),
+            presumes=held_text(texts, outcome.presumes),
+            detail=held_text(texts, outcome.detail),
         )
 
 
@@ -571,29 +586,29 @@ class UsageReading:
     maybe_billed_sends: int | None
 
     @classmethod
-    def of(cls, row: RoleUsage, shared: SharedValues) -> UsageReading:
+    def of(cls, row: RoleUsage, shared: SharedValues, texts: dict[str, str]) -> UsageReading:
         """The reading of a stored row."""
         sent = row.sent_settings
         return cls(
-            role=shared.text(row.role),
-            model=shared.text(row.model),
-            served_model=shared.text(row.served_model),
-            served_provider=shared.text(row.served_provider),
+            role=held_text(texts, row.role),
+            model=held_text(texts, row.model),
+            served_model=held_text(texts, row.served_model),
+            served_provider=held_text(texts, row.served_provider),
             prompt_tokens=row.prompt_tokens,
             completion_tokens=row.completion_tokens,
             reasoning_tokens=row.reasoning_tokens,
             cost_usd=row.cost_usd,
-            price_source=shared.text(row.price_source),
+            price_source=held_text(texts, row.price_source),
             call_count=row.call_count,
-            provider=shared.text(row.provider),
-            provider_unit=shared.text(row.provider_unit),
+            provider=held_text(texts, row.provider),
+            provider_unit=held_text(texts, row.provider_unit),
             provider_units=row.provider_units,
-            actor_id=shared.text(row.actor_id),
-            purpose=shared.text(row.purpose),
+            actor_id=held_text(texts, row.actor_id),
+            purpose=held_text(texts, row.purpose),
             sent_settings=None if sent is None else tuple(shared.settings(settings) for settings in sent),
             unanswered_retried=row.unanswered_retried,
             unanswered_lost=row.unanswered_lost,
-            unanswered_reasons=None if (reasons := row.unanswered_reasons) is None else shared.mapping(reasons),
+            unanswered_reasons=None if (reasons := row.unanswered_reasons) is None else shared.mapping(reasons, texts),
             maybe_billed_sends=row.maybe_billed_sends,
         )
 
@@ -648,17 +663,17 @@ class RepeatedScoreReading:
     cannot_tell: str | None
 
     @classmethod
-    def of(cls, entry: RepeatedScore, shared: SharedValues) -> RepeatedScoreReading:
+    def of(cls, entry: RepeatedScore, shared: SharedValues, texts: dict[str, str]) -> RepeatedScoreReading:
         """The reading of a stored entry."""
         return cls(
-            dim=shared.text(entry.dim),
-            scale=shared.text(entry.scale),
+            dim=held_text(texts, entry.dim),
+            scale=held_text(texts, entry.scale),
             first_score=entry.first_score,
-            first_served_model=shared.text(entry.first_served_model),
-            first_judge_config_id=shared.text(entry.first_judge_config_id),
+            first_served_model=held_text(texts, entry.first_served_model),
+            first_judge_config_id=held_text(texts, entry.first_judge_config_id),
             first_judge_temperature=entry.first_judge_temperature,
             first_judge_sent_settings=shared.settings(entry.first_judge_sent_settings),
-            repeat=None if entry.repeat is None else ScoreReading.of(entry.repeat, shared),
+            repeat=None if entry.repeat is None else ScoreReading.of(entry.repeat, shared, texts),
             cannot_tell=entry.cannot_tell,
         )
 
@@ -671,11 +686,11 @@ class RepeatReading:
     scores: tuple[RepeatedScoreReading, ...]
 
     @classmethod
-    def of(cls, repeat: JudgeRepeat, shared: SharedValues) -> RepeatReading:
+    def of(cls, repeat: JudgeRepeat, shared: SharedValues, texts: dict[str, str]) -> RepeatReading:
         """The reading of a stored repeat."""
         return cls(
-            judge_config_ids=shared.names(repeat.judge_config_ids),
-            scores=tuple(RepeatedScoreReading.of(entry, shared) for entry in repeat.scores),
+            judge_config_ids=shared.names(repeat.judge_config_ids, texts),
+            scores=tuple(RepeatedScoreReading.of(entry, shared, texts) for entry in repeat.scores),
         )
 
 
@@ -695,17 +710,17 @@ class SecondScoreReading:
     cannot_tell: str | None
 
     @classmethod
-    def of(cls, entry: SecondJudgeScore, shared: SharedValues) -> SecondScoreReading:
+    def of(cls, entry: SecondJudgeScore, shared: SharedValues, texts: dict[str, str]) -> SecondScoreReading:
         """The reading of a stored entry."""
         return cls(
-            dim=shared.text(entry.dim),
-            scale=shared.text(entry.scale),
+            dim=held_text(texts, entry.dim),
+            scale=held_text(texts, entry.scale),
             first_score=entry.first_score,
-            first_served_model=shared.text(entry.first_served_model),
-            first_judge_config_id=shared.text(entry.first_judge_config_id),
+            first_served_model=held_text(texts, entry.first_served_model),
+            first_judge_config_id=held_text(texts, entry.first_judge_config_id),
             first_judge_temperature=entry.first_judge_temperature,
             first_judge_sent_settings=shared.settings(entry.first_judge_sent_settings),
-            second=None if entry.second is None else ScoreReading.of(entry.second, shared),
+            second=None if entry.second is None else ScoreReading.of(entry.second, shared, texts),
             cannot_tell=entry.cannot_tell,
         )
 
@@ -720,12 +735,12 @@ class SecondJudgeReading:
     temperature: float | None
 
     @classmethod
-    def of(cls, judge: SecondJudge, shared: SharedValues) -> SecondJudgeReading:
+    def of(cls, judge: SecondJudge, shared: SharedValues, texts: dict[str, str]) -> SecondJudgeReading:
         """The reading of a stored judge."""
         configs = judge.config_ids
         return cls(
-            model=shared.text(judge.model),
-            config_ids=None if configs is None else shared.names(configs),
+            model=held_text(texts, judge.model),
+            config_ids=None if configs is None else shared.names(configs, texts),
             temperature=judge.temperature,
         )
 
@@ -740,13 +755,13 @@ class SecondJudgingReading:
     scores: tuple[SecondScoreReading, ...]
 
     @classmethod
-    def of(cls, judging: SecondJudging, shared: SharedValues) -> SecondJudgingReading:
+    def of(cls, judging: SecondJudging, shared: SharedValues, texts: dict[str, str]) -> SecondJudgingReading:
         """The reading of a stored pass."""
         return cls(
-            pass_id=shared.text(judging.pass_id),
-            judge=SecondJudgeReading.of(judging.judge, shared),
-            judge_config_ids=shared.names(judging.judge_config_ids),
-            scores=tuple(SecondScoreReading.of(entry, shared) for entry in judging.scores),
+            pass_id=held_text(texts, judging.pass_id),
+            judge=SecondJudgeReading.of(judging.judge, shared, texts),
+            judge_config_ids=shared.names(judging.judge_config_ids, texts),
+            scores=tuple(SecondScoreReading.of(entry, shared, texts) for entry in judging.scores),
         )
 
 
@@ -811,11 +826,16 @@ class ResultReading:
     scored_at: str
 
     @classmethod
-    def of(cls, result: EvalResult, shared: SharedValues | None = None) -> ResultReading:
+    def of(
+        cls, result: EvalResult, shared: SharedValues | None = None, texts: dict[str, str] | None = None
+    ) -> ResultReading:
         """The reading of a hydrated result: each attribute copied from it, never recomputed.
 
         :param result: A result the store returned, hydrated and validated.
         :ptype result: EvalResult
+        :param texts: The read's interned texts (:func:`held_text`), the reading function's own dict; ``None`` shares
+            none beyond this result's own.
+        :ptype texts: dict[str, str] | None
         :param shared: Where a read's repeated values are held once (:class:`SharedValues`); ``None`` shares none
             beyond this result's own.
         :ptype shared: SharedValues | None
@@ -823,7 +843,11 @@ class ResultReading:
         :rtype: ResultReading
         """
         held = SharedValues() if shared is None else shared
-        text = held.text
+        texts = {} if texts is None else texts
+
+        def text[T: str | None](value: T) -> T:
+            return held_text(texts, value)
+
         transcript, outcome, latency = result.transcript_score, result.outcome_score, result.latency
         deliveries = result.async_deliveries
         return cls(
@@ -846,24 +870,26 @@ class ResultReading:
             candidate_instance_id=text(result.candidate_instance_id),
             subject_id=text(result.subject_id),
             has_trace=result.has_trace,
-            precondition_outcomes=tuple(PreconditionReading.of(item, held) for item in result.precondition_outcomes),
-            goal_state_outcomes=tuple(GoalReading.of(item, held) for item in result.goal_state_outcomes),
-            rubric_scores=tuple(ScoreReading.of(score, held) for score in result.rubric_scores),
+            precondition_outcomes=tuple(
+                PreconditionReading.of(item, held, texts) for item in result.precondition_outcomes
+            ),
+            goal_state_outcomes=tuple(GoalReading.of(item, held, texts) for item in result.goal_state_outcomes),
+            rubric_scores=tuple(ScoreReading.of(score, held, texts) for score in result.rubric_scores),
             judge_model=text(result.judge_model),
-            transcript_score=None if transcript is None else ScoreReading.of(transcript, held),
-            outcome_score=None if outcome is None else ScoreReading.of(outcome, held),
-            judge_config_ids=held.names(result.judge_config_ids),
+            transcript_score=None if transcript is None else ScoreReading.of(transcript, held, texts),
+            outcome_score=None if outcome is None else ScoreReading.of(outcome, held, texts),
+            judge_config_ids=held.names(result.judge_config_ids, texts),
             judge_rescores=tuple(RescoreReading.of(rescore) for rescore in result.judge_rescores),
-            judge_repeats=tuple(RepeatReading.of(repeat, held) for repeat in result.judge_repeats),
-            judge_seconds=tuple(SecondJudgingReading.of(judging, held) for judging in result.judge_seconds),
+            judge_repeats=tuple(RepeatReading.of(repeat, held, texts) for repeat in result.judge_repeats),
+            judge_seconds=tuple(SecondJudgingReading.of(judging, held, texts) for judging in result.judge_seconds),
             cost_usd=result.cost_usd,
-            cost_roles=held.texts(result.cost_roles),
-            usage=tuple(UsageReading.of(row, held) for row in result.usage),
+            cost_roles=held.texts(result.cost_roles, texts),
+            usage=tuple(UsageReading.of(row, held, texts) for row in result.usage),
             latency=None if latency is None else LatencyReading.of(latency),
             async_deliveries=None if deliveries is None else tuple(deliveries),
-            covariates=held.mapping(result.covariates),
-            phase_timings=held.mapping(result.phase_timings),
-            host_measures=held.mapping(result.host_measures),
+            covariates=held.mapping(result.covariates, texts),
+            phase_timings=held.mapping(result.phase_timings, texts),
+            host_measures=held.mapping(result.host_measures, texts),
             variant_key=text(result.variant_key),
             identity_version=result.identity_version,
             termination=text(result.termination),
@@ -871,9 +897,9 @@ class ResultReading:
             turns_delivered=result.turns_delivered,
             runner_error=result.runner_error,
             judge_error=result.judge_error,
-            judge_cannot_tell=held.texts(result.judge_cannot_tell),
-            judge_cannot_tell_boundary=held.texts(result.judge_cannot_tell_boundary),
-            judge_cut_short=held.mapping(result.judge_cut_short),
+            judge_cannot_tell=held.texts(result.judge_cannot_tell, texts),
+            judge_cannot_tell_boundary=held.texts(result.judge_cannot_tell_boundary, texts),
+            judge_cut_short=held.mapping(result.judge_cut_short, texts),
             candidate_error=result.candidate_error,
             infra_error=result.infra_error,
             scored_at=result.scored_at,

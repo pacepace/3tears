@@ -115,7 +115,7 @@ class _OneDocumentPerId(InMemoryDocumentStore):
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         for key in [key for key in self.documents if key[1] == document["id"]]:
-            del self.documents[key]
+            self.delete(key[1], key[0])
         super().upsert(document, if_match=if_match, create_only=create_only)
 
 
@@ -991,12 +991,12 @@ def test_a_sweep_may_delete_as_it_goes() -> None:
     assert store.documents == {}
 
 
-class _SlowWrites(dict[tuple[str, str], dict[str, Any]]):
-    """A documents table whose every write takes long enough for another thread to arrive."""
+class _SlowWrites(InMemoryDocumentStore):
+    """The reference store, its every write taking long enough for another thread to arrive."""
 
-    def __setitem__(self, key: tuple[str, str], value: dict[str, Any]) -> None:
+    def _put(self, key: tuple[str, str], document: dict[str, Any] | None) -> None:
         time.sleep(0.01)
-        super().__setitem__(key, value)
+        super()._put(key, document)
 
 
 def test_the_racing_writers_case_holds_when_every_write_is_slow() -> None:
@@ -1005,6 +1005,19 @@ def test_the_racing_writers_case_holds_when_every_write_is_slow() -> None:
     With each write slowed, a store that compared outside the lock would let every writer pass the compare
     during another's write; the reference store still lands exactly one per round.
     """
-    store = InMemoryDocumentStore()
-    store.documents = _SlowWrites(store.documents)
+    store = _SlowWrites()
     _CASES["etag.racing_writers_one_lands"].run(store)
+
+
+@pytest.mark.loop_timing
+def test_sixty_thousand_writes_take_well_under_a_second() -> None:
+    """A write rebuilds only the store's small newest layer, its sealed layers merging two of a size into one, never a
+    map of every document: rebuilding one map whole per write took 68s for these 60,000, as many as the largest test
+    writes (``test_reads_past_fifty_thousand``)."""
+    store = InMemoryDocumentStore()
+    began = time.perf_counter()
+    for index in range(60_000):
+        store.upsert(_doc(f"d{index}"))
+    took = time.perf_counter() - began
+    assert len(store.documents) == 60_000
+    assert took < 1.0, f"60,000 writes took {took:.2f}s"
