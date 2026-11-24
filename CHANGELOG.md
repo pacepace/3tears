@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent/acl: one object per equal access shape
+
+**Added:** `AccessShapeInterner` (`threetears.agent.acl`), beside `AccessShape`: `intern(shape)` hands back the one
+canonical object for every equal shape. Its shapes are immutable chunks replaced whole (a hit is a plain read; a new
+shape appends a chunk and merges equal-sized ones, O(log shapes) chunks): 50k distinct shapes add in 0.2 s, where one
+whole snapshot per new shape took 30 s. The hub's per-person shapes use it: 50k people over 500 shapes hold 10.2 MB
+interned against 57.3 MB not.
+
+**Changed:** `ShapeActors` kept its shapes in an `OrderedDict` changed in place on every read. It now holds two
+generations of the same immutable chunks, replaced whole: a shape named or read is young, and when the young
+generation holds half of `max_shapes` it turns old and the old one is dropped whole, so the least recently used still
+go first. A young read is a plain read.
+
 ### core: the L1 fence holds no state a key
 
 **Changed:** the L1 fence (`_L1Fence`) kept a mutable activity record a key in flight, shared by every ticket on the
