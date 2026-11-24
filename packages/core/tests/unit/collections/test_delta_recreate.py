@@ -47,6 +47,7 @@ from threetears.nats.transport import IncomingMessage  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 import threetears.core.collections.delta_files as delta_files  # noqa: E402
 import threetears.core.collections.delta_recreate as delta_recreate  # noqa: E402
+import threetears.core.collections.volume_fulls as volume_fulls  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
@@ -788,3 +789,112 @@ async def test_only_the_replica_serving_under_the_lease_answers_and_with_none_th
     assert world.bus.registrations == [], "the writer stops serving when it leaves the lease"
     del replica
     assert await ask(_RESULTS, name, epoch) == "no_writer"
+
+
+# --- no full at all: the copy asks the writer for it (Pace's ruling of 2026-11-24) ---------------------------------
+
+
+class _Fulls:
+    """the writer's fold as the recreator asks it for a table's full (``MissingFulls``): the full it lacks is
+    published from L3's rows at the ask, standing in for the fold's rebuild (the cold start
+    ``test_delta_fold.test_a_copys_ask_for_a_full_has_a_started_fold_rebuild_it_with_no_commit_told`` proves); each
+    ask recorded."""
+
+    def __init__(self, db: _Db, volume: Path) -> None:
+        self.db = db
+        self.volume = volume
+        self.asked: list[str] = []
+
+    async def full_owed(self, table: str) -> bool:
+        self.asked.append(table)
+        current = volume_fulls.current_full_manifest(self.volume)
+        if current is not None and table in current.tables:
+            return False
+        schema = pa.schema(list(_TYPES.items()))
+        entries = {}
+        for name in (_RESULTS, _TALLIES):
+            rows = [dict(zip(_NAMES, row, strict=True)) for row in self.db.held(name)]
+            parts = tuple(
+                volume_fulls.write_full_part(
+                    self.volume,
+                    name,
+                    f"state:{state}",
+                    pa.Table.from_pylist([row for row in rows if row["state"] == state], schema=schema),
+                    f"{name}-inc:1",
+                )
+                for state in sorted({row["state"] for row in rows})
+            )
+            entries[name] = volume_fulls.FullTable(version=f"{name}-inc:1", parts=parts)
+        volume_fulls.publish_full_manifest(self.volume, term=1, tables=entries)
+        return True
+
+
+async def test_a_copy_starting_on_a_volume_with_no_full_asks_the_writer_for_it_and_loads_it_reading_no_l3(
+    _volume: Path,
+) -> None:
+    """Flips if a copy that starts from the delta-files volume and finds no full there waits without asking the
+    writer (a writer whose load had nothing new to write never began, so its fold never rebuilt the full and every
+    copy waited for ever: local burst replay, 2026-11-24), asks other than through the writer's recreate request, reads
+    L3 for it, or does not load the full the writer publishes and end equal to L3."""
+    db, log, lock = _Db(), _Log(), _Scopes()
+    for table in (_RESULTS, _TALLIES):
+        rows = [_row("VA", i, 10 + i) for i in range(3)] + [_row("IL", i, 20 + i) for i in range(2)]
+        db.insert(table, rows)
+        log.commit(table, [(row["state"], row["geo_id"]) for row in rows], None)
+    copy_l3 = _L3(db)
+    backend = DuckDBBackend()
+    _OPENED.append(backend.reset)
+    backend.initialize(_metadata())
+    registry = CollectionRegistry()
+    for name in (_RESULTS, _TALLIES):
+        registry.follow_generation(name)
+    bus = _Bus()
+    follower = CopyFollower(
+        registry,
+        _tables(),
+        backend,
+        copy_l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=50,
+        stamp_table="scope_epochs",
+        recreate=DeltaRecreateRequester(bus, _KEY_OF),
+        fulls=volume_fulls.VolumeFulls(_volume, _tables(), poll_seconds=0.01),
+    )
+    fulls = _Fulls(db, _volume)
+    recreator = DeltaRecreator(_tables(), _L3(db), log, fulls=fulls)
+    asked = _counted("copy_follower_full_requests_total", {"table": _RESULTS, "outcome": "recovering"})
+    async with serving_recreates(bus, _KEY_OF, recreator):
+        await asyncio.wait_for(follower.start(), timeout=5)
+        assert await follower.catch_up()
+
+    assert fulls.asked == [_RESULTS], "the copy asked once, for the first table no full holds"
+    assert [json.loads(request) for request in bus.requests] == [{"table": _RESULTS, "want": "full"}]
+    assert _counted("copy_follower_full_requests_total", {"table": _RESULTS, "outcome": "recovering"}) - asked == 1
+    assert copy_l3.statements == 0, "a copy never reads an opted-in table from L3 for a missing full"
+    for table in (_RESULTS, _TALLIES):
+        assert _copy(backend, table) == [(*row[:-1], _instant(row[-1])) for row in db.held(table)]
+    follower.stop()
+
+
+async def test_the_writer_answers_an_ask_for_a_full_present_or_recovering_and_refuses_one_it_cannot_serve(
+    _volume: Path,
+) -> None:
+    """Flips if the writer answers an ask for a full the current one holds other than ``present``, one it lacks other
+    than ``recovering`` (its fold set to rebuild it), or serves an ask for a table it does not fold, or with no fold
+    wired, instead of refusing it (the copy hears ``failed`` and asks again)."""
+    db, log = _Db(), _Log()
+    db.insert(_RESULTS, [_row("VA", 1, 11)])
+    db.insert(_TALLIES, [_row("VA", 1, 12)])
+    bus = _Bus()
+    fulls = _Fulls(db, _volume)
+    ask = DeltaRecreateRequester(bus, _KEY_OF)
+    async with serving_recreates(bus, _KEY_OF, DeltaRecreator(_tables(), _L3(db), log, fulls=fulls)):
+        assert await ask.full(_RESULTS) == "recovering"
+        assert await ask.full(_TALLIES) == "present"
+        assert await ask.full("elsewhere") == "failed"
+    async with serving_recreates(bus, _KEY_OF, DeltaRecreator(_tables(), _L3(db), log)):
+        assert await ask.full(_RESULTS) == "failed"
+    assert fulls.asked == [_RESULTS, _TALLIES]
+    assert await ask.full(_RESULTS) == "no_writer"

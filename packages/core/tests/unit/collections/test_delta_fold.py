@@ -10,6 +10,7 @@ import asyncio
 import dataclasses
 import os
 import re
+import shutil
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -1985,3 +1986,43 @@ async def test_a_commit_told_while_a_restarted_writer_relearns_is_folded_once_in
     await folds.wait()
     assert counting.folded == writer.files, "each delta folded once, in commit order"
     await folds.close()
+
+
+async def test_a_copys_ask_for_a_full_has_a_started_fold_rebuild_it_with_no_commit_told(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a copy's ask for a table's full (``DeltaFolds.full_owed``, through the writer's recreate request) does
+    not have a started fold rebuild every table the lost full held from L3, once each, and publish them at its term
+    with no commit told (a writer whose load has nothing new to write never begins: Pace's ruling of 2026-11-24); if an
+    ask the full can answer reads L3 at all; or if a fold not started reads anything (its writer's start rebuilds)."""
+    l3, folds = _l3(), _folds(tmp_path, workers)
+    generations = _Generations({"votes": "inc:7", "runs": "inc:3"})
+    assert await folds.start(l3, generations, changes=_Log(), version=12) == ("runs", "votes")
+    read = Counter(l3.statements)
+    # the volume holds its fulls: an ask costs one manifest read, nothing from L3
+    assert await folds.lacking() == ()
+    assert await folds.full_owed("votes") is False
+    await folds.wait()
+    assert l3.statements == read
+    # the volume lost its fulls (emptied): no write begins, the copy asks
+    shutil.rmtree(tmp_path / ".fulls")
+    assert await folds.lacking() == ("runs", "votes")
+    assert await folds.full_owed("votes") is True
+    await folds.wait()
+    assert folds.unfolded == frozenset(), "no commit was told"
+    manifest = current_full_manifest(tmp_path)
+    assert manifest is not None and manifest.term == 12 and set(manifest.tables) == {"votes", "runs"}
+    assert _held(tmp_path, "votes") == _sorted(_VOTES_ROWS)
+    assert l3.statements - read == Counter({"votes": 1, "runs": 1}), "each lost table read once, as a cold start"
+    assert await folds.full_owed("runs") is False
+    with pytest.raises(KeyError):
+        await folds.full_owed("elsewhere")
+    await folds.close()
+    # a fold no writer started knows neither L3 nor its term: the ask is owed, and nothing is read
+    unstarted = _folds(tmp_path / "other", workers)
+    (tmp_path / "other").mkdir()
+    assert not unstarted.started
+    assert await unstarted.full_owed("votes") is True
+    await unstarted.wait()
+    assert current_full_manifest(tmp_path / "other") is None
+    await unstarted.close()
