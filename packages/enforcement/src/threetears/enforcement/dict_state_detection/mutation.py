@@ -19,7 +19,7 @@ call, or an annotation naming one of those (or ``MutableMapping`` / ``MutableSet
   ``waits[f] = w``.
 
 The widened walk (``widened=True``; Pace's ruling of 2026-11-24, opt-in per repo through
-:attr:`DictStateConfig.immutable_widened` until each repo's sites are paid) closes three gaps:
+:attr:`DictStateConfig.immutable_widened` until each repo's sites are paid) closes four gaps:
 
 - (a) public attributes count too (``self.documents``, not only ``self._documents``);
 - (b) lists and deques count too (a list display or comprehension, ``list()`` / ``deque()``, an annotation naming
@@ -29,7 +29,15 @@ The widened walk (``widened=True``; Pace's ruling of 2026-11-24, opt-in per repo
   value (a dataclass's), ``ClassVar`` / ``Final`` / ``Optional`` wrappers, and a mutable class attribute (``_seen =
   set()``), changed through ``self`` or ``cls`` outside ``__init__`` / ``__post_init__``; and a change made from
   anywhere else in the same module through another object (``held.order.move_to_end(k)``) to a class-body field or a
-  private attribute of a class there.
+  private attribute of a class there;
+- (d) module-level state (Pace, decision 46): a module-level name bound to a dict, set, list or deque (assigned one,
+  or annotated as one) changed in place from any function or method of the module, directly, through ``global``, or
+  through a name bound to it or to an entry of it; reported as ``(module).NAME``. A constant built at import and never
+  changed after stays fine.
+
+An ``asyncio.Queue`` (the approved hand-off between coroutines, Pace 2026-11-23) is no container here: ``put_nowait``
+/ ``get_nowait`` on one hand an item over, in order, behind whatever bound its owner keeps, so a FIFO hand-off holds
+one rather than a deque it pops.
 
 Immutable values (tuple, frozenset, ``MappingProxyType``, ``Mapping`` / ``Sequence`` annotations) never count, and
 neither does a function-local container. Nor, in the widened walk, does the state of a call-scoped class (Pace,
@@ -47,7 +55,7 @@ from threetears.enforcement.common import Violation, iter_python_files, parse_py
 from threetears.enforcement.dict_state_detection.call_scope import call_scoped_classes
 from threetears.enforcement.dict_state_detection.config import DictStateAllowlistEntry
 
-__all__ = ["find_mutated_state_violations", "find_stale_immutable_debts", "is_non_serving"]
+__all__ = ["find_mutated_state_violations", "find_stale_immutable_debts", "is_non_serving", "without_call_scoped"]
 
 _CATEGORY = "dict_state_detection.mutated_in_place"
 _STALE_CATEGORY = "dict_state_detection.stale_immutable_debt"
@@ -98,6 +106,10 @@ _SEQUENCE_MUTATORS: frozenset[str] = frozenset(
 #: gap (c): annotation wrappers whose first argument is the field's real type
 _WRAPPERS: frozenset[str] = frozenset({"ClassVar", "Final", "Optional", "Annotated"})
 
+#: gap (d): the holder a module-level container is reported under (``(module).NAME``): never a class, so never
+#: call-scoped
+_MODULE_HOLDER = "(module)"
+
 #: the reads that hand back an entry of a dict (bound to a name, a change of the name is a change of the entry)
 _ENTRY_READS: frozenset[str] = frozenset({"get", "setdefault"})
 
@@ -140,11 +152,14 @@ class _Scope:
     :ivar owner: the function's class, or None for a module function
     :ivar own: the attributes of ``owner`` whose change through ``self`` / ``cls`` counts (empty in a builder)
     :ivar shared: gap (c): each class-body field or private attribute of the module, with the classes holding it
+    :ivar module: gap (d): the module-level names holding a mutable container that the function reaches (not bound
+        locally there)
     """
 
     owner: str | None
     own: frozenset[str]
     shared: tuple[tuple[str, str], ...]
+    module: frozenset[str] = frozenset()
 
 
 def _receiver_attr(node: ast.expr, rules: _Rules) -> str | None:
@@ -325,7 +340,9 @@ def _reached(node: ast.expr, scope: _Scope, aliases: dict[str, str], rules: _Rul
     while isinstance(node, ast.Subscript):
         node = node.value
     if isinstance(node, ast.Name):
-        return aliases.get(node.id)
+        if node.id in aliases:
+            return aliases[node.id]
+        return f"{_MODULE_HOLDER}.{node.id}" if node.id in scope.module else None
     if not isinstance(node, ast.Attribute):
         return None
     if isinstance(node.value, ast.Name) and node.value.id in rules.receivers:
@@ -385,6 +402,9 @@ def _changed(stmt: ast.AST, scope: _Scope, aliases: dict[str, str], rules: _Rule
         target = stmt.target
         if isinstance(target, (ast.Subscript, ast.Attribute)):
             return _reached(target, scope, aliases, rules)
+        if isinstance(target, ast.Name) and target.id in scope.module and target.id not in aliases:
+            # gap (d): ``global X`` then ``X += ...`` changes a module-level container in place
+            return f"{_MODULE_HOLDER}.{target.id}"
     elif isinstance(stmt, ast.Call) and isinstance(stmt.func, ast.Attribute) and stmt.func.attr in rules.mutators:
         return _entry_of(stmt.func.value, scope, aliases, rules)
     return None
@@ -460,6 +480,65 @@ def _module_functions(body: list[ast.stmt]) -> list[ast.FunctionDef | ast.AsyncF
     return found
 
 
+def _module_state(tree: ast.Module, rules: _Rules) -> frozenset[str]:
+    """gap (d): the module-level names bound to a mutable container (assigned one, or annotated as one).
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param rules: the walk
+    :ptype rules: _Rules
+    :return: their names
+    :rtype: frozenset[str]
+    """
+    found: set[str] = set()
+    pending = list(tree.body)
+    while pending:
+        stmt = pending.pop()
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            if _is_mutable_annotation(stmt.annotation, rules) or (
+                stmt.value is not None and _is_mutable_value(stmt.value, rules)
+            ):
+                found.add(stmt.target.id)
+        elif isinstance(stmt, ast.Assign) and _is_mutable_value(stmt.value, rules):
+            found.update(target.id for target in stmt.targets if isinstance(target, ast.Name))
+        elif not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # under ``if`` / ``try`` / ``with`` at module level, still module state
+            for field_name in ("body", "orelse", "finalbody"):
+                inner = getattr(stmt, field_name, None)
+                if isinstance(inner, list):
+                    pending.extend(child for child in inner if isinstance(child, ast.stmt))
+            for handler in getattr(stmt, "handlers", None) or ():
+                if isinstance(handler, ast.ExceptHandler):
+                    pending.extend(handler.body)
+    return frozenset(found)
+
+
+def _locally_bound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """the names ``function`` (or a function nested in it) binds as its own locals, so a module-level name of the
+    same spelling is not what it changes: parameters, assignment and loop targets, imports, nested definitions; a name
+    declared ``global`` is the module's.
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :return: the names
+    :rtype: frozenset[str]
+    """
+    bound: set[str] = set()
+    declared: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Global):
+            declared.update(node.names)
+        elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            bound.add(node.id)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update((alias.asname or alias.name.split(".")[0]) for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node is not function:
+            bound.add(node.name)
+    return frozenset(bound - declared)
+
+
 def _scan_module(tree: ast.Module, module_path: Path, rules: _Rules) -> list[Violation]:
     """every change in place in one module.
 
@@ -499,6 +578,14 @@ def _scan_module(tree: ast.Module, module_path: Path, rules: _Rules) -> list[Vio
             violations.extend(_scan_function(function, _Scope(None, frozenset(), shared), module_path, rules))
     if not rules.widened:
         return violations
+    state = _module_state(tree, rules)
+    if state:
+        units = [*_module_functions(tree.body), *(method for cls in classes for method in _methods(cls))]
+        for function in units:
+            reached = state - _locally_bound(function)
+            if reached:
+                scope = _Scope(None, frozenset(), (), module=reached)
+                violations.extend(_scan_function(function, scope, module_path, rules))
     # a function nested in a class nested in a function is walked from both; each change counts once
     seen: set[tuple[int, str]] = set()
     unique: list[Violation] = []
@@ -562,6 +649,29 @@ def find_mutated_state_violations(
     if not widened:
         return violations
     scoped = call_scoped_classes(tree for _, tree in parsed)
+    return [violation for violation in violations if not _call_scoped(violation.symbol, scoped)]
+
+
+def without_call_scoped(violations: list[Violation], roots: tuple[Path, ...]) -> list[Violation]:
+    """``violations`` less those on the state of a call-scoped class (decided across every module under ``roots``):
+    an object that lives and dies inside one call is no persistent state, whatever it starts with.
+
+    :param violations: ``Class.attr`` violations (the ``__init__`` walker's, say)
+    :ptype violations: list[Violation]
+    :param roots: the trees a class's uses are looked for in
+    :ptype roots: tuple[Path, ...]
+    :return: the violations left
+    :rtype: list[Violation]
+    """
+    if not violations:
+        return violations
+    trees: list[ast.Module] = []
+    for root in roots:
+        for module_path in [root] if root.is_file() else list(iter_python_files(root)):
+            tree = parse_python_file(module_path)
+            if tree is not None:
+                trees.append(tree)
+    scoped = call_scoped_classes(trees)
     return [violation for violation in violations if not _call_scoped(violation.symbol, scoped)]
 
 

@@ -47,6 +47,7 @@ from threetears.enforcement.dict_state_detection.mutation import (
     find_mutated_state_violations,
     find_stale_immutable_debts,
     is_non_serving,
+    without_call_scoped,
 )
 from threetears.enforcement.dict_state_detection.walkers import (
     filter_against_allowlist,
@@ -97,6 +98,9 @@ def run_dict_state_enforcement(
             config.known_violations,
             config.repo_root,
         )
+        if config.immutable_widened:
+            # decision 46: an object that lives and dies inside one call is no persistent state
+            true_violations = without_call_scoped(true_violations, src_roots)
         aggregated.extend(true_violations)
         if config.immutable_roots:
             mutated = find_mutated_state_violations(
