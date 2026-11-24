@@ -45,3 +45,19 @@ recorded as such, not invented.
 
 **2026-11-22.** "Please also make sure change logs are the modern fragment style." The change
 record is `.prawduct/changes/`, one fragment per scope; there is no `.prawduct/change-log.md`.
+
+**2026-11-24.** On the seven unintegrated evals delegate branches (all pushed; worktrees removed,
+branches kept):
+- Re-root (`evals/bp-x0`, `bp-x1`, `bp-x2`, #1199): "Still wanted, later." Keep the branches as the
+  starting point: `bp-x1`'s rewrite script as is, `bp-x0`'s name map regenerated at the cut-over
+  base (its 541-name map predates the removal of the unreached exports), `bp-x2` redone.
+- S5a-3 (`evals/bp-s5a3`): "Drop S5a-3." Structure work is paused and main has moved past it. If
+  S5b returns, it is rebuilt from current main; the pushed branch is reference only.
+- B1 (`evals/bp-b1`): "Park it as source." Not merged. When a report needs the people-corrected
+  difference, a fresh branch from evals/main takes only the estimator, without the 20/80 floors
+  (the 2026-11-16 ruling).
+- R1 (`evals/bp-r1`) and M0 (`evals/bp-m0`) were not asked; they follow from earlier rulings and
+  are recorded in the evals program plan (`program-big-picture.md`, 2026-11-24).
+
+**2026-11-24.** The extract fix's Critic verify pass may run with `--force`: the worktree had no
+session marker, and the suite had run on that exact tree.
