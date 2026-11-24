@@ -15,7 +15,7 @@ architecture (DS-11-01..15):
   :mod:`threetears.datasources.drivers.sync_bridge`. driver does NOT
   instantiate :class:`concurrent.futures.ThreadPoolExecutor` directly
   (enforcement test catches drift).
-- **connection cache** (``collections.deque``) of size
+- **connection cache** (a tuple replaced whole) of size
   :attr:`RedshiftConnectionConfig.connection_cache_size`. Redshift
   TLS+auth costs 1-3s per fresh connection, so the cache amortizes
   the handshake across queries. mutations guarded by
@@ -136,7 +136,6 @@ on every checkout.
 from __future__ import annotations
 
 import asyncio
-import collections
 import contextlib
 import dataclasses
 import functools
@@ -930,6 +929,28 @@ def _closer(conn: "RedshiftConnection") -> Callable[[], None]:
     return functools.partial(_close_connection_sync, conn)
 
 
+class _CachedConnections:
+    """a driver's idle connections, oldest first: a small bounded tuple (``connection_cache_size``) replaced whole under
+    the driver's cache lock, never changed in place (Pace, decision 45).
+
+    A holder rather than the tuple itself so the GC-time finalize, which must not reference the driver, still sees
+    whatever is cached when it runs.
+    """
+
+    __slots__ = ("held",)
+
+    def __init__(self) -> None:
+        self.held: tuple[RedshiftConnection, ...] = ()
+
+    def __iter__(self) -> Iterator["RedshiftConnection"]:
+        """the connections cached at the moment iteration starts.
+
+        :return: an iterator over them
+        :rtype: Iterator[RedshiftConnection]
+        """
+        return iter(self.held)
+
+
 def _drain_cache_static(
     connections: Iterable["RedshiftConnection"],
 ) -> None:
@@ -1077,11 +1098,12 @@ class RedshiftDriver(Driver):
             max_workers=config.executor_max_workers,
             name=f"rs-{config.host}",
         )
-        # connection cache: deque bounded by config.connection_cache_size.
+        # connection cache: a tuple bounded by config.connection_cache_size, replaced whole under the cache lock.
         # lazy-fill -- no eager warmup. each enqueued connection has
         # already had ``SET statement_timeout`` applied (see
         # :meth:`_open_connection`).
-        self._cache: collections.deque["RedshiftConnection"] = collections.deque(maxlen=config.connection_cache_size)
+        self._cache = _CachedConnections()
+        self._cache_size = config.connection_cache_size
         # cache mutations are guarded inside this lock so concurrent
         # acquire/release on the same event loop don't race.
         self._cache_lock = asyncio.Lock()
@@ -1398,8 +1420,10 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
         conn: RedshiftConnection | None = None
         async with self._cache_lock:
-            if self._cache:
-                conn = self._cache.popleft()
+            held = self._cache.held
+            if held:
+                conn = held[0]
+                self._cache.held = held[1:]
         if conn is not None:
             # re-apply search_path on the reused session: a recycled / reset
             # redshift connection can lose the SET issued at open, which surfaces
@@ -1637,11 +1661,12 @@ class RedshiftDriver(Driver):
             return
         evicted: RedshiftConnection | None = None
         async with self._cache_lock:
-            if len(self._cache) == self._cache.maxlen:
-                # the deque would drop the leftmost on append; pop it
-                # explicitly so we can close it cleanly.
-                evicted = self._cache.popleft()
-            self._cache.append(conn)
+            held = self._cache.held
+            if len(held) >= self._cache_size:
+                # the cache is full: drop the oldest explicitly so we can close it cleanly.
+                evicted = held[0]
+                held = held[1:]
+            self._cache.held = (*held, conn)
         if evicted is not None:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
@@ -1666,8 +1691,10 @@ class RedshiftDriver(Driver):
         async with self._cache_lock:
             # remove if present; the connection may already be out of
             # the cache if it's currently checked out for a query.
-            with self._suppress_close():
-                self._cache.remove(conn)
+            held = self._cache.held
+            if conn in held:
+                at = held.index(conn)
+                self._cache.held = held[:at] + held[at + 1 :]
         with self._suppress_close():
             await self._bridge.to_thread_with_cancel(
                 _closer(conn),
@@ -2991,8 +3018,8 @@ class RedshiftDriver(Driver):
         # snapshot + drain under the lock so concurrent acquire/
         # release don't race with the drain.
         async with self._cache_lock:
-            to_close = list(self._cache)
-            self._cache.clear()
+            to_close = list(self._cache.held)
+            self._cache.held = ()
         for conn in to_close:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
