@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the writer rebuilds and recovers a table with NUMERIC or enum columns
+
+**Fixed:** `DeltaFolds.start` and its rebuild and recovery of a full refused any table with a `NUMERIC(p, s)`, enum or
+vector column ("column_type=NUMERIC_TYPE requires both precision and scale"): they built a `Column` from the type tag
+alone. They now type the columns from the tag without making a `Column` (all the rail's Arrow types read), so the
+writer's start publishes the full (decision 14). The values round-trip exactly through fold, rebuild and recovery.
+
 ### core: delta files' save, fold, volume and check metrics
 
 **Added:** metrics for the delta files' dashboard row: `delta_file_save_seconds{where}` (a write's save, observed as it

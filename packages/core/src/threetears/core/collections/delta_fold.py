@@ -145,7 +145,7 @@ from threetears.core.collections.delta_keep import DeltaKeepRule
 from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
-from threetears.core.collections.schema_backed import Column, TableSchema, rail_arrow_types, sql_cast
+from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types, sql_cast
 from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
@@ -1961,6 +1961,28 @@ class _Reader:
     page_size: int
 
 
+@dataclass(frozen=True, slots=True)
+class _Kind:
+    """a column's name and type tag: all :func:`~threetears.core.collections.schema_backed.rail_arrow_types` reads of
+    a column. Never a :class:`~threetears.core.collections.schema_backed.Column` built from the tag alone: that is
+    refused for a column whose declaration needs more (a ``NUMERIC`` its precision and scale, an enum its values, a
+    vector its size), which refused the writer's start and its rebuild of a full for every such table (2026-11-23)."""
+
+    name: str
+    column_type: str
+
+
+def _kinds_types(kinds: Sequence[tuple[str, str]]) -> dict[str, Any]:
+    """columns' Arrow types as the L3 rail answers them, in order, from their ``(column, column_type)`` tags.
+
+    :param kinds: each column's type tag, :attr:`FoldedTable.kinds`
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: column -> its Arrow type
+    :rtype: dict[str, Any]
+    """
+    return rail_arrow_types([_Kind(name, kind) for name, kind in kinds])
+
+
 def _table_types(table: FoldedTable) -> dict[str, Any]:
     """a table's columns' Arrow types as the L3 rail answers them, in order.
 
@@ -1972,7 +1994,7 @@ def _table_types(table: FoldedTable) -> dict[str, Any]:
     """
     if not table.kinds:
         raise ValueError(f"{table.name}: a rebuild reads the table by its column types; make it FoldedTable.of")
-    return rail_arrow_types([Column(name, kind) for name, kind in table.kinds])
+    return _kinds_types(table.kinds)
 
 
 def _lead_array(table: FoldedTable) -> str:
@@ -2357,7 +2379,7 @@ def recovery_reach_job(
     """
     base = Path(root)
     table = _Folding.of(plain)
-    types = rail_arrow_types([Column(name, kind) for name, kind in kinds])
+    types = _kinds_types(kinds)
     kind_of = dict(kinds)
     read = [*table.key, *((delta_scope,) if delta_scope is not None else ())]
     schema = pa.schema([(column, types[column]) for column in read])
@@ -2500,7 +2522,7 @@ def recovery_delta_job(
     """
     base = Path(root)
     table = _Folding.of(plain)
-    types = rail_arrow_types([Column(name, kind) for name, kind in kinds])
+    types = _kinds_types(kinds)
     schema = pa.schema(list(types.items()))
     read = [_read_rows_file(base / file).select(list(types)).cast(schema) for file in pages_files]
     rows = pa.concat_tables(read) if read else schema.empty_table()

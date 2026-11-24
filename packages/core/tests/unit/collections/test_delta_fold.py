@@ -45,6 +45,8 @@ from threetears.core.collections.epoch_change import (  # noqa: E402
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
+    ENUM_TYPE,
+    NUMERIC_TYPE,
     STRING_TYPE,
     Column,
     TableSchema,
@@ -314,8 +316,9 @@ async def test_each_round_s_seconds_and_the_volume_s_bytes_per_table_are_recorde
     writer.tell(file)
     await writer.folds.wait()
     assert _rounds_timed("nothing_due") == nothing + 1
-    assert _unfolded("bytes") == (tmp_path / file).stat().st_size
-    assert _volume_bytes() == _full_size(tmp_path) + _unfolded("bytes"), "the full plus the delta not yet folded"
+    size = (tmp_path / file).stat().st_size
+    assert _unfolded("bytes") == size
+    assert _volume_bytes() == _full_size(tmp_path) + size, "the full plus the delta not yet folded"
     await writer.folds.close()
 
 
@@ -1309,6 +1312,124 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
     assert not (tmp_path / lost).exists(), "the damaged file is deleted once the recovery is published"
     assert not folds.unfolded
     await folds.close()
+
+
+def _shares_schema() -> TableSchema:
+    """a table with ``NUMERIC(p, s)`` columns and an enum, as 14 of reports' 17 opted-in tables have: a column whose
+    declaration needs more than its type tag."""
+    return TableSchema(
+        name="shares",
+        primary_key=("state", "geo_id"),
+        columns=[
+            Column("state", STRING_TYPE),
+            Column("geo_id", BIGINT_TYPE),
+            Column("share", NUMERIC_TYPE, nullable=True, precision=7, scale=4),
+            Column("margin", NUMERIC_TYPE, nullable=True, precision=14, scale=2),
+            Column("status", ENUM_TYPE, nullable=True, enum_type=("final", "partial"), enum_name="race_status"),
+        ],
+        l1_eviction=TEST_L1_TABLE,
+        delta_files=True,
+    )
+
+
+def _shares(state: str, geo_ids: range, bump: int = 0) -> list[dict[str, Any]]:
+    """rows as the rail answers them: a NUMERIC as its digits at its declared scale."""
+    return [
+        {
+            "state": state,
+            "geo_id": g,
+            "share": f"{(g + bump) % 1000}.{(g * 37 + bump) % 10000:04d}",
+            "margin": f"-{(g * 1234567 + bump) % 10**12}.{g % 100:02d}",
+            "status": "final" if g % 2 else "partial",
+        }
+        for g in geo_ids
+    ]
+
+
+class _SharesL3(ThreadedDuckDB):
+    """L3 holding ``shares`` as a DuckDB (its NUMERICs as the rail's text), keeping every statement it answers."""
+
+    _COLUMNS = ("state", "geo_id", "share", "margin", "status")
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        conn = duckdb.connect()
+        conn.execute(
+            "CREATE TABLE shares (state VARCHAR, geo_id BIGINT, share VARCHAR, margin VARCHAR, status VARCHAR, "
+            "PRIMARY KEY (state, geo_id))"
+        )
+        held = pa.Table.from_pylist(
+            [{column: row.get(column) for column in self._COLUMNS} for row in rows],
+            schema=pa.schema(
+                [
+                    ("state", pa.string()),
+                    ("geo_id", pa.int64()),
+                    ("share", pa.string()),
+                    ("margin", pa.string()),
+                    ("status", pa.string()),
+                ]
+            ),
+        )
+        conn.register("held", held)
+        conn.execute("INSERT INTO shares SELECT * FROM held")
+        conn.unregister("held")
+        super().__init__(conn)
+        self.db = conn
+        self.statements: list[str] = []
+
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append(query)
+        return await super().fetch(query, *params)
+
+    async def fetch_arrow(
+        self, query: str, /, *params: Any, types: Mapping[str, Any] | None, size: int | None = None
+    ) -> Any:
+        self.statements.append(query)
+        return await super().fetch_arrow(query, *params, types=types, size=size)
+
+
+async def test_a_table_with_numeric_and_enum_columns_folds_rebuilds_and_recovers_its_values_exactly(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer cannot rebuild or recover a table whose columns need more than their type tag to declare
+    (a ``NUMERIC(p, s)`` needs its precision and scale, an enum its values): its start refused ("column_type=
+    NUMERIC_TYPE requires both precision and scale") and no full ever published (decision 14), or if a NUMERIC's digits
+    or an enum's value do not round-trip exactly through the fold, the rebuild from L3 and the recovery by key."""
+    schema = _shares_schema()
+    folded_root = tmp_path / "folded"
+    folded_root.mkdir()
+    writer = _writer(folded_root, schema, workers)
+    l3 = {(row["state"], row["geo_id"]): row for row in _shares("TX", range(300)) + _shares("GA", range(40))}
+    await writer.commit(list(l3.values()))
+    assert _held(folded_root, "shares") == _sorted(list(l3.values())), "the fold keeps every digit and value"
+
+    # the rebuild of a full from L3: no full on the volume
+    rebuilt_root = tmp_path / "rebuilt"
+    rebuilt_root.mkdir()
+    rebuild = DeltaFolds(rebuilt_root, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    whole = _L3({"shares": list(l3.values())}, {"shares": ("state", "geo_id")})
+    assert await rebuild.start(whole, _Generations({"shares": "inc:1"}), changes=_Log(), version=7) == ("shares",)
+    assert whole.statements["shares"] == 1, "one whole read: the cold start"
+    assert _held(rebuilt_root, "shares") == _sorted(list(l3.values())), "the rebuilt full holds L3's values exactly"
+    await rebuild.close()
+
+    # the recovery by key: the epoch log lost, an update and a commit that never landed left on the volume
+    changed = _shares("TX", range(10, 14), bump=5)
+    leftovers = [writer.save(changed)]
+    l3.update({(row["state"], row["geo_id"]): row for row in changed})
+    leftovers.append(writer.save(_shares("TX", range(9000, 9001))))  # its commit never landed: L3 never took it
+    await writer.folds.close()
+    _no_whole_read(monkeypatch)
+    reader = _SharesL3(list(l3.values()))
+    recovery = DeltaFolds(folded_root, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    labels = {"table": "shares", "why": "log_lost", "outcome": "recovered"}
+    before = REGISTRY.get_sample_value("delta_fold_recoveries_total", labels) or 0.0
+    token = f"inc:{len(writer.files)}"
+    assert await recovery.start(reader, _Generations({"shares": token}), changes=_Log(), version=8) == ("shares",)
+    assert REGISTRY.get_sample_value("delta_fold_recoveries_total", labels) == before + 1
+    assert reader.statements, "recovered from L3 by key"
+    assert _held(folded_root, "shares") == _sorted(list(l3.values())), "the recovered full holds L3's values exactly"
+    assert not any((folded_root / file).exists() for file in leftovers), "the leftovers are replaced"
+    await recovery.close()
 
 
 async def test_no_full_at_all_with_the_log_lost_is_still_the_one_cold_start_whole_read(
