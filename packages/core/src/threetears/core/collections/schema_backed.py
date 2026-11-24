@@ -190,6 +190,10 @@ OnConflict = Literal["raise", "ignore", "update"]
 
 log = get_logger(__name__)
 
+#: ``committed_before`` not given (:meth:`SchemaBackedCollection._drop_and_advance`): the change was named by no broker
+#: reply (a reset, a failed load's settle, a key-prefix delete settled after its transaction)
+_NO_REPLY: Final = object()
+
 
 #: a page of more values than this (rows times the schema's columns) is read-coerced on a worker thread taking turns
 #: with the loop (:func:`_coerced_page`), a smaller one on the loop. A refill's page at the production reply cap is
@@ -3607,7 +3611,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                             # one epoch a request, each naming its own file: a file holding a later request's rows
                             # would hand a copy rows L3 does not hold yet, or never will once that request fails
                             await self._drop_and_advance(
-                                "loaded from files", reach=reach, rows=result.row_count, requests=1
+                                "loaded from files",
+                                reach=reach,
+                                committed_before=before,
+                                rows=result.row_count,
+                                requests=1,
                             )
                     landed = True
                 finally:
@@ -3910,7 +3918,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 level="error",
             )
 
-    async def _drop_and_advance(self, reason: str, *, reach: WholeReach | None = None, **detail: Any) -> None:
+    async def _drop_and_advance(
+        self,
+        reason: str,
+        *,
+        reach: WholeReach | None = None,
+        committed_before: object | None = _NO_REPLY,
+        **detail: Any,
+    ) -> None:
         """drop the table from this process's caches, then advance its write generation once.
 
         After a change to the table that left no row-level write mark (:meth:`truncate`,
@@ -3924,6 +3939,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             prefixes again, or the table as on a first start (:meth:`CollectionRegistry.drop_partitions`), and the
             epoch's record names the same, recorded here on a direct pool and by the broker that advances for a pod
         :ptype reach: WholeReach | None
+        :param committed_before: this task's record of its last commit's generations as it stood before the request
+            (``committed_generations_record``), for a request a broker answered: the epoch its reply names is the one
+            this process applies from the file when the collection advances none of its own
+            (:meth:`_advance_then_apply_file`); not given for a change no broker reply names
+        :ptype committed_before: object | None
         :param detail: more to log
         :ptype detail: Any
         :return: nothing
@@ -3948,7 +3968,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             self.drop_cached_table()
         if from_file:
             assert registry is not None and reach is not None and delta_file is not None  # noqa: S101 -- from_file
-            await self._advance_then_apply_file(registry, reason, reach, delta_file, **detail)
+            await self._advance_then_apply_file(
+                registry, reason, reach, delta_file, committed_before=committed_before, **detail
+            )
             return
         bump = await self._bump_after_commit(None, reach=reach)
         log.info(
@@ -3959,7 +3981,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise bump.failure
 
     async def _advance_then_apply_file(
-        self, registry: Any, reason: str, reach: WholeReach, delta_file: str, **detail: Any
+        self,
+        registry: Any,
+        reason: str,
+        reach: WholeReach,
+        delta_file: str,
+        *,
+        committed_before: object | None = _NO_REPLY,
+        **detail: Any,
     ) -> None:
         """:meth:`_drop_and_advance` for a change whose delta file was saved (a load's request, a key-prefix delete of
         a table that opts in): the generation advances first, then this process applies the epoch as a follower hears
@@ -3975,6 +4004,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype reach: WholeReach
         :param delta_file: the change's delta file, as its record names it
         :ptype delta_file: str
+        :param committed_before: as :meth:`_drop_and_advance` takes it
+        :ptype committed_before: object | None
         :param detail: more to log
         :ptype detail: Any
         :return: nothing
@@ -3982,11 +4013,22 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises GenerationUnavailableError: when the generation had to advance and could not
         """
         bump = await self._bump_after_commit(None, reach=reach)
-        if bump.token is not None:
+        token = bump.token
+        if token is None and committed_before is not _NO_REPLY:
+            # a collection that advances no generation of its own (a pod's table built without L2, NO_L2): its broker
+            # advanced the table after the request and named the epoch in its reply, the record naming this file.
+            # This process applies that epoch from the file, as every other pod does, and accounts it as its own so its
+            # catch-up does not apply it again. Dropping the prefixes instead told this process's own copy to read them
+            # from L3, which a copy of a table that opts in refuses: the writer's copy refused every load of its own
+            # and waited for the next full (2026-11-24, reports' LSF loads in test_refresh_live's rollout tests)
+            token = reply_generations_since(committed_before).get(self.table_name)
+            if token is not None:
+                registry.account_generation(self.table_name, token)
+        if token is not None:
             await registry.apply_epoch_change(
                 EpochChange(
                     table=self.table_name,
-                    token=bump.token,
+                    token=token,
                     whole_table=True,
                     prefixes=[dict(prefix) for prefix in reach.prefixes],
                     delta_file=delta_file,
@@ -4000,7 +4042,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 "extra_data": {
                     "table": self.table_name,
                     "change": reason,
-                    "generation": bump.token,
+                    "generation": token,
                     "file": delta_file,
                     **detail,
                 }
