@@ -54,11 +54,11 @@ left stale. Binding alone (:func:`bind_caller_cache_to_access_tables`) never cat
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar
 from uuid import UUID, uuid7
 
+from threetears.core.frozen_state import EMPTY, with_entry, without_entries, without_entry
 from threetears.observe import get_logger
 
 from threetears.agent.acl.access_tables import ACCESS_TABLES, DegradedEvictions
@@ -66,7 +66,7 @@ from threetears.agent.acl.collections import GroupMemberCollection
 from threetears.agent.acl.types import MemberType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
     from threetears.core.security.door_request import DoorCredential
@@ -109,6 +109,27 @@ class CallerKey:
     user_id: UUID | None
 
 
+class _Held(Generic[V]):
+    """one caller's answer as the cache holds it, stamped by each read under the cache's lock.
+
+    A read moves only this stamp, in place and in O(1), so a hit never rebuilds the cache's map; the map is
+    rebuilt whole only on a store or an eviction, and the bound drops the oldest stamp, so the order is
+    exactly least recently read or stored.
+
+    :param value: the answer
+    :ptype value: V
+    :param tick: the cache's tick at the store
+    :ptype tick: int
+    """
+
+    __slots__ = ("tick", "value")
+
+    def __init__(self, value: V, tick: int) -> None:
+        self.value = value
+        #: the cache's tick at this caller's last store or read
+        self.tick = tick
+
+
 class CallerAccessCache(Generic[V]):
     """one answer per caller, derived from the access tables, with no age; see the module docstring.
 
@@ -132,8 +153,10 @@ class CallerAccessCache(Generic[V]):
         if max_entries < 1:
             raise ValueError(f"a per-caller cache holds at least one answer, not {max_entries}")
         self._max_entries = max_entries
-        # least recently used first; a hit and a store both move a caller to the end
-        self._entries: OrderedDict[CallerKey, V] = OrderedDict()
+        # a read-only snapshot replaced whole on a store or an eviction; a hit stamps its _Held's tick in place
+        self._entries: Mapping[CallerKey, _Held[V]] = EMPTY
+        # moved by every store and hit: the smallest held tick is the least recently used
+        self._tick = 0
         self._capacity_evictions = 0
         self._lock = threading.Lock()
         # moved by every eviction; see read_fence
@@ -195,9 +218,11 @@ class CallerAccessCache(Generic[V]):
         held: V | None = None
         if self.trusted:
             with self._lock:
-                held = self._entries.get(caller)
-                if held is not None:
-                    self._entries.move_to_end(caller)
+                entry = self._entries.get(caller)
+                if entry is not None:
+                    self._tick += 1
+                    entry.tick = self._tick
+                    held = entry.value
         return held
 
     def put(self, caller: CallerKey, value: V, *, fence: int) -> bool:
@@ -220,12 +245,14 @@ class CallerAccessCache(Generic[V]):
         with self._lock:
             stored = trusted and fence == self._evictions
             if stored:
-                self._entries[caller] = value
-                self._entries.move_to_end(caller)
-                while len(self._entries) > self._max_entries:
-                    self._entries.popitem(last=False)
+                self._tick += 1
+                entries = with_entry(self._entries, caller, _Held(value, self._tick))
+                while len(entries) > self._max_entries:
+                    oldest = min(entries, key=lambda key: entries[key].tick)
+                    entries = without_entry(entries, oldest)
                     first_at_bound = self._capacity_evictions == 0
                     self._capacity_evictions += 1
+                self._entries = entries
             else:
                 self._fence_skipped_stores += 1
         if not stored:
@@ -293,8 +320,7 @@ class CallerAccessCache(Generic[V]):
                 doomed = [key for key in self._entries if key.user_id == member_id]
             else:
                 doomed = [key for key in self._entries if key.agent_id == member_id]
-            for key in doomed:
-                del self._entries[key]
+            self._entries = without_entries(self._entries, doomed)
         return len(doomed)
 
     def invalidate_all(self) -> None:
@@ -305,7 +331,7 @@ class CallerAccessCache(Generic[V]):
         """
         with self._lock:
             self._evictions += 1
-            self._entries.clear()
+            self._entries = EMPTY
 
 
 def bind_caller_cache_to_access_tables(
