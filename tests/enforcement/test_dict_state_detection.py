@@ -69,30 +69,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/utils/write_ledger.py",
-        class_name="WriteLedger",
-        attr_name="_open",
-        rationale=(
-            "the start of each L3 write open on this process's connections: a fact about this process alone, whose death ends them; its watermark is what reaches NATS (the backstop's beat), so another process never reads this"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/utils/write_ledger.py",
-        class_name="WriteLedger",
-        attr_name="_ended",
-        rationale=(
-            "the oldest start of this process's writes that ended in each second of the last minute: per-process by nature, read only into the watermark the backstop publishes to NATS"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/utils/write_ledger.py",
-        class_name="WriteLedger",
-        attr_name="_lost",
-        rationale=(
-            "the advances this process lost and retries, each a coroutine closure over its source: not serializable, and held in the watermark the backstop publishes, so a process that dies with some is recovered from NATS by another"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/shared_arrow.py",
         class_name="MappedTables",
         attr_name="_by_inode",
@@ -245,19 +221,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
-        class_name="YugabytePoolRecycler",
-        attr_name="_expired_at_by_trigger",
-        rationale=(
-            "each trigger's last expiry of ONE process's asyncpg pool, as time.monotonic() "
-            "readings: the pool exists only in this process and a monotonic reading means "
-            "nothing in any other, so a shared or durable copy would describe a pool and a "
-            "clock no other pod has. keyed by the recycler's fixed trigger set, so it never "
-            "grows past the triggers it was built with, and a restart correctly starts with "
-            "no expiry on record for a pool that is itself new"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/base.py",
         class_name="_L1Fence",
         attr_name="_keys",
@@ -276,82 +239,6 @@ _ALLOWLIST = (
         rationale=(
             "live asyncio.Task handles — per-worker + non-serializable; the cancel registry IS "
             "the ephemeral infrastructure, cannot live in an L1/L2/L3 backend"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/data/store.py",
-        class_name="DataStore",
-        attr_name="_collections",
-        rationale=("registry of collection instances, IS the infrastructure"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/data/migrations/runner.py",
-        class_name="MigrationRunner",
-        attr_name="_packages",
-        rationale=("static config, PackageMigrations registered once at startup"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/data/migrations/registry.py",
-        class_name="PackageMigrations",
-        attr_name="_versions",
-        rationale=("static config, migration callables registered once at startup"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/data/migrations/registry.py",
-        class_name="PackageMigrations",
-        attr_name="_descriptions",
-        rationale=(
-            "static config written in lockstep with _versions: the ledger description of each "
-            "registered version, fixed by the code at import time (a function __name__ or a "
-            "step's explicit text). Every pod derives the same map from the same code, so there "
-            "is nothing for pods to disagree about and nothing a restart can lose; the durable "
-            "copy is already the _schema_migrations.description column the runner compares it to"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/data/migrations/registry.py",
-        class_name="PackageMigrations",
-        attr_name="_downgrades",
-        rationale=("static config, downgrade callables registered once at startup"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/sqlite.py",
-        class_name="SQLiteBackend",
-        attr_name="_schema_info",
-        rationale=("schema metadata for type-aware serialization, infrastructure"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/duckdb.py",
-        class_name="DuckDBBackend",
-        attr_name="_schema_info",
-        rationale=("schema metadata for type-aware serialization, infrastructure"),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/duckdb.py",
-        class_name="DuckDBBackend",
-        attr_name="_keyless",
-        rationale=(
-            "schema metadata: each key-less table's key columns, read from its declaration when the table is "
-            "created, as _schema_info is; every pod derives the same map from the same metadata"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/duckdb.py",
-        class_name="DuckDBBackend",
-        attr_name="_not_null",
-        rationale=(
-            "schema metadata: each table's NOT NULL columns (its declared primary key's), read from its declaration "
-            "when the table is created, as _schema_info and _keyless are; every pod derives the same map from the "
-            "same metadata"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/duckdb.py",
-        class_name="DuckDBBackend",
-        attr_name="_primary_keys",
-        rationale=(
-            "schema metadata: each table's primary key columns in key order, read from its declaration when the "
-            "table is created, as _not_null is; scope_key reads its lead; every pod derives the same map"
         ),
     ),
     DictStateAllowlistEntry(
@@ -436,154 +323,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/plans.py",
-        class_name="WholeScanGuard",
-        attr_name="_sizes",
-        rationale=(
-            "a test helper's count of each table a guarded statement's plan names, taken once per guard; it lives "
-            "and dies with the one load-path test that wrapped its connection, and no pod runs it"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/plans.py",
-        class_name="WholeScanGuard",
-        attr_name="_returned",
-        rationale=(
-            "a test helper's tally of rows the guarded statements returned per table, to catch a whole read made "
-            "a keyed page at a time; it lives and dies with the one load-path test that wrapped its connection"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeChangeLog",
-        attr_name="_seen_ids",
-        rationale=(
-            "an in-memory test double's record of each append's Nats-Msg-Id, standing in for the stream's "
-            "dedup window; it lives and dies with the one test that built the double"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeChangeLog",
-        attr_name="_watchers",
-        rationale=(
-            "an in-memory test double's queue per watched key, standing in for the broker's push consumers; "
-            "it lives and dies with the one test that built the double"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeNatsClient",
-        attr_name="_change_logs",
-        rationale=(
-            "the test double client's change logs by name, so every caller in one test binds the same "
-            "in-memory log, as every caller of a broker binds the same stream"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeKvBucket",
-        attr_name="_entries",
-        rationale=(
-            "an in-memory test double's entire storage, standing in for a JetStream KV bucket. It "
-            "exists precisely so a test needs no backend at all, so routing it through an "
-            "L1/L2/L3 backend would defeat its purpose. Published rather than kept per-repo "
-            "because every consumer was hand-rolling this same double and drifting from the "
-            "wrapper it stands in for"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeKvBucket",
-        attr_name="_markers",
-        rationale=(
-            "the revision of each deleted key's marker -- the other half of the double's storage "
-            "beside _entries, since a real delete publishes a message whose revision a fenced "
-            "write depends on. Same test-double rationale as FakeKvBucket._entries above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeKvBucket",
-        attr_name="_marker_expiry",
-        rationale=(
-            "when each marker given a lifetime (delete's marker_ttl) is removed, on the double's own "
-            "clock -- the lifetime half of _markers, cleared with it. Same test-double rationale as "
-            "FakeKvBucket._entries above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeKvBucket",
-        attr_name="_key_watchers",
-        rationale=(
-            "the asyncio queues of each open watch_key iterator, keyed by the key it watches, "
-            "standing in for the server-side consumers a real watch creates. The values are live "
-            "in-process queues bound to one event loop, which no backend can serialise, and they "
-            "live exactly as long as the iterator that registered them -- same test-double "
-            "rationale as FakeKvBucket._entries above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeKvBucket",
-        attr_name="_sizes",
-        rationale=(
-            "the stored size of each key's latest message, which a bounded bucket (max_bytes) "
-            "counts against its bound the way the server's store does -- derived from the "
-            "double's own storage beside _entries and _markers, and cleared with them. Same "
-            "test-double rationale as FakeKvBucket._entries above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeNatsClient",
-        attr_name="_buckets",
-        rationale=(
-            "the double's bucket registry, mirroring NatsClient's own internal bucket cache so "
-            "repeat kv_bucket calls return the same instance -- same test-double rationale as "
-            "FakeKvBucket._entries above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeNatsClient",
-        attr_name="_refills",
-        rationale=(
-            "the double's bucket name to declarer-refill map, standing in for the refill the real "
-            "client remembers with each declaration (ensure_kv_bucket(on_restored=...)) so a test "
-            "can drive a refill through restart_broker. The values are live coroutine functions, "
-            "which no backend can serialise or hand to another process -- same test-double "
-            "rationale as FakeNatsClient._subscribers below, and it lives for one test's client "
-            "instance"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeNatsClient",
-        attr_name="_still_wanted",
-        rationale=(
-            "the double's bucket name to still_wanted map, standing in for the predicate the real "
-            "client remembers with each declaration (ensure_kv_bucket(still_wanted=...)) and asks "
-            "before a restoration. The values are live coroutine functions, which no backend can "
-            "serialise -- same rationale as FakeNatsClient._refills above, and it lives for one "
-            "test's client instance"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/testing/kv.py",
-        class_name="FakeNatsClient",
-        attr_name="_subscribers",
-        rationale=(
-            "the double's subject to callback map, standing in for the real client's "
-            "subscriptions so a test can run a real invalidation listener against it. The values "
-            "are live coroutine functions, which no backend can serialise or hand to another "
-            "process, and the whole point of the double is that a test needs no bus at all -- "
-            "same test-double rationale as FakeKvBucket._entries above, and it lives for one "
-            "test's client instance"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/service_envelope.py",
         class_name="InProcessEnvelopeLedger",
         attr_name="_spent",
@@ -624,16 +363,6 @@ _ALLOWLIST = (
             "this process, so two overlapping rebuilds cannot overwrite each other's bookkeeping; "
             "a lock is an in-process synchronisation primitive, not state -- it cannot be serialized "
             "into an L1/L2/L3 backend, and it guards the pod-local _resources / _tool_names above"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/sql.py",
-        class_name="SqlL3Backend",
-        attr_name="_schemas",
-        rationale=(
-            "static config, table→TableSchema registered once at collection construction "
-            "(startup); non-serializable (stores TableSchema dataclass refs, not data), read-only "
-            "on the CRUD hot path"
         ),
     ),
     DictStateAllowlistEntry(
@@ -709,17 +438,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/advanced.py",
-        class_name="AdvancedListener",
-        attr_name="_receivers",
-        rationale=(
-            "the callbacks of the repositories THIS process has open, by (namespace, key), that a "
-            "RepoAdvanced broadcast is handed to. live callables into this process's own GitRepo "
-            "objects, not data; another pod has its own repositories open, and a restart re-registers "
-            "each one as it opens"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/backends/git/layout.py",
         class_name="TemplateLayout",
         attr_name="_tables",
@@ -735,95 +453,6 @@ _ALLOWLIST = (
         rationale=(
             "static config: the compiled path pattern of each table in _tables, built once in the "
             "constructor from the same layouts"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/repo.py",
-        class_name="GitRepo",
-        attr_name="_tails",
-        rationale=(
-            "the PendingTail objects a product registered on this repository in THIS process, by "
-            "folder: live objects holding an op-log handle, not data. what they stand for lives in "
-            "git and the NATS OpLog, and a restart re-adds them before open"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/repo.py",
-        class_name="GitRepo",
-        attr_name="_pending",
-        rationale=(
-            "the files each tail has written into THIS process's working tree and not yet committed. "
-            "it describes this process's own files on disk, so another pod's copy would describe a "
-            "tree it does not have; the durable record is the OpLog, which a new writer replays to "
-            "rebuild both the files and this map"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/repos.py",
-        class_name="GitRepos",
-        attr_name="_repos",
-        rationale=(
-            "the GitRepo objects THIS process has opened, by repository key: live handles on working "
-            "trees, leases and subscriptions, not data, IS the infrastructure. opened on first use "
-            "and closed with the holder"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/repos.py",
-        class_name="RoutedGitStore",
-        attr_name="_stores",
-        rationale=(
-            "one GitDurableStore wrapper per repository opened through this store, by key: thin live "
-            "objects over the GitRepos above, not data, rebuilt on first use"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/backends/git/writer.py",
-        class_name="WriterRole",
-        attr_name="_handlers",
-        rationale=(
-            "the forward handlers a product registered on this writer, by operation name: live "
-            "callables, static once registered, served only while THIS process holds the writer lease"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/l1_lru.py",
-        class_name="L1Ledger",
-        attr_name="_tables",
-        rationale=(
-            "the recency order of each EVICTABLE L1 table of this process, keyed by (store, table): the L1 is process-local by design (a WAL file on /dev/shm that dies with the process), so its ledger is too; a restart starts with an empty L1 and nothing to order"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/l1_lru.py",
-        class_name="L1Ledger",
-        attr_name="_counters",
-        rationale=(
-            "each L1 table's bound Prometheus hit/miss counters, made once so a read pays no label lookup: metric handles, not data"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/sqlite.py",
-        class_name="SQLiteBackend",
-        attr_name="_policies",
-        rationale=(
-            "each table's declared eviction policy as this backend created it: a copy of the process-wide declarations (threetears.core.eviction), made again by every start's initialize"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/sqlite.py",
-        class_name="SQLiteBackend",
-        attr_name="_table_keys",
-        rationale=(
-            "each table's primary-key columns as created by this backend's DDL: schema facts of the process-local L1 file, made again by every start's initialize"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/cache/sqlite.py",
-        class_name="SQLiteBackend",
-        attr_name="_counters",
-        rationale=(
-            "each table's bound Prometheus hit/miss counters, made on the table's first read so a read pays no label lookup: metric handles, not data"
         ),
     ),
 )
