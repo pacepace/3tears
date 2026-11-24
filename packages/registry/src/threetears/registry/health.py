@@ -23,12 +23,13 @@ into two focused classes:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from threetears.core.collections.frozen_state import frozen, with_entry, without_entries
 from threetears.core.tool_wire import HeartbeatMessage
 from threetears.nats import Subjects
 from threetears.nats.errors import KvError
@@ -140,13 +141,14 @@ class HeartbeatSubscriber:
             logger=log,
             failure_message="health check sweep failed",
         )
-        self._known_pod_ids: set[str] = set()
+        # read-only snapshots (one entry per pod of the fleet), replaced whole on each change
+        self._known_pod_ids: frozenset[str] = frozenset()
         # what THIS registry heard and counted, kept beside the collection so liveness is still
         # judged while L2 (the collection's only store) is unreachable: quarantining a pod that
         # stopped heartbeating is a safety property, and an outage must not suspend it. Keyed only
         # by pods in _known_pod_ids, and dropped with a pod when the sweep forgets it.
-        self._heard_at: dict[str, datetime] = {}
-        self._local_misses: dict[str, int] = {}
+        self._heard_at: Mapping[str, datetime] = frozen()
+        self._local_misses: Mapping[str, int] = frozen()
 
     @property
     def has_active_check_task(self) -> bool:
@@ -180,7 +182,7 @@ class HeartbeatSubscriber:
         :return: nothing
         :rtype: None
         """
-        self._known_pod_ids.add(pod_id)
+        self._known_pod_ids = self._known_pod_ids | {pod_id}
 
     def track_pods(self, pod_ids: Iterable[str]) -> None:
         """seed multiple pod ids into the in-memory known-pods set.
@@ -194,7 +196,7 @@ class HeartbeatSubscriber:
         :return: nothing
         :rtype: None
         """
-        self._known_pod_ids.update(pod_ids)
+        self._known_pod_ids = self._known_pod_ids.union(pod_ids)
 
     async def start(self, nc: "NatsClient") -> None:
         """start heartbeat monitoring.
@@ -295,9 +297,11 @@ class HeartbeatSubscriber:
         now = datetime.now(UTC)
         pod_id = heartbeat.pod_id
         marked_tools = self._catalog.mark_pod_endpoints_available(pod_id)
-        self._known_pod_ids.add(pod_id)
-        self._heard_at[pod_id] = now
-        self._local_misses[pod_id] = 0
+        if pod_id not in self._known_pod_ids:
+            self._known_pod_ids = self._known_pod_ids | {pod_id}
+        self._heard_at = with_entry(self._heard_at, pod_id, now)
+        if self._local_misses.get(pod_id) != 0:
+            self._local_misses = with_entry(self._local_misses, pod_id, 0)
         try:
             await self._persist_heartbeat(pod_id, now, marked_tools, heartbeat.tools_count)
         except KvError as exc:
@@ -384,7 +388,7 @@ class HeartbeatSubscriber:
         now = datetime.now(UTC)
         to_remove: list[str] = []
         forgotten: list[str] = []
-        for pod_id in list(self._known_pod_ids):
+        for pod_id in self._known_pod_ids:
             heard = self._heard_at.get(pod_id)
             try:
                 entity = await self._collection.get(pod_id)
@@ -424,10 +428,10 @@ class HeartbeatSubscriber:
             if elapsed <= self._timeout:
                 if self._local_misses.get(pod_id):
                     # revived by a heartbeat a peer wrote and this registry did not hear
-                    self._local_misses[pod_id] = 0
+                    self._local_misses = with_entry(self._local_misses, pod_id, 0)
                     self._catalog.mark_pod_endpoints_available(pod_id)
                 continue
-            self._local_misses[pod_id] = misses
+            self._local_misses = with_entry(self._local_misses, pod_id, misses)
             if entity is not None:
                 entity.consecutive_misses = misses
                 entity.status = _STATUS_UNRESPONSIVE
@@ -486,10 +490,9 @@ class HeartbeatSubscriber:
                 contain(exc, log=log, what="evicted pod's heartbeat row not deleted from L2", extra={"pod_id": pod_id})
                 continue
             forgotten.append(pod_id)
-        for pod_id in forgotten:
-            self._known_pod_ids.discard(pod_id)
-            self._heard_at.pop(pod_id, None)
-            self._local_misses.pop(pod_id, None)
+        self._known_pod_ids = self._known_pod_ids.difference(forgotten)
+        self._heard_at = without_entries(self._heard_at, forgotten)
+        self._local_misses = without_entries(self._local_misses, forgotten)
 
     def _track_catalog_pods(self) -> dict[str, datetime]:
         """track every pod the catalog holds a copy for.
@@ -504,7 +507,8 @@ class HeartbeatSubscriber:
                 held = registered.get(endpoint.pod_id)
                 if held is None or endpoint.date_last_heartbeat > held:
                     registered[endpoint.pod_id] = endpoint.date_last_heartbeat
-        self._known_pod_ids.update(registered)
+        if not self._known_pod_ids.issuperset(registered):
+            self._known_pod_ids = self._known_pod_ids.union(registered)
         return registered
 
     async def _evicted_by_a_peer(self, pod_id: str) -> None:

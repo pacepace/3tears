@@ -22,6 +22,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
 from threetears.core.serialization import json_datetime
 from threetears.nats import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, Subjects
 from threetears.observe import contain, get_logger
@@ -880,12 +881,14 @@ class ToolCatalog:
         :return: nothing
         :rtype: None
         """
-        self._entries: dict[str, CatalogEntry] = {}
+        # a read-only snapshot by full name (one entry per tool), replaced whole when a tool is added or
+        # dropped; a held entry's copies are folded into the entry itself
+        self._entries: Mapping[str, CatalogEntry] = frozen()
         self._kv: KvBucketLike | None = None
         # by KV key, the content digest of the value this catalog last wrote there and saw land; a
         # registration whose entry still has that content writes nothing. a key is dropped from it
         # on any failed write or delete, and on a bucket bound afresh, so the next write is made.
-        self._written: dict[str, str] = {}
+        self._written: Mapping[str, str] = frozen()
         # the copies the last warm load brought in unavailable, by (full name, pod id), and when it
         # landed: a replica routes nothing to them until their pods announce again, so it holds its
         # calls until they have (loaded_copies_settled); replaced whole by each load, never pruned
@@ -993,7 +996,7 @@ class ToolCatalog:
         :raises KvError: when the bucket's keys could not be listed or an entry could not be read
         """
         self._kv = kv
-        self._written.clear()
+        self._written = frozen()
         awaiting: set[tuple[str, str]] = set()
         keys = await kv.list_keys()
         for key in keys:
@@ -1006,7 +1009,8 @@ class ToolCatalog:
             entry = CatalogEntry.from_dict(_translate_persisted_entry(data))
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
-            if self._entries.setdefault(entry.full_name, entry) is entry:
+            if entry.full_name not in self._entries:
+                self._entries = with_entry(self._entries, entry.full_name, entry)
                 awaiting.update((entry.full_name, endpoint.pod_id) for endpoint in entry.endpoints)
         self._awaiting_revival = awaiting
         self._loaded_at = time.monotonic()
@@ -1029,11 +1033,11 @@ class ToolCatalog:
         :rtype: list[str]
         """
         self._kv = kv
-        self._written.clear()
+        self._written = frozen()
         failed: list[str] = []
         # the whole write-back is one write operation, however many entries it writes
         async with self._write_health.operation():
-            for full_name in list(self._entries):
+            for full_name in self._entries:
                 # read at the moment of writing, not from a snapshot: a tool deregistered while an earlier
                 # write was awaited has had its key deleted, and writing it back would advertise a tool
                 # no replica holds to every registry that warm-loads the bucket.
@@ -1089,7 +1093,7 @@ class ToolCatalog:
         if self._written.get(key) == content and self._write_health.persisting:
             return False
         if self._kv is None:
-            self._written[key] = content
+            self._written = with_entry(self._written, key, content)
         else:
             await self._put(self._kv, key, entry)
         return True
@@ -1108,9 +1112,9 @@ class ToolCatalog:
         :raises KvError: when the write failed; counted, then raised to the caller
         """
         value = entry.to_dict()
-        self._written.pop(key, None)
+        self._written = without_entry(self._written, key)
         await self._write_health.write(kv.put(key=key, value=json.dumps(value).encode("utf-8")), key=key)
-        self._written[key] = _persisted_content(value)
+        self._written = with_entry(self._written, key, _persisted_content(value))
 
     async def _delete(self, kv: KvBucketLike, key: str) -> None:
         """delete ``key``, counting the outcome toward :attr:`persisting`.
@@ -1123,7 +1127,7 @@ class ToolCatalog:
         :rtype: None
         :raises KvError: when the delete failed; counted, then raised to the caller
         """
-        self._written.pop(key, None)
+        self._written = without_entry(self._written, key)
         await self._write_health.write(kv.delete(key=key), key=key)
 
     async def register(self, entry: CatalogEntry) -> bool:
@@ -1154,10 +1158,10 @@ class ToolCatalog:
         if existing is None:
             # an entry new to memory is always a change, whatever was recorded for its key before
             # it was dropped
-            self._written.pop(_sanitize_kv_key(entry.full_name), None)
+            self._written = without_entry(self._written, _sanitize_kv_key(entry.full_name))
             for endpoint in entry.endpoints:
                 endpoint.prune_definitions(now, ttl)
-            self._entries[entry.full_name] = entry
+            self._entries = with_entry(self._entries, entry.full_name, entry)
             target = entry
         else:
             for incoming in entry.endpoints:
@@ -1244,7 +1248,7 @@ class ToolCatalog:
             deregistered on its next restart, and every other node never stopped advertising it.
         :rtype: bool
         """
-        self._entries.pop(full_name, None)
+        self._entries = without_entry(self._entries, full_name)
         kv_deleted = True
         if self._kv is not None:
             try:
