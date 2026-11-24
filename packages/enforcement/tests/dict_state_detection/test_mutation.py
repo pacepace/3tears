@@ -161,3 +161,376 @@ def test_a_debt_paid_is_reported_stale(tmp_path: Path) -> None:
     stale = find_stale_immutable_debts((root,), (debt,), repo)
     assert [violation.symbol for violation in stale] == ["Owner._x"]
     assert stale[0].category == "dict_state_detection.stale_immutable_debt"
+
+
+def _widened(tmp_path: Path, source: str) -> list[tuple[int, str]]:
+    repo, root = _module(tmp_path, source)
+    return [
+        (violation.line, violation.symbol) for violation in find_mutated_state_violations((root,), repo, widened=True)
+    ]
+
+
+#: gap (a): evals' InMemoryDocumentStore before 2026-11-24, in small: a public dict changed in place
+_PUBLIC_STORE = """\
+class InMemoryDocumentStore:
+    def __init__(self):
+        self.documents: dict[str, str] = {}
+
+    def put(self, key, document):
+        self.documents[key] = document
+
+    def drop(self, key):
+        del self.documents[key]
+"""
+
+
+def test_gap_a_a_public_attribute_changed_in_place_is_refused_when_widened(tmp_path: Path) -> None:
+    assert _widened(tmp_path, _PUBLIC_STORE) == [
+        (6, "InMemoryDocumentStore.documents"),
+        (9, "InMemoryDocumentStore.documents"),
+    ]
+
+
+def test_gap_a_the_narrow_walk_still_skips_a_public_attribute(tmp_path: Path) -> None:
+    assert _found(tmp_path, _PUBLIC_STORE) == []
+
+
+def test_gap_a_a_public_attribute_replaced_whole_passes(tmp_path: Path) -> None:
+    source = """\
+from types import MappingProxyType
+
+
+class Store:
+    def __init__(self):
+        self.documents = MappingProxyType({})
+        self.names: frozenset[str] = frozenset()
+
+    def put(self, key, document):
+        self.documents = MappingProxyType({**self.documents, key: document})
+        self.names = self.names | {key}
+"""
+    assert _widened(tmp_path, source) == []
+
+
+#: gap (b): every change in place of a list, a deque and an OrderedDict
+_SEQUENCES = """\
+from collections import OrderedDict, deque
+
+
+class Queue:
+    def __init__(self):
+        self._items: list[str] = []
+        self._ring = deque(maxlen=4)
+        self._order = OrderedDict()
+
+    def churn(self, item):
+        self._items.append(item)
+        self._items.extend([item])
+        self._items.insert(0, item)
+        self._items.pop()
+        self._items.remove(item)
+        self._items.sort()
+        self._items.reverse()
+        self._items.clear()
+        self._items[0] = item
+        del self._items[0]
+        self._items[1:2] = [item]
+        self._items += [item]
+        self._ring.popleft()
+        self._ring.appendleft(item)
+        self._order.move_to_end(item)
+        self._order.popitem(last=False)
+"""
+
+
+def test_gap_b_lists_deques_and_ordered_dicts_changed_in_place_are_refused_when_widened(tmp_path: Path) -> None:
+    found = _widened(tmp_path, _SEQUENCES)
+    assert [line for line, _ in found] == list(range(11, 27))
+    assert {symbol for _, symbol in found} == {"Queue._items", "Queue._ring", "Queue._order"}
+
+
+def test_gap_b_the_narrow_walk_keeps_its_rules(tmp_path: Path) -> None:
+    # only OrderedDict.popitem: the narrow walk counts no list or deque, and no move_to_end
+    assert _found(tmp_path, _SEQUENCES) == [(26, "Queue._order")]
+
+
+def test_gap_b_tuples_and_function_local_lists_pass(tmp_path: Path) -> None:
+    source = """\
+from collections import deque
+
+
+class Queue:
+    def __init__(self):
+        self._items: tuple[str, ...] = ()
+        self._seq: "Sequence[str]" = ()
+
+    def churn(self, item):
+        self._items = (*self._items, item)
+        local = [item]
+        local.append(item)
+        local.sort()
+        ring = deque()
+        ring.popleft()
+        self._items = tuple(sorted(self._items))
+"""
+    assert _widened(tmp_path, source) == []
+
+
+#: gap (c): the L1Ledger shape: a dataclass field changed by its owner and from another class in the module
+_LEDGER = """\
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import ClassVar
+
+
+@dataclass
+class Held:
+    order: OrderedDict = field(default_factory=OrderedDict)
+    names: list[str] = field(default_factory=list)
+    tags: "set[str]" = field(default_factory=lambda: {"a"})
+    seen: ClassVar[dict[str, int]] = {}
+    size: int = 0
+    label: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        self.names.append("built")
+
+    def touch(self, key):
+        self.order.move_to_end(key)
+
+    @classmethod
+    def note(cls, key):
+        cls.seen[key] = 1
+
+
+class L1Ledger:
+    def __init__(self):
+        self._held = {}
+
+    def read(self, key):
+        held = self._held_for(key)
+        held.order.move_to_end(key)
+        names = held.names
+        names.append(key)
+        held.tags.add(key)
+        held.size += 1
+        held.label = (*held.label, key)
+
+
+def rebuild(held, key):
+    held.order[key] = None
+"""
+
+
+def test_gap_c_class_body_fields_are_refused_from_the_owner_and_from_another_class(tmp_path: Path) -> None:
+    assert _widened(tmp_path, _LEDGER) == [
+        (19, "Held.order"),
+        (23, "Held.seen"),
+        (32, "Held.order"),
+        (34, "Held.names"),
+        (35, "Held.tags"),
+        (41, "Held.order"),
+    ]
+
+
+def test_gap_c_the_narrow_walk_skips_class_body_fields(tmp_path: Path) -> None:
+    assert _found(tmp_path, _LEDGER) == []
+
+
+def test_gap_c_immutable_fields_and_unrelated_receivers_pass(tmp_path: Path) -> None:
+    source = """\
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Mapping
+
+
+@dataclass(frozen=True)
+class Held:
+    order: tuple[str, ...] = ()
+    names: frozenset[str] = frozenset()
+    index: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+
+
+class Reader:
+    def read(self, other, key):
+        other.items.append(key)
+        other.order_by.sort()
+        held = Held()
+        return Held(order=(*held.order, key))
+"""
+    assert _widened(tmp_path, source) == []
+
+
+def test_the_runner_walks_widened_only_when_a_repo_opts_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DICT_STATE_ENFORCEMENT_MODE", "strict")
+    repo, root = _module(tmp_path, _PUBLIC_STORE)
+    (repo / "pyproject.toml").write_text('[project]\nname = "synthetic"\n')
+    run_dict_state_enforcement(DictStateConfig(repo_root=repo, src_roots=(root,), immutable_roots=(root,)))
+    widened = DictStateConfig(repo_root=repo, src_roots=(root,), immutable_roots=(root,), immutable_widened=True)
+    with pytest.raises(pytest.fail.Exception, match="InMemoryDocumentStore.documents"):
+        run_dict_state_enforcement(widened, walker="detect")
+    debt = DictStateAllowlistEntry(
+        file="src/pkg/mod.py", class_name="InMemoryDocumentStore", attr_name="documents", rationale=_RATIONALE
+    )
+    stale = find_stale_immutable_debts((root,), (debt,), repo)
+    assert [violation.symbol for violation in stale] == ["InMemoryDocumentStore.documents"]
+    assert find_stale_immutable_debts((root,), (debt,), repo, widened=True) == []
+
+
+#: call-scoped state (Pace, 2026-11-24): a CLI report built in one call and filled by helpers
+_REPORT = """\
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ApplyReport:
+    created: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+
+    def note(self, name):
+        self.counts[name] = self.counts.get(name, 0) + 1
+
+
+def _apply_providers(report: ApplyReport, names):
+    for name in names:
+        report.created.append(name)
+        report.note(name)
+
+
+def _apply_models(report, names):
+    report.skipped.extend(names)
+
+
+def apply(names):
+    report = ApplyReport()
+    _apply_providers(report, names)
+    _apply_models(report=report, names=names)
+    print(report.created)
+    return report
+
+
+def main(names):
+    result = apply(names)
+    print(len(result.created))
+"""
+
+
+def test_call_scoped_a_report_built_and_filled_inside_one_call_passes(tmp_path: Path) -> None:
+    assert _widened(tmp_path, _REPORT) == []
+
+
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "class Runner:\n    def run(self, names):\n        report = ApplyReport()\n        _apply_providers(report, names)\n"
+        "        self._last = report\n",
+        "LAST = ApplyReport()\n",
+        "def keep(names):\n    held = apply(names)\n    REGISTRY.append(held)\n",
+        "def later(names):\n    report = ApplyReport()\n    return lambda: report\n",
+        "def spawn(loop, names):\n    report = ApplyReport()\n    loop.create_task(fill(report, names))\n",
+        "class Store:\n    report: ApplyReport = field(default_factory=ApplyReport)\n",
+    ],
+    ids=["stored-on-self", "module-state", "returned-to-a-keeper", "closure", "task", "field-factory"],
+)
+def test_call_scoped_the_same_report_kept_beyond_its_call_is_refused(tmp_path: Path, escape: str) -> None:
+    found = _widened(tmp_path, f"{_REPORT}\n\n{escape}")
+    assert {symbol for _, symbol in found} >= {"ApplyReport.created", "ApplyReport.counts"}
+
+
+def test_call_scoped_a_dataclass_cache_on_a_service_is_refused(tmp_path: Path) -> None:
+    source = """\
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Cache:
+    entries: dict[str, bytes] = field(default_factory=dict)
+
+
+class Service:
+    def __init__(self):
+        self._cache = Cache()
+
+    def put(self, key, value):
+        self._cache.entries[key] = value
+"""
+    assert _widened(tmp_path, source) == [(14, "Cache.entries")]
+
+
+def test_call_scoped_a_class_never_built_in_the_trees_is_refused(tmp_path: Path) -> None:
+    source = """\
+class Visitor:
+    def __init__(self):
+        self.found = []
+
+    def visit(self, node):
+        self.found.append(node)
+"""
+    assert _widened(tmp_path, source) == [(6, "Visitor.found")]
+    built = source + "\n\ndef walk(tree):\n    visitor = Visitor()\n    visitor.visit(tree)\n    return visitor.found\n"
+    assert _widened(tmp_path / "built", built) == []
+
+
+def test_call_scoped_reports_gathered_in_a_local_list_and_returned_in_a_tuple_pass(tmp_path: Path) -> None:
+    source = (
+        _REPORT
+        + """
+
+def plan(batches):
+    planned = []
+    for names in batches:
+        report = ApplyReport()
+        _apply_providers(report, names)
+        planned.append(report)
+    return planned, len(planned)
+
+
+def run(batches, totals):
+    planned, count = plan(batches)
+    totals.update(planned[0].counts)
+    return count
+"""
+    )
+    assert _widened(tmp_path, source) == []
+    kept = source + "\n\nclass Keeper:\n    def keep(self, batches):\n        self.planned, _ = plan(batches)\n"
+    assert {symbol for _, symbol in _widened(tmp_path / "kept", kept)} >= {"ApplyReport.created"}
+
+
+def _two_modules(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """a serving module and a tooling one holding the same change in place."""
+    repo, root = _module(tmp_path, _OLD_FOLLOWER)
+    tooling = root / "pkg" / "cli"
+    tooling.mkdir()
+    (tooling / "report.py").write_text(_PUBLIC_STORE.replace("self.documents", "self._documents"))
+    (repo / "pyproject.toml").write_text('[project]\nname = "synthetic"\n')
+    return repo, root, tooling
+
+
+def test_non_serving_roots_are_skipped_by_the_narrow_and_the_widened_walks(tmp_path: Path) -> None:
+    repo, root, tooling = _two_modules(tmp_path)
+    for widened in (False, True):
+        everything = find_mutated_state_violations((root,), repo, widened=widened)
+        assert {violation.file.name for violation in everything} == {"mod.py", "report.py"}
+        serving = find_mutated_state_violations((root,), repo, widened=widened, non_serving=(tooling,))
+        assert {violation.file.name for violation in serving} == {"mod.py"}
+        single = find_mutated_state_violations((root,), repo, widened=widened, non_serving=(tooling / "report.py",))
+        assert {violation.file.name for violation in single} == {"mod.py"}
+
+
+def test_the_runner_honours_non_serving_roots_in_every_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DICT_STATE_ENFORCEMENT_MODE", "strict")
+    repo, root, tooling = _two_modules(tmp_path)
+    (repo / "src" / "pkg" / "mod.py").write_text("class Quiet:\n    def __init__(self):\n        self._x = ()\n")
+    for widened in (False, True):
+        config = DictStateConfig(repo_root=repo, src_roots=(root,), immutable_roots=(root,), immutable_widened=widened)
+        with pytest.raises(pytest.fail.Exception, match="InMemoryDocumentStore._documents"):
+            run_dict_state_enforcement(config)
+        scoped = DictStateConfig(
+            repo_root=repo,
+            src_roots=(root,),
+            immutable_roots=(root,),
+            immutable_widened=widened,
+            non_serving_roots=(tooling,),
+        )
+        run_dict_state_enforcement(scoped)
