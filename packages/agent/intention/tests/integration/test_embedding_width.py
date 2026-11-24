@@ -26,7 +26,7 @@ from threetears.agent.intention.embedding_width import (
 )
 from threetears.agent.intention.migrations import register as register_intention
 from threetears.conversations.migrations import register as register_conversations
-from threetears.core.backends.dialect import l3_on_yugabyte
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationFailedError, MigrationRunner
@@ -150,7 +150,7 @@ class TestAConfiguredWidth:
         url, schema = pg_schema
         conn = await _connect(url, schema)
         try:
-            on_yugabyte = await l3_on_yugabyte(conn)
+            on_yugabyte = await known_on_yugabyte(conn)
         finally:
             await conn.close()
         if on_yugabyte:

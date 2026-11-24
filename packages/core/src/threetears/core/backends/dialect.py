@@ -21,7 +21,7 @@ from asyncpg.pool import PoolConnectionProxy
 from threetears.observe import WeakBuildOnce, get_logger
 from threetears.observe.metrics import gauge
 
-__all__ = ["check_index_hints", "known_on_yugabyte", "l3_on_yugabyte"]
+__all__ = ["check_index_hints", "known_on_yugabyte"]
 
 log = get_logger(__name__)
 
@@ -47,7 +47,7 @@ _YUGABYTE_DIALECT_CAPABILITY: Final = "dialect:yugabyte"
 _YUGABYTE_VERSION_MARK: Final = "-YB-"
 
 
-async def l3_on_yugabyte(l3: Any) -> bool:
+async def _l3_on_yugabyte(l3: Any) -> bool:
     """whether ``l3`` answers from YugabyteDB, asked each time: a reader asks once a whole read (beside it, one round
     trip), and the answer is kept nowhere a second caller could fill it twice.
 
@@ -96,11 +96,11 @@ _ASKED_POOLS: Mapping[int, tuple[asyncpg.Pool, bool]] = MappingProxyType({})
 async def known_on_yugabyte(l3: Any) -> bool:
     """whether ``l3`` answers from YugabyteDB, with no round trip where it can be known locally: an asyncpg
     connection reads the ``server_version`` its server sent at startup (YugabyteDB's carries ``-YB-``); any other
-    reader (a pool, the rail's proxy) is asked once, by :func:`l3_on_yugabyte`, and its answer kept for it (an
+    reader (a pool, the rail's proxy) is asked once, by :func:`_l3_on_yugabyte`, and its answer kept for it (an
     asyncpg pool, which cannot be held weakly, in :data:`_ASKED_POOLS`).
 
     For a statement whose spelling differs by database on every call (a listing's page past its cursor), where
-    :func:`l3_on_yugabyte`'s question each time would be a round trip a page.
+    :func:`_l3_on_yugabyte`'s question each time would be a round trip a page.
 
     :param l3: the reader
     :ptype l3: Any
@@ -113,8 +113,8 @@ async def known_on_yugabyte(l3: Any) -> bool:
         return await _pool_on_yugabyte(l3)
     if not type(l3).__weakrefoffset__:
         # a reader that cannot be held weakly is asked each time
-        return await l3_on_yugabyte(l3)
-    asked = _ASKED.get(l3, lambda: asyncio.ensure_future(l3_on_yugabyte(l3)))
+        return await _l3_on_yugabyte(l3)
+    asked = _ASKED.get(l3, lambda: asyncio.ensure_future(_l3_on_yugabyte(l3)))
     # shielded: a caller cancelled while it waits leaves the ask running for the others
     return await asyncio.shield(asked)
 
@@ -131,7 +131,7 @@ async def _pool_on_yugabyte(pool: asyncpg.Pool) -> bool:
     held = _ASKED_POOLS.get(id(pool))
     if held is not None and held[0] is pool:
         return held[1]
-    answer = await l3_on_yugabyte(pool)
+    answer = await _l3_on_yugabyte(pool)
     live = {key: other for key, other in _ASKED_POOLS.items() if not other[0].is_closing()}
     _ASKED_POOLS = MappingProxyType({**live, id(pool): (pool, answer)})
     return answer

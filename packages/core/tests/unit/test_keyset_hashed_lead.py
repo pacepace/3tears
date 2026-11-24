@@ -13,7 +13,7 @@ from typing import Any
 import duckdb
 import pytest
 
-from threetears.core.backends.dialect import l3_on_yugabyte
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed import ThreadedDuckDB
 from threetears.core.keyset import keyset_pages, read_keyset_pages
@@ -412,7 +412,7 @@ class TestWhichDatabaseAnL3Is:
     async def test_the_rail_is_asked_its_broker_s_dialect_and_a_pool_its_version(self) -> None:
         """Flips if the rail's proxy is not asked its broker's capabilities, or a pool's ``version()`` is misread."""
         rail = _Rail(frozenset({"dialect:yugabyte"}), [])
-        assert await l3_on_yugabyte(rail)
+        assert await known_on_yugabyte(rail)
         assert rail.asked == 1
         assert not rail.statements
 
@@ -424,5 +424,5 @@ class TestWhichDatabaseAnL3Is:
                 assert sql == "SELECT version() AS v"
                 return [{"v": self.version}]
 
-        assert await l3_on_yugabyte(_Pool("PostgreSQL 15.12-YB-2026.1.0.0-b0 on aarch64"))
-        assert not await l3_on_yugabyte(_Pool("PostgreSQL 16.4 on aarch64-unknown-linux-gnu"))
+        assert await known_on_yugabyte(_Pool("PostgreSQL 15.12-YB-2026.1.0.0-b0 on aarch64"))
+        assert not await known_on_yugabyte(_Pool("PostgreSQL 16.4 on aarch64-unknown-linux-gnu"))
