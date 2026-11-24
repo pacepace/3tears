@@ -53,7 +53,6 @@ from threetears.core.tenancy import (
     PodTenants,
     epoch_change_filter,
     epoch_change_key,
-    split_epoch_change_key,
 )
 from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
@@ -389,22 +388,6 @@ class _ChangeLogReading:
             self._refused = with_entry(self._refused, table_name, (refused, exc.subject))
             raise refused from exc
 
-    def _readable(self, table_name: str, key: str) -> bool:
-        """whether ``key`` is one of ``table_name``'s record keys this reader may read.
-
-        :param table_name: the table
-        :ptype table_name: str
-        :param key: a record's key
-        :ptype key: str
-        :return: whether it is
-        :rtype: bool
-        """
-        split = split_epoch_change_key(key)
-        mine = split_epoch_change_key(epoch_change_key(table_name, None))
-        if split is None or mine is None or split[1] != mine[1]:
-            return False
-        return self._tenants is None or split[0] in self._table_tenants(self._tenants, table_name)
-
     @property
     def database(self) -> str | None:
         """the database this source or reader names, by its change-note ring's schema; ``None`` when it names none.
@@ -438,23 +421,6 @@ class _ChangeLogReading:
         entries = await self._each_key(table_name, log.last)
         held = [entry for entry in entries if entry is not None]
         return max(held, key=lambda entry: entry.seq) if held else None
-
-    async def _next(self, table_name: str, seq: int) -> ChangeLogEntry | None:
-        """the first record of ``table_name`` after ``seq`` among the keys this reader reads.
-
-        :param table_name: the table
-        :ptype table_name: str
-        :param seq: the sequence to look past
-        :ptype seq: int
-        :return: the record, or ``None``
-        :rtype: ChangeLogEntry | None
-        :raises KvBucketNotFoundError: when the log is absent
-        :raises KvError: when the log cannot be read
-        """
-        log = self._log()
-        entries = await self._each_key(table_name, lambda key: log.next_after(key, seq))
-        held = [entry for entry in entries if entry is not None]
-        return min(held, key=lambda entry: entry.seq) if held else None
 
     def _log(self) -> ChangeLogLike:
         """the change log, bound through the client.
@@ -564,8 +530,19 @@ class _ChangeLogReading:
         state = await self._state()
         if parts is None or state is None or parts[0] != state.incarnation:
             return None
+        seq = parts[1]
+        if seq < state.first_seq or seq > state.last_seq:
+            # retention took it, or the log never held it: the follower is behind
+            return None
         try:
-            entry = await self._log().at(parts[1])
+            # WHY (2026-11-24): read by the table's keys, never by sequence. A message get by sequence
+            # ($JS.API.STREAM.MSG.GET) carries its subject in the request body, where no grant can narrow it, so
+            # the hub grants no pod that verb on the shared log: a pod writer's delta-file recreate asked for its
+            # epoch so, was refused, and waited out a 5 s deadline on every try (local replay, 2026-11-24). Each
+            # key's named consumer from ``seq - 1`` (its filter rides in the create subject, which pod grants
+            # name) finds the table's record at ``seq`` when the log holds one there.
+            log = self._log()
+            walked = await self._each_key(table_name, lambda key: log.records_after(key, seq - 1, seq))
         except KvBucketNotFoundError:
             # NOSILENT: the log went between the two reads
             return None
@@ -573,11 +550,15 @@ class _ChangeLogReading:
             raise GenerationUnavailableError(
                 f"the change of {table_name!r} at {token!r} could not be read: {exc}"
             ) from exc
+        entry = next((entry for entries in walked for entry in entries if entry.seq == seq), None)
         if entry is None:
-            return None
-        if not self._readable(table_name, entry.key):
+            after = await self._state()
+            if after is None or after.incarnation != state.incarnation or seq < after.first_seq:
+                # retention took it (or the log went) between the reads: the follower is behind, as before them
+                return None
+            # the log holds ``seq`` under none of the keys this reader reads ``table_name`` by
             raise GenerationUnavailableError(
-                f"the epoch {token!r} is {entry.key!r}'s, not one of {table_name!r}'s keys this reader reads"
+                f"the epoch {token!r} is not one of {table_name!r}'s records under the keys this reader reads"
             )
         return read_epoch_change_body(entry.value, table_name, token)
 

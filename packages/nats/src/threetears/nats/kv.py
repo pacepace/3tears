@@ -4165,6 +4165,10 @@ class NatsChangeLog:
     async def at(self, seq: int) -> ChangeLogEntry | None:
         """the record at ``seq``, or ``None`` when the log holds none there.
 
+        Only the log's owner (the hub) may call it: a message get by sequence carries its subject in the request
+        body, which no grant can narrow, so no pod is granted it (``subject_permissions``); a pod reads by key
+        (:meth:`records_after`). ``tests/enforcement/test_pods_read_the_change_log_by_key.py`` holds the callers.
+
         :param seq: the sequence
         :ptype seq: int
         :return: the record
@@ -4177,6 +4181,9 @@ class NatsChangeLog:
 
     async def next_after(self, key: str, seq: int) -> ChangeLogEntry | None:
         """the first record under ``key`` after ``seq``, or ``None`` when the log holds none.
+
+        A message get whose subject rides in the request body, as :meth:`at`'s does: no pod is granted it, so only
+        the log's owner may call it; a pod reads by :meth:`records_after`.
 
         :param key: the key
         :ptype key: str
@@ -4282,6 +4289,7 @@ class NatsChangeLog:
                 raise KvBucketNotFoundError(f"change log {self._stream} is absent", bucket=self._bucket)
             raise KvError(f"change log {self._stream} records after {seq} on {key} could not be read")
         records: list[ChangeLogEntry] = []
+        passed = False
         try:
             wanted = consumer.pending
             if wanted:
@@ -4289,11 +4297,14 @@ class NatsChangeLog:
                 async with aclosing(consumer.updates(key=None, key_prefix=prefix)) as updates:
                     async for update in updates:
                         if update.revision > upto:
+                            passed = True
                             break
                         records.append(ChangeLogEntry(seq=update.revision, key=update.key, value=update.value or b""))
                         if len(records) >= wanted:
                             break
-                if len(records) < wanted and (not records or records[-1].seq < upto):
+                # a record past ``upto`` proves the range read whole, even with none in it (a keyed read of one
+                # sequence that is another key's: generation.change)
+                if not passed and len(records) < wanted and (not records or records[-1].seq < upto):
                     raise KvError(f"change log {self._stream}: the read of {key} after {seq} ended early")
         finally:
             await consumer.close()

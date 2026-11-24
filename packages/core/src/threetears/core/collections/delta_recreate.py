@@ -454,6 +454,10 @@ class DeltaRecreator:
             flight = asyncio.get_running_loop().create_task(
                 self._recreate_once(request), name=f"recreate delta file {request.file}"
             )
+            # WHY (2026-11-24): a copy whose wait timed out leaves the shielded flight with no waiter, and its failure
+            # went unretrieved ("Task exception was never retrieved", a local replay's writer log); the flight's own
+            # callback retrieves and logs it whether or not anyone still waits
+            flight.add_done_callback(_flight_ended)
             self._flight = MappingProxyType({**self._flight, request.file: flight})
         # shielded: a copy whose request is cancelled (its timeout) does not cancel the recreation the others wait for
         return (await asyncio.shield(flight)).value
@@ -734,6 +738,24 @@ class DeltaRecreator:
                 )
             )
         return int(keys.num_rows)
+
+
+def _flight_ended(flight: asyncio.Task[_Outcome]) -> None:
+    """retrieve a recreation's failure and log it, so none goes unretrieved when every copy waiting on it gave up.
+
+    :param flight: the recreation, done
+    :ptype flight: asyncio.Task[_Outcome]
+    :return: None
+    :rtype: None
+    """
+    if flight.cancelled():
+        return
+    failure = flight.exception()
+    if failure is not None:
+        log.warning(
+            "a delta file's recreation failed; a copy asking again starts another",
+            extra={"extra_data": {"task": flight.get_name(), "error": repr(failure)}},
+        )
 
 
 def _record_keys(record: EpochChange, key: Sequence[str]) -> Any:

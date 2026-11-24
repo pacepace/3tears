@@ -21,6 +21,7 @@ to one subscriber and its reply back. The contract this pins:
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -53,6 +54,7 @@ from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
+from threetears.core.exceptions import GenerationUnavailableError  # noqa: E402
 from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaFileUnreadableError,
     TableDelta,
@@ -764,6 +766,43 @@ async def test_a_commit_too_big_to_list_whose_file_is_lost_goes_to_the_recovery_
     assert name in world.follower.status().waiting_for_file[_RESULTS]
     assert "recovering" in world.follower.status().waiting_for_file[_RESULTS]
     world.follower.stop()
+
+
+async def test_a_recreation_failing_after_every_copy_gave_up_is_retrieved_and_logged(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a recreation whose every waiting copy timed out fails with its exception never retrieved (the
+    writer's log of a local replay: "Task exception was never retrieved", name='recreate delta file ...'): the
+    flight's own callback retrieves it and logs it."""
+    world = _world()
+    name = _save(_volume, _RESULTS, "lost", [_row("VA", 1, 11)])
+    epoch = world.log.commit(_RESULTS, [("VA", 1)], name)
+    (_volume / name).unlink()
+    release = asyncio.Event()
+
+    async def refused_after_the_copy_left(table_name: str, token: str) -> EpochChange | None:
+        del table_name, token
+        await release.wait()
+        raise GenerationUnavailableError("the change log record by sequence was refused")
+
+    monkeypatch.setattr(world.log, "change", refused_after_the_copy_left)
+    loop = asyncio.get_running_loop()
+    unretrieved: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: unretrieved.append(context))
+    logged: list[str] = []
+    monkeypatch.setattr(delta_recreate.log, "warning", lambda message, *args, **kwargs: logged.append(str(message)))
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(world.recreator.recreate(_RESULTS, name, epoch), timeout=0.05)
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+    assert not [context for context in unretrieved if "never retrieved" in str(context.get("message"))]
+    assert any("recreation failed" in message for message in logged)
 
 
 async def test_only_the_replica_serving_under_the_lease_answers_and_with_none_the_copy_hears_no_writer(
