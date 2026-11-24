@@ -59,6 +59,7 @@ __all__ = [
     "prefix_conditions",
     "quoted_table",
     "reads_l3",
+    "reads_yugabyte",
     "selected_column",
     "relation",
     "narrowing",
@@ -189,6 +190,28 @@ def reads_l3(conn: Any) -> bool:
     # answers any name it is asked, and is no datasource
     named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
     return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
+
+
+async def reads_yugabyte(conn: Any) -> bool:
+    """whether a read on ``conn`` runs on YugabyteDB, whose keyed batches are spelled for it (no bounds beside a
+    batch's keys, :meth:`~threetears.interfaces.keyed.rows._KeyedRead.render`): an in-process DuckDB or SQLite never
+    is, a reader naming its dialect is when it names YugabyteDB's, and an L3 says so as it says it for an index hint
+    (:func:`~threetears.core.backends.dialect.known_on_yugabyte`: no round trip on an asyncpg connection, one a pool
+    or proxy, kept).
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :return: whether it runs on YugabyteDB
+    :rtype: bool
+    """
+    if isinstance(conn, ThreadedDuckDB | ThreadedSQLite | InlineSQLite | InlineDuckDB):
+        return False
+    named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
+    if named is None:
+        named = getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE)
+    if named is not None:
+        return named is Dialect.YUGABYTE
+    return await known_on_yugabyte(conn)
 
 
 async def yugabyte_index_hint(

@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: keyed reads of several key columns are read by their keys alone on YugabyteDB
+
+**Changed:** `read_keyed` and `read_keyed_arrow` no longer bound a batch of several key columns to each column's
+distinct values (`t."a" = ANY(...)` beside the keys) on YugabyteDB: there the bounds joined the batched nested loop's
+index condition and cost ~50 ms of YSQL CPU a 1,000 keys (50,000 composite keys: 2.4 s, now 0.21 s on the test pool;
+1,000 prefixes naming 30,000 rows: 1,020 ms, now 37 ms). PostgreSQL keeps them (its prefix reads' index condition).
+Full keys, prefixes, locked reads and the null-safe split alike; `read_keyed_statements(..., yugabyte=True)` writes
+the YugabyteDB form for a reader with no 3tears core.
+
 ### core: a table the copy loads from the volume never makes a checkpoint due from the change notes
 
 **Fixed:** an epoch a `CopyFollower` took from the change notes on a table in its `fulls=` made a checkpoint due a

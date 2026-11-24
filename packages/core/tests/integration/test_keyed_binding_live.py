@@ -11,6 +11,7 @@ a YugabyteDB URL to run them there.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -197,3 +198,45 @@ async def test_arrow_mode_costs_the_serving_process_less_cpu(seeded: _Seeded, mo
         assert arrow <= _ARROW_CPU_SHARE[table] * plain, (
             f"{table}: Arrow mode {arrow * 1000:.1f} ms CPU, plain {plain * 1000:.1f} ms"
         )
+
+
+#: the most seconds a 50,000-key composite read takes on YugabyteDB, best of three, its batches read by their keys alone
+#: (measured 2026-11-23, YugabyteDB 2026.1 on a laptop: 0.24-0.29 s; bounded beside the keys, as PostgreSQL's still
+#: are, 1.8-2.1 s: keyed/rows.py's render)
+_YUGABYTE_50K_SECONDS = 0.8
+
+#: the bound beside a composite batch's keys on its lead column (keyed/rows.py's _tight_values)
+_LEAD_BOUND = 't."state" = ANY('
+
+
+async def test_a_composite_batch_is_bounded_on_postgres_and_read_by_its_keys_alone_on_yugabyte(seeded: _Seeded) -> None:
+    """Flips if a composite batch whose values' cross product names at most twice its keys loses the bounds beside
+    its keys on PostgreSQL (its prefix reads' index condition), or carries them on YugabyteDB (where they cost ~50 ms
+    of YSQL CPU a 1,000 keys), or either names other rows."""
+    composite, _ = await _keys(seeded.conn, 1_000)
+    keys = KeyBatch(("state", "geo", "id"), composite, ("text", "text", "bigint"))
+    recorder = PlanRecorder(seeded.conn)
+    rows = await read_keyed(recorder, "kc", keys=keys, columns=["state", "geo", "id", "v"])
+    assert len(rows) == 1_000
+    assert recorder.plans, "the read sent no statement"
+    for plan in recorder.plans:
+        assert (_LEAD_BOUND in plan.sql) is not seeded.yugabyte, plan.sql[:400]
+
+
+@pytest.mark.yugabyte_only
+@pytest.mark.loop_timing
+async def test_a_50k_composite_read_on_yugabyte_is_within_its_budget(seeded: _Seeded) -> None:
+    """Flips if 50,000 composite keys (Arrow mode, the serving path's) take YugabyteDB more than
+    :data:`_YUGABYTE_50K_SECONDS` to read, best of three: the bounds beside the keys back (1.8-2.1 s), or any other
+    cost a batch's statement gains there."""
+    assert seeded.yugabyte, "a yugabyte_only test ran on another engine"
+    composite, ids = await _keys(seeded.conn, 50_000)
+    keys, _ = _arrow(composite, ids)
+    rows = await read_keyed(seeded.conn, "kc", keys=keys, columns=["v"], records=True)
+    assert len(rows) == 50_000
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        await read_keyed(seeded.conn, "kc", keys=keys, columns=["v"], records=True)
+        best = min(best, time.perf_counter() - started)
+    assert best <= _YUGABYTE_50K_SECONDS, f"50,000 composite keys read in {best:.2f} s on YugabyteDB"

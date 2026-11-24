@@ -457,6 +457,10 @@ class _Answering:
         self.answers = list(answers)
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
+    async def answers_from_yugabyte(self) -> bool:
+        """a PostgreSQL reader's: its keyed batches bounded beside their keys, and the question sent nowhere."""
+        return False
+
     async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
         self.calls.append((query, params))
         return self.answers.pop(0)

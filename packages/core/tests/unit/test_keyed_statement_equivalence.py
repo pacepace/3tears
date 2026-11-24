@@ -132,6 +132,18 @@ def _cases() -> dict[str, Case]:
                 where=[Fragment('t."v" > $1', (5,))],
             )
         ),
+        # on YugabyteDB a batch of several key columns is never bounded beside its keys (keyed/rows.py's render)
+        "read_keyed.two_columns_bounded_yugabyte": _run(
+            lambda c: keyed.read_keyed(
+                c,
+                "t",
+                keys=KeyBatch(("a", "b"), [["s", "s", "s"], [1, 2, 3]], ("text", "bigint")),
+                columns=("a", "b"),
+                by={"tenant": AnyOf(["x"])},
+                where=[Fragment('t."v" > $1', (5,))],
+            ),
+            _Recorder(dialect=Dialect.YUGABYTE),
+        ),
         "read_keyed.two_columns_scattered": _run(
             lambda c: keyed.read_keyed(
                 c,
@@ -149,6 +161,17 @@ def _cases() -> dict[str, Case]:
                 lock=Lock.UPDATE,
                 where=[Fragment('t."v" = $1', ("q",))],
             )
+        ),
+        "read_keyed.null_safe_lock_yugabyte": _run(
+            lambda c: keyed.read_keyed(
+                c,
+                "t",
+                keys=KeyBatch(("a", "b"), [[None, "s"], [1, 2]], ("text", "bigint"), null_safe=True),
+                columns=("a", "b"),
+                lock=Lock.UPDATE,
+                where=[Fragment('t."v" = $1', ("q",))],
+            ),
+            _Recorder(dialect=Dialect.YUGABYTE),
         ),
         "read_keyed.as_list_batches": _run(
             lambda c: keyed.read_keyed(
@@ -421,6 +444,14 @@ def _builders() -> dict[str, Sequence[tuple[str, Sequence[Any]]]]:
             columns=("a", "b"),
             by={"tenant": AnyOf(["x"])},
             where=[Fragment('t."v" > $1', (5,))],
+        ),
+        "read_keyed.two_columns_bounded_yugabyte": built.read_keyed_statements(
+            "t",
+            keys=KeyBatch(("a", "b"), [["s", "s", "s"], [1, 2, 3]], ("text", "bigint")),
+            columns=("a", "b"),
+            by={"tenant": AnyOf(["x"])},
+            where=[Fragment('t."v" > $1', (5,))],
+            yugabyte=True,
         ),
         "read_keyed.one_column_native": built.read_keyed_statements(
             "t", keys=KeyBatch(("id",), [[1, 2]], ("bigint",)), columns=("id",), by={"tenant": "x"}, natively=True

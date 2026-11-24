@@ -509,7 +509,7 @@ class _KeyedRead:
         ordered = ", ".join(f"t.{quote_identifier(column)}" for column in self.keys.columns)
         return f"{sql} ORDER BY {ordered}{self.lock.of('t')}"
 
-    def render(self, chunk: KeyChunk, natively: bool = False) -> tuple[str, tuple[Any, ...]]:
+    def render(self, chunk: KeyChunk, natively: bool = False, yugabyte: bool = False) -> tuple[str, tuple[Any, ...]]:
         """the statement naming ``chunk``'s keys, and its parameters.
 
         :param chunk: the keys, one sequence a key column (:func:`key_chunks`)
@@ -517,11 +517,14 @@ class _KeyedRead:
         :param natively: whether the connection binds typed arrays natively (:func:`binds_native_arrays`): a plain
             column whose values are of its type (no str) is then bound as ``$n::<type>[]`` from the values themselves
         :ptype natively: bool
+        :param yugabyte: whether the statement runs on YugabyteDB, which reads a batch of several key columns by its
+            keys alone, never bounded beside them (:meth:`_tight_values`)
+        :ptype yugabyte: bool
         :return: the statement, and its parameters
         :rtype: tuple[str, tuple[Any, ...]]
         """
         if self.keys.null_safe:
-            return self._null_split(chunk, natively)
+            return self._null_split(chunk, natively, yugabyte)
         width = len(self.keys.columns)
         count = len(chunk[0])
         if self.keys.as_list:
@@ -551,7 +554,13 @@ class _KeyedRead:
         arrays = tuple(value for value, _ in bound)
         kinds = tuple(kind for _, kind in bound)
         tight: tuple[tuple[Any, BindKind], ...] = ()
-        if width > 1:
+        # never bounded on YugabyteDB (2026.1, custom plans; measured 2026-11-23 on test_keyed_binding_live's
+        # 300,000-row (state, geo, id) table): the bounds join the batched nested loop's index condition there, ~50 ms
+        # of YSQL CPU a 1,000-key statement. 50,000 full keys: 1.8-2.1 s bounded, 0.24-0.29 s by the keys alone; 1,000
+        # prefixes naming 30,000 rows: 1,020 ms bounded, 37 ms not. On PostgreSQL 16 they make a prefix batch its
+        # index's own condition (14 ms against 22.5) and cost full keys nothing, so PostgreSQL keeps them
+        # (test_keyed_binding_live: the YugabyteDB budget, and the PostgreSQL statement still bounded)
+        if width > 1 and not yugabyte:
             tight = self._tight_values(chunk, count, natively)
         guarded = [param for fragment in self.where for param in fragment.params]
         # the statement's text follows only its shape (how each column binds, whether bounded): rendered once a
@@ -564,7 +573,7 @@ class _KeyedRead:
             _remember(shape, sql)
         return sql, (*arrays, *self._by[1], *(value for value, _ in tight), *guarded)
 
-    def _null_split(self, chunk: KeyChunk, natively: bool) -> tuple[str, tuple[Any, ...]]:
+    def _null_split(self, chunk: KeyChunk, natively: bool, yugabyte: bool) -> tuple[str, tuple[Any, ...]]:
         """a null-safe batch's statement: its keys a NULL pattern at a time (:func:`null_split`), each pattern's NULL
         parts pinned ``IS NULL`` and the rest named by equality as any batch's keys are, the patterns' reads one
         statement (``UNION ALL``; each locked one a ``WITH`` query of its own, as a union takes no lock).
@@ -584,7 +593,7 @@ class _KeyedRead:
                 head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
                 branches.append((self._locked(f"{head} WHERE {where}"), (*pinned, *guarded)))
                 continue
-            branches.append(replace(self, keys=group.keys, by=by).render(tuple(group.keys.keys), natively))
+            branches.append(replace(self, keys=group.keys, by=by).render(tuple(group.keys.keys), natively, yugabyte))
         return _united(branches, locked=self.lock is not None)
 
     def _text_list(self, head: str, listed: Sequence[list[Any]], count: int) -> tuple[str, tuple[Any, ...]]:
@@ -658,7 +667,7 @@ class _KeyedRead:
         bounds exactly: PostgreSQL reads them as the index's own condition, where the keys alone, each naming many
         rows, plan as a hash join over the whole table (300,000 rows read for 6,000). A batch of scattered keys
         (600 keys over 50 states, 200 geographies and 30 ids) names the whole table by them, so it gets none and is
-        read by its keys, one lookup a key.
+        read by its keys, one lookup a key. PostgreSQL's only: YugabyteDB's batches are never bounded (:meth:`render`).
         """
         distinct = [self.binder.distinct_values(values) for values in chunk]
         product = 1
@@ -740,6 +749,7 @@ def read_keyed_statements(
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
     binder: KeyBinder = PLAIN_KEYS,
+    yugabyte: bool = False,
 ) -> list[tuple[str, tuple[Any, ...]]]:
     """every statement a keyed read of ``table`` by ``keys`` (within ``by``) sends, ``batch`` keys each, and its
     binds: what ``threetears.core.keyed.read_keyed`` sends a transport that never cuts an answer.
@@ -762,9 +772,12 @@ def read_keyed_statements(
     :ptype where: Sequence[Fragment]
     :param binder: how the key columns bind (:data:`PLAIN_KEYS`, or ``threetears.core.keyed``'s Arrow binder)
     :ptype binder: KeyBinder
+    :param yugabyte: whether the statements run on YugabyteDB (a batch of several key columns is then never bounded
+        beside its keys; ``threetears.core.keyed.read_keyed`` asks its connection)
+    :ptype yugabyte: bool
     :return: each statement and its binds, a chunk of keys each; none for no keys
     :rtype: list[tuple[str, tuple[Any, ...]]]
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     """
     statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
-    return [statement.render(chunk, natively) for chunk in key_chunks(keys, batch, binder)]
+    return [statement.render(chunk, natively, yugabyte) for chunk in key_chunks(keys, batch, binder)]
