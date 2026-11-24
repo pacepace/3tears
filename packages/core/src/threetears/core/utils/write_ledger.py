@@ -29,10 +29,11 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import count
+from types import MappingProxyType
 from typing import Any, Final
 
 import asyncpg
@@ -111,12 +112,14 @@ class WriteLedger:
         self._clock = clock
         self._grace = grace.total_seconds()
         self._tokens = count(1)
-        #: each open write's start, by its token
-        self._open: dict[int, float] = {}
+        #: each open write's start, by its token (as many as the process's open connections); replaced whole
+        self._open: Mapping[int, float] = MappingProxyType({})
         #: the oldest start of the writes that ended in each whole second (the second they ended), kept for the grace:
-        #: a dict entry a second rather than a list entry a write, so a busy writer's ledger stays a few dozen entries
-        self._ended: dict[int, float] = {}
-        self._lost: dict[int, _LostAdvance] = {}
+        #: an entry a second rather than a list entry a write, so a busy writer's ledger stays a few dozen entries;
+        #: replaced whole only when a second's oldest start changes, not per write
+        self._ended: Mapping[int, float] = MappingProxyType({})
+        #: the advances held for retry, by key; replaced whole
+        self._lost: Mapping[int, _LostAdvance] = MappingProxyType({})
         self._lost_keys = count(1)
         #: whether a backstop retries this ledger's lost advances (:meth:`attach_repairer`)
         self.repairing = False
@@ -128,7 +131,7 @@ class WriteLedger:
         :rtype: int
         """
         token = next(self._tokens)
-        self._open[token] = self._clock()
+        self._open = MappingProxyType({**self._open, token: self._clock()})
         return token
 
     def end(self, token: int) -> None:
@@ -140,12 +143,14 @@ class WriteLedger:
         :return: nothing
         :rtype: None
         """
-        start = self._open.pop(token, None)
+        start = self._open.get(token)
         if start is None:
             return
+        self._open = MappingProxyType({held: begun for held, begun in self._open.items() if held != token})
         second = math.floor(self._clock())
         held = self._ended.get(second)
-        self._ended[second] = start if held is None else min(held, start)
+        if held is None or start < held:
+            self._ended = MappingProxyType({**self._ended, second: start})
 
     @property
     def open_writes(self) -> int:
@@ -164,8 +169,10 @@ class WriteLedger:
         """
         now = self._clock()
         # a second's entry is kept while any write that ended in it may still be in its grace
-        for second in [second for second in self._ended if second + 1 + self._grace <= now]:
-            del self._ended[second]
+        if any(second + 1 + self._grace <= now for second in self._ended):
+            self._ended = MappingProxyType(
+                {second: start for second, start in self._ended.items() if second + 1 + self._grace > now}
+            )
         starts = [*self._open.values(), *self._ended.values()]
         oldest = min(starts, default=now)
         held = min((lost.held_from for lost in self._lost.values()), default=None)
@@ -187,7 +194,7 @@ class WriteLedger:
         lost = _LostAdvance(
             table=table, retry=retry, held_from=self.watermark(), error=error, key=next(self._lost_keys)
         )
-        self._lost[lost.key] = lost
+        self._lost = MappingProxyType({**self._lost, lost.key: lost})
         _REPAIRS.labels(outcome="queued").inc()
         _PENDING.set(len(self._lost))
         if not self.repairing:
@@ -235,7 +242,7 @@ class WriteLedger:
         :return: how many are still held
         :rtype: int
         """
-        for lost in list(self._lost.values()):
+        for lost in self._lost.values():
             budget = _RETRY_SECONDS if deadline is None else min(_RETRY_SECONDS, deadline - time.monotonic())
             if budget <= 0:
                 break
@@ -255,7 +262,7 @@ class WriteLedger:
                     level="warning",
                 )
                 continue
-            self._lost.pop(lost.key, None)
+            self._lost = MappingProxyType({key: held for key, held in self._lost.items() if key != lost.key})
             _REPAIRS.labels(outcome="landed").inc()
             log.info(
                 "a lost epoch advance was made again",

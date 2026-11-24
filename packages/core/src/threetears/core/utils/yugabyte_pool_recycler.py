@@ -58,8 +58,9 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -247,8 +248,8 @@ class YugabytePoolRecycler:
         self._pool: asyncpg.Pool | None = None
         # the pool's last expiry, whatever caused it: every connection opened before it is retired.
         self._expired_at: float | None = None
-        # each trigger's last expiry, for its floor.
-        self._expired_at_by_trigger: dict[PoolExpiryTrigger, float] = {}
+        # each trigger's last expiry, for its floor; replaced whole.
+        self._expired_at_by_trigger: Mapping[PoolExpiryTrigger, float] = MappingProxyType({})
 
     @property
     def triggers(self) -> tuple[PoolExpiryTrigger, ...]:
@@ -387,5 +388,5 @@ class YugabytePoolRecycler:
                 error,
             )
             self._expired_at = now
-            self._expired_at_by_trigger[trigger] = now
+            self._expired_at_by_trigger = MappingProxyType({**self._expired_at_by_trigger, trigger: now})
             await self._pool.expire_connections()
