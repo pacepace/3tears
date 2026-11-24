@@ -74,6 +74,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from threetears.core.coordination import LockHeld, nats_distributed_lock
+from threetears.core.frozen_state import EMPTY, frozen, with_entry, without_entry
 from threetears.nats.errors import KvError, NatsClientError
 from threetears.observe import contain, get_logger
 
@@ -273,17 +274,19 @@ class BackgroundDispatch:
         self._group_turns: Mapping[str, asyncio.Lock] = MappingProxyType(
             {group: asyncio.Lock() for group in sorted(set(groups.values()))}
         )
-        self._group_holders: dict[str, str] = {}
+        # Each below is a read-only snapshot replaced whole on a change (decision 41): one entry per group, kind or
+        # fire running, never per row.
+        self._group_holders: Mapping[str, str] = EMPTY
         # Fires waiting for or holding each group's turn: the waiting event keys off this, not off
         # the lock, which reads free for a moment while the turn passes to the next in line.
-        self._group_queued: dict[str, int] = dict.fromkeys(self._group_turns, 0)
-        self._in_flight: dict[str, UUID] = {}
+        self._group_queued: Mapping[str, int] = frozen(dict.fromkeys(self._group_turns, 0))
+        self._in_flight: Mapping[str, UUID] = EMPTY
         # Every fire handed off and not yet settled: the one record of what this instance still
         # owes a row. Popped exactly once, by whichever path settles the fire.
-        self._pending: dict[UUID, tuple[JobTrigger, float]] = {}
-        self._started: set[UUID] = set()
-        self._tasks: dict[UUID, asyncio.Task[None]] = {}
-        self._writes: set[asyncio.Task[None]] = set()
+        self._pending: Mapping[UUID, tuple[JobTrigger, float]] = EMPTY
+        self._started: frozenset[UUID] = frozenset()
+        self._tasks: Mapping[UUID, asyncio.Task[None]] = EMPTY
+        self._writes: frozenset[asyncio.Task[None]] = frozenset()
         self._finalize_retry_seconds = float(finalize_retry_seconds)
         # Fires whose finalize write failed since the last join -- counted, the first few named --
         # and the first such failure: join raises them, so a lost record is not reported as recorded.
@@ -295,7 +298,7 @@ class BackgroundDispatch:
     @property
     def in_flight(self) -> Mapping[str, UUID]:
         """Kind -> fire id of every fire this instance is running now (a snapshot)."""
-        return MappingProxyType(dict(self._in_flight))
+        return self._in_flight
 
     def fire_timeout_for(self, kind: str) -> float:
         """The configured limit for a fire of ``kind`` (before the reap-deadline clamp).
@@ -396,24 +399,24 @@ class BackgroundDispatch:
                 },
             )
         else:
-            self._in_flight[trigger.kind] = fire_id
-            self._pending[fire_id] = (trigger, time.monotonic())
+            self._in_flight = with_entry(self._in_flight, trigger.kind, fire_id)
+            self._pending = with_entry(self._pending, fire_id, (trigger, time.monotonic()))
             task = asyncio.get_running_loop().create_task(
                 self._run(callback, trigger, fire_id), name=f"scheduled-jobs:{trigger.kind}"
             )
-            self._tasks[fire_id] = task
+            self._tasks = with_entry(self._tasks, fire_id, task)
             task.add_done_callback(functools.partial(self._forget, trigger.kind, fire_id))
             result = JobFireResult(handed_off=True)
         return result
 
     def _forget(self, kind: str, fire_id: UUID, _done: asyncio.Task[None]) -> None:
-        self._tasks.pop(fire_id, None)
-        self._started.discard(fire_id)
+        self._tasks = without_entry(self._tasks, fire_id)
+        self._started = self._started - {fire_id}
         if self._in_flight.get(kind) == fire_id:
-            del self._in_flight[kind]
+            self._in_flight = without_entry(self._in_flight, kind)
 
     async def _run(self, callback: DispatchCallback, trigger: JobTrigger, fire_id: UUID) -> None:
-        self._started.add(fire_id)
+        self._started = self._started | {fire_id}
         outcome: _Outcome | None = None
         try:
             # cancel_on_loss=False: the in-flight lock only saves duplicate work across pods
@@ -512,7 +515,7 @@ class BackgroundDispatch:
         turn = self._group_turns[group]
         if self._group_queued[group] > 0:
             _log_waiting(trigger, fire_id, group, self._group_holders.get(group))
-        self._group_queued[group] += 1
+        self._group_queued = with_entry(self._group_queued, group, self._group_queued[group] + 1)
         try:
             reap = reap_after_seconds_for_kind(self._config, trigger.kind)
             deadline = asyncio.timeout(_reap_time_left(trigger, reap))
@@ -537,7 +540,7 @@ class BackgroundDispatch:
                     _TIMEOUT,
                 )
             else:
-                self._group_holders[group] = trigger.kind
+                self._group_holders = with_entry(self._group_holders, group, trigger.kind)
                 try:
                     outcome = await self._run_in_slot(
                         callback,
@@ -546,10 +549,10 @@ class BackgroundDispatch:
                         waited_for=f"a free slot after its turn in exclusion group {group!r}",
                     )
                 finally:
-                    self._group_holders.pop(group, None)
+                    self._group_holders = without_entry(self._group_holders, group)
                     turn.release()
         finally:
-            self._group_queued[group] -= 1
+            self._group_queued = with_entry(self._group_queued, group, self._group_queued[group] - 1)
         return outcome
 
     async def _run_in_slot(
@@ -657,7 +660,7 @@ class BackgroundDispatch:
             )
         if outcome.result.handed_off:
             # The body handed the fire on to yet another owner, which now holds the row.
-            self._pending.pop(fire_id, None)
+            self._pending = without_entry(self._pending, fire_id)
         else:
             await self._finalize(trigger, fire_id, outcome.result, outcome.failure_reason, due_again=outcome.due_again)
 
@@ -670,16 +673,20 @@ class BackgroundDispatch:
         *,
         due_again: bool = False,
     ) -> None:
-        if self._pending.pop(fire_id, None) is None:
+        if fire_id not in self._pending:
             return
+        self._pending = without_entry(self._pending, fire_id)
         # Its own task, shielded: cancelling the fire (aclose) must not cut the record short.
         write = asyncio.get_running_loop().create_task(
             self._write_and_bring_back(trigger, fire_id, result, failure_reason, due_again=due_again),
             name=f"scheduled-jobs:finalize:{trigger.kind}",
         )
-        self._writes.add(write)
-        write.add_done_callback(self._writes.discard)
+        self._writes = self._writes | {write}
+        write.add_done_callback(self._forget_write)
         await asyncio.shield(write)
+
+    def _forget_write(self, write: asyncio.Task[None]) -> None:
+        self._writes = self._writes - {write}
 
     async def _write_and_bring_back(
         self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str, *, due_again: bool
