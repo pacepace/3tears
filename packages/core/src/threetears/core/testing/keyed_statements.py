@@ -431,9 +431,10 @@ def as_lists(sql: str, args: Sequence[Any]) -> tuple[str, list[Any]]:
 
 
 def bound_values(sql: str, args: Sequence[Any], place: int) -> list[Any]:
-    """placeholder ``place``'s key column as its values, however the helper bound it: a list (no-Arrow mode), or the
-    one text Arrow mode binds (:mod:`threetears.core.keyed.binding`), read back as ``sql`` splits or parses it. For
-    a fake reader standing in for PostgreSQL.
+    """placeholder ``place``'s key column as its values, however the helper bound it: a list (no-Arrow mode), the
+    one text Arrow mode binds (:mod:`threetears.core.keyed.binding`), read back as ``sql`` splits or parses it, or
+    the Arrow array an in-process DuckDB is handed, as its Python values. For a fake reader standing in for
+    PostgreSQL, or a test reading what a DuckDB reader was bound.
 
     :param sql: the statement
     :ptype sql: str
@@ -444,7 +445,10 @@ def bound_values(sql: str, args: Sequence[Any], place: int) -> list[Any]:
     :return: the column's values
     :rtype: list[Any]
     """
-    return list(_arrays(sql, args)[1][place - 1])
+    bound = _arrays(sql, args)[1][place - 1]
+    # an Arrow array (an in-process DuckDB's bind): its values, read once here in a test, never by a helper
+    to_pylist = getattr(bound, "to_pylist", None)
+    return list(to_pylist() if callable(to_pylist) else bound)
 
 
 def _value(text: str, args: Sequence[Any]) -> Any:

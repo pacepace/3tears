@@ -65,7 +65,7 @@ from threetears.core.collections.delta_files import (
     read_delta_table,
     write_delta_file,
 )
-from threetears.core.collections.delta_fold import _arrow_key_values, _typed_texts
+from threetears.core.collections.delta_fold import _typed_texts
 from threetears.core.collections.schema_backed import rail_arrow_types, sql_cast
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
@@ -416,9 +416,9 @@ class DeltaRecreator:
         found: list[Any] = []
         for start in range(0, keys.num_rows, self._page_size):
             chunk = keys.slice(start, self._page_size)
-            values = await asyncio.to_thread(_arrow_key_values, table.key, chunk)
+            columns = [chunk.column(column) for column in table.key]
             keyed = await read_keyed_arrow(
-                self._l3, table.name, keys=KeyBatch(tuple(table.key), values, casts), types=types, batch=chunk.num_rows
+                self._l3, table.name, keys=KeyBatch(tuple(table.key), columns, casts), types=types, batch=chunk.num_rows
             )
             _KEYS_READ.labels(table=table.name).inc(chunk.num_rows)
             for page in keyed:

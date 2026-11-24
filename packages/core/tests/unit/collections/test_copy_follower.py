@@ -64,6 +64,7 @@ from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noq
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, rail_arrow_types  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
+from threetears.core.testing.keyed_statements import as_lists  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 
 _TABLE = "votes"
@@ -413,7 +414,9 @@ async def test_the_keyed_read_joins_the_keys_to_the_table_on_its_key(world: Any)
     fetch = l3.fetch
 
     async def recording(sql: str, *params: Any) -> list[dict[str, Any]]:
-        asked.append(sql)
+        # each key column spelled as the list it binds, however it was bound (the page's Arrow key columns: one text
+        # a column, split back in SQL)
+        asked.append(as_lists(sql, params)[0])
         rows: list[dict[str, Any]] = await fetch(sql, *params)
         return rows
 

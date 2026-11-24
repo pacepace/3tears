@@ -33,6 +33,7 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     write_delta_file,
 )
 from threetears.core.testing.delta_files import read_delta_file
+from threetears.core.testing.keyed_statements import bound_values
 from threetears.core.collections import delta_files, delta_fold  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
@@ -979,6 +980,12 @@ async def test_a_table_keyed_without_its_state_files_a_delete_marker_under_the_s
 # --- a lost epoch log is recovered by key, never read whole (decision 28) ----------------------------------------
 
 
+def _bound_keys(statement: tuple[str, tuple[Any, ...], int]) -> list[tuple[Any, Any]]:
+    """the (state, geo_id) keys a keyed statement on :class:`_KeyedL3` bound, however the helper bound them."""
+    sql, params, _ = statement
+    return list(zip(bound_values(sql, params, 1), bound_values(sql, params, 2), strict=True))
+
+
 class _KeyedL3(ThreadedDuckDB):
     """L3 as a DuckDB, keeping every statement it answers and the rows each answered: a recovery's reads are keyed by
     the leftover files' keys and prefixes, never the table whole."""
@@ -1105,7 +1112,7 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
     keyed = sorted(named - {key for key in named if key[0] == "GA"})
     (by_key, by_prefix) = reader.statements
     # each key column's values bound as an array (twice: the key's index is read by them)
-    assert sorted(zip(by_key[1][0], by_key[1][1], strict=True)) == sorted((s, str(g)) for s, g in keyed), (
+    assert sorted(_bound_keys(by_key)) == sorted((s, str(g)) for s, g in keyed), (
         "one statement naming exactly the leftover files' keys outside a cleared prefix"
     )
     assert by_key[2] == sum(1 for key in keyed if key in l3), "it answered the keys L3 holds, no other row"
@@ -1157,8 +1164,10 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     # a writer restarting onto the new incarnation: the full's version names a log no record orders
     assert await folds.start(reader, generations, changes=log, version=6) == ("votes",)
     assert _recoveries("new_incarnation") == before + 1
-    ((_, params, answered),) = reader.statements
-    assert sorted(params[1]) == ["0", "1", "2"] and answered == 3, "the leftover delta's three keys, read by key"
+    ((sql, params, answered),) = reader.statements
+    assert sorted(bound_values(sql, params, 2)) == ["0", "1", "2"] and answered == 3, (
+        "the leftover delta's three keys, read by key"
+    )
     current = current_full_manifest(tmp_path)
     assert current is not None and current.tables["votes"].version == "new:1"
     assert all(part.version == "new:1" for part in current.tables["votes"].parts)
@@ -1171,7 +1180,7 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     folds.committed({"votes": later}, {"votes": "again:1"}, version=6)
     await folds.wait()
     assert _recoveries("new_incarnation") == before + 2
-    assert reader.statements[-1][1][:2] == (["TX"], ["4"]), "the new incarnation's delta read back by its one key"
+    assert _bound_keys(reader.statements[-1]) == [("TX", "4")], "the new incarnation's delta read back by its one key"
     current = current_full_manifest(tmp_path)
     assert current is not None and current.tables["votes"].version == "again:1"
     assert _held(tmp_path, "votes") == reader.held()
@@ -1256,8 +1265,8 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
     assert gaps[0].file == ga.file, "GA's rows are kept as they were, only its version moves"
     assert ga.fingerprint is not None
     assert gaps[0].fingerprint == ga.fingerprint, "GA's rows unchanged: its fingerprint moves with it (decision 32)"
-    ((_, params, _),) = reader.statements
-    assert sorted(zip(params[0], params[1], strict=True)) == [("NC", "5000"), ("NC", "5001")], (
+    (statement,) = reader.statements
+    assert sorted(_bound_keys(statement)) == [("NC", "5000"), ("NC", "5001")], (
         "the leftover file's keys alone, never the damaged file's"
     )
     assert not (tmp_path / lost).exists(), "the damaged file is deleted once the recovery is published"
@@ -1398,7 +1407,7 @@ async def test_a_lost_big_file_within_the_notes_window_is_recovered_from_the_key
     assert reader.asked == [("votes", _BRACKET)] * 2, "the record's bracket, both pages of its notes"
     ((sql, params, answered),) = reader.statements
     expected = sorted([("NC", "5000"), ("NC", "5001"), *_NOTED])
-    assert sorted(zip(params[0], params[1], strict=True)) == expected, (
+    assert sorted(_bound_keys((sql, params, answered))) == expected, (
         "one keyed statement naming the leftover file's keys and the noted keys, nothing else"
     )
     assert answered == len(expected) - 1, "only those rows: the deleted key is not in L3"
@@ -1434,7 +1443,7 @@ async def test_a_lost_big_file_past_the_notes_window_is_recovered_by_reading_onl
     assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
     # a dialect probe (``SELECT version()``) reads no table
     (by_key, *by_state) = [statement for statement in reader.statements if '"votes"' in statement[0]]
-    assert sorted(zip(by_key[1][0], by_key[1][1], strict=True)) == [("NC", "5000"), ("NC", "5001")]
+    assert sorted(_bound_keys(by_key)) == [("NC", "5000"), ("NC", "5001")]
     assert by_state, "the named state is read"
     for sql, params, _ in by_state:
         assert "WHERE" in sql and ["TX"] in [list(p) for p in params if isinstance(p, list | tuple)], (

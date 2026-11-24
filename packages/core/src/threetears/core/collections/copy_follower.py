@@ -4273,14 +4273,13 @@ class CopyFollower:
         :rtype: pyarrow.Table
         """
         read = self._reads[table.name]
-        # the rail binds a key batch as Python values (KeyBatch): a page of keys, made here and gone with the read
-        values = list(zip(*(keys.column(column).to_pylist() for column in table.key), strict=True))
+        # the page's key columns bound as they are, Arrow (KeyBatch's Arrow mode): never a Python object a key
         rows: list[Any] = await read_keyed_arrow(
             self._l3,
             table.name,
-            keys=KeyBatch(table.key, values, read.casts),
+            keys=KeyBatch(table.key, [keys.column(column) for column in table.key], read.casts),
             types=read.types,
-            batch=len(values),
+            batch=keys.num_rows,
         )
         return rows[0]
 

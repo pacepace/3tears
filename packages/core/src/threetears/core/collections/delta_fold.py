@@ -1665,11 +1665,11 @@ class DeltaFolds:
         pages = await asyncio.to_thread(_RowsFile, self.root / pages_file, pa.schema(list(types.items())))
         try:
             casts = tuple(sql_cast(kinds[column]) for column in table.key)
-            # one page of keys at a time, as Arrow; the keyed read's batch made from it off the loop
+            # one page of keys at a time, its Arrow key columns bound as they are (KeyBatch's Arrow mode)
             async for chunk in _reach_pages(self.root / reach_file, table.key):
-                values = await asyncio.to_thread(_arrow_key_values, table.key, chunk)
+                columns = [chunk.column(column) for column in table.key]
                 for page in await read_keyed_arrow(
-                    reader.l3, table.name, keys=KeyBatch(table.key, values, casts), types=types
+                    reader.l3, table.name, keys=KeyBatch(table.key, columns, casts), types=types
                 ):
                     await asyncio.to_thread(pages.write, page)
             for width, values in _prefixes_by_width(table.key, held).items():
@@ -2403,21 +2403,25 @@ def recovery_unstated_job(
     return bool(pc.any(unstated).as_py())
 
 
-def _prefixes_by_width(key: Sequence[str], prefixes: Sequence[Mapping[str, str]]) -> dict[int, list[tuple[str, ...]]]:
+def _prefixes_by_width(key: Sequence[str], prefixes: Sequence[Mapping[str, str]]) -> dict[int, list[list[str]]]:
     """prefixes grouped by how many of the key's leading columns they name (a delta file's prefixes lead the key,
-    :meth:`~threetears.core.collections.delta_files.TableDelta.clears`), each prefix's values in key order: one keyed
-    read a width.
+    :meth:`~threetears.core.collections.delta_files.TableDelta.clears`), column by column as a
+    :class:`~threetears.core.keyed.KeyBatch` takes them: one keyed read a width. A recovery's few cleared prefixes (a
+    leftover file's clears), function-local.
 
     :param key: the table's key columns, in key order
     :ptype key: Sequence[str]
     :param prefixes: the prefixes, as text
     :ptype prefixes: Sequence[Mapping[str, str]]
-    :return: width -> each prefix's values
-    :rtype: dict[int, list[tuple[str, ...]]]
+    :return: width -> one list a leading key column, each prefix's value at the same place in each
+    :rtype: dict[int, list[list[str]]]
     """
-    grouped: dict[int, list[tuple[str, ...]]] = {}
+    grouped: dict[int, list[list[str]]] = {}
     for prefix in prefixes:
-        grouped.setdefault(len(prefix), []).append(tuple(prefix[column] for column in key[: len(prefix)]))
+        width = len(prefix)
+        columns = grouped.setdefault(width, [[] for _ in range(width)])
+        for place, column in enumerate(key[:width]):
+            columns[place].append(prefix[column])
     return grouped
 
 
@@ -2537,25 +2541,6 @@ def _opened_ipc(path: Path) -> Any:
     :rtype: pyarrow.ipc.RecordBatchFileReader
     """
     return pa_ipc.open_file(pa.memory_map(str(path)))
-
-
-def _arrow_key_values(key: Sequence[str], keys: Any) -> list[tuple[Any, ...]]:
-    """one page of keys held as Arrow key columns (a page, bounded by its caller's batch) as
-    :class:`~threetears.core.keyed.KeyBatch` takes them today. Blocking: run it on a thread. The fold's recovery and the
-    writer's recreation of a delta file make every keyed read of a page of keys through it.
-
-    KEYBATCH ADAPTER (rl095 3t-keybatch): KeyBatch takes one tuple a key until the keyed core takes Arrow key columns;
-    then each caller hands its page to KeyBatch whole and this function goes. Until then it is the one place either
-    turns a page of keys into Python, off the loop.
-
-    :param key: the key columns, in key order
-    :ptype key: Sequence[str]
-    :param keys: the page's keys, a column each
-    :ptype keys: pyarrow.Table | pyarrow.RecordBatch
-    :return: each key's values
-    :rtype: list[tuple]
-    """
-    return list(zip(*(keys.column(column).to_pylist() for column in key), strict=True))
 
 
 def _unlink_work(root: Path, work: str) -> None:
