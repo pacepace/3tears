@@ -119,7 +119,7 @@ from threetears.core.eviction import (
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.processes import exit_with_parent, name_process, start_worker_server
 from threetears.core.utils.cpu_quota import effective_cpu_count
-from threetears.observe import contain, get_logger, remove_tree
+from threetears.observe import FrozenWeakKeys, FrozenWeakSet, contain, get_logger, remove_tree
 from threetears.observe.metrics import counter, gauge
 
 
@@ -1668,8 +1668,9 @@ class _KeptVersions:
         #: a read-only snapshot replaced whole under ``_lock`` (decision 41); one entry per store
         self._kept: Mapping[str, MappedVersion] = EMPTY
         self._lock = threading.Lock()
-        #: the kept mappings a thread waits to revoke, each once however often it is kept again
-        self._watched: weakref.WeakSet[MappedVersion] = weakref.WeakSet()
+        #: the kept mappings a thread waits to revoke, each once however often it is kept again; held weakly, replaced
+        #: whole under ``_lock``
+        self._watched: FrozenWeakSet[MappedVersion] = FrozenWeakSet()
         self.hits = 0
         self.misses = 0
 
@@ -1769,7 +1770,7 @@ class _KeptVersions:
             os.close(descriptor)
             contain(exc, log=log, what="a kept shared Arrow version's revoking thread could not start; let go")
             return False
-        self._watched.add(mapped)
+        self._watched = self._watched.with_item(mapped)
         return True
 
     def _revoked(self, descriptor: int, root: str, ref: weakref.ref[MappedVersion]) -> None:
@@ -1799,7 +1800,7 @@ class _KeptVersions:
             kept = self._kept.get(root) is mapped
             if kept:
                 self._kept = without_entries(self._kept, (root,))
-            self._watched.discard(mapped)
+            self._watched = self._watched.without_item(mapped)
         if kept:
             mapped.close()
 
@@ -2693,8 +2694,9 @@ class SharedArrowStore:
         #: the version staging directory being written now, and the version being published, which a sweep leaves alone
         self._staging: str | None = None
         self._pending: str | None = None
-        #: the serving process's readers of this store (:meth:`reader`), told after each publish
-        self._readers: weakref.WeakSet[SharedArrowReader] = weakref.WeakSet()
+        #: the serving process's readers of this store (:meth:`reader`), told after each publish; held weakly, replaced
+        #: whole under ``_state``
+        self._readers: FrozenWeakSet[SharedArrowReader] = FrozenWeakSet()
         #: slots reserved and not yet claimed or discarded, with the bytes each may take; a slot in pieces
         #: (:meth:`reserve_pieces`) is here a piece at a time, each written piece at the bytes it holds
         self._slots: Mapping[str, int] = EMPTY
@@ -3073,7 +3075,7 @@ class SharedArrowStore:
             self, schema=schema, config=config, prepare=prepare, admit_wait=admit_wait, cores=cores
         )
         with self._state:
-            self._readers.add(made)
+            self._readers = self._readers.with_item(made)
         return made
 
     def _tell_readers(self) -> None:
@@ -5096,17 +5098,16 @@ class SharedArrowPool:
         #: waits for, the pools whose worker's death was said, each once (:meth:`_broken`), and each pool's
         #: shutdown lock; a lock of their own, since the executor's thread takes it while holding the executor's
         #: lock, which :meth:`_submit` takes under ``_lock``
-        self._reaping: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
+        self._reaping: FrozenWeakSet[ProcessPoolExecutor] = FrozenWeakSet()
         self._reapers: frozenset[threading.Thread] = frozenset()
-        self._dead: weakref.WeakSet[ProcessPoolExecutor] = weakref.WeakSet()
+        self._dead: FrozenWeakSet[ProcessPoolExecutor] = FrozenWeakSet()
         #: one per pool, held across its waiting shutdown, so a retired pool's reaper (:meth:`_reap`) and
         #: :meth:`close` never shut one executor down at once: ``ProcessPoolExecutor.shutdown`` closes its result
         #: queue unlocked, and two at once close the same pipe twice -- ``OSError: [Errno 9] Bad file descriptor``
         #: at best, or another file that took the number in between. Per pool, so a retired pool finishing a long
-        #: job holds up no other pool's shutdown. never taken under ``_lock``.
-        self._shutdown_locks: weakref.WeakKeyDictionary[ProcessPoolExecutor, threading.Lock] = (
-            weakref.WeakKeyDictionary()
-        )
+        #: job holds up no other pool's shutdown. never taken under ``_lock``. These four are held weakly and replaced
+        #: whole under ``_reaping_lock``.
+        self._shutdown_locks: FrozenWeakKeys[ProcessPoolExecutor, threading.Lock] = FrozenWeakKeys()
         self._reaping_lock = threading.Lock()
         self._jobs = 0
         self._replaced = 0
@@ -5355,7 +5356,7 @@ class SharedArrowPool:
                 initargs=(self._serving, self._initializer, self._initargs, self._process_name),
             )
             with self._reaping_lock:
-                self._shutdown_locks[self._pool] = threading.Lock()
+                self._shutdown_locks = self._shutdown_locks.with_entry(self._pool, threading.Lock())
             self._stale = False
             for _ in range(self._workers):
                 self._pool.submit(_spawned)
@@ -5398,7 +5399,7 @@ class SharedArrowPool:
             return
         with self._reaping_lock:
             said = pool in self._dead
-            self._dead.add(pool)
+            self._dead = self._dead.with_item(pool)
         if not said:
             log.warning("shared Arrow worker died; its pool is replaced", extra={"extra_data": {"pool": self._name}})
         self._retire(pool)
@@ -5415,7 +5416,7 @@ class SharedArrowPool:
         with self._reaping_lock:
             if pool in self._reaping:
                 return
-            self._reaping.add(pool)
+            self._reaping = self._reaping.with_item(pool)
             self._reapers = self._reapers | {reaper}
         try:
             reaper.start()

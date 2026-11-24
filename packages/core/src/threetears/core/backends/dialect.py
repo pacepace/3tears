@@ -10,7 +10,6 @@ every statement in the form it had.
 
 from __future__ import annotations
 
-import weakref
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, Final
@@ -18,7 +17,7 @@ from typing import Any, Final
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
-from threetears.observe import get_logger
+from threetears.observe import FrozenWeakKeys, get_logger
 from threetears.observe.metrics import gauge
 
 __all__ = ["check_index_hints", "known_on_yugabyte", "l3_on_yugabyte"]
@@ -68,8 +67,9 @@ async def l3_on_yugabyte(l3: Any) -> bool:
     return bool(rows) and _YUGABYTE_VERSION_MARK in str(rows[0]["v"])
 
 
-#: readers whose database was asked once (a pool, the rail's proxy): a reader's database does not change under it
-_ASKED: Final[weakref.WeakKeyDictionary[Any, bool]] = weakref.WeakKeyDictionary()
+#: readers whose database was asked once (a pool, the rail's proxy): a reader's database does not change under it.
+#: Held weakly, replaced whole
+_ASKED: FrozenWeakKeys[Any, bool] = FrozenWeakKeys()
 
 #: asyncpg pools whose database was asked once, by ``id``, each held beside its answer. A pool is slotted with no
 #: ``__weakref__``, so it cannot sit in :data:`_ASKED`; before this every keyed read through a pool -- the hub's and
@@ -97,16 +97,31 @@ async def known_on_yugabyte(l3: Any) -> bool:
         return _YUGABYTE_VERSION_MARK in str(l3.get_settings().server_version)
     if isinstance(l3, asyncpg.Pool):
         return await _pool_on_yugabyte(l3)
-    try:
-        return _ASKED[l3]
-    except KeyError:  # NOSILENT: not asked yet: asked below, and the answer kept
-        pass
-    except TypeError:
+    if not type(l3).__weakrefoffset__:
         # a reader that cannot be held weakly is asked each time
         return await l3_on_yugabyte(l3)
+    known = _ASKED.get(l3)
+    if known is not None:
+        return known
     answer = await l3_on_yugabyte(l3)
-    _ASKED[l3] = answer
+    _keep_answer(l3, answer)
     return answer
+
+
+def _keep_answer(l3: Any, answer: bool) -> None:
+    """keep ``l3``'s answer: :data:`_ASKED` replaced whole, read here after the question's await so an answer kept for
+    another reader meanwhile stays. Two callers that both find a reader unasked each ask it once and keep the same
+    answer: no object is built, nothing is registered twice.
+
+    :param l3: the reader
+    :ptype l3: Any
+    :param answer: whether its database is YugabyteDB
+    :ptype answer: bool
+    :return: nothing
+    :rtype: None
+    """
+    global _ASKED
+    _ASKED = _ASKED.with_entry(l3, answer)
 
 
 async def _pool_on_yugabyte(pool: asyncpg.Pool) -> bool:

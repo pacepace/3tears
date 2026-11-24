@@ -6,6 +6,9 @@ which tables wait, why, at what mark. Each such value is a read-only snapshot (a
 snapshot (a status, a coroutine across an await, a thread handed it) never sees it change under it. Each is per table
 or per state, never per key (per-key state is Arrow), so rebuilding one is cheap.
 
+The same shape over weak references (in place of ``weakref.WeakSet`` / ``WeakKeyDictionary`` /
+``WeakValueDictionary``) is :mod:`threetears.observe.frozen_weak`, where every 3tears package can reach it.
+
 Stdlib only: shared_arrow, security and the collections import it, so it imports no pyarrow, asyncpg or
 threetears.core.collections (shared_arrow importing that package is a cycle; security runs without the arrow extra).
 """

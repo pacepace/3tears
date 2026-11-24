@@ -25,6 +25,8 @@ The widened walk (``widened=True``; Pace's ruling of 2026-11-24, opt-in per repo
 - (b) lists and deques count too (a list display or comprehension, ``list()`` / ``deque()``, an annotation naming
   ``list`` / ``deque`` / ``MutableSequence`` or a ``typing`` alias), and so do their changes: ``popleft``,
   ``appendleft``, ``extendleft``, ``rotate``, ``sort``, ``reverse``, slice assignment, and ``OrderedDict.move_to_end``;
+  and so do the weak containers (``weakref.WeakSet`` / ``WeakValueDictionary`` / ``WeakKeyDictionary``, built or
+  annotated), changed in place by this code as a set or a dict is (the GC dropping a dead entry is not this code);
 - (c) class-body fields count too: ``x: dict[str, int] = field(default_factory=dict)``, an annotated field with no
   value (a dataclass's), ``ClassVar`` / ``Final`` / ``Optional`` wrappers, and a mutable class attribute (``_seen =
   set()``), changed through ``self`` or ``cls`` outside ``__init__`` / ``__post_init__``; and a change made from
@@ -103,6 +105,11 @@ _SEQUENCE_MUTATORS: frozenset[str] = frozenset(
     {"appendleft", "extendleft", "popleft", "rotate", "sort", "reverse", "move_to_end"}
 )
 
+#: the weak containers (``weakref.WeakSet`` / ``WeakValueDictionary`` / ``WeakKeyDictionary``): a set or a dict all the
+#: same to a reader holding one while another coroutine or thread adds or drops an entry; the GC dropping a dead entry
+#: is no change by this code
+_WEAK: frozenset[str] = frozenset({"WeakSet", "WeakValueDictionary", "WeakKeyDictionary"})
+
 #: gap (c): annotation wrappers whose first argument is the field's real type
 _WRAPPERS: frozenset[str] = frozenset({"ClassVar", "Final", "Optional", "Annotated"})
 
@@ -137,8 +144,8 @@ _NARROW = _Rules(
 
 _WIDE = _Rules(
     widened=True,
-    constructors=_CONSTRUCTORS | _SEQUENCE_CONSTRUCTORS,
-    annotations=_ANNOTATIONS | _SEQUENCE_ANNOTATIONS,
+    constructors=_CONSTRUCTORS | _SEQUENCE_CONSTRUCTORS | _WEAK,
+    annotations=_ANNOTATIONS | _SEQUENCE_ANNOTATIONS | _WEAK,
     mutators=_MUTATORS | _SEQUENCE_MUTATORS,
     receivers=frozenset({"self", "cls"}),
     builders=frozenset({"__init__", "__post_init__"}),

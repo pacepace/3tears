@@ -75,7 +75,7 @@ from threetears.core.eviction import (
     policies_declared,
 )
 from threetears.core.packed_keys import NO_KEYS, key_text, packed, parts_of, texts
-from threetears.observe import BuildOnce, contain, get_logger
+from threetears.observe import BuildOnce, FrozenWeakValues, contain, get_logger
 
 __all__ = [
     "L1_EVICTION_INFO",
@@ -438,7 +438,8 @@ class L1Ledger:
         self._budget = budget
         #: per (store, table), replaced whole by the ledger's thread alone
         self._tables: Mapping[tuple[int, str], _Table] = MappingProxyType({})
-        self._stores: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
+        #: the joined stores by ``id``, held weakly (a dropped store leaves with it); replaced whole under the lock
+        self._stores: FrozenWeakValues[int, Any] = FrozenWeakValues()
         #: the exact bytes of every table's held rows, and the bytes their hand-offs' writes name; the ledger's thread's
         self._estimated = 0
         self._unsettled = 0
@@ -470,7 +471,7 @@ class L1Ledger:
             if self._budget is None:
                 self._budget = _budget_from_env(directory)
             BUDGET_BYTES.labels(tier=_TIER, name="").set(self._budget)
-            self._stores[id(store)] = store
+            self._stores = self._stores.with_entry(id(store), store)
             if self._threaded and (self._thread is None or not self._thread.is_alive()):
                 self._thread = threading.Thread(target=self._run, name="threetears-l1-ledger", daemon=True)
                 self._thread.start()
@@ -484,7 +485,7 @@ class L1Ledger:
         :rtype: None
         """
         with self._lock:
-            self._stores.pop(id(store), None)
+            self._stores = self._stores.without_key(id(store))
         self._handoffs.put(("l", id(store)))
 
     @property
