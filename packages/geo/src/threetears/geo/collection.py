@@ -30,6 +30,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+import pyarrow as pa
+
 from threetears.core.collections.derived import DerivedCollection
 from threetears.core.entities.base import BaseEntity
 from threetears.geo.attributes import coerce_attributes
@@ -180,9 +182,10 @@ class TileEntity(BaseEntity):
     primary_key_field = "z"
 
 
-#: fetches source rows for a layer, generation and rectangle. the collection
-#: does not own the query because only the caller knows the datasource.
-SourceLoader = Callable[[str, int, BoundingBox], Awaitable[list[dict[str, Any]]]]
+#: fetches source rows for a layer, generation and rectangle, as one Arrow table: the same
+#: callable as :data:`~threetears.geo.features.FeatureLoader`. the collection does not own the
+#: query because only the caller knows the datasource.
+SourceLoader = Callable[[str, int, BoundingBox], Awaitable[pa.Table]]
 
 
 class TileCollection(DerivedCollection[TileEntity]):
@@ -357,7 +360,9 @@ class TileCollection(DerivedCollection[TileEntity]):
 
         tile = TileId(z=z, x=x, y=y)
         rows = await self._features_for(definition, version, tile)
-        band = self._build_band(rows, tile=tile, definition=definition)
+        # the bands read a row at a time through the layer's geometry_of / attributes_of, which take
+        # a row mapping: this one tile's rows become mappings here, for this build only
+        band = self._build_band(rows.to_pylist(), tile=tile, definition=definition)
         # both bands meet here, so this is where a tile built over unreadable rows is marked:
         # the per-bucket property covers only buckets that kept a feature
         payload = encode_tile({layer_name: band.features}, tile, undecodable={layer_name: band.undecodable})
@@ -391,7 +396,7 @@ class TileCollection(DerivedCollection[TileEntity]):
             )
         return {"layer": layer_name, "version": version, "z": z, "x": x, "y": y, "mvt": payload}
 
-    async def _features_for(self, definition: LayerDefinition, version: int, tile: TileId) -> list[dict[str, Any]]:
+    async def _features_for(self, definition: LayerDefinition, version: int, tile: TileId) -> pa.Table:
         """source rows for one tile, through the per-pod feature cache.
 
         the cache loads coarse chunks and tracks which it has fully covered,

@@ -28,7 +28,7 @@ from threetears.geo.collection import (
     TileEntity,
     ViewportRequest,
 )
-from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
+from threetears.geo.features import BOUNDS_COLUMNS, BoundsOf, FeatureCache, FeatureEntity, FeatureLoader
 from threetears.geo.geometry import UndecodableGeometry, decode_geometry, geometry_bounds, point_geometry
 from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX, encode_tile, project_to_tile
 from threetears.geo.overlay import (
@@ -53,12 +53,14 @@ from threetears.geo.tiles import (
 )
 
 __all__ = [
+    "BOUNDS_COLUMNS",
     "MAX_CACHE_SCOPE_LENGTH",
     "MAX_MERCATOR_LATITUDE",
     "PARTIAL_LAYER_SUFFIX",
     "UNDECODABLE_PROPERTY",
     "AggregateSpec",
     "BandResult",
+    "BoundsOf",
     "FeatureCache",
     "FeatureEntity",
     "FeatureLoader",

@@ -25,7 +25,9 @@ dependencies = [
     # core supplies BaseCollection/DerivedCollection, which the feature cache
     # and tile collection subclass rather than hand-rolling a wrapper around
     # SQLiteBackend (the platform's caching rules forbid the latter).
-    "3tears>=0.95.0,<0.96.0",
+    # the arrow extra: the feature cache holds each chunk's rows as one Arrow table, and a
+    # loader answers in Arrow -- never a Python object per row in what a pod keeps.
+    "3tears[arrow]>=0.95.0,<0.96.0",
     "3tears-observe>=0.95.0,<0.96.0",
     # object-key contract: tiles use the platform key scheme rather than
     # inventing a parallel one.
