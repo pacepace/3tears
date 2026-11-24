@@ -111,6 +111,7 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.core.declared import whole_read
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
+from threetears.core.collections.frozen_state import frozen, with_entries
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -358,7 +359,8 @@ class ScopeEpochs:
         self._idle_ms = None if idle_timeout is None else max(1, int(idle_timeout.total_seconds() * 1000))
         # the snapshot last read, the rows it was built from (by scope), and the version a read of the changes reads past
         self._held: EpochSnapshot | None = None
-        self._rows: dict[str, dict[str, Any]] = {}
+        #: an immutable value replaced whole on change
+        self._rows: Mapping[str, Mapping[str, Any]] = frozen()
         self._since = 0
         self._reading = asyncio.Lock()
 
@@ -433,7 +435,7 @@ class ScopeEpochs:
             "test_read_whole_is_reached_only_at_a_first_read_a_reset_or_a_restore",
             speed="packages/core/tests/integration/test_scope_epochs_incremental.py::test_read_whole_speed_at_real_size",
         )
-        self._rows = {str(row["scope"]): row for row in rows}
+        self._rows = frozen({str(row["scope"]): row for row in rows})
         self._since = int(record) if record is not None else 0
         built = _Building()
         for row in rows:
@@ -560,13 +562,13 @@ class ScopeEpochs:
             columns=_COLUMNS,
         )
         found = {str(row["scope"]): dict(row) for row in again}
-        for row in changed:
-            self._rows[str(row["scope"])] = row
+        rows = {**self._rows, **{str(row["scope"]): row for row in changed}}
         for scope in named:
             if scope in found:
-                self._rows[scope] = found[scope]
+                rows[scope] = found[scope]
             else:
-                self._rows.pop(scope, None)
+                rows.pop(scope, None)
+        self._rows = frozen(rows)
         record = self._rows.get(WHOLE)
         self._since = int(record["epoch"]) if record is not None else 0
         built = _Building()
@@ -591,8 +593,8 @@ class ScopeEpochs:
         if not moved:
             return held
         built = _Building.of(held)
+        self._rows = with_entries(self._rows, {str(row["scope"]): row for row in moved})
         for row in moved:
-            self._rows[str(row["scope"])] = row
             built.apply(row)
         self._held = built.snapshot()
         return self._held

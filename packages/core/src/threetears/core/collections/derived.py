@@ -48,13 +48,14 @@ import asyncio
 import hashlib
 import re
 from abc import abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Protocol
 
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
 from threetears.core.collections.tier_reads import ReadTier
 from threetears.core.coordination.distributed_lock import LockHeld, nats_distributed_lock
 from threetears.core.coordination.lease import LeaseUnavailable
@@ -245,7 +246,7 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # this does not grow with the number of keys ever seen. the lock's own
         # ``locked()`` is the liveness signal -- a separate reference count
         # would be a second source of truth for the same fact.
-        self._inflight: dict[tuple[Any, ...], asyncio.Lock] = {}
+        self._inflight: Mapping[tuple[Any, ...], asyncio.Lock] = frozen()
 
     # ------------------------------------------------------------------
     # subclass contract
@@ -391,7 +392,7 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
         gate = self._inflight.get(key)
         if gate is None:
             gate = asyncio.Lock()
-            self._inflight[key] = gate
+            self._inflight = with_entry(self._inflight, key, gate)
         try:
             async with gate:
                 # a peer task on this pod may have derived it while we queued.
@@ -403,7 +404,7 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
             # only the last leaver sees an unlocked gate; anyone still queued
             # holds a reference to this same object and is unaffected either way.
             if not gate.locked():
-                self._inflight.pop(key, None)
+                self._inflight = without_entry(self._inflight, key)
 
     async def _derive_cross_pod(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         """hold the cross-pod build lock, then derive and persist.

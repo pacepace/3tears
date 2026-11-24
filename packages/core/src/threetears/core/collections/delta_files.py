@@ -78,6 +78,7 @@ from typing import Any, BinaryIO, Final
 
 from threetears.core.backends.arrow_reply import _rail_value
 from threetears.core.collections.epoch_change import key_text
+from threetears.core.collections.frozen_state import frozen, with_entry
 from threetears.observe import get_logger
 
 try:
@@ -1072,7 +1073,10 @@ class HeldDeltaRows:
             texts = [pa.array([values[at] for values in keys], pa.string()) for at in range(len(self.key))]
         self._key_columns = dict(zip(self.key, texts, strict=True))
         self._texts = _key_texts(texts)
-        self._columns = {name: pa.nulls(self._count, kind) for name, kind in self._types.items()}
+        #: each column's values (Arrow), one value a key: an immutable value replaced whole on change
+        self._columns: Mapping[str, Any] = frozen(
+            {name: pa.nulls(self._count, kind) for name, kind in self._types.items()}
+        )
         self._held = np.zeros(self._count, dtype=bool)
         self.applied = 0
 
@@ -1133,10 +1137,12 @@ class HeldDeltaRows:
         taken = np.flatnonzero(positions >= 0)
         positions = positions[taken]
         index = pa.array(taken)
-        for name in self._types:
-            self._columns[name] = self._placed(
-                self._columns[name], positions, self._typed(rows.column(name).take(index), name)
-            )
+        self._columns = frozen(
+            {
+                name: self._placed(self._columns[name], positions, self._typed(rows.column(name).take(index), name))
+                for name in self._types
+            }
+        )
         self._held[positions] = True
 
     def _under(self, prefixes: Sequence[Mapping[str, str]]) -> Any:
@@ -1213,7 +1219,7 @@ class HeldDeltaRows:
             )
             if not from_file.all():
                 values = pc.if_else(pa.array(from_file), values, self._columns[name].take(pa.array(keys)))
-            self._columns[name] = self._placed(self._columns[name], keys, values)
+            self._columns = with_entry(self._columns, name, self._placed(self._columns[name], keys, values))
         self._held[keys] = ~deleted
         self.applied += len(keys)
 

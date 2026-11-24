@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import inspect
 import weakref
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
@@ -39,6 +40,7 @@ from threetears.core.backends.broker_generation import (
     note_advanced_generation,
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
+from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
 
@@ -319,7 +321,7 @@ class GenerationVerdict(StrEnum):
 _MAX_REMEMBERED_ADVANCES: Final = 4096
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _Heard:
     """the rows a pod has heard of one advance.
 
@@ -331,7 +333,7 @@ class _Heard:
     of: int
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _TableMark:
     """one followed table's mark.
 
@@ -348,7 +350,7 @@ class _TableMark:
     sighted: bool = False
     incarnation: str | None = None
     accounted: int = 0
-    heard: dict[tuple[str, int], _Heard] = field(default_factory=dict)
+    heard: Mapping[tuple[str, int], _Heard] = field(default_factory=frozen)
     overflowed: bool = False
 
 
@@ -370,7 +372,8 @@ class GenerationMarks:
         :return: nothing
         :rtype: None
         """
-        self._tables: dict[str, _TableMark] = {}
+        #: an immutable value replaced whole on change, as each table's mark is
+        self._tables: Mapping[str, _TableMark] = frozen()
 
     def follow(self, table_name: str) -> None:
         """start keeping a mark for ``table_name``; a no-op when one is already kept.
@@ -380,7 +383,8 @@ class GenerationMarks:
         :return: nothing
         :rtype: None
         """
-        self._tables.setdefault(table_name, _TableMark())
+        if table_name not in self._tables:
+            self._tables = with_entry(self._tables, table_name, _TableMark())
 
     def unfollow(self, table_name: str) -> None:
         """stop keeping a mark for ``table_name``.
@@ -390,7 +394,7 @@ class GenerationMarks:
         :return: nothing
         :rtype: None
         """
-        self._tables.pop(table_name, None)
+        self._tables = without_entry(self._tables, table_name)
 
     def follows(self, table_name: str) -> bool:
         """whether a mark is kept for ``table_name``.
@@ -461,16 +465,8 @@ class GenerationMarks:
         :rtype: None
         """
         theirs = source._tables.get(table_name)
-        if theirs is None:
-            self._tables[table_name] = _TableMark()
-            return
-        self._tables[table_name] = _TableMark(
-            sighted=theirs.sighted,
-            incarnation=theirs.incarnation,
-            accounted=theirs.accounted,
-            heard={key: _Heard(rows=heard.rows, of=heard.of) for key, heard in theirs.heard.items()},
-            overflowed=theirs.overflowed,
-        )
+        # a mark is immutable, so theirs is taken as it is: neither registry's later change reaches the other
+        self._tables = with_entry(self._tables, table_name, _TableMark() if theirs is None else theirs)
 
     def pending(self, table_name: str) -> tuple[str, ...]:
         """the advances beyond the mark this pod has heard rows of but cannot yet count, as tokens, for a log line.
@@ -559,15 +555,20 @@ class GenerationMarks:
         if mark is None or parts is None or not mark.sighted:
             return
         if mark.incarnation is None:
-            mark.incarnation = parts[0]
-            mark.accounted = 0
+            mark = replace(mark, incarnation=parts[0], accounted=0)
+            self._tables = with_entry(self._tables, table_name, mark)
         if parts[0] != mark.incarnation or parts[1] <= mark.accounted:
             return
-        mark.accounted = parts[1]
-        mark.overflowed = False
-        mark.heard = {
-            key: heard for key, heard in mark.heard.items() if key[0] == mark.incarnation and key[1] > parts[1]
-        }
+        incarnation = mark.incarnation
+        mark = replace(
+            mark,
+            accounted=parts[1],
+            overflowed=False,
+            heard=frozen(
+                {key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > parts[1]}
+            ),
+        )
+        self._tables = with_entry(self._tables, table_name, mark)
 
     def applied(self, table_name: str, token: str) -> None:
         """record that the change of the advance that wrote ``token`` was fetched and applied in full.
@@ -585,16 +586,16 @@ class GenerationMarks:
         mark = self._tables.get(table_name)
         parts = split_generation_token(token)
         if mark is not None and parts is not None and mark.sighted and mark.incarnation is None:
-            mark.incarnation = parts[0]
-            mark.accounted = 0
+            mark = replace(mark, incarnation=parts[0], accounted=0)
+            self._tables = with_entry(self._tables, table_name, mark)
         if mark is None or parts is None or not mark.sighted or parts[0] != mark.incarnation:
             return
         if parts[1] > mark.accounted:
-            mark.heard[parts] = _Heard(rows=1, of=1)
-            self._move_on(mark)
+            mark = self._moved_on(replace(mark, heard=with_entry(mark.heard, parts, _Heard(rows=1, of=1))))
         if mark.overflowed and not any(heard.rows < heard.of for heard in mark.heard.values()):
             # the overflow only hid which advances were heard; every one up to here is applied now
-            mark.overflowed = False
+            mark = replace(mark, overflowed=False)
+        self._tables = with_entry(self._tables, table_name, mark)
 
     def continue_under(self, table_name: str, lost: str, restored: str, covered_from: int | None) -> bool:
         """carry the table's mark from a lost log's incarnation to the start of the one restored from it.
@@ -627,10 +628,9 @@ class GenerationMarks:
             or mark.accounted < covered_from
         ):
             return False
-        mark.incarnation = restored
-        mark.accounted = 0
-        mark.heard = {}
-        mark.overflowed = False
+        self._tables = with_entry(
+            self._tables, table_name, replace(mark, incarnation=restored, accounted=0, heard=frozen(), overflowed=False)
+        )
         return True
 
     def adopt_generation(self, table_name: str, token: str | None) -> None:
@@ -650,12 +650,14 @@ class GenerationMarks:
         """
         mark = self._tables[table_name]
         incarnation, count = self._parts(token)
-        mark.sighted = True
-        mark.incarnation = incarnation
-        mark.accounted = count
-        mark.overflowed = False
-        mark.heard = {key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > count}
-        self._move_on(mark)
+        mark = _TableMark(
+            sighted=True,
+            incarnation=incarnation,
+            accounted=count,
+            overflowed=False,
+            heard=frozen({key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > count}),
+        )
+        self._tables = with_entry(self._tables, table_name, self._moved_on(mark))
 
     def _record(self, table_name: str, token: str, *, rows: int, of: int) -> None:
         """count ``rows`` rows of the advance that wrote ``token``, and move the mark on if it can.
@@ -682,30 +684,42 @@ class GenerationMarks:
         heard = mark.heard.get(parts)
         if heard is None:
             if len(mark.heard) >= _MAX_REMEMBERED_ADVANCES:
-                mark.overflowed = True
+                self._tables = with_entry(self._tables, table_name, replace(mark, overflowed=True))
                 return
             heard = _Heard(rows=0, of=of)
-            mark.heard[parts] = heard
-        heard.rows += rows
-        self._move_on(mark)
+        heard = replace(heard, rows=heard.rows + rows)
+        self._tables = with_entry(
+            self._tables, table_name, self._moved_on(replace(mark, heard=with_entry(mark.heard, parts, heard)))
+        )
 
     @staticmethod
-    def _move_on(mark: _TableMark) -> None:
-        """move ``mark`` past every advance heard in full that directly follows it.
+    def _moved_on(mark: _TableMark) -> _TableMark:
+        """``mark`` moved past every advance heard in full that directly follows it.
 
         :param mark: the table's mark
         :ptype mark: _TableMark
-        :return: nothing
-        :rtype: None
+        :return: the mark moved on (``mark`` itself when none follows)
+        :rtype: _TableMark
         """
-        if not mark.sighted or mark.incarnation is None:
-            return
+        incarnation = mark.incarnation
+        if not mark.sighted or incarnation is None:
+            return mark
+        accounted = mark.accounted
         while True:
-            following = mark.heard.get((mark.incarnation, mark.accounted + 1))
+            following = mark.heard.get((incarnation, accounted + 1))
             if following is None or following.rows < following.of:
-                return
-            del mark.heard[(mark.incarnation, mark.accounted + 1)]
-            mark.accounted += 1
+                break
+            accounted += 1
+        if accounted == mark.accounted:
+            return mark
+        passed = range(mark.accounted + 1, accounted + 1)
+        return replace(
+            mark,
+            accounted=accounted,
+            heard=frozen(
+                {key: heard for key, heard in mark.heard.items() if not (key[0] == incarnation and key[1] in passed)}
+            ),
+        )
 
     def judge(self, table_name: str, token: str | None) -> GenerationVerdict:
         """compare a generation just read with the table's mark, changing nothing.

@@ -956,9 +956,9 @@ class ChangeNoteKeeper:
         self._fence = fence
         self._scrub_batch = scrub_batch
         #: the noted tables refused a trigger for a column type, so each is said once
-        self._refused: set[str] = set()
+        self._refused: frozenset[str] = frozenset()
         #: another schema's tables of a noted name found without a note trigger, so each is said once
-        self._untriggered: set[str] = set()
+        self._untriggered: frozenset[str] = frozenset()
         self._scrub_every = fence / _SCRUBS_PER_FENCE if scrub_every is None else scrub_every
         self._scrubbed_at: float | None = None
         self._marks = f"{self._owner}.{quote_identifier(MARKS_TABLE)}"
@@ -1132,7 +1132,7 @@ class ChangeNoteKeeper:
             name = f"{schema}.{table}"
             if name in self._untriggered:
                 continue
-            self._untriggered.add(name)
+            self._untriggered = self._untriggered | {name}
             log.warning(
                 "a table shares a noted table's name in another schema and carries no change-note trigger; the "
                 "keeper gives triggers only in its own schema. Its schema's migration run gives them, when that "
@@ -1156,7 +1156,7 @@ class ChangeNoteKeeper:
         name = f"{schema}.{table}"
         if name in self._refused:
             return
-        self._refused.add(name)
+        self._refused = self._refused | {name}
         log.error(
             "a noted table gets no change-note trigger: a key or invalidation column is not uuid, text, varchar, "
             "an integer or timestamptz, so its text form does not name the value exactly. Change the column or what the class "

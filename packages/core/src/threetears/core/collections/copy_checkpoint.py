@@ -73,6 +73,7 @@ from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
 from threetears.core.cache.duckdb_binds import KEYS, run_joined
+from threetears.core.collections.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
 from threetears.core.ddl.change_notes import DEFAULT_NOTE_FENCE
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
@@ -428,9 +429,9 @@ class _Taken:
     """what a write took of the changes counted since the last checkpoint: given back if the write does not land."""
 
     since: int
-    touched: dict[str, set[str] | None]
-    keys: dict[str, tuple[Any, ...]]
-    kinds: dict[str, str]
+    touched: Mapping[str, frozenset[str] | None]
+    keys: Mapping[str, tuple[Any, ...]]
+    kinds: Mapping[str, str]
     due: bool
     whole: frozenset[str]
     noted: datetime | None
@@ -458,37 +459,46 @@ class _Plan:
     kind: str = ""
 
 
-def _add_touched(into: dict[str, set[str] | None], table: str, scopes: Iterable[str] | None) -> None:
-    """count a table's touched scopes into ``into``; None (the table whole) wins over any scopes.
+def _with_touched(
+    held: Mapping[str, frozenset[str] | None], table: str, scopes: Iterable[str] | None
+) -> Mapping[str, frozenset[str] | None]:
+    """``held`` with a table's touched scopes counted in, as a new read-only snapshot; None (the table whole) wins over
+    any scopes.
 
-    :return: nothing
-    :rtype: None
-    """
-    if scopes is None:
-        into[table] = None
-        return
-    held = into.get(table, set())
-    if held is not None:
-        held.update(scopes)
-        into[table] = held
-
-
-def _add_keys(into: dict[str, tuple[Any, ...]], table: str, keys: Iterable[Any]) -> None:
-    """count a table's touched keys into ``into``: each batch kept as it is (immutable Arrow, never a Python object a
-    key; decision 35), an empty one not at all.
-
-    :param into: each table's batches
-    :ptype into: dict[str, tuple[pyarrow.Table, ...]]
+    :param held: each table touched, and its scopes
+    :ptype held: Mapping[str, frozenset[str] | None]
     :param table: the table
     :ptype table: str
-    :param keys: batches of its touched keys (its key columns as text)
-    :ptype keys: Iterable[pyarrow.Table]
-    :return: nothing
-    :rtype: None
+    :param scopes: the scopes touched; None: the table whole
+    :ptype scopes: Iterable[str] | None
+    :return: the new snapshot
+    :rtype: Mapping[str, frozenset[str] | None]
+    """
+    if scopes is None:
+        return with_entry(held, table, None)
+    have = held.get(table, frozenset())
+    if have is None:
+        return held
+    return with_entry(held, table, have | frozenset(scopes))
+
+
+def _with_keys(held: Mapping[str, tuple[Any, ...]], table: str, keys: Iterable[Any]) -> Mapping[str, tuple[Any, ...]]:
+    """``held`` with a table's touched keys counted in, as a new read-only snapshot: each batch kept as it is (immutable
+    Arrow, never a Python object a key; decision 35), an empty one not at all.
+
+    :param held: each table with no scope touched, and its key batches
+    :ptype held: Mapping[str, tuple[Any, ...]]
+    :param table: the table
+    :ptype table: str
+    :param keys: the key batches
+    :ptype keys: Iterable[Any]
+    :return: the new snapshot
+    :rtype: Mapping[str, tuple[Any, ...]]
     """
     batches = tuple(batch for batch in keys if batch.num_rows)
-    if batches:
-        into[table] = (*into.get(table, ()), *batches)
+    if not batches:
+        return held
+    return with_entry(held, table, (*held.get(table, ()), *batches))
 
 
 def _touched_keys(batches: Sequence[Any], key: Sequence[str]) -> Any:
@@ -574,26 +584,26 @@ class CopyCheckpoints:
         #: each table's entry this replica's copy of it matched at its last load or write, plus what changed since
         #: (``_touched``, ``_keys``): a write names its unchanged parts again while the newest or the previous
         #: checkpoint still names them
-        self._priors: dict[str, CheckpointTable] = {}
+        self._priors: Mapping[str, CheckpointTable] = frozen()
         #: each table changed since, and the scopes of it changed (None: the table changed whole)
-        self._touched: dict[str, set[str] | None] = {}
+        self._touched: Mapping[str, frozenset[str] | None] = frozen()
         #: each table with no scope changed since, and the keys of it changed: immutable Arrow batches of its key
         #: columns as text, one an apply (never a Python object a key)
-        self._keys: dict[str, tuple[Any, ...]] = {}
+        self._keys: Mapping[str, tuple[Any, ...]] = frozen()
         #: a change was counted with no tables named: the next write writes every table
         #: each table the follower read whole since the last write, onto the situation it read it in
-        self._whole_kinds: dict[str, str] = {}
+        self._whole_kinds: Mapping[str, str] = frozen()
         #: tables the next write writes whole or from the previous checkpoint: left out of the load, or loaded from
         #: the previous checkpoint
-        self._whole: set[str] = set()
+        self._whole: frozenset[str] = frozenset()
         #: each table a load left out, and why (:data:`COLD_START`, :data:`SCHEMA_CHANGE`): its cold start here
-        self._missing: dict[str, str] = {}
+        self._missing: Mapping[str, str] = frozen()
         #: a checkpoint is due for a table of ``_whole``: the load left it out, or it was read again since
         self._whole_due = False
         #: the newest checkpoint holds tables this replica could only rewrite whole: it writes none until it loads again
         self._stale = False
         #: (seq, table) whose parts did not read back here: never kept as they are
-        self._broken: set[tuple[int, str]] = set()
+        self._broken: frozenset[tuple[int, str]] = frozenset()
         #: the tables a follower keeps by their epochs (:meth:`follow`); every other is derived. None: every table
         self._followed: frozenset[str] | None = None
         #: where the oldest notes bracket begins of an epoch the follower applied from the change notes since the last
@@ -687,10 +697,16 @@ class CopyCheckpoints:
         :rtype: StagedCheckpoint
         """
         found = await self.newest()
-        self._touched, self._keys, self._whole_kinds, self._since, self._stale = {}, {}, {}, 0, False
+        self._touched, self._keys, self._whole_kinds, self._since, self._stale = frozen(), frozen(), frozen(), 0, False
         self._noted = None
         if found is None:
-            self._held_rows, self._priors, self._whole, self._whole_due, self._missing = None, {}, set(), False, {}
+            self._held_rows, self._priors, self._whole, self._whole_due, self._missing = (
+                None,
+                frozen(),
+                frozenset(),
+                False,
+                frozen(),
+            )
             return StagedCheckpoint(
                 stamp=None, marks={}, changes=[], rows=0, missing={t.name: COLD_START for t in self._tables}
             )
@@ -718,7 +734,7 @@ class CopyCheckpoints:
                         StagedChange(table=table.name, key=table.key, rows=stage, whole=True, whole_kind="cold_start")
                     )
                     break
-                self._broken.add((source.seq, table.name))
+                self._broken = self._broken | {(source.seq, table.name)}
             else:
                 missing[table.name] = COLD_START
         # a derived table holds what the followed ones hold at a stamp: it loads only when every one of them loaded
@@ -743,16 +759,16 @@ class CopyCheckpoints:
                     StagedChange(table=table.name, key=table.key, rows=stage, whole=True, whole_kind="cold_start")
                 )
             else:
-                self._broken.add((newest.seq, table.name))
+                self._broken = self._broken | {(newest.seq, table.name)}
                 missing[table.name] = COLD_START
         if missing:
             log.warning(
                 "a checkpoint did not hold every table; the follower reads those whole from L3",
                 extra={"extra_data": {"base": self.base, "missing": dict(missing), "loaded": sorted(loaded)}},
             )
-        self._priors = {name: source.tables[name] for name, source in loaded.items()} | derived
-        self._missing = dict(missing)
-        self._whole = {t.name for t in self._tables if loaded.get(t.name) is not newest}
+        self._priors = frozen({name: source.tables[name] for name, source in loaded.items()} | derived)
+        self._missing = frozen(missing)
+        self._whole = frozenset(t.name for t in self._tables if loaded.get(t.name) is not newest)
         self._whole_due = bool(self._whole)
         self._held_rows = rows if loaded else None
         oldest = min(loaded.values(), key=lambda source: source.seq) if loaded else None
@@ -849,8 +865,9 @@ class CopyCheckpoints:
             raise ValueError(f"{unknown} were read whole: name why, one of {sorted(_FOLLOWER_KINDS)}")
         self._since += rows
         self._note(noted)
-        for name in whole:
-            self._whole_kinds[name] = _FOLLOWER_KINDS[(whys or {})[name]]
+        self._whole_kinds = with_entries(
+            self._whole_kinds, {name: _FOLLOWER_KINDS[(whys or {})[name]] for name in whole}
+        )
         scopeless = {t.name for t in self._tables if t.scope is None}
         unkeyed = sorted(
             name
@@ -863,9 +880,9 @@ class CopyCheckpoints:
             )
         for table, scopes in touched.items():
             self._whole_due = self._whole_due or table in self._whole
-            _add_touched(self._touched, table, scopes)
+            self._touched = _with_touched(self._touched, table, scopes)
             if scopes is not None and keys is not None and table in keys:
-                _add_keys(self._keys, table, (keys[table],))
+                self._keys = _with_keys(self._keys, table, (keys[table],))
 
     def due(self) -> bool:
         """whether a checkpoint is due: none is known, a table the load left out is due, the rows applied since
@@ -951,7 +968,7 @@ class CopyCheckpoints:
             whole=frozenset(self._whole),
             noted=self._noted,
         )
-        self._touched, self._keys, self._whole_kinds, self._whole_due = {}, {}, {}, False
+        self._touched, self._keys, self._whole_kinds, self._whole_due = frozen(), frozen(), frozen(), False
         self._noted = None
         return taken
 
@@ -964,10 +981,10 @@ class CopyCheckpoints:
         :rtype: None
         """
         for table, scopes in taken.touched.items():
-            _add_touched(self._touched, table, scopes)
+            self._touched = _with_touched(self._touched, table, scopes)
         for table, keys in taken.keys.items():
-            _add_keys(self._keys, table, keys)
-        self._whole_kinds = {**taken.kinds, **self._whole_kinds}
+            self._keys = _with_keys(self._keys, table, keys)
+        self._whole_kinds = frozen({**taken.kinds, **self._whole_kinds})
         self._whole_due = self._whole_due or taken.due
         self._note(taken.noted)
 
@@ -1110,10 +1127,10 @@ class CopyCheckpoints:
         assert taken is not None  # noqa: S101 -- taken before any checkpoint is built
         self._since = max(0, self._since - taken.since)
         self._held_rows = checkpoint.rows
-        self._whole -= written_whole
+        self._whole = self._whole - written_whole
         for plan in plans:
-            self._priors[plan.table.name] = tables[plan.table.name]
-            self._missing.pop(plan.table.name, None)
+            self._priors = with_entry(self._priors, plan.table.name, tables[plan.table.name])
+            self._missing = without_entry(self._missing, plan.table.name)
             if plan.why is not None:
                 _WHOLE_WRITES.count(plan.why, table=plan.table.name)
         _writes().labels(kind=kind, outcome="written").inc()
@@ -1350,8 +1367,7 @@ class CopyCheckpoints:
             await self._pointers.delete(key=lock)
         gone = newest.live() - kept.live()
         await self._retire_quietly(sorted(gone), "forgotten by an operator")
-        for name in forgotten:
-            self._priors.pop(name, None)
+        self._priors = without_entries(self._priors, forgotten)
         log.warning(
             "an operator forgot tables in the copy checkpoint; the next start reads each whole as its cold start",
             extra={
