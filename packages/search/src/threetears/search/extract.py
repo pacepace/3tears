@@ -83,8 +83,11 @@ from __future__ import annotations
 import asyncio
 import codecs
 import json
+import os
+import pickle
 import re
 import time
+import traceback
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field, replace
@@ -120,7 +123,7 @@ from threetears.interfaces.media import (
     EXTRACTION_STATUS_REFUSED,
     EXTRACTION_STATUS_UNCHANGED,
 )
-from threetears.observe import contain, contained, get_logger
+from threetears.observe import contain, get_logger
 from threetears.search.contracts.candidate import Candidate, ContentSlot
 from threetears.search.contracts.errors import LocalCapExceeded, SearchFailure, TimedOut
 from threetears.search.contracts.fidelity import FIDELITY_CONTENT
@@ -447,14 +450,18 @@ async def extract(
     :param executor: where a page's CPU work runs -- decoding, text extraction, its title and
         date, a thin page's frame scan -- so the event loop stays free for timers and
         cancellation while it does. A ``ProcessPoolExecutor`` works: the work is module-level
-        functions over bytes and str. None runs it inline, on the calling thread. A failure of
-        the executor itself (a broken pool) is raised, never recorded as the page's
+        functions over bytes and str. None runs it inline, on the calling thread. A failure the
+        page's read absorbs (its title and date unreadable) is recorded in this process, wherever
+        the work ran
     :ptype executor: concurrent.futures.Executor | None
     :return: the candidate with content, fidelity and extraction facets recorded; on a
         per-candidate failure, the candidate with its status, reason and next step and no content
     :rtype: Candidate
     :raises threetears.search.contracts.errors.LocalCapExceeded: when the ``[extract]`` extra is
         not installed
+    :raises concurrent.futures.BrokenExecutor: or whatever else ``executor`` raises when it cannot
+        run the work: a dead pool fails every page alike, so it reaches the caller and is never
+        recorded as one page's failure
     """
     if robots_unreadable not in (ROBOTS_UNREADABLE_DENY, ROBOTS_UNREADABLE_ALLOW):
         raise ValueError(f"robots_unreadable must be 'deny' or 'allow', got {robots_unreadable!r}")
@@ -641,6 +648,20 @@ def _require_extractor() -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class _Absorbed:
+    """A failure the page stage absorbed, carried back to the process that asked for the page.
+
+    The stage records it where it runs (:func:`contain`). In a process pool that record is the
+    worker's, whose log and counters no operator reads, so the caller's process records it again
+    from this.
+    """
+
+    what: str
+    exc: Exception
+    trace: str
+
+
+@dataclass(frozen=True, slots=True)
 class _PageText:
     """What a page's CPU stage made of its bytes: small, and picklable, so a process pool can return it."""
 
@@ -649,6 +670,51 @@ class _PageText:
     title: str | None = None
     published_at: datetime | None = None
     notes: tuple[str, ...] = ()
+    absorbed: tuple[_Absorbed, ...] = ()
+    #: the process the stage ran in, which says whether its own record reached this one's
+    pid: int = field(default_factory=os.getpid)
+
+
+def _carried(exc: Exception, what: str) -> _Absorbed:
+    """``exc`` as a value that crosses a process boundary, with its traceback as text.
+
+    A pickled exception loses its traceback, and one whose class does not pickle would fail the
+    whole result: such a one is carried as a ``RuntimeError`` naming its type and message.
+
+    :param exc: the failure the stage absorbed
+    :ptype exc: Exception
+    :param what: the record's message
+    :ptype what: str
+    :return: the failure, portable
+    :rtype: _Absorbed
+    """
+    trace = "".join(traceback.format_exception(exc))
+    portable: Exception = exc
+    try:
+        pickle.loads(pickle.dumps(exc))
+    except pickle.PicklingError, TypeError, AttributeError:
+        # NOSILENT: an exception that cannot cross is carried as its type and message, and recorded
+        portable = RuntimeError(f"{type(exc).__module__}.{type(exc).__qualname__}: {exc}")
+    return _Absorbed(what=what, exc=portable, trace=trace)
+
+
+def _record_from_elsewhere(page: _PageText) -> None:
+    """Record, in this process, what a page stage that ran in another one absorbed.
+
+    A stage that ran here (inline, or on a thread) has already recorded it, and is not counted twice.
+
+    :param page: the stage's result
+    :ptype page: _PageText
+    """
+    if page.pid == os.getpid():
+        return
+    for absorbed in page.absorbed:
+        contain(
+            absorbed.exc,
+            log=_logger,
+            what=absorbed.what,
+            extra={"stage_pid": page.pid, "stage_traceback": absorbed.trace},
+        )
 
 
 async def _off_loop[R](executor: Executor | None, work: Callable[[], R]) -> R:
@@ -690,17 +756,18 @@ def _article_of(body: bytes, content_type: str, url: str) -> _PageText:
     if not text or tree is None:
         return _PageText(text=text, charset=charset)
     try:
-        title, published_at = _page_facts(tree, url)
+        title, published_at, absorbed = _page_facts(tree, url)
     except Exception as exc:  # noqa: BLE001 -- metadata is extra: the page is still read, and says it was read without it
-        contain(exc, log=_logger, what="a page's metadata could not be read; the page is read without it")
+        what = "a page's metadata could not be read; the page is read without it"
+        contain(exc, log=_logger, what=what)
         # the exception's type, not its message: a message can quote the page, and this
         # sentence reaches the reader
         note = f"The page's own title and date could not be read ({type(exc).__name__}); it was read without them."
-        return _PageText(text=text, charset=charset, notes=(note,))
-    return _PageText(text=text, charset=charset, title=title, published_at=published_at)
+        return _PageText(text=text, charset=charset, notes=(note,), absorbed=(_carried(exc, what),))
+    return _PageText(text=text, charset=charset, title=title, published_at=published_at, absorbed=absorbed)
 
 
-def _page_facts(tree: object, url: str) -> tuple[str | None, datetime | None]:
+def _page_facts(tree: object, url: str) -> tuple[str | None, datetime | None, tuple[_Absorbed, ...]]:
     """A page's own title and publication date, read from its parsed tree.
 
     The title is read the way ``trafilatura.metadata.extract_metadata`` reads it -- meta tags,
@@ -715,22 +782,27 @@ def _page_facts(tree: object, url: str) -> tuple[str | None, datetime | None]:
     :ptype tree: lxml.html.HtmlElement
     :param url: the URL that answered, read for a day when the page names no address of its own
     :ptype url: str
-    :return: the title and the date, each None when the page does not say
-    :rtype: tuple[str | None, datetime | None]
+    :return: the title and the date, each None when the page does not say, and what was absorbed
+        reading them
+    :rtype: tuple[str | None, datetime | None, tuple[_Absorbed, ...]]
     :raises Exception: whatever trafilatura or htmldate raised reading the page; the caller reads
         the page without them and says so, since "the page does not say" is a different answer
     """
     found = trafilatura.metadata.examine_meta(tree)
-    # trafilatura's own metadata read contains this step too: its JSON-LD reader is the part that breaks
-    with contained("a page's JSON-LD could not be read; its title is read from its other markup", log=_logger):
+    absorbed: tuple[_Absorbed, ...] = ()
+    try:
         found = trafilatura.metadata.extract_meta_json(tree, found)
+    except Exception as exc:  # noqa: BLE001 -- trafilatura's own metadata read contains its JSON-LD reader too, the part that breaks
+        what = "a page's JSON-LD could not be read; its title is read from its other markup"
+        contain(exc, log=_logger, what=what)
+        absorbed = (_carried(exc, what),)
     if not found.title:
         found.title = trafilatura.metadata.extract_title(tree)
     found.url = found.url or trafilatura.metadata.extract_url(tree, url)
     found.clean_and_trim()
     params = trafilatura.settings.set_date_params(extensive=False)
     day = htmldate.find_date(tree, **{**params, "url": found.url})
-    return (found.title or None), _day(day)
+    return (found.title or None), _day(day), absorbed
 
 
 def _day(value: object) -> datetime | None:
@@ -895,6 +967,7 @@ async def _read_carrier(
             method=EXTRACTION_METHOD_SOURCE if source and is_page else EXTRACTION_METHOD_TEXT,
         )
     page = await _off_loop(executor, partial(_article_of, response.body, content_type, response.final_url or url))
+    _record_from_elsewhere(page)
     text = page.text
     method = _METHOD_HEAVY if heavy_fetcher is not None else _METHOD_TRAFILATURA
     if not text:

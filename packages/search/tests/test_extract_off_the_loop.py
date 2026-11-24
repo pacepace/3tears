@@ -10,6 +10,8 @@ executor gets that work off the loop; one that passes none gets it inline.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import BrokenExecutor, Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor
@@ -236,3 +238,122 @@ async def test_a_date_found_only_in_running_text_is_not_taken_for_the_page_s() -
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
     assert result.published_at is None
+
+
+# --- what a page's read absorbs ----------------------------------------------
+
+LOGGER = "threetears.search.extract"
+
+
+class PickyError(Exception):
+    """An exception whose class does not survive pickling: its constructor needs a keyword ``args`` lacks."""
+
+    def __init__(self, message: str, *, detail: str) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+def break_the_title_read_with_a_runtime_error() -> None:
+    """A worker initializer: the page's title and date read raises, in the worker only."""
+    import trafilatura.metadata
+
+    def broken(tree: object) -> None:
+        raise RuntimeError("the meta-tag reader broke")
+
+    trafilatura.metadata.examine_meta = broken
+
+
+def break_the_title_read_with_an_unpicklable_error() -> None:
+    """A worker initializer: the read raises an exception that cannot be sent back as it is."""
+    import trafilatura.metadata
+
+    def broken(tree: object) -> None:
+        raise PickyError("the meta-tag reader broke", detail="unpicklable")
+
+    trafilatura.metadata.examine_meta = broken
+
+
+def contained_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The records ``contain()`` wrote, in this process, from the extract module."""
+    return [
+        record
+        for record in caplog.records
+        if record.name == LOGGER and "contained_site" in (getattr(record, "extra_data", None) or {})
+    ]
+
+
+@pytest.mark.parametrize(
+    ("initializer", "exc_type", "raised"),
+    [
+        pytest.param(break_the_title_read_with_a_runtime_error, "RuntimeError", "RuntimeError", id="picklable"),
+        pytest.param(break_the_title_read_with_an_unpicklable_error, "RuntimeError", "PickyError", id="unpicklable"),
+    ],
+)
+async def test_a_failure_absorbed_in_a_worker_process_is_recorded_in_the_caller_s(
+    caplog: pytest.LogCaptureFixture, initializer: Callable[[], None], exc_type: str, raised: str
+) -> None:
+    """A worker's own log and counters are not the host's: the host records what the worker absorbed."""
+    page = f"{SITE}/article/42"
+    transport = RecordedFetchTransport({ROBOTS: ALLOW, page: RecordedPage(body=ARTICLE)})
+    pool = ProcessPoolExecutor(max_workers=1, initializer=initializer)
+    try:
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            result = await extract(candidate(page), transport=transport, executor=pool)
+    finally:
+        pool.shutdown(wait=True)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and "South America" in result.content.text
+    assert result.title is None and result.published_at is None
+    assert result.facets[EXTRACTION_NOTES_FACET] == [
+        f"The page's own title and date could not be read ({raised}); it was read without them."
+    ]
+    [record] = contained_records(caplog)
+    assert record.getMessage() == "a page's metadata could not be read; the page is read without it"
+    extra = record.extra_data  # type: ignore[attr-defined]
+    assert extra["exc_type"] == exc_type
+    assert extra["stage_pid"] != os.getpid()
+    assert raised in extra["stage_traceback"] and "the meta-tag reader broke" in extra["stage_traceback"]
+
+
+async def test_a_failure_absorbed_on_a_thread_is_recorded_once(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A thread shares the caller's process, so the stage's own record is the host's, and is not repeated."""
+    import trafilatura.metadata
+
+    def broken(tree: object) -> None:
+        raise RuntimeError("the meta-tag reader broke")
+
+    monkeypatch.setattr(trafilatura.metadata, "examine_meta", broken)
+    page = f"{SITE}/article/42"
+    transport = RecordedFetchTransport({ROBOTS: ALLOW, page: RecordedPage(body=ARTICLE)})
+    with ThreadPoolExecutor(max_workers=1) as threads, caplog.at_level(logging.WARNING, logger=LOGGER):
+        result = await extract(candidate(page), transport=transport, executor=threads)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert len(contained_records(caplog)) == 1
+
+
+async def test_a_page_whose_json_ld_cannot_be_read_keeps_its_text_title_and_date(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON-LD is the part of a page's metadata that breaks; the title comes from its other markup instead."""
+    import trafilatura.metadata
+
+    def broken(tree: object, metadata: object) -> None:
+        raise RuntimeError("the JSON-LD reader broke")
+
+    monkeypatch.setattr(trafilatura.metadata, "extract_meta_json", broken)
+    page = f"{SITE}/article/42"
+    transport = RecordedFetchTransport({ROBOTS: ALLOW, page: RecordedPage(body=ARTICLE)})
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        result = await extract(candidate(page), transport=transport)
+
+    assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+    assert result.content is not None and "South America" in result.content.text
+    assert result.title == "Capybara habitats"
+    assert result.published_at is not None and result.published_at.date().isoformat() == "2026-09-14"
+    assert EXTRACTION_NOTES_FACET not in result.facets
+    [record] = contained_records(caplog)
+    assert record.getMessage() == "a page's JSON-LD could not be read; its title is read from its other markup"

@@ -49,7 +49,7 @@ pipeline. Flagged to the owner as a follow-up, not dropped.
 
 ## Chunks
 
-### 01 -- extract CPU stage off the loop, single parse
+### Chunk 01: extract CPU stage off the loop, single parse
 
 Critic mode: cumulative
 
