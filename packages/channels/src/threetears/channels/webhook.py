@@ -37,7 +37,7 @@ receiver does the header-name resolution once.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
@@ -46,6 +46,7 @@ from fastapi.responses import JSONResponse, Response
 
 from threetears.agent.wake import webhook_adapter
 from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
+from threetears.core.frozen_state import frozen, with_entry
 from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
@@ -220,9 +221,11 @@ class WebhookReceiver:
         self._wake_config = wake_config
         self._signature_header = signature_header
         self._max_payload_bytes = max_payload_bytes
-        self._verifiers: dict[str, Verifier] = {
-            "generic_hmac_sha256": verify_generic_hmac_sha256,
-        }
+        self._verifiers: Mapping[str, Verifier] = frozen(
+            {
+                "generic_hmac_sha256": verify_generic_hmac_sha256,
+            }
+        )
 
     def register_verifier(self, scheme: str, verifier: Verifier) -> None:
         """Register or replace a signature-verification scheme.
@@ -246,7 +249,7 @@ class WebhookReceiver:
         :param verifier: callable with the :data:`Verifier` signature
         :ptype verifier: Verifier
         """
-        self._verifiers[scheme] = verifier
+        self._verifiers = with_entry(self._verifiers, scheme, verifier)
 
     def register(self, app: FastAPI, *, mount_path: str = "/webhooks") -> None:
         """Mount the receiver as a ``POST`` route on a FastAPI app.

@@ -24,9 +24,11 @@ threaded):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.observe import get_logger
 
 from threetears.channels.presence.collection import PresenceCollection
@@ -102,7 +104,9 @@ class RoomState:
         # The ONE in-process structure: live, non-serializable socket
         # handles keyed by connection_id. Guarded by ``_lock``; never
         # iterated directly, never mutated across an ``await`` of a send.
-        self._sockets: dict[str, Any] = {}
+        # A read-only snapshot replaced whole (threetears.core.frozen_state):
+        # a connect or disconnect copies one entry per pod-local socket.
+        self._sockets: Mapping[str, Any] = EMPTY
         self._lock = asyncio.Lock()
 
     @property
@@ -125,7 +129,7 @@ class RoomState:
         :rtype: None
         """
         async with self._lock:
-            self._sockets[connection_id] = socket
+            self._sockets = with_entry(self._sockets, connection_id, socket)
 
     async def unregister(self, connection_id: str, socket: Any | None = None) -> None:
         """drop a connection's live socket handle (pod-local).
@@ -148,7 +152,7 @@ class RoomState:
             if current is None:
                 return
             if socket is None or current is socket:
-                del self._sockets[connection_id]
+                self._sockets = without_entry(self._sockets, connection_id)
 
     async def join(
         self,

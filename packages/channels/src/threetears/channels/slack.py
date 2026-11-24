@@ -8,7 +8,7 @@ without requiring public HTTP endpoints.
 from __future__ import annotations
 
 import time
-from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -28,6 +28,7 @@ from threetears.channels.protocol import (
     ChannelResponse,
     ChannelRouter,
 )
+from threetears.core.frozen_state import EMPTY, with_newest
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -276,12 +277,12 @@ class SlackAdapter:
         self._started_at: float | None = None
         # per-user profile cache: maps slack user_id -> (cached_at_monotonic, profile).
         # an entry stops being served once ``cached_at_monotonic`` is older than
-        # :data:`_USER_PROFILE_TTL_SECONDS`; the OrderedDict is kept in
-        # least-recently-used order and capped at
+        # :data:`_USER_PROFILE_TTL_SECONDS`; the read-only snapshot (replaced whole by
+        # threetears.core.frozen_state.with_newest) is kept in least-recently-used order and capped at
         # ``user_profile_cache_max_entries`` so the map cannot grow without
         # bound. populated lazily on first message from each user via
         # :meth:`_resolve_user_profile`.
-        self._user_profile_cache: OrderedDict[str, _ProfileCacheEntry] = OrderedDict()
+        self._user_profile_cache: Mapping[str, _ProfileCacheEntry] = EMPTY
         self._user_profile_cache_max_entries = user_profile_cache_max_entries
 
         self._app.event("message")(self.handle_message_event)
@@ -318,7 +319,9 @@ class SlackAdapter:
         entry = self._user_profile_cache.get(user_id)
         now = time.monotonic()
         if entry is not None and now < entry.fresh_until:
-            self._user_profile_cache.move_to_end(user_id)
+            self._user_profile_cache = with_newest(
+                self._user_profile_cache, user_id, entry, limit=self._user_profile_cache_max_entries
+            )
             return entry.profile
         previous_good = entry.good if entry is not None else None
         failures = entry.failures if entry is not None else 0
@@ -376,10 +379,9 @@ class SlackAdapter:
                 failures,
                 good=previous_good,
             )
-        self._user_profile_cache[user_id] = new_entry
-        self._user_profile_cache.move_to_end(user_id)
-        while len(self._user_profile_cache) > self._user_profile_cache_max_entries:
-            self._user_profile_cache.popitem(last=False)
+        self._user_profile_cache = with_newest(
+            self._user_profile_cache, user_id, new_entry, limit=self._user_profile_cache_max_entries
+        )
         return new_entry.profile
 
     async def start(self) -> None:

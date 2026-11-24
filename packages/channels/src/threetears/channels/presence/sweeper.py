@@ -66,7 +66,8 @@ class PresenceSweeper:
             logger=log,
             failure_message="presence sweep failed",
         )
-        self._known_connection_ids: set[str] = set()
+        # a frozenset replaced whole, never changed in place: a sweep walks the one it started with
+        self._known_connection_ids: frozenset[str] = frozenset()
 
     @property
     def known_connection_ids(self) -> set[str]:
@@ -94,7 +95,7 @@ class PresenceSweeper:
         :return: nothing
         :rtype: None
         """
-        self._known_connection_ids.add(connection_id)
+        self._known_connection_ids = self._known_connection_ids | {connection_id}
 
     def track_many(self, connection_ids: Iterable[str]) -> None:
         """start tracking several connections (recovery / multi-join).
@@ -104,7 +105,7 @@ class PresenceSweeper:
         :return: nothing
         :rtype: None
         """
-        self._known_connection_ids.update(connection_ids)
+        self._known_connection_ids = self._known_connection_ids.union(connection_ids)
 
     def untrack(self, connection_id: str) -> None:
         """stop tracking a connection (clean leave).
@@ -114,7 +115,7 @@ class PresenceSweeper:
         :return: nothing
         :rtype: None
         """
-        self._known_connection_ids.discard(connection_id)
+        self._known_connection_ids = self._known_connection_ids - {connection_id}
 
     async def start(self) -> None:
         """spawn the periodic sweep loop.
@@ -155,7 +156,7 @@ class PresenceSweeper:
         now = datetime.now(UTC)
         evicted: list[str] = []
         gone: list[str] = []
-        for connection_id in list(self._known_connection_ids):
+        for connection_id in self._known_connection_ids:
             try:
                 entity = await self._collection.connections.get(connection_id)
             except KvError as exc:
@@ -197,6 +198,5 @@ class PresenceSweeper:
                     }
                 },
             )
-        for connection_id in (*evicted, *gone):
-            self._known_connection_ids.discard(connection_id)
+        self._known_connection_ids = self._known_connection_ids.difference(evicted, gone)
         return evicted
