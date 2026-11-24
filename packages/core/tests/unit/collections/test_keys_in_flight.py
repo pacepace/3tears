@@ -109,7 +109,8 @@ class TestTheFence:
         for i in range(10 * _FENCE_ERA_CHANGES):
             fence.changed((f"other{i}",))
         assert fence.still_newest(held)
-        assert fence.recorded == (_FENCE_ERA_CHANGES,) * 10  # an era's copy is bounded, so the changes run over eras
+        # an era's copy is bounded, so the changes run over eras
+        assert list(fence.recorded) == [_FENCE_ERA_CHANGES] * 10
         fence.changed(("a",))
         assert not fence.still_newest(held)
         fence.end(held)
