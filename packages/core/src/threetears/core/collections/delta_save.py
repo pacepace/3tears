@@ -185,7 +185,7 @@ def _planned(deltas: Mapping[str, TableDelta]) -> tuple[tuple[tuple[Any, ...], .
                     else ("path", os.fspath(rows))
                     for rows in part
                 )
-                segments.append(("load", given, tuple(rest[0]), tuple(rest[1].items())))
+                segments.append(("load", given, tuple(rest[0]), _constants_bytes(rest[1])))
             elif kind == "deleted":
                 segments.append(("deleted", source(part)))
             else:
@@ -292,6 +292,39 @@ async def save_in_worker(root: Path, deltas: Mapping[str, TableDelta], write_id:
     return dict(answer)
 
 
+def _constants_bytes(constants: Mapping[str, Any]) -> bytes:
+    """a load's constants as plain data a worker takes: one Arrow row, as IPC bytes (:func:`_constants_of` reads them
+    back). Blocking.
+
+    Why: a constant is any value a column takes (an LSF run's timestamp is a ``datetime``), and a worker is handed
+    plain data alone (:func:`~threetears.core.process_workers.require_plain`): handed as ``(column, value)`` pairs, a
+    load with a ``datetime`` constant was refused before its file was saved, so every LSF load from files failed
+    (2026-11-24, test_refresh_live's rollout tests). Arrow types each value as ``pa.repeat`` would where the file is made.
+
+    :param constants: column -> the value every row takes for it
+    :ptype constants: Mapping[str, Any]
+    :return: the bytes; empty for no constant
+    :rtype: bytes
+    """
+    if not constants:
+        return b""
+    return _ipc_bytes(pa.table({column: [value] for column, value in constants.items()}))
+
+
+def _constants_of(data: bytes) -> dict[str, Any]:
+    """a load's constants as :func:`_constants_bytes` handed them: column -> its value, an Arrow scalar.
+
+    :param data: the bytes
+    :ptype data: bytes
+    :return: the constants
+    :rtype: dict[str, Any]
+    """
+    if not data:
+        return {}
+    row = _ipc_table(data)
+    return {column: row.column(column)[0] for column in row.column_names}
+
+
 def _resolved(source: tuple[str, Any], handed: Mapping[str, Any]) -> Any:
     """a part's table in the worker.
 
@@ -342,7 +375,7 @@ def save_delta_job(
             for kind, source, *rest in segments:
                 if kind == "load":
                     given = [_resolved(entry, handed) for entry in source]
-                    resolved.append(("load", given, list(rest[0]), dict(rest[1])))
+                    resolved.append(("load", given, list(rest[0]), _constants_of(rest[1])))
                 elif kind == "deleted":
                     resolved.append(("deleted", _resolved(source, handed)))
                 else:
