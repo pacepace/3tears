@@ -61,17 +61,38 @@ Rulings taken in this module, recorded here per the Gate A precedent:
   ordinary fetch fails.
 - **The robots memo lives and dies inside one call** (§3.5). It is not a
   response cache and D14 is untouched.
+- **The page's CPU work can run off the event loop.** Decoding, text
+  extraction, the title and date, and a thin page's frame scan are
+  module-level functions over bytes and str with a picklable result, run on
+  the ``executor`` the caller passes (a thread pool or a process pool), and
+  inline when it passes none. A page is hundreds of milliseconds of CPU on a
+  small machine: run inline, several concurrent reads hold the loop long
+  enough that their own timers fire late. A cancelled call stops waiting at
+  once; the work already handed to the executor runs out there, and its
+  result is dropped.
+- **A page is parsed once.** The text, the title and the date are all read
+  from one lxml tree. The date is htmldate's ordinary search, given the
+  page's address, never its *extensive* search: on real pages that search
+  found a date only where none was stated (a citation in the body, a year in
+  running text) and was most of the date's cost, while the address is where
+  a dated article most often says its day.
 """
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import json
+import os
+import pickle
 import re
 import time
+import traceback
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from html.parser import HTMLParser
 from typing import Final, Literal
 from urllib.parse import quote, urljoin, urlsplit
@@ -80,8 +101,10 @@ from urllib.robotparser import RobotFileParser
 from pydantic import JsonValue
 
 try:
+    import htmldate
     import trafilatura
     import trafilatura.metadata
+    import trafilatura.settings
 
     _TRAFILATURA = True
 except ImportError:  # NOSILENT: the extract extra is optional; extract() refuses with its name
@@ -277,9 +300,6 @@ _SHOWN_URL_CHARS: Final[int] = 500
 #: The least time worth spending on a frame; less than this left and it is not followed.
 _FRAME_MINIMUM_SECONDS: Final[float] = 1.0
 
-#: Markup in, article text out, ``None`` when the extractor found nothing worth keeping.
-type _Extractor = Callable[[str], str | None]
-
 
 @dataclass(frozen=True, slots=True)
 class CarrierText:
@@ -379,6 +399,7 @@ async def extract(
     readers: Sequence[CarrierReader] = (),
     thin_page_chars: int | None = None,
     source: bool = False,
+    executor: Executor | None = None,
 ) -> Candidate:
     """Fill one candidate's content slot from its carrier.
 
@@ -426,11 +447,21 @@ async def extract(
         frame is not followed when its source is asked for; text and readers' carriers read as
         they always do
     :ptype source: bool
+    :param executor: where a page's CPU work runs -- decoding, text extraction, its title and
+        date, a thin page's frame scan -- so the event loop stays free for timers and
+        cancellation while it does. A ``ProcessPoolExecutor`` works: the work is module-level
+        functions over bytes and str. None runs it inline, on the calling thread. A failure the
+        page's read absorbs (its title and date unreadable) is recorded in this process, wherever
+        the work ran
+    :ptype executor: concurrent.futures.Executor | None
     :return: the candidate with content, fidelity and extraction facets recorded; on a
         per-candidate failure, the candidate with its status, reason and next step and no content
     :rtype: Candidate
     :raises threetears.search.contracts.errors.LocalCapExceeded: when the ``[extract]`` extra is
         not installed
+    :raises concurrent.futures.BrokenExecutor: or whatever else ``executor`` raises when it cannot
+        run the work: a dead pool fails every page alike, so it reaches the caller and is never
+        recorded as one page's failure
     """
     if robots_unreadable not in (ROBOTS_UNREADABLE_DENY, ROBOTS_UNREADABLE_ALLOW):
         raise ValueError(f"robots_unreadable must be 'deny' or 'allow', got {robots_unreadable!r}")
@@ -443,7 +474,7 @@ async def extract(
     if url is None:
         return _marked(candidate, EXTRACTION_STATUS_FAILED, "it has no address to fetch")
 
-    extractor = _load_extractor()
+    _require_extractor()
     rules = _Rules(
         transport=transport,
         user_agent=user_agent,
@@ -460,7 +491,7 @@ async def extract(
         url,
         transport=transport,
         heavy_fetcher=heavy_fetcher,
-        extractor=extractor,
+        executor=executor,
         max_bytes=max_bytes,
         readers=readers,
         timeout_seconds=timeout_seconds,
@@ -485,7 +516,7 @@ async def extract(
             read,
             page_url=url,
             rules=rules,
-            extractor=extractor,
+            executor=executor,
             max_bytes=max_bytes,
             readers=readers,
             thin_page_chars=thin_page_chars,
@@ -602,11 +633,9 @@ def _carrier_url(candidate: Candidate) -> str | None:
     return candidate.locators[0].url if candidate.locators else None
 
 
-def _load_extractor() -> _Extractor:
-    """The installed HTML-to-text extractor, or a typed refusal.
+def _require_extractor() -> None:
+    """Refuse, typed, when the HTML-to-text extractor is not installed.
 
-    :return: trafilatura's ``extract`` callable
-    :rtype: _Extractor
     :raises threetears.search.contracts.errors.LocalCapExceeded: when the extra is not installed
     """
     if not _TRAFILATURA:
@@ -616,24 +645,164 @@ def _load_extractor() -> _Extractor:
             remediation=f"install {_EXTRACT_EXTRA}",
             scope=EXTRACTOR_UNAVAILABLE_SCOPE,
         )
-    return trafilatura.extract
 
 
-def _page_facts(markup: str) -> tuple[str | None, datetime | None]:
-    """A page's own title and publication date, as trafilatura reads them from its markup.
+@dataclass(frozen=True, slots=True)
+class _Absorbed:
+    """A failure the page stage absorbed, carried back to the process that asked for the page.
 
-    :param markup: the decoded page
-    :ptype markup: str
-    :return: the title and the date, each None when the page does not say
-    :rtype: tuple[str | None, datetime | None]
-    :raises Exception: whatever trafilatura raised reading the page's header; the caller reads
+    The stage records it where it runs (:func:`contain`). In a process pool that record is the
+    worker's, whose log and counters no operator reads, so the caller's process records it again
+    from this.
+    """
+
+    what: str
+    exc: Exception
+    trace: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PageText:
+    """What a page's CPU stage made of its bytes: small, and picklable, so a process pool can return it."""
+
+    text: str
+    charset: str
+    title: str | None = None
+    published_at: datetime | None = None
+    notes: tuple[str, ...] = ()
+    absorbed: tuple[_Absorbed, ...] = ()
+    #: the process the stage ran in, which says whether its own record reached this one's
+    pid: int = field(default_factory=os.getpid)
+
+
+def _carried(exc: Exception, what: str) -> _Absorbed:
+    """``exc`` as a value that crosses a process boundary, with its traceback as text.
+
+    A pickled exception loses its traceback, and one whose class does not pickle would fail the
+    whole result: such a one is carried as a ``RuntimeError`` naming its type and message.
+
+    :param exc: the failure the stage absorbed
+    :ptype exc: Exception
+    :param what: the record's message
+    :ptype what: str
+    :return: the failure, portable
+    :rtype: _Absorbed
+    """
+    trace = "".join(traceback.format_exception(exc))
+    portable: Exception = exc
+    try:
+        pickle.loads(pickle.dumps(exc))
+    except pickle.PicklingError, TypeError, AttributeError:
+        # NOSILENT: an exception that cannot cross is carried as its type and message, and recorded
+        portable = RuntimeError(f"{type(exc).__module__}.{type(exc).__qualname__}: {exc}")
+    return _Absorbed(what=what, exc=portable, trace=trace)
+
+
+def _record_from_elsewhere(page: _PageText) -> None:
+    """Record, in this process, what a page stage that ran in another one absorbed.
+
+    A stage that ran here (inline, or on a thread) has already recorded it, and is not counted twice.
+
+    :param page: the stage's result
+    :ptype page: _PageText
+    """
+    if page.pid == os.getpid():
+        return
+    for absorbed in page.absorbed:
+        contain(
+            absorbed.exc,
+            log=_logger,
+            what=absorbed.what,
+            extra={"stage_pid": page.pid, "stage_traceback": absorbed.trace},
+        )
+
+
+async def _off_loop[R](executor: Executor | None, work: Callable[[], R]) -> R:
+    """Run ``work`` on ``executor``, or inline when there is none.
+
+    :param executor: the caller's executor, or None
+    :ptype executor: concurrent.futures.Executor | None
+    :param work: a module-level function with its arguments bound (``functools.partial``), so a
+        process pool can pickle it
+    :ptype work: Callable[[], R]
+    :return: what ``work`` returned
+    :rtype: R
+    """
+    if executor is None:
+        return work()
+    return await asyncio.get_running_loop().run_in_executor(executor, work)
+
+
+def _article_of(body: bytes, content_type: str, url: str) -> _PageText:
+    """A page's article text, title and date, from one parse of its markup.
+
+    The CPU stage of the web path, run on the caller's executor: module-level, over bytes and
+    str, returning a picklable value. The title and date are read only when there is text, as a
+    page with none is not read at all.
+
+    :param body: the page's bytes
+    :ptype body: bytes
+    :param content_type: the response's ``Content-Type`` header
+    :ptype content_type: str
+    :param url: the URL that answered, which htmldate reads a day from
+    :ptype url: str
+    :return: the text (empty when the extractor found none), charset, title, date and notes
+    :rtype: _PageText
+    """
+    markup, charset = _decode(body, content_type)
+    tree = trafilatura.load_html(markup)
+    # trafilatura extracts from a copy of a tree it is handed, so the tree is still whole for the facts
+    text = (trafilatura.extract(tree) or "") if tree is not None else ""
+    if not text or tree is None:
+        return _PageText(text=text, charset=charset)
+    try:
+        title, published_at, absorbed = _page_facts(tree, url)
+    except Exception as exc:  # noqa: BLE001 -- metadata is extra: the page is still read, and says it was read without it
+        what = "a page's metadata could not be read; the page is read without it"
+        contain(exc, log=_logger, what=what)
+        # the exception's type, not its message: a message can quote the page, and this
+        # sentence reaches the reader
+        note = f"The page's own title and date could not be read ({type(exc).__name__}); it was read without them."
+        return _PageText(text=text, charset=charset, notes=(note,), absorbed=(_carried(exc, what),))
+    return _PageText(text=text, charset=charset, title=title, published_at=published_at, absorbed=absorbed)
+
+
+def _page_facts(tree: object, url: str) -> tuple[str | None, datetime | None, tuple[_Absorbed, ...]]:
+    """A page's own title and publication date, read from its parsed tree.
+
+    The title is read the way ``trafilatura.metadata.extract_metadata`` reads it -- meta tags,
+    then JSON-LD, then the page's headings -- and the date by htmldate's ordinary search,
+    given the page's address. ``extract_metadata`` itself is not called: it parses again and
+    reads an author, a site name, categories, tags and a licence nobody here records, with the
+    extensive date search on, which together cost more than the text. The four trafilatura
+    functions used are the ones ``extract_metadata`` calls, outside the module's ``__all__``;
+    a trafilatura that renamed one fails this package's tests, not a reader's page.
+
+    :param tree: the page's lxml tree, from ``trafilatura.load_html`` (lxml ships no type stubs)
+    :ptype tree: lxml.html.HtmlElement
+    :param url: the URL that answered, read for a day when the page names no address of its own
+    :ptype url: str
+    :return: the title and the date, each None when the page does not say, and what was absorbed
+        reading them
+    :rtype: tuple[str | None, datetime | None, tuple[_Absorbed, ...]]
+    :raises Exception: whatever trafilatura or htmldate raised reading the page; the caller reads
         the page without them and says so, since "the page does not say" is a different answer
     """
-    found = trafilatura.metadata.extract_metadata(markup)
-    if found is None:
-        return None, None
-    title = (getattr(found, "title", None) or "").strip() or None
-    return title, _day(getattr(found, "date", None))
+    found = trafilatura.metadata.examine_meta(tree)
+    absorbed: tuple[_Absorbed, ...] = ()
+    try:
+        found = trafilatura.metadata.extract_meta_json(tree, found)
+    except Exception as exc:  # noqa: BLE001 -- trafilatura's own metadata read contains its JSON-LD reader too, the part that breaks
+        what = "a page's JSON-LD could not be read; its title is read from its other markup"
+        contain(exc, log=_logger, what=what)
+        absorbed = (_carried(exc, what),)
+    if not found.title:
+        found.title = trafilatura.metadata.extract_title(tree)
+    found.url = found.url or trafilatura.metadata.extract_url(tree, url)
+    found.clean_and_trim()
+    params = trafilatura.settings.set_date_params(extensive=False)
+    day = htmldate.find_date(tree, **{**params, "url": found.url})
+    return (found.title or None), _day(day), absorbed
 
 
 def _day(value: object) -> datetime | None:
@@ -694,7 +863,7 @@ async def _read_carrier(
     *,
     transport: FetchTransport,
     heavy_fetcher: HeavyFetcher | None,
-    extractor: _Extractor,
+    executor: Executor | None,
     max_bytes: int,
     readers: Sequence[CarrierReader],
     timeout_seconds: float | None,
@@ -709,8 +878,8 @@ async def _read_carrier(
     :ptype transport: FetchTransport
     :param heavy_fetcher: the caller's escalation, when they passed one
     :ptype heavy_fetcher: HeavyFetcher | None
-    :param extractor: markup to text
-    :ptype extractor: _Extractor
+    :param executor: where the page's CPU work runs, or None for inline
+    :ptype executor: concurrent.futures.Executor | None
     :param max_bytes: the most of a page this read takes
     :ptype max_bytes: int
     :param readers: readers for carriers that are not pages
@@ -767,31 +936,39 @@ async def _read_carrier(
             f"the page is {_size(len(response.body))}, past the {_size(max_bytes)} a page may be",
             "find a shorter copy of it, or the same facts elsewhere",
         )
-    markup, charset = _decode(response.body, response.headers.get("content-type", ""))
+    content_type = response.headers.get("content-type", "")
     is_page = media_type_accepted(declared, HTML_CONTENT_TYPES)
     if (source and is_page) or (not is_page and media_type_accepted(declared, _TEXT_CONTENT_TYPES)):
-        return _as_written(
-            markup,
-            response=response,
-            charset=charset,
-            declared=declared,
-            source=source and is_page,
-            rendered=heavy_fetcher is not None,
+        written = await _off_loop(
+            executor,
+            partial(
+                _as_written,
+                response.body,
+                content_type,
+                declared=declared,
+                source=source and is_page,
+                rendered=heavy_fetcher is not None,
+            ),
         )
-    text = extractor(markup) or ""
-    title: str | None = None
-    published_at: datetime | None = None
-    notes: tuple[str, ...] = ()
-    if text:
-        try:
-            title, published_at = _page_facts(markup)
-        except Exception as exc:  # noqa: BLE001 -- metadata is extra: the page is still read, and says it was read without it
-            contain(exc, log=_logger, what="a page's metadata could not be read; the page is read without it")
-            # the exception's type, not its message: a message can quote the page, and this
-            # sentence reaches the reader
-            notes = (
-                f"The page's own title and date could not be read ({type(exc).__name__}); it was read without them.",
+        if not written.text.strip():
+            return _Unread(
+                EXTRACTION_STATUS_FAILED,
+                f"the address answered with nothing ({declared or 'no content type'}, empty)",
+                "check the address",
+                response=response,
             )
+        return _Read(
+            text=written.text,
+            response=response,
+            title=None,
+            published_at=None,
+            charset=written.charset,
+            notes=written.notes,
+            method=EXTRACTION_METHOD_SOURCE if source and is_page else EXTRACTION_METHOD_TEXT,
+        )
+    page = await _off_loop(executor, partial(_article_of, response.body, content_type, response.final_url or url))
+    _record_from_elsewhere(page)
+    text = page.text
     method = _METHOD_HEAVY if heavy_fetcher is not None else _METHOD_TRAFILATURA
     if not text:
         return _Unread(
@@ -803,37 +980,35 @@ async def _read_carrier(
     return _Read(
         text=text,
         response=response,
-        title=title,
-        published_at=published_at,
-        charset=charset,
-        notes=notes,
+        title=page.title,
+        published_at=page.published_at,
+        charset=page.charset,
+        notes=page.notes,
         method=method,
     )
 
 
-def _as_written(
-    decoded: str, *, response: TransportResponse, charset: str, declared: str | None, source: bool, rendered: bool
-) -> _Read | _Unread:
-    """A textual carrier, or a page's markup, handed back as it came.
+def _as_written(body: bytes, content_type: str, *, declared: str | None, source: bool, rendered: bool) -> _PageText:
+    """A textual carrier, or a page's markup, decoded and handed back as it came.
 
     JSON that parses is shown indented, since an API's answer on one line is unreadable;
-    anything else is the decoded body unchanged.
+    anything else is the decoded body unchanged. Run on the caller's executor, like
+    :func:`_article_of`.
 
-    :param decoded: the decoded body
-    :ptype decoded: str
-    :param response: the fetched carrier
-    :ptype response: TransportResponse
-    :param charset: the character set it was decoded with
-    :ptype charset: str
+    :param body: the carrier's bytes
+    :ptype body: bytes
+    :param content_type: the response's ``Content-Type`` header
+    :ptype content_type: str
     :param declared: its declared media type
     :ptype declared: str | None
     :param source: whether a page's markup was asked for in place of its article
     :ptype source: bool
     :param rendered: whether a heavy fetcher rendered the carrier, so its scripts ran first
     :ptype rendered: bool
-    :return: the text, or why there was none
-    :rtype: _Read | _Unread
+    :return: the text, possibly blank, its charset and its notes
+    :rtype: _PageText
     """
+    decoded, charset = _decode(body, content_type)
     text = decoded
     notes: tuple[str, ...] = ()
     if media_type_accepted(declared, ("application/json", "application/*+json")):
@@ -844,22 +1019,7 @@ def _as_written(
             notes = ("It says it is JSON but does not parse as JSON; it is shown as sent.",)
     if source:
         notes = (*notes, _SOURCE_RENDERED_NOTE if rendered else _SOURCE_FETCHED_NOTE)
-    if not text.strip():
-        return _Unread(
-            EXTRACTION_STATUS_FAILED,
-            f"the address answered with nothing ({declared or 'no content type'}, empty)",
-            "check the address",
-            response=response,
-        )
-    return _Read(
-        text=text,
-        response=response,
-        title=None,
-        published_at=None,
-        charset=charset,
-        notes=notes,
-        method=EXTRACTION_METHOD_SOURCE if source else EXTRACTION_METHOD_TEXT,
-    )
+    return _PageText(text=text, charset=charset, notes=notes)
 
 
 async def _read_with(reader: CarrierReader, response: TransportResponse) -> _Read | _Unread:
@@ -1241,6 +1401,24 @@ _WEB_SCHEMES: Final[tuple[str, ...]] = ("http", "https")
 _POINTER_UNREADABLE: Final[tuple[type[Exception], ...]] = (AssertionError, ValueError)
 
 
+def _pointer_in(body: bytes, content_type: str, base: str) -> tuple[str | None, int, bool]:
+    """:func:`_pointer_of` over a page's bytes: the frame scan's CPU stage, run on the caller's executor.
+
+    :param body: the page's bytes
+    :ptype body: bytes
+    :param content_type: the response's ``Content-Type`` header
+    :ptype content_type: str
+    :param base: the URL the page answered from
+    :ptype base: str
+    :return: what :func:`_pointer_of` returns
+    :rtype: tuple[str | None, int, bool]
+    :raises AssertionError: as :func:`_pointer_of`
+    :raises ValueError: as :func:`_pointer_of`
+    """
+    markup, _ = _decode(body, content_type)
+    return _pointer_of(markup, base)
+
+
 def _pointer_of(markup: str, base: str) -> tuple[str | None, int, bool]:
     """Where a thin page says its article is, how many frames it holds, and whether it said so outright.
 
@@ -1335,7 +1513,7 @@ async def _follow_a_thin_page(
     *,
     page_url: str,
     rules: _Rules,
-    extractor: _Extractor,
+    executor: Executor | None,
     max_bytes: int,
     readers: Sequence[CarrierReader],
     thin_page_chars: int,
@@ -1350,8 +1528,8 @@ async def _follow_a_thin_page(
     :ptype page_url: str
     :param rules: how permission is asked
     :ptype rules: _Rules
-    :param extractor: markup to text
-    :ptype extractor: _Extractor
+    :param executor: where the frame scan and the frame's read run, or None for inline
+    :ptype executor: concurrent.futures.Executor | None
     :param max_bytes: a page's cap; the frame gets what the page left of the cap
     :ptype max_bytes: int
     :param readers: readers for carriers that are not pages
@@ -1376,10 +1554,11 @@ async def _follow_a_thin_page(
             return read
         response, thin_text = read.response, ""
 
-    markup, _ = _decode(response.body, response.headers.get("content-type", ""))
     page = response.final_url or page_url
     try:
-        pointed, frames, outright = _pointer_of(markup, page)
+        pointed, frames, outright = await _off_loop(
+            executor, partial(_pointer_in, response.body, response.headers.get("content-type", ""), page)
+        )
     except _POINTER_UNREADABLE as exc:  # the page's own read stands, and says its frames were not looked for
         contain(exc, log=_logger, what="a thin page's frames and pointers could not be parsed")
         # the exception's type, not its message: a message can quote the page
@@ -1426,7 +1605,7 @@ async def _follow_a_thin_page(
         target,
         transport=rules.transport,
         heavy_fetcher=None,
-        extractor=extractor,
+        executor=executor,
         max_bytes=max(max_bytes - used, 1),
         readers=frame_readers,
         timeout_seconds=budget.left(),
