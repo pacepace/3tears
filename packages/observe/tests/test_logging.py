@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from threetears.observe import logging as observe_logging
 from threetears.observe.logging import (
     ContextFormatter,
     ThreeTearsLogger,
@@ -16,7 +17,6 @@ from threetears.observe.logging import (
     configure_third_party_logging,
     get_context,
     get_logger,
-    path_strip_prefixes,
     representative_exception,
     set_context,
 )
@@ -357,11 +357,8 @@ class TestPathShortening:
     def test_strips_configured_prefix(self) -> None:
         logger = get_logger("test.path_strip_prefix")
         records = _records_of(logger)
-        path_strip_prefixes.append("packages/observe/")
-        try:
+        with patch.object(observe_logging, "path_strip_prefixes", ("packages/observe/",)):
             logger.info("from a prefixed path")
-        finally:
-            path_strip_prefixes.remove("packages/observe/")
 
         assert records[0].call_site_file == "tests/test_logging.py"  # type: ignore[attr-defined]
 
@@ -431,12 +428,9 @@ class TestConfigureLogging:
             late.propagate = True
 
     def test_configure_logging_with_strip_prefixes(self) -> None:
-        original = path_strip_prefixes[:]
-        try:
-            configure_logging(strip_prefixes=["custom/prefix/"])
-            assert "custom/prefix/" in path_strip_prefixes
-        finally:
-            path_strip_prefixes[:] = original
+        with patch.object(observe_logging, "path_strip_prefixes", ()):
+            configure_logging(strip_prefixes=["custom/prefix/", "custom/prefix/"])
+            assert observe_logging.path_strip_prefixes == ("custom/prefix/",)
 
     def test_configure_third_party_logging(self) -> None:
         logger_name = "test.third_party_unique"

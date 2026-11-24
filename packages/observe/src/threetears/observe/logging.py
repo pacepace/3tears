@@ -112,8 +112,9 @@ def representative_exception(exc: BaseException) -> BaseException:
 # ---------------------------------------------------------------------------
 
 # Configurable path prefixes to strip from filenames for shorter log output.
-# Host apps can append to this list (e.g. ``path_strip_prefixes.append("myapp/src/")``).
-path_strip_prefixes: list[str] = []
+# Host apps add to it through ``configure_logging(strip_prefixes=[...])``; it is replaced whole, never changed in place
+# (decision 46), so a reader mid-loop never sees it change.
+path_strip_prefixes: tuple[str, ...] = ()
 
 
 def _shorten_path(filepath: str) -> str:
@@ -308,7 +309,8 @@ class ThreeTearsLogger(logging.Logger):
 # Public API
 # ---------------------------------------------------------------------------
 
-_configured_loggers: set[str] = set()
+#: the loggers given their NullHandler: replaced whole, never changed in place (decision 46)
+_configured_loggers: frozenset[str] = frozenset()
 
 
 def get_logger(name: str) -> ThreeTearsLogger:
@@ -321,10 +323,11 @@ def get_logger(name: str) -> ThreeTearsLogger:
     The first call for a given *name* installs the ``ThreeTearsLogger`` class
     and attaches a ``NullHandler``.  Subsequent calls return the existing logger.
     """
+    global _configured_loggers
     logging.setLoggerClass(ThreeTearsLogger)
     logger = logging.getLogger(name)
     if name not in _configured_loggers:
-        _configured_loggers.add(name)
+        _configured_loggers = _configured_loggers | {name}
         logger.addHandler(logging.NullHandler())
     return logger  # type: ignore[return-value]
 
@@ -370,7 +373,7 @@ def configure_logging(
         the ``THREETEARS_LOG_COLOR`` env var and terminal capability.
     :param strip_prefixes: path prefixes to strip from log file paths
         (e.g. ``["myapp/src/"]``).  Appended to the global
-        ``path_strip_prefixes`` list.
+        ``path_strip_prefixes``.
     :param quiet_noisy_libraries: hold the libraries in
         :data:`NOISY_LIBRARY_LOGGERS` one step quieter than a root below WARNING
         (INFO under a DEBUG root, WARNING under an INFO root) instead of letting
@@ -380,13 +383,12 @@ def configure_logging(
         several processes write one log.  Default ``False``.  It also applies to
         loggers attached afterwards with :func:`configure_third_party_logging`.
     """
-    global _process_id_on_lines
+    global _process_id_on_lines, path_strip_prefixes
     _process_id_on_lines = process_id
 
     if strip_prefixes:
-        for p in strip_prefixes:
-            if p not in path_strip_prefixes:
-                path_strip_prefixes.append(p)
+        added = tuple(p for p in dict.fromkeys(strip_prefixes) if p not in path_strip_prefixes)
+        path_strip_prefixes = (*path_strip_prefixes, *added)
 
     level_str = os.environ.get("THREETEARS_LOG_LEVEL", level).upper()
     level_val = getattr(logging, level_str, logging.INFO)

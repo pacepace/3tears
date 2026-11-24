@@ -42,9 +42,10 @@ import asyncio
 import dataclasses
 import json
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import aclosing
 from datetime import datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid7
 
@@ -389,10 +390,10 @@ _KEYS_A_BATCH_GET: Final = 500
 _BATCH_GET_PROBE_SECONDS: Final = 1.0
 
 #: the buckets whose batched direct get went unanswered in this process: read one key at a time from then on
-_BATCH_GET_REFUSED: set[str] = set()
+_BATCH_GET_REFUSED: frozenset[str] = frozenset()
 
 #: the buckets whose batched direct get has been answered in this process: no probe deadline from then on
-_BATCH_GET_ANSWERED: set[str] = set()
+_BATCH_GET_ANSWERED: frozenset[str] = frozenset()
 
 #: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
 #: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
@@ -402,8 +403,9 @@ _KEY_WATCH_FORBIDDEN: Final[frozenset[str]] = frozenset({"*", ">", " ", "\t", "\
 #:
 #: Module-level because :class:`NatsKvBucket` declares ``__slots__`` and because the
 #: throttle should hold across bucket handles for the same name -- a re-open mints a new
-#: instance, and a reconnect loop must not reset the throttle on every attempt.
-_last_timeout_remedy_log: dict[str, float] = {}
+#: instance, and a reconnect loop must not reset the throttle on every attempt. Replaced whole, never changed in place
+#: (decision 46).
+_last_timeout_remedy_log: Mapping[str, float] = MappingProxyType({})
 
 
 def _msg_ttl_seconds(ttl: timedelta | None) -> float | None:
@@ -2120,6 +2122,7 @@ class NatsKvBucket:
         :return: nothing
         :rtype: None
         """
+        global _last_timeout_remedy_log
         now = time.monotonic()
         last = _last_timeout_remedy_log.get(self._full_name)
         # ABSENCE means never logged, not ``0.0``. ``time.monotonic()`` is time since
@@ -2131,7 +2134,7 @@ class NatsKvBucket:
         if last is not None and now - last < self._timings.timeout_remedy_log_interval_seconds:
             log.debug("KV operation timed out on %s (remedy already logged)", self._full_name)
             return
-        _last_timeout_remedy_log[self._full_name] = now
+        _last_timeout_remedy_log = MappingProxyType({**_last_timeout_remedy_log, self._full_name: now})
         log.error(kv_timeout_remedy(self._full_name), extra={"extra_data": {"bucket": self._full_name}})
 
     async def _bounded(self, op: Any) -> Any:
@@ -2295,6 +2298,7 @@ class NatsKvBucket:
         request = json.dumps({"multi_last": [prefix + key for key in keys], "batch": len(keys)}).encode()
 
         async def ask() -> dict[str, tuple[bytes | None, int]] | None:
+            global _BATCH_GET_ANSWERED, _BATCH_GET_REFUSED
             connection = self._bound_to
             if connection is None:
                 return None
@@ -2313,14 +2317,14 @@ class NatsKvBucket:
                         try:
                             message = await asyncio.wait_for(replies.get(), _BATCH_GET_PROBE_SECONDS)
                         except TimeoutError:
-                            _BATCH_GET_REFUSED.add(self._full_name)
+                            _BATCH_GET_REFUSED = _BATCH_GET_REFUSED | {self._full_name}
                             log.warning(
                                 "a batched KV read went unanswered (the connection's grant refuses the body-carried "
                                 "direct get); reading this bucket a key at a time from now on",
                                 extra={"extra_data": {"bucket": self._full_name}},
                             )
                             return None
-                        _BATCH_GET_ANSWERED.add(self._full_name)
+                        _BATCH_GET_ANSWERED = _BATCH_GET_ANSWERED | {self._full_name}
                         probing = False
                     else:
                         message = await replies.get()
