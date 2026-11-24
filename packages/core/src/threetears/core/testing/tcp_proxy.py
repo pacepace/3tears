@@ -59,7 +59,8 @@ class StallingTcpProxy:
         self.open_client_sockets = 0
         self.port = 0
         self._server: asyncio.Server | None = None
-        self._tasks: set[asyncio.Task[None]] = set()
+        #: replaced whole
+        self._tasks: frozenset[asyncio.Task[None]] = frozenset()
 
     async def start(self) -> None:
         """listen on an ephemeral loopback port, recorded in :attr:`port`.
@@ -78,7 +79,7 @@ class StallingTcpProxy:
         """
         if self._server is not None:
             self._server.close()
-        for task in list(self._tasks):
+        for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._server is not None:
@@ -124,7 +125,7 @@ class StallingTcpProxy:
         self.open_client_sockets += 1
         task = asyncio.current_task()
         if task is not None:
-            self._tasks.add(task)
+            self._tasks = self._tasks | {task}
         try:
             action = self.plan.get(number, PROXY_FORWARD)
             if action == PROXY_STALL:
@@ -137,7 +138,7 @@ class StallingTcpProxy:
             self.open_client_sockets -= 1
             writer.close()
             if task is not None:
-                self._tasks.discard(task)
+                self._tasks = self._tasks - {task}
 
     async def _forward(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """pipe bytes both ways until either side closes.
