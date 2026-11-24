@@ -70,3 +70,35 @@ async def test_pop_before_cancel_is_idempotent() -> None:
         assert reg.pop(key) is None
     finally:
         await _drain(task)
+
+
+async def test_drain_awaits_the_registered_tasks_and_forgets_them() -> None:
+    """a drain waits out every task in flight, a failed one included, and leaves the registry empty."""
+    reg = KeyedTaskRegistry()
+    finished: list[str] = []
+    gate = asyncio.Event()
+
+    async def _work(name: str) -> None:
+        await gate.wait()
+        finished.append(name)
+
+    async def _fails() -> None:
+        await gate.wait()
+        raise RuntimeError("boom")
+
+    reg.register(uuid4(), asyncio.create_task(_work("a")))
+    reg.register(uuid4(), asyncio.create_task(_work("b")))
+    reg.register(uuid4(), asyncio.create_task(_fails()))
+    draining = asyncio.create_task(reg.drain())
+    await asyncio.sleep(0)
+    assert not draining.done()  # it waits on the tasks, which wait on the gate
+    gate.set()
+    await draining
+    assert sorted(finished) == ["a", "b"]
+    assert len(reg) == 0
+
+
+async def test_drain_of_an_empty_registry_returns_at_once() -> None:
+    reg = KeyedTaskRegistry()
+    await reg.drain()
+    assert len(reg) == 0
