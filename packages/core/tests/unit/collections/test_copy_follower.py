@@ -864,6 +864,39 @@ async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_no
     assert follower.stamp == lock.version
 
 
+async def test_a_large_commits_noted_keys_reach_a_copy_as_one_arrow_batch_a_page(noted_world: Any) -> None:
+    """Flips if a page of the keys the change notes name reaches a cache that takes key batches (a copy, ``on_keys``)
+    as anything but one Arrow batch a page (a row message a key: a Python object a key on the loop, decision 35), or
+    if a row message is built at all when every cache of the table takes batches."""
+    world, registry = noted_world
+    l3, log, lock, _backend, follower = world
+    await _warmed(world, 10)
+    changed = [("VA", i, 3) for i in range(10, 25_010)]
+    l3.put(changed)
+    since, _ = _too_large(log)
+    keys = [(s, str(g)) for s, g, _ in changed]
+    notes = _Notes([(since + timedelta(microseconds=index), key) for index, key in enumerate(keys)])
+    registry.set_noted_keys_reader(notes)
+    batches: list[Any] = []
+    rows: list[Any] = []
+    registry.register_derived_cache(
+        _TABLE,
+        on_row=rows.append,
+        on_table_dropped=lambda: None,
+        on_partition=lambda _prefix: None,
+        on_keys=lambda batch, epoch: batches.append((batch, epoch)),
+    )
+    lock.version += 1
+
+    assert await follower.catch_up()
+
+    assert rows == [], "no row message a key when every cache of the table takes batches"
+    assert len(batches) == notes.pages > 1, "one batch a page"
+    assert all(isinstance(batch, pa.Table) and epoch is None for batch, epoch in batches)
+    heard = pa.concat_tables([batch for batch, _ in batches])
+    assert sorted(zip(*(heard.column(at).to_pylist() for at in range(2)), strict=True)) == sorted(keys)
+
+
 async def test_notes_that_cannot_name_a_large_commit_leave_the_copy_behind_until_the_log_is_put_back(
     noted_world: Any,
 ) -> None:

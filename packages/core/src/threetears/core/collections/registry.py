@@ -1499,18 +1499,45 @@ class CollectionRegistry:
             async for page in pages:
                 if isinstance(page, str):
                     return page
-                columns = page.columns or (None,) * len(page.keys)
-                for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
-                    if index and not index % _NOTED_ROWS_PER_YIELD:
-                        # a page of many rows yields between runs of them, so the loop answers everything else
-                        # between
-                        await asyncio.sleep(0)
-                    await self._apply_row_message(
-                        CacheInvalidationMessage(
-                            table=change.table, ids=list(ids), columns=None if held is None else dict(held)
-                        )
-                    )
+                await self._tell_noted_page(change.table, page)
         return None
+
+    async def _tell_noted_page(self, table_name: str, page: NotedKeysPage) -> None:
+        """apply a page of keys the change notes name, each as its row message would be applied: a cache that takes key
+        batches (a copy, ``on_keys``) is told the page once, as Arrow (:meth:`NotedKeysPage.key_batch`); every other
+        one, and this process's own caches of the table, a row message a key. None is built when the copy is the
+        table's only cache here: the table's cached scans drop, as a row's message would drop them.
+
+        Why: a commit too big to list names hundreds of thousands of keys, a page of them at a time; a row message a key
+        cost the copy a Python object a key and the loop a key at a time (decision 35), as for a delta file's keys
+        (:meth:`_tell_keys`).
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param page: the page
+        :ptype page: NotedKeysPage
+        :return: nothing
+        :rtype: None
+        """
+        batched = self._key_batch_takers(table_name)
+        if batched and page.keys:
+            keys = page.key_batch()
+            for registration in batched:
+                # the notes name no epoch a key: the keys are heard as a row message names them, with none
+                registration.on_keys(keys, None)  # type: ignore[misc]  # narrowed by _key_batch_takers
+        others = len(self._derived_caches.get(table_name, ())) > len(batched)
+        if batched and not others and table_name not in self._collections:
+            self.drop_local_scans(table_name)
+            return
+        columns = page.columns or (None,) * len(page.keys)
+        for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
+            if index and not index % _NOTED_ROWS_PER_YIELD:
+                # a page of many rows yields between runs of them, so the loop answers everything else between
+                await asyncio.sleep(0)
+            await self._apply_row_message(
+                CacheInvalidationMessage(table=table_name, ids=list(ids), columns=None if held is None else dict(held)),
+                batched=bool(batched),
+            )
 
     async def resolve_behind_from_notes(self, table_name: str, since: datetime, token: str) -> str | None:
         """end being behind on ``table_name`` from its change notes, never by reading the table: every key its notes
@@ -1542,16 +1569,8 @@ class CollectionRegistry:
                     return page
                 if page.whole_table:
                     return "notes_whole"
-                columns = page.columns or (None,) * len(page.keys)
-                for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
-                    if index and not index % _NOTED_ROWS_PER_YIELD:
-                        await asyncio.sleep(0)
-                    await self._apply_row_message(
-                        CacheInvalidationMessage(
-                            table=table_name, ids=list(ids), columns=None if held is None else dict(held)
-                        )
-                    )
-                    keys += 1
+                await self._tell_noted_page(table_name, page)
+                keys += len(page.keys)
         self._noted(table_name, bracket[0])
         self._generation_marks.adopt_generation(table_name, token)
         self._caught_up(table_name)
