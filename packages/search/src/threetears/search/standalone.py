@@ -139,7 +139,7 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Final, Protocol, Self
 from urllib.parse import urljoin, urlparse
 
@@ -744,7 +744,8 @@ class _GuardedRoutes(httpx.AsyncBaseTransport):
             keepalive_expiry=limits.keepalive_expiry,
             network_backend=_PinnedNetwork(),
         )
-        self._proxied: dict[str, httpx.AsyncHTTPTransport] = {}
+        # a read-only snapshot by proxy URL, replaced whole when a proxy is first used
+        self._proxied: Mapping[str, httpx.AsyncHTTPTransport] = MappingProxyType({})
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """Send ``request`` down the route its guard chose.
@@ -761,7 +762,7 @@ class _GuardedRoutes(httpx.AsyncBaseTransport):
             proxy = self._proxied.get(route.proxy_url)
             if proxy is None:
                 proxy = httpx.AsyncHTTPTransport(proxy=route.proxy_url, verify=self._ssl_context, limits=self._limits)
-                self._proxied[route.proxy_url] = proxy
+                self._proxied = MappingProxyType({**self._proxied, route.proxy_url: proxy})
             return await proxy.handle_async_request(request)
         if not isinstance(route, (_Pinned, _Unpinned)):
             raise RuntimeError(f"refusing to send {request.url}: it carries no route from the address guard")
@@ -1262,7 +1263,8 @@ class _Breakers:
         self._failure_threshold = failure_threshold
         self._cooldown_seconds = cooldown_seconds
         self._clock = clock
-        self._circuits: dict[str, _Circuit] = {}
+        # a read-only snapshot of the upstreams with something to remember, replaced whole under the lock
+        self._circuits: Mapping[str, _Circuit] = MappingProxyType({})
         self._lock = threading.Lock()
 
     def admit(self, upstream: str) -> tuple[bool, float]:
@@ -1309,11 +1311,12 @@ class _Breakers:
             if circuit is None:
                 if verdict is not False:
                     return
-                circuit = self._circuits[upstream] = _Circuit()
+                circuit = _Circuit()
+                self._circuits = MappingProxyType({**self._circuits, upstream: circuit})
             was_probe = circuit.probing
             circuit.probing = False
             if verdict is True:
-                del self._circuits[upstream]
+                self._circuits = _without(self._circuits, upstream)
                 return
             if verdict is False:
                 circuit.failures += 1
@@ -1326,7 +1329,20 @@ class _Breakers:
                         )
                     circuit.opened_at = self._clock()
             if circuit.failures == 0 and circuit.opened_at is None:
-                del self._circuits[upstream]
+                self._circuits = _without(self._circuits, upstream)
+
+
+def _without(circuits: Mapping[str, _Circuit], upstream: str) -> Mapping[str, _Circuit]:
+    """``circuits`` without ``upstream``, as a new read-only snapshot.
+
+    :param circuits: the snapshot
+    :ptype circuits: Mapping[str, _Circuit]
+    :param upstream: the upstream to drop
+    :ptype upstream: str
+    :return: the next snapshot
+    :rtype: Mapping[str, _Circuit]
+    """
+    return MappingProxyType({held: circuit for held, circuit in circuits.items() if held != upstream})
 
 
 def _upstream(url: str) -> str:
