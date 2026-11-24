@@ -338,7 +338,9 @@ async def test_rebuild_speed_at_real_size(db: _Db, tmp_path: Path) -> None:
         await asyncio.to_thread(write_parts, tmp_path / f"bare-{next(runs)}", pa.concat_tables(pages))
 
     async def rebuild() -> None:
-        folds = DeltaFolds(tmp_path / f"rebuild-{next(runs)}", [FoldedTable.of(schema, scope=("state", "state:"))])
+        folds = DeltaFolds(
+            tmp_path / f"rebuild-{next(runs)}", [FoldedTable.of(schema, scope=("state", "state:"))], retention="delete"
+        )
         try:
             assert await folds.start(db.pool, _Generations(), changes=_Log(), version=1) == (_TABLE,)
         finally:

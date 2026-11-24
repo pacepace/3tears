@@ -1229,7 +1229,9 @@ async def test_a_load_from_files_hands_each_committed_request_its_file_and_gener
     workers = ProcessWorkers(workers=1, name="test load folds")
     try:
         publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version=before)})
-        folds = DeltaFolds(_volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], workers=workers)
+        folds = DeltaFolds(
+            _volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], retention="delete", workers=workers
+        )
         for files, generations in told.commits:
             folds.committed(files, generations, version=2)
         await folds.wait()
@@ -1241,6 +1243,54 @@ async def test_a_load_from_files_hands_each_committed_request_its_file_and_gener
     (part,) = [part for part in manifest.tables[_TABLE].parts if part.scope == "state:VA"]
     folded = read_volume_file(_volume / part.file)
     assert sorted(folded.column("geo_id").to_pylist()) == [100, 101, 102]
+
+
+async def test_a_copy_lagging_its_writer_applies_every_delta_file_a_published_full_covers_when_the_fold_keeps(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer's fold deletes a delta file once its full covers it while the fold keeps its delta files
+    (``retention="keep"``, design-pod-delta-files decision 51): a copy lagging its writer (a median 7.7 s on the
+    2026-11-24 replay) then finds its next epoch's file gone, waits on it as lost, and the table is reloaded whole (536
+    files, 91 reloads of 339k rows). Kept, every file is still on the volume after the publish and the lagging copy
+    applies each from its file: no L3 statement, no file waited for, no fallback."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    world = _world()
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version=f"inc:{log.count}")})
+    every = list(_NAMES)
+    tokens: dict[str, str] = {}
+    for write, (geo_id, votes) in enumerate(((1, 71), (2, 72), (3, 73)), start=1):
+        changed = _row("VA", geo_id, votes, "kept")
+        file = _save(_volume, f"keep{write}", ("rows", [changed], every))
+        l3.update(("VA", geo_id), votes=votes, note="kept")
+        tokens[file] = log.commit([("VA", geo_id)], delta_file=file)
+        lock.commit("state:VA")
+    missing = _fallbacks("file_missing")
+    workers = ProcessWorkers(workers=1, name="test keep folds")
+    try:
+        folds = DeltaFolds(
+            _volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], retention="keep", workers=workers
+        )
+        # the writer folds and publishes before its copy has applied any of the three: the copy lags
+        for file, token in tokens.items():
+            folds.committed({_TABLE: file}, {_TABLE: token}, version=2)
+            await folds.wait()
+        await folds.close()
+    finally:
+        await workers.close()
+    manifest = current_full_manifest(_volume)
+    assert manifest is not None and manifest.tables[_TABLE].version == list(tokens.values())[-1], (
+        "the published full covers every file"
+    )
+    assert all((_volume / file).is_file() for file in tokens), "a delta file the full covers is kept"
+
+    assert await follower.catch_up()
+
+    assert not follower.status().waiting_for_file, "the lagging copy found every file it applies"
+    assert _same(backend, l3)
+    assert l3.statements == 0
+    assert _fallbacks("file_missing") == missing
 
 
 async def test_a_load_that_replaces_a_prefix_hands_the_delete_s_commit_first(_volume: Path) -> None:
@@ -1500,7 +1550,9 @@ async def test_a_fold_told_a_confirmed_file_holds_its_rows(_volume: Path) -> Non
     workers = ProcessWorkers(workers=1, name="test confirmed folds")
     try:
         publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version="inc:0")})
-        folds = DeltaFolds(_volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], workers=workers)
+        folds = DeltaFolds(
+            _volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], retention="delete", workers=workers
+        )
         # the writer's own commit first, as under the lease: the fold's term is the writer's
         earlier = _save(_volume, "earlier", ("rows", [_row("VA", 99, 9, "new", _LATER)], list(_NAMES)))
         folds.committed({_TABLE: earlier}, {_TABLE: "inc:1"}, version=2)

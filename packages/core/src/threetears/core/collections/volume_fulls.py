@@ -25,7 +25,8 @@ is refused, never replaced: one writer holds a term (the lease), so nothing else
 
 **Kept and deleted.** The current manifest and the one it replaced (its ``previous``, which a reader that took it
 before the publish may still be loading) are kept with every file they name; :func:`deletable_full_files` lists the
-rest for the writer to delete after its own publish. Nothing calls it on a timer.
+rest for the writer to delete after its own publish. Nothing calls it on a timer. It lists a delta file only when the
+writer hands it covered ones, which a fold that keeps its delta files (``retention="keep"``, decision 51) never does.
 
 **Fingerprinted** (decision 32). Each part's manifest entry carries :func:`rows_fingerprint` of its rows: each row's
 columns, in name order, made canonical by a column type in Arrow (:data:`_FINGERPRINT_KINDS`, so the rail's types and
@@ -791,7 +792,8 @@ def deletable_full_files(root: Path, *, covered_deltas: Collection[str] = ()) ->
 
     :param root: the delta files' root
     :ptype root: Path
-    :param covered_deltas: delta files (``<table>/<write>.arrow``) the current full covers
+    :param covered_deltas: delta files (``<table>/<write>.arrow``) the current full covers, to delete too; empty from a
+        fold that keeps its delta files (decision 51), so then no delta file is listed
     :ptype covered_deltas: Collection[str]
     :return: the files, relative to ``root``
     :rtype: list[str]
