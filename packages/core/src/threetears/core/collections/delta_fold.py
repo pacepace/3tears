@@ -1369,9 +1369,6 @@ class DeltaFolds:
                 return
             taken, self._queued = self._queued, ()
             self._taken = tuple(taken)
-            # every file saved before it was told by now (the newest commit drained, or the oldest then in flight):
-            # what the round's full records it covers (FullTable.covered_before), so a recovery reads only what follows
-            since = self._before
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
             self._round_term = term
@@ -1389,7 +1386,6 @@ class DeltaFolds:
                     OWN_DELTA_SAVES.orphans,
                     tuple(sorted(set(self._fresh) | set(self._recover))),
                     self.retention,
-                    since,
                 )
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- a fold never fails a write: logged, counted, retried at the next commit
                 self._queued = (*taken, *self._queued)
@@ -1785,21 +1781,9 @@ class DeltaFolds:
                 | {left for left, _ in leftovers if left in lost}
             )
         )
-        # it covers every file of the table saved before ``cutoff`` (its keys were read after) but those still open
-        still_open = tuple(file for file in self._kept_files(covered=known) if file.startswith(f"{name}/"))
         try:
             answer = await self._workers.run(
-                recovery_round,
-                str(self.root),
-                term,
-                table.plain(),
-                file,
-                token,
-                doomable,
-                replaced,
-                self.retention,
-                cutoff,
-                still_open,
+                recovery_round, str(self.root), term, table.plain(), file, token, doomable, replaced, self.retention
             )
         except BaseException:
             await asyncio.to_thread(_unlink_all, self.root, [file])
@@ -2473,13 +2457,7 @@ def rebuild_round(
         for name, file, token, _ in staged:
             parts = _parts_of_rows(base, config[name], _read_rows_file(base / file), token)
             written.extend(part.file for part in parts)
-            # it covers every file of the table saved before ``cutoff`` (its read holds them all) but those kept open
-            tables_now[name] = FullTable(
-                version=token,
-                parts=parts,
-                covered_before=cutoff,
-                open=tuple(sorted(file for file in kept if file.startswith(f"{name}/"))),
-            )
+            tables_now[name] = FullTable(version=token, parts=parts)
         try:
             published = publish_full_manifest(base, term=term, tables=tables_now)
         except StaleTermError:
@@ -2520,15 +2498,8 @@ def rebuild_round(
 
 
 def _leftover_delta_files(root: Path, table: str) -> list[tuple[str, float]]:
-    """every delta file of ``table`` on the volume the current full does not cover and no full in use names, and when
-    each was saved; blocking. The one listing of the volume a writer makes: only a recovery (decision 28), when no
-    epoch log names the files.
-
-    Covered: saved before the full's :attr:`~threetears.core.collections.volume_fulls.FullTable.covered_before`
-    (less :data:`_COVERAGE_CLOCK_MARGIN_SECONDS`) and not among its ``open`` files. Such a file is never read: kept
-    files are history (decision 51), so reading them would cost the table's whole past, and one corrupt is never
-    needed again. A full that records no coverage (an older writer's) covers none: every file left is read, as
-    before.
+    """every delta file of ``table`` on the volume no full in use names, and when each was saved; blocking. The one
+    listing of the volume a writer makes: only a recovery (decision 28), when no epoch log names the files.
 
     :param root: the delta files' root
     :ptype root: Path
@@ -2546,31 +2517,14 @@ def _leftover_delta_files(root: Path, table: str) -> list[tuple[str, float]]:
         previous = root / ".fulls" / "manifests" / current.previous
         if previous.is_file():
             named |= FullManifest.decode(previous.read_bytes()).files()
-    entry = current.tables.get(table) if current is not None else None
-    bound = (
-        entry.covered_before - _COVERAGE_CLOCK_MARGIN_SECONDS
-        if entry is not None and entry.covered_before is not None
-        else None
-    )
-    still_open = frozenset(entry.open) if entry is not None else frozenset()
     found: list[tuple[str, float]] = []
     for path in sorted(directory.iterdir()):
         file = f"{table}/{path.name}"
         # a name starting with a dot is a file being written (``.partial``), never a delta a commit named
-        if not path.is_file() or path.suffix != ".arrow" or path.name.startswith(".") or file in named:
-            continue
-        saved = path.stat().st_mtime
-        if bound is not None and saved < bound and file not in still_open:
-            continue  # the current full covers it
-        found.append((file, saved))
+        if path.is_file() and path.suffix == ".arrow" and not path.name.startswith(".") and file not in named:
+            found.append((file, path.stat().st_mtime))
     return found
 
-
-#: how far a file's time on the volume (the NFS server's clock) may trail the writer's clock a full's coverage was
-#: taken by (:attr:`~threetears.core.collections.volume_fulls.FullTable.covered_before`) and still count as after it:
-#: a recovery reads every file saved within this of the coverage, so a skew between the clocks never drops one. Servers
-#: and pods keep NTP time to milliseconds; five minutes costs only the files those minutes saved
-_COVERAGE_CLOCK_MARGIN_SECONDS: Final = 300.0
 
 #: the recovery's reach file's own columns beside the key's (:func:`recovery_reach_job`): each key's one text, its
 #: state as a file carried it, whether a cleared prefix holds it, and whether the notes named it
@@ -2947,8 +2901,6 @@ def recovery_round(
     doomable: tuple[str, ...],
     replaced: tuple[str, ...],
     retention: DeltaRetention,
-    since: float,
-    still_open: tuple[str, ...],
 ) -> tuple[Any, ...]:
     """a recovery's fold, in a worker process (decision 28): the recovery delta folded into every state it reaches
     (its rows' and markers' states, and those its cleared prefixes reach), every other part kept as it is; every part
@@ -2980,12 +2932,6 @@ def recovery_round(
     :param retention: ``"keep"``: no delta file is deleted, the leftovers, a lost file and the recovery delta kept
         (decision 51); ``"delete"``: they go once the recovery is published
     :ptype retention: DeltaRetention
-    :param since: every file of the table saved before it is covered by the recovery but ``still_open``
-        (:attr:`~threetears.core.collections.volume_fulls.FullTable.covered_before`)
-    :ptype since: float
-    :param still_open: the table's files saved before ``since`` the recovery does not cover (told after its
-        generation was read, or in flight)
-    :ptype still_open: tuple[str, ...]
     :return: ``(outcome, manifest, states, deleted, full_bytes)``: ``"recovered"``, ``"stale"`` or ``"no_full"``; the
         manifest published (or the current one); the states folded; the files deleted; the table's ``(table, bytes of
         its parts)`` once recovered
@@ -3019,9 +2965,7 @@ def recovery_round(
         if part.scope not in by_scope and part.scope not in replaced
     )
     tables_now = dict(current.tables)
-    tables_now[table.name] = FullTable(
-        version=token, parts=tuple(parts), covered_before=since, open=tuple(sorted(still_open))
-    )
+    tables_now[table.name] = FullTable(version=token, parts=tuple(parts))
     try:
         published = publish_full_manifest(base, term=term, tables=tables_now)
     except StaleTermError:
@@ -3090,7 +3034,6 @@ def fold_round(
     orphans: tuple[str, ...],
     fresh: tuple[str, ...],
     retention: DeltaRetention,
-    since: float,
 ) -> tuple[Any, ...]:
     """one round of folds, in a worker process: note the commits' files, fold each state due, publish, delete the
     fulls' old files, and the covered delta files when ``retention`` is ``"delete"``.
@@ -3119,9 +3062,6 @@ def fold_round(
     :param retention: ``"keep"``: no delta file is deleted (decision 51), so none is remembered as reused or doomed
         and an orphan's temporary file alone is swept; ``"delete"``: covered deltas go after the publish
     :ptype retention: DeltaRetention
-    :param since: every file saved before it was told before the round (:attr:`~threetears.core.collections.
-        volume_fulls.FullTable.covered_before`): each folded table's full records it, with its files left unfolded
-    :ptype since: float
     :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed, full_bytes)``: the
         state for the next round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how,
         rows)``, the files deleted, the orphans swept (by name), the manifest published (or the current one), this
@@ -3214,10 +3154,6 @@ def fold_round(
         )
         folded.append((table, scope, how, new_part.rows))
         folded_shares.update(state_shares)
-    for table in {table for table, _, _, _ in folded}:
-        # what the new full covers: every file of the table saved before ``since`` but those still unfolded
-        unfolded = {share[2] for share in shares if share[0] == table and share not in folded_shares}
-        tables_now[table] = replace(tables_now[table], covered_before=since, open=tuple(sorted(unfolded)))
     if not folded:
         # an orphan is no file a share, a part or the full names: swept by name, as after a publish
         unnamed = {share[2] for share in shares} | set(reused) | set(doomed) | current.files()
