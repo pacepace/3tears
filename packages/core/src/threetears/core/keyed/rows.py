@@ -50,6 +50,7 @@ from threetears.core.keyed._filters import (
     binds_native_arrays,
     by_conditions,
     narrowing,
+    reads_yugabyte,
     relation,
     sent_by,
 )
@@ -238,9 +239,11 @@ async def read_keyed(
     binder = binder_for(conn, keys)
     statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
     natively = binds_native_arrays(conn)
+    # asked only where it changes the statement: a batch of several key columns (its bounds, PostgreSQL's alone)
+    yugabyte = len(keys.columns) > 1 and not keys.as_list and await reads_yugabyte(conn)
 
     async def fetch(chunk: KeyChunk) -> list[Any]:
-        sql, params = statement.render(chunk, natively)
+        sql, params = statement.render(chunk, natively, yugabyte)
         return list(await sent_by(conn).fetch(sql, *params))
 
     rows: list[Any] = []
@@ -299,9 +302,11 @@ async def read_keyed_arrow(
         table, list(types) if columns is None else columns, keys, by or {}, None, where, binder
     )
     natively = binds_native_arrays(conn)
+    # asked only where it changes the statement, as read_keyed asks it
+    yugabyte = len(keys.columns) > 1 and not keys.as_list and await reads_yugabyte(conn)
 
     async def fetch(chunk: KeyChunk) -> Any:
-        sql, params = statement.render(chunk, natively)
+        sql, params = statement.render(chunk, natively, yugabyte)
         return await l3_fetch_arrow(conn, sql, *params, types=types)
 
     tables: list[Any] = []
