@@ -216,6 +216,15 @@ class TestTheReadAheadBuffer:
         assert await buffer.get() == b"1234567890"
         await asyncio.wait_for(parked, timeout=1)
 
+    async def test_chunks_come_out_in_the_order_they_went_in(self) -> None:
+        """the chunks wait in an asyncio.Queue behind the byte bound: first in, first out, then the clean end."""
+        buffer = ReadAhead(max_bytes=1024)
+        for chunk in (b"a", b"bb", b"ccc"):
+            await buffer.put(chunk)
+        await buffer.close()
+
+        assert [await buffer.get() for _ in range(4)] == [b"a", b"bb", b"ccc", None]
+
     async def test_a_producer_failure_reaches_the_consumer(self) -> None:
         """a read error must not read as a clean end of stream, or a partial restore looks whole."""
         buffer = ReadAhead(max_bytes=1024)

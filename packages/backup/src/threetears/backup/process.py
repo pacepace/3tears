@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 
 from threetears.observe import cancel_and_wait, contain, get_logger
@@ -314,12 +313,14 @@ class ReadAhead:
 
     `asyncio.Queue` bounds by item COUNT, which is the wrong unit when one item can be a
     megabyte and the next a kilobyte. This bounds by summed length instead, so the ceiling means
-    what an operator reading it thinks it means.
+    what an operator reading it thinks it means: the chunks wait, in order, in an unbounded
+    `asyncio.Queue` (the approved hand-off between coroutines, never a container changed in
+    place) behind the byte bound the condition keeps.
     """
 
     def __init__(self, max_bytes: int) -> None:
         self._max_bytes = max_bytes
-        self._chunks: deque[bytes] = deque()
+        self._chunks: asyncio.Queue[bytes] = asyncio.Queue()
         self._size = 0
         self._closed = False
         self._failure: BaseException | None = None
@@ -331,7 +332,7 @@ class ReadAhead:
             await self._room.wait_for(lambda: self._size < self._max_bytes or self._closed)
             if self._closed:
                 return
-            self._chunks.append(chunk)
+            self._chunks.put_nowait(chunk)
             self._size += len(chunk)
             self._room.notify_all()
 
@@ -342,9 +343,9 @@ class ReadAhead:
             the caller rather than looking like a clean end of stream.
         """
         async with self._room:
-            await self._room.wait_for(lambda: self._chunks or self._closed)
-            if self._chunks:
-                chunk = self._chunks.popleft()
+            await self._room.wait_for(lambda: not self._chunks.empty() or self._closed)
+            if not self._chunks.empty():
+                chunk = self._chunks.get_nowait()
                 self._size -= len(chunk)
                 self._room.notify_all()
                 return chunk

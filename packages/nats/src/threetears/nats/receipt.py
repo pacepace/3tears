@@ -17,7 +17,6 @@ applies to them there.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -28,6 +27,9 @@ __all__ = ["ReceiptBacklog"]
 
 class ReceiptBacklog:
     """a bounded FIFO of received messages, each with the monotonic time it arrived.
+
+    the messages wait, in order, in an unbounded ``asyncio.Queue`` (the approved hand-off between coroutines, never
+    a container changed in place) behind the message and byte bounds the condition keeps.
 
     :param msgs_limit: most messages held at once; a put past it waits for a get
     :ptype msgs_limit: int
@@ -43,7 +45,7 @@ class ReceiptBacklog:
             raise ValueError(f"bytes_limit must be at least 1; got {bytes_limit}")
         self._msgs_limit = msgs_limit
         self._bytes_limit = bytes_limit
-        self._held: deque[tuple[_NatsMsg, float]] = deque()
+        self._held: asyncio.Queue[tuple[_NatsMsg, float]] = asyncio.Queue()
         self._bytes = 0
         self._closed = False
         self._changed = asyncio.Condition()
@@ -54,7 +56,7 @@ class ReceiptBacklog:
         :return: True while under both bounds
         :rtype: bool
         """
-        return len(self._held) < self._msgs_limit and self._bytes < self._bytes_limit
+        return self._held.qsize() < self._msgs_limit and self._bytes < self._bytes_limit
 
     def _has_message_or_closed(self) -> bool:
         """report whether a get can return.
@@ -62,7 +64,7 @@ class ReceiptBacklog:
         :return: True when a message is held or no more will come
         :rtype: bool
         """
-        return bool(self._held) or self._closed
+        return not self._held.empty() or self._closed
 
     async def put(self, msg: _NatsMsg, *, received: float) -> None:
         """hold a message, waiting while the backlog is at its bound.
@@ -79,7 +81,7 @@ class ReceiptBacklog:
         """
         async with self._changed:
             await self._changed.wait_for(self._has_room)
-            self._held.append((msg, received))
+            self._held.put_nowait((msg, received))
             self._bytes += len(msg.data)
             self._changed.notify_all()
 
@@ -93,8 +95,8 @@ class ReceiptBacklog:
         async with self._changed:
             await self._changed.wait_for(self._has_message_or_closed)
             result: tuple[_NatsMsg, float] | None = None
-            if self._held:
-                result = self._held.popleft()
+            if not self._held.empty():
+                result = self._held.get_nowait()
                 self._bytes -= len(result[0].data)
                 self._changed.notify_all()
             return result
