@@ -66,16 +66,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Final
+from typing import Annotated, Any, Final
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import known_on_yugabyte, l3_on_yugabyte
 from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed._filters import Fragment, narrowing
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
+from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.observe import get_logger
 
-__all__ = ["KeysetRead", "keyset_arrow_pages", "keyset_pages", "read_keyset_pages"]
+__all__ = ["KeysetRead", "keyset_arrow_pages", "keyset_pages", "keyset_scope_pages", "read_keyset_pages"]
 
 #: the share of a byte-capped reply a page is sized to fill: rows vary in width, so a page sized to the whole
 #: cap from the rows before would be cut about half the time
@@ -352,6 +353,62 @@ async def keyset_arrow_pages(
             yield page
         return
     async for page in _cursor_pages(reads, shape.statement(), None if after is None else tuple(after)):
+        yield page
+
+
+async def keyset_scope_pages(
+    l3: Any,
+    table: str,
+    key: Sequence[str],
+    *,
+    types: Mapping[str, Any],
+    scope_column: Annotated[str, DeclaredScope],
+    scope_values: Sequence[Any],
+    scope_array: str,
+    page_size: int,
+) -> AsyncGenerator[Any, None]:
+    """every row of ``table`` whose declared state column holds one of ``scope_values``, as
+    :func:`keyset_arrow_pages` pages: one keyset read led by the state column, the states a set filter on it, so each
+    page seeks the states' index range (the key when it leads with the state, the table's state index otherwise),
+    never the table. The statement is written here from the table's name and columns; no caller writes its SQL.
+
+    Bounded only by a state column the table declares: the enforcement rule judges a call bounded when
+    ``scope_column`` flows from a :class:`~threetears.interfaces.keyed.DeclaredScope` source, as it judges
+    :func:`~threetears.core.keyed.read_state_arrow`.
+
+    :param l3: the rail's proxy (``fetch_arrow``), or anything with an asyncpg-shaped ``fetch``
+    :ptype l3: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param key: the table's key columns, TRUSTED identifiers; the read pages on the state column, then the rest of
+        them
+    :ptype key: Sequence[str]
+    :param types: column name -> its Arrow type, every column selected, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :param scope_column: the table's declared state column, a TRUSTED identifier
+    :ptype scope_column: str
+    :param scope_values: the states read, each typed as the column holds it
+    :ptype scope_values: Sequence[Any]
+    :param scope_array: the SQL array type the states are sent as (``text[]``)
+    :ptype scope_array: str
+    :param page_size: rows a page keeps
+    :ptype page_size: int
+    :return: the pages, as they are read, each a ``pyarrow.Table``; none when ``scope_values`` is empty
+    :rtype: AsyncGenerator[pyarrow.Table, None]
+    :raises ValueError: when ``page_size`` is under one
+    """
+    if not scope_values:
+        return
+    selected = ", ".join(quote_identifier(name) for name in types)
+    async for page in keyset_arrow_pages(
+        l3,
+        f"SELECT {selected} FROM {quote_identifier(table)}",  # noqa: S608 - trusted identifiers
+        (scope_column, *(name for name in key if name != scope_column)),
+        types=types,
+        where_any={scope_column: (scope_array, scope_values)},
+        page_size=page_size,
+        lead_array=scope_array,
+    ):
         yield page
 
 

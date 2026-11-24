@@ -36,7 +36,7 @@ from threetears.core.collections.schema_backed import (  # noqa: E402
     Column,
 )
 from threetears.core.exceptions import DataLayerUnavailableError  # noqa: E402
-from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
+from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages  # noqa: E402
 
 _COLUMNS = [
     Column("id", BIGINT_TYPE),
@@ -302,3 +302,23 @@ async def test_the_keyset_pager_reads_a_table_in_arrow_pages() -> None:
     assert [row["id"] for page in pages for row in page.to_pylist()] == [0, 1, 2, 3, 9]
     assert all(_sent(request, index)["reply_format"] == "arrow" for index in range(2))
     assert _sent(request, 1)["params"] == [3]
+
+
+async def test_a_scope_page_read_of_no_states_sends_nothing() -> None:
+    """Flips if ``keyset_scope_pages`` handed no states sends a statement (an empty set filter read as no filter
+    would read the table whole) or yields a page."""
+    l3 = MagicMock()
+    pages = [
+        page
+        async for page in keyset_scope_pages(
+            l3,
+            "votes",
+            ("state", "id"),
+            types=_TYPES,
+            scope_column="state",
+            scope_values=[],
+            scope_array="text[]",
+            page_size=10,
+        )
+    ]
+    assert pages == [] and l3.mock_calls == []
