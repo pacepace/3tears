@@ -221,7 +221,8 @@ class-name dispatch when every provider has returned ``None``).
 """
 
 
-_capability_providers: list[CapabilityProvider] = []
+#: the providers in registration order: a tuple replaced whole, never changed in place
+_capability_providers: tuple[CapabilityProvider, ...] = ()
 
 
 def register_capability_provider(provider: CapabilityProvider) -> None:
@@ -255,10 +256,11 @@ def register_capability_provider(provider: CapabilityProvider) -> None:
         returning a :class:`ChatModelCapabilities` record or ``None``
     :ptype provider: CapabilityProvider
     """
+    global _capability_providers
     for existing in _capability_providers:
         if existing is provider:
             return
-    _capability_providers.append(provider)
+    _capability_providers = (*_capability_providers, provider)
 
 
 def clear_capability_providers() -> None:
@@ -268,7 +270,8 @@ def clear_capability_providers() -> None:
     clear the registry mid-run. matches the pattern of
     :func:`threetears.models.capabilities.clear_capability_overrides`.
     """
-    _capability_providers.clear()
+    global _capability_providers
+    _capability_providers = ()
 
 
 def _extract_model_name(chat_model: Any) -> str:

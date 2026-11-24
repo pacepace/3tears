@@ -73,8 +73,8 @@ _ABANDON_GRACE_SECONDS: Final[float] = 5.0
 #: entries remove themselves when they finally end. Module-level rather than
 #: per-client because it is a leak registry, not state anyone should consult --
 #: nothing reads it, and a caller reaching for it would be managing something it
-#: cannot influence.
-_abandoned: set[asyncio.Task[Any]] = set()
+#: cannot influence. Replaced whole, never changed in place (decision 46).
+_abandoned: frozenset[asyncio.Task[Any]] = frozenset()
 
 
 async def run_bounded(
@@ -143,8 +143,9 @@ def _abandon(task: asyncio.Task[Any]) -> None:
     :return: nothing
     :rtype: None
     """
+    global _abandoned
     task.cancel()
-    _abandoned.add(task)
+    _abandoned = _abandoned | {task}
     task.add_done_callback(_settle_abandoned)
 
 
@@ -156,7 +157,8 @@ def _settle_abandoned(task: asyncio.Task[Any]) -> None:
     :return: nothing
     :rtype: None
     """
-    _abandoned.discard(task)
+    global _abandoned
+    _abandoned = _abandoned - {task}
     if not task.cancelled():
         failure = task.exception()
         if failure is not None:
@@ -219,9 +221,7 @@ async def publish_bounded(
     # Past the deadline with the task still alive: it is wedged somewhere that does not honour
     # cancellation. Cancel and let go -- `await task` here would re-create the exact hang this
     # function exists to break, inside the code meant to break it.
-    task.cancel()
-    _abandoned.add(task)
-    task.add_done_callback(_abandoned.discard)
+    _abandon(task)
     log.error(
         "jetstream publish to %s did not finish within %.1fs and did not respond to cancellation; "
         "abandoning the in-flight task so the caller is not wedged behind it. This is nats-py "

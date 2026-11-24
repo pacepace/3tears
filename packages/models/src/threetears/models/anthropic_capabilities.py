@@ -59,6 +59,7 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -110,11 +111,11 @@ _THINKING_TYPE_FIELDS = (
 _LIST_PAGE_LIMIT = 1000
 
 _CACHE_LOCK = threading.Lock()
-#: model id -> monotonic time of its last successful load.
-_LOADED_AT: dict[str, float] = {}
+#: model id -> monotonic time of its last successful load (a read-only map replaced whole under the lock).
+_LOADED_AT: Mapping[str, float] = MappingProxyType({})
 #: the last successful whole-collection load as (monotonic time, model ids);
-#: empty until one succeeds.
-_CATALOGUE_LOADED: list[tuple[float, tuple[str, ...]]] = []
+#: empty until one succeeds (a tuple replaced whole under the lock).
+_CATALOGUE_LOADED: tuple[tuple[float, tuple[str, ...]], ...] = ()
 
 
 class PublishedCapabilityShapeError(ValueError):
@@ -314,9 +315,9 @@ def _record(facts: Mapping[str, CapabilityOverride]) -> None:
     now = time.monotonic()
     for model_id, model_facts in facts.items():
         register_published_capabilities(model_id, model_facts)
+    global _LOADED_AT
     with _CACHE_LOCK:
-        for model_id in facts:
-            _LOADED_AT[model_id] = now
+        _LOADED_AT = MappingProxyType({**_LOADED_AT, **dict.fromkeys(facts, now)})
 
 
 async def load_anthropic_capabilities(
@@ -394,6 +395,7 @@ async def load_all_anthropic_capabilities(
     :rtype: PublishedCapabilityLoad
     :raises PublishedCapabilityShapeError: when a listing or model object has a shape this build cannot read
     """
+    global _CATALOGUE_LOADED
     with _CACHE_LOCK:
         catalogue_loaded_at, cached_ids = _CATALOGUE_LOADED[-1] if _CATALOGUE_LOADED else (None, ())
     if _fresh(catalogue_loaded_at, max_age_seconds):
@@ -438,5 +440,5 @@ async def load_all_anthropic_capabilities(
 
     _record(facts)
     with _CACHE_LOCK:
-        _CATALOGUE_LOADED[:] = [(time.monotonic(), tuple(facts))]
+        _CATALOGUE_LOADED = ((time.monotonic(), tuple(facts)),)
     return PublishedCapabilityLoad(source=ANTHROPIC_MODELS_API_SOURCE, facts=facts)

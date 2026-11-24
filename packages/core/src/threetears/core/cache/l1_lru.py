@@ -59,6 +59,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Protocol
 
+from threetears.core.config import DEFAULT_L1_LEDGER_DRAIN_TIMEOUT_SECONDS
 from threetears.core.eviction import (
     BUDGET_BYTES,
     EVICTED_AGE_SECONDS,
@@ -74,7 +75,7 @@ from threetears.core.eviction import (
     policies_declared,
 )
 from threetears.core.packed_keys import NO_KEYS, key_text, packed, parts_of, texts
-from threetears.observe import contain, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
 __all__ = [
     "L1_EVICTION_INFO",
@@ -112,8 +113,18 @@ _TOUCH: Final = -1
 _REMOVED: Final = -2
 #: tags a key part that is not text, in its key text: the part's type, then its spelling
 _TAG: Final = "\x1d"
-#: advanced by every L1 declaration, so a backend that read its tables' policies sees a table become KEEP
-POLICY_EPOCH: list[int] = [0]
+#: advanced by every L1 declaration, so a backend that read its tables' policies sees a table become KEEP; read through
+#: :func:`policy_epoch` (an import of the name would keep the value it had then)
+_policy_epoch: int = 0
+
+
+def policy_epoch() -> int:
+    """the L1 policy epoch now: advanced by every :func:`declare_l1_table`.
+
+    :return: it
+    :rtype: int
+    """
+    return _policy_epoch
 
 
 def declare_l1_table(name: str, policy: Declared) -> None:
@@ -151,7 +162,8 @@ def declare_l1_table(name: str, policy: Declared) -> None:
         )
     kinds = enum.StrEnum("L1Table", {"TABLE": name})  # type: ignore[misc]
     policy_declare(Tier.L1, kinds, {kinds["TABLE"]: policy})
-    POLICY_EPOCH[0] += 1
+    global _policy_epoch
+    _policy_epoch += 1
 
 
 def row_bytes(values: Sequence[Any]) -> int:
@@ -909,7 +921,7 @@ class L1Ledger:
         held = self._tables.get((id(store), table))
         return () if held is None else tuple(_key_of(text) for text in texts(held.held.texts))
 
-    def drain(self, timeout: float = 30.0, *, fold: bool = False) -> None:
+    def drain(self, timeout: float = DEFAULT_L1_LEDGER_DRAIN_TIMEOUT_SECONDS, *, fold: bool = False) -> None:
         """every hand-off queued now taken, evicting as they pass the budget: on the calling thread for a step-by-step
         ledger, else waiting for the ledger's thread to reach them (tests, and a caller that must see them done).
 
@@ -932,8 +944,8 @@ class L1Ledger:
             raise TimeoutError(f"the L1 ledger's thread took no hand-offs in {timeout}s")
 
 
-_LEDGER: list[L1Ledger] = []
-_LEDGER_LOCK = threading.Lock()
+#: the process's ledger, built once by the first :func:`ledger`, however many threads ask first
+_LEDGER: BuildOnce[None, L1Ledger] = BuildOnce()
 
 
 def ledger() -> L1Ledger:
@@ -942,8 +954,4 @@ def ledger() -> L1Ledger:
     :return: it
     :rtype: L1Ledger
     """
-    if not _LEDGER:
-        with _LEDGER_LOCK:
-            if not _LEDGER:
-                _LEDGER.append(L1Ledger())
-    return _LEDGER[0]
+    return _LEDGER.get(None, L1Ledger)

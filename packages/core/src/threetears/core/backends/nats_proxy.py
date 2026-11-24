@@ -130,7 +130,33 @@ _logger = get_logger(__name__)
 #: at once would only share it
 #: the roll-backs of transactions begun for a caller that was cancelled while it waited for the begin's answer
 #: (:meth:`_ProxyTransaction.__aenter__`): each a task of its own, held here until it is done
-_BEGUN_FOR_NO_ONE: Final[set[asyncio.Task[None]]] = set()
+_BEGUN_FOR_NO_ONE: frozenset[asyncio.Task[None]] = frozenset()
+
+
+def _hold_begun(task: asyncio.Task[None]) -> None:
+    """hold a roll-back task in :data:`_BEGUN_FOR_NO_ONE` until it is done, the set replaced whole each time.
+
+    :param task: the roll-back
+    :ptype task: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    global _BEGUN_FOR_NO_ONE
+    _BEGUN_FOR_NO_ONE = _BEGUN_FOR_NO_ONE | {task}
+    task.add_done_callback(_forget_begun)
+
+
+def _forget_begun(task: asyncio.Task[None]) -> None:
+    """drop a finished roll-back from :data:`_BEGUN_FOR_NO_ONE`, replaced whole.
+
+    :param task: the finished roll-back
+    :ptype task: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    global _BEGUN_FOR_NO_ONE
+    _BEGUN_FOR_NO_ONE = _BEGUN_FOR_NO_ONE - {task}
+
 
 _COPY_BUILDS: Final = ThreadPoolExecutor(max_workers=1, thread_name_prefix="l3-copy-build")
 _COPY_BUILDS.submit(int).result()
@@ -2940,8 +2966,7 @@ class _ProxyTransaction:
             response = await asyncio.shield(begin)
         except asyncio.CancelledError:
             ending = asyncio.ensure_future(self._roll_back_begun(begin))
-            _BEGUN_FOR_NO_ONE.add(ending)
-            ending.add_done_callback(_BEGUN_FOR_NO_ONE.discard)
+            _hold_begun(ending)
             raise
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.begin")

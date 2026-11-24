@@ -2848,8 +2848,9 @@ class _ConnectionOpener:
         self._servers = servers
         self._establish: ConnectionEstablisher = establish if establish is not None else _establish_connection
         # rate-limit key -> when it was last logged at error, shared by every connection this opener
-        # opens: a successor repeating its predecessor's error is still the same repeat.
-        self._error_log_times: dict[str, float] = {}
+        # opens: a successor repeating its predecessor's error is still the same repeat. Replaced whole, never changed
+        # in place (decision 45): each error callback assigns the next map _on_error hands back.
+        self._error_log_times: Mapping[str, float] = MappingProxyType({})
         self._options = options
         self._primary_url = primary_url
         self._client_name = client_name
@@ -2996,7 +2997,6 @@ class _ConnectionOpener:
         :rtype: Callable[[Exception], Awaitable[None]]
         """
         health = self.health
-        error_log_times = self._error_log_times
 
         async def _dispatch_error(exc: Exception) -> None:
             """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
@@ -3012,7 +3012,7 @@ class _ConnectionOpener:
             violation = _permissions_violation(exc)
             if violation is not None and violation.operation == "publish" and violation.subject:
                 health.note_refused(violation.subject.lower())
-            await _on_error(exc, error_log_times)
+            self._error_log_times = await _on_error(exc, self._error_log_times)
 
         return _dispatch_error
 
@@ -7652,7 +7652,7 @@ def _is_connection_loss(exc: Exception) -> bool:
     return isinstance(exc, (OSError, TimeoutError)) and not isinstance(exc, _NatsError)
 
 
-async def _on_error(exc: Exception, last_logged: dict[str, float]) -> None:
+async def _on_error(exc: Exception, last_logged: Mapping[str, float]) -> Mapping[str, float]:
     """nats-py error callback with rate-limited logging.
 
     A CONNECTION LOSS (:func:`_is_connection_loss`) is logged at WARNING, naming the error's type
@@ -7690,10 +7690,10 @@ async def _on_error(exc: Exception, last_logged: dict[str, float]) -> None:
     :param exc: exception from nats-py client
     :ptype exc: Exception
     :param last_logged: rate-limit key -> when that key was last logged at error, owned by the
-        client whose connection raised; updated in place
-    :ptype last_logged: dict[str, float]
-    :return: nothing
-    :rtype: None
+        client whose connection raised; never changed in place
+    :ptype last_logged: Mapping[str, float]
+    :return: the next map (``last_logged`` itself when nothing was logged at error), for the owner to assign whole
+    :rtype: Mapping[str, float]
     """
     violation = _permissions_violation(exc)
     if violation is None:
@@ -7734,6 +7734,7 @@ async def _on_error(exc: Exception, last_logged: dict[str, float]) -> None:
                     }
                 },
             )
-        last_logged[key] = now
+        last_logged = MappingProxyType({**last_logged, key: now})
     else:
         log.debug("NATS error (rate-limited duplicate): %s", exc)
+    return last_logged

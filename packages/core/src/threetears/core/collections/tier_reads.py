@@ -27,10 +27,12 @@ from __future__ import annotations
 import asyncio
 import threading
 import weakref
-from collections import Counter
+from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
+from threetears.core.frozen_state import with_entry
 from threetears.observe import get_logger
 from threetears.observe.background import cancel_and_wait
 from threetears.observe.metrics import counter
@@ -56,9 +58,11 @@ class ReadTier(StrEnum):
     L3 = "l3"
 
 
-_counts: Counter[tuple[str, str]] = Counter()
+_counts: Mapping[tuple[str, str], int] = MappingProxyType({})
 #: every read since the process started, never started again: what :func:`tier_reads_total` reads
-_totals: Counter[tuple[str, str]] = Counter()
+_totals: Mapping[tuple[str, str], int] = MappingProxyType({})
+#: both maps are replaced whole under :data:`_lock`, never changed in place (decision 45): one entry a (table, tier),
+#: so a read's copy is of a few dozen entries
 _lock = threading.Lock()
 
 #: the counter's name and help. Fetched where it is incremented, never held at import: a module that a
@@ -77,15 +81,17 @@ def record_tier_read(table: str, tier: ReadTier) -> None:
     :return: nothing
     :rtype: None
     """
+    global _counts, _totals
+    key = (table, tier.value)
     with _lock:
-        _counts[(table, tier.value)] += 1
-        _totals[(table, tier.value)] += 1
+        _counts = with_entry(_counts, key, _counts.get(key, 0) + 1)
+        _totals = with_entry(_totals, key, _totals.get(key, 0) + 1)
     counter(_READS_NAME, description=_READS_HELP, label_names=("table", "tier")).labels(
         table=table, tier=tier.value
     ).inc()
 
 
-def _by_table(counts: Counter[tuple[str, str]]) -> dict[str, dict[str, int]]:
+def _by_table(counts: Mapping[tuple[str, str], int]) -> dict[str, dict[str, int]]:
     """counts keyed by (table, tier), as table -> tier -> reads, in table then tier order."""
     by_table: dict[str, dict[str, int]] = {}
     for (table, tier), reads in sorted(counts.items()):
@@ -103,9 +109,7 @@ def tier_reads_total() -> dict[str, dict[str, int]]:
     :return: table -> tier (``l1``, ``l2``, ``l3``) -> reads; a tier no read reached is absent
     :rtype: dict[str, dict[str, int]]
     """
-    with _lock:
-        totals = Counter(_totals)
-    return _by_table(totals)
+    return _by_table(_totals)
 
 
 def _take_tier_reads() -> dict[str, dict[str, int]]:
@@ -114,9 +118,9 @@ def _take_tier_reads() -> dict[str, dict[str, int]]:
     :return: table -> tier -> reads; empty when no read happened
     :rtype: dict[str, dict[str, int]]
     """
+    global _counts
     with _lock:
-        taken = Counter(_counts)
-        _counts.clear()
+        taken, _counts = _counts, MappingProxyType({})
     return _by_table(taken)
 
 

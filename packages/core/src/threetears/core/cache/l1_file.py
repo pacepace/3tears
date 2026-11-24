@@ -51,10 +51,13 @@ import re
 import secrets
 import tempfile
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
+from threetears.core.frozen_state import with_entry, without_entry
 from threetears.observe import BuildOnce, contain, get_logger
 
 __all__ = [
@@ -107,11 +110,13 @@ class _L1File:
 
 
 _LOCK = threading.Lock()
-_FILES: dict[str, _L1File] = {}
+#: this process's L1 files, by path; replaced whole under :data:`_LOCK`, never changed in place
+_FILES: Mapping[str, _L1File] = MappingProxyType({})
 #: the files whose holder was collected while :data:`_LOCK` was held (:func:`collected`), given back by the next
 #: :func:`acquire` or :func:`release`; a ``SimpleQueue`` because its ``put`` takes no lock a finalizer could wait on
 _COLLECTED: queue.SimpleQueue[Path] = queue.SimpleQueue()
-_SWEPT: set[str] = set()
+#: the directories already swept, each once per process at its first file (the files it removed, by directory)
+_SWEPT: BuildOnce[str, int] = BuildOnce()
 #: this process's pid and token, made on its first L1 file; keyed by pid, so a forked child makes its own
 _ME: BuildOnce[int, str] = BuildOnce()
 
@@ -206,13 +211,13 @@ def acquire(db_name: str, directory: Path | None = None) -> Path:
     where = directory if directory is not None else l1_directory()
     path = where / f"{_PREFIX}{_me()}-{_SAFE.sub('_', db_name)}.sqlite"
     key = str(path)
+    global _FILES
     with _LOCK:
         _give_back_collected()
         held = _FILES.get(key)
         if held is None:
-            if str(where) not in _SWEPT:
-                _SWEPT.add(str(where))
-                sweep(where)
+            # each directory is swept once per process, at its first file
+            _SWEPT.get(str(where), lambda: sweep(where))
             owner = _owner_path(path)
             while True:
                 # the name is this process's own (pid and token), so the lock is free unless a sweeper holds it
@@ -227,7 +232,8 @@ def acquire(db_name: str, directory: Path | None = None) -> Path:
                     break
                 os.close(fd)
             _remove(path)
-            held = _FILES[key] = _L1File(path=path, owner_fd=fd)
+            held = _L1File(path=path, owner_fd=fd)
+            _FILES = with_entry(_FILES, key, held)
         held.holders += 1
     return path
 
@@ -278,14 +284,29 @@ def _let_go(path: Path) -> None:
     :return: nothing
     :rtype: None
     """
-    held = _FILES.get(str(path))
+    global _FILES
+    _FILES, last = _released(_FILES, str(path))
+    if last is not None:
+        _close(last)
+
+
+def _released(files: Mapping[str, _L1File], key: str) -> tuple[Mapping[str, _L1File], _L1File | None]:
+    """``files`` after one holder of ``key`` lets go, and the file when that was its last holder.
+
+    :param files: the files held, by path
+    :ptype files: Mapping[str, _L1File]
+    :param key: the file's path
+    :ptype key: str
+    :return: the files held next (``files`` itself unless the last holder let go), and the file to close or None
+    :rtype: tuple[Mapping[str, _L1File], _L1File | None]
+    """
+    held = files.get(key)
     if held is None:
-        return
+        return files, None
     held.holders -= 1
     if held.holders > 0:
-        return
-    del _FILES[str(path)]
-    _close(held)
+        return files, None
+    return without_entry(files, key), held
 
 
 def _give_back_collected() -> None:
@@ -313,10 +334,11 @@ def _close(held: _L1File) -> None:
 @atexit.register
 def _remove_all() -> None:
     """a clean exit leaves no file behind."""
+    global _FILES
     with _LOCK:
         _give_back_collected()
         for held in _FILES.values():
             # NOSILENT: at exit nothing can be said; a file left behind is swept by the next process's first L1
             with contextlib.suppress(OSError):
                 _close(held)
-        _FILES.clear()
+        _FILES = MappingProxyType({})

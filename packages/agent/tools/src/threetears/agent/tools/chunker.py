@@ -12,8 +12,9 @@ hint → strategy mappings for domain-specific tool outputs.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 __all__ = [
     "ChunkResult",
@@ -52,8 +53,8 @@ class ChunkResult:
 # Strategy type: takes content string, returns list of ChunkResult
 ChunkStrategy = Callable[[str], list[ChunkResult]]
 
-# Default strategy registry: hint string → chunking function
-_STRATEGY_REGISTRY: dict[str, ChunkStrategy] = {}
+# Default strategy registry: hint string → chunking function; a read-only map replaced whole on each registration
+_STRATEGY_REGISTRY: Mapping[str, ChunkStrategy] = MappingProxyType({})
 
 
 def register_chunk_strategy(hint: str, strategy: ChunkStrategy) -> None:
@@ -64,7 +65,8 @@ def register_chunk_strategy(hint: str, strategy: ChunkStrategy) -> None:
     :param strategy: function that takes content and returns chunks
     :ptype strategy: ChunkStrategy
     """
-    _STRATEGY_REGISTRY[hint] = strategy
+    global _STRATEGY_REGISTRY
+    _STRATEGY_REGISTRY = MappingProxyType({**_STRATEGY_REGISTRY, hint: strategy})
 
 
 def chunk_content(content: str, strategy_hint: str = "") -> list[ChunkResult]:

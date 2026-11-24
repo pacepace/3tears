@@ -34,7 +34,9 @@ because a deployment that sets one has a reason the provider does not know.
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -335,12 +337,14 @@ class CapabilityOverride(BaseModel):
 
 
 _REGISTRY_LOCK = threading.Lock()
-_REGISTRY: dict[str, ModelCapabilities] = {}
-_OVERRIDES: dict[str, CapabilityOverride] = {}
+#: the three layers are read-only maps, each replaced whole under the lock, never changed in place: a reader holding
+#: one never sees it change under it
+_REGISTRY: Mapping[str, ModelCapabilities] = MappingProxyType({})
+_OVERRIDES: Mapping[str, CapabilityOverride] = MappingProxyType({})
 #: provider-published facts, keyed like the registry. typed as a
 #: CapabilityOverride because it is the same shape -- a subset of fields, only
 #: the explicitly-set ones applied -- layered BELOW the deployment override.
-_PUBLISHED: dict[str, CapabilityOverride] = {}
+_PUBLISHED: Mapping[str, CapabilityOverride] = MappingProxyType({})
 
 
 def register_capabilities(model_id: str, capabilities: ModelCapabilities) -> None:
@@ -354,8 +358,9 @@ def register_capabilities(model_id: str, capabilities: ModelCapabilities) -> Non
     :param capabilities: capability metadata
     :ptype capabilities: ModelCapabilities
     """
+    global _REGISTRY
     with _REGISTRY_LOCK:
-        _REGISTRY[model_id] = capabilities
+        _REGISTRY = MappingProxyType({**_REGISTRY, model_id: capabilities})
 
 
 def register_capability_override(model_id: str, override: CapabilityOverride) -> None:
@@ -384,8 +389,9 @@ def register_capability_override(model_id: str, override: CapabilityOverride) ->
         them) fall through to the canonical registry value
     :ptype override: CapabilityOverride
     """
+    global _OVERRIDES
     with _REGISTRY_LOCK:
-        _OVERRIDES[model_id] = override
+        _OVERRIDES = MappingProxyType({**_OVERRIDES, model_id: override})
 
 
 def unregister_capability_override(model_id: str) -> None:
@@ -398,8 +404,9 @@ def unregister_capability_override(model_id: str) -> None:
     :param model_id: public identifier for the model whose override should be cleared
     :ptype model_id: str
     """
+    global _OVERRIDES
     with _REGISTRY_LOCK:
-        _OVERRIDES.pop(model_id, None)
+        _OVERRIDES = MappingProxyType({held: was for held, was in _OVERRIDES.items() if held != model_id})
 
 
 def clear_capability_overrides() -> None:
@@ -410,8 +417,9 @@ def clear_capability_overrides() -> None:
     owns. process-wide and irreversible -- callers that share the
     process with other consumers should NOT use this in production.
     """
+    global _OVERRIDES
     with _REGISTRY_LOCK:
-        _OVERRIDES.clear()
+        _OVERRIDES = MappingProxyType({})
 
 
 def get_capability_override(model_id: str) -> CapabilityOverride | None:
@@ -455,8 +463,9 @@ def register_published_capabilities(model_id: str, facts: CapabilityOverride) ->
     :param facts: the published facts; only explicitly-set fields apply
     :ptype facts: CapabilityOverride
     """
+    global _PUBLISHED
     with _REGISTRY_LOCK:
-        _PUBLISHED[model_id] = facts
+        _PUBLISHED = MappingProxyType({**_PUBLISHED, model_id: facts})
 
 
 def unregister_published_capabilities(model_id: str) -> None:
@@ -468,8 +477,9 @@ def unregister_published_capabilities(model_id: str) -> None:
     :param model_id: public identifier for the model
     :ptype model_id: str
     """
+    global _PUBLISHED
     with _REGISTRY_LOCK:
-        _PUBLISHED.pop(model_id, None)
+        _PUBLISHED = MappingProxyType({held: was for held, was in _PUBLISHED.items() if held != model_id})
 
 
 def get_published_capabilities(model_id: str) -> CapabilityOverride | None:

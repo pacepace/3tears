@@ -72,7 +72,6 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -450,7 +449,10 @@ class PipeStream:
         # STREAM, so two senders' chunks arriving validly sequenced but interleaved is still a
         # corrupted payload. The lock therefore spans a whole send rather than one frame.
         self._send_lock = asyncio.Lock()
-        self._unacked: deque[tuple[int, int]] = deque()
+        # unacked frames wait in order in an asyncio.Queue (the approved hand-off); the oldest, taken off to
+        # compare with an ack, waits in _unacked_head until acked
+        self._unacked: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+        self._unacked_head: tuple[int, int] | None = None
         self._unacked_bytes = 0
         self._credit = asyncio.Event()
         self._credit.set()
@@ -720,7 +722,7 @@ class PipeStream:
         """publish a frame that consumes a data sequence and owes an ack."""
         self._send_seq += 1
         frame = encode_frame(tag, self._send_seq, body)
-        self._unacked.append((self._send_seq, len(body)))
+        self._unacked.put_nowait((self._send_seq, len(body)))
         self._unacked_bytes += len(body)
         await self._nats.publish_raw(subject=self._outbound, payload=frame)
 
@@ -824,8 +826,13 @@ class PipeStream:
 
     def _apply_credit(self, acked_through: int) -> None:
         """release everything the peer has now consumed, and unblock a sender."""
-        while self._unacked and self._unacked[0][0] <= acked_through:
-            _, size = self._unacked.popleft()
+        while self._unacked_head is not None or not self._unacked.empty():
+            if self._unacked_head is None:
+                self._unacked_head = self._unacked.get_nowait()
+            seq, size = self._unacked_head
+            if seq > acked_through:
+                break
+            self._unacked_head = None
             self._unacked_bytes -= size
         if self._unacked_bytes < self._endpoint.credit:
             self._credit.set()

@@ -38,6 +38,8 @@ declaration, which is every caller written before answers existed.
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Final, Literal, overload
 
 from pydantic import model_validator
@@ -195,8 +197,9 @@ class ProviderCapabilities(ContractModel):
 
 _REGISTRY_LOCK = threading.Lock()
 #: one registry, held as one map per kind so each answers in its own type.
-_SEARCH_REGISTRY: dict[str, ProviderCapabilities] = {}
-_ANSWER_REGISTRY: dict[str, AnswerCapabilities] = {}
+#: read-only maps, each replaced whole under the lock, never changed in place
+_SEARCH_REGISTRY: Mapping[str, ProviderCapabilities] = MappingProxyType({})
+_ANSWER_REGISTRY: Mapping[str, AnswerCapabilities] = MappingProxyType({})
 
 
 def register_capabilities(capabilities: ProviderCapabilities | AnswerCapabilities) -> None:
@@ -211,11 +214,12 @@ def register_capabilities(capabilities: ProviderCapabilities | AnswerCapabilitie
     :param capabilities: the provider's declaration, of either kind
     :ptype capabilities: ProviderCapabilities | AnswerCapabilities
     """
+    global _ANSWER_REGISTRY, _SEARCH_REGISTRY
     with _REGISTRY_LOCK:
         if capabilities.kind == "answer":
-            _ANSWER_REGISTRY[capabilities.provider] = capabilities
+            _ANSWER_REGISTRY = MappingProxyType({**_ANSWER_REGISTRY, capabilities.provider: capabilities})
         else:
-            _SEARCH_REGISTRY[capabilities.provider] = capabilities
+            _SEARCH_REGISTRY = MappingProxyType({**_SEARCH_REGISTRY, capabilities.provider: capabilities})
 
 
 @overload

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol, get_args, get_origin, runtime_checkable
 from uuid import UUID
 
@@ -336,7 +337,8 @@ class FormatHandler(Protocol):
         ...
 
 
-_HANDLERS: dict[str, FormatHandler] = {}
+#: extension -> handler; replaced whole by :func:`register_handler`, never changed in place
+_HANDLERS: Mapping[str, FormatHandler] = MappingProxyType({})
 
 
 def register_handler(handler: FormatHandler) -> None:
@@ -350,8 +352,8 @@ def register_handler(handler: FormatHandler) -> None:
     :return: None
     :rtype: None
     """
-    for ext in handler.extensions:
-        _HANDLERS[ext.lstrip(".").lower()] = handler
+    global _HANDLERS
+    _HANDLERS = MappingProxyType({**_HANDLERS, **{ext.lstrip(".").lower(): handler for ext in handler.extensions}})
 
 
 def handler_for(path: str | Path) -> FormatHandler:

@@ -72,10 +72,10 @@ class RecordedFetchTransport(FetchTransport):  # parity-with: threetears.search.
         self._pages = dict(pages)
         self._egress_name = egress_name
         #: every fetch, in order: ``{"url", "max_bytes", "allowed_content_types", "timeout_seconds",
-        #: "headers"}``.
-        self.calls: list[dict[str, object]] = []
-        #: the URLs fetched that had no recording, each answered 404.
-        self.unrecorded: list[str] = []
+        #: "headers"}``. Replaced whole, never changed in place.
+        self.calls: tuple[dict[str, object], ...] = ()
+        #: the URLs fetched that had no recording, each answered 404 (replaced whole).
+        self.unrecorded: tuple[str, ...] = ()
 
     @property
     def egress_name(self) -> str:
@@ -124,18 +124,19 @@ class RecordedFetchTransport(FetchTransport):  # parity-with: threetears.search.
         :raises LocalCapExceeded: past the cap, or outside the gate
         """
         del method
-        self.calls.append(
+        self.calls = (
+            *self.calls,
             {
                 "url": url,
                 "max_bytes": max_bytes,
                 "allowed_content_types": allowed_content_types,
                 "timeout_seconds": timeout_seconds,
                 "headers": dict(headers or {}),
-            }
+            },
         )
         page = self._pages.get(url)
         if page is None:
-            self.unrecorded.append(url)
+            self.unrecorded = (*self.unrecorded, url)
             page = RecordedPage(status_code=404, body=b"", content_type="text/plain")
         if page.failure is not None:
             raise page.failure

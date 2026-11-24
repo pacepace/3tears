@@ -118,7 +118,7 @@ from nats.nuid import NUID
 from nats.protocol.command import PUB_OP
 
 from threetears.nats._asyncio_send_path import TRANSPORT_NAME, send_path_gaps
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -212,7 +212,7 @@ _SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSoc
 _BOUNDED: Final[weakref.WeakSet[object]] = weakref.WeakSet()
 
 #: the transport classes a large publish has found unbounded (logged once each)
-_UNBOUNDED_KINDS: Final[set[type]] = set()
+_UNBOUNDED_KINDS: BuildOnce[type, bool] = BuildOnce()
 
 _SEND_PATH_GAPS: Final[list[str]] = send_path_gaps()
 if _SEND_PATH_GAPS:
@@ -416,6 +416,23 @@ def _socket_transport(connection: Client) -> asyncio.BaseTransport | None:
     return writer.transport
 
 
+def _warn_unbounded(kind: type) -> bool:
+    """WARN, once per transport class (through :data:`_UNBOUNDED_KINDS`), that its sends are not bounded.
+
+    :param kind: the transport class
+    :ptype kind: type
+    :return: True, the mark that it was said
+    :rtype: bool
+    """
+    log.warning(
+        "a large NATS publish on a %s.%s transport is not bounded per send (not asyncio's socket "
+        "transport): the kernel's copy of each send holds the event loop",
+        kind.__module__,
+        kind.__qualname__,
+    )
+    return True
+
+
 def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND_BYTES) -> bool:
     """make every ``sendmsg`` on ``transport`` offer at most ``bound`` bytes, when it is asyncio's socket one.
 
@@ -436,14 +453,8 @@ def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND
         return True
     if not isinstance(transport, _SOCKET_TRANSPORT):
         kind = type(transport)
-        if kind not in _UNBOUNDED_KINDS and transport.get_extra_info("sslcontext") is None:
-            _UNBOUNDED_KINDS.add(kind)
-            log.warning(
-                "a large NATS publish on a %s.%s transport is not bounded per send (not asyncio's socket "
-                "transport): the kernel's copy of each send holds the event loop",
-                kind.__module__,
-                kind.__qualname__,
-            )
+        if transport.get_extra_info("sslcontext") is None:
+            _UNBOUNDED_KINDS.get(kind, lambda: _warn_unbounded(kind))
         return False
     socket_transport = cast("_SendmsgTransport", transport)
     socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer, bound)
@@ -664,16 +675,17 @@ class _InertLoop:
     The surface check builds one transport over a socket pair without an event loop, reads its attributes, and
     closes it; nothing is scheduled and no socket is left open.
 
-    :ivar _transports: asyncio's fd-to-transport map, which the transport registers itself in
     """
 
-    def __init__(self) -> None:
-        """an empty transport map.
+    @property
+    def _transports(self) -> dict[int, object]:
+        """asyncio's fd-to-transport map, which a transport registers itself in: a fresh empty one each time, so the
+        registration lands nowhere, as :meth:`_add_reader` registers nothing.
 
-        :return: nothing
-        :rtype: None
+        :return: an empty map nothing keeps
+        :rtype: dict[int, object]
         """
-        self._transports: dict[int, object] = {}
+        return {}
 
     def call_soon(self, callback: Callable[..., object], *args: object) -> None:
         """run ``callback`` now.
@@ -851,8 +863,9 @@ def send_bound_gaps(*, bounded: bool = True) -> list[str]:
             transport.writelines([memoryview(bytes(payload))])
             sent = payload - sum(len(view) for view in buffer)
         finally:
-            buffer.clear()
-            transport.close()
+            # asyncio's own abort drops the unsent rest and closes, so the proof never changes the transport's buffer
+            # (a deque other code reads) in place itself
+            transport.abort()
     finally:
         near.close()
         far.close()

@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import chain
 from typing import Any, Final
 
 from pydantic import BaseModel
+
+from threetears.core.frozen_state import with_chunk
 
 __all__ = [
     "DEFAULT_PAGE_ROWS",
@@ -104,6 +107,7 @@ class RowBudget:
     """
 
     __slots__ = (
+        "_count",
         "_crossing",
         "_encode",
         "_encoded",
@@ -119,8 +123,12 @@ class RowBudget:
         self._max_bytes = max_bytes
         self._encode = encode
         self._max_rows = max_rows
-        self._rows: list[dict[str, Any]] = []
-        self._encoded: list[bytes] = []
+        # the rows kept and their encodings: append-only chunk logs replaced whole (frozen_state.with_chunk), never
+        # changed in place, so a reader (the awaiting coroutine, the worker thread a page is encoded in) never sees
+        # one change under it
+        self._rows: tuple[tuple[dict[str, Any], ...], ...] = ()
+        self._encoded: tuple[tuple[bytes, ...], ...] = ()
+        self._count = 0
         self._size = 2
         self._truncated = False
         # the mean encoded row of the last page kept (its comma included): the rows next are most like these
@@ -146,7 +154,7 @@ class RowBudget:
         """
         wanted = page_rows
         self._crossing = False
-        if self._rows:
+        if self._count:
             expected = int(max(0, self._max_bytes - self._size) / self._page_mean)
             if expected > page_rows:
                 # rows grow as a result goes on (wider keys, later values): a twentieth to spare, and half a page
@@ -155,7 +163,7 @@ class RowBudget:
                 wanted = expected + 1
                 self._crossing = True
         if self._max_rows is not None:
-            wanted = min(wanted, self._max_rows + 1 - len(self._rows))
+            wanted = min(wanted, self._max_rows + 1 - self._count)
         return max(1, wanted)
 
     def take(self, page: Iterable[dict[str, Any]]) -> bool:
@@ -169,8 +177,8 @@ class RowBudget:
         rows = list(page)
         if self._truncated:
             rows = []
-        elif self._max_rows is not None and len(self._rows) + len(rows) > self._max_rows:
-            rows = rows[: self._max_rows - len(self._rows)]
+        elif self._max_rows is not None and self._count + len(rows) > self._max_rows:
+            rows = rows[: self._max_rows - self._count]
             self._truncated = True
         if rows and self._crossing:
             # sized to cross: its whole encode would be thrown away, so its rows are measured one at a time from the
@@ -180,8 +188,8 @@ class RowBudget:
                 self._truncated = True
         elif rows:
             inner = self._encode(rows)[1:-1]
-            grown = self._size + len(inner) + (1 if self._rows else 0)
-            if grown <= self._max_bytes or (not self._rows and len(rows) == 1):
+            grown = self._size + len(inner) + (1 if self._count else 0)
+            if grown <= self._max_bytes or (not self._count and len(rows) == 1):
                 self._keep(rows, inner, grown)
             else:
                 self._truncated = True
@@ -200,8 +208,9 @@ class RowBudget:
         :return: nothing
         :rtype: None
         """
-        self._rows.extend(rows)
-        self._encoded.append(inner)
+        self._rows = with_chunk(self._rows, tuple(rows))
+        self._encoded = with_chunk(self._encoded, (inner,))
+        self._count += len(rows)
         self._page_mean = (grown - self._size) / len(rows)
         self._size = grown
 
@@ -217,8 +226,8 @@ class RowBudget:
         kept = 0
         for row in rows:
             inner = self._encode([row])[1:-1]
-            grown = self._size + len(inner) + (1 if self._rows else 0)
-            if self._rows and grown > self._max_bytes:
+            grown = self._size + len(inner) + (1 if self._count else 0)
+            if self._count and grown > self._max_bytes:
                 break
             self._keep([row], inner, grown)
             kept += 1
@@ -233,7 +242,12 @@ class RowBudget:
         :return: the kept rows, their encodings, whether rows were left, and the array's bytes
         :rtype: BoundedRows
         """
-        return BoundedRows(rows=self._rows, encoded=self._encoded, truncated=self._truncated, size=self._size)
+        return BoundedRows(
+            rows=list(chain.from_iterable(self._rows)),
+            encoded=list(chain.from_iterable(self._encoded)),
+            truncated=self._truncated,
+            size=self._size,
+        )
 
 
 def start_budget(

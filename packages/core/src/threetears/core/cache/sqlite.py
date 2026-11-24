@@ -52,11 +52,11 @@ from threetears.core.cache import l1_file
 from threetears.core.cache.l1_pages import measure as measure_pages
 from threetears.core.cache.l1_lru import (
     L1_EVICTION_INFO,
-    POLICY_EPOCH,
     L1Ledger,
     TableCounters,
     declare_l1_table,
     ledger,
+    policy_epoch,
     row_bytes,
 )
 from threetears.core.cache.base import (
@@ -311,12 +311,12 @@ class SQLiteBackend:
         :return: their names
         :rtype: frozenset[str]
         """
-        if self._policy_epoch != POLICY_EPOCH[0]:
+        if self._policy_epoch != policy_epoch():
             current = policies_declared(Tier.L1)
             self._evictable_tables = frozenset(
                 table for table in self._policies if (current.get(table) or self._policies[table]).evictable
             )
-            self._policy_epoch = POLICY_EPOCH[0]
+            self._policy_epoch = policy_epoch()
         return self._evictable_tables
 
     def table_policies(self) -> Mapping[str, Declared]:

@@ -338,6 +338,8 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "3tears-interfaces",
             "shapely",
             "mapbox-vector-tile",
+            "pyarrow",
+            "numpy",
         ),
     ),
     (

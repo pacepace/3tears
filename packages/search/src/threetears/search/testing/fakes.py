@@ -184,10 +184,11 @@ class FakeBudgetPort(BudgetPort):  # parity-with: threetears.search.contracts.Bu
         :ptype decision: BudgetDecision | None
         """
         self.decision = decision if decision is not None else BudgetDecision(allowed=True)
-        #: every ``(estimate, scope_tags)`` pair passed to :meth:`check`, in order.
-        self.checks: list[tuple[Spend, tuple[str, ...]]] = []
-        #: every ``(spend, scope_tags)`` pair passed to :meth:`record`, in order.
-        self.records: list[tuple[Spend, tuple[str, ...]]] = []
+        #: every ``(estimate, scope_tags)`` pair passed to :meth:`check`, in order (replaced whole, never changed in
+        #: place).
+        self.checks: tuple[tuple[Spend, tuple[str, ...]], ...] = ()
+        #: every ``(spend, scope_tags)`` pair passed to :meth:`record`, in order (replaced whole).
+        self.records: tuple[tuple[Spend, tuple[str, ...]], ...] = ()
 
     async def check(self, estimate: Spend, *, scope_tags: tuple[str, ...]) -> BudgetDecision:
         """Record the call and return the configured decision.
@@ -199,7 +200,7 @@ class FakeBudgetPort(BudgetPort):  # parity-with: threetears.search.contracts.Bu
         :return: the decision this fake was constructed with
         :rtype: BudgetDecision
         """
-        self.checks.append((estimate, scope_tags))
+        self.checks = (*self.checks, (estimate, scope_tags))
         return self.decision
 
     async def record(self, spend: Spend, *, scope_tags: tuple[str, ...]) -> None:
@@ -217,7 +218,7 @@ class FakeBudgetPort(BudgetPort):  # parity-with: threetears.search.contracts.Bu
         :return: nothing
         :rtype: None
         """
-        self.records.append((spend, scope_tags))
+        self.records = (*self.records, (spend, scope_tags))
 
 
 class FakeRateLimiterPort(RateLimiterPort):  # parity-with: threetears.search.contracts.RateLimiterPort
@@ -243,8 +244,8 @@ class FakeRateLimiterPort(RateLimiterPort):  # parity-with: threetears.search.co
         #: every acquisition asked for, as ``(provider_instance, egress, tokens,
         #: max_wait_seconds)``, in order (D8's key is the pair; the last two are
         #: kept too, since a weighted call asks for more than one token -- SR-E4's
-        #: pacing analogue).
-        self.acquisitions: list[tuple[str, str, float, float]] = []
+        #: pacing analogue). Replaced whole, never changed in place.
+        self.acquisitions: tuple[tuple[str, str, float, float], ...] = ()
 
     async def acquire(
         self,
@@ -267,5 +268,5 @@ class FakeRateLimiterPort(RateLimiterPort):  # parity-with: threetears.search.co
         :return: the decision this fake was constructed with
         :rtype: RateLimitDecision
         """
-        self.acquisitions.append((provider_instance, egress, tokens, max_wait_seconds))
+        self.acquisitions = (*self.acquisitions, (provider_instance, egress, tokens, max_wait_seconds))
         return self.decision
