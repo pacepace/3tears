@@ -13,11 +13,12 @@ have gone stale the first time someone added an import. The shared domain keys o
 ``(file, class_name, attr)`` now, which is what the copy always did and what survives a
 refactor that does not move the attribute.
 
-**ALLOWLIST is forever; KNOWN_VIOLATIONS is a debt list.** The first is state that
-genuinely cannot live in a backend -- live ``asyncio`` handles, the collection
-infrastructure itself. The second is state that should migrate and has not. Both are
-audited: an entry that stops matching a real violation is reported as stale, so the lists
-cannot quietly outlive the code they describe.
+**ALLOWLIST is forever, and there is no debt list.** The allowlist is state that genuinely
+cannot live in a backend -- live ``asyncio`` handles, the collection infrastructure itself --
+audited: an entry that stops matching a real violation is reported as stale. Nothing is
+tracked as an acknowledged violation (Pace, 2026-11-23: redesign it, never waive it); the
+last debts, the L1 fence's per-key records and the write buffer's dict and claim set, were
+redesigned as immutable packed batches and the lists deleted.
 """
 
 from __future__ import annotations
@@ -111,18 +112,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/base.py",
-        class_name="_L1Fence",
-        attr_name="_keys",
-        rationale=(
-            "the reads and writes of each key in flight in THIS process, ordering this process's "
-            "own L1 writes against each other: L1 is per-process, so the state ordering writes to "
-            "it is too, and a shared or durable copy would order writes to a cache no other pod "
-            "has. the L2 revision is the cross-pod half of the same fence. an entry lives only "
-            "while an operation on its key is in flight and is dropped when the last one ends"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py",
         class_name="AnalyzeMediaTool",
         attr_name="_analyzers",
@@ -163,66 +152,26 @@ _ALLOWLIST = (
     ),
 )
 
-#: Tracked for migration: real violations that are acknowledged, not accepted.
-_KNOWN_VIOLATIONS = (
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/flush.py",
-        class_name="WriteBuffer",
-        attr_name="_buf",
-        rationale=("pending write buffer in raw dict, migrate to SQLiteBackend L1"),
-    ),
-)
-
 #: Where an object's dict or set state is never changed in place after ``__init__``: its owner assigns the next
 #: immutable value whole (threetears.core.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,
 #: 2026-11-23: "small, owner-only, under the pass lock" is no exception).
 _IMMUTABLE_ROOTS = (_REPO_ROOT / "packages/core/src/threetears/core/collections",)
 
-#: Changes in place under _IMMUTABLE_ROOTS that are per key, where rebuilding the whole value at each change costs the
-#: keys in flight: each needs a redesign agreed first, named here. A debt list, audited for staleness.
-_IMMUTABLE_KNOWN_VIOLATIONS = (
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/base.py",
-        class_name="_L1Fence",
-        attr_name="_keys",
-        rationale=(
-            "one mutable activity record a key in flight, shared by identity with every ticket on the key; immutable it "
-            "needs a fence-wide sequence the tickets compare against, a redesign of the L1 fence to agree first"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/flush.py",
-        class_name="WriteBuffer",
-        attr_name="_buf",
-        rationale="one pending write a key: rebuilt whole a write it is quadratic; migrates to SQLiteBackend L1",
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/flush.py",
-        class_name="WriteBuffer",
-        attr_name="_in_flight",
-        rationale="the keys a drain claimed, one a pending write: migrates with _buf to SQLiteBackend L1",
-    ),
-)
-
 _CONFIG = DictStateConfig(
     repo_root=_REPO_ROOT,
     src_roots=_SRC_ROOTS,
     allowlist=_ALLOWLIST,
-    known_violations=_KNOWN_VIOLATIONS,
     immutable_roots=_IMMUTABLE_ROOTS,
-    immutable_known_violations=_IMMUTABLE_KNOWN_VIOLATIONS,
 )
 
 
 class TestDictStateDetection:
     def test_no_unexplained_raw_dict_state(self) -> None:
-        """Every raw-dict assignment in an ``__init__`` is either allowlisted or a known
-        violation. A new one fails here rather than becoming a pod-local cache nobody meant
+        """Every raw-dict assignment in an ``__init__`` is allowlisted. A new one fails here rather than becoming a pod-local cache nobody meant
         to add."""
         run_dict_state_enforcement(_CONFIG, walker="detect")
 
     def test_no_stale_allowlist_entries(self) -> None:
         """Guard the guard: an entry that no longer matches a real violation is reported, so
-        the lists cannot outlive the code they describe. This is what stops KNOWN_VIOLATIONS
-        from silently becoming a list of things that were fixed years ago."""
+        the allowlist cannot outlive the code it describes."""
         run_dict_state_enforcement(_CONFIG, walker="allowlist_integrity")

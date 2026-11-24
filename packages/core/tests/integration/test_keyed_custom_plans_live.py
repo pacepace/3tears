@@ -41,11 +41,13 @@ _FACTOR = 2.0
 def _spread(count: int) -> KeyBatch:
     """``count`` composite keys spread evenly over the whole table."""
     step = _STATES * _GEOS * _IDS // count
+    spots = range(0, step * count, step)
     return KeyBatch(
         ("state", "geo", "id"),
         [
-            (f"S{(n // (_GEOS * _IDS)) + 1:02d}", f"{((n // _IDS) % _GEOS) + 1:03d}", (n % _IDS) + 1)
-            for n in range(0, step * count, step)
+            [f"S{(n // (_GEOS * _IDS)) + 1:02d}" for n in spots],
+            [f"{((n // _IDS) % _GEOS) + 1:03d}" for n in spots],
+            [(n % _IDS) + 1 for n in spots],
         ],
         _CASTS,
     )
@@ -53,7 +55,15 @@ def _spread(count: int) -> KeyBatch:
 
 #: a tight-bounded read: one state, 20 geographies, every id (600 keys, each column's distinct values naming exactly
 #: them, so each column is bound to its distinct values beside the keys)
-_TIGHT = KeyBatch(("state", "geo", "id"), [("S07", f"{g:03d}", i) for g in range(41, 61) for i in range(1, 31)], _CASTS)
+_TIGHT = KeyBatch(
+    ("state", "geo", "id"),
+    [
+        ["S07"] * 600,
+        [f"{g:03d}" for g in range(41, 61) for _ in range(1, 31)],
+        [i for _ in range(41, 61) for i in range(1, 31)],
+    ],
+    _CASTS,
+)
 
 
 @pytest.fixture
@@ -94,9 +104,9 @@ async def _runs(conn: asyncpg.Connection, keys: KeyBatch) -> list[float]:
     seconds: list[float] = []
     for _ in range(_RUNS):
         started = time.perf_counter()
-        rows = await read_keyed(conn, "kc", keys=keys, columns=["v"], batch=len(keys.values), records=True)
+        rows = await read_keyed(conn, "kc", keys=keys, columns=["v"], batch=len(keys), records=True)
         seconds.append(time.perf_counter() - started)
-        assert len(rows) == len(keys.values)
+        assert len(rows) == len(keys)
     return seconds
 
 
