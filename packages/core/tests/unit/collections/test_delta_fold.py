@@ -30,9 +30,9 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     TableDelta,
     read_volume_file,
     apply_delta_row,
-    read_delta_file,
     write_delta_file,
 )
+from threetears.core.testing.delta_files import read_delta_file
 from threetears.core.collections import delta_files, delta_fold  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
@@ -1630,4 +1630,99 @@ async def test_a_recovery_builds_its_delta_in_a_worker_and_writes_l3_s_pages_bes
     assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
     assert not any((tmp_path / ".fulls" / "rebuild").rglob("*.arrow")), "the recovery's own files are removed"
     assert not any((tmp_path / file).exists() for file in leftovers)
+    await folds.close()
+
+
+# --- one owner of the fold's bookkeeping (decision 37): callers post, the round holder applies in order ---------------
+
+
+class _CountingWorkers:
+    """the fold's worker processes, keeping the files each fold round was handed, in order (a seam the fold takes)."""
+
+    def __init__(self, inner: ProcessWorkers) -> None:
+        self.inner = inner
+        self.folded: list[str] = []
+
+    async def run(self, job: Any, *args: Any, inline: bool = False) -> Any:
+        if job is delta_fold.fold_round:
+            self.folded.extend(file for _, file, _ in args[3])
+        return await self.inner.run(job, *args, inline=inline)
+
+    async def close(self, *, wait: bool = True) -> None:
+        await self.inner.close(wait=wait)
+
+
+async def test_a_lost_file_asked_during_a_rebuild_s_read_is_recovered_after_the_rebuild(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a recovery asked (DeltaFolds.recover_table, decision 29) after a rebuild of the same table read its
+    generation is dropped when the rebuild publishes: the rebuild's rows are current only to the generation it read,
+    which may be older than the lost file's epoch, so a copy waiting for that epoch would wait forever."""
+    schema = _votes_schema()
+    l3 = _KeyedL3(_votes("TX", range(5), 3))
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    asked: list[asyncio.Task[None]] = []
+
+    class _AskedDuringTheRead(_Generations):
+        async def current(self, table_name: str) -> str:
+            token = await super().current(table_name)
+            if not asked:
+                # a copy's ask lands once the rebuild has read its generation, while it reads the rows
+                asked.append(
+                    asyncio.get_running_loop().create_task(
+                        folds.recover_table("votes", epoch="inc:9", file="votes/lost.arrow")
+                    )
+                )
+            return token
+
+    before, rebuilt = _recoveries("file_lost"), _rebuilds("cold_start")
+    await folds.start(l3, _AskedDuringTheRead({"votes": "inc:7"}), changes=_Log(), version=5)
+    await folds.wait()
+    assert asked and asked[0].done()
+    assert _rebuilds("cold_start") == rebuilt + 1, "no full: the table is rebuilt from L3 first"
+    assert _recoveries("file_lost") == before + 1, "the ask that came during the rebuild is recovered after it"
+    await folds.close()
+
+
+async def test_a_commit_told_while_a_restarted_writer_relearns_is_folded_once_in_commit_order(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a commit told (DeltaFolds.committed) while a restarted writer walks its epoch log is queued twice or
+    ahead of the older deltas the walk re-learns: a fold of it before them would apply an older write over a newer one,
+    and twice its bytes would fold early."""
+    schema = _votes_schema()
+    _first_full(tmp_path, "votes")
+    counting = _CountingWorkers(workers)
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=counting)  # type: ignore[arg-type]
+    writer = _Writer(tmp_path, schema, folds)
+    log = _Log()
+    for step in range(4):
+        file = writer.save(_votes("TX", range(step * 3, step * 3 + 3), step))
+        log.append("votes", f"inc:{step + 1}", file)
+    walking, release = asyncio.Event(), asyncio.Event()
+
+    class _SlowLog(_Log):
+        async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+            walking.set()
+            await release.wait()
+            return await walk_by_count(self, table_name, after, upto)
+
+    slow = _SlowLog()
+    slow.records = log.records
+    started = asyncio.get_running_loop().create_task(
+        folds.start(
+            _L3({"votes": []}, {"votes": ("state", "geo_id")}),
+            _Generations({"votes": "inc:4"}),
+            changes=slow,
+            version=6,
+        )
+    )
+    await walking.wait()
+    # the newest commit lands and is told while the walk that also names it runs
+    folds.committed({"votes": writer.files[3]}, {"votes": "inc:4"}, version=6)
+    await asyncio.sleep(0)
+    release.set()
+    await started
+    await folds.wait()
+    assert counting.folded == writer.files, "each delta folded once, in commit order"
     await folds.close()

@@ -36,12 +36,12 @@ from threetears.core.collections.delta_files import (  # noqa: E402
     TableDelta,
     read_volume_file,
     apply_delta_row,
-    read_delta_file,
     read_delta_file_keys,
     OWN_DELTA_SAVES,
     sweep_orphan_delta_files,
     write_delta_file,
 )
+from threetears.core.testing.delta_files import read_delta_file
 from threetears.core.collections.registry import CollectionRegistry  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,

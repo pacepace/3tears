@@ -36,12 +36,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from threetears.nats import DELTA_FILES_FORWARD_FAMILY
@@ -55,13 +56,16 @@ from threetears.core.collections.copy_follower import FollowedTable, typed_text
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
     TableDelta,
+    _first_written,
     _key_texts,
     _text_column,
     delta_files_root,
+    joined_key_texts,
+    key_text_table,
     read_delta_table,
     write_delta_file,
 )
-from threetears.core.collections.epoch_change import key_text
+from threetears.core.collections.delta_fold import _arrow_key_values, _typed_texts
 from threetears.core.collections.schema_backed import rail_arrow_types, sql_cast
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
@@ -241,8 +245,10 @@ class DeltaRecreator:
         self._recovery = recovery
         self._page_size = page_size
         self._root = root
-        #: each file being recreated, onto its one recreation: a request for it meanwhile waits for that one
-        self._flight: dict[str, asyncio.Task[_Outcome]] = {}
+        #: each file being recreated, onto its one recreation: a request for it meanwhile waits for that one. A
+        #: read-only snapshot replaced whole on the loop: a request adds its file's flight, and the flight removes
+        #: itself as it ends (:meth:`_recreate_once`), so each entry has one holder
+        self._flight: Mapping[str, asyncio.Task[_Outcome]] = MappingProxyType({})
 
     async def answer(self, payload: bytes) -> bytes:
         """the forward handler: a request's body in, the outcome's word out.
@@ -275,17 +281,11 @@ class DeltaRecreator:
         """
         request = _Request(table=table, file=file, epoch=epoch)
         flight = self._flight.get(request.file)
-        if flight is None:
+        if flight is None or flight.done():
             flight = asyncio.get_running_loop().create_task(
                 self._recreate_once(request), name=f"recreate delta file {request.file}"
             )
-            self._flight[request.file] = flight
-
-            def landed(done: asyncio.Task[_Outcome]) -> None:
-                if self._flight.get(request.file) is done:
-                    del self._flight[request.file]
-
-            flight.add_done_callback(landed)
+            self._flight = MappingProxyType({**self._flight, request.file: flight})
         # shielded: a copy whose request is cancelled (its timeout) does not cancel the recreation the others wait for
         return (await asyncio.shield(flight)).value
 
@@ -299,6 +299,12 @@ class DeltaRecreator:
             # counted, and raised on to every copy waiting for it (framed back by serve_owner, logged there)
             _RECREATIONS.labels(table=request.table, outcome="failed").inc()
             raise
+        finally:
+            # the flight lets its own entry go as it ends: a request after it starts a recreation of its own
+            if self._flight.get(request.file) is asyncio.current_task():
+                self._flight = MappingProxyType(
+                    {file: flight for file, flight in self._flight.items() if file != request.file}
+                )
         _RECREATIONS.labels(table=request.table, outcome=outcome.value).inc()
         return outcome
 
@@ -401,29 +407,53 @@ class DeltaRecreator:
             )
             async for page in pages:
                 delta.arrow(page, every)
-        keys = list(dict.fromkeys(tuple(row.ids) for row in record.rows))
+        # the record's keys (their text, ``key_text``'s spelling) as Arrow key columns, each once in the order named;
+        # what L3 answers is matched against them in Arrow, never a key held as a Python object
+        keys = _first_written(_record_keys(record, table.key), table.key) if record.rows else None
+        if keys is None or not keys.num_rows:
+            return delta, 0
         casts = tuple(table.key_cast(column) for column in table.key)
-        found: set[tuple[str, ...]] = set()
-        for start in range(0, len(keys), self._page_size):
-            chunk = keys[start : start + self._page_size]
+        found: list[Any] = []
+        for start in range(0, keys.num_rows, self._page_size):
+            chunk = keys.slice(start, self._page_size)
+            values = await asyncio.to_thread(_arrow_key_values, table.key, chunk)
             keyed = await read_keyed_arrow(
-                self._l3, table.name, keys=KeyBatch(tuple(table.key), chunk, casts), types=types, batch=len(chunk)
+                self._l3, table.name, keys=KeyBatch(tuple(table.key), values, casts), types=types, batch=chunk.num_rows
             )
-            _KEYS_READ.labels(table=table.name).inc(len(chunk))
+            _KEYS_READ.labels(table=table.name).inc(chunk.num_rows)
             for page in keyed:
                 if page.num_rows:
                     delta.arrow(page, every)
-                    found.update(
-                        zip(*(map(key_text, page.column(column).to_pylist()) for column in table.key), strict=True)
-                    )
-        gone = [key for key in keys if key not in found]
-        if gone:
-            delta.deletes([self._typed_key(table, key) for key in gone])
-        return delta, len(keys)
+                    found.append(joined_key_texts(key_text_table(page, table.key), table.key))
+        held = pa.concat_arrays(found) if found else pa.array([], pa.string())
+        gone = keys.filter(pc.invert(pc.is_in(joined_key_texts(keys, table.key), value_set=held)))
+        if gone.num_rows:
+            # a key L3 no longer holds: a delete marker, its values typed as the column binds them
+            delta.deletes(
+                pa.table(
+                    {
+                        column: _typed_texts(gone.column(column), table.kind(column), types[column])
+                        for column in table.key
+                    }
+                )
+            )
+        return delta, int(keys.num_rows)
 
-    @staticmethod
-    def _typed_key(table: FollowedTable, key: Sequence[str]) -> tuple[Any, ...]:
-        return tuple(typed_text(table.kind(column), text) for column, text in zip(table.key, key, strict=True))
+
+def _record_keys(record: EpochChange, key: Sequence[str]) -> Any:
+    """the keys a record names, as text key columns: one row a key, in the order named (the record holds each key's
+    text already, ``key_text``'s spelling).
+
+    :param record: the record
+    :ptype record: EpochChange
+    :param key: the key columns, in key order
+    :ptype key: Sequence[str]
+    :return: the keys
+    :rtype: pyarrow.Table
+    """
+    return pa.table(
+        {column: pa.array([row.ids[index] for row in record.rows], pa.string()) for index, column in enumerate(key)}
+    )
 
 
 def _keys_lacking(path: Path, table: FollowedTable, record: EpochChange) -> int:

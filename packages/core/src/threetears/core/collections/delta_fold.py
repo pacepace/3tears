@@ -311,6 +311,60 @@ _FULLS_PREFIX: Final = ".fulls/"
 _Share = tuple[str, str | None, str, str, int]
 
 
+# --- what callers post to the fold's owner (decision 37) ---------------------------------------------------------------
+#
+# The fold's bookkeeping (the queue, the shares not folded, the tables owed a rebuild or a recovery, the asks, the lost
+# files) has one owner: the round task, of which only one runs at a time. A caller (a commit told, the writer's start, a
+# reset, a copy's lost file) only posts one of these, frozen as it hands it, and starts the round if none runs; the
+# round applies every posted command in order before each step of its work (:meth:`DeltaFolds._drain`), and between
+# two of its awaits nothing else changes what it reads. So a rebuild that read a table's generation judges, once it
+# publishes, every ask that came after that read; and a restarted writer's walk of its log sees the queue as it was
+# when the walk began, with a commit told meanwhile applied after it, never twice and never ahead of the older deltas.
+
+
+@dataclass(frozen=True, slots=True)
+class _Told:
+    """a commit told (:meth:`DeltaFolds.committed`): its files and generations, copied when told."""
+
+    files: Mapping[str, str]
+    generations: Mapping[str, str]
+    version: int
+    in_flight_since: float | None
+    at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Started:
+    """the writer's start (:meth:`DeltaFolds.start`): how L3 and the log are read, its term, and the answer it awaits:
+    the tables published before the rounds it started end."""
+
+    reader: _Reader
+    changes: EpochChangeReader
+    notes: NotedKeysReader | None
+    version: int
+    answer: asyncio.Future[tuple[str, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class _Fresh:
+    """a table reset or recreated by a migration (:meth:`DeltaFolds.start_fresh`)."""
+
+    table: str
+    why: _FreshWhy
+
+
+@dataclass(frozen=True, slots=True)
+class _LostFile:
+    """a copy's lost file of a commit too big to list (:meth:`DeltaFolds.recover_table`, decision 29)."""
+
+    table: str
+    epoch: str
+    file: str
+
+
+_Command = _Told | _Started | _Fresh | _LostFile
+
+
 def _with[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
     """``mapping`` with ``key`` set to ``value``, as a new read-only snapshot: the fold's bookkeeping is never a dict
     another call changes in place.
@@ -420,7 +474,9 @@ class DeltaFolds:
     """the writing load's fold of the tables that opt in to delta files: call :meth:`committed` after each commit.
 
     One a writer, made once and kept: it remembers each state's deltas since its last fold. Only the writer holding
-    the write lease makes commits, so only it folds; no other lock.
+    the write lease makes commits, so only it folds; no other lock. That memory has one owner, the round running
+    (decision 37): :meth:`committed`, :meth:`start`, :meth:`start_fresh` and :meth:`recover_table` only post a command
+    and start the round if none runs; the round applies the commands in order before each step (:meth:`_drain`).
 
     :param root: the delta files' root (``delta_files_root()``), the shared volume's mount
     :ptype root: Path
@@ -480,6 +536,12 @@ class DeltaFolds:
         self.published = 0
         #: the tables a rebuild or a recovery published during the :meth:`start` running, in order; None outside one
         self._starting: tuple[str, ...] | None = None
+        #: the commands callers posted that the round has not applied yet, in order: the one thing a caller adds to
+        self._inbox: tuple[_Command, ...] = ()
+        #: the starts applied whose walk of the epoch log the round runs next (:meth:`_relearn`)
+        self._relearning: tuple[_Started, ...] = ()
+        #: the starts applied whose answer is the tables published once the rounds end
+        self._answers: tuple[asyncio.Future[tuple[str, ...]], ...] = ()
 
     @property
     def unfolded(self) -> frozenset[str]:
@@ -488,7 +550,24 @@ class DeltaFolds:
         :return: the files, under the root
         :rtype: frozenset[str]
         """
-        return frozenset(file for _, file, _ in self._queued) | frozenset(share[2] for share in self._pending)
+        posted = frozenset(
+            file
+            for command in self._inbox
+            if isinstance(command, _Told)
+            for table, file in command.files.items()
+            if table in self.tables
+        )
+        return self._told() | posted
+
+    def _told(self) -> frozenset[str]:
+        """the delta files the owner holds unfolded: queued, in the round running, or in shares not folded yet.
+
+        :return: the files, under the root
+        :rtype: frozenset[str]
+        """
+        return frozenset(file for _, file, _ in (*self._queued, *self._taken)) | frozenset(
+            share[2] for share in self._pending
+        )
 
     def _measure(self) -> None:
         """set the unfolded gauges of every folded table from the fold's bookkeeping: the files queued, in the round
@@ -537,8 +616,27 @@ class DeltaFolds:
         :return: nothing
         :rtype: None
         """
-        now = time.time()
-        for table, file in files.items():
+        self._post(
+            _Told(
+                files=MappingProxyType(dict(files)),
+                generations=MappingProxyType(dict(generations)),
+                version=version,
+                in_flight_since=in_flight_since,
+                at=time.time(),
+            )
+        )
+
+    def _apply_told(self, told: _Told) -> None:
+        """the owner's part of :meth:`committed`: queue the commit's files, each once (a restarted writer's walk of the
+        log may have queued it already, in its place among the older ones), and take its term.
+
+        :param told: the commit
+        :ptype told: _Told
+        :return: nothing
+        :rtype: None
+        """
+        held = self._told()
+        for table, file in told.files.items():
             if table not in self.tables:
                 if table not in self._unfolded_warned:
                     self._unfolded_warned = self._unfolded_warned | {table}
@@ -548,7 +646,7 @@ class DeltaFolds:
                         extra={"extra_data": {"table": table, "file": file}},
                     )
                 continue
-            token = generations.get(table)
+            token = told.generations.get(table)
             if token is None or split_generation_token(token) is None:
                 _ROUNDS.labels(outcome="no_generation").inc()
                 log.error(
@@ -556,12 +654,11 @@ class DeltaFolds:
                     extra={"extra_data": {"table": table, "file": file, "generation": token}},
                 )
                 continue
+            if file in held:
+                continue  # re-learned from the epoch log first, in commit order
             self._queued = (*self._queued, (table, file, token))
-        self._term = version if self._term is None else max(self._term, version)
-        self._before = now if in_flight_since is None else min(now, in_flight_since)
-        self._measure()
-        if self._queued:
-            self._run_rounds()
+        self._term = told.version if self._term is None else max(self._term, told.version)
+        self._before = told.at if told.in_flight_since is None else min(told.at, told.in_flight_since)
 
     async def start(
         self,
@@ -610,25 +707,41 @@ class DeltaFolds:
             raise ValueError("page_size must be at least one")
         for table in self.tables.values():
             _table_types(table)  # refuses a table it could not read
-        self._reader = _Reader(l3=l3, generations=generations, page_size=page_size)
-        self._changes = changes
-        self._notes = notes if notes is not None else l3 if isinstance(l3, NotedKeysReader) else None
         running = self._round is not None and not self._round.done()
         if running and self._round_term is not None and self._round_term < version:
             # this process's own round of an older holding: a newer writer wrote since, so it is stale (its publish
             # is refused or never read); a session's start never waits on it. Its files go back to the queue
             await self._cut("new_term")
-        self._term = version if self._term is None else max(self._term, version)
+        answer: asyncio.Future[tuple[str, ...]] = asyncio.get_running_loop().create_future()
+        self._post(
+            _Started(
+                reader=_Reader(l3=l3, generations=generations, page_size=page_size),
+                changes=changes,
+                notes=notes if notes is not None else l3 if isinstance(l3, NotedKeysReader) else None,
+                version=version,
+                answer=answer,
+            )
+        )
+        return await answer
+
+    def _apply_started(self, started: _Started) -> None:
+        """the owner's part of :meth:`start`: how L3 and the log are read, the term, a rebuild looked for, and the walk
+        of the log owed before the round's next fold.
+
+        :param started: the start
+        :ptype started: _Started
+        :return: nothing
+        :rtype: None
+        """
+        self._reader = started.reader
+        self._changes = started.changes
+        self._notes = started.notes
+        self._term = started.version if self._term is None else max(self._term, started.version)
         self._recheck = True
-        self._starting = ()
-        try:
-            await self.wait()
-            await self._relearn(generations, changes)
-            self._run_rounds()
-            await self.wait()
-        finally:
-            published, self._starting = self._starting or (), None
-        return published
+        if self._starting is None:
+            self._starting = ()
+        self._relearning = (*self._relearning, started)
+        self._answers = (*self._answers, started.answer)
 
     async def _relearn(self, generations: GenerationSource, changes: EpochChangeReader) -> None:
         """queue, as commits told, each delta file the epoch log names since each table's oldest part (module
@@ -645,7 +758,9 @@ class DeltaFolds:
         current = await asyncio.to_thread(current_full_manifest, self.root)
         if current is None or self._term is None or current.term > self._term:
             return  # no full to continue (the rebuild publishes one), or a later writer's
-        told = {file for _, file, _ in self._queued} | {share[2] for share in self._pending}
+        # the owner's own queue, which nothing else changes across the walk's awaits: a commit told meanwhile waits
+        # in the inbox and is applied after the walk, once (:meth:`_apply_told`)
+        told = self._told()
         for name in sorted(self.tables):
             entry = current.tables.get(name)
             if entry is None or name in self._fresh or name in self._recover:
@@ -724,7 +839,7 @@ class DeltaFolds:
             raise KeyError(table)
         if why not in ("reset", "schema_change"):
             raise ValueError(f"a table starts fresh after a reset or a schema change, not {why!r}")
-        self._owe_fresh(table, why)
+        self._post(_Fresh(table=table, why=why))
 
     def _owe_fresh(self, table: str, why: _FreshWhy, *, detail: str = "") -> None:
         """mark ``table`` owed a rebuild from L3 before any round folds it again, its old files dropped.
@@ -745,8 +860,6 @@ class DeltaFolds:
         self._fresh = _with(self._fresh, table, why)
         self._recheck = True
         self._marked = True
-        if self._reader is not None:
-            self._run_rounds()
 
     def _owe_recovery(self, table: str, why: _RecoveryWhy, *, detail: str) -> None:
         """mark ``table`` owed a recovery by key (decision 28) before any round folds it again: its epoch log was lost,
@@ -769,8 +882,6 @@ class DeltaFolds:
         self._recover = _with(self._recover, table, why)
         self._recheck = True
         self._marked = True
-        if self._reader is not None:
-            self._run_rounds()
 
     async def recover_table(self, table: str, *, epoch: str, file: str) -> None:
         """decision 29's hand-off (:class:`~threetears.core.collections.delta_recreate.LostDeltaRecovery`): a commit
@@ -797,14 +908,23 @@ class DeltaFolds:
         """
         if table not in self.tables:
             raise KeyError(table)
+        self._post(_LostFile(table=table, epoch=epoch, file=file))
+
+    def _apply_lost(self, lost: _LostFile) -> None:
+        """the owner's part of :meth:`recover_table`: the lost file noted, the ask counted, the recovery owed.
+
+        :param lost: the ask
+        :ptype lost: _LostFile
+        :return: nothing
+        :rtype: None
+        """
+        table, epoch, file = lost.table, lost.epoch, lost.file
         self._lost = _with(self._lost, table, _with(self._lost.get(table, MappingProxyType({})), file, epoch))
         self._asked = _with(self._asked, table, self._asked.get(table, 0) + 1)
         if self._recover.get(table) is not None:
             # owed already (perhaps failed on this very file): tried again now, without reading it
             self._recheck = True
             self._marked = True
-            if self._reader is not None:
-                self._run_rounds()
             return
         self._owe_recovery(
             table,
@@ -812,6 +932,39 @@ class DeltaFolds:
             detail=f"{file} of epoch {epoch}: a commit too big to list lost its file; what only it named is recovered "
             "from its record's notes, else its states",
         )
+
+    def _post(self, command: _Command) -> None:
+        """post a command to the owner and start the round if none runs: all a caller does (decision 37).
+
+        :param command: the command
+        :ptype command: _Command
+        :return: nothing
+        :rtype: None
+        """
+        self._inbox = (*self._inbox, command)
+        self._run_rounds()
+
+    def _drain(self) -> None:
+        """the owner applies every command posted since it last looked, in order. Never awaits, so nothing is posted
+        between two of its lines; the round calls it before each step of its work and before it ends.
+
+        :return: nothing
+        :rtype: None
+        """
+        commands, self._inbox = self._inbox, ()
+        for command in commands:
+            if isinstance(command, _Told):
+                self._apply_told(command)
+            elif isinstance(command, _Started):
+                self._apply_started(command)
+            elif isinstance(command, _Fresh):
+                # an ask of the table: a rebuild that read its generation before it is owed again (:meth:`_fresh_fulls`)
+                self._asked = _with(self._asked, command.table, self._asked.get(command.table, 0) + 1)
+                self._owe_fresh(command.table, command.why)
+            else:
+                self._apply_lost(command)
+        if commands:
+            self._measure()
 
     def _run_rounds(self) -> None:
         """start the background rounds unless they are running.
@@ -822,14 +975,14 @@ class DeltaFolds:
         if self._round is None or self._round.done():
             self._round = asyncio.get_running_loop().create_task(self._rounds(), name="delta folds")
 
-    def _kept_files(self, *, covered: set[str]) -> tuple[str, ...]:
+    def _kept_files(self, *, covered: frozenset[str]) -> tuple[str, ...]:
         """the delta files a rebuild never drops, whatever their time on the volume (whose clock is not the
         writer's): each this process saved whose commit has not ended, and each commit's file queued or held unfolded
         but those the rebuild covers (told before its generation was read), which a commit newer than the rebuild's
         generation is folded from after it.
 
         :param covered: the files told before the rebuild's generations were read
-        :ptype covered: set[str]
+        :ptype covered: frozenset[str]
         :return: their names under the root
         :rtype: tuple[str, ...]
         """
@@ -917,19 +1070,61 @@ class DeltaFolds:
         return True
 
     async def _rounds(self) -> None:
-        """run rounds while commits are queued, each after any rebuild owed; a failed round keeps its files and waits
-        for the next commit.
+        """the owner's turn (decision 37): run rounds while there is work, then answer each start applied. Cancelled
+        (:meth:`_cut`), it applies what was posted and cancels the starts' answers, as their wait was cut; ended by
+        an error, it hands the starts that error and raises it.
 
         :return: nothing
         :rtype: None
         """
+        try:
+            await self._owned_rounds()
+        except BaseException as error:
+            self._drain()
+            self._relearning = ()
+            answers, self._answers = self._answers, ()
+            for answer in answers:
+                if answer.done():
+                    continue
+                if isinstance(error, asyncio.CancelledError):
+                    answer.cancel()
+                else:
+                    answer.set_exception(error)  # a start waiting raises what ended the rounds
+            self._starting = None
+            raise
+        answers, self._answers = self._answers, ()
+        published, self._starting = self._starting or (), None
+        for answer in answers:
+            if not answer.done():
+                answer.set_result(published)
+
+    async def _owned_rounds(self) -> None:
+        """run rounds while commits are queued, each after the commands posted are applied, the walk of the log a start
+        owes, and any rebuild or recovery owed; a failed round keeps its files and waits for the next commit. Between
+        its last look at the inbox and its return nothing awaits, so a command posted is never left for no one.
+
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: never: a start's walk that fails answers that start with it, and the
+            rounds end
+        """
         while True:
+            self._drain()
+            if self._relearning:
+                if not await self._relearned():
+                    self._drain()
+                    if not self._relearning:
+                        return
+                continue
             self._round_term = self._term
             if self._reader is not None and self._recheck:
                 self._recheck = False
                 self._marked = False
                 await self._fresh_fulls(self._reader)
                 await self._recoveries(self._reader)
+                self._drain()
+                if self._relearning:
+                    continue
             if not self._queued:
                 if self._marked and self._reader is not None:
                     continue  # a table marked fresh during that rebuild is rebuilt now, not at the next commit
@@ -972,10 +1167,36 @@ class DeltaFolds:
                 )
                 if self._failed_rounds >= _FAILED_ROUNDS_CAP:
                     self._hand_queue_to_recovery()
+                self._drain()
                 self._measure()
+                if self._relearning:
+                    continue  # a start posted meanwhile walks its log and folds now, as it always did
                 return
             self._failed_rounds = 0
             self._took(answer)
+
+    async def _relearned(self) -> bool:
+        """walk the epoch log for each start applied (:meth:`_relearn`). A walk that fails answers every start waiting
+        with its error, and the rounds end: a fold without the deltas it would not know of would publish parts lacking
+        their rows, so the writer's start fails and is tried again.
+
+        :return: whether every walk was read
+        :rtype: bool
+        """
+        starts, self._relearning = self._relearning, ()
+        try:
+            for started in starts:
+                await self._relearn(started.reader.generations, started.changes)
+        except GenerationUnavailableError as error:
+            # the log could not be read: handed to the starts waiting, which raise it, and the writer's start is
+            # tried again
+            answers, self._answers = self._answers, ()
+            self._starting = None
+            for answer in answers:
+                if not answer.done():
+                    answer.set_exception(error)
+            return False
+        return True
 
     def _hand_queue_to_recovery(self) -> None:
         """after :data:`_FAILED_ROUNDS_CAP` straight failed rounds, hand each queued table to a recovery by key
@@ -1073,16 +1294,21 @@ class DeltaFolds:
             return
         staged: list[tuple[str, str, str, int]] = []
         #: each table's files told before its generation was read: covered by its rebuild whatever their incarnation
-        known: dict[str, set[str]] = {}
+        known: dict[str, frozenset[str]] = {}
+        #: each table's asks (a reset, a lost file) applied before its generation was read: one after is owed again
+        asked: dict[str, int] = {}
         cutoff = self._before
         # a rebuild's rows left by a writer that died mid-read: only the writer holding the lease writes there
         await asyncio.to_thread(_cleared, self.root / _REBUILD_DIR)
         try:
             for name, why in sorted(owed.items()):
                 began = time.time()
-                known[name] = {file for table_name, file, _ in self._queued if table_name == name} | {
+                # what was posted before the generation is read is judged covered by it; what comes after, not
+                self._drain()
+                known[name] = frozenset(file for table_name, file, _ in self._queued if table_name == name) | {
                     share[2] for share in self._pending if share[0] == name
                 }
+                asked[name] = self._asked.get(name, 0)
                 try:
                     # the generation before the rows: a commit during the read is in the rows and applied again over
                     # them (module docstring), never missed
@@ -1132,7 +1358,7 @@ class DeltaFolds:
                 tuple(self.tables[name].plain() for name, _, _, _ in staged),
                 tuple(staged),
                 cutoff,
-                self._kept_files(covered=set().union(*known.values())),
+                self._kept_files(covered=frozenset().union(*known.values())),
             )
         except BaseException as error:  # prawduct:allow prawduct/broad-except -- a rebuild never fails a write: logged, counted, retried before the next round
             self._recheck = True
@@ -1148,15 +1374,24 @@ class DeltaFolds:
             )
             return
         outcome, manifest, rebuilt, deleted = answer
+        # every ask posted while the rebuild read and published, judged against the generation each table's read began at
+        self._drain()
         for name, token, rows in rebuilt:
             why = owed[name]
             _REBUILDS.labels(table=name, why=why, outcome=outcome).inc()
             if outcome != "rebuilt":
                 continue
-            if self._fresh.get(name) == why:
+            if self._asked.get(name, 0) == asked[name]:
+                # nothing asked of the table since its generation was read: the rows hold every change asked of it, its
+                # leftover and lost files' too, so neither a rebuild nor a recovery is owed after it
                 self._fresh = _without(self._fresh, name)
-            # a table read whole holds every change its leftover files named: no recovery is owed after it
-            self._recover = _without(self._recover, name)
+                self._recover = _without(self._recover, name)
+                self._lost = _without(self._lost, name)
+            else:
+                # a reset, or a lost file whose epoch may be past the generation read, asked while the rebuild read:
+                # owed again, never dropped by a rebuild that could not hold it
+                self._recheck = True
+                self._marked = True
             self._published_one(name)
             self._drop_covered(name, token, known[name])
             log.info(
@@ -1264,9 +1499,11 @@ class DeltaFolds:
         """
         table = self.tables[name]
         began = time.time()
+        # what was posted before the generation is read is judged covered by it; what comes after, not
+        self._drain()
         asked = self._asked.get(name, 0)
-        lost = dict(self._lost.get(name, {}))
-        known = {file for table_name, file, _ in self._queued if table_name == name} | {
+        lost = MappingProxyType(dict(self._lost.get(name, {})))
+        known = frozenset(file for table_name, file, _ in self._queued if table_name == name) | {
             share[2] for share in self._pending if share[0] == name
         }
         cutoff = min(self._before, began)
@@ -1308,6 +1545,8 @@ class DeltaFolds:
             await asyncio.to_thread(_unlink_all, self.root, [file])
             raise
         outcome, manifest, states, deleted = answer
+        # every ask posted while the recovery read and published, judged against the generation it read
+        self._drain()
         _RECOVERIES.labels(table=name, why=why, outcome=outcome).inc()
         if outcome != "recovered":
             await asyncio.to_thread(_unlink_all, self.root, [file])
@@ -1426,10 +1665,11 @@ class DeltaFolds:
         pages = await asyncio.to_thread(_RowsFile, self.root / pages_file, pa.schema(list(types.items())))
         try:
             casts = tuple(sql_cast(kinds[column]) for column in table.key)
-            # one page of keys at a time, the keyed read's own form (KeyBatch takes each key's values)
+            # one page of keys at a time, as Arrow; the keyed read's batch made from it off the loop
             async for chunk in _reach_pages(self.root / reach_file, table.key):
+                values = await asyncio.to_thread(_arrow_key_values, table.key, chunk)
                 for page in await read_keyed_arrow(
-                    reader.l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types
+                    reader.l3, table.name, keys=KeyBatch(table.key, values, casts), types=types
                 ):
                     await asyncio.to_thread(pages.write, page)
             for width, values in _prefixes_by_width(table.key, held).items():
@@ -1565,7 +1805,7 @@ class DeltaFolds:
                     count += keys.num_rows
         return count
 
-    def _drop_covered(self, table: str, token: str, known: set[str]) -> None:
+    def _drop_covered(self, table: str, token: str, known: frozenset[str]) -> None:
         """drop from the folds' queue each of ``table``'s commits its rebuild at ``token`` holds (of that incarnation,
         at or below its count; of another, one told before the generation was read: a commit of the lost log): a copy
         applies only the deltas newer than a part, and a fold of an older one would undo a later write. Their files
@@ -1576,7 +1816,7 @@ class DeltaFolds:
         :param token: the generation its parts are current to
         :ptype token: str
         :param known: the table's files told before that generation was read
-        :ptype known: set[str]
+        :ptype known: frozenset[str]
         :return: nothing
         :rtype: None
         """
@@ -2269,23 +2509,23 @@ def recovery_delta_job(
     return file, int(rows.num_rows), int(count)
 
 
-async def _reach_pages(path: Path, key: Sequence[str]) -> AsyncIterator[list[tuple[Any, ...]]]:
-    """the reach's keys no cleared prefix holds, a batch of the reach file at a time, each key its values: the
-    keyed read's own form (:class:`~threetears.core.keyed.KeyBatch`), one page of keys made at a time and let go.
+async def _reach_pages(path: Path, key: Sequence[str]) -> AsyncIterator[Any]:
+    """the reach's keys no cleared prefix holds, a batch of the reach file at a time, as Arrow key columns: one page
+    of keys at a time, let go once read.
 
     :param path: the reach file
     :ptype path: Path
     :param key: the key columns
     :ptype key: Sequence[str]
-    :return: each page's keys
-    :rtype: AsyncIterator[list[tuple]]
+    :return: each page's keys, a column each
+    :rtype: AsyncIterator[pyarrow.RecordBatch]
     """
     reader = await asyncio.to_thread(_opened_ipc, path)
     for index in range(reader.num_record_batches):
         batch = await asyncio.to_thread(reader.get_batch, index)
         keyed = batch.filter(pc.invert(batch.column(_UNDER)))
         if keyed.num_rows:
-            yield await asyncio.to_thread(_key_values, keyed, key)
+            yield keyed.select(list(key))
 
 
 def _opened_ipc(path: Path) -> Any:
@@ -2299,18 +2539,23 @@ def _opened_ipc(path: Path) -> Any:
     return pa_ipc.open_file(pa.memory_map(str(path)))
 
 
-def _key_values(rows: Any, key: Sequence[str]) -> list[tuple[Any, ...]]:
-    """one page of keys as the keyed read binds them: each key's values (a page, bounded by the reach file's batch).
-    Blocking.
+def _arrow_key_values(key: Sequence[str], keys: Any) -> list[tuple[Any, ...]]:
+    """one page of keys held as Arrow key columns (a page, bounded by its caller's batch) as
+    :class:`~threetears.core.keyed.KeyBatch` takes them today. Blocking: run it on a thread. The fold's recovery and the
+    writer's recreation of a delta file make every keyed read of a page of keys through it.
 
-    :param rows: the page's keys, a column each
-    :ptype rows: pyarrow.RecordBatch
-    :param key: the key columns
+    KEYBATCH ADAPTER (rl095 3t-keybatch): KeyBatch takes one tuple a key until the keyed core takes Arrow key columns;
+    then each caller hands its page to KeyBatch whole and this function goes. Until then it is the one place either
+    turns a page of keys into Python, off the loop.
+
+    :param key: the key columns, in key order
     :ptype key: Sequence[str]
+    :param keys: the page's keys, a column each
+    :ptype keys: pyarrow.Table | pyarrow.RecordBatch
     :return: each key's values
     :rtype: list[tuple]
     """
-    return list(zip(*(rows.column(column).to_pylist() for column in key), strict=True))
+    return list(zip(*(keys.column(column).to_pylist() for column in key), strict=True))
 
 
 def _unlink_work(root: Path, work: str) -> None:

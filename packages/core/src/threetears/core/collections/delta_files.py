@@ -366,13 +366,13 @@ class TableDelta:
             self.parts.append(("arrow", rows, written))
             self.entries += int(rows.num_rows)
 
-    def deletes(self, keys: Sequence[Sequence[Any]], *, scope: Any = None) -> None:
-        """add keys deleted, each its values in key order, and, for a table whose key does not name a row's state,
-        the state of them all: each marker carries it in :attr:`scope_column`, so the fold files the delete under that
-        state's part (decision 27).
+    def deletes(self, keys: Sequence[Sequence[Any]] | Any, *, scope: Any = None) -> None:
+        """add keys deleted, each its values in key order (or an Arrow table of the key columns, typed as the table's,
+        which no key leaves), and, for a table whose key does not name a row's state, the state of them all: each
+        marker carries it in :attr:`scope_column`, so the fold files the delete under that state's part (decision 27).
 
         :param keys: the keys
-        :ptype keys: Sequence[Sequence[Any]]
+        :ptype keys: Sequence[Sequence[Any]] | pyarrow.Table
         :param scope: the keys' state, the value of :attr:`scope_column` in each of their rows; None for a table whose
             key names it
         :ptype scope: Any
@@ -382,7 +382,7 @@ class TableDelta:
             filed under no state's part, and the deleted row would stay in the full
         :raises ValueError: when a state is given for a table whose markers carry none
         """
-        if keys:
+        if len(keys):
             check_delta_scope(self.name, self.scope_column, scope)
             self.parts.append(("deletes", keys, (), scope))
             self.entries += len(keys)
@@ -494,13 +494,13 @@ def _rows_table(rows: Sequence[Mapping[str, Any]], types: Mapping[str, Any], def
 
 
 def _marker_table(
-    keys: Sequence[Sequence[Any]], key: Sequence[str], state: Mapping[str, Any], types: Mapping[str, Any]
+    keys: Sequence[Sequence[Any]] | Any, key: Sequence[str], state: Mapping[str, Any], types: Mapping[str, Any]
 ) -> Any:
     """delete markers as the table's columns: the key columns set, the state a table keyed without it carries
     (decision 27), every other column null; a column at a time, never a row made.
 
-    :param keys: the keys deleted, each its values in key order
-    :ptype keys: Sequence[Sequence[Any]]
+    :param keys: the keys deleted, each its values in key order; or an Arrow table of the key columns, taken as it is
+    :ptype keys: Sequence[Sequence[Any]] | pyarrow.Table
     :param key: the key columns, in key order
     :ptype key: Sequence[str]
     :param state: the state column and the value every marker carries; empty for a table whose key names it
@@ -513,7 +513,9 @@ def _marker_table(
     count = len(keys)
     columns = []
     for name, kind in types.items():
-        if name in key:
+        if name in key and isinstance(keys, pa.Table):
+            columns.append(keys.column(name).combine_chunks().cast(kind))
+        elif name in key:
             at = list(key).index(name)
             values = [values[at] for values in keys]
             try:
@@ -628,32 +630,13 @@ class DeltaChange:
 
 
 @dataclass(frozen=True, slots=True)
-class DeltaFile:
-    """a delta file read back as Python changes (:func:`read_delta_file`, a test's reader, out of ``__all__``): the
-    table it holds rows of, the write that saved it, and its changes in order.
-
-    :ivar table: the table
-    :ivar write: the write's unique id
-    :ivar key: the table's key columns, in key order
-    :ivar changes: every row and delete marker, in the order written
-    :ivar prefixes: the key prefixes the write cleared before them, as text (:func:`_prefix_text`)
-    """
-
-    table: str
-    write: str
-    key: tuple[str, ...]
-    changes: list[DeltaChange]
-    prefixes: tuple[dict[str, str], ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class DeltaTable:
     """a delta file read back as Arrow, never a Python row of it built: what a copy applies a file from
     (:class:`HeldDeltaRows`).
 
-    Why not :class:`DeltaFile`: its rows as Python dicts cost about ten times their Arrow (291 MB for a 200,000-row file
-    of 15 text columns, 2026-11-23 audit), and a copy holding every epoch's file that way through a pass ran out of
-    memory before it was CPU bound.
+    Why not Python rows (a test's reader: :func:`threetears.core.testing.delta_files.read_delta_file`): a row as a
+    dict costs about ten times its Arrow (291 MB for a 200,000-row file of 15 text columns, 2026-11-23 audit), and a
+    copy holding every epoch's file that way through a pass ran out of memory before it was CPU bound.
 
     :ivar table: the table
     :ivar write: the write's unique id
@@ -912,39 +895,10 @@ def read_delta_table(path: Path, *, table: str | None = None) -> DeltaTable:
     )
 
 
-def read_delta_file(path: Path, *, table: str | None = None) -> DeltaFile:
-    """read a delta file saved by :func:`write_delta_file` as Python changes. Blocking: run it on a thread.
-
-    Every row becomes a Python dict (about ten times its Arrow): for a test reading a small file back, and kept out of
-    ``__all__`` for that (no production path reads one so since the copy applies a file from its Arrow,
-    :func:`read_delta_table`, :class:`HeldDeltaRows`).
-
-    :param path: the file
-    :ptype path: Path
-    :param table: the table whose file it must be; None checks none
-    :ptype table: str | None
-    :return: the file's table, write, key and changes
-    :rtype: DeltaFile
-    :raises FileNotFoundError: when it is not there
-    :raises DeltaFileUnreadableError: when it is there but not a delta file of this format, of ``table`` and of the
-        write its name says
-    :raises OSError: when the volume cannot read it (an errno)
-    :raises ImportError: without pyarrow
-    """
-    read = read_delta_table(path, table=table)
-    changes = [
-        DeltaChange(row=row, deleted=deleted, written=read.sets[written])
-        for row, deleted, written in zip(
-            read.rows.to_pylist(), read.deleted.to_pylist(), read.written.to_pylist(), strict=True
-        )
-    ]
-    return DeltaFile(table=read.table, write=read.write, key=read.key, changes=changes, prefixes=read.prefixes)
-
-
 def read_delta_file_keys(path: Path, *, table: str | None = None) -> DeltaKeys:
     """the keys a delta file names, rows and delete markers alike, each once in the order first written, as Arrow
     text (``key_text``'s spelling), and the key prefixes it clears: its key columns and its metadata alone are read,
-    the key columns validated in full before a key is decoded, as :func:`read_delta_file` validates every column.
+    the key columns validated in full before a key is decoded, as the full read (:func:`read_delta_table`) validates every column.
     Blocking: run it on a thread.
 
     Why: a copy hears a commit too big to list (337,000 keys in the 2026-11-23 audit) and a load's keys from the file;
@@ -1054,7 +1008,7 @@ def apply_delta_row(held: Mapping[str, Any] | None, change: DeltaChange) -> dict
 
     :param held: the row held before the change, keyed by column; None when there was none
     :ptype held: Mapping[str, Any] | None
-    :param change: the file's change (:attr:`DeltaFile.changes`)
+    :param change: the file's change (a delta file's change, :class:`DeltaChange`)
     :ptype change: DeltaChange
     :return: the row held after it, keyed by column; None when the change deleted it
     :rtype: dict[str, Any] | None

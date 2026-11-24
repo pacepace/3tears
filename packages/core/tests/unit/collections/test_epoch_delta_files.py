@@ -30,7 +30,8 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.protocol import LoadFile
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
 from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.collections.delta_files import DeltaFileRefusedError, read_delta_file
+from threetears.core.collections.delta_files import DeltaFileRefusedError
+from threetears.core.testing.delta_files import read_delta_file
 from threetears.core.collections.epoch_change import (
     ChangedRow,
     advance_recording,
