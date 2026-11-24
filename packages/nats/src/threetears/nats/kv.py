@@ -66,7 +66,7 @@ from nats.js.api import (
 from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, ServiceUnavailableError
 from nats.js.errors import NoStreamResponseError as NatsNoStreamResponseError
 from nats.js.errors import NotFoundError as NatsNotFoundError
-from threetears.observe import contain, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 from threetears.observe.resilience import retry_bounded
 
 from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
@@ -390,10 +390,27 @@ _KEYS_A_BATCH_GET: Final = 500
 _BATCH_GET_PROBE_SECONDS: Final = 1.0
 
 #: the buckets whose batched direct get went unanswered in this process: read one key at a time from then on
-_BATCH_GET_REFUSED: frozenset[str] = frozenset()
+_BATCH_GET_REFUSED: BuildOnce[str, bool] = BuildOnce()
 
 #: the buckets whose batched direct get has been answered in this process: no probe deadline from then on
-_BATCH_GET_ANSWERED: frozenset[str] = frozenset()
+_BATCH_GET_ANSWERED: BuildOnce[str, bool] = BuildOnce()
+
+
+def _say_batch_get_refused(bucket: str) -> bool:
+    """WARN, once per bucket (through :data:`_BATCH_GET_REFUSED`), that its batched reads go unanswered.
+
+    :param bucket: the bucket's full name
+    :ptype bucket: str
+    :return: True, the mark that it is read a key at a time from now on
+    :rtype: bool
+    """
+    log.warning(
+        "a batched KV read went unanswered (the connection's grant refuses the body-carried "
+        "direct get); reading this bucket a key at a time from now on",
+        extra={"extra_data": {"bucket": bucket}},
+    )
+    return True
+
 
 #: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
 #: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
@@ -2272,7 +2289,7 @@ class NatsKvBucket:
         found: dict[str, tuple[bytes | None, int]] = {}
         for start in range(0, len(named), _KEYS_A_BATCH_GET):
             chunk = named[start : start + _KEYS_A_BATCH_GET]
-            usable = batched and self._bound_to is not None and self._full_name not in _BATCH_GET_REFUSED
+            usable = batched and self._bound_to is not None and _BATCH_GET_REFUSED.peek(self._full_name) is None
             answered = await self._batch_get_latest(chunk) if usable else None
             if answered is None:
                 limit = asyncio.Semaphore(_KEY_READS_IN_FLIGHT)
@@ -2298,7 +2315,6 @@ class NatsKvBucket:
         request = json.dumps({"multi_last": [prefix + key for key in keys], "batch": len(keys)}).encode()
 
         async def ask() -> dict[str, tuple[bytes | None, int]] | None:
-            global _BATCH_GET_ANSWERED, _BATCH_GET_REFUSED
             connection = self._bound_to
             if connection is None:
                 return None
@@ -2309,7 +2325,7 @@ class NatsKvBucket:
             try:
                 await connection.publish(f"$JS.API.DIRECT.GET.KV_{self._full_name}", request, reply=inbox)
                 answered: dict[str, tuple[bytes | None, int]] = dict.fromkeys(keys, (None, 0))
-                probing = self._full_name not in _BATCH_GET_ANSWERED
+                probing = _BATCH_GET_ANSWERED.peek(self._full_name) is None
                 while True:
                     if probing:
                         # the first reply of a bucket's first batch is a probe: a refused publish is never
@@ -2317,14 +2333,9 @@ class NatsKvBucket:
                         try:
                             message = await asyncio.wait_for(replies.get(), _BATCH_GET_PROBE_SECONDS)
                         except TimeoutError:
-                            _BATCH_GET_REFUSED = _BATCH_GET_REFUSED | {self._full_name}
-                            log.warning(
-                                "a batched KV read went unanswered (the connection's grant refuses the body-carried "
-                                "direct get); reading this bucket a key at a time from now on",
-                                extra={"extra_data": {"bucket": self._full_name}},
-                            )
+                            _BATCH_GET_REFUSED.get(self._full_name, lambda: _say_batch_get_refused(self._full_name))
                             return None
-                        _BATCH_GET_ANSWERED = _BATCH_GET_ANSWERED | {self._full_name}
+                        _BATCH_GET_ANSWERED.get(self._full_name, lambda: True)
                         probing = False
                     else:
                         message = await replies.get()

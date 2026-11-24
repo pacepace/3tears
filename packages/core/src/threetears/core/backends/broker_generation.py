@@ -73,7 +73,7 @@ from typing import Any, Final, Protocol, runtime_checkable
 
 from threetears.core.exceptions import GenerationNotCommittedError, GenerationUnavailableError
 from threetears.core.frozen_state import EMPTY, frozen
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "CHANGED_ROWS_FIELD",
@@ -388,8 +388,26 @@ class _Committed:
     names_generations: bool = False
 
 
-#: tables a broker that advances nothing has been reported for, so the warning is logged once each
-_WARNED_UNADVANCED: frozenset[str] = frozenset()
+#: tables a broker that advances nothing has been reported for, so the warning is logged once each (BuildOnce: two
+#: threads that both see the table unreported never log it twice)
+_WARNED_UNADVANCED: BuildOnce[str, bool] = BuildOnce()
+
+
+def _warn_unadvanced(table_name: str) -> bool:
+    """log, once per table, that the broker advanced no write generation for it.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: True, the mark that it was logged
+    :rtype: bool
+    """
+    _logger.warning(
+        "the L3 broker advanced no write generation for a switched-on table: its hub is older "
+        "than write generations or does not hold the table's class switched on yet; this pod's "
+        "rows of it name no generation until the hub does",
+        extra={"extra_data": {"table": table_name}},
+    )
+    return True
 
 
 _COMMITTED: ContextVar[_Committed | None] = ContextVar("threetears_broker_committed_generations", default=None)
@@ -505,7 +523,6 @@ def _take_committed_generation(table_name: str) -> str | None:
         named generations and none for it, or nothing this task committed wrote anything; or when
         the commit's token was already handed to an advance
     """
-    global _WARNED_UNADVANCED
     held = _COMMITTED.get()
     if held is not None:
         token = held.tokens.get(table_name)
@@ -526,14 +543,7 @@ def _take_committed_generation(table_name: str) -> str | None:
                 f"no write generation for {table_name!r}: {held.not_committed}, so nothing it wrote landed"
             )
         if not held.names_generations:
-            if table_name not in _WARNED_UNADVANCED:
-                _WARNED_UNADVANCED = _WARNED_UNADVANCED | {table_name}
-                _logger.warning(
-                    "the L3 broker advanced no write generation for a switched-on table: its hub is older "
-                    "than write generations or does not hold the table's class switched on yet; this pod's "
-                    "rows of it name no generation until the hub does",
-                    extra={"extra_data": {"table": table_name}},
-                )
+            _WARNED_UNADVANCED.get(table_name, lambda: _warn_unadvanced(table_name))
             return None
     raise GenerationUnavailableError(
         f"the L3 broker named no write generation for {table_name!r} for the commit just made: it named "

@@ -41,9 +41,8 @@ def register_tool_builder(builder: Callable[..., TearsTool]) -> None:
     :rtype: None
     """
     global _TOOL_BUILDERS
-    if builder in _TOOL_BUILDERS:
-        return
-    _TOOL_BUILDERS = (*_TOOL_BUILDERS, builder)
+    # in registration order, each builder once
+    _TOOL_BUILDERS = tuple(dict.fromkeys((*_TOOL_BUILDERS, builder)))
 
 
 def registered_tool_builders() -> tuple[Callable[..., TearsTool], ...]:

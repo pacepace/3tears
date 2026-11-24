@@ -75,7 +75,7 @@ from threetears.core.eviction import (
     policies_declared,
 )
 from threetears.core.packed_keys import NO_KEYS, key_text, packed, parts_of, texts
-from threetears.observe import contain, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
 __all__ = [
     "L1_EVICTION_INFO",
@@ -944,9 +944,8 @@ class L1Ledger:
             raise TimeoutError(f"the L1 ledger's thread took no hand-offs in {timeout}s")
 
 
-#: the process's ledger, built once by the first :func:`ledger` (rebound under :data:`_LEDGER_LOCK`)
-_LEDGER: L1Ledger | None = None
-_LEDGER_LOCK = threading.Lock()
+#: the process's ledger, built once by the first :func:`ledger`, however many threads ask first
+_LEDGER: BuildOnce[None, L1Ledger] = BuildOnce()
 
 
 def ledger() -> L1Ledger:
@@ -955,9 +954,4 @@ def ledger() -> L1Ledger:
     :return: it
     :rtype: L1Ledger
     """
-    global _LEDGER
-    if _LEDGER is None:
-        with _LEDGER_LOCK:
-            if _LEDGER is None:
-                _LEDGER = L1Ledger()
-    return _LEDGER
+    return _LEDGER.get(None, L1Ledger)

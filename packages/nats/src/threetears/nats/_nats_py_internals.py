@@ -118,7 +118,7 @@ from nats.nuid import NUID
 from nats.protocol.command import PUB_OP
 
 from threetears.nats._asyncio_send_path import TRANSPORT_NAME, send_path_gaps
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -212,7 +212,7 @@ _SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSoc
 _BOUNDED: Final[weakref.WeakSet[object]] = weakref.WeakSet()
 
 #: the transport classes a large publish has found unbounded (logged once each)
-_UNBOUNDED_KINDS: frozenset[type] = frozenset()
+_UNBOUNDED_KINDS: BuildOnce[type, bool] = BuildOnce()
 
 _SEND_PATH_GAPS: Final[list[str]] = send_path_gaps()
 if _SEND_PATH_GAPS:
@@ -416,6 +416,23 @@ def _socket_transport(connection: Client) -> asyncio.BaseTransport | None:
     return writer.transport
 
 
+def _warn_unbounded(kind: type) -> bool:
+    """WARN, once per transport class (through :data:`_UNBOUNDED_KINDS`), that its sends are not bounded.
+
+    :param kind: the transport class
+    :ptype kind: type
+    :return: True, the mark that it was said
+    :rtype: bool
+    """
+    log.warning(
+        "a large NATS publish on a %s.%s transport is not bounded per send (not asyncio's socket "
+        "transport): the kernel's copy of each send holds the event loop",
+        kind.__module__,
+        kind.__qualname__,
+    )
+    return True
+
+
 def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND_BYTES) -> bool:
     """make every ``sendmsg`` on ``transport`` offer at most ``bound`` bytes, when it is asyncio's socket one.
 
@@ -432,19 +449,12 @@ def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND
     :return: True when its sends are bounded (now or before)
     :rtype: bool
     """
-    global _UNBOUNDED_KINDS
     if transport in _BOUNDED:
         return True
     if not isinstance(transport, _SOCKET_TRANSPORT):
         kind = type(transport)
-        if kind not in _UNBOUNDED_KINDS and transport.get_extra_info("sslcontext") is None:
-            _UNBOUNDED_KINDS = _UNBOUNDED_KINDS | {kind}
-            log.warning(
-                "a large NATS publish on a %s.%s transport is not bounded per send (not asyncio's socket "
-                "transport): the kernel's copy of each send holds the event loop",
-                kind.__module__,
-                kind.__qualname__,
-            )
+        if transport.get_extra_info("sslcontext") is None:
+            _UNBOUNDED_KINDS.get(kind, lambda: _warn_unbounded(kind))
         return False
     socket_transport = cast("_SendmsgTransport", transport)
     socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer, bound)

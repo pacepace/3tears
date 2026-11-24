@@ -45,7 +45,7 @@ from collections.abc import Sequence
 from multiprocessing import forkserver, resource_tracker
 from typing import Final
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 __all__ = ["exit_with_parent", "name_process", "start_worker_server"]
 
@@ -70,8 +70,8 @@ _watching = threading.Event()
 #: held while the server's preload is set and the server started
 _server_lock = threading.Lock()
 
-#: the modules the server was asked to preload by the first start here; None before (rebound under :data:`_server_lock`)
-_server_preload: frozenset[str] | None = None
+#: the modules the server was asked to preload by the first start here, set once by that start
+_server_preload: BuildOnce[None, frozenset[str]] = BuildOnce()
 
 
 def _alive(pid: int) -> bool:
@@ -162,6 +162,21 @@ def name_process(name: str) -> bool:
     return named
 
 
+def _preload(context: multiprocessing.context.BaseContext, wanted: frozenset[str]) -> frozenset[str]:
+    """ask the fork server, before its first start, to preload ``wanted`` (on top of ``__main__``).
+
+    :param context: the workers' context
+    :ptype context: multiprocessing.context.BaseContext
+    :param wanted: the modules
+    :ptype wanted: frozenset[str]
+    :return: ``wanted``, the modules the server starts with
+    :rtype: frozenset[str]
+    """
+    if wanted:
+        context.set_forkserver_preload(["__main__", *sorted(wanted)])
+    return wanted
+
+
 def start_worker_server(preload: Sequence[str] = ()) -> multiprocessing.context.BaseContext:
     """start the fork server, and the resource tracker, now (each a ``fork_exec`` of this process once: its first
     worker or first multiprocessing lock otherwise, mid-load); started already, it starts nothing. Blocking: a
@@ -176,18 +191,14 @@ def start_worker_server(preload: Sequence[str] = ()) -> multiprocessing.context.
     :return: the context every pool's workers start in (:data:`_WORKER_START`)
     :rtype: multiprocessing.context.BaseContext
     """
-    global _server_preload
     context = multiprocessing.get_context(_WORKER_START)
     wanted = frozenset(preload)
     with _server_lock:
-        if _server_preload is None:
-            if wanted:
-                context.set_forkserver_preload(["__main__", *sorted(wanted)])
-            _server_preload = wanted
-        elif not wanted <= _server_preload:
+        started = _server_preload.get(None, lambda: _preload(context, wanted))
+        if not wanted <= started:
             log.info(
                 "worker fork server already started: its workers import these modules themselves",
-                extra={"extra_data": {"modules": sorted(wanted - _server_preload)}},
+                extra={"extra_data": {"modules": sorted(wanted - started)}},
             )
         resource_tracker.ensure_running()
         forkserver.ensure_running()

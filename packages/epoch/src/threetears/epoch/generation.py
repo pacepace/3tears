@@ -78,7 +78,7 @@ from threetears.core.exceptions import (
 from threetears.nats.capabilities import ChangeLogBinder
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogLike, ChangeLogState
 from threetears.nats.errors import KvBucketNotFoundError, KvError, KvFullError, KvReadRefusedError
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 from threetears.observe.metrics import counter, gauge
 from threetears.observe.resilience import retry_until_done
 from uuid_utils import uuid7
@@ -147,7 +147,7 @@ def _other_database_records() -> Any:
 
 
 #: schema tables whose record with no tenant was already said: one WARNING per table per process
-_UNTENANTED_SAID: frozenset[str] = frozenset()
+_UNTENANTED_SAID: BuildOnce[str, bool] = BuildOnce()
 
 
 def _note_untenanted(table_name: str) -> None:
@@ -167,14 +167,22 @@ def _note_untenanted(table_name: str) -> None:
         ),
         label_names=("table",),
     ).labels(table=table_name).inc()
-    global _UNTENANTED_SAID
-    if table_name in _UNTENANTED_SAID:
-        return
-    _UNTENANTED_SAID = _UNTENANTED_SAID | {table_name}
+    _UNTENANTED_SAID.get(table_name, lambda: _say_untenanted(table_name))
+
+
+def _say_untenanted(table_name: str) -> bool:
+    """WARN, once per table (through :data:`_UNTENANTED_SAID`), that its change records name no schema.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: True, the mark that it was said
+    :rtype: bool
+    """
     log.warning(
         "an agent-schema table's change record names no schema; it goes on _all, where its pods do not read it",
         extra={"extra_data": {"table": table_name}},
     )
+    return True
 
 
 def _fill_ratio() -> Any:

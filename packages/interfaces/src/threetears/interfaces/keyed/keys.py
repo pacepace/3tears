@@ -386,14 +386,32 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
         raise ValueError(
             f"{table!r} names no table (schema.table, or a bare table): its predicates cannot be registered"
         )
+    _STATED = _with_stated(_STATED, relation, predicates)
+
+
+def _with_stated(
+    known: tuple[tuple[Relation, str, str], ...], relation: Relation, predicates: Iterable[str]
+) -> tuple[tuple[Relation, str, str], ...]:
+    """``known`` with each ``column = 'text'`` conjunct of ``predicates`` on ``relation`` it lacks, in order.
+
+    :param known: the stated equalities so far
+    :ptype known: tuple[tuple[Relation, str, str], ...]
+    :param relation: the table
+    :ptype relation: Relation
+    :param predicates: the partial predicates
+    :ptype predicates: Iterable[str]
+    :return: the stated equalities next
+    :rtype: tuple[tuple[Relation, str, str], ...]
+    """
     for predicate in predicates:
         for conjunct in re.split(r"\s+AND\s+", predicate, flags=re.IGNORECASE):
             found = _STATED_EQUALITY.fullmatch(conjunct)
             if found is None:
                 continue
             stated = (relation, found.group(1).lower(), found.group(2).replace("''", "'"))
-            if stated not in _STATED:
-                _STATED = (*_STATED, stated)
+            if stated not in known:
+                known = (*known, stated)
+    return known
 
 
 def _states(index: DeclaredIndex, by: Mapping[Any, Any], guarded: frozenset[str] = frozenset()) -> bool:

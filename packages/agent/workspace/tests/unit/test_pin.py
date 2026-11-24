@@ -267,7 +267,7 @@ async def test_cross_pod_survival_via_shared_collection(
 
     # pod B: fresh manager with empty _items; hydrates via load_context
     ctx_b = ToolContextManager(collection, conversation_id, user_id)
-    assert ctx_b.items == []
+    assert ctx_b.items == ()
 
     await ctx_b.load_context()
     pin = await get_pin(ctx_b)

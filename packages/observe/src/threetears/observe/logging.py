@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from types import FrameType
 from typing import Any
 
+from threetears.observe.build_once import BuildOnce
+
 __all__ = [
     "NOISY_LIBRARY_LOGGERS",
     "ContextFormatter",
@@ -309,8 +311,20 @@ class ThreeTearsLogger(logging.Logger):
 # Public API
 # ---------------------------------------------------------------------------
 
-#: the loggers given their NullHandler: replaced whole, never changed in place (decision 46)
-_configured_loggers: frozenset[str] = frozenset()
+#: the loggers given their NullHandler, each once however many threads ask for it first
+_configured_loggers: BuildOnce[str, bool] = BuildOnce()
+
+
+def _quiet(logger: logging.Logger) -> bool:
+    """attach the ``NullHandler`` that keeps a 3tears logger silent until the host configures handlers.
+
+    :param logger: the logger
+    :ptype logger: logging.Logger
+    :return: True, the mark that it was attached
+    :rtype: bool
+    """
+    logger.addHandler(logging.NullHandler())
+    return True
 
 
 def get_logger(name: str) -> ThreeTearsLogger:
@@ -323,12 +337,9 @@ def get_logger(name: str) -> ThreeTearsLogger:
     The first call for a given *name* installs the ``ThreeTearsLogger`` class
     and attaches a ``NullHandler``.  Subsequent calls return the existing logger.
     """
-    global _configured_loggers
     logging.setLoggerClass(ThreeTearsLogger)
     logger = logging.getLogger(name)
-    if name not in _configured_loggers:
-        _configured_loggers = _configured_loggers | {name}
-        logger.addHandler(logging.NullHandler())
+    _configured_loggers.get(name, lambda: _quiet(logger))
     return logger  # type: ignore[return-value]
 
 
