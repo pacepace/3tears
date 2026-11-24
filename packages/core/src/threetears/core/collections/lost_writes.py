@@ -66,6 +66,7 @@ from threetears.core.utils.write_ledger import CLOCK_SKEW, WRITE_GRACE, WriteLed
 
 __all__ = [
     "WriteBackstop",
+    "WriterBeats",
     "announce_window",
     "tables_switched_by_trigger",
 ]
@@ -643,6 +644,39 @@ async def _drop_leftover_write_mark_triggers(
             extra={"extra_data": {"tables": dropped}},
         )
     return dropped
+
+
+class WriterBeats:
+    """whether a writer's beat is still kept: the liveness every writer process already publishes (:meth:`WriteBackstop
+    .beat`), read by its key, for a reader told which writer to ask after (a load's intent record names its loading
+    writer's beat key: ``EpochChange.unconfirmed_writer``, read by ``delta_recreate.DeltaRecreator``).
+
+    A writer is gone once its key is: a writer stopping cleanly deletes its own (:meth:`WriteBackstop.stop`), and the
+    replica holding the recovery lease deletes a dead writer's once it has announced its window
+    (:meth:`WriteBackstop.recover_pass`). This reader keeps no clock of its own: a key still there is a writer not yet
+    gone, however old its beat (the recovery judges that, once, for every reader).
+
+    :param lease: a factory over the bucket the beats are kept in (the platform's ``leases``), opened as it is: a
+        reader granted the beat keys alone builds it with ``create_if_missing=False``
+    :ptype lease: KVLease
+    """
+
+    def __init__(self, lease: KVLease) -> None:
+        self._lease = lease
+
+    async def gone(self, key: str) -> bool:
+        """whether the writer whose beat is kept under ``key`` is gone: the key holds no beat.
+
+        :param key: the beat's key as stored (:attr:`WriteBackstop.key`)
+        :ptype key: str
+        :return: ``True`` once the key holds no value
+        :rtype: bool
+        :raises Exception: what the bucket's read raised (the caller asks again; never read as gone)
+        """
+        if not key.startswith(f"{_BEAT_PREFIX}."):
+            raise ValueError(f"not a writer beat's key: {key!r}")
+        bucket = await self._lease.bucket()
+        return await bucket.get_entry(key=key) is None
 
 
 class WriteBackstop:

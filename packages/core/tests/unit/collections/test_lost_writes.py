@@ -22,9 +22,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 
 from threetears.core.collections.epoch_change import ChangedRow
-from threetears.core.collections.lost_writes import WriteBackstop
+from threetears.core.collections.lost_writes import WriteBackstop, WriterBeats
 from threetears.core.coordination.lease import KVLease
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
@@ -269,3 +270,20 @@ async def test_a_retry_that_hangs_never_holds_a_stop_past_its_drain() -> None:
     assert left == 1
     assert asyncio.get_running_loop().time() - started < 2
     assert await bucket.get(key=backstop.key) is not None
+
+
+async def test_writer_beats_tell_a_writer_gone_only_once_its_key_is_deleted_never_by_its_beat_s_age() -> None:
+    """Flips if a writer is read as gone while its beat key is kept (however old: a hub still loading, its loop slow),
+    or never once the key is deleted (a clean stop, or the recovery's delete of a dead writer's key), or a key that is
+    no beat's is asked after."""
+    nats, pool, source = FakeNatsClient(), _Pool(), _Source()
+    clock = _Clock()
+    backstop = _backstop(nats, "hub-1", clock, source, pool, WriteLedger(clock=clock), recover=False)
+    beats = WriterBeats(KVLease(nats, pod_id="pod", create_if_missing=False))
+    await backstop.beat()
+    clock.at += _STALE * 100
+    assert await beats.gone(backstop.key) is False, "an old beat is still a kept beat: the recovery judges age"
+    assert await backstop.stop(drain_seconds=0) == 0
+    assert await beats.gone(backstop.key) is True
+    with pytest.raises(ValueError, match="beat"):
+        await beats.gone("leases.someone-else")

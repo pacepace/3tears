@@ -39,6 +39,16 @@ confirmed (:attr:`~threetears.core.collections.delta_files.DeltaKeys.confirmed`)
 writer's fold is told it (:class:`_ConfirmedFolds`), so the fold holds the rows that did commit. A file already confirmed
 is answered ``present``; one lost or unreadable (its keys were only in it) goes to decision 28's recovery.
 
+**A load's intent record** (``EpochChange.unconfirmed_writer``, Pace's ruling of 2026-11-23). The hub names a load's
+file unconfirmed BEFORE its first commit, beside its own writer beat's key, so a crash after a commit leaves a record
+naming the rows. While the hub may still be loading, the file is never confirmed over it: a later record of the table
+naming the same file supersedes the intent (the hub's confirmed record on success, its unconfirmed record naming no
+writer on a failure it answered), and the copy is answered ``superseded`` and applies that record alone, once; else,
+while the named beat is kept (:class:`~threetears.core.collections.lost_writes.WriterBeats`), the copy is answered
+``pending`` and asks again; once the beat is gone (the hub stopped, or the platform's recovery declared it dead and
+deleted it) the file is confirmed from L3 as above. Never by elapsed time. A writer given no beats to read never
+confirms an intent the hub has not superseded (logged).
+
 Counted (``delta_file_recreations_total`` by outcome, ``delta_file_recreate_keys_read_total``) and logged at WARNING.
 """
 
@@ -91,6 +101,8 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a delta file is
 
 if TYPE_CHECKING:
     from threetears.nats.capabilities import RawRequester
+
+    from threetears.core.collections.generation import GenerationSource
     from threetears.nats.forward import ForwardTransport
 
     from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
@@ -125,6 +137,10 @@ class _Outcome(StrEnum):
     NO_WRITER = "no_writer"
     #: the writer's recreation raised, or the request was refused (copy side only): asked again
     FAILED = "failed"
+    #: a load's intent record whose loading writer may still be loading: nothing written, asked again
+    PENDING = "pending"
+    #: a load's intent record a later record of the table names the same file in: that record alone applies it
+    SUPERSEDED = "superseded"
 
 
 #: recreations by the writer, by table and outcome (``recreated``, ``present``, ``recovering``, ``refused``, ``failed``)
@@ -242,6 +258,23 @@ class _ConfirmedFolds(Protocol):
         ...
 
 
+@runtime_checkable
+class _WriterLiveness(Protocol):
+    """whether a loading writer is gone, by its beat's key: :class:`~threetears.core.collections.lost_writes
+    .WriterBeats` is the one the platform keeps.
+    """
+
+    async def gone(self, key: str) -> bool:
+        """whether the writer whose beat is kept under ``key`` is gone.
+
+        :param key: the beat's key
+        :ptype key: str
+        :return: whether it is gone
+        :rtype: bool
+        """
+        ...
+
+
 class DeltaRecreator:
     """the writer's side: recreates one epoch's delta file from L3 by key, once however many copies ask.
 
@@ -263,6 +296,12 @@ class DeltaRecreator:
     :param root: the delta files' directory; None takes :func:`~threetears.core.collections.delta_files.delta_files_root`
         at each request
     :ptype root: Path | None
+    :param writers: the loading writers' liveness, for a load's intent record (module docstring); None confirms no
+        intent the hub has not superseded
+    :ptype writers: _WriterLiveness | None
+    :param generations: the tables' current generations, to walk the log past an intent record for the record that
+        supersedes it; None reads no such record
+    :ptype generations: GenerationSource | None
     """
 
     def __init__(
@@ -275,7 +314,11 @@ class DeltaRecreator:
         page_size: int = DEFAULT_PAGE_SIZE,
         root: Path | None = None,
         folds: _ConfirmedFolds | None = None,
+        writers: _WriterLiveness | None = None,
+        generations: GenerationSource | None = None,
     ) -> None:
+        self._writers = writers
+        self._generations = generations
         self._tables = {table.name: table for table in tables}
         self._l3 = l3
         self._changes = changes
@@ -364,6 +407,10 @@ class DeltaRecreator:
                 f"{table.name}: the record of {request.epoch} names {record.delta_file!r}, not {request.file!r}"
             )
         if record.delta_file_unconfirmed:
+            if record.unconfirmed_writer is not None:
+                held = await self._intent_held(table, request, record.unconfirmed_writer)
+                if held is not None:
+                    return held
             return await self._confirm(table, request, root)
         path = root / request.file
         try:
@@ -399,6 +446,63 @@ class DeltaRecreator:
             },
         )
         return _Outcome.RECREATED
+
+    async def _intent_held(self, table: FollowedTable, request: _Request, writer: str) -> _Outcome | None:
+        """a load's intent record: ``superseded`` once a later record of the table names its file, ``pending`` while its
+        loading writer's beat is kept, ``None`` (confirm it) once that beat is gone (module docstring).
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param request: the copy's request, its epoch the intent's
+        :ptype request: _Request
+        :param writer: the loading writer's beat key, as the record names it
+        :ptype writer: str
+        :return: the answer, or None to confirm the file now
+        :rtype: _Outcome | None
+        """
+        if await self._superseded(table.name, request):
+            log.info(
+                "a load's intent record is superseded by a later record naming its file: that record alone applies it",
+                extra={"extra_data": {"table": table.name, "epoch": request.epoch, "file": request.file}},
+            )
+            return _Outcome.SUPERSEDED
+        if self._writers is None:
+            log.warning(
+                "a load's intent record names its loading writer, and this writer reads no beats: it is never "
+                "confirmed until a later record supersedes it",
+                extra={"extra_data": {"table": table.name, "epoch": request.epoch, "writer": writer}},
+            )
+            return _Outcome.PENDING
+        if not await self._writers.gone(writer):
+            return _Outcome.PENDING
+        # gone: no record of its own comes now. Looked for once more, so a record written just before it went is the
+        # one applied, never the file confirmed over it as well
+        if await self._superseded(table.name, request):
+            return _Outcome.SUPERSEDED
+        log.warning(
+            "a load's loading writer is gone and no record superseded its intent: the file is confirmed from L3",
+            extra={"extra_data": {"table": table.name, "epoch": request.epoch, "writer": writer}},
+        )
+        return None
+
+    async def _superseded(self, table: str, request: _Request) -> bool:
+        """whether a record of ``table`` after the request's epoch names the request's file (the epoch log, NATS: never
+        L3).
+
+        :param table: the table
+        :ptype table: str
+        :param request: the request
+        :ptype request: _Request
+        :return: whether one does
+        :rtype: bool
+        """
+        if self._generations is None:
+            return False
+        now = await self._generations.current(table)
+        if now == request.epoch:
+            return False
+        walk = await self._changes.changes_after(table, request.epoch, now)
+        return any(change.delta_file == request.file and change.token != request.epoch for change in walk.changes)
 
     async def _confirm(self, table: FollowedTable, request: _Request, root: Path) -> _Outcome:
         """write a failed load request's file again from L3 (module docstring): its keys, read from the file, read from

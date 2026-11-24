@@ -241,9 +241,10 @@ class _Log:
         prefixes: Sequence[Mapping[str, str]] | None = None,
         delta_file: str | None = None,
         unconfirmed_delta_file: str | None = None,
+        unconfirmed_writer: str | None = None,
     ) -> str:
         """the writer's own advance (a load, a key-prefix delete), recorded as its broker would: its reach and its file,
-        a failed load request's named unconfirmed."""
+        a failed load request's named unconfirmed, a load's intent beside its loading writer's beat key."""
         token = await self.advance(table_name)
         self.records[token] = EpochChange(
             table=table_name,
@@ -254,6 +255,7 @@ class _Log:
             prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
             delta_file=delta_file if unconfirmed_delta_file is None else unconfirmed_delta_file,
             delta_file_unconfirmed=unconfirmed_delta_file is not None,
+            unconfirmed_writer=unconfirmed_writer,
         )
         return token
 
@@ -1399,3 +1401,201 @@ async def test_a_fold_told_a_confirmed_file_holds_its_rows(_volume: Path) -> Non
     assert manifest is not None
     (part,) = [part for part in manifest.tables[_TABLE].parts if part.scope == "state:VA"]
     assert sorted(read_volume_file(_volume / part.file).column("geo_id").to_pylist()) == [99, 100]
+
+
+# --- a load's intent record, written before its first commit (Pace's ruling of 2026-11-23) ------------------------------
+
+_HUB = "write-ledger.aibots.hub-0195f3"
+
+
+class _Beats:
+    """the writer beats as ``lost_writes.WriterBeats`` reads them: each kept key, and every key asked after."""
+
+    def __init__(self, *kept: str) -> None:
+        self.kept = frozenset(kept)
+        self.asked: list[str] = []
+
+    async def gone(self, key: str) -> bool:
+        self.asked.append(key)
+        return key not in self.kept
+
+
+def _intent_world(
+    beats: _Beats | None, answers: list[str], folds: _Confirmed | None = None
+) -> tuple[tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower], _L3, list[DeltaRecreator]]:
+    """a copy whose writer is the recreator below, reading the hub's beats and walking the log for a superseding
+    record; every answer the writer gave the copy kept in ``answers``."""
+    recreator: list[DeltaRecreator] = []
+
+    async def recreate(table: str, file: str, epoch: str) -> str:
+        answer = await recreator[0].recreate(table, file, epoch)
+        answers.append(answer)
+        return answer
+
+    world = _world(recreate=recreate)
+    l3, log, _lock, _backend, _follower = world
+    writer_l3 = _writer_l3(l3)
+    recreator.append(
+        DeltaRecreator(
+            [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=True)],
+            writer_l3,
+            log,
+            folds=folds,
+            page_size=50,
+            writers=beats,
+            generations=log,
+        )
+    )
+    return world, writer_l3, recreator
+
+
+def _load_file(volume: Path, write: str, rows: Sequence[dict[str, Any]]) -> str:
+    """the pod's file for a load request of VA (an upsert): every row the request sends."""
+    delta = TableDelta(name=_TABLE, types=_TYPES, key=_KEY)
+    delta.rows(rows, list(_NAMES))
+    return write_delta_file(volume, delta, write)
+
+
+async def test_a_hub_crash_after_one_commit_leaves_the_intent_copies_wait_with_no_l3_read_and_the_writer_confirms_once_it_is_gone(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a hub that crashed after its first 50k commit leaves rows no record names, if a copy applies the
+    request's own file (rows L3 never took) or reads L3 while the hub may still be loading, if the writer confirms the
+    file while the hub's beat is kept (a hub still copying), or if it never confirms it once the beat is gone. The
+    intent record names the file unconfirmed beside the hub's beat key; the copy waits (``file_unconfirmed``) and asks;
+    the writer answers ``pending`` while the beat is kept, then, the beat deleted (the platform's recovery declared the
+    hub dead), reads the request's keys from L3 by key once and writes the file confirmed; the copy is then current."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    beats, answers, folds = _Beats(_HUB), list[str](), _Confirmed()
+    world, writer_l3, _ = _intent_world(beats, answers, folds)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    held = _copy(backend)
+    sent = [_row("VA", 100, 1, "new", _LATER), _row("VA", 101, 2, "new", _LATER)]
+    file = _load_file(_volume, "intent", sent)
+    intent = await log.advance_with_change(
+        _TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=file, unconfirmed_writer=_HUB
+    )
+    # the first transaction committed (its leading rows), then the hub died: no record of its own follows
+    l3.insert([sent[0]])
+    lock.commit("state:VA")
+
+    await follower.catch_up()
+    await asyncio.wait_for(_until(lambda: answers.count("pending") >= 3), timeout=5)
+
+    assert "file_unconfirmed" in follower.status().waiting_for_file[_TABLE], "its own why, not key_not_in_file"
+    assert _copy(backend) == held, "nothing of the request's file is applied while the hub may still be loading"
+    assert l3.statements == 0 and writer_l3.statements == 0, "no copy and no writer reads L3 while the hub is alive"
+    assert not read_delta_file_keys(_volume / file).confirmed, "never confirmed over a hub still copying"
+    assert set(answers) == {"pending"} and set(beats.asked) == {_HUB}
+
+    beats.kept = frozenset()
+    await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
+    assert await follower.catch_up()
+
+    assert _same(backend, l3), "the copy holds what L3 holds: the committed row, not the one L3 never took"
+    assert l3.statements == 0
+    assert writer_l3.statements == 1, "the writer read the request's keys from L3 by key, once"
+    assert read_delta_file_keys(_volume / file).confirmed
+    assert answers[-1] == "recreated" and folds.told == [(_TABLE, file, intent)]
+
+
+async def test_a_normal_load_writes_the_intent_then_its_confirmed_record_and_is_applied_once_from_the_later_record(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the hub's confirmed record does not supersede its intent: the copy waiting for the hub's death (for
+    ever, the hub being alive), the writer reading L3 or rewriting the hub's own file, or the file applied twice (once
+    for the intent, once for the confirmed record). The copy ends the intent's wait with nothing heard
+    (``superseded``) and applies the load from the confirmed record alone."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    beats, answers, folds = _Beats(_HUB), list[str](), _Confirmed()
+    world, writer_l3, _ = _intent_world(beats, answers, folds)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    # the two places a load's file is heard by a copy: from a waited-for file, and from the record the registry applies
+    heard: list[str] = []
+    hear_file = CopyFollower.__dict__["_hear_file"]
+
+    def hearing(self: CopyFollower, table: str, wait: Any, reach: Any) -> None:
+        heard.append(wait.epoch)
+        hear_file(self, table, wait, reach)
+
+    monkeypatch.setattr(CopyFollower, "_hear_file", hearing)
+    applied: list[str] = []
+    apply_file_prefixes = CollectionRegistry.__dict__["_apply_file_prefixes"]
+
+    async def applying(self: CollectionRegistry, change: EpochChange, **kwargs: Any) -> bool:
+        applied.append(change.token)
+        return bool(await apply_file_prefixes(self, change, **kwargs))
+
+    monkeypatch.setattr(CollectionRegistry, "_apply_file_prefixes", applying)
+    sent = [_row("VA", 100, 1, "new", _LATER), _row("VA", 101, 2, "new", _LATER)]
+    file = _load_file(_volume, "whole", sent)
+    intent = await log.advance_with_change(
+        _TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=file, unconfirmed_writer=_HUB
+    )
+    await follower.catch_up()
+    await asyncio.wait_for(_until(lambda: "pending" in answers), timeout=5)
+    l3.insert(sent)
+    confirmed = await log.advance_with_change(_TABLE, None, prefixes=[{"state": "VA"}], delta_file=file)
+    lock.commit("state:VA")
+
+    await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert l3.statements == 0 and writer_l3.statements == 0
+    assert answers[-1] == "superseded"
+    assert applied == [confirmed] and heard == [], "the file is applied once, at the confirmed record"
+    assert not read_delta_file_keys(_volume / file).confirmed, "the hub's own file, left as it is"
+    assert folds.told == [] and intent != confirmed
+
+
+async def test_a_load_the_hub_answered_failed_after_its_intent_is_confirmed_at_the_hubs_own_record_while_it_lives(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the hub's own record of a failed load (unconfirmed, naming no writer) does not supersede its intent:
+    the copy then waits for a live hub's death, or the swallowed wait never applies the rows that committed. The wait
+    moves to the hub's record, which the writer confirms from L3 at once."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    beats, answers, folds = _Beats(_HUB), list[str](), _Confirmed()
+    world, writer_l3, _ = _intent_world(beats, answers, folds)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    sent = [_row("VA", 100, 1, "new", _LATER), _row("VA", 101, 2, "new", _LATER)]
+    file = _load_file(_volume, "failed", sent)
+    await log.advance_with_change(
+        _TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=file, unconfirmed_writer=_HUB
+    )
+    l3.insert([sent[0]])
+    stopped = await log.advance_with_change(_TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=file)
+    lock.commit("state:VA")
+
+    await follower.catch_up()
+    await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert l3.statements == 0 and writer_l3.statements == 1
+    assert folds.told == [(_TABLE, file, stopped)], "confirmed once, at the hub's own record"
+    assert "pending" not in answers, "a hub still alive is never waited on once its own record names the file"
+
+
+async def test_a_writer_given_no_beats_never_confirms_an_intent_the_hub_has_not_superseded(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a writer that reads no beats confirms an intent record over a hub that may still be loading."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    answers: list[str] = []
+    world, writer_l3, _ = _intent_world(None, answers)
+    l3, log, lock, _backend, follower = world
+    await _warmed(world)
+    file = _load_file(_volume, "nobeats", [_row("VA", 100, 1, "new", _LATER)])
+    await log.advance_with_change(
+        _TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=file, unconfirmed_writer=_HUB
+    )
+    lock.commit("state:VA")
+    await follower.catch_up()
+    await asyncio.wait_for(_until(lambda: answers.count("pending") >= 2), timeout=5)
+    assert writer_l3.statements == 0 and not read_delta_file_keys(_volume / file).confirmed
+    follower.stop()

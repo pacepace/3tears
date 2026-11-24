@@ -278,7 +278,8 @@ _DELTA_FILE_FALLBACKS = counter(
 
 #: waits for a delta file, by table and why: ``file_missing`` (the record names a file the volume does not hold, or no
 #: volume is mounted) or ``file_unreadable`` (it holds one under the name that is not the table's delta file:
-#: truncated, garbage, another format, a damaged zstd buffer, another table's or write's), ``key_not_in_file`` (it reads,
+#: truncated, garbage, another format, a damaged zstd buffer, another table's or write's), ``file_unconfirmed`` (a
+#: load's file named unconfirmed: read once the writer confirmed it from L3), ``key_not_in_file`` (it reads,
 #: and holds no change of a key its record named: read again only once the writer answered, which recreates it from
 #: the record) or ``record_missing`` (the log holds no record of the epoch, so no file can be named: the writer recovers
 #: the table, decision 28, and the copy waits for that full). Each is a file the writer recreated, or must; the copy
@@ -302,6 +303,15 @@ _RECREATE_ASKS = counter(
 
 #: the writer's answers after which the copy does not ask again for the same file: it reads it, or waits for the full
 _ANSWERED: Final = frozenset({"recreated", "present", "recovering"})
+
+#: the waits whose file, though it reads, is read only once the writer answered for it: ``key_not_in_file`` (it lacks a
+#: key its record named) and ``file_unconfirmed`` (a load's file, named unconfirmed: it may hold rows L3 never took,
+#: and is applied only as the writer confirms it from L3; ``registry.UNCONFIRMED_FILE_WAIT``)
+_READ_ONCE_ANSWERED: Final = frozenset({"key_not_in_file", "file_unconfirmed"})
+
+#: the writer's answer to a wait for a load's intent record that a later record of the table names the same file in:
+#: the wait ends with nothing heard, and that later record alone applies the file, once (``delta_recreate``)
+_SUPERSEDED: Final = "superseded"
 
 #: how often a table waiting for a delta file looks for it again, besides when the writer answers (seconds)
 FILE_POLL_SECONDS: Final = 5.0
@@ -1112,7 +1122,8 @@ class FileRecreate(Protocol):
         :ptype file: str
         :param epoch: the epoch whose record names it
         :ptype epoch: str
-        :return: ``recreated``, ``present``, ``recovering``, ``no_writer`` or ``failed``
+        :return: ``recreated``, ``present``, ``recovering``, ``no_writer``, ``failed``, ``pending`` (a load's intent
+            whose writer may still be loading: asked again) or ``superseded`` (a later record applies the file)
         :rtype: str
         """
         ...
@@ -2666,8 +2677,11 @@ class CopyFollower:
         :rtype: None
         """
         waits = self._file_waits.get(table, frozen())
-        if file in waits:
+        had = waits.get(file)
+        if had is not None and not (why == "file_unconfirmed" and had.epoch != epoch):
             return
+        # a later record naming the same file unconfirmed (the hub's own record of a load it answered failed, after
+        # its intent record) supersedes the wait: the file is waited for, and asked after, at that record's epoch
         self._file_waits = with_entry(
             self._file_waits,
             table,
@@ -2767,7 +2781,7 @@ class CopyFollower:
                 for wait in waits:
                     reach: _WaitedReach | None = None
                     why = wait.why
-                    if wait.watch and (wait.why != "key_not_in_file" or wait.answer in _ANSWERED):
+                    if wait.watch and (wait.why not in _READ_ONCE_ANSWERED or wait.answer in _ANSWERED):
                         # a file that reads and lacks a key is read again only once the writer answered for it
                         reach, why = await self._look_for(table, wait)
                     answer = wait.answer
@@ -2805,6 +2819,11 @@ class CopyFollower:
         waits = self._file_waits.get(table, frozen())
         if waits.get(wait.file) is not wait:
             return False  # ended or replaced meanwhile: a stale look, discarded
+        if answer == _SUPERSEDED and reach is None:
+            # a load's intent record a later record names the same file in: nothing of it is heard here, the later
+            # record applies the file once
+            self._file_read(table, wait.file, why="a later record of the table names the file")
+            return False
         if reach is not None:
             self._hear_file(table, wait, reach)
             self._file_read(table, wait.file, why="the file reads")

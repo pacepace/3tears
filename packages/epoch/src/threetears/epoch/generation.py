@@ -1004,6 +1004,7 @@ class EpochGenerationSource(_ChangeLogReading):
         delta_file: str | None = None,
         scopes: Sequence[str] | None = None,
         unconfirmed_delta_file: str | None = None,
+        unconfirmed_writer: str | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -1046,6 +1047,10 @@ class EpochGenerationSource(_ChangeLogReading):
             committed some rows (:attr:`~threetears.core.collections.epoch_change.EpochChange.delta_file_unconfirmed`),
             stored under its own field so an older reader never applies it; requires ``rows=None`` and ``prefixes``
         :ptype unconfirmed_delta_file: str | None
+        :param unconfirmed_writer: beside ``unconfirmed_delta_file`` on a load's intent record (written before its
+            first commit), the loading writer's beat key
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.unconfirmed_writer`)
+        :ptype unconfirmed_writer: str | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -1072,6 +1077,7 @@ class EpochGenerationSource(_ChangeLogReading):
                         delta_file=delta_file,
                         scopes=scopes,
                         unconfirmed_delta_file=unconfirmed_delta_file,
+                        unconfirmed_writer=unconfirmed_writer,
                     ),
                 )
             ]

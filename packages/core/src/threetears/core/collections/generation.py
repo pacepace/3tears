@@ -938,6 +938,8 @@ async def advance_for_write(
     delta_file: str | None = None,
     scopes: Sequence[str] | None = None,
     unconfirmed_delta_file: str | None = None,
+    unconfirmed_writer: str | None = None,
+    repair: bool = True,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -986,6 +988,13 @@ async def advance_for_write(
         committed some rows (``EpochChange.delta_file_unconfirmed``): the broker passes the one the request named;
         ``None`` takes the one named in this context (``naming_unconfirmed_delta_files``), none when none is
     :ptype unconfirmed_delta_file: str | None
+    :param unconfirmed_writer: beside ``unconfirmed_delta_file`` on a load's intent record, written before its first
+        commit, the loading writer's beat key (``EpochChange.unconfirmed_writer``); ``None`` names none
+    :ptype unconfirmed_writer: str | None
+    :param repair: hand a failed advance to the process's writer ledger for retry (``advance_recording``); ``False``
+        for an advance whose failure the caller answers itself, so no retry lands after it (a load's intent record,
+        whose failure stops the load before its first commit)
+    :ptype repair: bool
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -1024,6 +1033,8 @@ async def advance_for_write(
         # only a keys-unknown record of a commit with a delta file: its keys are in that file alone (decision 31)
         scopes=(scopes if scopes is not None else named_commit_scopes()) if keys_unknown and file else None,
         unconfirmed_delta_file=unconfirmed,
+        unconfirmed_writer=unconfirmed_writer if unconfirmed is not None else None,
+        repair=repair,
     )
     if isinstance(token, str) and token:
         # a commit settling in this context collects it: a writer folds its delta files by the generation it wrote

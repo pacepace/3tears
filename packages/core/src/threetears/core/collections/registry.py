@@ -88,11 +88,10 @@ def _unconfirmed_files_waited() -> Any:
     )
 
 
-#: how a copy is told to wait for a failed load request's unconfirmed file (``WantedFile.why``): the wait whose file,
-#: though it reads, is read again only once the writer has answered for it (``CopyFollower``'s rule for a file lacking a
-#: key its record named), so the copy never applies the request's own file, only the one the writer wrote again from
-#: L3. Why this word and not one of its own: the copy's wait rule keys on it, and the copy follower is not changed here
-UNCONFIRMED_FILE_WAIT: Final = "key_not_in_file"
+#: how a copy is told to wait for a load's unconfirmed file (``WantedFile.why``): the wait whose file, though it reads,
+#: is read only once the writer has answered for it (``CopyFollower._await_files``), so the copy never applies the
+#: request's own file, only the one the writer wrote again from L3; or none at all, when a later record supersedes it
+UNCONFIRMED_FILE_WAIT: Final = "file_unconfirmed"
 
 
 #: every reason a followed table falls behind, and what ends it: the one list the metric's description and the
