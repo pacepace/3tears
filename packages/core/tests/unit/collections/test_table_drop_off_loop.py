@@ -264,18 +264,18 @@ class TestAPrefixDropHoldsNoTurnOfTheLoop:
         collection.add_l1_change_listener(heard.append)
 
         def walked(*_: Any, **__: Any) -> Any:
-            raise AssertionError("L1's keys were read for a refused prefix")
+            raise AssertionError("L1 was read for a refused prefix")
 
-        monkeypatch.setattr(collection, "_l1_keys", walked)
-        monkeypatch.setattr(collection, "_l1_keys_under", walked)
         labels = {"table": "prefix_rows"}
         before = REGISTRY.get_sample_value("threetears_collection_prefix_drops_refused_total", labels) or 0.0
-        with pytest.raises(PrefixNotLeadingError) as refused:
+        with monkeypatch.context() as patched, pytest.raises(PrefixNotLeadingError) as refused:
+            # L1's front door: every read of its keys asks the backend for its connection
+            patched.setattr(l1, "get_connection", walked)
             await collection.drop_cached_prefixes([{"state": "VA"}, {"id": "k0000001"}])
         assert refused.value.table == "prefix_rows"
         assert refused.value.prefix == {"id": "k0000001"}
         assert REGISTRY.get_sample_value("threetears_collection_prefix_drops_refused_total", labels) == before + 1
         assert heard == []
-        assert not collection.__dict__.get("_l2_distrusted_prefixes"), "a refused clear distrusts nothing"
+        assert collection.distrusted_prefixes() == {}, "a refused clear distrusts nothing"
         counted = l1.execute_query("SELECT state, count(*) AS n FROM prefix_rows GROUP BY state")
         assert {row["state"]: row["n"] for row in counted} == {"IL": 1_000, "VA": 1_000}

@@ -1841,6 +1841,10 @@ class CollectionRegistry:
                     "prefixes": [dict(prefix) for prefix in prefixes[:20]],
                     "prefix_count": len(prefixes),
                     "l1_rows": rows,
+                    # how many prefixes the table's reads are now checked against (a table drop forgets them)
+                    "distrusted_prefixes": (
+                        sum(collection.distrusted_prefixes().values()) if collection is not None else 0
+                    ),
                     "derived_caches": len(derived),
                 }
             },
