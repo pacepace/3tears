@@ -86,7 +86,7 @@ import json
 import re
 
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from dataclasses import dataclass
@@ -175,7 +175,7 @@ _SCOPE_MAX_CHARS: Final = 128
 _DELTA_FILE_MAX_CHARS: Final = 256
 
 
-def key_text(value: Any) -> str:
+def key_text(value: Any, *, instant: bool = False) -> str:
     """a key's or an invalidation column's value as a change record, a row message and a change note name it.
 
     A time zone-aware ``datetime`` (a ``timestamptz``) is named in UTC, to the microsecond, in ISO form
@@ -185,14 +185,30 @@ def key_text(value: Any) -> str:
     ``str``. Every key derived from a row's key values (its L2 key, its fence key) is built from these forms too, so a
     message's text values land on the key the typed values made.
 
+    With ``instant`` (the value is of a ``timestamptz`` column, ``DATETIMETZ_TYPE``), the column's other spellings
+    of an instant name it in that one form too: the ISO text the L3 rail answers (``2026-11-03T21:45:00Z``, which a
+    delta file and a copy's full load hold), Postgres' own (``2026-11-03 21:45:00+00``), and a naive time, which such a
+    column holds as UTC. Why: a delta file named a timestamp key ``...Z`` while the epoch record and the change note
+    named it ``....000000+00:00``, so a copy of a table keyed by a timestamp (reports' ``result_snapshots_by_id``)
+    never found the keys it heard in the file (2026-11-24). Text that is no instant is kept as it is.
+
     :param value: the value
     :ptype value: Any
+    :param instant: the value is a ``timestamptz`` column's, as a datetime or any ISO text of one
+    :ptype instant: bool
     :return: its text
     :rtype: str
     """
-    if isinstance(value, datetime) and value.utcoffset() is not None:
-        # the L1 keeps a timestamp column in this text too, so an eviction naming the key finds its row
-        return stored_instant(value)
+    if instant and isinstance(value, str):
+        text: str = value
+        try:
+            value = datetime.fromisoformat(text.strip())
+        except ValueError:
+            return text  # NOSILENT: not an instant's text, so no instant's canonical text can equal it either way
+    if isinstance(value, datetime) and (instant or value.utcoffset() is not None):
+        # the L1 keeps a timestamp column in this text too, so an eviction naming the key finds its row; a naive
+        # time of a timestamptz column is UTC
+        return stored_instant(value if value.utcoffset() is not None else value.replace(tzinfo=UTC))
     return str(value)
 
 

@@ -975,7 +975,7 @@ def read_delta_file_keys(path: Path, *, table: str | None = None) -> DeltaKeys:
     return DeltaKeys(key=key, keys=_first_written(texts, key), prefixes=prefixes, table=named, confirmed=confirmed)
 
 
-def key_text_table(rows: Any, key: Sequence[str]) -> Any:
+def key_text_table(rows: Any, key: Sequence[str], instants: Collection[str] = ()) -> Any:
     """the key columns of ``rows``, each as text in ``key_text``'s spelling (a change record's, a row message's), named
     as the key's columns, in key order: what a copy holds a key heard as.
 
@@ -983,10 +983,13 @@ def key_text_table(rows: Any, key: Sequence[str]) -> Any:
     :ptype rows: pyarrow.Table
     :param key: the key columns, in key order
     :ptype key: Sequence[str]
+    :param instants: the key columns of a ``timestamptz`` column (``DATETIMETZ_TYPE``): each spelling of an instant
+        named in its one canonical text (``key_text(..., instant=True)``), whichever text or type the rows hold it in
+    :ptype instants: Collection[str]
     :return: one row a row of ``rows``
     :rtype: pyarrow.Table
     """
-    return pa.table({column: _text_column(rows.column(column)) for column in key})
+    return pa.table({column: _text_column(rows.column(column), instant=column in instants) for column in key})
 
 
 def joined_key_texts(rows: Any, key: Sequence[str]) -> Any:
@@ -1043,23 +1046,29 @@ def _first_written(texts: Any, key: Sequence[str]) -> Any:
 _KEY_SEPARATOR: Final = "\x1e"
 
 
-def _text_column(column: Any) -> Any:
+def _text_column(column: Any, *, instant: bool = False) -> Any:
     """a key column's values as :func:`~threetears.core.collections.epoch_change.key_text` names each (a change
     record's, a row message's spelling): text kept, an integer's digits cast in Arrow, any other type one distinct value
-    at a time.
+    at a time. A ``timestamptz`` column's (``instant``) one distinct value at a time too, text included: the rail's
+    ``...Z``, Postgres' ``... +00`` and the record's ``....000000+00:00`` are one instant, named in the record's text.
 
     :param column: the column
     :ptype column: pyarrow.Array | pyarrow.ChunkedArray
+    :param instant: the column is a ``timestamptz`` column's
+    :ptype instant: bool
     :return: its texts
     :rtype: pyarrow.Array
     """
     if isinstance(column, pa.ChunkedArray):
         column = column.combine_chunks()
     kind = column.type
-    if pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_integer(kind):
+    if not instant and (pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_integer(kind)):
         return column.cast(pa.string())
     encoded = pc.dictionary_encode(column)
-    texts = pa.array([key_text(value) for value in encoded.dictionary.to_pylist()], pa.string())
+    texts = pa.array(
+        [None if value is None else key_text(value, instant=instant) for value in encoded.dictionary.to_pylist()],
+        pa.string(),
+    )
     return texts.take(encoded.indices)
 
 
@@ -1091,7 +1100,9 @@ class HeldDeltaRows:
     :ivar applied: how many changes were applied, each once
     """
 
-    def __init__(self, key: Sequence[str], keys: Any, types: Mapping[str, Any]) -> None:
+    def __init__(
+        self, key: Sequence[str], keys: Any, types: Mapping[str, Any], *, instants: Collection[str] = ()
+    ) -> None:
         """the keys, none held yet.
 
         :param key: the table's key columns, in key order
@@ -1101,8 +1112,12 @@ class HeldDeltaRows:
         :ptype keys: pyarrow.Table | Sequence[Sequence[str]]
         :param types: each column the rows hold, onto its Arrow type, in order
         :ptype types: Mapping[str, pyarrow.DataType]
+        :param instants: the key columns of a ``timestamptz`` column: the keys and the rows' keys are matched by each
+            instant's canonical text (:func:`key_text_table`), whichever spelling each holds
+        :ptype instants: Collection[str]
         """
         self.key = tuple(key)
+        self._instants = frozenset(instants)
         self._types = dict(types)
         if isinstance(keys, pa.Table):
             self._count = keys.num_rows
@@ -1110,6 +1125,10 @@ class HeldDeltaRows:
         else:
             self._count = len(keys)
             texts = [pa.array([values[at] for values in keys], pa.string()) for at in range(len(self.key))]
+        texts = [
+            _text_column(text, instant=True) if column in self._instants else text
+            for column, text in zip(self.key, texts, strict=True)
+        ]
         self._key_columns = dict(zip(self.key, texts, strict=True))
         self._texts = _key_texts(texts)
         #: each column's values (Arrow), one value a key: an immutable value replaced whole on change
@@ -1127,7 +1146,10 @@ class HeldDeltaRows:
         :return: one position a row
         :rtype: numpy.ndarray
         """
-        found = pc.index_in(_key_texts([_text_column(rows.column(name)) for name in self.key]), value_set=self._texts)
+        found = pc.index_in(
+            _key_texts([_text_column(rows.column(name), instant=name in self._instants) for name in self.key]),
+            value_set=self._texts,
+        )
         return np.asarray(pc.fill_null(found, -1).to_numpy(zero_copy_only=False), dtype=np.int64)
 
     def _placed(self, column: Any, positions: Any, values: Any) -> Any:

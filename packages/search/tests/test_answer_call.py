@@ -147,8 +147,8 @@ async def test_the_budget_is_checked_with_the_provider_s_estimate_before_and_deb
         AnswerRequest(question="q", budget_scope_tags=("run:1",)), provider=provider, budget=budget, clock=_Clock()
     )
 
-    assert budget.checks == [(ESTIMATE, ("run:1",))]
-    assert budget.records == [(result.spend, ("run:1",))]
+    assert budget.checks == ((ESTIMATE, ("run:1",)),)
+    assert budget.records == ((result.spend, ("run:1",)),)
     assert result.spend.wall_clock_seconds == pytest.approx(0.5), "the call layer's own wall-clock replaces it"
 
 
@@ -164,7 +164,7 @@ async def test_a_budget_refusal_is_a_local_cap_and_the_provider_is_never_asked()
     assert caught.value.scope == "run:1"
     assert caught.value.spend == consumed
     assert not isinstance(caught.value, QuotaExhausted)
-    assert provider.requests == [] and limiter.acquisitions == [] and budget.records == []
+    assert provider.requests == [] and limiter.acquisitions == () and budget.records == ()
 
 
 async def test_pacing_keys_on_instance_and_egress_and_spends_the_caller_s_bound() -> None:
@@ -214,7 +214,7 @@ async def test_a_typed_failure_passes_through_and_its_spend_is_debited() -> None
 
     assert caught.value.spend.calls == 1
     assert caught.value.spend.wall_clock_seconds == pytest.approx(0.5)
-    assert budget.records == [(caught.value.spend, ())]
+    assert budget.records == ((caught.value.spend, ()),)
 
 
 async def test_an_untyped_adapter_escape_becomes_a_typed_failure_and_is_debited_honestly() -> None:
@@ -225,7 +225,7 @@ async def test_an_untyped_adapter_escape_becomes_a_typed_failure_and_is_debited_
 
     assert "unmapped KeyError" in caught.value.message
     assert caught.value.spend.calls == 0, "the call layer claims no bill it cannot see"
-    assert budget.records == [(caught.value.spend, ())]
+    assert budget.records == ((caught.value.spend, ()),)
 
 
 async def test_a_criterion_the_adapter_forgot_is_answered_from_the_declaration() -> None:
