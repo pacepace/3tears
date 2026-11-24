@@ -141,6 +141,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; rail_arrow_type
 
 __all__ = [
     "register_sa_table_indexes",
+    "rail_text",
     "sql_cast",
     "BIGINT_TYPE",
     "MAX_INDEX_COLUMNS",
@@ -340,6 +341,19 @@ def sql_cast(column_type: str) -> str:
 #: the L3 column types the rail's JSON answers as text: ``fetch`` answers them as text (a ``NUMERIC`` arrives as
 #: its digits, a timestamp outside ``date_*`` as its ISO text)
 _RAIL_TEXT_TYPES: Final = frozenset({STRING_TYPE, UUID_TYPE, ENUM_TYPE, TSVECTOR_TYPE, NUMERIC_TYPE, DATETIMETZ_TYPE})
+
+
+def rail_text(column_type: str) -> bool:
+    """whether the L3 rail answers a column of ``column_type`` as text (:data:`_RAIL_TEXT_TYPES`): what a copy read
+    off the rail holds it as, a timestamp outside ``date_*`` as its ISO text, a ``NUMERIC`` as its digits.
+
+    :param column_type: the column's type tag
+    :ptype column_type: str
+    :return: True when the rail answers it as text
+    :rtype: bool
+    """
+    return column_type in _RAIL_TEXT_TYPES
+
 
 #: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy.deserialize_row``)
 _DATED_PREFIX: Final = "date_"

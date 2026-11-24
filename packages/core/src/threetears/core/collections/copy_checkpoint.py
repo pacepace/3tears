@@ -1594,7 +1594,7 @@ def _patched_part(cursor: Any, table: FollowedTable, old: Any, keys: Any) -> Any
     # keyed reads take them (CopyFollower's read by key). Bound as Python lists, DuckDB probes each value: 25,000
     # touched keys of a 250,000-row part took 22.7 s to read against 0.17 s through Arrow (DuckDB 1.5.6, 2026-11-15;
     # the patch's real-size budget: test_copy_follower_whole_reads_live.py::test_checkpoint_patch_speed_at_real_size)
-    named = ", ".join(f"t.{quote_identifier(column)}" for column in table.key)
+    named = ", ".join(table.held_key(column, "t") for column in table.key)
     cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(table.key))
     fresh = run_joined(
         cursor,
