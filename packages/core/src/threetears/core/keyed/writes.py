@@ -132,7 +132,7 @@ async def update_keyed(
         batch=batch,
         prefix=prefix,
         natively=binds_native_arrays(conn),
-        binder=binder_for(conn),
+        binder=binder_for(conn, keys),
     )
     return await _ran(conn, statements, returning)
 
@@ -179,7 +179,7 @@ async def delete_keyed(
         batch=batch,
         prefix=prefix,
         natively=binds_native_arrays(conn),
-        binder=binder_for(conn),
+        binder=binder_for(conn, keys),
     )
     return await _ran(conn, statements, returning)
 

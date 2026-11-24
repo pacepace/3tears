@@ -1,14 +1,15 @@
 """a key batch's columns bound in Arrow: each key column ONE text, written in Arrow's kernels.
 
 A :class:`~threetears.core.keyed.KeyBatch` holds one array a key column. Wherever pyarrow imports, the keyed helpers
-bind it here (Arrow mode, Pace 2026-11-23): a plain column is made an Arrow array once, by Arrow's own conversion, and
-every column's distinct keys, its chunks (zero-copy slices) and its bind are Arrow's work, never a Python object a
+bind it here (Arrow mode, Pace 2026-11-23) when a column arrives as an Arrow array (a plain column beside it is made
+one by Arrow's own conversion), and every column's distinct keys, its chunks (zero-copy slices) and its bind are Arrow's work, never a Python object a
 key. On PostgreSQL and YugabyteDB (asyncpg, the rail) a column is ONE text, its values' texts joined by a code point
 none holds and split back in SQL (``string_to_array($1::text, chr(44))::uuid[]``, :class:`SplitText`); a reader naming
 DuckDB gets the array's literal in DuckDB's list form; an in-process DuckDB gets the Arrow array of its texts itself,
-which :func:`~threetears.core.cache.duckdb_binds.run_bound` sets as a DuckDB variable. Where pyarrow does not import (a
-process with no Arrow extra: the SDK's agents, the epoch follow, 3tears' import-without-Arrow gate), the batch binds
-through :data:`~threetears.interfaces.keyed.rows.PLAIN_KEYS`, a list a column.
+which :func:`~threetears.core.cache.duckdb_binds.run_bound` sets as a DuckDB variable. A batch of plain columns (a small key
+list program logic holds), or any batch where pyarrow does not import (the SDK's agents, the epoch follow, 3tears'
+import-without-Arrow gate), binds through :data:`~threetears.interfaces.keyed.rows.PLAIN_KEYS`, a list a column
+(:func:`binder_for`).
 
 A batch bound as a list of placeholders (``as_list``: Redshift, SQLite) is the one exception: its driver binds a
 placeholder a value, so its values are made Python objects at the bind, a statement's chunk at a time.
@@ -221,16 +222,32 @@ _IN_PROCESS_DUCKDB: Final[KeyBinder | None] = _ArrowKeys(duckdb=True, brackets=F
 _DUCKDB_READER: Final[KeyBinder | None] = _ArrowKeys(duckdb=False, brackets=True) if _ARROW else None
 
 
-def binder_for(conn: Any) -> KeyBinder:
-    """how a keyed helper on ``conn`` binds its key columns: in Arrow wherever pyarrow imports (an in-process DuckDB's
-    as Arrow arrays, run_bound's; a reader naming DuckDB's in its list form), else plain lists.
+def _arrives_as_arrow(keys: KeyBatch | None) -> bool:
+    """whether any of a batch's key columns arrived as an Arrow array (a serving path's keys)."""
+    return keys is not None and any(isinstance(column, pa.Array | pa.ChunkedArray) for column in keys.keys)
+
+
+def binder_for(conn: Any, keys: KeyBatch | None) -> KeyBinder:
+    """how a keyed helper on ``conn`` binds ``keys``' columns: in Arrow when a column arrived as an Arrow array (an
+    in-process DuckDB's as Arrow arrays, run_bound's; a reader naming DuckDB's in its list form; else one text a
+    column, split back in SQL), a plain column beside it made Arrow too; plain lists when every column is a plain
+    sequence, or where pyarrow does not import.
+
+    WHY plain columns keep their lists where pyarrow imports (Pace 2026-11-23, option A): a plain column is a small
+    key list program logic already holds as Python values; made Arrow and sent as one text it read 2,000 UUIDs at
+    1.27-1.34x the hand-written native bind on PostgreSQL 16 (1.09-1.12x on YugabyteDB), as a list at 1.05x, as the
+    tuples did. Arrow mode is for keys that arrive as Arrow, where it spends a third to a half of the CPU.
 
     :param conn: the connection or reader the helper was handed
     :ptype conn: Any
+    :param keys: the batch bound; None when the helper names no batch (a write by ``by`` alone)
+    :ptype keys: KeyBatch | None
     :return: the binder
     :rtype: KeyBinder
     """
     if not _ARROW or _LITERAL is None or _IN_PROCESS_DUCKDB is None or _DUCKDB_READER is None:
+        return PLAIN_KEYS
+    if not _arrives_as_arrow(keys):
         return PLAIN_KEYS
     if isinstance(conn, InlineDuckDB | ThreadedDuckDB):
         return _IN_PROCESS_DUCKDB

@@ -235,7 +235,7 @@ async def read_keyed(
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    binder = binder_for(conn)
+    binder = binder_for(conn, keys)
     statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
     natively = binds_native_arrays(conn)
 
@@ -294,7 +294,7 @@ async def read_keyed_arrow(
     :raises ValueError: as :func:`read_keyed`
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    binder = binder_for(conn)
+    binder = binder_for(conn, keys)
     statement = keyed_read_statement(
         table, list(types) if columns is None else columns, keys, by or {}, None, where, binder
     )

@@ -7,7 +7,6 @@ from typing import Any
 
 from threetears.core.keyed import Fragment
 from threetears.core.data.migrations.backfill import backfill_pages
-from threetears.core.testing.keyed_statements import bound_values
 
 
 class _Held:
@@ -31,7 +30,7 @@ class _Held:
 
     async def execute(self, sql: str, *params: Any) -> str:
         self.statements.append((sql, params))
-        return f"UPDATE {len(bound_values(sql, params, len(params)))}"
+        return f"UPDATE {len(params[-1])}"
 
 
 def _writes(held: _Held) -> list[tuple[str, tuple[Any, ...]]]:
@@ -56,10 +55,10 @@ async def test_each_page_writes_its_rows_of_one_value_by_their_keys() -> None:
     assert reads[0] == 'SELECT "id", "status", "notes" FROM t ORDER BY "id" LIMIT 5'
     assert len(reads) == 3, reads
     for sql, params in _writes(held):
-        assert sql == 'UPDATE "t" SET "status" = $1 WHERE "id" = ANY(string_to_array($2::text, chr(31)))', sql
-        named = set(bound_values(sql, params, 2))
+        assert sql == 'UPDATE "t" SET "status" = $1 WHERE "id" = ANY($2::text[])', sql
+        named = set(params[1])
         assert all(rows[int(key[1:])]["status"] is None for key in named), "a filled row was written again"
-    every = sorted(key for sql, params in _writes(held) for key in bound_values(sql, params, 2))
+    every = sorted(key for _, params in _writes(held) for key in params[1])
     assert every == [row["id"] for row in rows if row["status"] is None]
     assert written == len(every)
     first_page_writes = _writes(held)[:2]
@@ -82,10 +81,9 @@ async def test_a_fragment_value_is_computed_from_the_row_s_own_columns() -> None
     [(sql, params)] = _writes(held)
     assert sql == (
         'UPDATE "s"."items" SET "long_desc" = LEFT("content", 1000) '
-        'WHERE ("a", "b") IN (SELECT unnest(string_to_array($1::text, chr(44))::bigint[]), '
-        "unnest(string_to_array($2::text, chr(44))::bigint[]))"
+        'WHERE ("a", "b") IN (SELECT unnest($1::text[]::bigint[]), unnest($2::text[]::bigint[]))'
     )
-    assert params == ("1", "2")
+    assert params == (["1"], ["2"])
 
 
 async def test_a_replay_over_filled_rows_writes_nothing() -> None:

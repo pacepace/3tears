@@ -30,6 +30,9 @@ from threetears.core.keyed import (
 from threetears.core.keyed.binding import _arrow_literal, binder_for
 from threetears.interfaces.keyed.rows import PLAIN_KEYS, read_keyed_statements
 
+#: a batch whose column arrives as Arrow: a serving path's keys, bound in Arrow mode
+_ARROW_KEYS = KeyBatch(("k",), [pa.array(["a"])])
+
 #: keys a real-size read names: a page of a night's changed rows
 _REAL_KEYS = 50_000
 _STATES, _GEOS, _IDS = 50, 200, 30
@@ -124,7 +127,7 @@ class TestArrowModeBindsOneTextAColumn:
     def test_a_text_column_no_delimiter_fits_is_bound_as_its_literal(self) -> None:
         """Flips if a text column holding every candidate delimiter, or one empty text alone (which a split reads as
         no value), is bound other than as its array literal."""
-        binder = binder_for(object())
+        binder = binder_for(object(), _ARROW_KEYS)
         every = "".join(chr(code) for code in range(24, 32))
         bound, kind = binder.array(pa.array([every, "x"]), "text", False)
         assert kind == "literal" and bound.startswith("{")
@@ -134,22 +137,29 @@ class TestArrowModeBindsOneTextAColumn:
         """Flips if a read on an in-process DuckDB is sent a PostgreSQL literal (it parses none) or Python values
         rather than the Arrow array of its texts (run_bound sets it as a DuckDB variable)."""
         conn = duckdb.connect()
-        binder = binder_for(InlineDuckDB(conn))
+        binder = binder_for(InlineDuckDB(conn), _ARROW_KEYS)
         bound, kind = binder.array(pa.array(["a", "b"]), "text", False)
         assert kind == "text" and isinstance(bound, pa.Array)
-        assert binder_for(ThreadedDuckDB(conn)) is binder
+        assert binder_for(ThreadedDuckDB(conn), _ARROW_KEYS) is binder
 
-    def test_the_binder_follows_the_connection_and_whether_arrow_imports(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Flips if a reader naming DuckDB is sent PostgreSQL's literal, or a process with no Arrow binds other than
-        plain lists."""
+    def test_the_binder_follows_the_connection_the_columns_and_whether_arrow_imports(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a reader naming DuckDB is sent PostgreSQL's literal, a batch of plain columns (a key list program
+        logic holds) is made Arrow where pyarrow imports (Pace's option A: it read 2,000 UUIDs at 1.3x the native bind
+        so), one arriving as Arrow is not, or a process with no Arrow binds other than plain lists."""
 
         class _DuckReader:
             sql_dialect = Dialect.DUCKDB
 
-        bound, kind = binder_for(_DuckReader()).array(pa.array(["a"]), "text", False)
+        bound, kind = binder_for(_DuckReader(), _ARROW_KEYS).array(pa.array(["a"]), "text", False)
         assert (bound, kind) == ('["a"]', "literal")
+        plain = KeyBatch(("id",), [[uuid.uuid4(), uuid.uuid4()]], ("uuid",))
+        assert binder_for(object(), plain) is PLAIN_KEYS and binder_for(object(), None) is PLAIN_KEYS
+        mixed = KeyBatch(("a", "b"), [pa.array(["x"]), [1]], ("text", "bigint"))
+        assert binder_for(object(), mixed) is binder_for(object(), _ARROW_KEYS) is not PLAIN_KEYS
         monkeypatch.setattr(binding, "_ARROW", False)
-        assert binder_for(object()) is PLAIN_KEYS
+        assert binder_for(object(), _ARROW_KEYS) is PLAIN_KEYS
 
     def test_the_plain_binder_refuses_an_arrow_column(self) -> None:
         """Flips if the pure builders' plain binder takes an Arrow column value by value (a Python object a key)."""
@@ -239,7 +249,7 @@ class TestNoKeyIsAPythonObjectOnTheWayIn:
                 3,
             ),
         ]
-        literal_binder = binder_for(object())
+        literal_binder = binder_for(object(), _ARROW_KEYS)
         for keys, width in cases:
             read_keyed_statements("t", keys=keys, columns=["v"], batch=10_000, binder=literal_binder)  # warm
             tracemalloc.start()

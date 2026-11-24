@@ -171,8 +171,9 @@ class KeyBatch:
     """the keys a read names: a leading part of a key, one array a key column (column-major, never one tuple a key).
 
     Each of ``keys`` is one key column's values, in key order: a ``pyarrow`` array (a serving path's keys, bound as one
-    text literal written in Arrow's kernels: ``threetears.core.keyed`` does, wherever pyarrow imports) or a plain
-    sequence (a process with no Arrow: its values bound as one array). The i-th key is each column's i-th value.
+    text written in Arrow's kernels, ``threetears.core.keyed.binding``) or a plain sequence (a small key list program
+    logic holds, or any key list in a process with no Arrow: its values bound as one list). The i-th key is each
+    column's i-th value.
 
     :param columns: the key columns, TRUSTED identifiers, in key order
     :ptype columns: tuple[str, ...]
@@ -282,8 +283,9 @@ def _text(value: Any) -> str | None:
 
 
 class _PlainKeys:
-    """:class:`KeyBinder` of plain sequences: a process with no Arrow. Each column bound as one list, of its values
-    where the connection binds the type natively, else of their texts (a column of str bound as it is)."""
+    """:class:`KeyBinder` of plain sequences: a batch of plain columns, or any in a process with no Arrow. Each column
+    bound as one list, of its values where the connection binds the type natively, else of their texts (a column of
+    str bound as it is)."""
 
     def distinct(self, keys: KeyBatch) -> KeyChunk:
         columns = tuple(self._plain(column) for column in keys.keys)
