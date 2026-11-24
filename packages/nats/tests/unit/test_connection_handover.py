@@ -10,7 +10,10 @@ live proof against a real nats-server and auth-callout is
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Mapping
 from datetime import timedelta
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -24,6 +27,7 @@ from threetears.nats import (
     Subscription,
     set_default_namespace,
 )
+from threetears.nats.client import with_reply_route, without_reply_route
 from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason
 
 from .wire_server import wire_server
@@ -1202,12 +1206,10 @@ async def test_a_reply_owed_across_a_requested_renewal_leaves_on_the_connection_
     await client.shutdown()
 
 
-async def test_a_reply_never_sent_is_not_remembered_past_the_longest_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    """the route map is bounded: a request older than the longest request has no requester waiting."""
-    monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 3600.0)
+async def test_a_reply_never_sent_leaves_the_route_map_when_its_connection_retires() -> None:
+    """the route map is bounded by the connections still held: retiring one drops every route to it."""
     current, successor = _Conn("current"), _Conn("successor")
     client = await _connected(current, successor)
-    client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=0.05)
     owed: list[IncomingMessage] = []
 
     async def _cb(msg: IncomingMessage) -> None:
@@ -1216,21 +1218,37 @@ async def test_a_reply_never_sent_is_not_remembered_past_the_longest_request(mon
     await client.subscribe(Subject.raw("calls"), cb=_cb)
     await current.subs[0].queue_in.put(_Msg(b"abandoned", reply="_INBOX.requester.old", subject="calls"))
     await _settle()
-    await asyncio.sleep(0.1)
-    # a later request is noted, and noting it ages out the one whose reply was never sent
-    await current.subs[0].queue_in.put(_Msg(b"fresh", reply="_INBOX.requester.new", subject="calls"))
-    await _settle()
+    seen_before = client.reply_routes
+    assert set(seen_before) == {"_INBOX.requester.old"}
 
-    await client.renew_connection(retire_after=timedelta(seconds=30))
-    await _settle()
-    old, new = (msg.reply_subject for msg in owed)
-    assert old is not None and new is not None
-    await client.publish_raw_reply(reply_subject=new, payload=b"in time")
-    await client.publish_raw_reply(reply_subject=old, payload=b"too late")
-
-    assert current.published == [("_INBOX.requester.new", b"in time")]
-    assert successor.published == [("_INBOX.requester.old", b"too late")], "an aged-out route is not kept"
+    await client.renew_connection(retire_after=timedelta(seconds=0.05))
+    await _until(lambda: current.is_closed)
+    await _until(lambda: not client.reply_routes)
+    assert set(seen_before) == {"_INBOX.requester.old"}, "the map is replaced whole, never changed under a reader"
     await client.shutdown()
+
+
+def test_a_route_is_added_and_removed_within_budget_with_a_thousand_in_flight() -> None:
+    """the route map is frozen and rebuilt per request; at 1,000 requests in flight that stays cheap.
+
+    measured on an M-series laptop: about 45 us to add and remove one route with 1,000 in flight.
+    the budget below (200 us for the pair, best of 200) leaves room for a slow CI runner while
+    still failing a rebuild that grew per-entry Python work or a scan of every route per request.
+    """
+    connection: Any = _Conn("current")
+    routes: Mapping[str, Any] = MappingProxyType({})
+    for index in range(1_000):
+        routes = with_reply_route(routes, f"_INBOX.inflight.{index}", connection)
+
+    best = float("inf")
+    for _ in range(200):
+        started = time.perf_counter()
+        added = with_reply_route(routes, "_INBOX.timed", connection)
+        removed = without_reply_route(added, "_INBOX.timed")
+        best = min(best, time.perf_counter() - started)
+        assert len(added) == 1_001 and len(removed) == 1_000 and len(routes) == 1_000
+
+    assert best < 200e-6, f"adding and removing one route took {best * 1e6:.0f} us with 1,000 in flight"
 
 
 async def test_a_move_that_cannot_open_a_successor_is_retried_until_it_lands(monkeypatch: pytest.MonkeyPatch) -> None:
