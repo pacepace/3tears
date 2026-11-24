@@ -26,7 +26,7 @@ from threetears.nats.change_log import ChangeLogState
 from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO
-from threetears.core.collections.epoch_change import EpochChange, keyed_record_form
+from threetears.core.collections.epoch_change import EpochChange, EpochWalk, keyed_record_form
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.loop_lateness import turn_holds
@@ -68,6 +68,9 @@ class _LostLog:
 
     async def epoch_at(self, seq: int) -> EpochChange | None:
         raise AssertionError(f"a restore reads no record of the lost log ({seq})")
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        raise AssertionError(f"a restore reads no record of the lost log ({table_name} after {after} up to {upto})")
 
     async def start_log(self) -> str:
         raise AssertionError("a restore declares its log through begin_restore")
