@@ -191,7 +191,8 @@ async def resolve_object(object_id: UUID) -> "ObjectHandle":
     resolver = scope.object_resolver
     if resolver is None:
         raise ConsumeObjectError(
-            "the current call scope carries no object resolver; the tool pod was not wired with one (no NATS client)"
+            "the current call scope carries no object resolver; the tool pod was not wired with one (no NATS client, "
+            "or no resolution store attached: ToolServerBootstrap attaches one on every pod)"
         )
     customer_id = scope.context.customer_id
     if customer_id is None:

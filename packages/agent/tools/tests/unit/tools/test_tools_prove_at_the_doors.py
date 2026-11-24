@@ -24,7 +24,7 @@ from threetears.core.security.identity_token import PLATFORM_CUSTOMER_SENTINEL, 
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.interfaces.media import ObjectHandle
 
-from packages.agent.tools.tests.testing_utils import unchecked
+from packages.agent.tools.tests.testing_utils import RecordingResolutionCache, unchecked
 from packages.agent.tools.tests.unit.tools.pod_auth import (
     ScopeRecordingTool,
     deliver_call,
@@ -204,7 +204,7 @@ class TestTheDoorClients:
         nats = _RecordingNats(
             ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
         )
-        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0, resolution_cache=RecordingResolutionCache())  # type: ignore[arg-type]
         await resolver.resolve(
             _OBJECT,
             customer_id=_CUSTOMER,
@@ -245,7 +245,7 @@ class TestTheDoorClients:
         nats = _RecordingNats(
             ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
         )
-        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0, resolution_cache=RecordingResolutionCache())  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="another token"):
             await resolver.resolve(
                 _OBJECT,
@@ -258,7 +258,7 @@ class TestTheDoorClients:
         nats = _RecordingNats(
             ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
         )
-        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0, resolution_cache=RecordingResolutionCache())  # type: ignore[arg-type]
         await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token="bearer")
         assert nats.sent[0]["identity_token"] == "bearer"
         assert "identity_proof" not in nats.sent[0]

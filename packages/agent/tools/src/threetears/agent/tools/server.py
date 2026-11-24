@@ -1016,8 +1016,8 @@ class ToolServer:
         # every per-call ToolCallScope so consuming tools resolve ids ambiently.
         self._object_resolver = object_resolver
         # the pod's two-tier resolution store, attached by the lifecycle owner once the
-        # collection stack exists (see attach_object_resolution_cache). None -> the
-        # self-provisioned resolver falls back to its own in-process cache.
+        # collection stack exists (see attach_object_resolution_cache). None -> no resolver is
+        # self-provisioned (there is no in-process fallback cache).
         self._object_resolution_cache: "ObjectResolutionCache | None" = None
         # the pod's single engagement-scope resolver; None here is self-provisioned
         # in serve() from the NATS client (needs no S3 creds), then installed on
@@ -1952,16 +1952,17 @@ class ToolServer:
             # refresh + re-verify. only set when the pod self-provisions; an injected provider keeps
             # whatever (possibly None) trigger the constructor was given.
             self._jwks_refresh = owned.refresh_now
-        if self._object_resolver is None:
+        if self._object_resolver is None and self._object_resolution_cache is not None:
             # self-provision the object-id resolver over this connection so
             # consuming tools can turn an object id into its stored key. it
             # needs only NATS (the hub verifies the caller's identity_token +
             # owns the objects table), so -- unlike the object store -- the pod
             # does not have to be wired with S3 creds to resolve.
             #
-            # the resolution cache is whatever the lifecycle owner attached above --
-            # the pod's two-tier store when it has a collection stack, ``None`` when
-            # it does not, in which case the resolver keeps its own in-process cache.
+            # it caches in the pod's two-tier store the lifecycle owner attached above
+            # (ToolServerBootstrap attaches one on every pod). a server given none gets no
+            # resolver: there is no in-process fallback cache (decision 41), and a tool that
+            # needs one is refused by name (consume.resolve_object).
             self._object_resolver = HubObjectResolver(
                 self._nc,
                 request_timeout_seconds=get_object_resolve_request_timeout(),
