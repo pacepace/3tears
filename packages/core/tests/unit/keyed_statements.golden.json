@@ -36,8 +36,12 @@
  "delete_keyed.empty_keys": [],
  "delete_keyed.null_safe_keys": [
   [
-   "DELETE FROM \"t\" WHERE EXISTS (SELECT 1 FROM (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::uuid[]) AS k1) AS k WHERE \"a\" IS NOT DISTINCT FROM k.k0 AND \"b\" IS NOT DISTINCT FROM k.k1)",
-   "([None, 's'], ['1', '2'])"
+   "DELETE FROM \"t\" WHERE (\"a\", \"b\") IN (SELECT unnest($1::text[]), unnest($2::text[]::uuid[]))",
+   "(['s'], ['2'])"
+  ],
+  [
+   "DELETE FROM \"t\" WHERE \"b\" = ANY($1::text[]::uuid[]) AND \"a\" IS NULL",
+   "(['1'],)"
   ]
  ],
  "delete_keyed.single_key_text": [
@@ -178,8 +182,8 @@
  ],
  "read_keyed.null_safe_lock": [
   [
-   "SELECT t.\"a\", t.\"b\" FROM \"t\" AS t JOIN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AS k ON t.\"a\" IS NOT DISTINCT FROM k.k0 AND t.\"b\" IS NOT DISTINCT FROM k.k1 WHERE (t.\"v\" = $3) ORDER BY t.\"a\", t.\"b\" FOR UPDATE OF t",
-   "([None, 's'], ['1', '2'], 'q')"
+   "/*+ YbBatchedNL(ANY_subquery t) */ WITH b0 AS (SELECT t.\"a\", t.\"b\" FROM \"t\" AS t WHERE (t.\"a\", t.\"b\") IN (SELECT unnest($1::text[]) AS k0, unnest($2::text[]::bigint[]) AS k1) AND t.\"a\" = ANY($3::text[]) AND t.\"b\" = ANY($4::text[]::bigint[]) AND (t.\"v\" = $5) ORDER BY t.\"a\", t.\"b\" FOR UPDATE OF t), b1 AS (SELECT t.\"a\", t.\"b\" FROM \"t\" AS t WHERE t.\"b\" = ANY($6::text[]::bigint[]) AND t.\"a\" IS NULL AND (t.\"v\" = $7) ORDER BY t.\"b\" FOR UPDATE OF t) SELECT * FROM b0 UNION ALL SELECT * FROM b1",
+   "(['s'], ['2'], ['s'], ['2'], 'q', ['1'], 'q')"
   ]
  ],
  "read_keyed.one_column": [

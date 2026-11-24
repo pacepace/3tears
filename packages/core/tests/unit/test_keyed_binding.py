@@ -114,10 +114,19 @@ class TestArrowModeBindsOneTextAColumn:
             'AND t."b" = ANY((SELECT string_to_array($4::text, chr(44))::bigint[])::bigint[])'
         ) in sql, sql
         assert params[2:] == ("S1", "1,2")
+        # a null-safe batch's NULL bucket is pinned IS NULL (null_split), so its split text carries no NULL
         nulls = KeyBatch(("scope",), [pa.array(["a", None])], null_safe=True)
         await read_keyed(sent, "t", keys=nulls, columns=["v"])
         sql, params = sent.sent[-1]
-        assert "unnest(string_to_array($1::text, chr(31), chr(30))) AS k0" in sql and params == ("a\x1f\x1e",)
+        assert sql == (
+            'SELECT t."v" FROM "t" AS t WHERE t."scope" = ANY(string_to_array($1::text, chr(31))) '
+            'UNION ALL SELECT t."v" FROM "t" AS t WHERE t."scope" IS NULL'
+        ), sql
+        assert params == ("a",)
+        # a NULL in a batch's text is written as a code point of its own, split back as NULL
+        await read_keyed(sent, "t", keys=KeyBatch(("scope",), [pa.array(["a", None])]), columns=["v"])
+        sql, params = sent.sent[-1]
+        assert "string_to_array($1::text, chr(31), chr(30))" in sql and params == ("a\x1f\x1e",)
         await update_keyed(
             sent, "t", values={"v": Increment(1)}, keys=KeyBatch(("id",), [pa.array(ids, pa.uuid())], ("uuid",))
         )

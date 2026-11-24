@@ -42,6 +42,7 @@ from threetears.interfaces.keyed.rows import (
     KeyBinder,
     KeyChunk,
     _typed_array,
+    null_split,
 )
 
 __all__ = [
@@ -102,7 +103,8 @@ class Increment:
 def _named(keys: KeyBatch, chunk: KeyChunk, first: int, natively: bool, binder: KeyBinder) -> tuple[str, list[Any]]:
     """the condition naming ``chunk``'s keys in a write, placeholders from ``first``: ONE array a column (a plain
     column's list, of its type where the connection binds it natively, else of texts; an Arrow column's literal text),
-    a list of placeholders for a database with none, ``IS NOT DISTINCT FROM`` each key for a null-safe batch.
+    a list of placeholders for a database with none. A null-safe batch is named a NULL pattern at a time
+    (:func:`~threetears.interfaces.keyed.rows.null_split`), never here.
 
     :param keys: the batch's shape
     :ptype keys: KeyBatch
@@ -121,6 +123,8 @@ def _named(keys: KeyBatch, chunk: KeyChunk, first: int, natively: bool, binder: 
         raise ValueError(
             "a key batch spelled as text is a read's (its texts are written over t): a write names its keys"
         )
+    if keys.null_safe:
+        raise ValueError("a null-safe batch is named a NULL pattern at a time (null_split), each by equality")
     columns = [quote_identifier(column) for column in keys.columns]
     width = len(columns)
     count = len(chunk[0])
@@ -140,10 +144,6 @@ def _named(keys: KeyBatch, chunk: KeyChunk, first: int, natively: bool, binder: 
         bound, kind = binder.array(values, cast, natively)
         arrays.append(bound)
         typed.append(_typed_array(first + index, cast, kind))
-    if keys.null_safe:
-        unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
-        joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
-        return f"EXISTS (SELECT 1 FROM (SELECT {unnested}) AS k WHERE {joined})", arrays
     if width == 1:
         return f"{columns[0]} = ANY({typed[0]})", arrays
     return f"({', '.join(columns)}) IN (SELECT {', '.join(f'unnest({array})' for array in typed)})", arrays
@@ -220,15 +220,32 @@ def _statements(
     for chunk in _chunks(keys, batch, binder):
         if keys is not None and not chunk:
             continue
-        named = None if chunk is None or keys is None else _named(keys, chunk, first, natively, binder)
-        named_rows, params = _guarded(by, where, table, first, named, prefix=prefix)
-        tail = _returning(returning)
-        if assignments is None:
-            sql = f"DELETE FROM {quoted_table(table)} WHERE {named_rows}{tail}"
-        else:
-            sql = f"UPDATE {quoted_table(table)} SET {', '.join(assignments)} WHERE {named_rows}{tail}"
-        statements.append((sql, [*head_params, *params]))
+        for named_keys, pinned in _patterns(keys, chunk, by, binder):
+            named = None if named_keys is None else _named(*named_keys, first, natively, binder)
+            named_rows, params = _guarded(pinned, where, table, first, named, prefix=prefix)
+            tail = _returning(returning)
+            if assignments is None:
+                sql = f"DELETE FROM {quoted_table(table)} WHERE {named_rows}{tail}"
+            else:
+                sql = f"UPDATE {quoted_table(table)} SET {', '.join(assignments)} WHERE {named_rows}{tail}"
+            statements.append((sql, [*head_params, *params]))
     return statements
+
+
+def _patterns(
+    keys: KeyBatch | None, chunk: KeyChunk | None, by: Mapping[str, Any], binder: KeyBinder
+) -> list[tuple[tuple[KeyBatch, KeyChunk] | None, Mapping[str, Any]]]:
+    """the keys one statement names and the columns it pins: the chunk's keys and ``by``, or for a null-safe batch
+    one statement a NULL pattern (:func:`null_split`: its NULL parts pinned ``IS NULL`` beside ``by``, the rest named
+    by equality, so the key's index finds every row; never ``IS NOT DISTINCT FROM`` a key, which no index reads)."""
+    if keys is None or chunk is None:
+        return [(None, by)]
+    if not keys.null_safe:
+        return [((keys, chunk), by)]
+    return [
+        (None if group.keys is None else (group.keys, tuple(group.keys.keys)), {**by, **dict.fromkeys(group.nulled)})
+        for group in null_split(keys, chunk, binder)
+    ]
 
 
 def update_keyed_statements(

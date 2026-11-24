@@ -180,6 +180,7 @@ class _ArrowKeys:
         self._brackets = brackets
 
     def distinct(self, keys: KeyBatch) -> KeyChunk:
+        """the batch's distinct keys, in the order first named, one Arrow array a column."""
         columns = [_as_arrow(column) for column in keys.keys]
         if len(columns) == 1:
             return (_unique(columns[0]),)
@@ -196,6 +197,7 @@ class _ArrowKeys:
         )
 
     def array(self, values: Sequence[Any], cast: str, natively: bool) -> tuple[Any, BindKind]:
+        """one key column as ONE bind: its split text, its array's literal, or (in-process DuckDB) its texts."""
         del cast, natively
         arrow = _as_arrow(values)
         if self._duckdb:
@@ -205,14 +207,35 @@ class _ArrowKeys:
         return _arrow_literal(arrow, self._brackets), "literal"
 
     def distinct_values(self, values: Sequence[Any]) -> Sequence[Any]:
+        """one key column's distinct values, an Arrow array."""
         unique: Sequence[Any] = _unique(_as_arrow(values))
         return unique
 
     def listed(self, values: Sequence[Any]) -> list[Any]:
+        """one key column's values as Python values, a placeholder each (``as_list`` only)."""
         # as_list only: its driver binds a placeholder a value (module docstring); a plain column's values as given
         if isinstance(values, pa.Array | pa.ChunkedArray):
             return list(values.to_pylist())
         return list(values)
+
+    def null_groups(self, chunk: KeyChunk) -> list[tuple[int, KeyChunk]]:
+        """the chunk's keys grouped by which parts are NULL, each group its pattern's code and its Arrow columns."""
+        # each key's NULL pattern one int (null_pattern_code: bit i for part i) summed in Arrow's kernels, each
+        # pattern's keys a filter of the columns: never a Python object a key
+        columns = [_as_arrow(column) for column in chunk]
+        if not any(column.null_count for column in columns):
+            return [(0, tuple(columns))]
+        codes: Any = None
+        for index, column in enumerate(columns):
+            if not column.null_count:
+                continue
+            bit = pc.multiply(pc.cast(pc.is_null(column), pa.int64()), pa.scalar(1 << index, pa.int64()))
+            codes = bit if codes is None else pc.add(codes, bit)
+        # the distinct codes: one a NULL pattern the chunk holds, a few small ints
+        return [
+            (int(code), tuple(column.filter(pc.equal(codes, pa.scalar(code, pa.int64()))) for column in columns))
+            for code in codes.unique().to_pylist()
+        ]
 
 
 #: the Arrow binders: the literal's (PostgreSQL, YugabyteDB), an in-process DuckDB's (Arrow arrays), and a reader's

@@ -190,3 +190,28 @@ class TestAWalkALimitStops:
         await guard.execute(trim)
         assert conn.analysed == []
         assert [problem.split(" of ")[0] for problem in guard.problems] == ["index only scan with no index condition"]
+
+
+class TestNullSafeKeyMatch:
+    async def test_a_key_matched_is_not_distinct_from_fails_and_a_fence_on_one_bound_value_does_not(self) -> None:
+        """GUARD. Flips if a statement sent to L3 may match a key ``IS NOT DISTINCT FROM`` a joined or unnested key
+        (no index reads by it: the table read whole once a key, however its plan looks on a small table), or if a
+        compare-and-swap fence on one bound value (the row its key already names) is taken for one."""
+        joined = (
+            'SELECT t."v" FROM "t" AS t JOIN (SELECT unnest($1::text[]) AS k0) AS k ON t."a" IS NOT DISTINCT FROM k.k0'
+        )
+        exists = (
+            'DELETE FROM "t" WHERE EXISTS (SELECT 1 FROM (SELECT unnest($1::text[]) AS k0) AS k '
+            'WHERE "a" is not distinct from CAST(k.k0 AS uuid))'
+        )
+        fence = 'UPDATE "t" SET "v" = $1 WHERE "id" = $2 AND "ts" IS NOT DISTINCT FROM $3'
+        index = _scan("Index Scan", "t", **{"Index Cond": "(id = $2)"})
+        conn = _Conn({joined: index, exists: index, fence: index}, {"t": 10})
+        guard = WholeScanGuard(conn, threshold_rows=1000)
+        await guard.fetch(joined)
+        await guard.execute(exists)
+        await guard.execute(fence)
+        assert [problem.split(":")[0] for problem in guard.problems] == [
+            "a key matched IS NOT DISTINCT FROM, which no index reads by",
+            "a key matched IS NOT DISTINCT FROM, which no index reads by",
+        ]
