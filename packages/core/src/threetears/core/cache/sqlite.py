@@ -210,7 +210,8 @@ class SQLiteBackend:
         #: may make that thread's connection here, as a collected FeatureCache's R-Tree drop does; a plain lock waited
         #: on itself for ever there (the hang an L1 file's finalizer had, 2026-11-16)
         self._pool_lock: threading.RLock = threading.RLock()
-        self._pooled_connections: list[sqlite3.Connection] = []
+        #: one per thread that asked; replaced whole under the pool lock
+        self._pooled_connections: tuple[sqlite3.Connection, ...] = ()
         #: every table's declared policy (:mod:`threetears.core.eviction`); an undeclared table is refused
         self._policies: Mapping[str, Declared] = MappingProxyType({})
         #: the EVICTABLE tables, the only ones whose rows the ledger keeps a recency of
@@ -408,7 +409,7 @@ class SQLiteBackend:
             conn = self._make_connection()
             self._local.conn = conn
             with self._pool_lock:
-                self._pooled_connections.append(conn)
+                self._pooled_connections = (*self._pooled_connections, conn)
         return _PooledConnection(conn)
 
     @staticmethod
@@ -1106,7 +1107,7 @@ class SQLiteBackend:
                 # NOSILENT: teardown best-effort; a connection that will not close is already gone
                 except Exception as exc:  # noqa: BLE001
                     contain(exc, log=log, what="sqlite L1 backend close: a connection did not close")
-            self._pooled_connections = []
+            self._pooled_connections = ()
         self._local = threading.local()
         if self._anchor_conn is not None:
             self._anchor_conn.close()

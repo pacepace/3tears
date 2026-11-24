@@ -68,10 +68,11 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
 
 from threetears.core.exceptions import GenerationNotCommittedError, GenerationUnavailableError
+from threetears.core.frozen_state import EMPTY, frozen
 from threetears.observe import get_logger
 
 __all__ = [
@@ -380,10 +381,10 @@ class _Committed:
         that advances sends; without them the broker advanced nothing for the commit
     """
 
-    tokens: dict[str, str] = field(default_factory=dict)
-    failed: dict[str, str] = field(default_factory=dict)
+    tokens: Mapping[str, str] = EMPTY
+    failed: Mapping[str, str] = EMPTY
     not_committed: str | None = None
-    taken: set[str] = field(default_factory=set)
+    taken: frozenset[str] = frozenset()
     names_generations: bool = False
 
 
@@ -421,13 +422,8 @@ def record_reply_generations(response: Mapping[str, Any], *, ends_write: bool) -
     unadvanced = [table for table in (failed if isinstance(failed, list) else ()) if isinstance(table, str)]
     if not named and not unadvanced and not ends_write:
         return
-    held = _Committed(
-        names_generations=GENERATIONS_REPLY_FIELD in response or GENERATIONS_FAILED_REPLY_FIELD in response
-    )
-    _COMMITTED.set(held)
-    for table, token in named.items():
-        held.tokens[table] = token
-        held.failed.pop(table, None)
+    # built whole before the record is set: a task sharing this context never sees it part-filled
+    reasons: dict[str, str] = {}
     if unadvanced:
         reason = str(response.get("error_message") or "the broker could not advance the generation")
         _logger.error(
@@ -435,11 +431,19 @@ def record_reply_generations(response: Mapping[str, Any], *, ends_write: bool) -
             "wrote; a pod following the table cannot tell from it that this write happened",
             extra={"extra_data": {"tables": sorted(unadvanced), "error_code": response.get("error_code")}},
         )
-        for table in unadvanced:
-            held.tokens.pop(table, None)
-            held.failed[table] = (
+        reasons = {
+            table: (
                 f"the L3 broker committed the write to {table!r} and could not advance its write generation: {reason}"
             )
+            for table in unadvanced
+        }
+    _COMMITTED.set(
+        _Committed(
+            tokens=frozen((table, token) for table, token in named.items() if table not in reasons),
+            failed=frozen(reasons),
+            names_generations=GENERATIONS_REPLY_FIELD in response or GENERATIONS_FAILED_REPLY_FIELD in response,
+        )
+    )
 
 
 def forget_reply_generations(reason: str) -> None:
@@ -511,7 +515,7 @@ def _take_committed_generation(table_name: str) -> str | None:
                     f"settle every row of one commit of a table in one advance (invalidate_cache_many), so "
                     f"its broadcasts carry one count"
                 )
-            held.taken.add(table_name)
+            held.taken = held.taken | {table_name}
             return token
         failure = held.failed.get(table_name)
         if failure is not None:

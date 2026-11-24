@@ -763,7 +763,8 @@ class DuckDBBackend:
         self._schema_info: Mapping[str, Mapping[str, str]] = MappingProxyType({})
         self._local: threading.local = threading.local()
         self._pool_lock: threading.Lock = threading.Lock()
-        self._pooled_connections: list[Any] = []
+        #: one per thread that asked; replaced whole under the pool lock
+        self._pooled_connections: tuple[Any, ...] = ()
         self._db_lock: threading.Lock = threading.Lock()
         # the connection read cursors are opened from, apart from the one writes hold `_db_lock` on
         # across their transaction, so opening a read never waits for a write to commit
@@ -877,7 +878,7 @@ class DuckDBBackend:
         """Create a new cursor/connection from the shared database."""
         conn = self._cursor(self._db)
         with self._pool_lock:
-            self._pooled_connections.append(conn)
+            self._pooled_connections = (*self._pooled_connections, conn)
         return conn
 
     def initialize(self, sa_metadata: Any) -> None:
@@ -2320,7 +2321,7 @@ class DuckDBBackend:
                 # NOSILENT: teardown best-effort; a connection that will not close is already gone
                 except Exception as exc:  # noqa: BLE001
                     contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
-            self._pooled_connections = []
+            self._pooled_connections = ()
         self._local = threading.local()
         if self._reader is not None:
             try:
