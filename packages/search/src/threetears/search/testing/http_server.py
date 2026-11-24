@@ -22,7 +22,6 @@ and the transport's tests never served a response at all.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from dataclasses import dataclass, field
 from types import TracebackType
 
@@ -76,11 +75,14 @@ class LocalHttpServer:
         """
         if not replies:
             raise ValueError("LocalHttpServer needs at least one reply")
-        self._replies = deque(replies)
+        # the replies in order, and how many were handed out: an exhausted sequence repeats its last entry
+        self._replies = tuple(replies)
+        self._served = 0
         self._last = replies[-1]
         self._server: asyncio.Server | None = None
         self._port = 0
-        self.requests: list[str] = []
+        #: every request head, in order (replaced whole, never changed in place)
+        self.requests: tuple[str, ...] = ()
         #: connections accepted, as distinct from requests served. The two
         #: numbers are the same until something reuses a connection, which
         #: makes this the only observable that can tell a shared client from
@@ -155,8 +157,9 @@ class LocalHttpServer:
                 # NOSILENT: a client that hung up between requests is done
                 except asyncio.IncompleteReadError, ConnectionError:
                     return
-                self.requests.append(head.decode("latin-1"))
-                reply = self._replies.popleft() if self._replies else self._last
+                self.requests = (*self.requests, head.decode("latin-1"))
+                reply = self._replies[self._served] if self._served < len(self._replies) else self._last
+                self._served += 1
                 if reply.delay:
                     await asyncio.sleep(reply.delay)
                 if reply.close_early:

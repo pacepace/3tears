@@ -212,7 +212,7 @@ _SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSoc
 _BOUNDED: Final[weakref.WeakSet[object]] = weakref.WeakSet()
 
 #: the transport classes a large publish has found unbounded (logged once each)
-_UNBOUNDED_KINDS: Final[set[type]] = set()
+_UNBOUNDED_KINDS: frozenset[type] = frozenset()
 
 _SEND_PATH_GAPS: Final[list[str]] = send_path_gaps()
 if _SEND_PATH_GAPS:
@@ -432,12 +432,13 @@ def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND
     :return: True when its sends are bounded (now or before)
     :rtype: bool
     """
+    global _UNBOUNDED_KINDS
     if transport in _BOUNDED:
         return True
     if not isinstance(transport, _SOCKET_TRANSPORT):
         kind = type(transport)
         if kind not in _UNBOUNDED_KINDS and transport.get_extra_info("sslcontext") is None:
-            _UNBOUNDED_KINDS.add(kind)
+            _UNBOUNDED_KINDS = _UNBOUNDED_KINDS | {kind}
             log.warning(
                 "a large NATS publish on a %s.%s transport is not bounded per send (not asyncio's socket "
                 "transport): the kernel's copy of each send holds the event loop",
@@ -664,16 +665,17 @@ class _InertLoop:
     The surface check builds one transport over a socket pair without an event loop, reads its attributes, and
     closes it; nothing is scheduled and no socket is left open.
 
-    :ivar _transports: asyncio's fd-to-transport map, which the transport registers itself in
     """
 
-    def __init__(self) -> None:
-        """an empty transport map.
+    @property
+    def _transports(self) -> dict[int, object]:
+        """asyncio's fd-to-transport map, which a transport registers itself in: a fresh empty one each time, so the
+        registration lands nowhere, as :meth:`_add_reader` registers nothing.
 
-        :return: nothing
-        :rtype: None
+        :return: an empty map nothing keeps
+        :rtype: dict[int, object]
         """
-        self._transports: dict[int, object] = {}
+        return {}
 
     def call_soon(self, callback: Callable[..., object], *args: object) -> None:
         """run ``callback`` now.
@@ -851,8 +853,9 @@ def send_bound_gaps(*, bounded: bool = True) -> list[str]:
             transport.writelines([memoryview(bytes(payload))])
             sent = payload - sum(len(view) for view in buffer)
         finally:
-            buffer.clear()
-            transport.close()
+            # asyncio's own abort drops the unsent rest and closes, so the proof never changes the transport's buffer
+            # (a deque other code reads) in place itself
+            transport.abort()
     finally:
         near.close()
         far.close()

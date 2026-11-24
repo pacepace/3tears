@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, ClassVar, Final
 
 import pyarrow as pa
@@ -287,8 +288,9 @@ class TileCollection(DerivedCollection[TileEntity]):
         self._datasource_name = datasource_name
         # optional per-layer feature caches. absent is a supported
         # configuration -- builds then read L3 per tile, which is correct and
-        # only slower -- so a deployment without an L1 backend still works.
-        self._feature_caches = feature_caches or {}
+        # only slower -- so a deployment without an L1 backend still works. A read-only copy: the map never changes
+        # after construction.
+        self._feature_caches = MappingProxyType(dict(feature_caches or {}))
 
     @property
     def table_name(self) -> str:

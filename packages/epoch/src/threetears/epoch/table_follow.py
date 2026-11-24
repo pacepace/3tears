@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
+from types import MappingProxyType
 from typing import Any, Final
 
 from threetears.core.collections.epoch_change import (
@@ -250,8 +251,8 @@ class TableFollower:
         self._source = reader
         self._reader = _ObservedWatcher(reader, self._health)
         self._tasks: list[asyncio.Task[None]] = []
-        # table -> what this follower registered with the registry, withdrawn by stop()
-        self._watching_by_table: dict[str, Callable[[], bool]] = {}
+        # table -> what this follower registered with the registry, withdrawn by stop(); replaced whole
+        self._watching_by_table: Mapping[str, Callable[[], bool]] = MappingProxyType({})
 
     @property
     def running(self) -> bool:
@@ -325,7 +326,9 @@ class TableFollower:
         # pushed a value before its table is followed. The tasks are a fixed set, one per table, held to
         # be stopped -- nothing is accumulated or flushed
         # what a cache derived from each table reads to know whether it may serve what it holds
-        self._watching_by_table = {table: functools.partial(self._table_watching, table) for table in self._tables}
+        self._watching_by_table = MappingProxyType(
+            {table: functools.partial(self._table_watching, table) for table in self._tables}
+        )
         for table in self._tables:
             self._registry.follow_generation(table)
             self._registry.watched_by(table, self._watching_by_table[table])
@@ -355,7 +358,7 @@ class TableFollower:
         :rtype: None
         """
         tasks, self._tasks = self._tasks, []
-        watching_by_table, self._watching_by_table = self._watching_by_table, {}
+        watching_by_table, self._watching_by_table = self._watching_by_table, MappingProxyType({})
         for table, watching in watching_by_table.items():
             self._registry.not_watched_by(table, watching)
         for task in tasks:
