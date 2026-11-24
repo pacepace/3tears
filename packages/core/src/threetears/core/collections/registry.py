@@ -342,6 +342,22 @@ class CacheInvalidationMessage(BaseModel):
             )
         return rows
 
+    @classmethod
+    def of_slice(cls, table: str, prefix: Mapping[str, str]) -> CacheInvalidationMessage:
+        """a slice a load or a clear reaches (a key prefix) as the row message its columns make: the prefix's columns
+        and values as :attr:`columns`, no key. A derived cache whose row handler evicts by declared columns hands it the
+        slice (``on_partition``) and drops the entries under it alone; a handler that needs the row's key drops as for
+        a row that does not say what it reaches, as it already does.
+
+        :param table: the table
+        :ptype table: str
+        :param prefix: the key prefix, column onto its value as text
+        :ptype prefix: Mapping[str, str]
+        :return: the message
+        :rtype: CacheInvalidationMessage
+        """
+        return cls(table=table, ids=[], columns=dict(prefix))
+
 
 @dataclass(frozen=True, slots=True)
 class _L2KeptChanges:
@@ -394,7 +410,9 @@ class DerivedCacheRegistration:
     :ivar on_partition: called, in place of :attr:`on_table_dropped`, when a whole-table change is a load or a clear
         whose reach the record names (:attr:`~threetears.core.collections.epoch_change.EpochChange.prefixes`, or an
         older writer's :attr:`~threetears.core.collections.epoch_change.EpochChange.partition`): once per key prefix,
-        the columns its rows hold and their values. ``None`` drops the table as for any whole-table change
+        the columns its rows hold and their values. Every derived cache takes it (decision 33): it drops only what is
+        under the slice, never everything derived from the table. A cache that evicts by a row's declared columns can
+        hand the slice to its row handler as :meth:`CacheInvalidationMessage.of_slice` makes it
     :ivar on_table_reset: called, in place of :attr:`on_table_dropped`, when the table is reset by an operator (a
         record naming :data:`~threetears.core.collections.epoch_change.RESET_REASON`): a copy reads it again as on a
         first start. It is given the reset's generation token when the record named it, else None (a reset made in
@@ -418,9 +436,9 @@ class DerivedCacheRegistration:
 
     on_row: Callable[[CacheInvalidationMessage], None]
     on_table_dropped: Callable[[], None]
+    on_partition: Callable[[Mapping[str, str]], None]
     on_caught_up: Callable[[], None] | None = None
     on_first_sight: Callable[[], None] | None = None
-    on_partition: Callable[[Mapping[str, str]], None] | None = None
     on_table_reset: Callable[[str | None], None] | None = None
     on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None
     on_file_wanted: Callable[[WantedFile], None] | None = None
@@ -1385,8 +1403,9 @@ class CollectionRegistry:
                 registration.on_keys(positional, token)  # type: ignore[misc]  # narrowed by _key_batch_takers
         others = len(self._derived_caches.get(table_name, ())) > len(batched)
         if not others and table_name not in self._collections:
-            # no cache here needs a row message: the scans the table's rows feed still drop, as a row's would
-            self.scan_cache.drop_for_table(table_name)
+            # no cache here needs a row message: the scans the table's rows feed still drop, as a row's would, through
+            # the one local scan drop every write path takes (a cached scan names no keys to drop it by)
+            self.drop_local_scans(table_name)
             return
         count = keys.num_rows
         for start in range(0, count, _NOTED_ROWS_PER_YIELD):
@@ -1498,18 +1517,45 @@ class CollectionRegistry:
             async for page in pages:
                 if isinstance(page, str):
                     return page
-                columns = page.columns or (None,) * len(page.keys)
-                for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
-                    if index and not index % _NOTED_ROWS_PER_YIELD:
-                        # a page of many rows yields between runs of them, so the loop answers everything else
-                        # between
-                        await asyncio.sleep(0)
-                    await self._apply_row_message(
-                        CacheInvalidationMessage(
-                            table=change.table, ids=list(ids), columns=None if held is None else dict(held)
-                        )
-                    )
+                await self._tell_noted_page(change.table, page)
         return None
+
+    async def _tell_noted_page(self, table_name: str, page: NotedKeysPage) -> None:
+        """apply a page of keys the change notes name, each as its row message would be applied: a cache that takes key
+        batches (a copy, ``on_keys``) is told the page once, as Arrow (:meth:`NotedKeysPage.key_batch`); every other
+        one, and this process's own caches of the table, a row message a key. None is built when the copy is the
+        table's only cache here: the table's cached scans drop, as a row's message would drop them.
+
+        Why: a commit too big to list names hundreds of thousands of keys, a page of them at a time; a row message a key
+        cost the copy a Python object a key and the loop a key at a time (decision 35), as for a delta file's keys
+        (:meth:`_tell_keys`).
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param page: the page
+        :ptype page: NotedKeysPage
+        :return: nothing
+        :rtype: None
+        """
+        batched = self._key_batch_takers(table_name)
+        if batched and page.keys:
+            keys = page.key_batch()
+            for registration in batched:
+                # the notes name no epoch a key: the keys are heard as a row message names them, with none
+                registration.on_keys(keys, None)  # type: ignore[misc]  # narrowed by _key_batch_takers
+        others = len(self._derived_caches.get(table_name, ())) > len(batched)
+        if batched and not others and table_name not in self._collections:
+            self.drop_local_scans(table_name)
+            return
+        columns = page.columns or (None,) * len(page.keys)
+        for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
+            if index and not index % _NOTED_ROWS_PER_YIELD:
+                # a page of many rows yields between runs of them, so the loop answers everything else between
+                await asyncio.sleep(0)
+            await self._apply_row_message(
+                CacheInvalidationMessage(table=table_name, ids=list(ids), columns=None if held is None else dict(held)),
+                batched=bool(batched),
+            )
 
     async def resolve_behind_from_notes(self, table_name: str, since: datetime, token: str) -> str | None:
         """end being behind on ``table_name`` from its change notes, never by reading the table: every key its notes
@@ -1541,16 +1587,8 @@ class CollectionRegistry:
                     return page
                 if page.whole_table:
                     return "notes_whole"
-                columns = page.columns or (None,) * len(page.keys)
-                for index, (ids, held) in enumerate(zip(page.keys, columns, strict=True)):
-                    if index and not index % _NOTED_ROWS_PER_YIELD:
-                        await asyncio.sleep(0)
-                    await self._apply_row_message(
-                        CacheInvalidationMessage(
-                            table=table_name, ids=list(ids), columns=None if held is None else dict(held)
-                        )
-                    )
-                    keys += 1
+                await self._tell_noted_page(table_name, page)
+                keys += len(page.keys)
         self._noted(table_name, bracket[0])
         self._generation_marks.adopt_generation(table_name, token)
         self._caught_up(table_name)
@@ -1753,8 +1791,8 @@ class CollectionRegistry:
 
         A load's rows all hold its constants (:attr:`~threetears.core.collections.epoch_change.EpochChange.partition`),
         so a cache that keeps the table whole (a copy follower) reads those rows again rather than the table. The
-        collection's own L1, its cached scans and every derived cache without ``on_partition`` drop as
-        :meth:`drop_table` drops them.
+        collection's own L1 and its cached scans drop as :meth:`drop_table` drops them; every derived cache is told the
+        partition (``on_partition``).
 
         :param table_name: the table
         :ptype table_name: str
@@ -1807,11 +1845,10 @@ class CollectionRegistry:
             elif cleared is not None and registration.on_file_prefixes is not None:
                 if cleared[0]:
                     registration.on_file_prefixes(cleared[0], cleared[1])
-            elif registration.on_partition is not None:
+            else:
+                # every derived cache takes a slice (decision 33): only what is under each prefix leaves it
                 for prefix in prefixes:
                     registration.on_partition(dict(prefix))
-            else:
-                registration.on_table_dropped()
         log.info(
             "a load's partition reached this process: its rows under the reach left L1, derived copies read it again",
             extra={
@@ -1821,10 +1858,36 @@ class CollectionRegistry:
                     "prefixes": [dict(prefix) for prefix in prefixes[:20]],
                     "prefix_count": len(prefixes),
                     "l1_rows": rows,
+                    # how many prefixes the table's reads are now checked against (a table drop forgets them)
+                    "distrusted_prefixes": (
+                        sum(collection.distrusted_prefixes().values()) if collection is not None else 0
+                    ),
                     "derived_caches": len(derived),
                 }
             },
         )
+
+    @staticmethod
+    def slice_as_row(
+        table_name: str, on_row: Callable[[CacheInvalidationMessage], None]
+    ) -> Callable[[Mapping[str, str]], None]:
+        """an ``on_partition`` for a derived cache whose row handler evicts by a row's declared columns: each slice is
+        handed to ``on_row`` as the row message its prefix makes (:meth:`CacheInvalidationMessage.of_slice`), so the
+        entries under it go and nothing else; a handler that cannot place it drops as for a row that does not say
+        what it reaches, as it already does.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param on_row: the cache's row handler
+        :ptype on_row: Callable[[CacheInvalidationMessage], None]
+        :return: the slice handler
+        :rtype: Callable[[Mapping[str, str]], None]
+        """
+
+        def on_slice(prefix: Mapping[str, str]) -> None:
+            on_row(CacheInvalidationMessage.of_slice(table_name, prefix))
+
+        return on_slice
 
     def register_derived_cache(
         self,
@@ -1832,9 +1895,9 @@ class CollectionRegistry:
         *,
         on_row: Callable[[CacheInvalidationMessage], None],
         on_table_dropped: Callable[[], None],
+        on_partition: Callable[[Mapping[str, str]], None],
         on_caught_up: Callable[[], None] | None = None,
         on_first_sight: Callable[[], None] | None = None,
-        on_partition: Callable[[Mapping[str, str]], None] | None = None,
         on_table_reset: Callable[[str | None], None] | None = None,
         on_file_prefixes: Callable[[Sequence[Mapping[str, str]], str], None] | None = None,
         on_file_wanted: Callable[[WantedFile], None] | None = None,
@@ -1872,9 +1935,10 @@ class CollectionRegistry:
         :param on_first_sight: told when the registry first sights the table and takes its mark, so a cache
             keeping its own marks starts them there; ``None`` uses ``on_caught_up``. A first sight drops nothing
         :ptype on_first_sight: Callable[[], None] | None
-        :param on_partition: told, in place of ``on_table_dropped``, the reach of a load from files the record names
-            (the columns its rows hold and their values), so the cache drops only those rows; ``None`` drops it all
-        :ptype on_partition: Callable[[Mapping[str, str]], None] | None
+        :param on_partition: told, in place of ``on_table_dropped``, each key prefix a load or a clear reaches (the
+            columns its rows hold and their values), so the cache drops only the rows under it (decision 33: every
+            derived cache takes slices; none is dropped whole for one)
+        :ptype on_partition: Callable[[Mapping[str, str]], None]
         :param on_table_reset: told, in place of ``on_table_dropped``, an operator's reset of the table, so a copy
             reads it again as on a first start, given the reset's generation token when known (else None); ``None``
             drops it all
@@ -2051,9 +2115,17 @@ class CollectionRegistry:
             # evict OTHER pods, which carry a different origin.
             if message.origin is not None and message.origin == self._origin_id:
                 return
-            # a message naming many rows is heard as one message a row, in order
-            for row in message.each_row() if message.more_rows else (message,):
-                await self._apply_row_message(row)
+            # a message naming many rows is heard as one message a row, in order; a cache that takes key batches (a
+            # copy, ``on_keys``) is told them once, as Arrow, at the advance they share (decision 35: no Python object
+            # a key in the copy). A one-row message is the row message the copy coalesces with its neighbours
+            rows = message.each_row() if message.more_rows else (message,)
+            batched = self._key_batch_takers(message.table) if message.more_rows else []
+            if batched:
+                keys = text_key_batch([row.ids for row in rows])
+                for registration in batched:
+                    registration.on_keys(keys, message.generation)  # type: ignore[misc]  # narrowed by _key_batch_takers
+            for row in rows:
+                await self._apply_row_message(row, batched=bool(batched))
                 # Counted as heard only once everything above has run to the end: a row whose
                 # eviction raised part-way is one this registry cannot vouch for, and leaving it
                 # uncounted is what makes the next catch-up apply its epoch's change record. A message naming no

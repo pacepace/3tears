@@ -415,6 +415,7 @@ class TestASwitchedOnCollectionAdvancesOncePerCommit:
             _TABLE,
             on_row=lambda message: told.append((message.ids[0], message.generation, message.bump_rows)),
             on_table_dropped=lambda: told.append(("ALL", None, None)),
+            on_partition=lambda prefix: told.append(("SLICE", None, None)),
         )
         await _save(members, "m1")
         await members.invalidate_cache_many(["m2", "m3"])

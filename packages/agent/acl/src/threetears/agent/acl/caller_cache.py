@@ -351,6 +351,8 @@ def bind_caller_cache_to_access_tables(
             table,
             on_row=on_group_member if table == _GROUP_MEMBERS else on_other,
             on_table_dropped=cache.invalidate_all,
+            # a slice is the row its prefix makes, handed to the table's row handler (decision 33)
+            on_partition=registry.slice_as_row(table, on_group_member if table == _GROUP_MEMBERS else on_other),
         )
         for table in ACCESS_TABLES
     ]
@@ -401,7 +403,10 @@ def bind_caller_cache_to_memberships(
             cache.invalidate_all()
 
     return registry.register_derived_cache(
-        _GROUP_MEMBERS, on_row=on_group_member, on_table_dropped=cache.invalidate_all
+        _GROUP_MEMBERS,
+        on_row=on_group_member,
+        on_table_dropped=cache.invalidate_all,
+        on_partition=registry.slice_as_row(_GROUP_MEMBERS, on_group_member),
     )
 
 

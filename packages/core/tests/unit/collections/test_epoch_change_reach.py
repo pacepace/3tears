@@ -152,3 +152,21 @@ async def test_a_registry_tells_each_prefix_and_a_reset_and_counts_only_whole_dr
     await registry.apply_epoch_change(EpochChange(table=_TABLE, token="i:3", whole_table=True))
     assert heard == [{"office_key": "a"}, {"office_key": "b"}, "reset", "dropped"]
     assert (_drops("reset"), _drops("whole_record")) == (resets + 1, records + 1)
+
+
+async def test_a_slice_reaches_a_row_handler_as_the_row_its_prefix_makes_and_nothing_is_dropped_whole() -> None:
+    """Flips if a derived cache that hands its slices to its row handler (``slice_as_row``) is told anything but the
+    prefix's columns with no key, once a prefix, or is dropped whole for a slice (decision 33)."""
+    registry = CollectionRegistry()
+    heard: list[Any] = []
+    registry.register_derived_cache(
+        "role_assignments",
+        on_row=heard.append,
+        on_table_dropped=lambda: heard.append("ALL"),
+        on_partition=registry.slice_as_row("role_assignments", heard.append),
+    )
+    await registry.drop_partitions("role_assignments", [{"group_id": "g1"}, {"group_id": "g2"}], reason="a clear")
+    assert [(m.table, m.ids, m.columns) for m in heard] == [
+        ("role_assignments", [], {"group_id": "g1"}),
+        ("role_assignments", [], {"group_id": "g2"}),
+    ]

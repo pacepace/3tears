@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
+
+from threetears.core.collections.delta_files import text_key_batch
 
 __all__ = [
     "NotedKeysCursor",
@@ -53,6 +55,19 @@ class NotedKeysPage:
     whole_table: bool
     next: NotedKeysCursor | None
     columns: tuple[dict[str, str | None] | None, ...] = ()
+
+    def key_batch(self) -> Any:
+        """the page's keys as one Arrow batch, one row a key, its columns named by position (``k0``, ``k1``, ...), each
+        as text: what a cache that takes key batches (``on_keys``) is told, and what a reader of many keys works on in
+        place of a Python tuple a key. Built here, at the reader, from the keys as the notes' wire and the ring's
+        read hand them over (text, a sequence a key); a process without pyarrow, which has no such cache, never
+        calls it.
+
+        :return: the keys
+        :rtype: pyarrow.Table
+        :raises ImportError: without pyarrow
+        """
+        return text_key_batch(self.keys)
 
 
 @runtime_checkable

@@ -453,6 +453,23 @@ class TestTheGrantsAreFollowedByKey:
         finally:
             await authz.stop()
 
+    @pytest.mark.asyncio
+    async def test_a_slice_of_the_table_reads_its_one_grant_and_never_fills_again(self) -> None:
+        """Flips if a load's or a clear's slice of the grants (a key prefix: one grant, the key being its id alone) fills
+        the cache again (a whole read for a slice, decision 33) instead of reading that grant by its key."""
+        principal_id, grant_id = uuid4(), uuid4()
+        loader = AsyncMock(return_value=[])
+        reader = AsyncMock(return_value=_row(principal_id, "p.read", grant_id))
+        authz, registry = await _build_started_authorizer(loader=loader, reader=reader)
+        try:
+            await registry.drop_partitions(_GRANTS, [{"grant_id": str(grant_id)}], reason="a clear")
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            await _eventually(lambda: authz.allows(identity, "p.read"), "the slice's grant read by key")
+            assert loader.await_count == 1, "the cold fill alone"
+            reader.assert_awaited_with(grant_id)
+        finally:
+            await authz.stop()
+
 
 async def _negated(answer: Awaitable[bool]) -> bool:
     """``not await answer``.

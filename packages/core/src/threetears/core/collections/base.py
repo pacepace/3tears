@@ -4043,6 +4043,18 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return tuple(self.primary_key_columns[:width])
 
+    def distrusted_prefixes(self) -> dict[tuple[int, ...], int]:
+        """each shape of key prefix (its key positions) this process distrusts L2 under since the table's last drop,
+        onto how many prefixes of it: what a read is checked against, one lookup a shape (:meth:`_dropped_prefix_at`),
+        and what a table drop forgets. A slice clear's log counts them (the registry's ``drop_partitions``), so a
+        growing count of prefixes held is seen.
+
+        :return: each shape, onto its prefixes' count; empty when none is distrusted
+        :rtype: dict[tuple[int, ...], int]
+        """
+        distrusted: dict[tuple[int, ...], dict[tuple[str, ...], int]] = self.__dict__.get("_l2_distrusted_prefixes", {})
+        return {shape: len(values) for shape, values in distrusted.items()}
+
     def _dropped_prefix_at(self, key: tuple[str, ...]) -> int:
         """the latest drop of a prefix :meth:`drop_cached_prefixes` dropped in this process that ``key`` lies under: one
         lookup a prefix shape (a table's loads name one or two), never one a prefix.

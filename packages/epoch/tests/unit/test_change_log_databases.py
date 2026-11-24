@@ -106,6 +106,7 @@ class TestAFollowerWalksOnlyItsOwnDatabasesRecords:
             _SHARED,
             on_row=lambda message: heard.append(str(message.ids[0])),
             on_table_dropped=lambda: dropped.append(True),
+            on_partition=lambda _prefix: dropped.append(True),
         )
         start = await reader.read(_SHARED)
         assert start is not None

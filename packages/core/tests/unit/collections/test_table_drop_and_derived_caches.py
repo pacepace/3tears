@@ -14,7 +14,7 @@ Two registries on one in-process bus stand in for two pods. The contract this pi
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import asyncio
 import json
@@ -198,7 +198,14 @@ class _PersonCache:
         self.entries = {person: f"access-of-{person}" for person in people}
         self.dropped_all = 0
         self.unmapped: list[CacheInvalidationMessage] = []
-        registry.register_derived_cache(_TABLE, on_row=self._on_row, on_table_dropped=self._on_table_dropped)
+        self.slices: list[dict[str, str]] = []
+        registry.register_derived_cache(
+            _TABLE, on_row=self._on_row, on_table_dropped=self._on_table_dropped, on_partition=self._on_slice
+        )
+
+    def _on_slice(self, prefix: Mapping[str, str]) -> None:
+        # a slice of rows keyed by id: this cache, keyed by the person, holds no entry it can place under it
+        self.slices.append(dict(prefix))
 
     def _on_row(self, message: CacheInvalidationMessage) -> None:
         if message.columns is None:
@@ -350,7 +357,10 @@ class TestAHeardRowIsEvictedCountedAndPassedOnRowByRow:
         writer = _Pod(bus, {}, source, scope="writer")
         heard: list[str] = []
         remove = writer.registry.register_derived_cache(
-            _TABLE, on_row=lambda message: heard.append(message.ids[0]), on_table_dropped=lambda: heard.append("ALL")
+            _TABLE,
+            on_row=lambda message: heard.append(message.ids[0]),
+            on_table_dropped=lambda: heard.append("ALL"),
+            on_partition=lambda _prefix: heard.append("SLICE"),
         )
         await _save(writer, "m1", "ada")
         remove()
@@ -675,25 +685,17 @@ class TestWhenAKeyIsTrustedAgainAfterADrop:
         assert pod.members.fetches == fetches + 2, "dropped again, it is distrusted again"
 
     async def test_many_dropped_prefixes_cost_a_read_one_lookup_a_shape(self, bus: _Lossy, source: _Source) -> None:
-        """Flips if whether a key is distrusted is asked of every prefix ever dropped (each read paid for every load's
-        prefix: a scan a read), or if a table drop does not forget them (they grew with every distinct prefix)."""
+        """Flips if the prefixes dropped are not held by their shape (a read then asks every prefix ever dropped: a scan
+        a read, where it asks one lookup a shape), or if a table drop does not forget them (they grew with every
+        distinct prefix)."""
         rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}
         pod = _Pod(bus, rows, source, scope="reader")
         await pod.registry.drop_partitions(_TABLE, [{"id": f"x{i}"} for i in range(20_000)], reason="test")
-        asked: list[Any] = []
-        dict_get = dict.get
-
-        class Counting(dict):  # type: ignore[type-arg]
-            def get(self, key: Any, default: Any = None) -> Any:
-                asked.append(key)
-                return dict_get(self, key, default)
-
-        index = pod.members.__dict__["_l2_distrusted_prefixes"]
-        index.update({shape: Counting(values) for shape, values in index.items()})
+        # 20,000 prefixes of one shape: a read is checked against them with one lookup
+        assert pod.members.distrusted_prefixes() == {(0,): 20_000}
         assert await _member_id(pod, "m1") == "ada"
-        assert len(asked) <= 2, f"a read asked {len(asked)} prefixes"
         pod.registry.drop_table(_TABLE, reason="test")
-        assert "_l2_distrusted_prefixes" not in pod.members.__dict__, "a table drop forgets the prefixes it covers"
+        assert pod.members.distrusted_prefixes() == {}, "a table drop forgets the prefixes it covers"
 
     async def test_a_drop_during_the_read_through_leaves_the_key_distrusted(self, bus: _Lossy, source: _Source) -> None:
         rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}
@@ -755,7 +757,9 @@ class TestADerivedCacheThatFails:
         def broken(message: CacheInvalidationMessage) -> None:
             raise RuntimeError("a bug in a derived cache")
 
-        reader.registry.register_derived_cache(_TABLE, on_row=broken, on_table_dropped=lambda: None)
+        reader.registry.register_derived_cache(
+            _TABLE, on_row=broken, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+        )
         with pytest.raises(RuntimeError, match="derived cache"):
             await _save(writer, "m1", "grace")
 

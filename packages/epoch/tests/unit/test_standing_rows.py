@@ -44,8 +44,16 @@ class _FakeAgentsDb:
             self.fail_next -= 1
             raise OSError("database unreachable")
         assert f"FROM {_TABLE} AS t" in sql or f'FROM "{_TABLE}" AS t' in sql, sql
+        if len(params) == 1:
+            # a slice's read by the key's leading part (the customers bound as one text array)
+            customers = {UUID(customer) for customer in params[0]}
+            return [dict(row) for (customer, _), row in self.rows.items() if customer in customers]
         named = {(UUID(customer), UUID(agent)) for customer, agent in zip(params[0], params[1], strict=True)}
         return [dict(row) for key, row in self.rows.items() if key in named]
+
+
+async def _no_slice(reach: Mapping[str, str]) -> None:
+    raise AssertionError(f"no slice is read here: {dict(reach)}")
 
 
 def _agent(customer: UUID | None = None, *, deleted: bool = False) -> dict[str, Any]:
@@ -105,6 +113,33 @@ async def test_the_set_is_read_whole_only_cold_and_each_change_by_its_whole_key(
     assert len(db.statements) == 2
     for _sql, params in db.statements:
         assert len(params[0]) == 1 and len(params[1]) == 1, "one changed row, named by its whole key"
+
+
+async def test_a_slice_is_read_by_its_prefix_and_nothing_else_held_moves() -> None:
+    """Flips if a slice a load or a clear reaches (a customer's key prefix) drops the set or reads it cold (decision 33),
+    reads the table past the slice, leaves a row held under it that is gone, misses one added under it, or touches a row
+    held outside it."""
+    customer, other = uuid4(), uuid4()
+    kept, gone, outside = _agent(customer), _agent(customer), _agent(other)
+    db = _FakeAgentsDb([kept, gone, outside])
+    cold = _Cold(db)
+    rows = _set(db, cold)
+    assert await rows.count() == 3
+    del db.rows[(gone["customer_id"], gone["id"])]
+    added = _agent(customer)
+    db.rows[(added["customer_id"], added["id"])] = added
+    # a change outside the slice, heard by no one: the slice's read must not pick it up
+    db.rows[(outside["customer_id"], outside["id"])]["is_deleted"] = True
+    db.statements.clear()
+
+    rows.rows.on_partition(_TABLE, {"customer_id": str(customer)})
+    await rows.settled()
+
+    assert await rows.keys() == sorted([(customer, kept["id"]), (customer, added["id"]), (other, outside["id"])]), (
+        "the slice's rows as they stand now; the row outside it as held"
+    )
+    assert cold.calls == 1, "never read cold for a slice"
+    assert len(db.statements) == 1 and db.statements[0][1] == ([str(customer)],), "one read, by the slice's prefix"
 
 
 async def test_a_change_heard_before_the_cold_read_is_not_read() -> None:
@@ -299,7 +334,7 @@ async def test_a_follow_since_naming_a_table_it_does_not_follow_is_refused() -> 
     async def read(key: tuple[str, ...]) -> None:
         return None
 
-    follower = RowFollower({}, lambda: None, name="test", key_reads={"a": read})
+    follower = RowFollower({}, lambda: None, name="test", key_reads={"a": read}, partition_reads={"a": _no_slice})
     with pytest.raises(ValueError, match="does not follow"):
         follower.follow(CollectionRegistry(), EpochGenerationReader(FakeNatsClient()), since={"b": None})
 

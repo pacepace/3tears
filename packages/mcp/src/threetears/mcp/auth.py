@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
@@ -577,7 +577,10 @@ class LocalGrantAuthorizer:
         if self._registry is not None:
             assert self._generation_reader is not None  # constructed together
             self._unregister = self._registry.register_derived_cache(
-                _GRANTS_TABLE, on_row=self._on_grant_row, on_table_dropped=self._on_table_dropped
+                _GRANTS_TABLE,
+                on_row=self._on_grant_row,
+                on_table_dropped=self._on_table_dropped,
+                on_partition=self._on_grant_slice,
             )
             # the generation as it stands, read before the fill: everything at or below it is in the
             # rows the fill reads, and the follow walks every epoch after it. ``None`` (no change log
@@ -683,6 +686,23 @@ class LocalGrantAuthorizer:
         :raises ValueError: when the message's key is not a uuid
         """
         grant_id = UUID(message.ids[0])
+        self._spawn(self._apply_grant(grant_id), f"mcp-grant-read-{grant_id}")
+
+    def _on_grant_slice(self, prefix: Mapping[str, str]) -> None:
+        """registry callback: a load or a clear reached a slice of the table (a key prefix). The table's key is the
+        grant's id alone, and a prefix leads the key, so a slice is one grant: read by its key, as a changed row is,
+        and nothing else is touched (decision 33: never the whole cache for a slice).
+
+        :param prefix: the key prefix, column onto its value as text
+        :ptype prefix: Mapping[str, str]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the prefix names other than one column (a one-column key's prefix is the key)
+        """
+        if len(prefix) != 1:
+            raise ValueError(f"{_GRANTS_TABLE} is keyed by its grant id alone; a slice of it names one, got {prefix}")
+        (value,) = prefix.values()
+        grant_id = UUID(value)
         self._spawn(self._apply_grant(grant_id), f"mcp-grant-read-{grant_id}")
 
     def _on_table_dropped(self) -> None:

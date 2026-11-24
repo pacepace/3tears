@@ -1072,7 +1072,10 @@ class TestARecoveredWriteTooLargeToRecordReachesAFollower:
         heard: set[str] = set()
         dropped: list[bool] = []
         registry.register_derived_cache(
-            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+            table,
+            on_row=lambda message: heard.add(str(message.ids[0])),
+            on_table_dropped=lambda: dropped.append(True),
+            on_partition=lambda _prefix: dropped.append(True),
         )
         await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
         await reconciler.run_pass()
@@ -1112,7 +1115,10 @@ class TestARecoveredWriteTooLargeToRecordReachesAFollower:
         heard: set[str] = set()
         dropped: list[bool] = []
         registry.register_derived_cache(
-            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+            table,
+            on_row=lambda message: heard.add(str(message.ids[0])),
+            on_table_dropped=lambda: dropped.append(True),
+            on_partition=lambda _prefix: dropped.append(True),
         )
         await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
         await reconciler.run_pass()
@@ -1162,7 +1168,10 @@ class TestAFollowerOnADirectPoolReadsTheNotesItself:
         heard: set[str] = set()
         dropped: list[bool] = []
         registry.register_derived_cache(
-            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+            table,
+            on_row=lambda message: heard.add(str(message.ids[0])),
+            on_table_dropped=lambda: dropped.append(True),
+            on_partition=lambda _prefix: dropped.append(True),
         )
         await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
         await reconciler.run_pass()
@@ -1831,6 +1840,7 @@ class TestATableNamedInTwoDatabases:
                     table,
                     on_row=lambda message, heard=heard: heard.append(str(message.ids[0])),  # type: ignore[misc]
                     on_table_dropped=lambda dropped=dropped: dropped.append(True),  # type: ignore[misc]
+                    on_partition=lambda _prefix: None,
                 )
                 reader = EpochGenerationReader(bus, database=notes_schema)
                 await registry.catch_up_generation(table, await reader.read(table), changes=reader)
