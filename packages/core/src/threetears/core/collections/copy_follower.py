@@ -3140,9 +3140,11 @@ class CopyFollower:
         :rtype: StagedFull | None
         """
         staged: StagedFull | None = None
+        #: the last reason logged: each new one is logged once, not at every look
+        said = ""
 
         async def looked() -> bool:
-            nonlocal staged
+            nonlocal staged, said
             if self._status.phase is FollowerPhase.STOPPED:
                 return True
             try:
@@ -3152,6 +3154,12 @@ class CopyFollower:
             if isinstance(found, StagedFull):
                 staged = found
                 return True
+            if found.reason != said:
+                said = found.reason
+                log.warning(
+                    "a copy waits for the full on the volume, reading nothing from L3",
+                    extra={"extra_data": {"reason": found.reason}},
+                )
             self._say(FollowerPhase.WAITING, f"waiting for the full: {found.reason}")
             return False
 
