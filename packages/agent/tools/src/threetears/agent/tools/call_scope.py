@@ -57,7 +57,6 @@ from threetears.interfaces.media import ObjectStore
 from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
-    "CallCleanupHooks",
     "ContextFactory",
     "ToolCallScope",
     "build_call_scope",
@@ -77,7 +76,7 @@ if TYPE_CHECKING:
     from threetears.agent.tools.object_resolver import ObjectResolver
 
 
-class CallCleanupHooks:
+class _CallCleanupHooks:
     """the cleanup hooks one call registered, in registration order.
 
     The scope is frozen and reached by every coroutine (and ``to_thread`` worker) of its call, so its one changing
@@ -174,7 +173,7 @@ class ToolCallScope:
         process-group kill so a hard timeout REAPS the process instead of leaving
         an orphaned child holding memory. Empty on the normal path; never invoked
         when the tool returns on its own.
-    :ptype cleanup_hooks: CallCleanupHooks
+    :ptype cleanup_hooks: _CallCleanupHooks
     """
 
     context: CallContext = field(default_factory=CallContext)
@@ -184,7 +183,7 @@ class ToolCallScope:
     engagement_resolver: "EngagementScopeResolver | None" = None
     principal_is_tool_pod: bool = False
     credential: DoorCredential | None = None
-    cleanup_hooks: CallCleanupHooks = field(default_factory=CallCleanupHooks)
+    cleanup_hooks: _CallCleanupHooks = field(default_factory=_CallCleanupHooks)
 
     def door_credential(self) -> DoorCredential | None:
         """what a tool presents at a platform door for this call.
