@@ -149,6 +149,7 @@ from threetears.core.collections.schema_backed import (
     NUMERIC_TYPE,
     Column,
     TableSchema,
+    rail_text,
     sql_cast,
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
@@ -1318,6 +1319,29 @@ class FollowedTable:
         """
         kind = next(c.column_type for c in self.columns if c.name == column)
         return sql_cast(kind)
+
+    def held_key(self, column: str, alias: str | None = None) -> str:
+        """a key column as the copy's semi-join on some keys compares it (``WHERE (<held keys>) IN (SELECT <keys cast
+        by key_cast> FROM ({KEYS}))``): cast to its type (:meth:`key_cast`) when the rail answers it as text
+        (:func:`~threetears.core.collections.schema_backed.rail_text`) though its type is not text, else as it is held.
+
+        Why: the copy holds a ``DATETIMETZ_TYPE`` column as its ISO text (VARCHAR), and DuckDB's ``IN`` compares no
+        VARCHAR with the ``TIMESTAMPTZ`` its key is cast to (a Binder Error that failed every pass of a copy of a table
+        keyed by a timestamp, reports' ``result_snapshots_by_id``, 2026-11-24), where the ``=`` join the semi-join
+        replaced (2026-11-23) cast the copy's text implicitly. Cast so, a key matches the instant it names, as the join
+        matched it, whatever text form (``+00`` or ``+00:00``, a ``T`` or a space) the copy or the key carries. A text
+        or BIGINT column is compared uncast.
+
+        :param column: a key column
+        :ptype column: str
+        :param alias: the copy table's alias in the statement; None names the column bare
+        :ptype alias: str | None
+        :return: the column's SQL
+        :rtype: str
+        """
+        held = quote_identifier(column) if alias is None else f"{alias}.{quote_identifier(column)}"
+        cast = self.key_cast(column)
+        return f"CAST({held} AS {cast})" if cast != "text" and rail_text(self.kind(column)) else held
 
 
 @dataclass(frozen=True, slots=True)
@@ -4285,7 +4309,7 @@ class CopyFollower:
         :rtype: pyarrow.Table
         """
         selected = self._copy_columns(table) if selected is None else selected
-        named = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
+        named = ", ".join(table.held_key(column, "t") for column in columns)
         cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(columns))
         statement = (
             f"SELECT {selected} FROM {quote_identifier(table.name)} AS t "  # noqa: S608 - trusted identifiers
@@ -4636,7 +4660,7 @@ class CopyFollower:
         if not keys.num_rows:
             return schema.empty_table()
         selected = ", ".join(quote_identifier(column.name) for column in table.columns)
-        named = ", ".join(quote_identifier(column) for column in table.key)
+        named = ", ".join(table.held_key(column) for column in table.key)
         cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(table.key))
         statement = (
             f"SELECT {selected} FROM {quote_identifier(table.name)} "  # noqa: S608 - trusted identifiers

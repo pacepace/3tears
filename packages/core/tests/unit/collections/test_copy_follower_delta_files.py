@@ -304,7 +304,11 @@ class _Notes:
 
 
 def _world(
-    *, delta_files: bool = True, notes: _Notes | None = None, recreate: Any = None
+    *,
+    delta_files: bool = True,
+    notes: _Notes | None = None,
+    recreate: Any = None,
+    key: tuple[str, ...] = _KEY,
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
@@ -315,7 +319,7 @@ def _world(
     registry.set_noted_keys_reader(notes)
     follower = CopyFollower(
         registry,
-        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=delta_files)],
+        [FollowedTable(name=_TABLE, key=key, columns=_COLUMNS, scope=("state", "state:"), delta_files=delta_files)],
         backend,
         l3,
         settled=lock.settled,
@@ -512,6 +516,57 @@ async def test_a_table_that_does_not_opt_in_reads_l3_as_before(_volume: Path) ->
     assert _same(backend, l3)
     assert l3.statements == 1
     assert {why: _fallbacks(why) for why in before} == before
+
+
+async def test_a_copy_keyed_by_a_timestamp_reads_its_own_rows_of_a_change_by_the_instant(_volume: Path) -> None:
+    """Flips if the copy's own read of a change's rows by key (CopyFollower._copy_rows_of_keys, run for a table whose
+    scope is in its rows only) compares the copy's timestamp text with the key's timestamp uncast: DuckDB's IN refuses
+    VARCHAR against TIMESTAMPTZ (a Binder Error), so every pass failed and the copy never applied the change. Reports'
+    result_snapshots_by_id is keyed by source_timestamp; its copy on a second replica stood current at the right epochs
+    without ever answering (test_refresh_live::test_a_first_load_on_one_replica_reaches_the_others_copy, 2026-11-24).
+    The key names the instant in another text form than the copy keeps (a space, ``+00``): it matches all the same."""
+    world = _world(delta_files=False, key=("geo_id", "date_created"))
+    l3, log, lock, backend, follower = world
+    rows = [_row("VA", i, 10 + i) for i in range(5)] + [_row("IL", 10 + i, 20 + i) for i in range(5)]
+    l3.insert(rows)
+    log.commit([(str(row["geo_id"]), row["date_created"].isoformat()) for row in rows])
+    await follower.warm()
+    assert await follower.catch_up()
+    assert _same(backend, l3)
+    l3.update(("VA", 1), votes=88)
+    log.commit([("1", "2026-11-03 21:45:00+00")])  # type: ignore[list-item]
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+    assert _same(backend, l3)
+    assert follower.status().failures == 0
+
+
+async def test_a_copy_keyed_by_a_timestamp_merges_a_files_upsert_onto_the_row_it_holds(_volume: Path) -> None:
+    """Flips if the copy's read of the rows it holds of a file's keys (the row an upsert that left columns out is
+    merged onto, decision 19) compares the copy's timestamp text with the key's timestamp uncast: DuckDB's IN refuses
+    VARCHAR against TIMESTAMPTZ (a Binder Error), so the pass fails and the change is never applied. Applied, the copy
+    keeps the columns the write left out."""
+    key = ("geo_id", "date_created")
+    world = _world(key=key)
+    l3, log, lock, backend, follower = world
+    rows = [_row("VA", i, 10 + i) for i in range(3)]
+    l3.insert(rows)
+    log.commit([(str(row["geo_id"]), row["date_created"].isoformat()) for row in rows])
+    await follower.warm()
+    assert await follower.catch_up()
+    assert _same(backend, l3)
+    l3.statements = 0
+    # the write set votes alone: the copy keeps the row's state and note
+    delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
+    delta.rows([{"state": None, "geo_id": 1, "votes": 77, "note": None, "date_created": _BORN}], key + ("votes",))
+    name = write_delta_file(_volume, delta, "w1")
+    l3.update(("VA", 1), votes=77)
+    # the key as the file names it (TableDelta's text of an instant)
+    log.commit([("1", "2026-11-03T21:45:00.000000+00:00")], delta_file=name)  # type: ignore[list-item]
+    lock.commit("state:VA")
+    assert await follower.catch_up()
+    assert _same(backend, l3)
+    assert l3.statements == 0
 
 
 async def test_a_key_left_out_of_a_change_is_staged_again_from_its_files_next_pass_with_no_l3_read(
