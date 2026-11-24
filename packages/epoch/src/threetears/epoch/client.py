@@ -46,10 +46,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
 from threetears.core.coordination.distributed_counter import DistributedCounter
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.core.keyed import read_row, read_value
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats import KvPublisher
@@ -364,14 +366,15 @@ class EpochClient:
         # :meth:`versions` with ``cached=True``: the versions of each durable subject this process
         # read or wrote, by subject path, held only for a subject a listener follows. one entry per
         # followed durable subject asked about, which is one per tile layer.
-        self._versions: dict[str, DurableEpoch] = {}
+        # each a read-only snapshot replaced whole on a change (decision 41)
+        self._versions: Mapping[str, DurableEpoch] = EMPTY
         # the subject paths, concrete or wildcard, a listener on this client has subscribed
         # (:meth:`observe_subscription`); one per subscription
-        self._followed: set[str] = set()
+        self._followed: frozenset[str] = frozenset()
         # the :meth:`versions` reads in flight, by subject path. a change to a subject's copy removes
         # its entry, so a read that left before the change and lands after does not store the row as
         # it stood before. an entry lasts only as long as its reads do.
-        self._versions_reads: dict[str, set[object]] = {}
+        self._versions_reads: Mapping[str, frozenset[object]] = EMPTY
         # whether the one warning for a cached read of a subject nothing follows has been logged
         self._warned_unfollowed = False
 
@@ -667,7 +670,9 @@ class EpochClient:
                     extra={"extra_data": {"subject": path}},
                 )
         read = object()
-        self._versions_reads.setdefault(path, set()).add(read)
+        self._versions_reads = with_entry(
+            self._versions_reads, path, self._versions_reads.get(path, frozenset()) | {read}
+        )
         try:
             row = await read_row(
                 self._pool,
@@ -684,7 +689,7 @@ class EpochClient:
             result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
         if unchanged and self._is_followed(path):
             # nothing changed the copy since the read left, so the row it read is current
-            self._versions[path] = result
+            self._versions = with_entry(self._versions, path, result)
         return result
 
     @property
@@ -716,8 +721,8 @@ class EpochClient:
         :return: nothing
         :rtype: None
         """
-        self._followed.add(subject.path)
-        self._versions_reads.clear()
+        self._followed = self._followed | {subject.path}
+        self._versions_reads = EMPTY
 
     def observe_broadcast(self, message: EpochBumpMessage) -> None:
         """drop the cached :meth:`versions` of the subject a broadcast names, when it names a later epoch.
@@ -755,18 +760,20 @@ class EpochClient:
         reads = self._versions_reads.get(path)
         if reads is None or read not in reads:
             return False
-        reads.discard(read)
-        if not reads:
-            del self._versions_reads[path]
+        left = reads - {read}
+        if left:
+            self._versions_reads = with_entry(self._versions_reads, path, left)
+        else:
+            self._versions_reads = without_entry(self._versions_reads, path)
         return True
 
     def _remember_versions(self, path: str, value: DurableEpoch) -> None:
         """write this process's own knowledge of a row into the cached copy, when the subject is followed."""
-        self._versions_reads.pop(path, None)
+        self._versions_reads = without_entry(self._versions_reads, path)
         if self._is_followed(path):
-            self._versions[path] = value
+            self._versions = with_entry(self._versions, path, value)
 
     def _forget_versions(self, path: str) -> None:
         """drop a subject's cached copy, so its next read asks the row."""
-        self._versions_reads.pop(path, None)
-        self._versions.pop(path, None)
+        self._versions_reads = without_entry(self._versions_reads, path)
+        self._versions = without_entry(self._versions, path)

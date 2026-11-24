@@ -68,6 +68,7 @@ from threetears.core.collections.epoch_change import (
     read_logged_epoch_change,
 )
 from threetears.core.collections.generation import split_generation_token, tenancy_of_table
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.core.exceptions import (
     ChangeLogKeyRefusedError,
     GenerationUnavailableError,
@@ -276,11 +277,12 @@ class _ChangeLogReading:
         self._nats = nats_client
         self._tenants = tenants
         self._database = database
-        self._tenants_of: dict[str, tuple[str, ...]] = {}
+        # read-only snapshots replaced whole on a change (decision 41); one entry per table
+        self._tenants_of: Mapping[str, tuple[str, ...]] = EMPTY
         # each table this pod's tenants cannot read, with why, and the subject the broker refused (``None`` when
         # the tenants name no key for it): a wiring error, so a later read is answered at once rather than waiting
         # on the broker again, for as long as the client still holds the refusal (a new credential clears it)
-        self._refused: dict[str, tuple[ChangeLogKeyRefusedError, str | None]] = {}
+        self._refused: Mapping[str, tuple[ChangeLogKeyRefusedError, str | None]] = EMPTY
         self._absent_log_poll = absent_log_poll
 
     def _table_tenants(self, pod: PodTenants, table_name: str) -> tuple[str, ...]:
@@ -307,9 +309,9 @@ class _ChangeLogReading:
                     keys=(),
                     tenants=pod,
                 )
-                self._refused[table_name] = (refused, None)
+                self._refused = with_entry(self._refused, table_name, (refused, None))
                 raise refused from exc
-            self._tenants_of[table_name] = tenants
+            self._tenants_of = with_entry(self._tenants_of, table_name, tenants)
         return tenants
 
     def _keys(self, table_name: str) -> tuple[str, ...]:
@@ -328,7 +330,7 @@ class _ChangeLogReading:
         if refused is not None:
             if self._still_refused(refused[1]):
                 raise refused[0]
-            del self._refused[table_name]
+            self._refused = without_entry(self._refused, table_name)
         return tuple(epoch_change_key(table_name, tenant) for tenant in self._table_tenants(self._tenants, table_name))
 
     def _still_refused(self, subject: str | None) -> bool:
@@ -375,7 +377,7 @@ class _ChangeLogReading:
                 keys=keys,
                 tenants=self._tenants,
             )
-            self._refused[table_name] = (refused, exc.subject)
+            self._refused = with_entry(self._refused, table_name, (refused, exc.subject))
             raise refused from exc
 
     def _readable(self, table_name: str, key: str) -> bool:

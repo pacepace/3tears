@@ -187,7 +187,9 @@ class RowFollower:
         self._partition_reads = dict(partition_reads)
         self._on_table_dropped = on_table_dropped
         self._name = name
-        self._tasks: set[asyncio.Task[None]] = set()
+        # the reads in flight, a read-only snapshot replaced whole on a change (decision 41). Not a KeyedTaskRegistry:
+        # these tasks have no key, and stop() cancels each one, which the registry cannot list
+        self._tasks: frozenset[asyncio.Task[None]] = frozenset()
         self._follower: TableFollower | None = None
         self._unregister: list[Callable[[], None]] = []
 
@@ -244,8 +246,18 @@ class RowFollower:
         :rtype: None
         """
         task = asyncio.get_running_loop().create_task(work, name=name)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._tasks = self._tasks | {task}
+        task.add_done_callback(self._forget)
+
+    def _forget(self, task: asyncio.Task[None]) -> None:
+        """drop a finished task from the reads in flight.
+
+        :param task: the finished task
+        :ptype task: asyncio.Task[None]
+        :return: nothing
+        :rtype: None
+        """
+        self._tasks = self._tasks - {task}
 
     async def settled(self) -> None:
         """wait for every read started so far, and any they started.

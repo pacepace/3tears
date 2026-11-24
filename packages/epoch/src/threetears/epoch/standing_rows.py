@@ -36,6 +36,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.frozen_state import EMPTY, frozen, with_entry, without_entry
 from threetears.core.keyed import KeyBatch, read_keyed
 from threetears.observe import contain, get_logger
 
@@ -167,8 +168,10 @@ class StandingRows:
         self._loaded = False
         self._following = False
         self._since: dict[str, str | None] | None = None
-        self._held: dict[tuple[Any, ...], dict[str, Any]] = {}
-        self._missed: set[tuple[Any, ...]] = set()
+        # read-only snapshots replaced whole on a change (decision 41): a standing set is small and changes rarely
+        # (active agents, customers, pods), so a change rebuilds it whole; what failed a read is a handful at most
+        self._held: Mapping[tuple[Any, ...], dict[str, Any]] = EMPTY
+        self._missed: frozenset[tuple[Any, ...]] = frozenset()
         #: slices whose read failed, each as its prefix's items: read again before the next question, as a missed row is
         self._missed_slices: tuple[tuple[tuple[str, str], ...], ...] = ()
         self._cold_reads = 0
@@ -293,7 +296,7 @@ class StandingRows:
             self._missed_slices = self._missed_slices[1:]
         for key in sorted(self._missed):
             await self._apply(key)
-            self._missed.discard(key)
+            self._missed = self._missed - {key}
 
     async def read(
         self,
@@ -339,8 +342,8 @@ class StandingRows:
         if not self._following:
             self._since = await cold_read_generations(self._generations, (standing.table,))
         rows = await self._cold()
-        self._held = {standing.key_of(row): dict(row) for row in rows if standing.member(row)}
-        self._missed.clear()
+        self._held = frozen((standing.key_of(row), dict(row)) for row in rows if standing.member(row))
+        self._missed = frozenset()
         self._missed_slices = ()
         self._loaded = True
         self._cold_reads += 1
@@ -380,9 +383,9 @@ class StandingRows:
         stands = row is not None and standing.member(row)
         after = {column: row[column] for column in standing.columns} if row is not None and stands else None
         if after is not None:
-            self._held[key] = after
+            self._held = with_entry(self._held, key, after)
         else:
-            self._held.pop(key, None)
+            self._held = without_entry(self._held, key)
         if self._on_change is not None and before != after:
             # a task: it runs once the lock this read holds is let go, so it may ask the set; settled() waits for it
             self._rows.spawn(self._tell(key, before, after), f"{self._name}-on-change")
@@ -430,7 +433,7 @@ class StandingRows:
                     await self._apply(key)
                 except Exception as exc:
                     # the next question reads the row again first and raises to its caller if it fails again
-                    self._missed.add(key)
+                    self._missed = self._missed | {key}
                     contain(
                         exc,
                         log=log,

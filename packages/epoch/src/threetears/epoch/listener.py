@@ -20,7 +20,10 @@ deserialization, programming errors propagate.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Awaitable, Callable
+
+from threetears.core.frozen_state import EMPTY, with_entry, without_entries, without_entry
 
 from threetears.nats import TypedSubscriber
 from threetears.nats.errors import SubscribeError
@@ -102,7 +105,9 @@ class EpochListener:
         """
         self._nats = nats_client
         self._epoch_client = epoch_client
-        self._last_seen: dict[str, int] = {}
+        # read-only snapshots replaced whole on a change (decision 41): one entry per subject heard, one list per
+        # subscribed path
+        self._last_seen: Mapping[str, int] = EMPTY
         # Every registered subscription, so a reset can reach ALL of them.
         # Without this the callbacks live only as closure arguments to
         # ``subscribe`` and ``catch_up``, and whichever call happened to
@@ -118,7 +123,7 @@ class EpochListener:
         # One entry per path would give both consumers bumps and only the last
         # one resets: the same permanent staleness, one scope smaller and
         # considerably harder to notice.
-        self._registrations: dict[str, list[tuple[Subject, BumpCallback, ResetCallback | None]]] = {}
+        self._registrations: Mapping[str, tuple[tuple[Subject, BumpCallback, ResetCallback | None], ...]] = EMPTY
         # The identity of the bucket this listener's numbers were counted in.
         # ``None`` until first observed; compared for EQUALITY only.
         self._bucket_identity: str | None = None
@@ -267,7 +272,7 @@ class EpochListener:
             fails to register
         """
         primed = primed_epoch if primed_epoch is not None else await self._epoch_client.current(subject)
-        self._last_seen[subject.path] = primed
+        self._last_seen = with_entry(self._last_seen, subject.path, primed)
 
         log.debug(
             "epoch listener primed last-seen",
@@ -315,7 +320,7 @@ class EpochListener:
                     },
                 )
                 return
-            self._last_seen[dedupe_path] = message.epoch
+            self._last_seen = with_entry(self._last_seen, dedupe_path, message.epoch)
             await on_bump(message.epoch, message.payload)
 
         try:
@@ -336,7 +341,11 @@ class EpochListener:
         # one registration and gets one reset callback, however many concrete
         # subjects it later matches. dedupe stays keyed on the message path,
         # because those counters are independent numbers.
-        self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
+        self._registrations = with_entry(
+            self._registrations,
+            subject.path,
+            (*self._registrations.get(subject.path, ()), (subject, on_bump, on_reset)),
+        )
         # from here every broadcast on the subject reaches the client's ``observe_broadcast``, so
         # the client may keep a cached ``versions`` copy for what this subscription hears
         self._epoch_client.observe_subscription(subject)
@@ -405,10 +414,10 @@ class EpochListener:
         :return: how many registrations were dropped
         :rtype: int
         """
-        entries = self._registrations.get(subject.path, [])
+        entries = self._registrations.get(subject.path, ())
         if on_bump is None:
             dropped = len(entries)
-            self._registrations.pop(subject.path, None)
+            self._registrations = without_entry(self._registrations, subject.path)
         else:
             # Equality, NOT identity. A bound method is built fresh on every
             # attribute access, so ``self._on_x is self._on_x`` is False and an
@@ -416,12 +425,12 @@ class EpochListener:
             # production caller (``LocalGrantAuthorizer.stop``) passes it.
             # ``a.m == a.m`` is True because a bound method compares on
             # ``(__func__, __self__)``.
-            keep = [e for e in entries if e[1] != on_bump]
+            keep = tuple(e for e in entries if e[1] != on_bump)
             dropped = len(entries) - len(keep)
             if keep:
-                self._registrations[subject.path] = keep
+                self._registrations = with_entry(self._registrations, subject.path, keep)
             else:
-                self._registrations.pop(subject.path, None)
+                self._registrations = without_entry(self._registrations, subject.path)
 
         # Only once nobody is left on the path. Clearing while another consumer
         # is still registered would re-fire its next bump as new.
@@ -433,7 +442,7 @@ class EpochListener:
         # package does not have, and a stale entry only suppresses a bump whose
         # epoch the counter already passed, which is the correct answer anyway.
         if not self._registrations.get(subject.path):
-            self._last_seen.pop(subject.path, None)
+            self._last_seen = without_entry(self._last_seen, subject.path)
         return dropped
 
     async def signal_reset(self, subject: Subject | None = None) -> None:
@@ -500,8 +509,8 @@ class EpochListener:
             # that detected the problem the only one not reset by it, wedged
             # permanently while every ephemeral consumer reloaded on every tick
             # because the condition never cleared.
-            self._last_seen.pop(subject.path, None)
-            scoped = list(self._registrations.get(subject.path, []))
+            self._last_seen = without_entry(self._last_seen, subject.path)
+            scoped = list(self._registrations.get(subject.path, ()))
             through_bump, scoped_error = await _reset_each(scoped)
             log.warning(
                 "epoch counter for one subject read backwards; that subject reset",
@@ -516,8 +525,9 @@ class EpochListener:
             if scoped_error is not None:
                 raise scoped_error
             return
-        for path in [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]:
-            del self._last_seen[path]
+        self._last_seen = without_entries(
+            self._last_seen, [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]
+        )
         # Record the identity we are announcing, AFTER the clear. Only the
         # bucket-wide path reaches here: a scoped reset returns above, because
         # one subject's counter reading backwards is not a claim about the
@@ -613,7 +623,7 @@ class EpochListener:
             await self.signal_reset(subject)
             return current
         if current > last_seen:
-            self._last_seen[subject.path] = current
+            self._last_seen = with_entry(self._last_seen, subject.path, current)
             await on_bump(current, None)
         return current
 
