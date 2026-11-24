@@ -14,6 +14,7 @@ The contract this pins (:mod:`threetears.core.collections.volume_fulls`, ``desig
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import shutil
 from collections.abc import Iterator
@@ -407,3 +408,105 @@ async def test_a_waiting_copy_loads_the_writer_s_rebuild_and_never_reads_l3(tmp_
     assert _held(backend) == [("VA", i, 1) for i in range(3)]
     assert registry.generation_marks.recorded(_TABLE) == "inc:5"
     assert writer_l3.reads == 1 and copy_l3.statements == 0
+
+
+# --- a table whose columns changed in place (decision 12) ---------------------------------------
+
+
+_ADDED = TableSchema(
+    name=_TABLE,
+    primary_key=_KEY,
+    columns=[*_COLUMNS, Column(name="source", column_type=STRING_TYPE, nullable=True)],
+    l1_eviction=TEST_L1_TABLE,
+    delta_files=True,
+)
+_FOLLOWED_ADDED = dataclasses.replace(FollowedTable.of(_ADDED), scope=("state", "state:"))
+
+
+def _backend_added() -> DuckDBBackend:
+    metadata = MetaData()
+    Table(
+        _TABLE,
+        metadata,
+        SaColumn("state", String(8), primary_key=True),
+        SaColumn("geo_id", BigInteger, primary_key=True),
+        SaColumn("votes", BigInteger),
+        SaColumn("source", String(8)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    _OPENED.append(backend.reset)
+    return backend
+
+
+def _other_columns() -> float:
+    return REGISTRY.get_sample_value("volume_fulls_other_columns_total", {"table": _TABLE}) or 0.0
+
+
+async def test_a_full_over_other_columns_than_the_copy_s_schema_is_waited_on_and_counted(tmp_path: Path) -> None:
+    """Flips if a copy whose table list added a column in place stages a full whose parts were made over the old
+    columns (it would hold the table without the new column, or fail its start), instead of waiting for the writer's
+    fresh full, counted; or if a full over its columns is refused."""
+    _full(tmp_path, 1, VA=3)
+    looks = _other_columns()
+    found = await VolumeFulls(tmp_path, [_FOLLOWED_ADDED]).stage(_backend_added())
+    assert isinstance(found, FullAbsent) and "other columns" in found.reason
+    assert _other_columns() == looks + 1
+    assert isinstance(await VolumeFulls(tmp_path, [_FOLLOWED]).stage(_backend()), StagedFull), "its own columns load"
+
+
+async def test_a_column_added_in_place_makes_the_writer_start_fresh_once_and_the_copy_load_the_new_column(
+    tmp_path: Path,
+) -> None:
+    """Flips if, after a newer table list adds a column in place (no recreate, no reset record), the writer keeps the
+    full over the old columns, or rebuilds more than once; or if a copy starting meanwhile reads L3 or takes the old
+    full instead of waiting for the fresh one and loading the new column."""
+    old_schema = TableSchema(
+        name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
+    )
+    writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(old_schema, scope=("state", "state:"))])
+    try:
+        assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=3) == (_TABLE,)
+    finally:
+        await folds.close()
+    # the hub adds `source` in place; a copy of the new table list starts before the writer restarts
+    copy_l3, backend, registry = _L3(), _backend_added(), CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        [_FOLLOWED_ADDED],
+        backend,
+        copy_l3,
+        settled=lambda: asyncio.sleep(0, result=0),
+        generation=_Generations().current,
+        changes=None,
+        stamp_table="scope_epochs",
+        fulls=VolumeFulls(tmp_path, [_FOLLOWED_ADDED], poll_seconds=0.01),
+    )
+    looks = _other_columns()
+    start = asyncio.create_task(follower.start())
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if follower.status().phase is FollowerPhase.WAITING:
+            break
+    await asyncio.sleep(0.05)  # several looks at the volume
+    assert not start.done() and follower.status().phase is FollowerPhase.WAITING
+    assert "other columns" in follower.status().detail
+    assert _other_columns() > looks and copy_l3.statements == 0
+    # the writer restarts on the new table list: the table starts fresh, read from L3 once
+    writer_l3.rows = [{"state": "VA", "geo_id": g, "votes": 1, "source": f"s{g}"} for g in range(3)]
+    folds = DeltaFolds(tmp_path, [FoldedTable.of(_ADDED, scope=("state", "state:"))])
+    try:
+        assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=4) == (_TABLE,)
+        assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=5) == ()
+    finally:
+        await folds.close()
+    assert writer_l3.reads == 2, "the first rebuild and the fresh start, nothing more"
+    assert await asyncio.wait_for(start, 5) is False
+    assert follower.status().phase is FollowerPhase.FOLLOWING
+    with backend.read_snapshot() as cursor:
+        held = sorted(cursor.execute(f"SELECT state, geo_id, votes, source FROM {_TABLE}").fetchall())
+    assert held == [("VA", g, 1, f"s{g}") for g in range(3)]
+    assert copy_l3.statements == 0

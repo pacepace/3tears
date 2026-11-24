@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the L1 fence holds no state a key
+
+**Changed:** the L1 fence (`_L1Fence`) kept a mutable activity record a key in flight, shared by every ticket on the
+key: per-key Python objects and mutable shared state (Pace, 2026-11-23: redesign, never waive). It now holds immutable
+values it replaces whole: a count of changes, its writes in flight as one packed batch
+(`threetears.core.packed_keys`, stdlib only, shared: one string a batch of keys, `NUL text NUL ...`; core imports no
+Arrow), the held tickets' keys as one more batch, and
+the changes recorded while a ticket is held as eras of at most 64 changes, each dropped whole once no ticket needs it.
+A write or eviction of one key no ticket holds is only counted, so a held read's check after 1,000 writes of other
+keys costs 0.2 us (a speed-budget test holds it under 2 us). A 33,786-key eviction is one recorded change, its batch
+made on the thread. Who may cache is unchanged;
+`_L1Fence.changed_many` takes the packed batch and its count.
+
+### core: the write buffer holds no dict or set a key, and the dict_state rule has no exceptions
+
+**Changed:** `WriteBuffer` kept a dict of pending writes and a set of claimed keys. It now holds a tuple of immutable
+runs sorted by key (keys one packed string, states one `bytes`), merged logarithmically, a key found by bisection, a
+claim the entry's state byte, an ack or removal a copy of its run's state bytes; each change replaces the tuple whole
+under the buffer's lock. What a drain claims, its
+order, and the claim's version guard are unchanged. The dict_state rule's two known-violation lists are deleted: it
+passes with no exception.
+### core: a folded table whose columns changed in place starts fresh; a reset record is a fresh start, not a lost log
+
+**Fixed:** a newer table list that adds (or drops) a column in place, with no recreate and no reset record, left the
+volume's full over the old columns: the writer kept folding onto it and copies took it. Now `DeltaFolds`' start starts
+such a table fresh (`why="schema_change"`, one read from L3) when its parts' fingerprints name other columns
+(`other_columns_parts`, `columns_hash`), and a copy's start from the volume waits for that fresh full, reading no L3
+(`volume_fulls_other_columns_total`, logged once per reason). A restarted writer meeting a reset record in the epoch
+log starts the table fresh (`why="reset"`) instead of recovering it by key as a lost log.
+
 ### core: keyed reads of several key columns are read by their keys alone on YugabyteDB
 
 **Changed:** `read_keyed` and `read_keyed_arrow` no longer bound a batch of several key columns to each column's

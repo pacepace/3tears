@@ -144,7 +144,7 @@ from threetears.core.collections.delta_files import (
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import EpochChange, EpochChangeReader
+from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, EpochChangeReader
 from threetears.core.frozen_state import with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
@@ -162,6 +162,7 @@ from threetears.core.collections.volume_fulls import (
     StaleTermError,
     current_full_manifest,
     deletable_full_files,
+    other_columns_parts,
     publish_full_manifest,
     rows_fingerprint,
     write_full_part,
@@ -790,6 +791,16 @@ class DeltaFolds:
             entry = current.tables.get(name)
             if entry is None or name in self._fresh or name in self._recover:
                 continue  # rebuilt or recovered before any round: its parts are then current to L3, no delta owed
+            other = other_columns_parts(entry, self.tables[name].kinds)
+            if other:
+                # a newer table list changed the table's columns in place (the hub adds a column with no recreate and
+                # no reset record): its parts hold the old columns, so it starts fresh, never folded onto them
+                self._owe_fresh(
+                    name,
+                    "schema_change",
+                    detail=f"{len(other)} parts over other columns than the schema ({other[0].fingerprint})",
+                )
+                continue
             try:
                 now = await generations.current(name)
             except (
@@ -815,6 +826,12 @@ class DeltaFolds:
             if at[1] <= low:
                 continue
             walk = await changes.changes_after(name, f"{held[0]}:{low}", now)
+            resets = [change.token for change in walk.changes if change.whole_table and change.reason == RESET_REASON]
+            if resets:
+                # a reset's record names no delta file by design: the table starts fresh (decision 12), its rows read
+                # from L3 once, never recovered by key as a lost log
+                self._owe_fresh(name, "reset", detail=f"reset records {resets[:5]} since {held[0]}:{low}")
+                continue
             unnamed = [change.token for change in walk.changes if change.delta_file is None]
             if not walk.complete or unnamed:
                 self._owe_recovery(
