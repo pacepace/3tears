@@ -178,8 +178,9 @@ import html
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from types import MappingProxyType
 from typing import Any, Callable
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
@@ -1171,7 +1172,8 @@ class _StructuredAttempts:
     """
 
     def __init__(self) -> None:
-        self._inputs: dict[str, dict[str, Any]] = {}
+        # one entry per StructuredOutput attempt of this call, a handful: a read-only snapshot replaced whole
+        self._inputs: Mapping[str, dict[str, Any]] = MappingProxyType({})
         self.rejected_output: dict[str, Any] | None = None
         self.rejection: str | None = None
         #: Every attempt the CLI rejected, oldest first.
@@ -1185,7 +1187,7 @@ class _StructuredAttempts:
         """
         for block in blocks:
             if isinstance(block, ToolUseBlock) and block.name == _STRUCTURED_OUTPUT_TOOL:
-                self._inputs[block.id] = dict(block.input or {})
+                self._inputs = MappingProxyType({**self._inputs, block.id: dict(block.input or {})})
 
     def answered(self, message: Any) -> None:
         """Note the CLI's rejection of a ``StructuredOutput`` call, when a user message carries one.

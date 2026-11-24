@@ -11,8 +11,10 @@ adds handlers to it (or to a bare model) and keeps the ones already bound.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Mapping
 from decimal import Decimal
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
@@ -81,7 +83,10 @@ class UsageAccumulator(BaseCallbackHandler):
         self.cache_creation_tokens = 0
         self.calls = 0
         self.token_source: TokenSource | None = None
-        self._prompts: dict[Any, list[Any]] = {}
+        # run_id -> the prompt, one per call in flight: a read-only snapshot replaced whole under the
+        # lock, because a sync invoke runs these callbacks on its caller's thread
+        self._prompts: Mapping[Any, list[Any]] = MappingProxyType({})
+        self._prompts_lock = threading.Lock()
 
     @property
     def total_tokens(self) -> int:
@@ -120,7 +125,7 @@ class UsageAccumulator(BaseCallbackHandler):
         :rtype: None
         """
         _ = serialized, kwargs
-        self._prompts[run_id] = [m for batch in messages for m in batch]
+        self._hold(run_id, [m for batch in messages for m in batch])
 
     def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], *, run_id: UUID, **kwargs: Any) -> None:
         """remember a completion-style call's prompt, for an input estimate.
@@ -137,7 +142,7 @@ class UsageAccumulator(BaseCallbackHandler):
         :rtype: None
         """
         _ = serialized, kwargs
-        self._prompts[run_id] = [SimpleNamespace(content=p) for p in prompts]
+        self._hold(run_id, [SimpleNamespace(content=p) for p in prompts])
 
     def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
         """add one call's usage to the totals.
@@ -152,7 +157,7 @@ class UsageAccumulator(BaseCallbackHandler):
         :rtype: None
         """
         _ = kwargs
-        extracted = extract_usage(response, prompt_messages=self._prompts.pop(run_id, None))
+        extracted = extract_usage(response, prompt_messages=self._take(run_id))
         self.input_tokens += extracted.input_tokens
         self.output_tokens += extracted.output_tokens
         self.cache_read_tokens += extracted.cache_read_tokens
@@ -173,7 +178,32 @@ class UsageAccumulator(BaseCallbackHandler):
         :rtype: None
         """
         _ = error, kwargs
-        self._prompts.pop(run_id, None)
+        self._take(run_id)
+
+    def _hold(self, run_id: Any, prompt: list[Any]) -> None:
+        """keep a call's prompt until it ends.
+
+        :param run_id: the call's run id
+        :ptype run_id: Any
+        :param prompt: its prompt messages
+        :ptype prompt: list[Any]
+        """
+        with self._prompts_lock:
+            self._prompts = MappingProxyType({**self._prompts, run_id: prompt})
+
+    def _take(self, run_id: Any) -> list[Any] | None:
+        """a call's prompt, out of the books.
+
+        :param run_id: the call's run id
+        :ptype run_id: Any
+        :return: the prompt, ``None`` when its start was never seen
+        :rtype: list[Any] | None
+        """
+        with self._prompts_lock:
+            prompt = self._prompts.get(run_id)
+            if prompt is not None:
+                self._prompts = MappingProxyType({held: was for held, was in self._prompts.items() if held != run_id})
+        return prompt
 
 
 def attach_callbacks(model: BaseChatModel | RunnableBinding[Any, Any], *handlers: BaseCallbackHandler) -> BaseChatModel:
