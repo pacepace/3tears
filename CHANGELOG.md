@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a failed load request's delta file is named unconfirmed; copies wait for the writer to confirm it from L3
+
+**Changed (ruling C, 2026-11-23):** a `load_files` request of a table that opts in to delta files that fails after
+committing some rows (a transaction per 50k) is recorded with its file named unconfirmed: a new stored field,
+`unconfirmed_delta_file`, read as `EpochChange.delta_file` with `delta_file_unconfirmed` set. A reader built before it
+ignores the field and reads the record as a load naming no file, so it never applies the file. A copy never applies
+an unconfirmed file nor reads L3 for it: it waits, as for a lost file (decision 29), and asks the writer, whose
+`DeltaRecreator` reads that request's keys (from the file, Arrow) from L3 by key, once, writes the file again under its
+name holding exactly what L3 holds (a key L3 lacks a delete marker), marked confirmed (`DeltaKeys.confirmed`,
+`DeltaTable.confirmed`), and tells its fold (`DeltaFolds.confirmed`), so the fold holds the rows that committed; a
+restarted writer folds a confirmed one from the log. A direct pool names the file unconfirmed itself; a pod writes no
+record of its own for a failed request (its broker owns it: `threetears_load_requests_failed_total{owner}`), a cancel
+with no answer none at all. A copy of an opted-in table refuses a record naming no file (an older writer's or broker's)
+instead of reading its prefix from L3: counted in `copy_follower_partition_refused_total`, logged, and it waits for the
+writer's full when it loads the table from the volume.
+
 ### core: a table the copy loads from the volume never makes a checkpoint due from the change notes
 
 **Fixed:** an epoch a `CopyFollower` took from the change notes on a table in its `fulls=` made a checkpoint due a

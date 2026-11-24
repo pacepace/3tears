@@ -2243,6 +2243,12 @@ class CopyFollower:
     def _partition_heard(self, table: str, partition: Mapping[str, str]) -> None:
         """a load's partition of ``table`` (the owner's).
 
+        A table that opts in to delta files refuses it, loudly: a record naming no file is the only way one reaches
+        here (an older writer's or broker's, mid-roll), and reading its prefix back is an L3 read by every copy, the
+        load election night could not carry. Counted (``copy_follower_partition_refused_total``) and logged at ERROR;
+        the copy waits for the writer's full when it loads the table from the volume, and reads nothing from L3 (ruling
+        C of 2026-11-23, step 5).
+
         :param table: the table
         :ptype table: str
         :param partition: the columns its rows hold and their values
@@ -2250,6 +2256,23 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
+        if self._tables[table].delta_files:
+            counter(
+                "copy_follower_partition_refused_total",
+                description="key prefixes of a table that opts in to delta files a copy was told to read again from L3 "
+                "(a record naming no file: an older writer's or broker's) and refused; the copy waits for the "
+                "writer's full instead, reading nothing from L3",
+                label_names=("table",),
+            ).labels(table=table).inc()
+            waits = self._fulls is not None and table in self._fulls.tables
+            log.error(
+                "a copy refused to read a key prefix of a table that opts in to delta files from L3: its record names "
+                "no file (an older writer or broker); the copy waits for the writer's full",
+                extra={"extra_data": {"table": table, "prefix": dict(partition), "waits_for_full": waits}},
+            )
+            if waits:
+                self._wait_for_reload(table, "partition_refused", None, keep=True)
+            return
         if table in self._full_after:
             # a load into the table a reset left: read once its full is reloaded (no pass takes it meanwhile)
             if dict(partition) not in self._partitions[table]:

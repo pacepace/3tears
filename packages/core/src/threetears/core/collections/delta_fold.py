@@ -130,12 +130,14 @@ from threetears.core.collections.delta_files import (
     _text_column,
     _under_texts,
     read_volume_file,
+    DeltaFileUnreadableError,
     DeltaTable,
     OWN_DELTA_SAVES,
     build_file_table,
     fold_delta_tables,
     joined_key_texts,
     key_text_table,
+    read_delta_file_keys,
     sweep_orphan_delta_files,
     write_table_file,
 )
@@ -386,7 +388,16 @@ class _LostFile:
     file: str
 
 
-_Command = _Told | _Started | _Fresh | _LostFile
+@dataclass(frozen=True, slots=True)
+class _Confirmed:
+    """a failed load request's file the writer confirmed from L3 (:meth:`DeltaFolds.confirmed`, ruling C)."""
+
+    table: str
+    file: str
+    epoch: str
+
+
+_Command = _Told | _Started | _Fresh | _LostFile | _Confirmed
 
 
 def _with[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
@@ -842,6 +853,22 @@ class DeltaFolds:
             for change in walk.changes:
                 assert change.delta_file is not None  # noqa: S101 -- refused above
                 files[change.delta_file] = change.token  # a commit of several records: its newest
+            # a failed load request's file, named unconfirmed, is folded only once the writer has confirmed it from L3
+            # (ruling C): one not confirmed yet is left out here, and told to the fold when a copy's ask confirms it
+            unconfirmed = [
+                change.delta_file
+                for change in walk.changes
+                if change.delta_file_unconfirmed and change.delta_file is not None
+            ]
+            if unconfirmed:
+                waiting = await asyncio.to_thread(_not_confirmed, self.root, name, unconfirmed)
+                if waiting:
+                    log.warning(
+                        "a restarted writer left out failed load requests' files not yet confirmed from L3: each is "
+                        "folded once a copy's ask confirms it",
+                        extra={"extra_data": {"table": name, "files": waiting[:20], "count": len(waiting)}},
+                    )
+                files = {file: token for file, token in files.items() if file not in waiting}
             present = await asyncio.to_thread(_present, self.root, list(files))
             # a file gone was covered by a published full and deleted (nothing else deletes a committed delta)
             learned = [(name, file, files[file]) for file in present if file not in told]
@@ -975,6 +1002,61 @@ class DeltaFolds:
             "from its record's notes, else its states",
         )
 
+    def confirmed(self, table: str, *, file: str, epoch: str) -> None:
+        """a failed load request's file, its record naming it unconfirmed, written again by the writer from L3 and
+        marked confirmed (``delta_recreate.DeltaRecreator`` tells it, ruling C of
+        2026-11-23): the rows of the request that committed are folded as any commit's, at its record's epoch. Never
+        waits, never raises for a fold; a table the writer does not fold is skipped, said.
+
+        Why: the load hands its caller only the requests that landed whole (:meth:`committed`), so the fold never heard
+        the rows a failed request committed; they would be missing from every full published after.
+
+        :param table: the table
+        :ptype table: str
+        :param file: the confirmed file, under the root
+        :ptype file: str
+        :param epoch: the epoch whose record names it
+        :ptype epoch: str
+        :return: nothing
+        :rtype: None
+        """
+        self._post(_Confirmed(table=table, file=file, epoch=epoch))
+
+    def _apply_confirmed(self, confirmed: _Confirmed) -> None:
+        """the owner's part of :meth:`confirmed`: the file queued once, at its record's epoch.
+
+        :param confirmed: the confirmed file
+        :ptype confirmed: _Confirmed
+        :return: nothing
+        :rtype: None
+        """
+        table, file, token = confirmed.table, confirmed.file, confirmed.epoch
+        if table not in self.tables:
+            log.warning(
+                "a confirmed load request's file is of a table the writer does not fold; it is never folded",
+                extra={"extra_data": {"table": table, "file": file}},
+            )
+            return
+        if split_generation_token(token) is None:
+            _ROUNDS.labels(outcome="no_generation").inc()
+            log.error(
+                "a confirmed load request's file came with no generation to version a part by; it is not folded",
+                extra={"extra_data": {"table": table, "file": file, "generation": token}},
+            )
+            return
+        if file in self._told():
+            return  # re-learned from the epoch log first (a restarted writer's walk), or told twice
+        if self._term is None:
+            # no write of this holding told yet: the writer's start walks the log and learns the file, confirmed on the
+            # volume by then (decision 24); a round never runs without a term
+            log.warning(
+                "a confirmed load request's file was told before the writer's first write: its start learns it",
+                extra={"extra_data": {"table": table, "file": file}},
+            )
+            return
+        # a confirmation is no new write: the writer's term and its oldest open transaction are left as they are
+        self._queued = (*self._queued, (table, file, token))
+
     def _post(self, command: _Command) -> None:
         """post a command to the owner and start the round if none runs: all a caller does (decision 37).
 
@@ -999,6 +1081,8 @@ class DeltaFolds:
                 self._apply_told(command)
             elif isinstance(command, _Started):
                 self._apply_started(command)
+            elif isinstance(command, _Confirmed):
+                self._apply_confirmed(command)
             elif isinstance(command, _Fresh):
                 # an ask of the table: a rebuild that read its generation before it is owed again (:meth:`_fresh_fulls`)
                 self._asked = _with(self._asked, command.table, self._asked.get(command.table, 0) + 1)
@@ -2131,6 +2215,30 @@ def _unlink_all(root: Path, files: Sequence[str]) -> None:
     """
     for file in files:
         (root / file).unlink(missing_ok=True)
+
+
+def _not_confirmed(root: Path, table: str, files: Sequence[str]) -> list[str]:
+    """each of ``files`` (failed load requests' files, named unconfirmed) that does not read as confirmed from L3:
+    missing, unreadable, or still the request's own; blocking. Each is opened by its name, never listed.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param table: the table whose files they are
+    :ptype table: str
+    :param files: the files, relative to it
+    :ptype files: Sequence[str]
+    :return: those not confirmed
+    :rtype: list[str]
+    """
+    waiting: list[str] = []
+    for file in files:
+        try:
+            confirmed = read_delta_file_keys(root / file, table=table).confirmed
+        except FileNotFoundError, DeltaFileUnreadableError:
+            confirmed = False  # NOSILENT: left out, said by the caller; the copies' ask recovers it (decision 28)
+        if not confirmed:
+            waiting.append(file)
+    return waiting
 
 
 def _present(root: Path, files: Sequence[str]) -> list[str]:

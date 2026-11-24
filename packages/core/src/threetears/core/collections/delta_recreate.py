@@ -29,6 +29,16 @@ directory flushed, so a reader sees the old file or the whole new one. A file th
 be recreated by key: the table is handed to decision 28's recovery (:class:`LostDeltaRecovery`), which reads the keys
 the leftover files name from L3 and publishes a full; the copy waits for that full (``recovering``).
 
+**A failed load request's file, named unconfirmed** (``EpochChange.delta_file_unconfirmed``, ruling C of 2026-11-23).
+A load commits a transaction per 50k rows, so a request that fails part way leaves a leading part of its rows in L3,
+and its record names its file unconfirmed: the file holds every row the request sent, some perhaps never taken. Copies
+wait and ask, as for a lost file. The writer reads that request's keys from the file itself (Arrow, on a thread; the
+record lists none), reads those keys' rows from L3 by key, once (:func:`~threetears.core.keyed.read_keyed_arrow`), a key
+L3 does not hold becoming a delete marker, and writes the file again under its name holding exactly that, marked
+confirmed (:attr:`~threetears.core.collections.delta_files.DeltaKeys.confirmed`); the copies then apply it, and the
+writer's fold is told it (:class:`_ConfirmedFolds`), so the fold holds the rows that did commit. A file already confirmed
+is answered ``present``; one lost or unreadable (its keys were only in it) goes to decision 28's recovery.
+
 Counted (``delta_file_recreations_total`` by outcome, ``delta_file_recreate_keys_read_total``) and logged at WARNING.
 """
 
@@ -43,7 +53,7 @@ from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.nats import DELTA_FILES_FORWARD_FAMILY
 from threetears.nats.errors import RequestError
@@ -62,6 +72,7 @@ from threetears.core.collections.delta_files import (
     delta_files_root,
     joined_key_texts,
     key_text_table,
+    read_delta_file_keys,
     read_delta_table,
     write_delta_file,
 )
@@ -209,6 +220,28 @@ class LostDeltaRecovery(Protocol):
         ...
 
 
+@runtime_checkable
+class _ConfirmedFolds(Protocol):
+    """the writer's fold, told each failed load request's file the writer confirmed from L3: the rows that committed
+    are folded as any commit's. :class:`~threetears.core.collections.delta_fold.DeltaFolds` is the one the writing load
+    hands over (it is also the recovery, so a recreator given it as ``recovery`` tells it without more wiring).
+    """
+
+    def confirmed(self, table: str, *, file: str, epoch: str) -> None:
+        """note a confirmed file, at its record's epoch; never waits, never raises for a fold.
+
+        :param table: the table
+        :ptype table: str
+        :param file: the file, under the root
+        :ptype file: str
+        :param epoch: the epoch whose record names it
+        :ptype epoch: str
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+
 class DeltaRecreator:
     """the writer's side: recreates one epoch's delta file from L3 by key, once however many copies ask.
 
@@ -222,6 +255,9 @@ class DeltaRecreator:
     :param recovery: decision 28's recovery, for a commit too big to list; None answers such a request ``failed``,
         logged
     :ptype recovery: LostDeltaRecovery | None
+    :param folds: the writer's fold, told each failed load request's file once confirmed; None takes ``recovery`` when
+        it is one (:class:`_ConfirmedFolds`), else tells none
+    :ptype folds: _ConfirmedFolds | None
     :param page_size: keys a statement names, and rows a page of a prefix's read holds
     :ptype page_size: int
     :param root: the delta files' directory; None takes :func:`~threetears.core.collections.delta_files.delta_files_root`
@@ -238,11 +274,13 @@ class DeltaRecreator:
         recovery: LostDeltaRecovery | None = None,
         page_size: int = DEFAULT_PAGE_SIZE,
         root: Path | None = None,
+        folds: _ConfirmedFolds | None = None,
     ) -> None:
         self._tables = {table.name: table for table in tables}
         self._l3 = l3
         self._changes = changes
         self._recovery = recovery
+        self._folds = folds if folds is not None else recovery if isinstance(recovery, _ConfirmedFolds) else None
         self._page_size = page_size
         self._root = root
         #: each file being recreated, onto its one recreation: a request for it meanwhile waits for that one. A
@@ -325,6 +363,8 @@ class DeltaRecreator:
             raise _RefusedError(
                 f"{table.name}: the record of {request.epoch} names {record.delta_file!r}, not {request.file!r}"
             )
+        if record.delta_file_unconfirmed:
+            return await self._confirm(table, request, root)
         path = root / request.file
         try:
             lacking = await asyncio.to_thread(_keys_lacking, path, table, record)
@@ -358,6 +398,51 @@ class DeltaRecreator:
                 }
             },
         )
+        return _Outcome.RECREATED
+
+    async def _confirm(self, table: FollowedTable, request: _Request, root: Path) -> _Outcome:
+        """write a failed load request's file again from L3 (module docstring): its keys, read from the file, read from
+        L3 by key once; written under its name marked confirmed; the fold told.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param request: the copy's request, its file the one the record names unconfirmed
+        :ptype request: _Request
+        :param root: the delta files' directory
+        :ptype root: Path
+        :return: ``recreated`` once confirmed, ``present`` when it was already, ``recovering`` when the file is lost
+        :rtype: _Outcome
+        """
+        try:
+            held = await asyncio.to_thread(read_delta_file_keys, root / request.file, table=table.name)
+        except FileNotFoundError:
+            # the request's keys were only in its file: decision 28's recovery reads what the leftover files name
+            return await self._recover(table, request, "unconfirmed_file_missing")
+        except DeltaFileUnreadableError as exc:
+            return await self._recover(table, request, f"unconfirmed_file_unreadable: {exc}")
+        if held.confirmed:
+            return _Outcome.PRESENT
+        delta = TableDelta(name=table.name, types=rail_arrow_types(table.columns), key=tuple(table.key))
+        keys = await self._keys_from_l3(table, delta, held.keys)
+        write_id = Path(request.file).stem
+        written = await asyncio.to_thread(write_delta_file, root, delta, write_id, confirmed=True)
+        if written != request.file:
+            raise ValueError(f"{table.name}: the confirmed file was named {written!r}, not {request.file!r}")
+        log.warning(
+            "the writer confirmed a failed load request's delta file from L3 by key: the rows that committed, as L3 "
+            "holds them, the rest delete markers",
+            extra={
+                "extra_data": {
+                    "table": table.name,
+                    "epoch": request.epoch,
+                    "file": request.file,
+                    "keys": keys,
+                    "entries": delta.entries,
+                }
+            },
+        )
+        if self._folds is not None:
+            self._folds.confirmed(table.name, file=request.file, epoch=request.epoch)
         return _Outcome.RECREATED
 
     async def _recover(self, table: FollowedTable, request: _Request, why: str) -> _Outcome:
@@ -412,6 +497,25 @@ class DeltaRecreator:
         keys = _first_written(_record_keys(record, table.key), table.key) if record.rows else None
         if keys is None or not keys.num_rows:
             return delta, 0
+        return delta, await self._keys_from_l3(table, delta, keys)
+
+    async def _keys_from_l3(self, table: FollowedTable, delta: TableDelta, keys: Any) -> int:
+        """add to ``delta`` each key's row as L3 holds it now, read by key a page at a time, every column set; a key L3
+        no longer holds a delete marker.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param delta: the file being made
+        :ptype delta: TableDelta
+        :param keys: the keys, text key columns named as the key's, each once
+        :ptype keys: pyarrow.Table
+        :return: the keys read by key
+        :rtype: int
+        """
+        if not keys.num_rows:
+            return 0
+        types = rail_arrow_types(table.columns)
+        every = [column.name for column in table.columns]
         casts = tuple(table.key_cast(column) for column in table.key)
         found: list[Any] = []
         for start in range(0, keys.num_rows, self._page_size):
@@ -437,7 +541,7 @@ class DeltaRecreator:
                     }
                 )
             )
-        return delta, int(keys.num_rows)
+        return int(keys.num_rows)
 
 
 def _record_keys(record: EpochChange, key: Sequence[str]) -> Any:

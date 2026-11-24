@@ -22,8 +22,11 @@ statement reached L3" are both checked. The contract this pins:
 - a load that replaces a key prefix clears the copy's rows under it first (a row no longer in the export leaves), and
   a key-prefix delete (``delete_prefixes``) deletes the copy's rows under its prefixes, both with no L3 statement
   (decision 23);
-- a load on a direct pool that fails after committing some rows names no file in the record it advances (the file holds
-  rows L3 never took).
+- a load on a direct pool that fails after committing some rows names its file unconfirmed in the record it advances
+  (the file may hold rows L3 never took): copies wait with no L3 read, and are current once the writer confirms the
+  file from L3 by key; a pod's failed request writes no record of its own (its broker owns it), a cancel with no
+  answer none at all; a record naming no file of an opted-in table is refused by the copy, never read from L3 (ruling C
+  of 2026-11-23).
 """
 
 from __future__ import annotations
@@ -55,9 +58,10 @@ import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 import threetears.core.collections.delta_files as delta_files  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
-from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
+from threetears.core.collections.delta_files import TableDelta, read_delta_file_keys, write_delta_file  # noqa: E402
+from threetears.core.collections.delta_recreate import DeltaRecreator  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
-from threetears.core.backends.broker_generation import named_delta_files  # noqa: E402
+from threetears.core.backends.broker_generation import named_delta_files, note_load_answer  # noqa: E402
 from threetears.core.backends.protocol import DurableStore, FileLoad, LoadFile, LoadResult  # noqa: E402
 from threetears.core.collections import WRITE_GENERATION  # noqa: E402
 from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
@@ -236,8 +240,10 @@ class _Log:
         keys_unknown: bool = False,
         prefixes: Sequence[Mapping[str, str]] | None = None,
         delta_file: str | None = None,
+        unconfirmed_delta_file: str | None = None,
     ) -> str:
-        """the writer's own advance (a load, a key-prefix delete), recorded as its broker would: its reach and its file."""
+        """the writer's own advance (a load, a key-prefix delete), recorded as its broker would: its reach and its file,
+        a failed load request's named unconfirmed."""
         token = await self.advance(table_name)
         self.records[token] = EpochChange(
             table=table_name,
@@ -246,7 +252,8 @@ class _Log:
             keys_unknown=keys_unknown,
             rows=list(rows or []),
             prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
-            delta_file=delta_file,
+            delta_file=delta_file if unconfirmed_delta_file is None else unconfirmed_delta_file,
+            delta_file_unconfirmed=unconfirmed_delta_file is not None,
         )
         return token
 
@@ -294,7 +301,7 @@ class _Notes:
 
 
 def _world(
-    *, delta_files: bool = True, notes: _Notes | None = None
+    *, delta_files: bool = True, notes: _Notes | None = None, recreate: Any = None
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
@@ -313,6 +320,7 @@ def _world(
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        recreate=recreate,
     )
     follower.register()
     return l3, log, lock, backend, follower
@@ -1024,11 +1032,12 @@ class _FailingAfterAFileStore(_Store):
         raise RuntimeError("the second file's copy failed; the first file's rows stay committed")
 
 
-async def test_a_direct_pool_load_failing_after_some_rows_names_no_delta_file(_volume: Path) -> None:
+async def test_a_direct_pool_load_failing_after_some_rows_names_its_delta_file_unconfirmed(_volume: Path) -> None:
     """Flips if a load from files on a direct pool that fails after committing some of its rows names its request's
-    delta file in the record it advances: the file holds rows L3 never took (the failed file's), so a copy applying
-    it would hold rows L3 does not; with no file named, a copy reads the load's prefixes from L3 instead. The hub's
-    broker keeps the same rule for a pod's load (a file named only when the load had no error)."""
+    delta file as a whole load's (the file holds rows L3 never took, the failed file's, which a copy applying it would
+    hold), or names none (every copy would read the load's prefixes back from L3). Its record names the file
+    unconfirmed, on the load's prefixes (ruling C of 2026-11-23); the hub's broker keeps the same rule for a pod's
+    load."""
     world = _world()
     l3, log, _lock, _backend, _follower = world
     await _warmed(world)
@@ -1048,9 +1057,10 @@ async def test_a_direct_pool_load_failing_after_some_rows_names_no_delta_file(_v
     (sent,) = store.loads
     assert sent[0] is not None and sent[1], "the request's file was saved and named before the load"
     advanced = [log.records[f"inc:{count}"] for count in range(before + 1, log.count + 1)]
-    assert advanced, "the failed load still advanced the table"
-    assert all(record.delta_file is None for record in advanced), "a file of rows L3 never took was named"
-    assert all(record.prefixes == [{"state": "VA"}] for record in advanced)
+    assert len(advanced) == 1, "the failed load advanced the table once"
+    (record,) = advanced
+    assert (record.delta_file, record.delta_file_unconfirmed) == (sent[0], True), "named, and unconfirmed"
+    assert record.prefixes == [{"state": "VA"}]
 
 
 class _Told:
@@ -1162,3 +1172,230 @@ async def test_a_load_request_that_fails_hands_its_caller_no_file(_volume: Path)
             on_commit=told,
         )
     assert told.commits == []
+
+
+# --- a failed load request's file, named unconfirmed (ruling C of 2026-11-23) ------------------------------------------
+
+
+class _Confirmed:
+    """the writer's fold as the recreator tells it each confirmed file (``DeltaFolds.confirmed``)."""
+
+    def __init__(self) -> None:
+        self.told: list[tuple[str, str, str]] = []
+
+    def confirmed(self, table: str, *, file: str, epoch: str) -> None:
+        self.told.append((table, file, epoch))
+
+
+def _writer_l3(l3: _L3) -> _L3:
+    """the writer's own L3: the same rows, its statements counted apart from the copy's."""
+    writer = _L3.__new__(_L3)
+    writer.db = l3.db
+    writer.statements = 0
+    return writer
+
+
+async def test_a_load_failing_after_a_commit_leaves_copies_waiting_with_no_l3_read_then_current_once_the_writer_confirms(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy applies a failed load request's own file (rows L3 never took: the second file's), reads the
+    load's prefixes or keys back from L3 itself (every pod at once, election night's load), or stays behind once the
+    writer has confirmed the file. The request's first transaction commits, then it fails: the record names the file
+    unconfirmed; the copy waits and asks; the writer reads the request's keys (from the file) from L3 by key, once,
+    writes the file again holding exactly what L3 holds, marked confirmed, and tells its fold; the copy is then current,
+    having read nothing from L3."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    folds = _Confirmed()
+    recreator: list[DeltaRecreator] = []
+
+    async def recreate(table: str, file: str, epoch: str) -> str:
+        return await recreator[0].recreate(table, file, epoch)
+
+    world = _world(recreate=recreate)
+    l3, log, lock, backend, follower = world
+    writer_l3 = _writer_l3(l3)
+    recreator.append(
+        DeltaRecreator(
+            [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=True)],
+            writer_l3,
+            log,
+            folds=folds,
+            page_size=50,
+        )
+    )
+    await _warmed(world)
+    held = _copy(backend)
+    results, _ = _writer(l3, log, _volume)
+    store = _FailingAfterAFileStore(l3, _volume)
+    results.l3_pool = store
+    first, first_rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    second, second_rows = _export(store, "https://bucket/va-1.parquet", [_row("VA", 101, 2, "new", _LATER)])
+    with pytest.raises(RuntimeError, match="second file"):
+        await results.load_files(
+            [first, second],
+            columns=[name for name in _NAMES if name != "state"],
+            constants={"state": "VA"},
+            delta=LoadDelta(rows=[first_rows, second_rows]),
+        )
+    ((file, _),) = store.loads
+    assert file is not None
+    assert not read_delta_file_keys(_volume / file).confirmed, "the request's own file, holding both files' rows"
+    lock.commit("state:VA")
+
+    await follower.catch_up()
+
+    assert l3.statements == 0, "a copy never reads a failed load request's rows from L3"
+    assert _copy(backend) == held, "nothing of the request's file is applied before the writer confirms it"
+    await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
+    assert await follower.catch_up()
+
+    assert _same(backend, l3), "the copy holds what L3 holds: the first file's row, not the second's"
+    assert ("VA", 100) in [row[:2] for row in _copy(backend)] and ("VA", 101) not in [row[:2] for row in _copy(backend)]
+    assert l3.statements == 0
+    assert writer_l3.statements == 1, "the writer read the request's two keys from L3 by key, once"
+    confirmed = read_delta_file(_volume / file)
+    assert read_delta_file_keys(_volume / file).confirmed
+    assert sorted((change.row["geo_id"], change.deleted) for change in confirmed.changes) == [(100, False), (101, True)]
+    assert folds.told == [(_TABLE, file, _token_of(log, file))], "the fold hears the rows that committed"
+
+
+async def test_a_record_whose_unconfirmed_file_the_writer_has_confirmed_is_applied_with_no_l3_read_and_no_ask(
+    _volume: Path,
+) -> None:
+    """Flips if a copy meeting a failed load request's record after the writer confirmed its file (a restart, a copy
+    behind) waits or asks again, or reads L3: the confirmed file is applied as any load's."""
+    asked: list[str] = []
+
+    async def recreate(table: str, file: str, epoch: str) -> str:
+        asked.append(file)
+        return "failed"
+
+    world = _world(recreate=recreate)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    row = _row("VA", 100, 1, "new", _LATER)
+    l3.insert([row])
+    delta = TableDelta(name=_TABLE, types=_TYPES, key=_KEY)
+    delta.rows([row], list(_NAMES))
+    name = write_delta_file(_volume, delta, "confirmed", confirmed=True)
+    await log.advance_with_change(_TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=name)
+    lock.commit("state:VA")
+
+    assert await follower.catch_up()
+
+    assert _same(backend, l3)
+    assert l3.statements == 0
+    assert asked == [] and not follower.status().waiting_for_file
+
+
+class _PodSource:
+    """a pod's generation source: its broker records each change, so it records none; counts every advance asked."""
+
+    def __init__(self) -> None:
+        self.advances = 0
+
+    async def current(self, table_name: str) -> str:
+        return f"inc:{self.advances}"
+
+    async def advance(self, table_name: str) -> str:
+        self.advances += 1
+        return f"inc:{self.advances}"
+
+
+class _UnansweredStore(_Store):
+    """a pod's load request the broker answers as told (the rows it committed, then a failure), or never (cancelled)."""
+
+    def __init__(self, l3: _L3, volume: Path, answer: int | None) -> None:
+        super().__init__(l3, volume)
+        self.answer = answer
+
+    async def load_files(self, table: str, files: Sequence[LoadFile], **kwargs: Any) -> LoadResult:
+        named = named_delta_files().get(table)
+        self.loads.append((named, named is not None and (self.volume / named).is_file()))
+        if self.answer is None:
+            raise asyncio.CancelledError
+        note_load_answer(self.answer)
+        raise RuntimeError("the broker answered the load failed")
+
+
+@pytest.mark.parametrize(("answer", "kept"), [(None, False), (0, False), (7, True)])
+async def test_a_pods_failed_load_request_writes_no_record_of_its_own(
+    _volume: Path, answer: int | None, kept: bool
+) -> None:
+    """Flips if a pod writes its own record for a failed load request of an opted-in table: one naming no file sent
+    every copy to L3 for the load's prefixes, even for a cancel that committed nothing. The broker owns the record (it
+    names the file unconfirmed when rows committed, so the file is kept for the writer to confirm; none when none did,
+    so it is an orphan); a cancel with no answer writes none either (ruling C of 2026-11-23)."""
+    registry = CollectionRegistry()
+    source = _PodSource()
+    registry.set_generation_source(source)
+    results = _Results(registry, DefaultCoreConfig(), None)
+    l3 = _L3()
+    store = _UnansweredStore(l3, _volume, answer)
+    results.l3_pool = store
+    file, rows = _export(store, "https://bucket/va-0.parquet", [_row("VA", 100, 1, "new", _LATER)])
+    raised: type[BaseException] = asyncio.CancelledError if answer is None else RuntimeError
+    with pytest.raises(raised):
+        await results.load_files(
+            [file],
+            columns=[name for name in _NAMES if name != "state"],
+            constants={"state": "VA"},
+            delta=LoadDelta(rows=[rows]),
+        )
+    ((name, saved),) = store.loads
+    assert name is not None and saved
+    assert source.advances == 0, "the pod advanced the table itself: a record of its own"
+    assert (name in delta_files.OWN_DELTA_SAVES.orphans) is not kept
+    assert name not in delta_files.OWN_DELTA_SAVES.in_flight
+    delta_files.OWN_DELTA_SAVES.swept([name])
+
+
+def _refused() -> float:
+    return REGISTRY.get_sample_value("copy_follower_partition_refused_total", {"table": _TABLE}) or 0.0
+
+
+async def test_a_copy_of_an_opted_in_table_refuses_a_prefix_record_naming_no_file_and_reads_no_l3(
+    _volume: Path,
+) -> None:
+    """Flips if a record of an opted-in table's load naming no file (an older writer's or broker's) sends the copy to
+    L3 for the load's prefix: every copy reading it at once is election night's load. The copy refuses it, counted
+    and logged, and reads nothing from L3 (ruling C of 2026-11-23, step 5)."""
+    world = _world()
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    held = _copy(backend)
+    before = _refused()
+    l3.insert([_row("VA", 100, 1, "new", _LATER)])
+    await log.advance_with_change(_TABLE, None, prefixes=[{"state": "VA"}])
+    lock.commit("state:VA")
+
+    await follower.catch_up()
+
+    assert l3.statements == 0, "the copy read the prefix back from L3"
+    assert _copy(backend) == held
+    assert _refused() - before == 1
+
+
+async def test_a_fold_told_a_confirmed_file_holds_its_rows(_volume: Path) -> None:
+    """Flips if the writer's fold never hears a failed load request's rows that committed once the writer confirmed
+    its file: a load hands its caller only the requests that landed whole, so every full published after would lack
+    them."""
+    workers = ProcessWorkers(workers=1, name="test confirmed folds")
+    try:
+        publish_full_manifest(_volume, term=1, tables={_TABLE: FullTable(version="inc:0")})
+        folds = DeltaFolds(_volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], workers=workers)
+        # the writer's own commit first, as under the lease: the fold's term is the writer's
+        earlier = _save(_volume, "earlier", ("rows", [_row("VA", 99, 9, "new", _LATER)], list(_NAMES)))
+        folds.committed({_TABLE: earlier}, {_TABLE: "inc:1"}, version=2)
+        delta = TableDelta(name=_TABLE, types=_TYPES, key=_KEY)
+        delta.rows([_row("VA", 100, 1, "new", _LATER)], list(_NAMES))
+        name = write_delta_file(_volume, delta, "confirmed", confirmed=True)
+        folds.confirmed(_TABLE, file=name, epoch="inc:2")
+        await folds.wait()
+        await folds.close()
+    finally:
+        await workers.close()
+    manifest = current_full_manifest(_volume)
+    assert manifest is not None
+    (part,) = [part for part in manifest.tables[_TABLE].parts if part.scope == "state:VA"]
+    assert sorted(read_volume_file(_volume / part.file).column("geo_id").to_pylist()) == [99, 100]
