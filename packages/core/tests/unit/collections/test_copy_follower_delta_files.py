@@ -1233,7 +1233,7 @@ async def test_a_load_from_files_hands_each_committed_request_its_file_and_gener
             _volume, [FoldedTable.of(_WRITER_SCHEMA, scope=("state", "state:"))], retention="delete", workers=workers
         )
         for files, generations in told.commits:
-            folds.committed(files, generations, version=2)
+            folds.committed(files, generations, version=2, in_flight_since=None)
         await folds.wait()
         await folds.close()
     finally:
@@ -1274,7 +1274,7 @@ async def test_a_copy_lagging_its_writer_applies_every_delta_file_a_published_fu
         )
         # the writer folds and publishes before its copy has applied any of the three: the copy lags
         for file, token in tokens.items():
-            folds.committed({_TABLE: file}, {_TABLE: token}, version=2)
+            folds.committed({_TABLE: file}, {_TABLE: token}, version=2, in_flight_since=None)
             await folds.wait()
         await folds.close()
     finally:
@@ -1555,7 +1555,7 @@ async def test_a_fold_told_a_confirmed_file_holds_its_rows(_volume: Path) -> Non
         )
         # the writer's own commit first, as under the lease: the fold's term is the writer's
         earlier = _save(_volume, "earlier", ("rows", [_row("VA", 99, 9, "new", _LATER)], list(_NAMES)))
-        folds.committed({_TABLE: earlier}, {_TABLE: "inc:1"}, version=2)
+        folds.committed({_TABLE: earlier}, {_TABLE: "inc:1"}, version=2, in_flight_since=None)
         delta = TableDelta(name=_TABLE, types=_TYPES, key=_KEY)
         delta.rows([_row("VA", 100, 1, "new", _LATER)], list(_NAMES))
         name = write_delta_file(_volume, delta, "confirmed", confirmed=True)
