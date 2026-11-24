@@ -340,7 +340,7 @@ async def test_rebuild_speed_at_real_size(db: _Db, tmp_path: Path) -> None:
     async def rebuild() -> None:
         folds = DeltaFolds(tmp_path / f"rebuild-{next(runs)}", [FoldedTable.of(schema, scope=("state", "state:"))])
         try:
-            assert await folds.start(db.pool, _Generations(), version=1) == (_TABLE,)
+            assert await folds.start(db.pool, _Generations(), changes=_Log(), version=1) == (_TABLE,)
         finally:
             await folds.close()
 
