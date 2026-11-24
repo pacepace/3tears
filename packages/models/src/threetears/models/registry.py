@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import importlib
 import threading
-from types import ModuleType
+from collections.abc import Mapping
+from types import MappingProxyType, ModuleType
 
 __all__ = [
     "BUILTIN_PROVIDERS",
@@ -35,8 +36,9 @@ class ProviderRegistry:
     """
 
     def __init__(self) -> None:
-        self._providers: dict[str, str] = dict(BUILTIN_PROVIDERS)
-        self._modules: dict[str, ModuleType] = {}
+        # read-only snapshots replaced whole under the lock: one entry per provider, a handful
+        self._providers: Mapping[str, str] = MappingProxyType(dict(BUILTIN_PROVIDERS))
+        self._modules: Mapping[str, ModuleType] = MappingProxyType({})
         self._lock = threading.Lock()
 
     def register(self, name: str, import_path: str) -> None:
@@ -51,8 +53,8 @@ class ProviderRegistry:
         :ptype import_path: str
         """
         with self._lock:
-            self._providers[name] = import_path
-            self._modules.pop(name, None)
+            self._providers = MappingProxyType({**self._providers, name: import_path})
+            self._modules = MappingProxyType({held: module for held, module in self._modules.items() if held != name})
 
     def get_provider(self, name: str) -> ModuleType:
         """resolve provider name to imported module.
@@ -89,7 +91,7 @@ class ProviderRegistry:
             raise ImportError(f"Failed to import provider '{name}' from '{registered}': {exc}") from exc
 
         with self._lock:
-            self._modules[name] = module
+            self._modules = MappingProxyType({**self._modules, name: module})
 
         return module
 

@@ -27,6 +27,7 @@ transient key, before anything downstream sees the chunk.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage
@@ -127,9 +128,10 @@ class StreamExtraResolver:
 
     def __init__(self) -> None:
         """start with no calls seen."""
-        self._ids: dict[int, str] = {}
-        self._emitted: dict[str, dict[str, Any]] = {}
-        self._pending: dict[int, dict[str, Any]] = {}
+        # one entry per tool call in this stream, a handful: read-only snapshots, each replaced whole
+        self._ids: Mapping[int, str] = MappingProxyType({})
+        self._emitted: Mapping[str, Mapping[str, Any]] = MappingProxyType({})
+        self._pending: Mapping[int, Mapping[str, Any]] = MappingProxyType({})
 
     def resolve(self, chunk: ChatGenerationChunk) -> ChatGenerationChunk:
         """rewrite one chunk's stashed fields under the public key, in place.
@@ -142,11 +144,14 @@ class StreamExtraResolver:
         message = chunk.message
         for fragment in getattr(message, "tool_call_chunks", None) or []:
             index, call_id = fragment.get("index"), fragment.get("id")
-            if isinstance(index, int) and call_id:
-                self._ids.setdefault(index, call_id)
+            if isinstance(index, int) and call_id and index not in self._ids:
+                self._ids = MappingProxyType({**self._ids, index: call_id})
         stashed = message.additional_kwargs.pop(_STREAM_STASH_KEY, None) or {}
-        for index, extras in stashed.items():
-            self._pending.setdefault(index, {}).update(extras)
+        if stashed:
+            merged = dict(self._pending)
+            for index, extras in stashed.items():
+                merged[index] = MappingProxyType({**merged.get(index, {}), **extras})
+            self._pending = MappingProxyType(merged)
         fresh: dict[str, dict[str, Any]] = {}
         # a chunk can arrive already keyed by id: LangChain builds a structured-output stream's final
         # chunk from the whole completion (``_create_chat_result``), repeating what the deltas carried.
@@ -156,13 +161,17 @@ class StreamExtraResolver:
             new = self._first_seen(call_id, dict(extras))
             if new:
                 fresh.setdefault(call_id, {}).update(new)
-        for index in list(self._pending):
-            call_id = self._ids.get(index)
-            if call_id is None:
-                continue
-            new = self._first_seen(call_id, self._pending.pop(index))
-            if new:
-                fresh.setdefault(call_id, {}).update(new)
+        resolved = [index for index in self._pending if index in self._ids]
+        if resolved:
+            pending = self._pending
+            self._pending = MappingProxyType(
+                {index: extras for index, extras in pending.items() if index not in self._ids}
+            )
+            for index in resolved:
+                call_id = self._ids[index]
+                new = self._first_seen(call_id, dict(pending[index]))
+                if new:
+                    fresh.setdefault(call_id, {}).update(new)
         if fresh:
             message.additional_kwargs[TOOL_CALL_PROVIDER_EXTRA_KEY] = fresh
         return chunk
@@ -174,7 +183,7 @@ class StreamExtraResolver:
                 "a streamed tool call at index %s carried provider fields but never an id; they are dropped",
                 index,
             )
-        self._pending.clear()
+        self._pending = MappingProxyType({})
 
     def _first_seen(self, call_id: str, extras: dict[str, Any]) -> dict[str, Any]:
         """the fields of ``extras`` not yet emitted for ``call_id``; a repeat is dropped, first value wins.
@@ -186,11 +195,10 @@ class StreamExtraResolver:
         :return: the fields to emit now
         :rtype: dict[str, Any]
         """
-        seen = self._emitted.setdefault(call_id, {})
+        seen = self._emitted.get(call_id, {})
         new: dict[str, Any] = {}
         for key, value in extras.items():
             if key not in seen:
-                seen[key] = value
                 new[key] = value
             elif seen[key] != value:
                 _logger.warning(
@@ -198,6 +206,8 @@ class StreamExtraResolver:
                     call_id,
                     key,
                 )
+        if new:
+            self._emitted = MappingProxyType({**self._emitted, call_id: MappingProxyType({**seen, **new})})
         return new
 
 

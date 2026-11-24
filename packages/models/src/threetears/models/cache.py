@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 __all__ = [
@@ -19,7 +21,8 @@ class ModelCache:
     """
 
     def __init__(self) -> None:
-        self._cache: dict[tuple[str, str], Any] = {}
+        # a read-only snapshot replaced whole under the lock: one entry per (provider, model), a handful
+        self._cache: Mapping[tuple[str, str], Any] = MappingProxyType({})
         self._lock: threading.Lock = threading.Lock()
 
     def get(self, provider_name: str, model_name: str) -> Any | None:
@@ -47,7 +50,7 @@ class ModelCache:
         :ptype instance: Any
         """
         with self._lock:
-            self._cache[(provider_name, model_name)] = instance
+            self._cache = MappingProxyType({**self._cache, (provider_name, model_name): instance})
 
     def evict(self, provider_name: str, model_name: str) -> bool:
         """remove specific model instance from cache.
@@ -62,7 +65,7 @@ class ModelCache:
         with self._lock:
             key = (provider_name, model_name)
             if key in self._cache:
-                del self._cache[key]
+                self._cache = MappingProxyType({held: value for held, value in self._cache.items() if held != key})
                 found = True
             else:
                 found = False
@@ -77,16 +80,15 @@ class ModelCache:
         :rtype: int
         """
         with self._lock:
-            keys_to_remove = [key for key in self._cache if key[0] == provider_name]
-            for key in keys_to_remove:
-                del self._cache[key]
-            count = len(keys_to_remove)
+            kept = {key: value for key, value in self._cache.items() if key[0] != provider_name}
+            count = len(self._cache) - len(kept)
+            self._cache = MappingProxyType(kept)
         return count
 
     def clear(self) -> None:
         """remove all entries from cache."""
         with self._lock:
-            self._cache.clear()
+            self._cache = MappingProxyType({})
 
     def size(self) -> int:
         """return number of cached entries.
