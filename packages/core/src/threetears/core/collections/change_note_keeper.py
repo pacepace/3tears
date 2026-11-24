@@ -96,10 +96,15 @@ ERROR and counted (``threetears_change_notes_missing_total``), for an alert. It 
 its own database notes: a table whose note trigger writes into this ring, or any table of the ring's own schema (so a
 table refused a trigger, or one that lost it, is still reported). The log is shared with other databases' writers
 (identity-core's), whose notes are in their own rings; their epochs are skipped (``ScrubPass.others``), never read as
-missing (2026-11-16). A ring beside the log (below) scrubs its own tables the same way. It reads up to
+missing (2026-11-16). A ring beside the log (below) scrubs its own tables the same way, reading only theirs. The
+owner reads up to
 ``scrub_batch``
 records from the log, a few dozen at a time, and looks their notes up through the note tables'
-``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. It only
+``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. A ring beside
+never reads the log by sequence (2026-11-24): that read's subject rides in its request body, where no grant can narrow
+it, so a pod's grant never names it and each such read was refused and waited out its deadline. It reads each of its
+own tables' records in the range by the table's keys (``changes_after``, a consumer whose filter rides in its create
+subject), and counts the range's other epochs rather than reading them. It only
 checks and reports; it never writes a note, reloads anything or repairs.
 
 **A ring beside a log another keeper keeps** (Pace 2026-11-16; its restore and scrub 2026-11-16). One
@@ -187,6 +192,7 @@ from threetears.core.collections.change_notes import (
 )
 from threetears.core.collections.epoch_change import (
     EpochChange,
+    EpochWalk,
     KeyedRecordForm,
     keyed_record_form,
 )
@@ -528,6 +534,21 @@ class _ChangeLogKeeping(Protocol):
         """
         ...
 
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        """every epoch of ``table_name`` after ``after`` and up to ``upto``, read by the table's keys.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param after: the token to read past
+        :ptype after: str
+        :param upto: the last token wanted, under the same incarnation
+        :ptype upto: str
+        :return: the epochs the log holds in that range; another database's records of the name are walked past
+        :rtype: EpochWalk
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        ...
+
     async def start_log(self) -> str:
         """declare a fresh log where the broker holds none.
 
@@ -671,7 +692,8 @@ class ScrubPass:
     :ivar checked: epochs checked: those of tables this ring's database notes
     :ivar missing: epochs whose note was not where the coverage needs it
     :ivar position: the newest epoch checked, ``incarnation:seq``; ``None`` when none was
-    :ivar others: epochs read and skipped: of tables another database notes, in its own ring
+    :ivar others: epochs skipped: of tables another database notes, in its own ring. The log's owner reads and skips
+        them; a ring beside never reads them, and counts the range's epochs not of its tables
     """
 
     checked: int = 0
@@ -804,13 +826,24 @@ WHERE g.tgname::text = ANY($1::text[])
 """
 
 #: which of the named tables this ring's database notes into this ring: a table whose note trigger runs a function of
-#: the ring's schema. What a ring beside the log judges (module docstring: never a plain table of its schema, whose
-#: name the owner's database may also hold)
+#: the ring's schema. Part of what the log's owner judges (:data:`_OWN_TABLES_SQL`); a ring beside judges only these,
+#: named by :data:`_RING_TABLES_SQL` (module docstring: never a plain table of its schema, whose name the owner's
+#: database may also hold)
 _TRIGGERED_TABLES_SQL: Final = """
 SELECT c.relname::text AS table_name
 FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_proc p ON p.oid = g.tgfoid
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE g.tgname::text = $2 AND n.nspname::text = $1 AND c.relname::text = ANY($3::text[])
+"""
+
+#: every table this ring's database notes into this ring, named once: the tables a ring beside the log reads the log
+#: by (:meth:`ChangeNoteKeeper._own_epochs_between`). A catalog read of the triggers, its size the tables noted
+_RING_TABLES_SQL: Final = """
+SELECT DISTINCT c.relname::text AS table_name
+FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_proc p ON p.oid = g.tgfoid
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE g.tgname::text = $2 AND n.nspname::text = $1
+ORDER BY 1
 """
 
 #: what the log's owner judges: those, or any table of the ring's schema, triggered or not
@@ -2221,22 +2254,34 @@ class ChangeNoteKeeper:
         if end <= start:
             _SCRUB_BEHIND.set(max(0, state.last_seq - start))
             return ScrubPass(position=_token(incarnation, start))
-        read = await self._epochs_between(start, end)
-        # WHY only this database's tables (2026-11-16): the log is shared with another database's writers
-        # (identity-core's), whose notes are in that database's ring; read here, each of their epochs was a missing
-        # note, raising threetears_change_notes_missing_total on every identity write.
-        # WHY by the record's database first (2026-11-16): both databases note coordination_revocations, so by
-        # its table's name each ring judged the other's every write of it as missing. A record naming its database
-        # is this ring's exactly when it names this one; only an older writer's, naming none, is judged by its table
-        own = await self._own_tables({record.table for record in read if record.database is None})
-        records = [
-            record
-            for record in read
-            if (record.database == self._database if record.database is not None else record.table in own)
-        ]
+        if self._keeps_log:
+            read = await self._epochs_between(start, end)
+            # WHY only this database's tables (2026-11-16): the log is shared with another database's writers
+            # (identity-core's), whose notes are in that database's ring; read here, each of their epochs was a
+            # missing note, raising threetears_change_notes_missing_total on every identity write.
+            # WHY by the record's database first (2026-11-16): both databases note coordination_revocations, so by
+            # its table's name each ring judged the other's every write of it as missing. A record naming its
+            # database is this ring's exactly when it names this one; only an older writer's, naming none, is judged
+            # by its table
+            own = await self._own_tables({record.table for record in read if record.database is None})
+            records = [
+                record
+                for record in read
+                if (record.database == self._database if record.database is not None else record.table in own)
+            ]
+            others = len(read) - len(records)
+        else:
+            # WHY by its tables' keys, never by sequence (2026-11-24, Pace): a read by sequence
+            # ($JS.API.STREAM.MSG.GET) carries its subject in the request body, where no grant can narrow it, so a
+            # pod's grant never names it (threetears.nats.subject_permissions) and every such read of a reports tool
+            # pod's keeper was refused and waited out its 5 s deadline. A ring beside judges only its own tables, so
+            # it reads only theirs, through the keyed read its grant names
+            records = await self._own_epochs_between(incarnation, start, end)
+            # the range's other epochs, counted, never read: every sequence after the log's first is held
+            others = max(0, end - start - len(records))
         fence = _seq_under(ring.fence_seq, incarnation)
         found = await self.notes_found(ring, records)
-        result = ScrubPass(checked=len(records), position=_token(incarnation, end), others=len(read) - len(records))
+        result = ScrubPass(checked=len(records), position=_token(incarnation, end), others=others)
         for record in records:
             seq = int(record.token.rpartition(":")[2])
             where = (ring.current,) if fence is not None and seq > fence else (ring.current, ring.previous)
@@ -2265,8 +2310,8 @@ class ChangeNoteKeeper:
         return result
 
     async def _own_tables(self, tables: set[str]) -> set[str]:
-        """which of ``tables`` this ring's database notes into this ring: for the log's owner :data:`_OWN_TABLES_SQL`,
-        for a ring beside it :data:`_TRIGGERED_TABLES_SQL` (module docstring).
+        """which of ``tables`` the log owner's database notes (:data:`_OWN_TABLES_SQL`; module docstring). A ring
+        beside reads only its own tables' records (:meth:`_own_epochs_between`), so it never asks.
 
         :param tables: the tables the scrub's epochs name
         :ptype tables: set[str]
@@ -2275,8 +2320,7 @@ class ChangeNoteKeeper:
         """
         if not tables:
             return set()
-        sql = _OWN_TABLES_SQL if self._keeps_log else _TRIGGERED_TABLES_SQL
-        rows = await self._pool.fetch(sql, self._schema, NOTE_TRIGGER, sorted(tables))
+        rows = await self._pool.fetch(_OWN_TABLES_SQL, self._schema, NOTE_TRIGGER, sorted(tables))
         return {str(row["table_name"]) for row in rows}
 
     async def _epochs_between(self, start: int, end: int) -> list[EpochChange]:
@@ -2295,6 +2339,38 @@ class ChangeNoteKeeper:
             read = await asyncio.gather(*(self._log.epoch_at(seq) for seq in batch))
             records.extend(record for record in read if record is not None)
         return records
+
+    async def _own_epochs_between(self, incarnation: str, start: int, end: int) -> list[EpochChange]:
+        """a ring beside's scrub read: its own tables' records after ``start`` up to ``end``, by each table's keys.
+
+        Each table is read through :meth:`_ChangeLogKeeping.changes_after` (a consumer whose filter names the table's
+        keys in its create subject, which a pod's grant names), :data:`_SCRUB_READS_AT_ONCE` tables at a time; the
+        log is never read by sequence. A record naming another database is walked past by the read and again here.
+
+        :param incarnation: the log's incarnation
+        :ptype incarnation: str
+        :param start: the sequence after which to read
+        :ptype start: int
+        :param end: the last sequence to read
+        :ptype end: int
+        :return: the records of this ring's tables, in sequence order
+        :rtype: list[EpochChange]
+        :raises GenerationUnavailableError: when the log cannot be read
+        """
+        rows = await self._pool.fetch(_RING_TABLES_SQL, self._schema, NOTE_TRIGGER)
+        tables = [str(row["table_name"]) for row in rows]
+        after, upto = _token(incarnation, start), _token(incarnation, end)
+        walks: list[EpochWalk] = []
+        for first in range(0, len(tables), _SCRUB_READS_AT_ONCE):
+            batch = tables[first : first + _SCRUB_READS_AT_ONCE]
+            walks.extend(await asyncio.gather(*(self._log.changes_after(table, after, upto) for table in batch)))
+        records = [
+            change
+            for walk in walks
+            for change in walk.changes
+            if change.database is None or change.database == self._database
+        ]
+        return sorted(records, key=lambda record: int(record.token.rpartition(":")[2]))
 
     async def notes_found(self, ring: NoteRingState, records: Sequence[EpochChange]) -> dict[int, _Found]:
         """the notes the coverage tables hold for ``records``, by table.
