@@ -60,6 +60,7 @@ import math
 
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, computed_field, model_validator
@@ -1751,18 +1752,28 @@ class _JudgedTally:
     with the second judges' agreement on it."""
 
     def __init__(self) -> None:
-        self._scores: dict[str, _Values] = {}
-        self._scales: dict[str, RubricScale] = {}
-        self._cannot_tell: Counter[str] = Counter()
+        # One entry per rubric dimension (a handful), so each map is frozen and rebuilt whole on a new dimension (or a
+        # count moving); a dimension's running values are its own accumulator.
+        self._scores: Mapping[str, _Values] = MappingProxyType({})
+        self._scales: Mapping[str, RubricScale] = MappingProxyType({})
+        self._cannot_tell: Mapping[str, int] = MappingProxyType({})
         self._agreement = InterJudgeTally()
+
+    def _values_of(self, dim: str) -> _Values:
+        values = self._scores.get(dim)
+        if values is None:
+            values = _Values()
+            self._scores = MappingProxyType({**self._scores, dim: values})
+        return values
 
     def add(self, result: EvalResult) -> None:
         for score in result.rubric_scores:
-            self._scores.setdefault(score.dim, _Values()).add(float(score.score))
-            self._scales.setdefault(score.dim, score.scale)
+            self._values_of(score.dim).add(float(score.score))
+            if score.dim not in self._scales:
+                self._scales = MappingProxyType({**self._scales, score.dim: score.scale})
         for dim in result.judge_cannot_tell:
-            self._scores.setdefault(dim, _Values())
-            self._cannot_tell[dim] += 1
+            self._values_of(dim)
+            self._cannot_tell = MappingProxyType({**self._cannot_tell, dim: self._cannot_tell.get(dim, 0) + 1})
         self._agreement.add(result)
 
     def dimensions(self) -> list[DimensionSummary]:
@@ -1775,7 +1786,7 @@ class _JudgedTally:
                 mean=values.mean(),
                 minimum=values.minimum,
                 maximum=values.maximum,
-                cannot_tell=self._cannot_tell[name],
+                cannot_tell=self._cannot_tell.get(name, 0),
                 second_judges=[row for row in agreement.dimensions if row.rubric_dim == name],
             )
             for name, values in self._scores.items()
@@ -1809,7 +1820,9 @@ class _SpendTally:
     """
 
     def __init__(self) -> None:
-        self._roles: dict[str, _RoleTally] = {}
+        # One entry per usage role (a handful), so a frozen map rebuilt whole on a new role; a role's sums are its own
+        # accumulator.
+        self._roles: Mapping[str, _RoleTally] = MappingProxyType({})
         self._any_priced_row = False
         self._unknown_cost = False
         self._cost = _ExactSum()
@@ -1819,7 +1832,10 @@ class _SpendTally:
             if row.answers_nothing:
                 # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
                 continue
-            role = self._roles.setdefault(row.role, _RoleTally())
+            role = self._roles.get(row.role)
+            if role is None:
+                role = _RoleTally()
+                self._roles = MappingProxyType({**self._roles, row.role: role})
             role.calls += row.call_count or 0
             if row.call_count is None:
                 role.uncounted_rows += 1
@@ -1886,7 +1902,8 @@ class _RunTally:
         self.classifications: list[tuple[str, str]] = []
         self.judged = _JudgedTally()
         self.spend = _SpendTally()
-        self._verdicts: dict[str, list[int]] = {}
+        # Each goal check's (passed, n): a handful of checks, so a frozen map rebuilt whole per counted verdict.
+        self._verdicts: Mapping[str, tuple[int, int]] = MappingProxyType({})
         self.self_judging = SelfJudgingTally(run)
         self.identities = ModelIdentityTally([run])
         self.settings = RequestSettingsTally([run])
@@ -1912,9 +1929,10 @@ class _RunTally:
         self.judged.add(result)
         self.spend.add(result)
         for check, passed in counted_goal_verdicts(result) or []:
-            counted = self._verdicts.setdefault(check.expression, [0, 0])
-            counted[0] += 1 if passed else 0
-            counted[1] += 1
+            was_passed, was_n = self._verdicts.get(check.expression, (0, 0))
+            self._verdicts = MappingProxyType(
+                {**self._verdicts, check.expression: (was_passed + (1 if passed else 0), was_n + 1)}
+            )
         self.self_judging.add(result)
         self.identities.add(result)
         self.settings.add(result)

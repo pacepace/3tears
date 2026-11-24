@@ -497,10 +497,11 @@ class ModelIdentityTally:
         """
         self._by_id = {run.id: run for run in runs}
         self._candidate_total = self._candidate_unrecorded = 0
-        self._candidate_requested: set[str] = set()
-        self._candidate_served: set[str] = set()
-        self._judge_served: set[str] = set()
-        self._judge_requested: set[str] = set()
+        # Model names: a handful each, so frozensets grown whole (only when a new name is seen).
+        self._candidate_requested: frozenset[str] = frozenset()
+        self._candidate_served: frozenset[str] = frozenset()
+        self._judge_served: frozenset[str] = frozenset()
+        self._judge_requested: frozenset[str] = frozenset()
         self._n_scores = self._n_unnamed = 0
 
     def add(self, result: ResultView) -> None:
@@ -511,20 +512,24 @@ class ModelIdentityTally:
         """
         if (reading := served_reading(result)) is not None:
             self._candidate_total += 1
-            self._candidate_served |= reading.served
+            if not self._candidate_served.issuperset(reading.served):
+                self._candidate_served = self._candidate_served | reading.served
             if reading.unrecorded:
                 self._candidate_unrecorded += 1
-                self._candidate_requested.add(reading.requested)
+                if reading.requested not in self._candidate_requested:
+                    self._candidate_requested = self._candidate_requested | {reading.requested}
         run = self._by_id.get(result.eval_run_id)
         axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
         for score in (*result.rubric_scores, *axes):
             self._n_scores += 1
             if score.served_model:
-                self._judge_served.add(score.served_model)
+                if score.served_model not in self._judge_served:
+                    self._judge_served = self._judge_served | {score.served_model}
                 continue
             self._n_unnamed += 1
             if run is not None and (asked := dim_judge_model(run, score.dim)) is not None:
-                self._judge_requested.add(asked)
+                if asked not in self._judge_requested:
+                    self._judge_requested = self._judge_requested | {asked}
 
     def identities(self) -> list[UnconfirmedModelIdentity]:
         """Each role some response named no model for, over every result read so far.
@@ -1941,8 +1946,11 @@ class SelfJudgingTally:
         :param run: The run.
         :ptype run: EvalRun
         """
-        self._judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
-        self._candidates = {run.candidate_model}
+        # Model names: a handful, so frozensets grown whole.
+        self._judges = frozenset(
+            {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
+        )
+        self._candidates = frozenset({run.candidate_model})
 
     def add(self, result: ResultView) -> None:
         """Read the models one result's scores name as judging it and its candidate rows name as answering.
@@ -1950,8 +1958,8 @@ class SelfJudgingTally:
         :param result: The result.
         :ptype result: ResultView
         """
-        self._judges |= {score.served_model for score in result.rubric_scores if score.served_model}
-        self._candidates |= {
+        self._judges = self._judges | {score.served_model for score in result.rubric_scores if score.served_model}
+        self._candidates = self._candidates | {
             model for row in result.usage if row.role == "candidate" for model in (row.model, row.served_model) if model
         }
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from types import MappingProxyType
 from typing import Protocol
 
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest
@@ -142,14 +143,17 @@ class _ChartLedger:
     def __init__(self, bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> None:
         self._arm = arm
         self._usable = {board.variant_key: board.usable_cases for board in bundle.scoreboard}
-        self._small: dict[str, int] = {}
+        # One entry per arm (a handful), so a frozen map rebuilt whole when an arm's count moves.
+        self._small: Mapping[str, int] = MappingProxyType({})
         self._no_interval: list[str] = []
 
     def drawable(self, variant_key: str, n_cases: int | None, interval: tuple[float, float] | None, what: str) -> bool:
         """Whether a row of ``variant_key``'s may be drawn; one that may not is counted for the sentence."""
         usable = min(self._usable.get(variant_key, 0), n_cases if n_cases is not None else 0)
         if usable < MIN_CASES:
-            self._small[variant_key] = min(self._small.get(variant_key, usable), usable)
+            self._small = MappingProxyType(
+                {**self._small, variant_key: min(self._small.get(variant_key, usable), usable)}
+            )
             return False
         if interval is None:
             self.left_out(what)
