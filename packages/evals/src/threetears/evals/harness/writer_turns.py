@@ -41,6 +41,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final, Protocol, get_args
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill
@@ -153,7 +154,8 @@ class WriterTurns:
                 raise ValueError(f"snapshots {other} and {snapshot} are both case {case!r}, which is one recording")
             named[case] = snapshot
         self._cases = dict(cases)
-        self._served: set[Path] = set()
+        # One path per recorded case an arm serves (tens), so a frozenset grown whole.
+        self._served: frozenset[Path] = frozenset()
         self._replays: list[tuple[str, RecordedTurns]] = []
         self._recorders: list[_Recorder] = []
 
@@ -307,7 +309,7 @@ class WriterTurns:
                 f"case {case!r} was already served to a cell of this arm, and a second cell would repeat its report",
                 "run each recorded case once (k_runs=1)",
             )
-        self._served.add(path)
+        self._served = self._served | {path}
         if path.is_file():
             replay = RecordedTurns.replay(path)
             self._replays.append((case, replay))
@@ -329,7 +331,8 @@ class _CellModel:
         self.model_name = model
         self._route = route
         self._probe = probe
-        self._by_snapshot: dict[str, _Sessions] = {}
+        # One entry per snapshot a cell reads (a few), so a frozen map rebuilt whole on a new one.
+        self._by_snapshot: Mapping[str, _Sessions] = MappingProxyType({})
 
     async def turn_pricing_refusal(self) -> str | None:
         """``None`` when every session replays, which costs nothing; else the recording model's own answer."""
@@ -341,7 +344,8 @@ class _CellModel:
         """The named session over ``snapshot``, from its case's replay or recording."""
         sessions = self._by_snapshot.get(snapshot)
         if sessions is None:
-            sessions = self._by_snapshot[snapshot] = self._route(snapshot)
+            sessions = self._route(snapshot)
+            self._by_snapshot = MappingProxyType({**self._by_snapshot, snapshot: sessions})
         return sessions.turn_session(name, snapshot=snapshot)
 
 
