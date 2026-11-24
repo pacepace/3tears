@@ -27,8 +27,6 @@ from threetears.core.keyed import (
 from threetears.core.testing.keyed_statements import decode, keyed_fetch
 
 
-pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
-
 _T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _NOW = datetime(2026, 11, 10, 13, 0, tzinfo=UTC)
 

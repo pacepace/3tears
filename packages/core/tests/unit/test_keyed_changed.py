@@ -41,8 +41,6 @@ from threetears.core.testing.same_results import Seeded, assert_same_results
 from threetears.interfaces.keyed import HashEncoding
 
 
-pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
-
 _HASHED = (
     HashColumn("name"),
     HashColumn("votes", HashKind.INTEGER),

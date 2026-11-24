@@ -42,9 +42,6 @@ from threetears.core.keyed import (
 )
 
 
-pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
-
-
 @pytest.fixture
 def db() -> Iterator[duckdb.DuckDBPyConnection]:
     """``t``: 10 groups of 10 rows keyed ``(a, b)``, a nullable ``s`` every third row."""

@@ -60,8 +60,6 @@ from threetears.interfaces.keyed import read_keyed_statements
 from threetears.core.pagination import CursorError
 
 
-pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
-
 _START = datetime(2026, 1, 1)
 
 

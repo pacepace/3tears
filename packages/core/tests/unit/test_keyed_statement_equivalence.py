@@ -34,8 +34,6 @@ from threetears.core.keyed import (
 )
 
 
-pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
-
 _GOLDEN = Path(__file__).with_name("keyed_statements.golden.json")
 
 _WHEN = datetime(2026, 11, 11, 12, 30, tzinfo=UTC)
