@@ -31,13 +31,14 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
 from threetears.observe import get_logger
-from threetears.observe.metrics import counter
+from threetears.observe.metrics import counter, histogram
 
 from threetears.core.collections.delta_files import (
     TableDelta,
@@ -82,6 +83,15 @@ _SAVES = counter(
     "delta_file_saves_total",
     description="writes' delta file saves by where they ran: worker (a worker process) or thread (a thread of the "
     "serving process: a large part and no shared-memory hand-off directory, THREETEARS_DELTA_HANDOFF_DIR)",
+    label_names=("where",),
+)
+
+#: each save's seconds, from the write handing its deltas to its files saved (the commit waits on this), by where it
+#: ran (:data:`_SAVES`): observed where the save completes, a histogram observe on the loop and nothing more
+_SAVE_SECONDS = histogram(
+    "delta_file_save_seconds",
+    description="seconds of a write's delta file save, from its deltas handed to its files saved (its commit waits on "
+    "it), by where it ran: worker (a worker process) or thread (a thread of the serving process)",
     label_names=("where",),
 )
 
@@ -248,6 +258,7 @@ async def save_in_worker(root: Path, deltas: Mapping[str, TableDelta], write_id:
     :raises ValueError: as :func:`~threetears.core.collections.delta_files.build_file_table`
     :raises BrokenProcessPool: when the worker died
     """
+    began = time.monotonic()
     plans, large = await asyncio.to_thread(_planned, deltas)
     handed: HandedTables | None = None
     store: SharedArrowStore | None = None
@@ -267,7 +278,9 @@ async def save_in_worker(root: Path, deltas: Mapping[str, TableDelta], write_id:
                     "hand-off directory has room for it (THREETEARS_DELTA_HANDOFF_DIR)",
                     extra={"extra_data": {"bytes": sum(table.nbytes for table in large.values())}},
                 )
-            return await asyncio.to_thread(_save_all_here, root, deltas, write_id)
+            saved = await asyncio.to_thread(_save_all_here, root, deltas, write_id)
+            _SAVE_SECONDS.labels(where="thread").observe(time.monotonic() - began)
+            return saved
     handoff = None if handed is None else (handed.root, handed.handoff_id, tuple(handed.tables), int(handed.nbytes))
     try:
         answer = await _WORKERS.run(save_delta_job, str(root), write_id, plans, handoff)
@@ -275,6 +288,7 @@ async def save_in_worker(root: Path, deltas: Mapping[str, TableDelta], write_id:
         if handed is not None and store is not None:
             await asyncio.to_thread(store.release, handed)
     _SAVES.labels(where="worker").inc()
+    _SAVE_SECONDS.labels(where="worker").observe(time.monotonic() - began)
     return dict(answer)
 
 

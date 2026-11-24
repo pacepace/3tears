@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from prometheus_client import REGISTRY
 
 from threetears.core.collections.delta_files_check import (
     DeltaFilesDirectoryError,
@@ -90,13 +91,43 @@ def test_a_file_is_refused(tmp_path: Path) -> None:
     assert _refused({ENV: str(file)}).found == f"{ENV}={file} is not a directory"
 
 
+def _checks(outcome: str) -> float:
+    return REGISTRY.get_sample_value("delta_files_start_checks_total", {"outcome": outcome}) or 0.0
+
+
+def test_every_start_check_is_counted_by_its_outcome(tmp_path: Path) -> None:
+    """Flips if a start check of the directory stops being counted by what it found
+    (``delta_files_start_checks_total{outcome}``), or a process whose tables do not opt in is counted at all."""
+    file = tmp_path / "file"
+    file.write_text("x")
+    cases = {
+        "usable": {ENV: str(tmp_path)},
+        "unset": {},
+        "not_absolute": {ENV: "delta-files"},
+        "missing": {ENV: str(tmp_path / "gone")},
+        "not_directory": {ENV: str(file)},
+    }
+    for outcome, environ in cases.items():
+        before = _checks(outcome)
+        if outcome == "usable":
+            require_delta_files_root(OPTED, environ=environ)
+        else:
+            _refused(environ)
+        assert _checks(outcome) == before + 1, outcome
+    totals = {outcome: _checks(outcome) for outcome in cases}
+    require_delta_files_root([_schema("plain", delta_files=False)], environ={})
+    assert {outcome: _checks(outcome) for outcome in cases} == totals, "a process with no opted-in table is not checked"
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only directory")
 def test_a_read_only_directory_is_refused(tmp_path: Path) -> None:
     tmp_path.chmod(0o555)
+    before = _checks("not_writable")
     try:
         found = _refused({ENV: str(tmp_path)}).found
     finally:
         tmp_path.chmod(0o755)
+    assert _checks("not_writable") == before + 1
     assert found.startswith(f"{ENV}={tmp_path} is not writable by this process")
     assert list(tmp_path.iterdir()) == []
 

@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: delta files' save, fold, volume and check metrics
+
+**Added:** metrics for the delta files' dashboard row: `delta_file_save_seconds{where}` (a write's save, observed as it
+completes), `delta_fold_round_seconds{outcome}` (each writer fold round), `delta_files_volume_bytes{table}` (the current
+full's parts plus the deltas the fold holds unfolded, from the sizes its worker already measured: no directory walk),
+`volume_fulls_fingerprint_check_seconds{outcome}` (a copy's check of a part against the full's fingerprint, counted in
+`copy_follower_drift_checks_total`), `volume_fulls_part_checks_total{outcome}` and `volume_fulls_part_check_seconds`
+(a copy's checksum and row-count check of each part it loads: ok, unreadable, missing, rows_differ) and
+`delta_files_start_checks_total{outcome}` (the start check of the directory: usable, unset, not_absolute, missing,
+not_directory, not_writable).
+
 ### epoch: a follower's partition reads made from its row reads by the key's lead
 
 **Added:** `threetears.epoch.lead_slice_reads(reads, leads)`: per table, the partition read `RowFollower` requires

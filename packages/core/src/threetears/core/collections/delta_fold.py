@@ -109,7 +109,7 @@ import os
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -117,7 +117,7 @@ from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal
 
 from threetears.observe import get_logger
-from threetears.observe.metrics import counter, gauge
+from threetears.observe.metrics import counter, gauge, histogram
 
 from threetears.core.collections.delta_files import (
     _DELETED_COLUMN,
@@ -279,6 +279,27 @@ _UNFOLDED_BYTES = gauge(
     "delta_fold_unfolded_bytes",
     description="bytes of the delta files the writer's fold holds unfolded, as its rounds measured each state's share, "
     "by table; zero while every delta is folded",
+    label_names=("table",),
+)
+
+#: each fold round's seconds, the worker's whole round (note the commits' files, fold each state due, publish, delete),
+#: as the writer waits for it, by outcome (:data:`_ROUNDS`, ``failed`` for one that raised): observed as the round
+#: ends, a histogram observe on the loop and nothing more
+_ROUND_SECONDS = histogram(
+    "delta_fold_round_seconds",
+    description="seconds of each writer fold round in its worker process, by outcome (folded, nothing_due, no_full, "
+    "stale, no_generation, failed)",
+    label_names=("outcome",),
+)
+
+#: the bytes the delta files' volume holds per table: its current full's parts plus the bytes of the delta files the
+#: fold holds unfolded (:data:`_UNFOLDED_BYTES`). The full's bytes are the sizes the worker already had of the parts it
+#: read, wrote or published (a round's, a rebuild's, a recovery's): never a walk or a stat of the directory on the loop.
+#: Set once the writer's first round, rebuild or recovery has measured the table's full
+_VOLUME_BYTES = gauge(
+    "delta_files_volume_bytes",
+    description="bytes on the delta files' volume per table: the current full's parts plus the delta files the "
+    "writer's fold holds unfolded, from the sizes its worker measured (no directory walk)",
     label_names=("table",),
 )
 
@@ -531,6 +552,9 @@ class DeltaFolds:
         #: each table's recovery asks (:meth:`recover_table`): one asked while a recovery of the table runs is owed
         #: again once it ends, since the generation that recovery read may be older than the lost file's epoch
         self._asked: Mapping[str, int] = MappingProxyType({})
+        #: each table's current full's bytes, as the last round, rebuild or recovery measured its parts: a read-only
+        #: snapshot replaced whole, the full's half of :data:`_VOLUME_BYTES`
+        self._full_bytes: Mapping[str, int] = MappingProxyType({})
         #: whether a rebuild may be owed: the next round looks before it folds
         self._recheck = False
         #: whether a table was marked fresh since the last rebuild began
@@ -590,7 +614,22 @@ class DeltaFolds:
         for table in self.tables:
             _UNFOLDED_FILES.labels(table=table).set(len(files[table]))
             _UNFOLDED_BYTES.labels(table=table).set(sizes[table])
+            full = self._full_bytes.get(table)
+            if full is not None:
+                _VOLUME_BYTES.labels(table=table).set(full + sizes[table])
         _QUEUED.set(len(self._queued))
+
+    def _measured_fulls(self, full_bytes: Sequence[tuple[str, int]]) -> None:
+        """keep the full's bytes per table a worker answered, and set the volume gauge from them.
+
+        :param full_bytes: each table's ``(table, bytes of its current full's parts)``, from the worker
+        :ptype full_bytes: Sequence[tuple[str, int]]
+        :return: nothing
+        :rtype: None
+        """
+        if full_bytes:
+            self._full_bytes = MappingProxyType({**self._full_bytes, **dict(full_bytes)})
+        self._measure()
 
     def committed(
         self,
@@ -1137,6 +1176,7 @@ class DeltaFolds:
             term = self._term
             assert term is not None  # noqa: S101 -- set by the commit that queued the files
             self._round_term = term
+            began = time.monotonic()
             try:
                 answer = await self._workers.run(
                     fold_round,
@@ -1156,6 +1196,7 @@ class DeltaFolds:
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 _ROUNDS.labels(outcome="failed").inc()
+                _ROUND_SECONDS.labels(outcome="failed").observe(time.monotonic() - began)
                 self._failed_rounds += 1
                 log.error(
                     "a delta fold round failed; its files are kept for the round the next commit starts",
@@ -1176,6 +1217,7 @@ class DeltaFolds:
                     continue  # a start posted meanwhile walks its log and folds now, as it always did
                 return
             self._failed_rounds = 0
+            _ROUND_SECONDS.labels(outcome=answer[3]).observe(time.monotonic() - began)
             self._took(answer)
 
     async def _relearned(self) -> bool:
@@ -1232,11 +1274,11 @@ class DeltaFolds:
         :return: nothing
         :rtype: None
         """
-        pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed = answer
+        pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed, full_bytes = answer
         self._pending, self._reused, self._doomed = pending, reused, doomed
         OWN_DELTA_SAVES.swept(swept)
         self._taken = ()
-        self._measure()
+        self._measured_fulls(full_bytes)
         _ROUNDS.labels(outcome=outcome).inc()
         for table in renewed:
             # a commit of another incarnation than the table's full: never folded across, recovered by key instead
@@ -1376,7 +1418,8 @@ class DeltaFolds:
                 exc_info=error,
             )
             return
-        outcome, manifest, rebuilt, deleted = answer
+        outcome, manifest, rebuilt, deleted, full_bytes = answer
+        self._measured_fulls(full_bytes)
         # every ask posted while the rebuild read and published, judged against the generation each table's read began at
         self._drain()
         for name, token, rows in rebuilt:
@@ -1547,7 +1590,8 @@ class DeltaFolds:
         except BaseException:
             await asyncio.to_thread(_unlink_all, self.root, [file])
             raise
-        outcome, manifest, states, deleted = answer
+        outcome, manifest, states, deleted, full_bytes = answer
+        self._measured_fulls(full_bytes)
         # every ask posted while the recovery read and published, judged against the generation it read
         self._drain()
         _RECOVERIES.labels(table=name, why=why, outcome=outcome).inc()
@@ -2123,8 +2167,9 @@ def rebuild_round(
     :param kept: delta files never dropped, whatever their time (:meth:`DeltaFolds._kept_files`): the volume's clock
         is not the writer's
     :ptype kept: tuple[str, ...]
-    :return: ``(outcome, manifest, rebuilt, deleted)``: ``"rebuilt"`` or ``"stale"``, the manifest published (or
-        the current one), each table as ``(table, generation, rows)``, and the files deleted
+    :return: ``(outcome, manifest, rebuilt, deleted, full_bytes)``: ``"rebuilt"`` or ``"stale"``, the manifest
+        published (or the current one), each table as ``(table, generation, rows)``, the files deleted, and each
+        rebuilt table's ``(table, bytes of its parts)`` (none when stale)
     :rtype: tuple
     """
     base = Path(root)
@@ -2134,7 +2179,7 @@ def rebuild_round(
     try:
         current = current_full_manifest(base)
         if current is not None and current.term > term:
-            return ("stale", current.name, rebuilt, 0)
+            return ("stale", current.name, rebuilt, 0, ())
         tables_now = dict(current.tables) if current is not None else {}
         for name, file, token, _ in staged:
             parts = _parts_of_rows(base, config[name], _read_rows_file(base / file), token)
@@ -2146,7 +2191,7 @@ def rebuild_round(
             # a later writer published since this one looked: its parts are this writer's alone, named by none
             _unlink_all(base, written)
             stale = current_full_manifest(base)
-            return ("stale", stale.name if stale is not None else "", rebuilt, 0)
+            return ("stale", stale.name if stale is not None else "", rebuilt, 0, ())
     except BaseException:
         _unlink_all(base, written)
         raise
@@ -2175,7 +2220,7 @@ def rebuild_round(
             )
             continue
         deleted += 1
-    return ("rebuilt", published.name, rebuilt, deleted)
+    return ("rebuilt", published.name, rebuilt, deleted, _full_bytes(base, published, config))
 
 
 def _leftover_delta_files(root: Path, table: str) -> list[tuple[str, float]]:
@@ -2585,17 +2630,18 @@ def recovery_round(
     :param replaced: the states whose every row L3 holds the recovery delta holds (decision 31): each one's part is
         those rows alone, the held part dropped; a state L3 holds no row of has no part
     :ptype replaced: tuple[str, ...]
-    :return: ``(outcome, manifest, states, deleted)``: ``"recovered"``, ``"stale"`` or ``"no_full"``; the manifest
-        published (or the current one); the states folded; the files deleted
+    :return: ``(outcome, manifest, states, deleted, full_bytes)``: ``"recovered"``, ``"stale"`` or ``"no_full"``; the
+        manifest published (or the current one); the states folded; the files deleted; the table's ``(table, bytes of
+        its parts)`` once recovered
     :rtype: tuple
     """
     base = Path(root)
     table = _Folding.of(plain)
     current = current_full_manifest(base)
     if current is None or table.name not in current.tables:
-        return ("no_full", current.name if current is not None else "", 0, 0)
+        return ("no_full", current.name if current is not None else "", 0, 0, ())
     if current.term > term:
-        return ("stale", current.name, 0, 0)
+        return ("stale", current.name, 0, 0, ())
     entry = current.tables[table.name]
     sizes = {part.scope: (base / part.file).stat().st_size for part in entry.parts}
     by_scope: dict[str | None, list[_Share]] = {}
@@ -2623,7 +2669,7 @@ def recovery_round(
     except StaleTermError:
         _unlink_all(base, written)
         stale = current_full_manifest(base)
-        return ("stale", stale.name if stale is not None else "", 0, 0)
+        return ("stale", stale.name if stale is not None else "", 0, 0, ())
     deleted = 0
     for doomed in deletable_full_files(base, covered_deltas=sorted({*doomable, file})):
         try:
@@ -2635,7 +2681,7 @@ def recovery_round(
             )
             continue
         deleted += 1
-    return ("recovered", published.name, len(by_scope), deleted)
+    return ("recovered", published.name, len(by_scope), deleted, _full_bytes(base, published, (table.name,)))
 
 
 def _parts_of_rows(root: Path, table: _Folding, rows: Any, token: str) -> tuple[FullPart, ...]:
@@ -2707,20 +2753,26 @@ def fold_round(
     :ptype orphans: tuple[str, ...]
     :param fresh: tables owed a rebuild (reset or recreated): their files are kept, never folded onto the old parts
     :ptype fresh: tuple[str, ...]
-    :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed)``: the state for
-        the next round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how, rows)``, the
-        files deleted, the orphans swept (by name), the manifest published (or the current one), this worker's process id, and each
-        table a commit of another incarnation than its full's was told of (its log lost: rebuilt, never folded)
+    :return: ``(pending, reused, doomed, outcome, folded, deleted, swept, manifest, pid, renewed, full_bytes)``: the
+        state for the next round, the round's outcome (:data:`_ROUNDS`), each state folded as ``(table, scope, how,
+        rows)``, the files deleted, the orphans swept (by name), the manifest published (or the current one), this
+        worker's process id, each table a commit of another incarnation than its full's was told of (its log lost:
+        rebuilt, never folded), and each committed or folded table's ``(table, bytes of its current full's parts)``
+        from the sizes the round already took (:data:`_VOLUME_BYTES`)
     :rtype: tuple
     """
     base = Path(root)
     config = {plain[0]: _Folding.of(plain) for plain in tables}
     current = current_full_manifest(base)
     shares = list(pending)
+    # each committed table's full's bytes, from the part sizes its shares are measured against: the volume gauge's
+    full_bytes: dict[str, int] = {}
     for table, file, token in committed:
         # a cleared prefix reaches the states the full holds of the table, each counted at its part's size
         held = current.tables.get(table) if current is not None else None
         sizes = {part.scope: (base / part.file).stat().st_size for part in held.parts} if held is not None else {}
+        if held is not None:
+            full_bytes[table] = sum(sizes.values())
         shares.extend(_shares(base, config[table], file, token, sizes))
     renewed: tuple[str, ...] = ()
 
@@ -2738,6 +2790,7 @@ def fold_round(
             manifest,
             os.getpid(),
             renewed,
+            tuple(sorted(full_bytes.items())),
         )
 
     if current is None:
@@ -2816,7 +2869,37 @@ def fold_round(
     doomed = tuple(sorted((covered | set(doomed)) - deleted - kept_reused))
     named = left | set(reused) | set(doomed) | published.files()
     swept = sweep_orphan_delta_files(base, orphans=orphans, named=named)
+    # the folded tables' new fulls: the parts it wrote and kept, sized once each here in the worker
+    full_bytes.update(_full_bytes(base, published, {table for table, _, _, _ in folded}))
     return answer("folded", published.name, folded=folded, deleted=len(deleted), swept=swept)
+
+
+def _full_bytes(base: Path, manifest: FullManifest, tables: Collection[str]) -> tuple[tuple[str, int], ...]:
+    """each of ``tables``' bytes in ``manifest``: the sizes of the parts it names, in a worker process (never the loop).
+    A part already gone (a later round's delete) counts as nothing.
+
+    :param base: the delta files' root
+    :ptype base: Path
+    :param manifest: the full
+    :ptype manifest: FullManifest
+    :param tables: the tables to size
+    :ptype tables: Collection[str]
+    :return: each table held as ``(table, bytes)``
+    :rtype: tuple[tuple[str, int], ...]
+    """
+    sized: list[tuple[str, int]] = []
+    for table in sorted(tables):
+        entry = manifest.tables.get(table)
+        if entry is None:
+            continue
+        total = 0
+        for part in entry.parts:
+            try:
+                total += (base / part.file).stat().st_size
+            except FileNotFoundError:  # NOSILENT: a part a later round deleted holds no bytes on the volume
+                continue
+        sized.append((table, total))
+    return tuple(sized)
 
 
 def _one_incarnation(token: str, other: str) -> bool:

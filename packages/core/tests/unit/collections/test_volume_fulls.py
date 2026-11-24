@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
@@ -187,6 +188,46 @@ async def test_a_start_loads_every_part_and_reports_each_parts_version(tmp_path:
     part = read_volume_file(tmp_path / va.file)
     assert part.schema.metadata[b"threetears.full.version"] == b"inc:7"
     assert part.num_rows == 3
+
+
+def _part_checks(outcome: str) -> tuple[float, float]:
+    """the part checks' count and their seconds' count for ``outcome``."""
+    labels = {"outcome": outcome}
+    return (
+        REGISTRY.get_sample_value("volume_fulls_part_checks_total", labels) or 0.0,
+        REGISTRY.get_sample_value("volume_fulls_part_check_seconds_count", labels) or 0.0,
+    )
+
+
+async def test_each_part_a_copy_loads_is_checked_and_counted_by_outcome_with_its_seconds(tmp_path: Path) -> None:
+    """Flips if a copy's check of a part it loads (checksum, then the row count its manifest says) stops being counted
+    by outcome (``volume_fulls_part_checks_total``) with its seconds (``volume_fulls_part_check_seconds``): ok for each
+    part loaded, rows_differ, unreadable and missing for a part that fails the start."""
+    ok = _part_checks("ok")
+    _full(tmp_path, 1, VA=3, IL=2)
+    await _stage(tmp_path, _backend())
+    assert _part_checks("ok") == (ok[0] + 2, ok[1] + 2)
+    va = write_full_part(tmp_path, _TABLE, "state:VA", _rows("VA", 3), "inc:6")
+    wrong = FullPart(scope=va.scope, file=va.file, version=va.version, rows=4)
+    publish_full_manifest(tmp_path, term=2, tables={_TABLE: FullTable(version="inc:6", parts=(wrong,))})
+    differ = _part_checks("rows_differ")
+    with pytest.raises(ValueError, match="its manifest says 4"):
+        await VolumeFulls(tmp_path, [_FOLLOWED]).stage(_backend())
+    assert _part_checks("rows_differ") == (differ[0] + 1, differ[1] + 1)
+    damaged = tmp_path / va.file
+    body = bytearray(damaged.read_bytes())
+    body[len(body) // 2] ^= 0xFF
+    damaged.write_bytes(bytes(body))
+    publish_full_manifest(tmp_path, term=3, tables={_TABLE: FullTable(version="inc:6", parts=(va,))})
+    unreadable = _part_checks("unreadable")
+    with pytest.raises(ValueError):
+        await VolumeFulls(tmp_path, [_FOLLOWED]).stage(_backend())
+    assert _part_checks("unreadable") == (unreadable[0] + 1, unreadable[1] + 1)
+    damaged.unlink()
+    missing = _part_checks("missing")
+    with pytest.raises(FileNotFoundError):
+        await VolumeFulls(tmp_path, [_FOLLOWED]).stage(_backend())
+    assert _part_checks("missing") == (missing[0] + 1, missing[1] + 1)
 
 
 async def test_a_delta_named_as_a_part_loads_its_rows_never_its_delete_markers(tmp_path: Path) -> None:

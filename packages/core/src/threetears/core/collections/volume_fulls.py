@@ -52,6 +52,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -59,9 +60,10 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import get_logger
+from threetears.observe.metrics import counter, histogram
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
-from threetears.core.collections.delta_files import read_volume_file, write_volume_file
+from threetears.core.collections.delta_files import DeltaFileUnreadableError, read_volume_file, write_volume_file
 from threetears.core.collections.generation import split_generation_token
 
 if TYPE_CHECKING:
@@ -84,6 +86,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a fingerprint n
     _DUCKDB = False
 
 __all__ = [
+    "FINGERPRINT_CHECK_SECONDS",
     "FINGERPRINT_FORMAT",
     "FullAbsent",
     "FullManifest",
@@ -107,6 +110,35 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: each copy's check of one part against the full's fingerprint (decision 32,
+#: :meth:`~threetears.core.collections.copy_follower.CopyFollower.check_drift`), its seconds by outcome (counted by
+#: outcome in ``copy_follower_drift_checks_total``): the copy's read of its rows and their fingerprint in a worker
+#: process, observed once the check ends
+FINGERPRINT_CHECK_SECONDS = histogram(
+    "volume_fulls_fingerprint_check_seconds",
+    description="seconds of a copy's check of one part of the full against its fingerprint (its own rows of the "
+    "state read and fingerprinted), by outcome (equal, drift, skipped, not_current, version_unknown, no_fingerprint, "
+    "other_columns)",
+    label_names=("outcome",),
+)
+
+#: a copy's checks of each part it loads from the full (:meth:`VolumeFulls.stage`), by outcome: ``ok`` (its checksum
+#: verified and its rows the count its manifest says), ``unreadable`` (damaged: its checksum failed), ``missing`` (not
+#: on the volume), ``rows_differ`` (another count of rows than its manifest says). Any but ``ok`` fails the copy's start
+_PART_CHECKS = counter(
+    "volume_fulls_part_checks_total",
+    description="a copy's checks of each part of the full it loads (checksum, then the row count its manifest says), "
+    "by outcome: ok, unreadable, missing, rows_differ; any but ok fails the start",
+    label_names=("outcome",),
+)
+#: each such check's seconds (the part read off the volume and verified), by outcome, on the copy's worker thread
+_PART_CHECK_SECONDS = histogram(
+    "volume_fulls_part_check_seconds",
+    description="seconds of a copy's check of one part of the full it loads (read off the volume, checksum verified, "
+    "rows counted), by outcome",
+    label_names=("outcome",),
+)
 
 #: the fulls' directory under the delta files' root: a name no table's directory can take (a table is an identifier)
 _FULLS: Final = ".fulls"
@@ -868,7 +900,20 @@ class VolumeFulls:
         :raises ValueError: when the part holds other than the rows its manifest says
         """
         # its checksum verified first: a damaged part raises DeltaFileUnreadableError, never stages other rows
-        rows = read_full_part(self.root, part).select([column.name for column in table.columns])
-        if rows.num_rows != part.rows:
-            raise ValueError(f"part {part.file} holds {rows.num_rows} rows, its manifest says {part.rows}")
+        began = time.monotonic()
+        outcome = "ok"
+        try:
+            rows = read_full_part(self.root, part).select([column.name for column in table.columns])
+            if rows.num_rows != part.rows:
+                outcome = "rows_differ"
+                raise ValueError(f"part {part.file} holds {rows.num_rows} rows, its manifest says {part.rows}")
+        except DeltaFileUnreadableError:
+            outcome = "unreadable"
+            raise
+        except FileNotFoundError:
+            outcome = "missing"
+            raise
+        finally:
+            _PART_CHECKS.labels(outcome=outcome).inc()
+            _PART_CHECK_SECONDS.labels(outcome=outcome).observe(time.monotonic() - began)
         return int(backend.stage_rows(stage, table.name, rows, table.key)) if rows.num_rows else 0

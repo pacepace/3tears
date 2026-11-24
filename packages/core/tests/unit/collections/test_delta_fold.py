@@ -282,6 +282,43 @@ def _unfolded(metric: str, table: str = "votes") -> float | None:
     return REGISTRY.get_sample_value(f"delta_fold_unfolded_{metric}", {"table": table})
 
 
+def _volume_bytes(table: str = "votes") -> float | None:
+    return REGISTRY.get_sample_value("delta_files_volume_bytes", {"table": table})
+
+
+def _full_size(root: Path, table: str = "votes") -> int:
+    """the bytes of the current full's parts of ``table``, stat'd by the test."""
+    manifest = current_full_manifest(root)
+    assert manifest is not None
+    return sum((root / part.file).stat().st_size for part in manifest.tables[table].parts)
+
+
+def _rounds_timed(outcome: str) -> float:
+    return REGISTRY.get_sample_value("delta_fold_round_seconds_count", {"outcome": outcome}) or 0.0
+
+
+async def test_each_round_s_seconds_and_the_volume_s_bytes_per_table_are_recorded(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a fold round's seconds stop being observed by its outcome (``delta_fold_round_seconds``), or the
+    volume's bytes per table (``delta_files_volume_bytes``) stop reading the current full's parts plus the deltas the
+    fold holds unfolded, from the sizes its worker measured: after a fold and after a commit not yet due (a rebuild's and
+    a recovery's are pinned in their own tests)."""
+    writer = _writer(tmp_path, _votes_schema(), workers)
+    folded = _rounds_timed("folded")
+    await writer.commit([{"state": "TX", "geo_id": g, "votes": g, "note": f"n{g}"} for g in range(3000)])
+    assert _rounds_timed("folded") == folded + 1
+    assert _volume_bytes() == _full_size(tmp_path), "a fold leaves only the full on the volume"
+    nothing = _rounds_timed("nothing_due")
+    file = writer.save(_votes("TX", range(5000, 5002), 2))
+    writer.tell(file)
+    await writer.folds.wait()
+    assert _rounds_timed("nothing_due") == nothing + 1
+    assert _unfolded("bytes") == (tmp_path / file).stat().st_size
+    assert _volume_bytes() == _full_size(tmp_path) + _unfolded("bytes"), "the full plus the delta not yet folded"
+    await writer.folds.close()
+
+
 async def test_the_unfolded_gauges_rise_with_each_commit_and_fall_to_zero_once_folded(
     tmp_path: Path, workers: ProcessWorkers
 ) -> None:
@@ -1121,6 +1158,7 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
     current = current_full_manifest(tmp_path)
     assert current is not None and current.term == 6
     assert all(part.version == token for part in current.tables["votes"].parts)
+    assert _volume_bytes() == _full_size(tmp_path), "the recovered full's bytes, from the recovery's worker"
     assert _part(tmp_path, "votes", "state:NC") == FullPart("state:NC", nc.file, token, nc.rows, nc.fingerprint), (
         "NC's part is kept, its fingerprint with it"
     )
@@ -1291,6 +1329,9 @@ async def test_no_full_at_all_with_the_log_lost_is_still_the_one_cold_start_whol
     assert l3.statements == Counter({"votes": 1, "runs": 1}), "one whole read of each table"
     assert _recoveries("log_lost") == before and _rebuilds("cold_start") == rebuilt + 1
     assert _held(tmp_path, "votes") == _sorted(_VOTES_ROWS)
+    # the volume's bytes per table from the parts the rebuild's worker wrote (delta_files_volume_bytes)
+    assert _volume_bytes("votes") == _full_size(tmp_path, "votes")
+    assert _volume_bytes("runs") == _full_size(tmp_path, "runs")
     await folds.close()
 
 

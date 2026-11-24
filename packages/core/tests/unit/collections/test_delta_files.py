@@ -182,6 +182,13 @@ def _saves(where: str) -> float:
     return REGISTRY.get_sample_value("delta_file_saves_total", {"where": where}) or 0.0
 
 
+def _save_seconds(where: str) -> tuple[float, float]:
+    """the save seconds histogram's count and sum for ``where``."""
+    labels = {"where": where}
+    count = REGISTRY.get_sample_value("delta_file_save_seconds_count", labels) or 0.0
+    return count, REGISTRY.get_sample_value("delta_file_save_seconds_sum", labels) or 0.0
+
+
 async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
     root: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -198,6 +205,7 @@ async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
     monkeypatch.setenv("THREETEARS_DELTA_HANDOFF_DIR", str(handoff))
     collection, conn = _collection(), _Conn(root)
     before = _saves("worker")
+    timed, spent = _save_seconds("worker")
     async with CallerTransaction(conn) as transaction:
         await collection.save_rows(_rows(3), conn=conn)
     small = read_delta_file(root / transaction.delta_files["results"], table="results")
@@ -218,6 +226,8 @@ async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
     held = read_volume_file(root / files["results"])
     assert held.num_rows == count and held.column("geo_id")[count - 1].as_py() == f"{count - 1:060d}"
     assert _saves("worker") == before + 2
+    # each save's seconds observed as it completes (delta_file_save_seconds{where="worker"})
+    assert _save_seconds("worker")[0] == timed + 2 and _save_seconds("worker")[1] > spent
     assert not any(handoff.rglob("*.arrow")), "the hand-off is released once the worker is done"
 
 
@@ -234,9 +244,11 @@ async def test_without_a_hand_off_directory_a_large_part_is_saved_on_a_thread_co
     load = _collection().table_delta()
     load.load([rows], [count], {})
     before = _saves("thread")
+    timed, spent = _save_seconds("thread")
     files = await save_delta_files({"results": load})
     assert read_volume_file(root / files["results"]).num_rows == count
     assert _saves("thread") == before + 1
+    assert _save_seconds("thread")[0] == timed + 1 and _save_seconds("thread")[1] > spent, "its seconds observed too"
 
 
 async def test_a_table_not_opted_in_saves_no_file(root: Path) -> None:

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Final
 
 from threetears.core.collections.delta_files import _DELTA_FILES_DIR_ENV, _fsync_directory
 from threetears.observe import get_logger
+from threetears.observe.metrics import counter
 
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import TableSchema
@@ -42,6 +43,16 @@ log = get_logger(__name__)
 #: the start probe's name under the root: a dot name at the top, never in a table's directory, so no sweep or fold
 #: ever reads it (delta files live one directory deep, ``<table>/<id>.arrow``)
 _PROBE_PREFIX: Final = ".start-check-"
+
+#: the start checks of the directory, by outcome: ``usable``, or what was wrong (``unset``, ``not_absolute``,
+#: ``missing``, ``not_directory``, ``not_writable``); a process whose tables do not opt in is never checked, so never
+#: counted. Any but ``usable`` refuses the start
+_START_CHECKS = counter(
+    "delta_files_start_checks_total",
+    description="a process's start checks of its delta files' directory, by outcome: usable, unset, not_absolute, "
+    "missing, not_directory, not_writable; any but usable refuses the start",
+    label_names=("outcome",),
+)
 
 #: the rule line around the message, so it stands out in a pod's log among everything else at its start
 _RULE: Final = "=" * 100
@@ -88,7 +99,7 @@ def _probe(root: Path) -> None:
 
 
 def _found(named: str | None) -> str | None:
-    """what is wrong with the directory ``named``, or None when it is usable.
+    """what is wrong with the directory ``named``, or None when it is usable; counted by outcome (:data:`_START_CHECKS`).
 
     :param named: the variable's value; None or empty when unset
     :ptype named: str | None
@@ -96,22 +107,29 @@ def _found(named: str | None) -> str | None:
     :rtype: str | None
     """
     problem: str | None = None
+    outcome = "usable"
     if not named:
+        outcome = "unset"
         problem = f"{_DELTA_FILES_DIR_ENV} is not set"
     elif not os.path.isabs(named):
+        outcome = "not_absolute"
         problem = f"{_DELTA_FILES_DIR_ENV}={named} is not an absolute path"
     elif not os.path.exists(named):
+        outcome = "missing"
         problem = f"{_DELTA_FILES_DIR_ENV}={named} does not exist (nothing is mounted there)"
     elif not os.path.isdir(named):
+        outcome = "not_directory"
         problem = f"{_DELTA_FILES_DIR_ENV}={named} is not a directory"
     else:
         try:
             _probe(Path(named))
         except OSError as exc:
+            outcome = "not_writable"
             problem = (
                 f"{_DELTA_FILES_DIR_ENV}={named} is not writable by this process (uid {os.getuid()}, gid "
                 f"{os.getgid()}): writing, flushing, renaming and removing a file there failed: {exc}"
             )
+    _START_CHECKS.labels(outcome=outcome).inc()
     return problem
 
 

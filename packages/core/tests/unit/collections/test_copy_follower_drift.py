@@ -217,6 +217,11 @@ def _checks(name: str, outcome: str) -> float:
     return REGISTRY.get_sample_value("copy_follower_drift_checks_total", {"table": name, "outcome": outcome}) or 0.0
 
 
+def _check_seconds(outcome: str) -> float:
+    """how many fingerprint checks' seconds were observed for ``outcome``."""
+    return REGISTRY.get_sample_value("volume_fulls_fingerprint_check_seconds_count", {"outcome": outcome}) or 0.0
+
+
 class _World:
     def __init__(self, volume: Path, workers: ProcessWorkers, key: tuple[str, ...]) -> None:
         self.volume = volume
@@ -282,12 +287,15 @@ async def test_a_copy_equal_to_the_full_reads_zero_drift_and_reads_no_l3(
     world = _World(_volume, workers, key)
     await world.started()
     equal_before = _checks(_RESULTS, "equal")
+    timed_before = _check_seconds("equal")
     outcomes = await world.follower.check_drift()
     assert outcomes == {(name, f"state:{state}"): "equal" for name in _OPTED for state in ("IL", "VA")}
     for name in _OPTED:
         for state in ("VA", "IL"):
             assert _parts(name, state) == 0
     assert _checks(_RESULTS, "equal") == equal_before + 2
+    # each part's check timed by its outcome (volume_fulls_fingerprint_check_seconds), every table's
+    assert _check_seconds("equal") == timed_before + 2 * len(_OPTED)
     assert world.l3.statements == 0
 
 
@@ -300,6 +308,7 @@ async def test_a_corrupted_copy_row_flips_the_gauge_for_exactly_that_table_and_s
     world = _World(_volume, workers, key)
     await world.started()
     drift_before = _checks(_RESULTS, "drift")
+    timed_before = _check_seconds("drift")
     world.backend.execute_query("UPDATE results SET votes = 999 WHERE state = 'VA' AND geo_id = 1 RETURNING geo_id")
     outcomes = await world.follower.check_drift()
     assert outcomes[(_RESULTS, "state:VA")] == "drift"
@@ -311,6 +320,7 @@ async def test_a_corrupted_copy_row_flips_the_gauge_for_exactly_that_table_and_s
     assert _parts(_TALLIES, "VA") == 0
     assert _parts(_TALLIES, "IL") == 0
     assert _checks(_RESULTS, "drift") == drift_before + 1
+    assert _check_seconds("drift") == timed_before + 1
     # the row put back: the next check finds the state equal and the gauge drops to 0
     world.backend.execute_query("UPDATE results SET votes = 11 WHERE state = 'VA' AND geo_id = 1 RETURNING geo_id")
     assert (await world.follower.check_drift())[(_RESULTS, "state:VA")] == "equal"

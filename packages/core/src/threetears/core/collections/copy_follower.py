@@ -130,6 +130,7 @@ from threetears.core.collections.volume_fulls import (
     StagedFull,
     VolumeFulls,
     current_full_manifest,
+    FINGERPRINT_CHECK_SECONDS,
     FINGERPRINT_FORMAT,
     fingerprint_columns,
     fingerprint_comparable,
@@ -4868,8 +4869,10 @@ class CopyFollower:
                 continue
             kinds = fingerprint_kinds(self._reads[name].types)
             for part in entry.parts:
+                began = time.monotonic()
                 outcome = await self._check_part(self._tables[name], part, kinds, manifest.name)
                 _DRIFT_CHECKS.labels(table=name, outcome=outcome).inc()
+                FINGERPRINT_CHECK_SECONDS.labels(outcome=outcome).observe(time.monotonic() - began)
                 outcomes[(name, part.scope)] = outcome
         return outcomes
 
