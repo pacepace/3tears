@@ -50,6 +50,7 @@ from threetears.core.collections.generation import (
     WriteGeneration,
     announce_unheard_writes,
 )
+from threetears.core.collections.manifest import load_declared_collections
 from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.reapply import (
     REAPPLY_BACKOFF_SECONDS,
@@ -110,6 +111,7 @@ __all__ = [
     "BOOL_TYPE",
     "BYTES_TYPE",
     "COLLECTIONS_BUCKET_SUFFIX",
+    "load_declared_collections",
     "BaseCollection",
     "CascadedRows",
     "DeleteCascade",

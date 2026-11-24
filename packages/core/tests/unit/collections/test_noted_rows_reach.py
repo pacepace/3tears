@@ -12,13 +12,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
-from threetears.core.collections.generation import tables_written_l2_first
+from threetears.core.collections.generation import written_l2_first
 from threetears.core.collections.lost_writes import announce_window
 
 _EPOCH = datetime(2026, 11, 11, tzinfo=UTC)
 
 #: the noted table: a name no collection class in the process claims. A recovery passes over a table some class
-#: defined in the process writes L2-first (``tables_written_l2_first``, a process-wide registry), and the epoch
+#: defined in the process writes L2-first (``written_l2_first``, a process-wide registry), and the epoch
 #: package's L2-first tests define such a class on "results": run in one batch after them, the recovery test here would
 #: fail on the batch's order alone
 _TABLE = "noted_reach_results"
@@ -168,7 +168,7 @@ async def test_a_recovery_records_a_load_s_whole_note_with_its_prefixes_and_a_re
         ([_note(None, None, _RESET, None)], None, "reset"),
     ):
         pool, source = _Notes(notes), _Recorder()
-        assert _TABLE not in tables_written_l2_first(), "a class in this process claims the test's table L2-first"
+        assert not written_l2_first(_TABLE), "a class in this process claims the test's table L2-first"
         done = await announce_window(
             pool,
             generation_source=source,

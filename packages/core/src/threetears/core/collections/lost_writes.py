@@ -53,7 +53,7 @@ from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, advance_recording
-from threetears.core.collections.generation import GenerationSource, tables_written_l2_first, tenancy_of_table
+from threetears.core.collections.generation import GenerationSource, tenancy_of_table, written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.change_notes import NOTE_TRIGGER, WHOLE_COPY_ROWS
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
@@ -220,11 +220,10 @@ async def _switched_tables(pool: SqlConnection) -> dict[str, tuple[str, ...]]:
     :return: table name -> the schemas holding it with the trigger
     :rtype: dict[str, tuple[str, ...]]
     """
-    l2_first = tables_written_l2_first()
     found: dict[str, list[str]] = {}
     for row in await pool.fetch(_ALL_SWITCHED_SQL, NOTE_TRIGGER):
         table = str(row["table_name"])
-        if table not in l2_first:
+        if not written_l2_first(table):
             found.setdefault(table, []).append(str(row["table_schema"]))
     return {table: tuple(schemas) for table, schemas in found.items()}
 

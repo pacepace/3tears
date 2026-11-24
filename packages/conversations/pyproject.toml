@@ -28,6 +28,12 @@ dependencies = [
     "langchain-core",
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.conversations.collection" = "threetears.conversations.collection"
+"threetears.conversations.folder_collection" = "threetears.conversations.folder_collection"
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 

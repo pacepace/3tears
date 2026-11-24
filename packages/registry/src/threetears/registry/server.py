@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
 from threetears.core.arrow_pool import use_system_pool_if_installed
+from threetears.core.collections import load_declared_collections
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
     bind_collections_bucket,
@@ -1183,6 +1184,9 @@ def _run_server() -> None:
     # arrow_pool; core's keyed reads load pyarrow here when it is installed, and mimalloc held the serving thread
     # 5-15 ms in about a quarter of Arrow builds, arrow_copy 2026-11-15)
     use_system_pool_if_installed()
+    # every listed collection module, imported once before serving, so the registry lookups know every declared
+    # table (threetears.core.collections.manifest)
+    load_declared_collections()
 
     allow_all = (
         os.environ.get(

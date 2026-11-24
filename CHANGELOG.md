@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: every process knows every declared collection table
+
+**Added:** an entry-point group, `threetears.collections`: each package lists the modules defining its collection
+classes in its pyproject (`[project.entry-points."threetears.collections"]`; an entry needing an extra names it, as
+`threetears.mcp.rbac [grants]`). `threetears.core.collections.load_declared_collections()` imports every listed module
+once (BuildOnce) and records their tables; the tool-pod bootstrap and the registry server call it at start, before
+serving, and consumers call it at theirs. The tenancy, write-generation and L2-first registries were complete only
+for the classes a process happened to import: the hub never imported `MemoriesCollection`, so `memories` answered
+undeclared and a user merge's record went out under `_all`. Listed here: core, agent-acl, agent-memory, agent-skills,
+agent-tools, agent-wake, channels, conversations, datasources, mcp, registry, scheduled-jobs, scrape.
+
+**Changed:** a registry lookup for a table no listed module declares (`tenancy_of_table`, the new per-table
+`has_write_generation` and `written_l2_first`) keeps its fallback this release, but logs at ERROR once per table and
+lookup and counts `threetears_undeclared_table_total{table, lookup}`. Next release it is refused
+(`test_an_undeclared_table_is_refused`, strict xfail until then). `tables_written_l2_first` is now private;
+`written_l2_first(table)` is the lookup.
+
 ### agent/acl: one object per equal access shape
 
 **Added:** `AccessShapeInterner` (`threetears.agent.acl`), beside `AccessShape`: `intern(shape)` hands back the one

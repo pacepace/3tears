@@ -31,6 +31,11 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.mcp.rbac" = "threetears.mcp.rbac [grants]"
+
 [project.optional-dependencies]
 # The grant store: LocalGrantAuthorizer, mcp.rbac and mcp.migrations -- grants in Postgres, kept
 # coherent across pods by following the table's write generation. The only part of the package that needs the rest of

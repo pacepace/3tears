@@ -41,6 +41,7 @@ from threetears.core.backends.broker_generation import (
     note_advanced_generation,
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
+from threetears.core.collections.undeclared_tables import report_undeclared_table
 from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.observe import FrozenWeakSet
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
@@ -71,13 +72,14 @@ __all__ = [
     "primary_key_of_table",
     "note_l2_first_class",
     "note_tenancy_class",
+    "has_write_generation",
+    "written_l2_first",
     "noted_tables",
     "source_reads",
     "split_generation_token",
     "switched_tables_not_noted",
     "table_named_by_class",
     "tables_with_write_generation",
-    "tables_written_l2_first",
     "tenancy_of_table",
 ]
 
@@ -842,6 +844,24 @@ def tables_with_write_generation() -> frozenset[str]:
     return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
 
 
+def has_write_generation(table_name: str) -> bool:
+    """whether ``table_name``'s committed writes advance its write generation, by the classes defined here.
+
+    The per-table lookup of :func:`tables_with_write_generation`. A table no module listed under the
+    ``threetears.collections`` entry points declares answers ``False`` (the fallback) and is reported
+    (:func:`~threetears.core.collections.undeclared_tables.report_undeclared_table`). NEXT RELEASE: refused.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: whether it is switched on
+    :rtype: bool
+    """
+    if table_name in tables_with_write_generation():
+        return True
+    report_undeclared_table(table_name, "write_generation")
+    return False
+
+
 def primary_key_of_table(table_name: str) -> tuple[str, ...] | None:
     """the primary key columns of ``table_name``, as the collection classes defined here declare it.
 
@@ -883,7 +903,7 @@ def note_l2_first_class(cls: type) -> None:
         _L2_FIRST_CLASSES = _L2_FIRST_CLASSES.with_item(cls)
 
 
-def tables_written_l2_first() -> frozenset[str]:
+def _tables_written_l2_first() -> frozenset[str]:
     """every table whose writes commit in NATS first, by the classes defined here.
 
     Such a table's epoch is advanced, naming its rows, before its row reaches L3; an L3 write of it
@@ -894,6 +914,24 @@ def tables_written_l2_first() -> frozenset[str]:
     :rtype: frozenset[str]
     """
     return frozenset(name for name in map(table_named_by_class, list(_L2_FIRST_CLASSES)) if name is not None)
+
+
+def written_l2_first(table_name: str) -> bool:
+    """whether ``table_name``'s writes commit in NATS first, by the classes defined here.
+
+    The per-table lookup of :func:`_tables_written_l2_first`. A table no module listed under the
+    ``threetears.collections`` entry points declares answers ``False`` (the fallback) and is reported
+    (:func:`~threetears.core.collections.undeclared_tables.report_undeclared_table`). NEXT RELEASE: refused.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: whether it commits L2-first
+    :rtype: bool
+    """
+    if table_name in _tables_written_l2_first():
+        return True
+    report_undeclared_table(table_name, "l2_first")
+    return False
 
 
 #: every collection class defined in this process that declares a tenancy, joined by
@@ -924,7 +962,9 @@ def tenancy_of_table(table_name: str) -> Tenancy:
     :param table_name: the table
     :ptype table_name: str
     :return: the first declaration found; :data:`~threetears.core.tenancy.TENANCY_UNDECLARED` when no class
-        defined here names the table with one
+        defined here names the table with one. A table no module listed under the ``threetears.collections``
+        entry points declares gets that fallback too, and is reported
+        (:func:`~threetears.core.collections.undeclared_tables.report_undeclared_table`). NEXT RELEASE: refused.
     :rtype: Tenancy
     """
     for cls in list(_TENANCY_CLASSES):
@@ -932,6 +972,7 @@ def tenancy_of_table(table_name: str) -> Tenancy:
             tenancy = getattr(cls, "tenancy", None)
             if isinstance(tenancy, Tenancy):
                 return tenancy
+    report_undeclared_table(table_name, "tenancy")
     return TENANCY_UNDECLARED
 
 
@@ -1092,7 +1133,7 @@ def noted_tables() -> tuple[NotedTable, ...]:
     """every table whose epochs go into the change log, with the key and columns its change note names.
 
     The tables of every class this process defined that carries a write generation, caches absences
-    (:func:`tables_with_write_generation`) or commits L2-first (:func:`tables_written_l2_first`): each of
+    (:func:`tables_with_write_generation`) or commits L2-first (:func:`written_l2_first`): each of
     their L3 writes leaves a note in its own transaction
     (:mod:`~threetears.core.collections.change_notes`). A table two classes name with different keys, or
     whose class names it per instance, is left out: no one trigger can name its rows. Two classes naming

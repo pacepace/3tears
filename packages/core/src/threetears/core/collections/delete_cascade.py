@@ -27,8 +27,8 @@ from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.collections.epoch_change import ChangedRow, key_text
 from threetears.core.collections.generation import (
     advance_for_write,
+    has_write_generation,
     primary_key_of_table,
-    tables_with_write_generation,
 )
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import AnyOf, Sort, keyset_rows
@@ -185,7 +185,7 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
     # only a switched-on table has followers to tell, and only it may be advanced
     source = None if registry is None else registry.generation_source
     for rows in unheard:
-        if rows.table_name not in tables_with_write_generation() or source is None:
+        if source is None or not has_write_generation(rows.table_name):
             continue
         named = [
             ChangedRow(
