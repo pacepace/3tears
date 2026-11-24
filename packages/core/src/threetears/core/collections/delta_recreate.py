@@ -52,7 +52,7 @@ confirms an intent the hub has not superseded (logged).
 **No full at all** (Pace's ruling of 2026-11-24: "We have a mechanism to recover bad files; it should also detect no
 files"). A copy starting from the volume whose current full lacks a table (none published: a new or emptied volume)
 asks the writer for that table's full through the same request, ``{"table": ..., "want": "full"}``
-(:meth:`DeltaRecreateRequester.full`). The writer answers through its fold (:class:`MissingFulls`,
+(:meth:`DeltaRecreateRequester.full`). The writer answers through its fold (:class:`_MissingFulls`,
 :meth:`~threetears.core.collections.delta_fold.DeltaFolds.full_owed`): ``present`` when the full holds it, else
 ``recovering`` once the fold is set to rebuild it from L3 (decision 14's cold start, its one whole read) and publish
 it, with no write begun; the copy reads nothing from L3 and waits for that full. A writer given no fold for it refuses
@@ -122,7 +122,6 @@ __all__ = [
     "DeltaRecreateRequester",
     "DeltaRecreator",
     "LostDeltaRecovery",
-    "MissingFulls",
     "serving_recreates",
 ]
 
@@ -271,7 +270,7 @@ class LostDeltaRecovery(Protocol):
         ...
 
 
-class MissingFulls(Protocol):
+class _MissingFulls(Protocol):
     """the writer's fold, asked for a table's full a copy found the volume's current full lacking (module docstring,
     "No full at all"). :meth:`~threetears.core.collections.delta_fold.DeltaFolds.full_owed` is the fold's own; a writer
     whose fold starts only with a write wraps it to start the fold first (the reports pod's store).
@@ -355,9 +354,9 @@ class DeltaRecreator:
     :param generations: the tables' current generations, to walk the log past an intent record for the record that
         supersedes it; None reads no such record
     :ptype generations: GenerationSource | None
-    :param fulls: the writer's fold, asked for a table's full a copy found lacking (:class:`MissingFulls`); None
+    :param fulls: the writer's fold, asked for a table's full a copy found lacking (:class:`_MissingFulls`); None
         refuses such an ask (the copy asks again)
-    :ptype fulls: MissingFulls | None
+    :ptype fulls: _MissingFulls | None
     """
 
     def __init__(
@@ -372,7 +371,7 @@ class DeltaRecreator:
         folds: _ConfirmedFolds | None = None,
         writers: _WriterLiveness | None = None,
         generations: GenerationSource | None = None,
-        fulls: MissingFulls | None = None,
+        fulls: _MissingFulls | None = None,
     ) -> None:
         self._fulls = fulls
         self._writers = writers
@@ -454,6 +453,10 @@ class DeltaRecreator:
             flight = asyncio.get_running_loop().create_task(
                 self._recreate_once(request), name=f"recreate delta file {request.file}"
             )
+            # WHY (2026-11-24): a copy whose wait timed out leaves the shielded flight with no waiter, and its failure
+            # went unretrieved ("Task exception was never retrieved", a local replay's writer log); the flight's own
+            # callback retrieves and logs it whether or not anyone still waits
+            flight.add_done_callback(_flight_ended)
             self._flight = MappingProxyType({**self._flight, request.file: flight})
         # shielded: a copy whose request is cancelled (its timeout) does not cancel the recreation the others wait for
         return (await asyncio.shield(flight)).value
@@ -734,6 +737,24 @@ class DeltaRecreator:
                 )
             )
         return int(keys.num_rows)
+
+
+def _flight_ended(flight: asyncio.Task[_Outcome]) -> None:
+    """retrieve a recreation's failure and log it, so none goes unretrieved when every copy waiting on it gave up.
+
+    :param flight: the recreation, done
+    :ptype flight: asyncio.Task[_Outcome]
+    :return: None
+    :rtype: None
+    """
+    if flight.cancelled():
+        return
+    failure = flight.exception()
+    if failure is not None:
+        log.warning(
+            "a delta file's recreation failed; a copy asking again starts another",
+            extra={"extra_data": {"task": flight.get_name(), "error": repr(failure)}},
+        )
 
 
 def _record_keys(record: EpochChange, key: Sequence[str]) -> Any:

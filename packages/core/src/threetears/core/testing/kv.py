@@ -960,7 +960,8 @@ class FakeChangeLog:
         #: a test sets it to fail appends: called with each msg_id, it returns the error to raise, or None
         self.refuse_append: Callable[[str], Exception | None] | None = None
         #: a test sets it to the subject patterns a pod's grant names (``s-x.>``, ``_all.groups.e``): a read of
-        #: any other key is refused as the broker refuses a subject the grant does not cover. ``None`` grants all
+        #: any other key is refused as the broker refuses a subject the grant does not cover, and a read by sequence
+        #: (:meth:`at`, :meth:`next_after`) always, as no pod grant names that body-keyed verb. ``None`` grants all
         self.granted_reads: tuple[str, ...] | None = None
         #: every key or filter read, in order, for a test that asserts what a reader asked for
         self.read_keys: list[str] = []
@@ -1139,7 +1140,9 @@ class FakeChangeLog:
         :ptype seq: int
         :return: the record, or ``None``
         :rtype: ChangeLogEntry | None
+        :raises KvReadRefusedError: when :attr:`granted_reads` is set: a pod's grant never names the message get
         """
+        self._by_sequence_granted()
         self._present_or_raise()
         return next((entry for entry in self._entries if entry.seq == seq), None)
 
@@ -1152,7 +1155,9 @@ class FakeChangeLog:
         :ptype seq: int
         :return: the record, or ``None``
         :rtype: ChangeLogEntry | None
+        :raises KvReadRefusedError: when :attr:`granted_reads` is set: its key rides in the body of a message get
         """
+        self._by_sequence_granted()
         self._granted(key)
         self._present_or_raise()
         return next((entry for entry in self._entries if _subject_matches(key, entry.key) and entry.seq > seq), None)
@@ -1187,6 +1192,23 @@ class FakeChangeLog:
         if self.granted_reads is not None and not any(_subject_matches(grant, key) for grant in self.granted_reads):
             subject = f"$KV.{self._bucket}.{key}"
             raise KvReadRefusedError(f"permissions violation for subject {subject}", subject=subject)
+
+    def _by_sequence_granted(self) -> None:
+        """refuse a message get on a pod's connection, as the broker does.
+
+        :return: None
+        :rtype: None
+        :raises KvReadRefusedError: when :attr:`granted_reads` is set: a message get
+            (``$JS.API.STREAM.MSG.GET``) carries its subject in its body, where no grant can narrow it, so
+            ``subject_permissions`` grants no pod that verb, whatever keys it reads
+        """
+        if self.granted_reads is not None:
+            subject = f"$JS.API.STREAM.MSG.GET.KV_{self._bucket}"
+            raise KvReadRefusedError(
+                f"change log KV_{self._bucket} record by sequence was refused: this connection's grant does not name "
+                f"{subject.lower()!r}",
+                subject=subject.lower(),
+            )
 
     def _present_or_raise(self) -> None:
         """raise as the real log does when it is absent or unreachable.

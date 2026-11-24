@@ -61,7 +61,6 @@ __all__ = [
     "no_tenant",
     "rows_with_tenants",
     "schema_tenant",
-    "split_epoch_change_key",
     "tenant_column",
     "value_tenant",
 ]
@@ -272,21 +271,6 @@ def epoch_change_filter(table: str) -> str:
     :rtype: str
     """
     return f"*.{_table_segment(table)}.{_SUFFIX}"
-
-
-def split_epoch_change_key(key: str) -> tuple[str, str] | None:
-    """the tenant and the table segment a record key names, or ``None`` for a key of another shape.
-
-    :param key: the key
-    :ptype key: str
-    :return: ``(tenant, table segment)``
-    :rtype: tuple[str, str] | None
-    """
-    tenant, _, rest = key.partition(".")
-    table, _, suffix = rest.rpartition(".")
-    if not tenant or not table or suffix != _SUFFIX:
-        return None
-    return tenant, table
 
 
 def rows_with_tenants(tenancy: Tenancy, rows: Sequence[ChangedRow] | None) -> Sequence[ChangedRow] | None:

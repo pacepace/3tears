@@ -1032,7 +1032,7 @@ class DeltaFolds:
         return _lacking(current, self.tables)
 
     async def full_owed(self, table: str) -> bool:
-        """a copy's ask for ``table``'s full (:class:`~threetears.core.collections.delta_recreate.MissingFulls`): when
+        """a copy's ask for ``table``'s full (:class:`~threetears.core.collections.delta_recreate._MissingFulls`): when
         the current full lacks it, a fold already started looks again before its next round, so its rebuild (the cold
         start, decision 14) publishes the full with no commit told; never waits for that. A fold not started cannot
         (it knows neither L3 nor its term): said, and left to the writer's start, which rebuilds every table lacking.
