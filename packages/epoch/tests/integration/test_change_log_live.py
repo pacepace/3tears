@@ -232,3 +232,38 @@ async def test_a_tenant_reader_walks_and_watches_only_its_own_keys_and_all(nats_
         async with aclosing(mine.watch(_CUSTOMER_TABLE)) as tokens:
             first = await asyncio.wait_for(anext(tokens), timeout=10)
             assert first in {newest_a, whole}
+
+
+async def test_change_reads_an_epochs_record_by_the_tables_keys(nats_container: str) -> None:
+    """``change`` reads by key (``records_after`` from ``seq - 1``), never by sequence: on a real broker it answers the
+    table's record at its epoch, and refuses another table's epoch as not the table's, never as a read that failed
+    (the table's consumer delivers its later record, past ``upto``, with nothing in range)."""
+    async with _client(nats_container) as nc:
+        source = EpochGenerationSource(nc)
+        await source.current(_CUSTOMER_TABLE)
+        a = value_tenant("tenant-a")
+        other = await source.advance_with_change(_OTHER, [ChangedRow(ids=["o1"])])
+        mine = await source.advance_with_change(_CUSTOMER_TABLE, [ChangedRow(ids=["a1"], tenant=a)])
+        await source.advance_with_change(_CUSTOMER_TABLE, None)  # a later record under _all
+
+        record = await source.change(_CUSTOMER_TABLE, mine)
+        assert record is not None and [row.ids for row in record.rows] == [["a1"]]
+
+        with pytest.raises(GenerationUnavailableError, match="not one of"):
+            await source.change(_CUSTOMER_TABLE, other)
+
+
+async def test_a_tenant_readers_change_answers_its_epoch_while_its_all_key_holds_only_a_later_record(
+    nats_container: str,
+) -> None:
+    """The ``_all`` key's consumer delivers a record past ``upto`` with nothing in range: the read is whole, never
+    "ended early", and the tenant's own key answers the epoch."""
+    async with _client(nats_container) as nc:
+        source = EpochGenerationSource(nc)
+        await source.current(_CUSTOMER_TABLE)
+        a = value_tenant("tenant-a")
+        mine = await source.advance_with_change(_CUSTOMER_TABLE, [ChangedRow(ids=["a1"], tenant=a)])
+        await source.advance_with_change(_CUSTOMER_TABLE, None)  # a later record under _all, none before it
+        reader = EpochGenerationReader(nc, tenants=PodTenants(customer="tenant-a"))
+        held = await reader.change(_CUSTOMER_TABLE, mine)
+        assert held is not None and [row.ids for row in held.rows] == [["a1"]]
