@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
 from threetears.evals.schema.models import SCALES, LabelKey
@@ -410,10 +411,12 @@ class SharedValues:
 
     def __init__(self) -> None:
         self._texts: dict[str, str] = {}
-        self._tuples: dict[tuple[str, ...], tuple[str, ...]] = {}
-        self._names: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
+        # The tuples, name mappings and settings are the read's vocabulary (a run's roles, its judge configs, its
+        # settings models: a handful), so each is a frozen map rebuilt whole on a new entry.
+        self._tuples: Mapping[tuple[str, ...], tuple[str, ...]] = MappingProxyType({})
+        self._names: Mapping[tuple[tuple[str, str], ...], dict[str, str]] = MappingProxyType({})
         self._empty: dict[str, Any] = {}
-        self._settings: dict[tuple[object, ...], list[ClientRequestSettings]] = {}
+        self._settings: Mapping[tuple[object, ...], tuple[ClientRequestSettings, ...]] = MappingProxyType({})
 
     def text[T: str | None](self, value: T) -> T:
         """``value``, or the equal text already held."""
@@ -424,7 +427,11 @@ class SharedValues:
     def texts(self, values: Iterable[str]) -> tuple[str, ...]:
         """``values`` as a tuple, the equal tuple already held if there is one."""
         held = tuple(self.text(value) for value in values)
-        return self._tuples.setdefault(held, held)
+        found = self._tuples.get(held)
+        if found is None:
+            self._tuples = MappingProxyType({**self._tuples, held: held})
+            return held
+        return found
 
     def names(self, mapping: Mapping[str, str]) -> Mapping[str, str]:
         """A mapping of text to text (a result's judge configs by dimension), the equal one already held if there is
@@ -432,7 +439,8 @@ class SharedValues:
         key = tuple(mapping.items())
         held = self._names.get(key)
         if held is None:
-            held = self._names[key] = {self.text(name): self.text(value) for name, value in key}
+            held = {self.text(name): self.text(value) for name, value in key}
+            self._names = MappingProxyType({**self._names, key: held})
         return held
 
     def mapping[V](self, mapping: Mapping[str, V]) -> Mapping[str, V]:
@@ -445,11 +453,12 @@ class SharedValues:
         """``value``, or an equal settings model already held."""
         if value is None:
             return value
-        held = self._settings.setdefault((type(value), *vars(value).values()), [])
+        key = (type(value), *vars(value).values())
+        held = self._settings.get(key, ())
         for candidate in held:
             if candidate == value:
                 return cast(S, candidate)
-        held.append(value)
+        self._settings = MappingProxyType({**self._settings, key: (*held, value)})
         return value
 
 

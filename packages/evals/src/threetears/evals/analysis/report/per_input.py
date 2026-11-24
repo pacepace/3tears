@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import functools
 import weakref
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -29,7 +30,9 @@ class _Kept:
     """
 
     def __init__(self) -> None:
-        self._values: dict[Hashable, object] = {}
+        # A few values per input, so a frozen map rebuilt whole on a new one; two threads racing on a first build each
+        # assign a whole map, and a value lost that way is built again on its next ask (builds are pure).
+        self._values: Mapping[Hashable, object] = MappingProxyType({})
 
     def get[V](self, key: Hashable, build: Callable[[], V]) -> V:
         """The value kept under ``key``, built by ``build`` the first time.
@@ -45,7 +48,7 @@ class _Kept:
         if key in self._values:
             return cast("V", self._values[key])
         value = build()
-        self._values[key] = value
+        self._values = MappingProxyType({**self._values, key: value})
         return value
 
 

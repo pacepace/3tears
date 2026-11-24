@@ -39,6 +39,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import reduce
+from types import MappingProxyType
 
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
@@ -580,13 +581,16 @@ class _PassRates:
     def __init__(self, reports: Mapping[str, Report], control: str) -> None:
         self._reports = reports
         self._control = control
-        self._read: dict[tuple[str, str], RateReading | None] = {}
+        # One entry per (aspect, arm) row: tens, so a frozen map rebuilt whole on a new one.
+        self._read: Mapping[tuple[str, str], RateReading | None] = MappingProxyType({})
 
     def of(self, row: AspectReading) -> RateReading | None:
         """The row's pass rate, read off its aspect's evidence the first time it is asked for."""
         key = (row.aspect, row.arm)
         if key not in self._read:
-            self._read[key] = aspect_pass_rate(self._reports[row.aspect].bundle, self._control, row.arm)
+            self._read = MappingProxyType(
+                {**self._read, key: aspect_pass_rate(self._reports[row.aspect].bundle, self._control, row.arm)}
+            )
         return self._read[key]
 
 

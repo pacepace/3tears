@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import math
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Literal
 
 from threetears.evals.kernel.candidate_kind import CandidateOutput
@@ -623,13 +624,15 @@ class WitnessedJudging:
         self._lock = asyncio.Lock()
         # The judge spend of the LATEST judgement of every cell judged here, by result id — counted from here
         # rather than from the store, which holds that judgement only once the host saves it.
-        self._latest: dict[str, float | None] = {}
+        # A frozen map rebuilt whole per judged cell: O(the run's cells), as each cell's ceiling check (spent()) already
+        # is, and a cell's judging (model calls) dwarfs both.
+        self._latest: Mapping[str, float | None] = MappingProxyType({})
         # Every judgement that a later judgement of the same cell replaced: re-recording a cell judges it again,
         # and both judgements were paid for, though only the later one will be stored.
         self._superseded: list[float | None] = []
         # The judge spend of each cell the store held at the last ceiling check, by result id: what a cell
         # judged here for the first time replaces, once the host saves it.
-        self._stored: dict[str, float | None] = {}
+        self._stored: Mapping[str, float | None] = MappingProxyType({})
 
     def count(self, result: EvalResult) -> None:
         """Count ``result``'s judging as spent — what :func:`record_witnessed_cell` calls once it has judged a cell.
@@ -647,7 +650,7 @@ class WitnessedJudging:
             self._superseded.append(self._latest[result.id])
         elif result.id in self._stored:
             self._superseded.append(self._stored[result.id])
-        self._latest[result.id] = spend
+        self._latest = MappingProxyType({**self._latest, result.id: spend})
 
     def count_unrecorded(self, spend: float | None) -> None:
         """Count judging that was paid for and that no cell will carry — a judgement a protocol defect stopped.
@@ -672,10 +675,7 @@ class WitnessedJudging:
         :return: Each judgement's spend; ``None`` for an unpriced one.
         :rtype: list[float | None]
         """
-        self._stored = {}
-        for result_id, spend in saved:
-            if spend is not False:
-                self._stored[result_id] = spend
+        self._stored = MappingProxyType({result_id: spend for result_id, spend in saved if spend is not False})
         from_store = [spend for result_id, spend in self._stored.items() if result_id not in self._latest]
         return [*from_store, *self._latest.values(), *self._superseded]
 

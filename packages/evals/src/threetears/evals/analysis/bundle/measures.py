@@ -12,7 +12,7 @@ from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
-from types import UnionType
+from types import MappingProxyType, UnionType
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -837,20 +837,23 @@ class Describer:
 
     def __init__(self, measures: MeasureRegistry) -> None:
         self.measures = measures
-        self._descriptors: dict[str, MetricDescriptor] = {}
-        self._phases: dict[str, MetricDescriptor] = {}
+        # Vocabulary-sized (one entry per distinct name), so each is a frozen map rebuilt whole on a new name.
+        self._descriptors: Mapping[str, MetricDescriptor] = MappingProxyType({})
+        self._phases: Mapping[str, MetricDescriptor] = MappingProxyType({})
 
     def __call__(self, name: str) -> MetricDescriptor:
         descriptor = self._descriptors.get(name)
         if descriptor is None:
-            descriptor = self._descriptors[name] = describe_measure(name, self.measures)
+            descriptor = describe_measure(name, self.measures)
+            self._descriptors = MappingProxyType({**self._descriptors, name: descriptor})
         return descriptor
 
     def phase(self, name: str) -> MetricDescriptor:
         """A phase-timing key's descriptor (:func:`describe_phase_timing`)."""
         descriptor = self._phases.get(name)
         if descriptor is None:
-            descriptor = self._phases[name] = describe_phase_timing(name)
+            descriptor = describe_phase_timing(name)
+            self._phases = MappingProxyType({**self._phases, name: descriptor})
         return descriptor
 
 
@@ -895,8 +898,10 @@ class _WalkMemo:
         self.walks: dict[int, _CompactWalk] = {}
         self.describers: dict[int, Describer] = {}
         self.slots: list[_Slot] = []
-        self._slot_ids: dict[tuple[str, str, int, str | None, str, str, str | None], int] = {}
-        self._populations: dict[MeasurePopulation, list[int]] = {}
+        # Vocabulary-sized (one slot per distinct leaf identity; a few populations), so both are frozen maps rebuilt
+        # whole on a new entry.
+        self._slot_ids: Mapping[tuple[str, str, int, str | None, str, str, str | None], int] = MappingProxyType({})
+        self._populations: Mapping[MeasurePopulation, tuple[int, ...]] = MappingProxyType({})
 
     def describer(self, measures: MeasureRegistry) -> Describer:
         """The describer over ``measures``, made on first use."""
@@ -911,18 +916,21 @@ class _WalkMemo:
         key = (slot.source, slot.name, id(slot.descriptor), slot.carrier, slot.unit, slot.verdict, slot.misfit)
         found = self._slot_ids.get(key)
         if found is None:
-            found = self._slot_ids[key] = len(self.slots)
+            found = len(self.slots)
+            self._slot_ids = MappingProxyType({**self._slot_ids, key: found})
             self.slots.append(slot)
         return found
 
-    def population_bits(self, undeclared: MeasurePopulation) -> list[int]:
+    def population_bits(self, undeclared: MeasurePopulation) -> tuple[int, ...]:
         """Each slot's population on a surface whose undeclared population is ``undeclared``, as its membership bit
         (:attr:`_CompactWalk.members`), aligned with :attr:`slots`."""
-        known = self._populations.setdefault(undeclared, [])
-        known.extend(
-            1 << _POPULATIONS.index(summary_population(slot.descriptor, undeclared))
-            for slot in self.slots[len(known) :]
-        )
+        known = self._populations.get(undeclared, ())
+        if len(known) < len(self.slots):
+            known = known + tuple(
+                1 << _POPULATIONS.index(summary_population(slot.descriptor, undeclared))
+                for slot in self.slots[len(known) :]
+            )
+            self._populations = MappingProxyType({**self._populations, undeclared: known})
         return known
 
 

@@ -1244,8 +1244,10 @@ class InterJudgeTally:
         :ptype pass_id: str | None
         """
         self._pass_id = pass_id
-        self._groups: dict[SecondJudgeGroup, list[_Pair]] = {}
-        self._served: dict[SecondJudgeGroup, set[str]] = {}
+        # Each pair is appended as it is read (rows grow; the groups are formed once, in agreement()); the served
+        # models are a few per group, so their set is rebuilt whole on the rare new one.
+        self._pairs: list[tuple[SecondJudgeGroup, _Pair]] = []
+        self._served: frozenset[tuple[SecondJudgeGroup, str]] = frozenset()
         self._unpaired: list[UnpairedSecondScore] = []
         self._read = 0
 
@@ -1277,9 +1279,11 @@ class InterJudgeTally:
                 )
                 key = second_judge_group(first, judging, entry.dim)
                 second = entry.second.score if entry.second is not None else None
-                self._groups.setdefault(key, []).append(_Pair(entry.first_score, second, judging.pass_id, result.id))
+                self._pairs.append((key, _Pair(entry.first_score, second, judging.pass_id, result.id)))
                 if entry.second is not None and entry.second.served_model is not None:
-                    self._served.setdefault(key, set()).add(entry.second.served_model)
+                    seen = (key, entry.second.served_model)
+                    if seen not in self._served:
+                        self._served = self._served | {seen}
 
     def agreement(self) -> InterJudgeAgreement:
         """The agreement over every result read so far.
@@ -1288,7 +1292,12 @@ class InterJudgeTally:
             paired.
         :rtype: InterJudgeAgreement
         """
-        groups, served = self._groups, self._served
+        groups: dict[SecondJudgeGroup, list[_Pair]] = {}
+        for group, pair in self._pairs:
+            groups.setdefault(group, []).append(pair)
+        served: dict[SecondJudgeGroup, set[str]] = {}
+        for group, model in self._served:
+            served.setdefault(group, set()).add(model)
         dimensions = []
         for key in sorted(groups, key=second_judge_group_sort_key):
             first, model, config_id, temperature, second_sent = key

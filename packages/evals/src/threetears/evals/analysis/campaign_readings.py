@@ -60,6 +60,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from statistics import NormalDist, variance
+from types import MappingProxyType
 from typing import Final, Literal, Self
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
@@ -750,13 +751,14 @@ class _Floors:
     """
 
     def __init__(self) -> None:
-        self._read: dict[tuple[int, str, str], tuple[AnalysisContextBundle, FloorReadings]] = {}
+        # One entry per (bundle, arm pair) a campaign reads: tens, so a frozen map rebuilt whole on a new one.
+        self._read: Mapping[tuple[int, str, str], tuple[AnalysisContextBundle, FloorReadings]] = MappingProxyType({})
 
     def readings(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> FloorReadings:
         """:func:`~threetears.evals.analysis.report.decision.floor_readings` at its defaults, read once."""
         key = (id(bundle), control, candidate)
         if key not in self._read:
-            self._read[key] = (bundle, floor_readings(bundle, control, candidate))
+            self._read = MappingProxyType({**self._read, key: (bundle, floor_readings(bundle, control, candidate))})
         return self._read[key][1]
 
     def pass_rate(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> RateReading | None:

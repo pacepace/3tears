@@ -32,12 +32,13 @@ class HostAttributed:
     is wiring that never ran.
     """
 
-    _host_ids: set[str]
+    _host_ids: frozenset[str]
     _host_drop_announced: bool
 
     def _init_attribution(self) -> None:
         """Initialise the attribution state. Call from the registry's ``__init__``."""
-        self._host_ids = set()
+        # The host ids that bound this registry: one or two, so a frozenset grown whole.
+        self._host_ids = frozenset()
         self._host_drop_announced = False
 
     def bind_host(self, host_id: str) -> None:
@@ -56,7 +57,7 @@ class HostAttributed:
         # becomes truthy before the branch below reads it, announcing a dropped attribution on
         # the FIRST bind of every registry.
         first_other = bool(self._host_ids) and host_id not in self._host_ids
-        self._host_ids.add(host_id)
+        self._host_ids = self._host_ids | {host_id}
         if first_other and not self._host_drop_announced:
             self._host_drop_announced = True
             log.warning(

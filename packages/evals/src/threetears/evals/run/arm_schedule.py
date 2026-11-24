@@ -32,9 +32,10 @@ from __future__ import annotations
 import asyncio
 import contextvars
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from functools import partial
+from types import MappingProxyType
 from typing import Final
 
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -128,7 +129,8 @@ class CellInterleaver:
 
     def __init__(self) -> None:
         """An interleaver expecting no run yet."""
-        self._lanes: dict[str, _Lane] = {}
+        # One lane per run of the launch (its arms: a handful), so a frozen map rebuilt whole on each expected run.
+        self._lanes: Mapping[str, _Lane] = MappingProxyType({})
         self._sealed = False
         self._width: int | None = None
 
@@ -141,7 +143,7 @@ class CellInterleaver:
         """
         if self._sealed or run_id in self._lanes:
             raise RuntimeError(f"run {run_id} cannot join this launch's turns: it is sealed, or the run is already in")
-        self._lanes[run_id] = _Lane(len(self._lanes))
+        self._lanes = MappingProxyType({**self._lanes, run_id: _Lane(len(self._lanes))})
 
     def seal(self) -> None:
         """Expect no further run: once every expected run has handed over its cells or ended, cells start."""

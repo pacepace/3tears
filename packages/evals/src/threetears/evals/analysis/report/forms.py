@@ -66,6 +66,7 @@ import math
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, overload
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
@@ -240,7 +241,8 @@ class PageForms:
         # Each table cell a builder made as a figure of a measure (:meth:`of_measure`), by the cell's id, with that
         # measure and its reading, so a column rule that spells the cell records it under them. The cell is held beside
         # its id, so the id names that cell for as long as these forms are read.
-        self._cell_measures: dict[int, tuple[TableCell, str, str]] = {}
+        # One page's figure cells (tens to hundreds), so a frozen map rebuilt whole on each new cell.
+        self._cell_measures: Mapping[int, tuple[TableCell, str, str]] = MappingProxyType({})
 
     @classmethod
     def of(cls, report_input: ReportInput) -> PageForms:
@@ -3086,7 +3088,7 @@ class PageForms:
         :rtype: TableCell
         """
         if measure:
-            self._cell_measures[id(cell)] = (cell, *_keyed(measure, kind))
+            self._cell_measures = MappingProxyType({**self._cell_measures, id(cell): (cell, *_keyed(measure, kind))})
         return cell
 
     def as_printed(

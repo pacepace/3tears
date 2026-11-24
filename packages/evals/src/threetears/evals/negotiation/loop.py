@@ -12,8 +12,9 @@ request carried (:class:`Negotiated`), which is what the caller's completion rep
 from __future__ import annotations
 
 import threading
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Final
 
 from threetears.evals.negotiation.refusals import SettingRefusal
@@ -84,7 +85,8 @@ class LearnedSettings:
         self._client = client
         self._declared_by = declared_by
         self._contradiction = contradiction
-        self._facts: dict[tuple[str, str], SettingFacts] = {}
+        # One entry per (provider, model) a refusal taught (a handful), so a frozen map rebuilt whole on a lesson.
+        self._facts: Mapping[tuple[str, str], SettingFacts] = MappingProxyType({})
         self._lock = threading.Lock()
 
     def facts(self, provider: str, model: str) -> SettingFacts:
@@ -134,7 +136,7 @@ class LearnedSettings:
                 taught = refusal.teach(known)
                 if taught == known:
                     continue
-                self._facts[(provider, model)] = taught
+                self._facts = MappingProxyType({**self._facts, (provider, model): taught})
             log.warning(
                 "%s model refuses %s provider=%s model=%s %s=%s; the request was resent as %s and is sent so for the "
                 "rest of this store's life: %s",

@@ -59,10 +59,11 @@ import contextvars
 import random
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 from pydantic import ValidationError
@@ -804,14 +805,16 @@ class JobLeases:
         self._lease_s = float(lease_s)
         self._executor: ThreadPoolExecutor | None = None
         self._holder_id = str(uuid.uuid7())
-        self._held: dict[str, _Held] = {}
+        # The leases one process holds: one per job it runs (tens), so a frozen map rebuilt whole on each hold and
+        # release, which a renewal pass reads across its awaits without it moving under it.
+        self._held: Mapping[str, _Held] = MappingProxyType({})
         # Records this process let go of — a renewal found them ended by another writer, or the lease lapsed by
         # this process's own count — whose jobs have not yet ended. See fenced.
-        self._let_go: set[str] = set()
+        self._let_go: frozenset[str] = frozenset()
         self._renewer: asyncio.Task[None] | None = None
         #: Every expiry still writing why its record stopped, each in a task of its own (:meth:`_expiring`), so a
         #: renewer cancelled at shutdown leaves it to finish and :meth:`shut_down` waits for it, within its bound.
-        self._expiries: set[asyncio.Task[None]] = set()
+        self._expiries: frozenset[asyncio.Task[None]] = frozenset()
         #: Where the leases stand on shutting down (:data:`_Shutdown`), one value: a shutdown under way (from
         #: :meth:`shut_down`'s first step until it closes the pool), during which no lease is held and an expiry
         #: bounds its writes by its deadline and writes its record lost with its cause; then down, during which an
@@ -1087,8 +1090,13 @@ class JobLeases:
                 "and holds no new lease while it does",
                 remedy="start it again once the process has restarted, or on another process",
             )
-        self._held[record_id] = _Held(
-            kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop, epoch=epoch
+        self._held = MappingProxyType(
+            {
+                **self._held,
+                record_id: _Held(
+                    kind=kind, record_id=record_id, scope_id=scope_id, cancel=cancel, stop=stop, epoch=epoch
+                ),
+            }
         )
         self._shutdown = None  # held again after a shutdown ended: the leases live on past it
         self._loop = asyncio.get_running_loop()
@@ -1097,7 +1105,14 @@ class JobLeases:
 
     def release(self, record_id: str) -> None:
         """Stop renewing a record's lease: its job has written its own ending. Idempotent."""
-        self._held.pop(record_id, None)
+        self._drop_held(record_id)
+
+    def _drop_held(self, record_id: str) -> _Held | None:
+        """Stop holding ``record_id``'s lease, the held map rebuilt whole without it; the lease it held, if any."""
+        held = self._held.get(record_id)
+        if held is not None:
+            self._held = MappingProxyType({key: value for key, value in self._held.items() if key != record_id})
+        return held
 
     def let_go(self, record_id: str) -> None:
         """Give a record's lease up as lost: stop renewing it, and refuse every later write of it from this process.
@@ -1111,8 +1126,9 @@ class JobLeases:
         :param record_id: The record.
         :ptype record_id: str
         """
-        self._held.pop(record_id, None)
-        self._let_go.add(record_id)
+        self._drop_held(record_id)
+        if record_id not in self._let_go:
+            self._let_go = self._let_go | {record_id}
 
     def fenced(self, record_id: str) -> bool:
         """Whether this process let go of ``record_id``'s lease (:meth:`let_go`) and its job has not yet ended.
@@ -1129,7 +1145,8 @@ class JobLeases:
 
     def forget(self, record_id: str) -> None:
         """Forget a record this process let go of: its job has ended, and writes nothing more. Idempotent."""
-        self._let_go.discard(record_id)
+        if record_id in self._let_go:
+            self._let_go = self._let_go - {record_id}
 
     async def _renew_while_held(self) -> None:
         """Renew every held lease each interval, each in a task of its own, until none is held and none is renewing.
@@ -1326,7 +1343,7 @@ class JobLeases:
         running, within its own bound.
         """
         expiry = asyncio.create_task(self._expire(held), name=f"eval-job-lease-expiry-{held.record_id}")
-        self._expiries.add(expiry)
+        self._expiries = self._expiries | {expiry}
         expiry.add_done_callback(self._expiry_done)
         await asyncio.shield(expiry)
 
@@ -1334,7 +1351,7 @@ class JobLeases:
         """Forget an expiry that ended, and retrieve what it raised: the renewal that started it may have been
         cancelled since (a shutdown cancels every renewal), so nothing else would, and its failure would surface only
         as an unretrieved-exception warning at collection, if ever."""
-        self._expiries.discard(expiry)
+        self._expiries = self._expiries - {expiry}
         if expiry.cancelled():
             return
         raised = expiry.exception()
@@ -1475,7 +1492,7 @@ class JobLeases:
         :raises ConflictError: The record kept changing while it was being written.
         :raises StorageError: A read or write failed.
         """
-        held = self._held.pop(record_id, None)
+        held = self._drop_held(record_id)
         if held is None:
             return False
         return await run_blocking(self._pool(), self._end_lost, held, cause)
@@ -1601,7 +1618,7 @@ class JobLeases:
         self._shutdown = _ShuttingDown(cause=cause, deadline=deadline)
         # Every held lease is the shutdown's from its first step, before it awaits anything: cut short at any await, it
         # leaves no lease held for a later hold's renewer to renew.
-        held, self._held = list(self._held.values()), {}
+        held, self._held = list(self._held.values()), MappingProxyType({})
         cut_short: BaseException | None = None
         try:
             try:

@@ -65,6 +65,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
+from types import MappingProxyType
 from typing import Any, NamedTuple, Self
 
 from threetears.evals.schema.models import (
@@ -624,7 +625,8 @@ class JudgeService:
         self._client_factory = client_factory
         self._failure_describer = failure_describer
         self._configs = dict(configs or {})
-        self._client_cache: dict[tuple[str | None, float | None], Any] = {}
+        # One client per (model, temperature) the service judges with (a handful), so a frozen map rebuilt whole.
+        self._client_cache: Mapping[tuple[str | None, float | None], Any] = MappingProxyType({})
 
     async def aclose(self) -> None:
         """Release every client this service minted, and empty the cache.
@@ -642,7 +644,7 @@ class JudgeService:
         gives up halfway leaks the remainder silently.
         """
         clients = list(self._client_cache.values())
-        self._client_cache.clear()
+        self._client_cache = MappingProxyType({})
         first_error: BaseException | None = None
         for client in clients:
             try:
@@ -987,7 +989,7 @@ class JudgeService:
         else:
             key = (config.model or None, config.temperature)
         if key not in self._client_cache:
-            self._client_cache[key] = self._client_factory(*key)
+            self._client_cache = MappingProxyType({**self._client_cache, key: self._client_factory(*key)})
         return self._client_cache[key]
 
     def _build_user_prompt(self, context: JudgeContext, *, include_goal_outcomes: bool) -> str:

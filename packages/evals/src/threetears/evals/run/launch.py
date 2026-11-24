@@ -963,7 +963,8 @@ class LaunchGroup:
         self.measure_latency: bool | None = None
         self.members: list[tuple[EvalRun, WorkFn, float]] = []
         self._teardowns: list[contextlib.AsyncExitStack] = []
-        self._resolved: dict[tuple[str, ...], Any] = {}
+        # One entry per launch-wide input (a handful), so a frozen map rebuilt whole.
+        self._resolved: Mapping[tuple[str, ...], Any] = MappingProxyType({})
         self._interleaver = CellInterleaver()
         self._interleaving = False
         self.notices: list[str] = []
@@ -991,7 +992,8 @@ class LaunchGroup:
         :rtype: Any
         """
         if key not in self._resolved:
-            self._resolved[key] = await compute()
+            value = await compute()
+            self._resolved = MappingProxyType({**self._resolved, key: value})
         return self._resolved[key]
 
     def add(

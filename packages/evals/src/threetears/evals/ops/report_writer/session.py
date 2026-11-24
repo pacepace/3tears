@@ -56,6 +56,7 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
@@ -285,7 +286,8 @@ class ToolSession:
         self._budget = budget
         self._messages: list[TurnMessage] = []
         #: Each result the mount answered, by its call's id: the sha256 of the text the model was sent.
-        self._answered: dict[str, str] = {}
+        # One entry per tool call the session's budget allows (tens), so a frozen map rebuilt whole on each answer.
+        self._answered: Mapping[str, str] = MappingProxyType({})
         self._sent = 0
         self._round = 0
         self._calls = 0
@@ -485,7 +487,7 @@ class ToolSession:
                 continue
             outcome = await self._mount.call(use.input)
             text = self.capped(outcome.text)
-            self._answered[use.id] = canonical_digest(text)
+            self._answered = MappingProxyType({**self._answered, use.id: canonical_digest(text)})
             results.append(TurnToolResult(use.id, text, is_error=outcome.is_error))
         self._tally.record_calls(self.role, self._round, ran)
         left = self._calls - self._used
@@ -658,7 +660,7 @@ class ToolSession:
         uses = {block.id: block for message in messages for block in message.content if isinstance(block, TurnToolUse)}
         bodies: dict[str, str] = {}
         for call, digest, stored in results:
-            session._answered[call] = digest
+            session._answered = MappingProxyType({**session._answered, call: digest})
             if stored != "rederive":
                 continue
             if call not in uses:

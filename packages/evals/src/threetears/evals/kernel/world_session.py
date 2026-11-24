@@ -123,8 +123,9 @@ class WorldSession:
         self._seeded: tuple[str, ...] = ()
         self._armed_events: dict[str, str] = {}
         self._ambient_turns: frozenset[int] = frozenset()
-        self._perturbed: set[int] = set()
-        self._announced: set[int] = set()
+        # One entry per turn of one session (tens), so frozensets grown whole.
+        self._perturbed: frozenset[int] = frozenset()
+        self._announced: frozenset[int] = frozenset()
         self._events: list[WorldEvent] = []
         self._end_state: dict[str, Any] | None = None
 
@@ -305,14 +306,15 @@ class WorldSession:
         :raises WorldSessionError: The world is not open, or is already closed.
         """
         self._require_open("announce a turn")
-        self._announced.add(turn)
+        if turn not in self._announced:
+            self._announced = self._announced | {turn}
         if turn not in self._ambient_turns or turn in self._perturbed:
             return None
         handle = self._registry.perturb_ambient
         # Refused at seed when absent, so a scheduled turn always has a handle here.
         assert handle is not None
         moved = await self._registry.call(handle)
-        self._perturbed.add(turn)
+        self._perturbed = self._perturbed | {turn}
         event = WorldEvent(
             kind="ambient",
             caused_by="rig",

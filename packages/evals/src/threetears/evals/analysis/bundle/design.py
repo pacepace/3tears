@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping
 from functools import partial
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from threetears.evals.analysis.cells import Observation
@@ -197,7 +198,9 @@ class SurfaceFolds:
         self._arm_of: dict[str, str] = {
             run.id: variant_key_of_run(results_by_run.get(run.id, [])) or f"run:{run.id}" for run in runs
         }
-        self._residuals: dict[tuple[str, str, frozenset[str]], str | None] = {}
+        # One entry per (surface, run, levers) the campaign asks about: tens to hundreds, so the memo is a frozen map
+        # rebuilt whole on each new entry.
+        self._residuals: Mapping[tuple[str, str, frozenset[str]], str | None] = MappingProxyType({})
 
     @property
     def surfaces(self) -> frozenset[str]:
@@ -365,7 +368,9 @@ class SurfaceFolds:
         key = (surface, run_id, removed)
         if key not in self._residuals:
             content = self._registry.read_residual(surface, self._runs[run_id], self._results.get(run_id, []), removed)
-            self._residuals[key] = None if content is None else canonical_json(content)
+            self._residuals = MappingProxyType(
+                {**self._residuals, key: None if content is None else canonical_json(content)}
+            )
         return self._residuals[key]
 
 

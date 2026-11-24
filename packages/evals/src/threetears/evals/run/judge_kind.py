@@ -37,6 +37,7 @@ import contextlib
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -847,7 +848,8 @@ class JudgeKind:
         self._failure_describer = failure_describer
         self._configs = configs
         self._temperature = temperature
-        self._built: dict[float | None, Any] = {}
+        # One client per temperature the kind judges at (one or two), so a frozen map rebuilt whole.
+        self._built: Mapping[float | None, Any] = MappingProxyType({})
 
     @property
     def model(self) -> str:
@@ -858,7 +860,7 @@ class JudgeKind:
         """The kind's judge client at ``temperature``, built on first ask and kept for every later cell."""
         sent = self._temperature if self._temperature is not None else temperature
         if sent not in self._built:
-            self._built[sent] = self._clients("judge", self._model, temperature=sent)
+            self._built = MappingProxyType({**self._built, sent: self._clients("judge", self._model, temperature=sent)})
         return self._built[sent]
 
     def ceiling_is_estimate(self) -> bool:
@@ -874,7 +876,7 @@ class JudgeKind:
     async def aclose(self) -> None:
         """Release every client this kind built, the first failure re-raised after all were offered a release."""
         built = list(self._built.values())
-        self._built.clear()
+        self._built = MappingProxyType({})
         first: BaseException | None = None
         for client in built:
             try:
