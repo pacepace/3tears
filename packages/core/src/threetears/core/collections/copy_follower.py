@@ -130,7 +130,9 @@ from threetears.core.collections.volume_fulls import (
     StagedFull,
     VolumeFulls,
     current_full_manifest,
+    FINGERPRINT_FORMAT,
     fingerprint_columns,
+    fingerprint_comparable,
     fingerprint_ipc,
     fingerprint_kinds,
     full_table_floor,
@@ -4907,9 +4909,10 @@ class CopyFollower:
         :return: the outcome (``copy_follower_drift_checks_total``)
         :rtype: str
         """
-        if part.fingerprint is None:
+        if part.fingerprint is None or not fingerprint_comparable(part.fingerprint):
+            # none, or one an older writer made another way: never read as drift
             return "no_fingerprint"
-        if not part.fingerprint.startswith(f"{fingerprint_columns(kinds)}-"):
+        if not part.fingerprint.startswith(f"{FINGERPRINT_FORMAT}:{fingerprint_columns(kinds)}-"):
             return "other_columns"
         keys = await asyncio.to_thread(self._part_keys, table, part)
         # under the pass lock, as the owner: no apply moves the state between its version's check and the snapshot read

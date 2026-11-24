@@ -13,12 +13,14 @@ contract this pins:
   ``outcome="skipped"``), and once the full holds it at the copy's version it is compared again;
 - a row the copy holds of a state and the part does not is found, for a state read by its key's prefix or by its
   scope column (a table keyed without its state);
+- a part fingerprinted in an older format counts ``no_fingerprint``, never drift;
 - no check issues an L3 statement.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +44,7 @@ from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, 
 from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullTable,
     VolumeFulls,
+    current_full_manifest,
     publish_full_manifest,
     write_full_part,
 )
@@ -353,4 +356,37 @@ async def test_an_extra_copy_row_of_a_state_flips_the_gauge(_volume: Path, worke
     }
     assert _parts(_RESULTS, "VA") == 1
     assert _parts(_RESULTS, "IL") == 0
+    assert world.l3.statements == 0
+
+
+async def test_a_part_fingerprinted_in_an_older_format_reads_no_fingerprint_never_drift(
+    _volume: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a full an older writer fingerprinted (the per-row BLAKE2b format, ``<columns>-<rows>-<sum>``) is
+    compared with the copy's new-format fingerprint: every state would read as drifted the moment the copies upgrade
+    before the writer. Each part must count ``no_fingerprint``, the drift count not move, and no L3 statement issue, even
+    with a copy row changed."""
+    world = _World(_volume, workers, _KEYS["state_led"])
+    await world.started()
+    current = current_full_manifest(_volume)
+    assert current is not None
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            name: FullTable(
+                version=entry.version,
+                parts=tuple(
+                    dataclasses.replace(part, fingerprint="b2942aa7-4-136b4254e1a789f18e6ae91cdc46e3dc")
+                    for part in entry.parts
+                ),
+            )
+            for name, entry in current.tables.items()
+        },
+    )
+    world.backend.execute_query("UPDATE results SET votes = 999 WHERE state = 'VA' AND geo_id = 1 RETURNING geo_id")
+    drift_before = _checks(_RESULTS, "drift")
+    outcomes = await world.follower.check_drift()
+    assert outcomes == {(name, f"state:{state}"): "no_fingerprint" for name in _OPTED for state in ("IL", "VA")}
+    assert _checks(_RESULTS, "drift") == drift_before
     assert world.l3.statements == 0

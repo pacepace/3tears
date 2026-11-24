@@ -129,7 +129,7 @@ class _Drawn:
     keys: tuple[tuple[str, ...], ...]
     typed: tuple[tuple[Any, ...], ...]
     versions: tuple[str, ...]
-    digests: tuple[int, ...]
+    digests: tuple[str, ...]
 
 
 def _draw(root: Path, table: FollowedTable, parts: Sequence[FullPart], count: int) -> _Drawn:
@@ -163,7 +163,7 @@ def _draw(root: Path, table: FollowedTable, parts: Sequence[FullPart], count: in
     keys: list[tuple[str, ...]] = []
     typed: list[tuple[Any, ...]] = []
     versions: list[str] = []
-    digests: list[int] = []
+    digests: list[str] = []
     for at, rows_at in by_part.items():
         part = parts[at]
         drawn = read_full_part(root, part).select(list(types)).take(rows_at)
@@ -171,11 +171,11 @@ def _draw(root: Path, table: FollowedTable, parts: Sequence[FullPart], count: in
         keys += [tuple(key_text(value) for value in key) for key in values]
         typed += values
         versions += [part.version] * drawn.num_rows
-        digests += row_digests(drawn, kinds)
+        digests += row_digests(drawn, kinds).to_pylist()
     return _Drawn(keys=tuple(keys), typed=tuple(typed), versions=tuple(versions), digests=tuple(digests))
 
 
-def _l3_digests(table: FollowedTable, pages: Sequence[Any]) -> dict[tuple[str, ...], int]:
+def _l3_digests(table: FollowedTable, pages: Sequence[Any]) -> dict[tuple[str, ...], str]:
     """each key's row hash as L3 holds it, from the rows read by key.
 
     :param table: the table
@@ -183,15 +183,15 @@ def _l3_digests(table: FollowedTable, pages: Sequence[Any]) -> dict[tuple[str, .
     :param pages: the rows read
     :ptype pages: Sequence[pyarrow.Table]
     :return: key text -> its row's hash
-    :rtype: dict[tuple[str, ...], int]
+    :rtype: dict[tuple[str, ...], str]
     """
     types = rail_arrow_types(table.columns)
     kinds = fingerprint_kinds(types)
-    held: dict[tuple[str, ...], int] = {}
+    held: dict[tuple[str, ...], str] = {}
     for page in pages:
         rows = page.select(list(types))
         keys = zip(*(rows.column(column).to_pylist() for column in table.key), strict=True)
-        for key, digest in zip(keys, row_digests(rows, kinds), strict=True):
+        for key, digest in zip(keys, row_digests(rows, kinds).to_pylist(), strict=True):
             held[tuple(key_text(value) for value in key)] = digest
     return held
 

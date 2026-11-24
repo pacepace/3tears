@@ -28,13 +28,16 @@ before the publish may still be loading) are kept with every file they name; :fu
 rest for the writer to delete after its own publish. Nothing calls it on a timer.
 
 **Fingerprinted** (decision 32). Each part's manifest entry carries :func:`rows_fingerprint` of its rows: each row's
-columns, in name order, as one canonical text a column type (:data:`_FINGERPRINT_KINDS`), hashed (BLAKE2b, 16 bytes)
-and the hashes summed modulo 2**128, so the order rows are held in never counts and a row held twice does; with the
-row count and a short hash of the columns and their kinds, so a copy holding other columns is told apart from one
-holding other rows. A pod copy fingerprints its own rows of a state held at the part's version the same way and
-compares (:meth:`~threetears.core.collections.copy_follower.CopyFollower.check_drift`); the writer's sample of L3 by
-key compares rows by the same per-row hash (:mod:`~threetears.core.collections.delta_drift`). One definition, here,
-for both sides.
+columns, in name order, made canonical by a column type in Arrow (:data:`_FINGERPRINT_KINDS`, so the rail's types and
+a copy's DuckDB types of the same values agree) and rendered as one length-prefixed text in DuckDB, hashed (MD5, 128
+bits) and the hashes' two 64-bit halves each summed modulo 2**64, all a column at a time, never a row at a time in
+Python: so the order rows are held in never counts and a row held twice does; with the row count and a short hash of
+the columns and their kinds, so a copy holding other columns is told apart from one holding other rows, and the
+format (:data:`FINGERPRINT_FORMAT`), so a part an older writer fingerprinted another way is never compared. A pod copy
+fingerprints its own rows of a state held at the part's version the same way and compares
+(:meth:`~threetears.core.collections.copy_follower.CopyFollower.check_drift`); the writer's sample of L3 by key
+compares rows by the same per-row hash (:mod:`~threetears.core.collections.delta_drift`). One definition, here, for
+both sides.
 
 **Where.** Under the delta files' root (``THREETEARS_DELTA_FILES_DIR``), in ``.fulls/``: ``.fulls/manifests/`` and
 ``.fulls/parts/<table>/``. A table's delta files are ``<table>/<write>.arrow``; a table is an identifier, which never
@@ -50,8 +53,6 @@ import json
 import os
 import re
 import uuid
-from datetime import UTC, datetime
-from decimal import Decimal
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -59,10 +60,8 @@ from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import get_logger
 
-from threetears.core.cache.base import stored_instant
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.delta_files import read_volume_file, write_volume_file
-from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.generation import split_generation_token
 
 if TYPE_CHECKING:
@@ -77,7 +76,15 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; a full refuses without it, saying so
     _PYARROW = False
 
+try:
+    import duckdb
+
+    _DUCKDB = True
+except ImportError:  # NOSILENT: the snapshot extra is optional; a fingerprint needs it (the rows are hashed in DuckDB)
+    _DUCKDB = False
+
 __all__ = [
+    "FINGERPRINT_FORMAT",
     "FullAbsent",
     "FullManifest",
     "FullPart",
@@ -88,6 +95,7 @@ __all__ = [
     "current_full_manifest",
     "deletable_full_files",
     "fingerprint_columns",
+    "fingerprint_comparable",
     "fingerprint_ipc",
     "fingerprint_kinds",
     "full_table_floor",
@@ -127,13 +135,21 @@ _VERSION_METADATA: Final = b"threetears.full.version"
 _DEFAULT_POLL_SECONDS: Final = 1.0
 #: the kinds a fingerprint renders a column's value by, one an Arrow type the L3 rail answers
 #: (:func:`~threetears.core.collections.schema_backed.rail_arrow_types`): text, an integer, a boolean, an instant; any
-#: other renders as sorted JSON
+#: other renders as DuckDB's text of it
 _FINGERPRINT_KINDS: Final = ("text", "int", "bool", "instant", "other")
-#: the bytes of each row's hash, and the modulus the hashes are summed under
-_ROW_HASH_BYTES: Final = 16
-_ROW_HASH_MODULUS: Final = 1 << (8 * _ROW_HASH_BYTES)
-#: what a NULL renders as: never a text a value renders as (every value's text is length-prefixed)
-_NULL_RENDERING: Final = "\x00"
+#: the fingerprint's format, which every fingerprint opens with (``<format>:``): one of another format (``f1``, the
+#: per-row BLAKE2b sum in Python, wrote none) is never compared, so a part an older writer fingerprinted reads as
+#: ``no_fingerprint`` on a copy, never as drift. Raise it whenever the definition changes.
+FINGERPRINT_FORMAT: Final = "f2"
+#: the modulus each half of the rows' hashes is summed under
+_HALF_MODULUS: Final = 1 << 64
+#: an instant's text as :func:`~threetears.core.cache.base.stored_instant` spells it (``%S`` of a microsecond
+#: timestamp carries its six places): the spelling the rail's text of an instant arrives in
+_STORED_INSTANT_FORMAT: Final = "%Y-%m-%dT%H:%M:%S+00:00"
+#: the rows a batch DuckDB scans a fingerprint's rows in: a batch a scan thread
+_SCAN_BATCH_ROWS: Final = 32_768
+#: ISO text that names its offset; text that names none is the rail's UTC kept without its zone
+_ZONED_TEXT: Final = r"(Z|[+-]\d\d(:?\d\d)?)$"
 
 
 class StaleTermError(RuntimeError):
@@ -166,60 +182,101 @@ def fingerprint_kinds(types: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(kinds))
 
 
-def _rendered(value: Any, kind: str) -> str:
-    """one value as the fingerprint renders it, by its column's kind, so a value the rail answers and the same value
-    a copy keeps another way (a ``NUMERIC`` as a ``Decimal``, an instant as its ISO text) render alike.
+def _canonical_column(values: Any, kind: str) -> Any:
+    """one column as the fingerprint renders it, by its kind, in Arrow (a kernel a column, never a value at a time),
+    so the rail's type and the type a copy keeps the same values as come out as one text: text stays text, a
+    ``NUMERIC`` a copy keeps as a decimal is its digits at its scale, a timestamp a copy keeps in a text column is
+    :func:`~threetears.core.cache.base.stored_instant`'s text of it; an integer is its digits; a boolean ``t`` or
+    ``f``; an instant is the digits of its microseconds since the epoch in UTC, whether held as a timestamp or as ISO
+    text (a timestamp or text naming no zone is the rail's UTC kept without it). Any other kind is left for DuckDB's
+    text of it.
 
-    :param value: the value
-    :ptype value: Any
-    :param kind: its column's kind
+    :param values: the column
+    :ptype values: pyarrow.ChunkedArray
+    :param kind: its kind
     :ptype kind: str
-    :return: its text, length-prefixed; :data:`_NULL_RENDERING` for a NULL
-    :rtype: str
+    :return: the column as text; an ``other`` column as it is
+    :rtype: pyarrow.ChunkedArray
     """
-    if value is None:
-        return _NULL_RENDERING
+    held = values.type
+    textual = pa.types.is_string(held) or pa.types.is_large_string(held)
+    if kind == "instant":
+        if textual:
+            zoned = pc.match_substring_regex(values, _ZONED_TEXT)
+            values = pc.cast(
+                pc.if_else(zoned, values, pc.binary_join_element_wise(values, "+00:00", "")),
+                pa.timestamp("us", tz="UTC"),
+            )
+        elif pa.types.is_timestamp(held):
+            # a naive timestamp's storage is its wall clock, which is the rail's UTC: the same integer
+            values = pc.cast(values, pa.timestamp("us", tz=held.tz), safe=False)
+        return pc.cast(pc.cast(values, pa.int64()), pa.string())
+    if kind == "text" and pa.types.is_timestamp(held):
+        utc = pc.cast(pc.cast(values, pa.timestamp("us", tz=held.tz), safe=False), pa.timestamp("us", tz="UTC"))
+        return pc.strftime(utc, format=_STORED_INSTANT_FORMAT)
+    if kind == "int":
+        return pc.cast(pc.cast(values, pa.int64()), pa.string())
+    if kind == "bool":
+        return pc.if_else(pc.cast(values, pa.bool_()), "t", "f")
     if kind == "text":
-        text = format(value, "f") if isinstance(value, Decimal) else key_text(value)
-    elif kind == "int":
-        text = str(int(value))
-    elif kind == "bool":
-        text = "t" if value else "f"
-    elif kind == "instant":
-        instant = datetime.fromisoformat(value) if isinstance(value, str) else value
-        # a naive instant is the rail's UTC kept without its zone
-        text = stored_instant(instant if instant.utcoffset() is not None else instant.replace(tzinfo=UTC))
-    else:
-        text = json.dumps(value, sort_keys=True, default=str)
-    return f"{len(text)}:{text}"
+        # text as it is; a decimal as its digits at its scale (``1.50``, as ``format(Decimal, "f")`` spells it)
+        return pc.cast(values, pa.string())
+    return values
 
 
-def row_digests(rows: Any, kinds: Sequence[tuple[str, str]]) -> list[int]:
-    """each row's hash, in the rows' order: its columns in ``kinds``' order, each rendered by its kind, hashed with
-    BLAKE2b (16 bytes) as an integer. The one per-row rule a full's fingerprint sums and the writer's sample compares
-    by. CPU: run it in a worker process (or on a handful of rows).
+def _rendered_rows(rows: Any, kinds: Sequence[tuple[str, str]]) -> tuple[Any, str]:
+    """the rows made canonical (:func:`_canonical_column`), one column a kind, named by position, cut into batches
+    DuckDB scans in parallel, and the SQL of each row's text over them: its columns in ``kinds``' order, each its text
+    length-prefixed (``<bytes>:<text>``), a NULL ``-`` (never how a value starts), so the text names one row only.
+
+    :param rows: the rows, holding every column ``kinds`` names
+    :ptype rows: pyarrow.Table
+    :param kinds: :func:`fingerprint_kinds` of the columns
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: the canonical rows and the row text's SQL expression
+    :rtype: tuple[pyarrow.Table, str]
+    :raises ImportError: without DuckDB
+    """
+    if not _DUCKDB:
+        raise ImportError("a fingerprint hashes rows in DuckDB: install 3tears[snapshot]")
+    columns = {f"c{at}": _canonical_column(rows.column(name), kind) for at, (name, kind) in enumerate(kinds)}
+    canonical = pa.table(columns) if columns else pa.table({"c": pa.nulls(rows.num_rows)})
+    pieces = []
+    for at, values in enumerate(columns.values()):
+        text = f"c{at}" if pa.types.is_string(values.type) else f"CAST(c{at} AS VARCHAR)"
+        pieces.append(f"coalesce(CAST(strlen({text}) AS VARCHAR) || ':' || {text}, '-')")
+    # zero-copy slices; one batch would be one scan thread (measured: 337k rows x 15 columns, 210 ms on one thread,
+    # 40 ms on ten)
+    batched = pa.Table.from_batches(canonical.to_batches(max_chunksize=_SCAN_BATCH_ROWS), canonical.schema)
+    return batched, " || ".join(pieces) if pieces else "''"
+
+
+def row_digests(rows: Any, kinds: Sequence[tuple[str, str]]) -> Any:
+    """each row's hash, in the rows' order: the MD5 (hex) of its text (:func:`_rendered_rows`), computed in DuckDB a
+    column at a time, never a row at a time in Python. The one per-row rule a full's fingerprint sums and the
+    writer's sample compares by. CPU: run it in a worker process (or on a handful of rows).
 
     :param rows: the rows, holding every column ``kinds`` names
     :ptype rows: pyarrow.Table
     :param kinds: :func:`fingerprint_kinds` of the rows' columns
     :ptype kinds: Sequence[tuple[str, str]]
     :return: each row's hash
-    :rtype: list[int]
+    :rtype: pyarrow.ChunkedArray
     """
-    columns = [(name, kind, rows.column(name).to_pylist()) for name, kind in kinds]
-    digests: list[int] = []
-    for index in range(rows.num_rows):
-        text = "\x1e".join(f"{name}\x1f{_rendered(values[index], kind)}" for name, kind, values in columns)
-        digest = hashlib.blake2b(text.encode(), digest_size=_ROW_HASH_BYTES).digest()
-        digests.append(int.from_bytes(digest, "big"))
-    return digests
+    canonical, text = _rendered_rows(rows, kinds)
+    with duckdb.connect() as con:
+        # a projection over one Arrow scan keeps the rows' order (DuckDB's preserve_insertion_order, on by default)
+        return con.from_arrow(canonical).select(f"md5({text}) AS digest").to_arrow_table().column("digest")
 
 
 def rows_fingerprint(rows: Any, kinds: Sequence[tuple[str, str]] | None = None) -> str:
-    """the fingerprint of some rows (module docstring, "Fingerprinted"): ``<columns>-<rows>-<sum>``, the columns' and
-    kinds' hash (8 hex digits), the row count, and the rows' hashes (:func:`row_digests`) summed modulo 2**128 (32 hex
-    digits). The order the rows are held in never changes it; a row held twice, or a column more, does. CPU: run it in
-    a worker process.
+    """the fingerprint of some rows (module docstring, "Fingerprinted"): ``f2:<columns>-<rows>-<sums>``, the format,
+    the columns' and kinds' hash (8 hex digits), the row count, and each row's 128-bit MD5 (:func:`row_digests`) split
+    in two 64-bit halves, each half summed over the rows modulo 2**64 (16 hex digits each), in DuckDB. The order the
+    rows are held in never changes it; a row held twice, or a column more, does. Summed, not XORed: XOR cancels a row
+    held twice, so ``{a, a, b}`` and ``{b, c, c}`` would agree; a sum moves by every row's hash however often it is
+    held, and a changed row moves both halves by independent amounts (a miss is a 2**-128 chance). CPU: run it in a
+    worker process.
 
     :param rows: the rows
     :ptype rows: pyarrow.Table
@@ -230,8 +287,31 @@ def rows_fingerprint(rows: Any, kinds: Sequence[tuple[str, str]] | None = None) 
     """
     if kinds is None:
         kinds = fingerprint_kinds({field.name: field.type for field in rows.schema})
-    total = sum(row_digests(rows, kinds)) % _ROW_HASH_MODULUS
-    return f"{fingerprint_columns(kinds)}-{rows.num_rows}-{total:032x}"
+    canonical, text = _rendered_rows(rows, kinds)
+    with duckdb.connect() as con:
+        # one MD5 a row, its two halves summed apart (UBIGINT sums are exact HUGEINTs below 2**64 rows)
+        summed = (
+            con.from_arrow(canonical)
+            .select(f"md5_number({text}) AS h")
+            .aggregate(f"count(*), sum((h >> 64)::UBIGINT), sum((h & {_HALF_MODULUS - 1}::UHUGEINT)::UBIGINT)")
+            .fetchone()
+        )
+    assert summed is not None  # noqa: S101 -- an aggregate answers one row
+    count, upper, lower = summed
+    upper, lower = (upper or 0) % _HALF_MODULUS, (lower or 0) % _HALF_MODULUS
+    return f"{FINGERPRINT_FORMAT}:{fingerprint_columns(kinds)}-{count}-{upper:016x}{lower:016x}"
+
+
+def fingerprint_comparable(fingerprint: str | None) -> bool:
+    """whether a part's fingerprint is of this format (:data:`FINGERPRINT_FORMAT`), so a copy's own can be compared
+    with it; one an older writer wrote (another format, or none) is not.
+
+    :param fingerprint: the part's fingerprint
+    :ptype fingerprint: str | None
+    :return: whether it is comparable
+    :rtype: bool
+    """
+    return fingerprint is not None and fingerprint.startswith(f"{FINGERPRINT_FORMAT}:")
 
 
 def fingerprint_columns(kinds: Sequence[tuple[str, str]]) -> str:
