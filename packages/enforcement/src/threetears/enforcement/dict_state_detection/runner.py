@@ -95,7 +95,9 @@ def run_dict_state_enforcement(
         )
         aggregated.extend(true_violations)
         if config.immutable_roots:
-            mutated = find_mutated_state_violations(config.immutable_roots, config.repo_root)
+            mutated = find_mutated_state_violations(
+                config.immutable_roots, config.repo_root, widened=config.immutable_widened
+            )
             changed, _tracked = filter_against_allowlist(
                 mutated, (), config.immutable_known_violations, config.repo_root
             )
@@ -103,7 +105,12 @@ def run_dict_state_enforcement(
 
     if walker in {"allowlist_integrity", "all"}:
         aggregated.extend(
-            find_stale_immutable_debts(config.immutable_roots, config.immutable_known_violations, config.repo_root)
+            find_stale_immutable_debts(
+                config.immutable_roots,
+                config.immutable_known_violations,
+                config.repo_root,
+                widened=config.immutable_widened,
+            )
         )
         aggregated.extend(
             find_stale_allowlist_entries(

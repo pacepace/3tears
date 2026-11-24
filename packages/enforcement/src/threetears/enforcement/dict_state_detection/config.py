@@ -178,6 +178,10 @@ class DictStateConfig:
     :ivar immutable_known_violations: changes in place under :attr:`immutable_roots` tracked for a redesign, matched by
         ``(file, class_name, attr_name)`` and audited for staleness like :attr:`known_violations`. A debt list, never
         an allowance: each entry says what the redesign is.
+    :ivar immutable_widened: walk :attr:`immutable_roots` with the widened rules of Pace's ruling of 2026-11-24
+        (public attributes, lists and deques, class-body fields, changes through another object in the same module;
+        :mod:`~threetears.enforcement.dict_state_detection.mutation`). Off until a repo's widened sites are paid or
+        tracked, so turning it on is that repo's own change.
     """
 
     repo_root: Path
@@ -188,3 +192,4 @@ class DictStateConfig:
     known_violations: tuple[DictStateAllowlistEntry, ...] = ()
     immutable_roots: tuple[Path, ...] = ()
     immutable_known_violations: tuple[DictStateAllowlistEntry, ...] = ()
+    immutable_widened: bool = False
