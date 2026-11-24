@@ -46,7 +46,7 @@ failures away.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Final, Protocol, TypeVar
@@ -54,6 +54,7 @@ from uuid import UUID
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination import WindowedCounter
+from threetears.core.frozen_state import EMPTY, with_entry
 from threetears.observe import get_logger
 
 from threetears.datasources.drivers.errors import (
@@ -258,7 +259,9 @@ class _LoginQueues:
         :return: None
         :rtype: None
         """
-        self._queues: dict[str, asyncio.Lock] = {}
+        # one per credential this process logs in with: a few, so a new one rebuilds the snapshot whole. Not striped:
+        # a login may run while another credential's is held, and two credentials sharing a lock would wait on each other
+        self._queues: Mapping[str, asyncio.Lock] = EMPTY
 
     def slot(self, key: str) -> asyncio.Lock:
         """the queue one credential's logins wait in.
@@ -268,7 +271,11 @@ class _LoginQueues:
         :return: its queue; hold it for the whole login
         :rtype: asyncio.Lock
         """
-        return self._queues.setdefault(key, asyncio.Lock())
+        queue = self._queues.get(key)
+        if queue is None:
+            queue = asyncio.Lock()
+            self._queues = with_entry(self._queues, key, queue)
+        return queue
 
 
 class _CredentialGuard:
