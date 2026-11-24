@@ -92,7 +92,6 @@ import os
 import re
 import secrets
 import socket
-import weakref
 from asyncio import selector_events
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
@@ -207,9 +206,6 @@ _IOV_MAX: Final[int] = os.sysconf("SC_IOV_MAX")
 
 #: asyncio's plain socket transport class (typeshed does not declare it)
 _SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSocketTransport  # type: ignore[attr-defined]
-
-#: the socket transports :func:`bound_socket_sends` has bounded; a transport leaves when it is collected
-_BOUNDED: Final[weakref.WeakSet[object]] = weakref.WeakSet()
 
 #: the transport classes a large publish has found unbounded (logged once each)
 _UNBOUNDED_KINDS: BuildOnce[type, bool] = BuildOnce()
@@ -449,7 +445,7 @@ def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND
     :return: True when its sends are bounded (now or before)
     :rtype: bool
     """
-    if transport in _BOUNDED:
+    if _is_bounded(transport):
         return True
     if not isinstance(transport, _SOCKET_TRANSPORT):
         kind = type(transport)
@@ -458,8 +454,21 @@ def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND
         return False
     socket_transport = cast("_SendmsgTransport", transport)
     socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer, bound)
-    _BOUNDED.add(transport)
     return True
+
+
+def _is_bounded(transport: object) -> bool:
+    """whether ``transport``'s sends are bounded already: the transport itself says so (its ``_get_sendmsg_buffer``
+    is a :class:`_BoundedSends`), so no process-wide record of bounded transports is kept beside it.
+
+    :param transport: the asyncio transport
+    :ptype transport: object
+    :return: whether it is bounded
+    :rtype: bool
+    """
+    if not isinstance(transport, _SOCKET_TRANSPORT):
+        return False
+    return isinstance(cast("_SendmsgTransport", transport)._get_sendmsg_buffer, _BoundedSends)
 
 
 def bound_socket_sends(connection: Client) -> None:
@@ -487,7 +496,7 @@ def sends_are_bounded(connection: Client) -> bool:
     :rtype: bool
     """
     transport = _socket_transport(connection)
-    return transport is not None and transport in _BOUNDED
+    return transport is not None and _is_bounded(transport)
 
 
 def _check_subject(subject: str) -> None:

@@ -348,3 +348,70 @@ def visible(rows):
     )
     with pytest.raises(pytest.fail.Exception, match="Wall._edges"):
         run_dict_state_enforcement(config, walker="detect")
+
+
+#: the weak containers changed in place, through an object and at module level (nats' ``_BOUNDED`` before 2026-11-24)
+_WEAK_IN_PLACE = """\
+import weakref
+from weakref import WeakValueDictionary
+
+_BOUNDED: weakref.WeakSet[object] = weakref.WeakSet()
+_ASKED = weakref.WeakKeyDictionary()
+
+def bound(transport):
+    _BOUNDED.add(transport)
+
+def ask(reader, answer):
+    _ASKED[reader] = answer
+
+class Ledger:
+    def __init__(self):
+        self._stores = WeakValueDictionary()
+        self._backends: weakref.WeakSet[object] = weakref.WeakSet()
+
+    def join(self, store):
+        self._stores[id(store)] = store
+        self._backends.add(store)
+
+    def leave(self, store):
+        self._stores.pop(id(store), None)
+        self._backends.discard(store)
+
+def keep(ledger):
+    ledger_ref = Ledger()
+    return ledger_ref
+"""
+
+#: the approved shape: a frozen holder of weak references, replaced whole
+_WEAK_REPLACED = """\
+from threetears.observe import FrozenWeakSet, FrozenWeakValues
+
+_BOUNDED: FrozenWeakSet[object] = FrozenWeakSet()
+
+def bound(transport):
+    global _BOUNDED
+    _BOUNDED = _BOUNDED.with_item(transport)
+
+class Ledger:
+    def __init__(self):
+        self._stores: FrozenWeakValues[int, object] = FrozenWeakValues()
+
+    def join(self, store):
+        self._stores = self._stores.with_entry(id(store), store)
+
+    def leave(self, store):
+        self._stores = self._stores.without_key(id(store))
+"""
+
+
+def test_weak_containers_changed_in_place_are_refused(tmp_path: Path) -> None:
+    assert _symbols(tmp_path, _WEAK_IN_PLACE) == {
+        "(module)._BOUNDED",
+        "(module)._ASKED",
+        "Ledger._stores",
+        "Ledger._backends",
+    }
+
+
+def test_frozen_weak_holders_replaced_whole_pass(tmp_path: Path) -> None:
+    assert _symbols(tmp_path, _WEAK_REPLACED) == set()

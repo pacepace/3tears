@@ -50,7 +50,6 @@ from __future__ import annotations
 import asyncio
 import random
 import re
-import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -78,6 +77,7 @@ from threetears.core.security.door_request import (
 )
 from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.declared import whole_read
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.core.keyed import Fragment, Selected, renumbered, selected_column
 from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
@@ -86,7 +86,7 @@ from threetears.datasources.bounded_rows import json_with_rows
 from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
-from threetears.observe import get_logger, traced
+from threetears.observe import FrozenWeakKeys, get_logger, traced
 
 if TYPE_CHECKING:
     from threetears.core.security.door_request import PopKey
@@ -2362,7 +2362,8 @@ _CAP_FILL: Final[float] = 0.95
 #: per client, the rows one reply of a byte-capping hub carried for a (datasource, relation, columns) read, so the
 #: next read of it sizes its FIRST page from the announced cap too. A hint only: a page it oversizes comes back cut
 #: and is read on from its last whole key group, as any cut page is.
-_REPLY_ROWS: weakref.WeakKeyDictionary[Any, dict[tuple[str, str, str], int]] = weakref.WeakKeyDictionary()
+#: Keyed weakly (a client's hints go with it) and replaced whole.
+_REPLY_ROWS: FrozenWeakKeys[Any, Mapping[tuple[str, str, str], int]] = FrozenWeakKeys()
 
 
 def _remembered_reply_rows(client: Any, read: tuple[str, str, str]) -> int | None:
@@ -2376,7 +2377,7 @@ def _remembered_reply_rows(client: Any, read: tuple[str, str, str]) -> int | Non
     :rtype: int | None
     """
     try:
-        return _REPLY_ROWS.get(client, {}).get(read)
+        return _REPLY_ROWS.get(client, EMPTY).get(read)
     except TypeError:  # NOSILENT: a client that cannot be weakly referenced or hashed keeps no memory; a hint only
         return None
 
@@ -2391,17 +2392,15 @@ def _remember_reply_rows(client: Any, read: tuple[str, str, str], rows: int | No
     :param rows: the rows, or None to forget
     :ptype rows: int | None
     """
-    # the client's hints replaced whole (copied, changed, stored), never filled in place: two reads racing keep one
-    # reader's hint, and a hint only sizes a first page
+    # the client's hints replaced whole, and the holder too, never filled in place; on the loop, with no await between
+    # the read and the write
+    global _REPLY_ROWS
     try:
-        held = dict(_REPLY_ROWS.get(client, {}))
+        held = _REPLY_ROWS.get(client, EMPTY)
+        held = without_entry(held, read) if rows is None else with_entry(held, read, rows)
+        _REPLY_ROWS = _REPLY_ROWS.with_entry(client, held)
     except TypeError:  # NOSILENT: a client that cannot be weakly referenced or hashed keeps no memory; a hint only
         return
-    if rows is None:
-        held.pop(read, None)
-    else:
-        held[read] = rows
-    _REPLY_ROWS[client] = held
 
 
 def _rows_a_reply_carries(page: DatasourceQueryResult | DatasourceArrowResult, max_reply_bytes: int) -> int:

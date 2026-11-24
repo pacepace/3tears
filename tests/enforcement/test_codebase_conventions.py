@@ -47,6 +47,7 @@ _CONFIG = CodebaseConventionsConfig(
         f"packages/enforcement/src/threetears/enforcement/{domain}/runner.py": "emits the enforcement report to stderr"
         for domain in (
             "audit_details",
+            "await_race",
             "cache",
             "codebase_conventions",
             "coercion_coverage",

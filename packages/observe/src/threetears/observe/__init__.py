@@ -23,6 +23,7 @@ from threetears.observe.background import cancel_and_wait, spawn_background
 from threetears.observe.build_once import BuildOnce
 from threetears.observe.containment import ContainedLevel, contain, contained, remove_tree
 from threetears.observe.erasure import ANONYMIZED_MARKER
+from threetears.observe.frozen_weak import FrozenWeakKeys, FrozenWeakSet, FrozenWeakValues
 from threetears.observe.periodic import NextDelay, PeriodicTask, TickResult
 from threetears.observe.health import HealthCheck, HealthServer, HealthTier
 from threetears.observe.call_metrics import CallMetrics
@@ -49,6 +50,9 @@ __all__ = [
     "CallMetrics",
     "ContainedLevel",
     "ContextFormatter",
+    "FrozenWeakKeys",
+    "FrozenWeakSet",
+    "FrozenWeakValues",
     "HealthCheck",
     "HealthServer",
     "HealthTier",

@@ -141,6 +141,7 @@ import dataclasses
 import functools
 import socket
 import ssl
+import threading
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
@@ -209,7 +210,7 @@ from threetears.datasources.drivers.errors import (
     connect_error_from,
     required_password,
 )
-from threetears.observe import contain, get_logger, spawn_background, traced
+from threetears.observe import FrozenWeakKeys, FrozenWeakSet, contain, get_logger, spawn_background, traced
 
 __all__ = [
     "DriverCancellationError",
@@ -1120,13 +1121,15 @@ class RedshiftDriver(Driver):
         # FRESH connection to issue ``pg_terminate_backend(<pid>)`` --
         # closing the CLIENT socket does NOT kill the SERVER-SIDE
         # query (a real abandoned query ran for 7.4h in production,
-        # leaking a pool slot). a WeakKeyDictionary so an evicted /
-        # GC'd connection drops its pid entry automatically without a
-        # manual cleanup pass.
-        self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
+        # leaking a pool slot). keyed weakly so an evicted / GC'd
+        # connection's pid goes with it, with no cleanup pass.
+        self._backend_pids: FrozenWeakKeys[RedshiftConnection, int] = FrozenWeakKeys()
         # connections a cancel reached between two statements (fetch_within's pages): their session is idle, so the
         # cancel path leaves them to the release path's rollback and the cache instead of terminating them
-        self._idle_at_cancel: weakref.WeakSet[RedshiftConnection] = weakref.WeakSet()
+        self._idle_at_cancel: FrozenWeakSet[RedshiftConnection] = FrozenWeakSet()
+        # the two above are replaced whole under this lock: a pid is kept on a login's worker thread, and logins run
+        # side by side; never held across an await
+        self._held_lock = threading.Lock()
         self._closed = False
         # each fingerprinted relation's boolean columns, kept once a fingerprint has used them and
         # forgotten when one fails, so a relation rebuilt with a column turned boolean is read again
@@ -1311,7 +1314,8 @@ class RedshiftDriver(Driver):
         # than close / raise.
         pid = self._read_backend_pid_sync(conn)
         if pid is not None:
-            self._backend_pids[conn] = pid
+            with self._held_lock:
+                self._backend_pids = self._backend_pids.with_entry(conn, pid)
         return conn
 
     def _read_backend_pid_sync(self, conn: RedshiftConnection) -> int | None:
@@ -1605,11 +1609,13 @@ class RedshiftDriver(Driver):
         :return: nothing
         :rtype: None
         """
-        if checkout.conn in self._idle_at_cancel:
-            # between statements (fetch_within finished its page first): nothing runs to abort, and the release
-            # path's rollback closes the transaction and its cursor before the connection is cached
-            self._idle_at_cancel.discard(checkout.conn)
-        else:
+        with self._held_lock:
+            idle = checkout.conn in self._idle_at_cancel
+            if idle:
+                # between statements (fetch_within finished its page first): nothing runs to abort, and the release
+                # path's rollback closes the transaction and its cursor before the connection is cached
+                self._idle_at_cancel = self._idle_at_cancel.without_item(checkout.conn)
+        if not idle:
             await self._abort_checkout(checkout)
 
     async def _abort_checkout(self, checkout: _Checkout) -> None:
@@ -2247,7 +2253,8 @@ class RedshiftDriver(Driver):
                     # not terminated, by the cancel path (_cancel_checkout) the cancellation goes on to
                     await page
                     cursor.close()
-                    self._idle_at_cancel.add(conn)
+                    with self._held_lock:
+                        self._idle_at_cancel = self._idle_at_cancel.with_item(conn)
                     raise
             cursor.close()
 

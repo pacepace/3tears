@@ -28,14 +28,13 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import weakref
 from collections.abc import Mapping
 from typing import Final
 
 from threetears.core.cache.l1_pages import TableSize, measure
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.eviction import HELD_BYTES, HELD_ENTRIES, Tier, policies_declared
-from threetears.observe import contain, get_logger
+from threetears.observe import FrozenWeakSet, contain, get_logger
 
 __all__ = ["L1_SIZES", "measure"]
 
@@ -55,7 +54,8 @@ class _L1Sizes:
 
     def __init__(self, interval: float = _INTERVAL_SECONDS) -> None:
         self._interval = interval
-        self._backends: weakref.WeakSet[SQLiteBackend] = weakref.WeakSet()
+        #: the watched L1s, held weakly (a dropped backend is no longer measured); replaced whole under the lock
+        self._backends: FrozenWeakSet[SQLiteBackend] = FrozenWeakSet()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -76,7 +76,7 @@ class _L1Sizes:
         if not isinstance(backend, SQLiteBackend):
             return
         with self._lock:
-            self._backends.add(backend)
+            self._backends = self._backends.with_item(backend)
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, name="l1-sizes", daemon=True)
                 self._thread.start()

@@ -27,7 +27,7 @@ implementation over its epoch bucket, and the pass that judges a mark against it
 from __future__ import annotations
 
 import inspect
-import weakref
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -42,6 +42,7 @@ from threetears.core.backends.broker_generation import (
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
 from threetears.core.frozen_state import frozen, with_entry, without_entry
+from threetears.observe import FrozenWeakSet
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
 
@@ -767,10 +768,15 @@ class GenerationMarks:
         return parts if parts is not None else (token, 0)
 
 
+#: the three class registries below are replaced whole under this lock: a class can be defined on any thread (an
+#: import on a worker thread), and two registering at once must both stay
+_CLASSES_LOCK: Final = threading.Lock()
+
 #: every collection class defined in this process whose committed writes advance its table's write
-#: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Appended
+#: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Joined
 #: by :meth:`BaseCollection.__init_subclass__` (:func:`note_generation_class`), read by :func:`tables_with_write_generation`.
-_GENERATION_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+#: Held weakly, so a class defined and dropped (a test's) leaves with it.
+_GENERATION_CLASSES: FrozenWeakSet[type] = FrozenWeakSet()
 
 
 def note_generation_class(cls: type) -> None:
@@ -784,7 +790,9 @@ def note_generation_class(cls: type) -> None:
     :return: nothing
     :rtype: None
     """
-    _GENERATION_CLASSES.add(cls)
+    global _GENERATION_CLASSES
+    with _CLASSES_LOCK:
+        _GENERATION_CLASSES = _GENERATION_CLASSES.with_item(cls)
 
 
 def table_named_by_class(cls: type) -> str | None:
@@ -858,8 +866,8 @@ def primary_key_of_table(table_name: str) -> tuple[str, ...] | None:
 
 
 #: every collection class defined in this process that commits its writes in NATS first
-#: (``BaseCollection.l2_first``), appended by :func:`note_l2_first_class`.
-_L2_FIRST_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+#: (``BaseCollection.l2_first``), joined by :func:`note_l2_first_class`.
+_L2_FIRST_CLASSES: FrozenWeakSet[type] = FrozenWeakSet()
 
 
 def note_l2_first_class(cls: type) -> None:
@@ -870,7 +878,9 @@ def note_l2_first_class(cls: type) -> None:
     :return: nothing
     :rtype: None
     """
-    _L2_FIRST_CLASSES.add(cls)
+    global _L2_FIRST_CLASSES
+    with _CLASSES_LOCK:
+        _L2_FIRST_CLASSES = _L2_FIRST_CLASSES.with_item(cls)
 
 
 def tables_written_l2_first() -> frozenset[str]:
@@ -886,9 +896,9 @@ def tables_written_l2_first() -> frozenset[str]:
     return frozenset(name for name in map(table_named_by_class, list(_L2_FIRST_CLASSES)) if name is not None)
 
 
-#: every collection class defined in this process that declares a tenancy, appended by
+#: every collection class defined in this process that declares a tenancy, joined by
 #: :func:`note_tenancy_class` and read by :func:`tenancy_of_table`.
-_TENANCY_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+_TENANCY_CLASSES: FrozenWeakSet[type] = FrozenWeakSet()
 
 
 def note_tenancy_class(cls: type) -> None:
@@ -899,7 +909,9 @@ def note_tenancy_class(cls: type) -> None:
     :return: nothing
     :rtype: None
     """
-    _TENANCY_CLASSES.add(cls)
+    global _TENANCY_CLASSES
+    with _CLASSES_LOCK:
+        _TENANCY_CLASSES = _TENANCY_CLASSES.with_item(cls)
 
 
 def tenancy_of_table(table_name: str) -> Tenancy:
