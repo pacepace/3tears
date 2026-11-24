@@ -35,7 +35,7 @@ decision behind them, and neither is guessed at here.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -43,6 +43,7 @@ from typing import Protocol, runtime_checkable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from threetears.core.frozen_state import frozen, with_entry
 from threetears.core.security.secret_refs import resolve_secret
 from threetears.observe import contain, get_logger
 
@@ -229,7 +230,7 @@ class BounceReceiver:
         self.verification_scheme = verification_scheme
         self.signature_header = signature_header
         self.max_payload_bytes = max_payload_bytes
-        self._verifiers: dict[str, Verifier] = {"generic_hmac_sha256": verify_generic_hmac_sha256}
+        self._verifiers: Mapping[str, Verifier] = frozen({"generic_hmac_sha256": verify_generic_hmac_sha256})
 
     def register_verifier(self, scheme: str, verifier: Verifier) -> None:
         """Register or replace a signature-verification scheme.
@@ -247,7 +248,7 @@ class BounceReceiver:
         :return: nothing
         :rtype: None
         """
-        self._verifiers[scheme] = verifier
+        self._verifiers = with_entry(self._verifiers, scheme, verifier)
 
     async def handle_payload(self, body: bytes, signature: str | None) -> BounceIngestResult:
         """Verify one callback body and dispatch the events it carries.

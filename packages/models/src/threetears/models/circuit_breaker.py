@@ -21,8 +21,8 @@ import hashlib
 import secrets
 import threading
 import time
-from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -712,13 +712,19 @@ class CircuitBreakerRegistry:
         self._credential_idle_seconds = credential_idle_seconds
         self._max_credential_breakers = max_credential_breakers
         self._clock = clock if clock is not None else _monotonic
-        # (provider_name, credential fingerprint or None, model or None) -> breaker, least
-        # recently asked-for first, and the clock reading of each key's last get()
-        self._breakers: OrderedDict[tuple[str, str | None, str | None], CircuitBreaker] = OrderedDict()
-        self._last_get: dict[tuple[str, str | None, str | None], float] = {}
+        # (provider_name, credential fingerprint or None, model or None) -> the breaker held, with the
+        # clock reading and order of its key's last get(). a read-only snapshot replaced whole under the
+        # lock, only when a breaker is created or dropped (a new credential, rarely); a get() of a held
+        # key stamps its _Held and never rebuilds the map, so the per-call path stays O(1) at the
+        # ``max_credential_breakers`` (1024) cap.
+        self._breakers: Mapping[tuple[str, str | None, str | None], _Held] = MappingProxyType({})
+        # how many get()s so far: each stamps its _Held with the next, so the least recently asked-for
+        # of breakers last used at the same clock reading is dropped first, as it always was
+        self._gets = 0
         # every provider ever asked for, so status() keeps reporting one whose
         # breakers were all dropped as idle (they were CLOSED) instead of losing it
-        self._providers: set[str] = set()
+        # a read-only snapshot replaced whole under the lock: one entry per provider, a handful
+        self._providers: frozenset[str] = frozenset()
         # drawn on the first fingerprint, never at construction: the default registry is built at import
         self._fingerprint_key: bytes | None = None
         self._lock = threading.Lock()
@@ -759,8 +765,9 @@ class CircuitBreakerRegistry:
         key = (provider_name, self._fingerprint(credential), model)
         now = self._clock()
         with self._lock:
-            breaker = self._breakers.get(key)
-            if breaker is None:
+            self._gets += 1
+            held = self._breakers.get(key)
+            if held is None:
                 if _droppable(key):
                     self._evict_credential_breakers_locked(now)
                 breaker = CircuitBreaker(
@@ -772,11 +779,12 @@ class CircuitBreakerRegistry:
                     credential_scoped=key[1] is not None,
                     model_name=model,
                 )
-                self._breakers[key] = breaker
-                self._providers.add(provider_name)
-            self._breakers.move_to_end(key)
-            self._last_get[key] = now
-        return breaker
+                held = _Held(breaker)
+                self._breakers = MappingProxyType({**self._breakers, key: held})
+                self._providers = self._providers | {provider_name}
+            held.last_get = now
+            held.order = self._gets
+        return held.breaker
 
     def _evict_credential_breakers_locked(self, now: float) -> None:
         """drop idle, then least recently used, CLOSED credential breakers. **caller holds the lock.**
@@ -786,37 +794,28 @@ class CircuitBreakerRegistry:
         :return: nothing
         :rtype: None
         """
+        # (last used, order of last get) per droppable CLOSED key, least recently asked-for first on a tie
         last_used = {
-            key: max(self._last_get.get(key, 0.0), breaker.last_activity)
-            for key, breaker in self._breakers.items()
-            if _droppable(key) and breaker.state is CircuitState.CLOSED
+            key: (max(held.last_get, held.breaker.last_activity), held.order)
+            for key, held in self._breakers.items()
+            if _droppable(key) and held.breaker.state is CircuitState.CLOSED
         }
-        for key, used in last_used.items():
-            if now - used >= self._credential_idle_seconds:
-                self._drop_locked(key)
-        credential_count = sum(1 for key in self._breakers if _droppable(key))
-        for key in sorted((k for k in last_used if k in self._breakers), key=lambda k: last_used[k]):
+        dropped = {key for key, (used, _order) in last_used.items() if now - used >= self._credential_idle_seconds}
+        credential_count = sum(1 for key in self._breakers if _droppable(key) and key not in dropped)
+        for key in sorted((k for k in last_used if k not in dropped), key=lambda k: last_used[k]):
             if credential_count < self._max_credential_breakers:
                 break
-            self._drop_locked(key)
+            dropped.add(key)
             credential_count -= 1
+        if dropped:
+            # one rebuild for every breaker dropped
+            self._breakers = MappingProxyType({key: held for key, held in self._breakers.items() if key not in dropped})
         if credential_count >= self._max_credential_breakers:
             logger.warning(
                 "circuit breaker registry is at its credential cap and every remaining credential breaker "
                 "is tripped; keeping them all rather than forgetting a tripped credential",
                 extra={"extra_data": {"credential_breakers": credential_count, "cap": self._max_credential_breakers}},
             )
-
-    def _drop_locked(self, key: tuple[str, str | None, str | None]) -> None:
-        """forget one breaker. **caller holds the lock.**
-
-        :param key: ``(provider_name, fingerprint, model)``
-        :ptype key: tuple[str, str | None, str | None]
-        :return: nothing
-        :rtype: None
-        """
-        self._breakers.pop(key, None)
-        self._last_get.pop(key, None)
 
     def reset(self, provider_name: str, *, credential: str | None = None) -> None:
         """forces circuit breakers for a provider back to CLOSED state.
@@ -833,8 +832,8 @@ class CircuitBreakerRegistry:
         fingerprint = self._fingerprint(credential)
         with self._lock:
             breakers = [
-                breaker
-                for (name, key_fingerprint, _model), breaker in self._breakers.items()
+                held.breaker
+                for (name, key_fingerprint, _model), held in self._breakers.items()
                 if name == provider_name and (credential is None or key_fingerprint == fingerprint)
             ]
         for breaker in breakers:
@@ -856,8 +855,8 @@ class CircuitBreakerRegistry:
         with self._lock:
             # the provider's own breakers: one model's rate limit is not the provider's state (model_status)
             snapshot = [
-                (name, breaker.state)
-                for (name, _fingerprint, model), breaker in self._breakers.items()
+                (name, held.breaker.state)
+                for (name, _fingerprint, model), held in self._breakers.items()
                 if model is None
             ]
             providers = sorted(self._providers)
@@ -880,9 +879,9 @@ class CircuitBreakerRegistry:
         """
         with self._lock:
             snapshot = [
-                (f"{name}/{model}", breaker.state)
-                for (name, _fingerprint, model), breaker in self._breakers.items()
-                if model is not None and breaker.state is not CircuitState.CLOSED
+                (f"{name}/{model}", held.breaker.state)
+                for (name, _fingerprint, model), held in self._breakers.items()
+                if model is not None and held.breaker.state is not CircuitState.CLOSED
             ]
         result: dict[str, CircuitState] = {}
         for name, state in snapshot:
@@ -890,6 +889,23 @@ class CircuitBreakerRegistry:
             if current is None or _STATE_SEVERITY[state] > _STATE_SEVERITY[current]:
                 result[name] = state
         return result
+
+
+class _Held:
+    """one breaker the registry holds, stamped by each get() of its key under the registry's lock.
+
+    :param breaker: the breaker
+    :ptype breaker: CircuitBreaker
+    """
+
+    __slots__ = ("breaker", "last_get", "order")
+
+    def __init__(self, breaker: CircuitBreaker) -> None:
+        self.breaker = breaker
+        #: the clock reading of the key's last get()
+        self.last_get = 0.0
+        #: the registry's get() count at the key's last get()
+        self.order = 0
 
 
 def _droppable(key: tuple[str, str | None, str | None]) -> bool:

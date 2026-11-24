@@ -20,7 +20,8 @@ on nothing, so any package may hold its lazily built objects here without a new 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
+from types import MappingProxyType
 from typing import cast
 
 __all__ = ["BuildOnce"]
@@ -86,8 +87,10 @@ class BuildOnce[K: Hashable, V]:
             raise ValueError("BuildOnce bounds by cost and max_cost together: give both or neither")
         if max_cost is not None and max_cost < 0:
             raise ValueError(f"BuildOnce max_cost must be 0 or more, got {max_cost}")
-        self._values: dict[K, V] = {}
-        self._costs: dict[K, int] = {}
+        # read-only snapshots, replaced whole under the lock: get() reads without the lock, so a reader
+        # always holds one whole snapshot, never one a build is changing
+        self._values: Mapping[K, V] = MappingProxyType({})
+        self._costs: Mapping[K, int] = MappingProxyType({})
         self._total_cost = 0
         self._lock = threading.Lock()
         self._is_current = is_current
@@ -140,13 +143,13 @@ class BuildOnce[K: Hashable, V]:
         :ptype value: V
         """
         if self._cost is None or self._max_cost is None:
-            self._values[key] = value
+            self._values = MappingProxyType({**self._values, key: value})
             return
         self._drop(key)
         price = self._cost(value)
         if self._total_cost + price <= self._max_cost:
-            self._values[key] = value
-            self._costs[key] = price
+            self._values = MappingProxyType({**self._values, key: value})
+            self._costs = MappingProxyType({**self._costs, key: price})
             self._total_cost += price
 
     def _drop(self, key: K) -> object:
@@ -157,8 +160,13 @@ class BuildOnce[K: Hashable, V]:
         :return: the value that was stored, or the missing marker
         :rtype: object
         """
-        self._total_cost -= self._costs.pop(key, 0)
-        return self._values.pop(key, _MISSING)
+        self._total_cost -= self._costs.get(key, 0)
+        found: object = self._values.get(key, _MISSING)
+        if key in self._costs:
+            self._costs = MappingProxyType({held: price for held, price in self._costs.items() if held != key})
+        if found is not _MISSING:
+            self._values = MappingProxyType({held: value for held, value in self._values.items() if held != key})
+        return found
 
     def peek(self, key: K) -> V | None:
         """the value stored for *key*, current or not, without building one.
@@ -201,6 +209,6 @@ class BuildOnce[K: Hashable, V]:
             if dispose is not None:
                 for value in self._values.values():
                     dispose(value)
-            self._values.clear()
-            self._costs.clear()
+            self._values = MappingProxyType({})
+            self._costs = MappingProxyType({})
             self._total_cost = 0

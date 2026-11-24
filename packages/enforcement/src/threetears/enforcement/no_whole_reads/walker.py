@@ -77,6 +77,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
+from threetears.core.frozen_state import EMPTY, frozen, with_entry
 from threetears.enforcement.common import (
     dotted,
     iter_python_files,
@@ -2223,10 +2224,11 @@ class _ModuleWalk(ast.NodeVisitor):
         #: the module's lookup functions (:func:`_lookup_functions`), read once its strings are known
         self._lookups: dict[str, tuple[dict[str, str], str | None]] | None = None
         #: each nested function onto the function it is nested in, read once
-        self._enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] | None = None
+        self._enclosing: Mapping[int, ast.FunctionDef | ast.AsyncFunctionDef] | None = None
         #: each function's or class's body (by id, held) onto the assignments that name a class (:func:`_assignments`),
-        #: read once per body instead of once per call judged in it
-        self._assignments: dict[int, tuple[list[ast.stmt], list[_Assigned]]] = {}
+        #: read once per body instead of once per call judged in it; this and the other memos below are read-only
+        #: snapshots replaced whole (threetears.core.frozen_state), one entry a body, class or local of the module
+        self._assignments: Mapping[int, tuple[list[ast.stmt], list[_Assigned]]] = EMPTY
         self.source = source
         self.hits: list[WholeReadHit] = []
         #: every SQL statement the module writes as text, as the walk reads it
@@ -2269,7 +2271,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for owner, _, method in (producer.rpartition("."),)
         }
         #: per class, the ``self`` attributes every assignment of which is a producer's return
-        self._produced_attributes: dict[int, frozenset[str]] = {}
+        self._produced_attributes: Mapping[int, frozenset[str]] = EMPTY
         #: the module's transient producers' returns as written (:meth:`_producer_spellings`), read once
         self._spellings: frozenset[str] | None = None
         self._tree = tree
@@ -2280,7 +2282,7 @@ class _ModuleWalk(ast.NodeVisitor):
         #: the repo's declared state-column sources (:mod:`.keys`): a column from one bounds read_state_arrow alone
         self._scope_sources = scope_sources if scope_sources is not None else ScopeSources()
         #: (function, local) -> whether the local flows from a declared key source, each found once
-        self._key_locals: dict[tuple[int, str], bool] = {}
+        self._key_locals: Mapping[tuple[int, str], bool] = EMPTY
         self._verify = verify
         self._exec_calls = _EXEC_CALLS | exec_calls
         self._cte_arguments = cte_arguments or {}
@@ -4870,8 +4872,9 @@ class _ModuleWalk(ast.NodeVisitor):
         # once per function and name: a name read many times (and a cycle of locals) is followed once
         held = (id(self._function_nodes[-1]), name)
         if held not in self._key_locals:
-            self._key_locals[held] = False
-            self._key_locals[held] = self._derived_from_key(name, depth)
+            # False while it is followed: a cycle of locals reads it so, and stops
+            self._key_locals = with_entry(self._key_locals, held, False)
+            self._key_locals = with_entry(self._key_locals, held, self._derived_from_key(name, depth))
         return self._key_locals[held]
 
     def _derived_from_key(self, name: str, depth: int) -> bool:
@@ -5873,12 +5876,13 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: ast.FunctionDef | ast.AsyncFunctionDef | None
         """
         if self._enclosing is None:
-            self._enclosing = {}
+            enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] = {}
             for outer in walk_tree(self._tree):
                 if isinstance(outer, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     for inner in _own_nodes(outer.body):
                         if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            self._enclosing[id(inner)] = outer
+                            enclosing[id(inner)] = outer
+            self._enclosing = frozen(enclosing)
         return self._enclosing.get(id(function))
 
     def _receiver_class(
@@ -6123,7 +6127,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if kept is not None and kept[0] is body:
             return kept[1]
         found = _assignments(body)
-        self._assignments[id(body)] = (body, found)
+        self._assignments = with_entry(self._assignments, id(body), (body, found))
         return found
 
     def _schema_name_text(self, node: ast.expr) -> str | None:
@@ -6501,7 +6505,7 @@ class _ModuleWalk(ast.NodeVisitor):
                         )
                         (produced if made else other).add(target.attr)
         found = frozenset(produced - other)
-        self._produced_attributes[id(owner)] = found
+        self._produced_attributes = with_entry(self._produced_attributes, id(owner), found)
         return found
 
 

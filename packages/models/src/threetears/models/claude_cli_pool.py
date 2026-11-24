@@ -76,10 +76,11 @@ import secrets
 import signal
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from uuid_utils import uuid7
@@ -1336,19 +1337,23 @@ class ClaudeCliPool:
         self._reset_timeout = reset_timeout_seconds
         self._kill_grace = kill_grace_seconds
         self._condition = asyncio.Condition()
-        self._idle: dict[str, deque[_Idle]] = {}
-        self._live: dict[str, int] = {}
-        self._all: set[PooledCliSession] = set()
+        # The books below are read-only snapshots, each replaced whole in one statement (under the
+        # condition), so a reader holding one across an await never sees it change. Each is bounded
+        # by the live CLIs (``max_sessions``, tens at most), so rebuilding one is cheap.
+        #: Idle sessions by launch key, longest idle first; a key with none has no entry.
+        self._idle: Mapping[str, tuple[_Idle, ...]] = MappingProxyType({})
+        self._live: Mapping[str, int] = MappingProxyType({})
+        self._all: frozenset[PooledCliSession] = frozenset()
         self._total = 0
         self._closing = False
         self._reaper: asyncio.Task[None] | None = None
         #: Spares being started in the background (:meth:`_start_spare`), so a close can stop them.
-        self._spares: set[asyncio.Task[None]] = set()
+        self._spares: frozenset[asyncio.Task[None]] = frozenset()
         #: Every system prompt each key has seen, by agent name, least recently used first. A CLI
         #: starts with all of them defined as agents (see the module docstring). A key's entry lives
         #: only while the key holds a CLI: it is dropped with the key's last one, so the table is
         #: bounded by the live CLIs, not by every credential and schema the process has seen.
-        self._prompts: dict[str, dict[str, str]] = {}
+        self._prompts: Mapping[str, Mapping[str, str]] = MappingProxyType({})
         #: How a session is started. Injected by tests; a real host never passes it.
         self._start = session_factory or PooledCliSession.start
         self._structural_failures = 0
@@ -1371,7 +1376,7 @@ class ClaudeCliPool:
         #: session leaves this set only AFTER its CLI is confirmed stopped, so a stop that is
         #: cancelled or fails part-way leaves it where :meth:`known_pids` -- the interpreter-exit
         #: backstop -- and the next takeover or close still find it.
-        self._stopping: set[PooledCliSession] = set()
+        self._stopping: frozenset[PooledCliSession] = frozenset()
 
     @property
     def live_count(self) -> int:
@@ -1543,20 +1548,20 @@ class ClaudeCliPool:
         :return: the sessions the previous loop held, and any whose earlier stop never completed
         :rtype: list[PooledCliSession]
         """
-        self._stopping.update(self._all)
+        self._stopping = self._stopping | self._all
         stranded = list(self._stopping)
         took_over = self._served_a_loop
         self._served_a_loop = True
-        self._all.clear()
-        self._idle.clear()
-        self._live.clear()
+        self._all = frozenset()
+        self._idle = MappingProxyType({})
+        self._live = MappingProxyType({})
         self._total = 0
         self._condition = asyncio.Condition()
         self._reaper = None
-        self._prompts.clear()
+        self._prompts = MappingProxyType({})
         # A spare's task lived on the closed loop and ran no further than the loop did; its CLI,
         # if it got that far, is registered in ``_all`` and stopped with the rest.
-        self._spares = set()
+        self._spares = frozenset()
         if took_over:
             _logger.info(
                 "The event loop the Claude CLI pool served has closed; the pool now serves the next caller's loop",
@@ -1601,7 +1606,7 @@ class ClaudeCliPool:
                 extra={"pid": session.pid, "error": repr(exc)},
             )
         if stopped:
-            self._stopping.discard(session)
+            self._stopping = self._stopping - {session}
         return stopped
 
     def _note_structural_failure(self, exc: ClaudeCliSessionError) -> None:
@@ -1658,11 +1663,11 @@ class ClaudeCliPool:
             sessions = list(self._all)
             # a session not idle is on loan, its call still running: stopped as abandoned
             idle = {waiting.session for queue in self._idle.values() for waiting in queue}
-            self._stopping.update(sessions)
-            self._all.clear()
-            self._idle.clear()
-            self._live.clear()
-            self._prompts.clear()
+            self._stopping = self._stopping | self._all
+            self._all = frozenset()
+            self._idle = MappingProxyType({})
+            self._live = MappingProxyType({})
+            self._prompts = MappingProxyType({})
             self._total = 0
             self._condition.notify_all()
         spares = list(self._spares)
@@ -1676,7 +1681,7 @@ class ClaudeCliPool:
             self._reaper = None
         for session in sessions:
             await session.dispose(grace_seconds=self._kill_grace, abandoned=session not in idle)
-            self._stopping.discard(session)
+            self._stopping = self._stopping - {session}
         if stranded:
             await self._abandon(stranded)
         if sessions:
@@ -1706,7 +1711,7 @@ class ClaudeCliPool:
                 if taken is not None:
                     return taken
                 if self._total < self._max_sessions and self._live.get(key, 0) < self._per_key:
-                    self._live[key] = self._live.get(key, 0) + 1
+                    self._count(key, 1)
                     self._total += 1
                     break
                 victim = self._longest_idle_elsewhere(key) if self._live.get(key, 0) < self._per_key else None
@@ -1791,7 +1796,7 @@ class ClaudeCliPool:
         :ptype session: PooledCliSession
         """
         async with self._condition:
-            self._all.add(session)
+            self._all = self._all | {session}
 
     def _learn_prompt(self, key: str, options: Any) -> str | None:
         """Record the call's system prompt under its key; the agent that holds it.
@@ -1807,11 +1812,11 @@ class ClaudeCliPool:
         if not switchable or prompt is None:
             return None
         name = agent_name(prompt)
-        known = self._prompts.setdefault(key, {})
-        known.pop(name, None)
+        known = {held: was for held, was in self._prompts.get(key, {}).items() if held != name}
         known[name] = prompt
         while len(known) > _MAX_AGENTS_PER_KEY:
             known.pop(next(iter(known)))
+        self._prompts = MappingProxyType({**self._prompts, key: MappingProxyType(known)})
         return name
 
     def _launch_options(self, key: str, options: Any) -> Any:
@@ -1842,9 +1847,37 @@ class ClaudeCliPool:
         :param options: the CLI's launch options (:meth:`_launch_options`)
         :ptype options: Any
         """
-        known = self._prompts.setdefault(key, {})
+        known = dict(self._prompts.get(key, {}))
         for name, prompt in (getattr(options, "agents", None) or {}).items():
             known.setdefault(name, prompt)
+        self._prompts = MappingProxyType({**self._prompts, key: MappingProxyType(known)})
+
+    def _park(self, key: str, waiting: tuple[_Idle, ...]) -> None:
+        """Replace ``key``'s idle sessions with ``waiting``, dropping the key when it is empty. Call under the lock.
+
+        :param key: the launch key
+        :ptype key: str
+        :param waiting: its idle sessions, longest idle first
+        :ptype waiting: tuple[_Idle, ...]
+        """
+        idle = {held: queue for held, queue in self._idle.items() if held != key}
+        if waiting:
+            idle[key] = waiting
+        self._idle = MappingProxyType(idle)
+
+    def _count(self, key: str, delta: int) -> None:
+        """Add ``delta`` to ``key``'s live CLIs, dropping the key at zero. Call under the lock.
+
+        :param key: the launch key
+        :ptype key: str
+        :param delta: how many more (or fewer) CLIs it holds
+        :ptype delta: int
+        """
+        live = {held: count for held, count in self._live.items() if held != key}
+        count = self._live.get(key, 0) + delta
+        if count > 0:
+            live[key] = count
+        self._live = MappingProxyType(live)
 
     def _take_idle(self, key: str, agent: str | None) -> PooledCliSession | None:
         """Take the most recently idle session of ``key`` that defines ``agent``. Call under the lock.
@@ -1856,9 +1889,11 @@ class ClaudeCliPool:
         :return: the session, or ``None`` when no idle one can serve the call
         :rtype: PooledCliSession | None
         """
-        waiting = self._idle.get(key)
-        if not waiting:
+        held = self._idle.get(key)
+        if not held:
             return None
+        waiting = list(held)
+        taken: PooledCliSession | None = None
         for index in range(len(waiting) - 1, -1, -1):
             candidate = waiting[index].session
             if candidate.closed:
@@ -1866,8 +1901,11 @@ class ClaudeCliPool:
                 continue
             if agent is None or agent in candidate.agents:
                 del waiting[index]
-                return candidate
-        return None
+                taken = candidate
+                break
+        if len(waiting) != len(held):
+            self._park(key, tuple(waiting))
+        return taken
 
     def _idle_without(self, key: str, agent: str | None) -> tuple[str, PooledCliSession] | None:
         """Take the longest-idle session of ``key`` out of the idle set, one that lacks ``agent``.
@@ -1884,7 +1922,7 @@ class ClaudeCliPool:
             return None
         for index, idle in enumerate(waiting):
             if agent not in idle.session.agents:
-                del waiting[index]
+                self._park(key, waiting[:index] + waiting[index + 1 :])
                 return key, idle.session
         return None
 
@@ -1904,7 +1942,9 @@ class ClaudeCliPool:
                 oldest = (waiting[0].since, other)
         if oldest is None:
             return None
-        return oldest[1], self._idle[oldest[1]].popleft().session
+        waiting = self._idle[oldest[1]]
+        self._park(oldest[1], waiting[1:])
+        return oldest[1], waiting[0].session
 
     async def _return(
         self, key: str, session: PooledCliSession, *, clean: bool, options: Any, first_message_uuid: str | None
@@ -1942,7 +1982,7 @@ class ClaudeCliPool:
         if keep:
             async with self._condition:
                 if not self._closing:
-                    self._idle.setdefault(key, deque()).append(_Idle(session, time.monotonic()))
+                    self._park(key, (*self._idle.get(key, ()), _Idle(session, time.monotonic())))
                     self._condition.notify()
                     return
         # The spare's launch options are taken before the dispose: a key's last CLI takes the key's
@@ -1964,8 +2004,16 @@ class ClaudeCliPool:
         :ptype options: Any
         """
         task = asyncio.create_task(self._spare(key, options), context=contextvars.Context())
-        self._spares.add(task)
-        task.add_done_callback(self._spares.discard)
+        self._spares = self._spares | {task}
+        task.add_done_callback(self._spare_done)
+
+    def _spare_done(self, task: asyncio.Task[None]) -> None:
+        """Drop a finished spare's task from the books.
+
+        :param task: the spare's task
+        :ptype task: asyncio.Task[None]
+        """
+        self._spares = self._spares - {task}
 
     async def _spare(self, key: str, options: Any) -> None:
         """Start one spare and put it in the idle set, when the caps have room and none is waiting.
@@ -1987,7 +2035,7 @@ class ClaudeCliPool:
                 or self._live.get(key, 0) >= self._per_key
             ):
                 return
-            self._live[key] = self._live.get(key, 0) + 1
+            self._count(key, 1)
             self._total += 1
             # The key holds a CLI again, so it keeps the prompts that CLI defines.
             self._hold_prompts(key, options)
@@ -2006,9 +2054,9 @@ class ClaudeCliPool:
             return
         async with self._condition:
             parked = not self._closing
-            self._all.add(session)
+            self._all = self._all | {session}
             if parked:
-                self._idle.setdefault(key, deque()).append(_Idle(session, time.monotonic()))
+                self._park(key, (*self._idle.get(key, ()), _Idle(session, time.monotonic())))
                 self._condition.notify()
         if not parked:
             await self._dispose(key, session)
@@ -2029,16 +2077,14 @@ class ClaudeCliPool:
         """
         async with self._condition:
             if session is not None:
-                self._all.discard(session)
-            live = self._live.get(key, 0)
-            if live > 0:
-                self._live[key] = live - 1
+                self._all = self._all - {session}
+            if self._live.get(key, 0) > 0:
+                self._count(key, -1)
                 self._total = max(0, self._total - 1)
-            if self._live.get(key) == 0:
-                self._live.pop(key, None)
-                self._idle.pop(key, None)
+            if not self._live.get(key):
+                self._park(key, ())
                 # The key's last CLI is gone, and with it every agent the table was kept for.
-                self._prompts.pop(key, None)
+                self._prompts = MappingProxyType({held: known for held, known in self._prompts.items() if held != key})
             self._condition.notify()
 
     async def _forget_prompts_if_unheld(self, key: str) -> None:
@@ -2049,7 +2095,7 @@ class ClaudeCliPool:
         """
         async with self._condition:
             if not self._live.get(key):
-                self._prompts.pop(key, None)
+                self._prompts = MappingProxyType({held: known for held, known in self._prompts.items() if held != key})
 
     async def _dispose(self, key: str, session: PooledCliSession, *, abandoned: bool = False) -> None:
         """Stop one session and release its slot once the process is actually gone.
@@ -2098,9 +2144,14 @@ class ClaudeCliPool:
         cutoff = time.monotonic() - self._idle_ttl
         expired: list[tuple[str, PooledCliSession]] = []
         async with self._condition:
-            for key, waiting in self._idle.items():
-                while waiting and waiting[0].since <= cutoff:
-                    expired.append((key, waiting.popleft().session))
+            idle = self._idle
+            for key, waiting in idle.items():
+                gone = 0
+                while gone < len(waiting) and waiting[gone].since <= cutoff:
+                    expired.append((key, waiting[gone].session))
+                    gone += 1
+                if gone:
+                    self._park(key, waiting[gone:])
         for key, session in expired:
             _logger.info("Evicting an idle Claude CLI", extra={"extra_data": {"key": key[:12], "pid": session.pid}})
             await self._dispose(key, session)

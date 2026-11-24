@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
@@ -63,6 +63,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 from threetears.core.coordination.token_bucket import TokenBucketConflict
+from threetears.core.frozen_state import EMPTY, with_newest, without_entry
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
 
@@ -251,9 +252,11 @@ class RobotsGate:
         # circuit's equivalent state gets a manual `forget_target` instead -- evicting a
         # circuit row would discard a judgement nothing can reconstruct, while evicting one of
         # these costs exactly one re-fetch. A long-lived process scraping a wide set of sites
-        # would otherwise hold one entry per origin it had ever touched, forever.
-        self._cache: OrderedDict[str, tuple[RobotFileParser | _Unreadable | None, float]] = OrderedDict()
-        self._last_fetch_at: OrderedDict[str, float] = OrderedDict()
+        # would otherwise hold one entry per origin it had ever touched, forever. Each is a
+        # read-only snapshot in least-recently-touched order, replaced whole by
+        # threetears.core.frozen_state.with_newest(limit=max_origins).
+        self._cache: Mapping[str, tuple[RobotFileParser | _Unreadable | None, float]] = EMPTY
+        self._last_fetch_at: Mapping[str, float] = EMPTY
         # Bumped by `forget`. `_parser_for` deliberately does not hold the lock across its
         # fetch -- one slow origin must not stall every other -- which leaves a window where a
         # forget lands mid-load and the completing write would resurrect what was just
@@ -372,9 +375,12 @@ class RobotsGate:
         """
         origin = _origin_of(url)
         if origin:
-            self._last_fetch_at[origin] = now if now is not None else time.monotonic()
-            self._last_fetch_at.move_to_end(origin)
-            self._evict_if_needed(self._last_fetch_at)
+            self._last_fetch_at = with_newest(
+                self._last_fetch_at,
+                origin,
+                now if now is not None else time.monotonic(),
+                limit=self._max_origins,
+            )
 
     async def _delay_owed(self, origin: str, parser: RobotFileParser, now: float) -> float:
         """Seconds still owed to *origin* before another fetch is polite."""
@@ -404,14 +410,9 @@ class RobotsGate:
         :ptype url_or_origin: str
         """
         origin = _origin_of(url_or_origin) or url_or_origin
-        self._cache.pop(origin, None)
-        self._last_fetch_at.pop(origin, None)
+        self._cache = without_entry(self._cache, origin)
+        self._last_fetch_at = without_entry(self._last_fetch_at, origin)
         self._generation += 1
-
-    def _evict_if_needed(self, store: OrderedDict[str, Any]) -> None:
-        """Hold *store* to ``max_origins`` entries, dropping least-recently-touched first."""
-        while len(store) > self._max_origins:
-            store.popitem(last=False)
 
     async def refund_fleet_turn(self, url: str) -> None:
         """Give back a turn taken for a fetch that never happened.
@@ -591,7 +592,7 @@ class RobotsGate:
             if cached is not None and now < cached[1]:
                 # A read counts as use, or a steadily-scraped origin would be evicted by a
                 # burst of one-off ones purely because it was fetched longer ago.
-                self._cache.move_to_end(origin)
+                self._cache = with_newest(self._cache, origin, cached, limit=self._max_origins)
                 return cached[0]
             # A stale entry is still held until eviction; a PARSED one can stand in below. A
             # remembered 404 or empty file is not a copy of anything (section 2.4 is about a
@@ -615,9 +616,7 @@ class RobotsGate:
                 # Something was forgotten while this was in flight. Hand the caller what was
                 # actually fetched, but do not cache it: the write would undo the forget.
                 return parser
-            self._cache[origin] = (parser, now + lifetime)
-            self._cache.move_to_end(origin)
-            self._evict_if_needed(self._cache)
+            self._cache = with_newest(self._cache, origin, (parser, now + lifetime), limit=self._max_origins)
         return parser
 
     async def _load(self, origin: str) -> RobotFileParser | _Unreadable | None:

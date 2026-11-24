@@ -36,13 +36,13 @@ from __future__ import annotations
 
 import secrets
 import weakref
-from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any, ClassVar
 
 from threetears.core.cache.rtree import SQLiteRTree
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
+from threetears.core.frozen_state import EMPTY, with_entry, with_newest, without_entry
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, bounds_to_tile_range, tile_bounds
@@ -137,15 +137,17 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         # the chunks this pod has fully covered, each with the ids of the features intersecting
         # it, least recently read first. coverage is what lets a hit be trusted: without it the
         # R-Tree can only say what is held, never what is complete. only filled with an L1 bound,
-        # and bounded by ``_row_limit`` row entries (``_held``).
-        self._chunks: OrderedDict[_ChunkMarker, tuple[Any, ...]] = OrderedDict()
+        # and bounded by ``_row_limit`` row entries (``_held``). a read-only snapshot replaced whole
+        # (threetears.core.frozen_state): one entry a chunk, a few hundred at the default bound.
+        self._chunks: Mapping[_ChunkMarker, tuple[Any, ...]] = EMPTY
         self._held = 0
         # each held feature's row by its R-Tree feature key, and how many held chunks carry it: a
         # feature leaves the rows and the index only when the last chunk holding it is evicted
         self._rows: dict[str, dict[str, Any]] = {}
         self._holders: dict[str, int] = {}
-        # chunks a read in progress depends on, which eviction skips until that read has answered
-        self._pins: dict[_ChunkMarker, int] = {}
+        # chunks a read in progress depends on, which eviction skips until that read has answered;
+        # a read-only snapshot replaced whole
+        self._pins: Mapping[_ChunkMarker, int] = EMPTY
         # names this instance's own R-Tree, so instances sharing the L1 never read or evict each
         # other's entries
         self._instance_key = secrets.token_hex(6)
@@ -310,8 +312,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         try:
             for chunk in chunks:
                 marker = (layer, source_version, chunk.key)
-                if marker in self._chunks:
-                    self._chunks.move_to_end(marker)
+                held_ids = self._chunks.get(marker)
+                if held_ids is not None:
+                    self._chunks = with_newest(self._chunks, marker, held_ids)
                 else:
                     loaded = self._identified(await self._loader(layer, source_version, tile_bounds(chunk)))
                     log.debug(
@@ -337,7 +340,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                         continue
                     claimed += weight
                     self._index_many(self._hold(marker, loaded))
-                self._pins[marker] = self._pins.get(marker, 0) + 1
+                self._pins = with_entry(self._pins, marker, self._pins.get(marker, 0) + 1)
                 pinned.append(marker)
             found = dict(transient)
             for key in self._keys_in_bbox(layer, source_version, bounds):
@@ -349,9 +352,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             for marker in pinned:
                 count = self._pins[marker] - 1
                 if count:
-                    self._pins[marker] = count
+                    self._pins = with_entry(self._pins, marker, count)
                 else:
-                    del self._pins[marker]
+                    self._pins = without_entry(self._pins, marker)
             self._evict()
 
     @property
@@ -460,7 +463,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             # two reads loaded the same chunk at once; the later one replaces the earlier
             self._release(marker)
         layer, source_version, _key = marker
-        self._chunks[marker] = tuple(rows)
+        self._chunks = with_newest(self._chunks, marker, tuple(rows))
         self._held += max(1, len(rows))
         fresh: list[tuple[str, BoundingBox]] = []
         for feature_id, row in rows.items():
@@ -492,7 +495,8 @@ class FeatureCache(BaseCollection[FeatureEntity]):
 
     def _release(self, marker: _ChunkMarker) -> None:
         """evict one covered chunk, dropping each feature no other held chunk carries."""
-        feature_ids = self._chunks.pop(marker)
+        feature_ids = self._chunks[marker]
+        self._chunks = without_entry(self._chunks, marker)
         self._held -= max(1, len(feature_ids))
         layer, source_version, _key = marker
         gone: list[str] = []

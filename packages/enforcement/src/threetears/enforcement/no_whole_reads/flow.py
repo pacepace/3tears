@@ -21,11 +21,12 @@ or referenced other than by a call (handed on as a value), is none. A declared t
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 import re
 from typing import Final, Literal
 
+from threetears.core.frozen_state import EMPTY, frozen, with_entry
 from threetears.enforcement.common import dotted, kept_for, walk_tree
 from threetears.enforcement.no_whole_reads.helpers import COPY_CALLS, STEP_CALLS, STEP_RELATIONS, STEP_TARGETS
 
@@ -353,8 +354,8 @@ class RepoForwarders:
     methods: dict[str, Callee] = field(default_factory=dict)
     forwarded: dict[int, dict[str, set[Mode]]] = field(default_factory=dict)
     returned: dict[int, dict[str, set[Mode]]] = field(default_factory=dict)
-    returning: set[int] = field(default_factory=set)
-    wanted: set[int] = field(default_factory=set)
+    returning: frozenset[int] = frozenset()
+    wanted: frozenset[int] = frozenset()
 
     def size(self) -> tuple[int, int, int, int]:
         """how much the shared state holds, to tell when following it has settled.
@@ -513,29 +514,28 @@ class RelationFlow:
                     if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
                 ]
         self._owners = {id(function): owner for function, owner in self._definitions}
-        self._functions: dict[str, Function] = {}
-        self._methods: dict[str, tuple[Function, ast.ClassDef]] = {}
-        self._constructors: dict[str, tuple[Function, ast.ClassDef]] = {}
-        self._candidates: set[int] = set()
-        self._bindings: dict[int, dict[str, list[_Binding]]] = {}
-        self._fields: dict[int, dict[str, list[_Binding]]] = {}
+        # each a read-only value replaced whole, never changed in place (threetears.core.frozen_state)
+        self._functions: Mapping[str, Function] = EMPTY
+        self._methods: Mapping[str, tuple[Function, ast.ClassDef]] = EMPTY
+        self._constructors: Mapping[str, tuple[Function, ast.ClassDef]] = EMPTY
+        self._candidates: frozenset[int] = frozenset()
+        self._bindings: Mapping[int, dict[str, list[_Binding]]] = EMPTY
+        self._fields: Mapping[int, dict[str, list[_Binding]]] = EMPTY
         #: per forwarder, each parameter it hands a step and how (the repo's, shared, where it follows them across
         #: modules)
         self.forwarded: dict[int, dict[str, set[Mode]]] = repo.forwarded if repo is not None else {}
-        #: the forwarders every return of which is a relation (clean or handed)
-        self._returning: set[int] = repo.returning if repo is not None else set()
+        #: the repo's shared state, or this module's own: ``returning`` and ``wanted`` are frozensets it replaces whole
+        self._shared = repo if repo is not None else RepoForwarders()
         #: per relation-returning forwarder, each parameter only its returns hand on, and how: judged where a call of
         #: it stands as a relation, by the argument that call hands it
         self._returned: dict[int, dict[str, set[Mode]]] = repo.returned if repo is not None else {}
         #: the relation-returning forwarder whose returns the walk reads: its own parameters read there are recorded
         #: as returned, every other one as forwarded
         self._returning_now: int | None = None
-        #: the forwarders a call of which stands where a relation is named: only these may return relations
-        self._wanted: set[int] = repo.wanted if repo is not None else set()
         self._recording = True
         #: a parameter of a forwarder reads as handed without being recorded (whether a function returns relations)
         self._dry = False
-        self._busy: set[tuple[int, str]] = set()
+        self._busy: frozenset[tuple[int, str]] = frozenset()
         self._find_forwarders(tree, producer)
         self._settle()
         self._recording = False
@@ -560,6 +560,10 @@ class RelationFlow:
                 loose_attributes.add(node.attr)
         eligible = self._repo.eligible if self._repo is not None else frozenset()
         external: set[int] = set()
+        functions: dict[str, Function] = {}
+        constructors: dict[str, tuple[Function, ast.ClassDef]] = {}
+        methods: dict[str, tuple[Function, ast.ClassDef]] = {}
+        candidates: set[int] = set()
         for function, owner in self._definitions:
             if producer(function, owner):
                 continue
@@ -570,24 +574,27 @@ class RelationFlow:
             if owner is None:
                 if function.name in loose_names:
                     continue
-                self._functions[function.name] = function
+                functions[function.name] = function
             elif function.name == "__init__":
-                self._constructors[owner.name] = (function, owner)
+                constructors[owner.name] = (function, owner)
             else:
                 if names[function.name] > 1 or function.name in loose_attributes:
                     continue
-                self._methods[function.name] = (function, owner)
+                methods[function.name] = (function, owner)
             if public:
                 external.add(id(function))
             else:
-                self._candidates.add(id(function))
+                candidates.add(id(function))
+        # _match reads these, so they are in place before the walk below
+        self._functions = frozen(functions)
+        self._constructors = frozen(constructors)
+        self._methods = frozen(methods)
         sited: set[int] = set()
         for node in walk_tree(tree):
             if isinstance(node, ast.Call) and (matched := self._match(node)) is not None:
                 sited.add(id(matched.function))
-        self._candidates &= sited
         # a public one of the repo's: its calls are in any module, each judged by that module's walk
-        self._candidates |= external
+        self._candidates = frozenset((candidates & sited) | external)
 
     def callee(self, call: ast.Call) -> Callee | None:
         """the forwarder a call reaches, if it is one's call.
@@ -628,7 +635,7 @@ class RelationFlow:
                 scope = _Scope(function, owner)
                 for expression, mode in self._positions(function):
                     self._judged(expression, mode, scope)
-                if id(function) in self._returning:
+                if id(function) in self._shared.returning:
                     # a return hands its parameters on only where a call of the function stands as a relation
                     self._returning_now = id(function)
                     try:
@@ -637,7 +644,7 @@ class RelationFlow:
                                 self._judged(node.value, "rel", scope)
                     finally:
                         self._returning_now = None
-                elif id(function) in self._wanted:
+                elif id(function) in self._shared.wanted:
                     returned = [
                         node.value
                         for node in walk_tree(function)
@@ -649,7 +656,7 @@ class RelationFlow:
                     finally:
                         self._dry = False
                     if returned and _combine(kinds) is not None:
-                        self._returning.add(id(function))
+                        self._shared.returning = self._shared.returning | {id(function)}
             if self._size() == before:
                 return
 
@@ -657,7 +664,7 @@ class RelationFlow:
         def count(found: dict[int, dict[str, set[Mode]]]) -> int:
             return sum(len(modes) for handed in found.values() for modes in handed.values())
 
-        return count(self.forwarded), count(self._returned), len(self._returning), len(self._wanted)
+        return count(self.forwarded), count(self._returned), len(self._shared.returning), len(self._shared.wanted)
 
     def _positions(self, function: Function) -> Iterator[tuple[ast.expr, Mode]]:
         """each expression a function names a relation by: a step's relation arguments, a forwarder's handed
@@ -788,9 +795,9 @@ class RelationFlow:
         if self._produces(node, scope.function, scope.owner):
             return CLEAN
         callee = self.callee(node)
-        if callee is not None and (self._recording or self._dry):
-            self._wanted.add(id(callee.function))
-        if callee is not None and id(callee.function) in self._returning:
+        if callee is not None and (self._recording or self._dry) and id(callee.function) not in self._shared.wanted:
+            self._shared.wanted = self._shared.wanted | {id(callee.function)}
+        if callee is not None and id(callee.function) in self._shared.returning:
             # a relation-returning forwarder: what it returns is what each call hands the parameters its returns hand on
             returned = self._returned.get(id(callee.function), {})
             kinds: list[_Kind | str] = [CLEAN]
@@ -907,22 +914,22 @@ class RelationFlow:
         key = (id(owner), f"self.{attribute}:{mode}")
         if key in self._busy:
             return _NEUTRAL
-        self._busy.add(key)
+        self._busy = self._busy | {key}
         try:
             kinds = [self._one(binding, mode, _Scope(binding.scope, owner), depth + 1) for binding in bindings]
         finally:
-            self._busy.discard(key)
+            self._busy = self._busy - {key}
         return _combine(kinds)
 
     def _bound(self, bindings: list[_Binding], mode: Mode, scope: _Scope, depth: int) -> _Kind | str:
         key = (id(bindings), mode)
         if key in self._busy:
             return _NEUTRAL
-        self._busy.add(key)
+        self._busy = self._busy | {key}
         try:
             kinds = [self._one(binding, mode, scope, depth + 1) for binding in bindings]
         finally:
-            self._busy.discard(key)
+            self._busy = self._busy - {key}
         return _combine(kinds)
 
     def _one(self, binding: _Binding, mode: Mode, scope: _Scope, depth: int) -> _Kind | str:
@@ -985,7 +992,7 @@ class RelationFlow:
                 if isinstance(receiver, ast.Name):
                     for binding in _mutation(node, function):
                         add(receiver.id, binding)
-        self._bindings[id(function)] = found
+        self._bindings = with_entry(self._bindings, id(function), found)
         return found
 
     def _assigned(
@@ -1079,7 +1086,7 @@ class RelationFlow:
                     if named is not None:
                         for binding in _mutation(node, method):
                             found.setdefault(named, []).append(binding)
-        self._fields[id(owner)] = found
+        self._fields = with_entry(self._fields, id(owner), found)
         return found
 
 

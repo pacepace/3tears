@@ -45,7 +45,9 @@ the junk name itself.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessageChunk
@@ -155,7 +157,8 @@ class JunkToolCallStreamFilter:
 
     def __init__(self) -> None:
         """start with no calls seen."""
-        self._calls: dict[Any, _Call] = {}
+        # one entry per tool call in this stream, a handful: a read-only snapshot, a new call added whole
+        self._calls: Mapping[Any, _Call] = MappingProxyType({})
 
     def feed(self, chunk: ChatGenerationChunk) -> list[ChatGenerationChunk]:
         """take one chunk from the source; return the chunks to emit now, in order.
@@ -252,7 +255,10 @@ class JunkToolCallStreamFilter:
         index = fragment.get("index")
         name = fragment.get("name")
         released: list[ChatGenerationChunk] = []
-        call = self._calls.setdefault(index, _Call()) if index is not None else None
+        call = self._calls.get(index) if index is not None else None
+        if call is None and index is not None:
+            call = _Call()
+            self._calls = MappingProxyType({**self._calls, index: call})
         if call is not None and call.verdict != "dropped" and name is not None and name != "":
             released_as = call.name if call.verdict == "released" else None
             call.name = call.name + name if isinstance(name, str) else repr(name)

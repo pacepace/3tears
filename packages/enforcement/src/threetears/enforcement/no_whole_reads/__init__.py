@@ -95,6 +95,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Final
 
+from threetears.core.frozen_state import EMPTY, with_entry
 from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.bounded import BoundBy
 from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME, apply_index_declarations
@@ -951,7 +952,8 @@ class _Settled:
             self._by_path.setdefault(hit.path, []).append(hit)
         self._covered = covered
         self._exemptions = exemptions
-        self._known: dict[tuple[str, str], bool] = {}
+        # a read-only memo replaced whole (threetears.core.frozen_state), one entry a function judged
+        self._known: Mapping[tuple[str, str], bool] = EMPTY
 
     def __call__(self, target: tuple[str, str], seen: frozenset[tuple[str, str]] = frozenset()) -> bool:
         """whether every whole read of a function (and of the functions defined inside it) is settled.
@@ -972,7 +974,7 @@ class _Settled:
             if hit.function == function or hit.function.startswith(f"{function}.")
         ]
         answer = bool(own) and all(self._settled(hit, seen | {target}) for hit in own)
-        self._known[target] = answer
+        self._known = with_entry(self._known, target, answer)
         return answer
 
     def _settled(self, hit: WholeReadHit, seen: frozenset[tuple[str, str]]) -> bool:

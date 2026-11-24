@@ -32,6 +32,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Final
 
 import httpx
@@ -141,7 +142,8 @@ class OidcDiscoveryClient:
         :ptype client: httpx.AsyncClient
         """
         self._client = client
-        self._cache: dict[str, OidcProviderMetadata] = {}
+        # a read-only snapshot per issuer, replaced whole: discover() awaits, so a reader never sees it change
+        self._cache: Mapping[str, OidcProviderMetadata] = MappingProxyType({})
 
     async def discover(self, issuer: str) -> OidcProviderMetadata:
         """Resolve ``issuer``'s metadata, from cache when already fetched.
@@ -190,7 +192,7 @@ class OidcDiscoveryClient:
             )
         except KeyError as exc:
             raise OidcError(f"oidc discovery document is missing {exc.args[0]!r}.") from None
-        self._cache[issuer] = metadata
+        self._cache = MappingProxyType({**self._cache, issuer: metadata})
         return metadata
 
     def forget(self, issuer: str) -> None:
@@ -199,7 +201,7 @@ class OidcDiscoveryClient:
         The escape hatch for key rotation: a verifier that fails on an unknown ``kid`` can
         call this and retry once, rather than waiting for a restart.
         """
-        self._cache.pop(issuer, None)
+        self._cache = MappingProxyType({held: kept for held, kept in self._cache.items() if held != issuer})
 
 
 def verify_id_token(

@@ -23,8 +23,9 @@ logs failures with ``exc_info=True`` and never re-raises.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -743,7 +744,8 @@ class UsageTracker:
         self._tracer: Tracer | None = None
         self._otel_available = False
         self._prom = _get_prom_emitter(prom_registry)
-        self._pending_sinks: set[asyncio.Task[None]] = set()
+        # the sink writes in flight: a read-only snapshot replaced whole, each write dropping itself when done
+        self._pending_sinks: frozenset[asyncio.Task[None]] = frozenset()
         self._audit_sink = audit_sink
         self._counter_sink = counter_sink
         if _OPENTELEMETRY:
@@ -787,6 +789,14 @@ class UsageTracker:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
+    def _sink_done(self, task: asyncio.Task[None]) -> None:
+        """drop a finished sink write from the writes in flight.
+
+        :param task: the finished write
+        :ptype task: asyncio.Task[None]
+        """
+        self._pending_sinks = self._pending_sinks - {task}
+
     def _dispatch_sink(
         self,
         kind: str,
@@ -819,8 +829,8 @@ class UsageTracker:
             # held until done: the loop keeps only a weak reference to a task, so an unreferenced sink
             # write can be garbage-collected mid-flight.
             task = loop.create_task(self._invoke_sink(kind, sink, usage))
-            self._pending_sinks.add(task)
-            task.add_done_callback(self._pending_sinks.discard)
+            self._pending_sinks = self._pending_sinks | {task}
+            task.add_done_callback(self._sink_done)
             return
 
         # no running loop -- synchronous fallback for tests and scripts.
@@ -963,6 +973,10 @@ class UsageTracker:
         )
 
 
+#: what a call's start leaves for its end: (monotonic start, (attribution fields, purpose), prompt messages)
+type _Run = tuple[float, tuple[dict[str, Any], LlmPurpose | None], list[Any]]
+
+
 class UsageTrackingCallback(BaseCallbackHandler):
     """LangChain callback that records ``UsageRecord`` on every ``on_llm_end``.
 
@@ -1014,12 +1028,37 @@ class UsageTrackingCallback(BaseCallbackHandler):
         self._tier = tier
         self._cost_per_input_token = cost_per_input_token
         self._cost_per_output_token = cost_per_output_token
-        # run_id -> monotonic start timestamp for latency calculation
-        self._starts: dict[Any, float] = {}
-        # run_id -> (attribution fields, purpose) named by the run's metadata
-        self._attribution: dict[Any, tuple[dict[str, Any], LlmPurpose | None]] = {}
-        # run_id -> the prompt messages, for an input estimate when the provider reports no usage
-        self._prompts: dict[Any, list[Any]] = {}
+        # run_id -> (monotonic start for latency, (attribution fields, purpose) named by the run's metadata,
+        # the prompt messages for an input estimate when the provider reports no usage). One entry per call
+        # in flight on this model: a read-only snapshot replaced whole under the lock, because a sync
+        # invoke runs these callbacks on its caller's thread and two threads may start calls at once.
+        self._runs: Mapping[Any, _Run] = MappingProxyType({})
+        self._runs_lock = threading.Lock()
+
+    def _started(self, key: Any, run: _Run) -> None:
+        """note a call that started.
+
+        :param key: the run's key
+        :ptype key: Any
+        :param run: what the call's end needs
+        :ptype run: _Run
+        """
+        with self._runs_lock:
+            self._runs = MappingProxyType({**self._runs, key: run})
+
+    def _finished(self, key: Any) -> _Run | None:
+        """take a call's start out of the books.
+
+        :param key: the run's key
+        :ptype key: Any
+        :return: what its start noted, ``None`` when this callback never saw it start
+        :rtype: _Run | None
+        """
+        with self._runs_lock:
+            run = self._runs.get(key)
+            if run is not None:
+                self._runs = MappingProxyType({held: was for held, was in self._runs.items() if held != key})
+        return run
 
     def on_llm_start(
         self,
@@ -1042,9 +1081,14 @@ class UsageTrackingCallback(BaseCallbackHandler):
         """
         _ = serialized
         key = run_id if run_id is not None else id(self)
-        self._starts[key] = time.monotonic()
-        self._attribution[key] = _attribution_at_start(kwargs.get("metadata"))
-        self._prompts[key] = [SimpleNamespace(content=p) for p in prompts]
+        self._started(
+            key,
+            (
+                time.monotonic(),
+                _attribution_at_start(kwargs.get("metadata")),
+                [SimpleNamespace(content=p) for p in prompts],
+            ),
+        )
 
     def on_chat_model_start(
         self,
@@ -1070,9 +1114,10 @@ class UsageTrackingCallback(BaseCallbackHandler):
         """
         _ = serialized
         key = run_id if run_id is not None else id(self)
-        self._starts[key] = time.monotonic()
-        self._attribution[key] = _attribution_at_start(kwargs.get("metadata"))
-        self._prompts[key] = [m for batch in messages for m in batch]
+        self._started(
+            key,
+            (time.monotonic(), _attribution_at_start(kwargs.get("metadata")), [m for batch in messages for m in batch]),
+        )
 
     def on_llm_end(
         self,
@@ -1092,12 +1137,12 @@ class UsageTrackingCallback(BaseCallbackHandler):
         """
         _ = kwargs
         key = run_id if run_id is not None else id(self)
-        start = self._starts.pop(key, None)
-        latency_ms = int((time.monotonic() - start) * 1000) if start is not None else 0
+        run = self._finished(key)
+        latency_ms = int((time.monotonic() - run[0]) * 1000) if run is not None else 0
         # taken when the call started (scope, then the run's metadata over it); a call whose start this
         # callback never saw is attributed by the scope in force now
-        attribution, purpose = self._attribution.pop(key, (current_usage_scope(), None))
-        extracted = extract_usage(response, prompt_messages=self._prompts.pop(key, None))
+        attribution, purpose = run[1] if run is not None else (current_usage_scope(), None)
+        extracted = extract_usage(response, prompt_messages=run[2] if run is not None else None)
         input_tokens, output_tokens = extracted.input_tokens, extracted.output_tokens
         total_tokens = input_tokens + output_tokens
 
@@ -1159,9 +1204,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
         """
         _ = kwargs
         key = run_id if run_id is not None else id(self)
-        self._starts.pop(key, None)
-        self._attribution.pop(key, None)
-        self._prompts.pop(key, None)
+        self._finished(key)
         logger.debug(
             "LLM call errored, usage record skipped: %s",
             error,

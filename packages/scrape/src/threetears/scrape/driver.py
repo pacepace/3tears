@@ -224,7 +224,7 @@ class ScrapeDriver(ABC):
     #: to prevent.
     #: Per render was the opposite failure, a warning per document across a whole listing.
     #: An origin is the unit a human's solve actually belongs to, so it is the unit here.
-    _warned_dropped_origins: set[str] | None = None
+    _warned_dropped_origins: frozenset[str] = frozenset()
 
     #: What to tell an operator instead. PUBLIC and a class attribute: subclasses are meant to
     #: override it, which the repo's underscore rule rightly forbids for a private name -- an
@@ -262,10 +262,8 @@ class ScrapeDriver(ABC):
         :ptype log: Any
         """
         origin = _origin_of(url)
-        if self._warned_dropped_origins is None:
-            # Lazily built per instance, so no backend has to remember to initialise it and
-            # the class-level default is never mutated into a set shared by every driver.
-            self._warned_dropped_origins = set()
+        # A frozenset replaced whole on the instance, never changed in place: the class-level
+        # empty default is shared by every driver and stays empty.
         if origin in self._warned_dropped_origins:
             return
         if len(self._warned_dropped_origins) >= _MAX_WARNED_ORIGINS:
@@ -273,8 +271,8 @@ class ScrapeDriver(ABC):
             # would otherwise hold one string per origin forever, which is the same leak the
             # robots gate had to fix. Clearing wholesale re-warns once for each site still in
             # play, which is the honest cost -- noisier than "at most one", and still bounded.
-            self._warned_dropped_origins.clear()
-        self._warned_dropped_origins.add(origin)
+            self._warned_dropped_origins = frozenset()
+        self._warned_dropped_origins = self._warned_dropped_origins | {origin}
         log.warning(
             "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
             "unauthenticated. %s (reported once per site)",

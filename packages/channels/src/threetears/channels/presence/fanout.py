@@ -36,7 +36,9 @@ task-03). a dropped frame is not recovered here.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.nats import NatsClient, Subjects
 from threetears.nats.client import Subscription
 from threetears.observe import contain, get_logger
@@ -81,8 +83,9 @@ class RoomFanout:
         # connection ref-count + the retained Subscription handle so the
         # last leave can tear the subscription down. guarded by ``_lock``
         # because join/leave (WS loop) and the NATS callback both touch it.
-        self._ref_counts: dict[str, int] = {}
-        self._subscriptions: dict[str, Subscription] = {}
+        # read-only snapshots replaced whole (threetears.core.frozen_state), one entry per room
+        self._ref_counts: Mapping[str, int] = EMPTY
+        self._subscriptions: Mapping[str, Subscription] = EMPTY
         self._lock = asyncio.Lock()
 
     async def join_room(
@@ -114,7 +117,7 @@ class RoomFanout:
         await self._room_state.join(room_id, connection_id, user_id, customer_id)
         async with self._lock:
             count = self._ref_counts.get(room_id, 0)
-            self._ref_counts[room_id] = count + 1
+            self._ref_counts = with_entry(self._ref_counts, room_id, count + 1)
             if count == 0:
                 # subscribe UNDER the lock so the ref bump and the stored
                 # subscription handle move as ONE atomic step. were the
@@ -146,12 +149,12 @@ class RoomFanout:
         async with self._lock:
             count = self._ref_counts.get(room_id, 0)
             if count > 1:
-                self._ref_counts[room_id] = count - 1
+                self._ref_counts = with_entry(self._ref_counts, room_id, count - 1)
                 return
             # last local member (or a defensive count <= 0): drop the ref and
             # tear the subscription down atomically with it, under the lock —
             # the symmetric counterpart to the atomic subscribe in join_room.
-            self._ref_counts.pop(room_id, None)
+            self._ref_counts = without_entry(self._ref_counts, room_id)
             await self._unsubscribe_locked(room_id)
 
     async def broadcast(
@@ -263,11 +266,12 @@ class RoomFanout:
         :rtype: None
         """
         # sender-posture: unauthenticated open S7 -- frames go to browser sockets on the subject's say-so
-        self._subscriptions[room_id] = await self._nats.subscribe_typed(
+        subscription = await self._nats.subscribe_typed(
             subject=Subjects.room(room_id),
             message_type=RoomFrame,
             cb=self._deliver,
         )
+        self._subscriptions = with_entry(self._subscriptions, room_id, subscription)
         log.debug(
             "room fanout subscribed",
             extra={"extra_data": {"room_id": room_id, "pod_id": self._room_state.pod_id}},
@@ -285,7 +289,8 @@ class RoomFanout:
         :return: nothing
         :rtype: None
         """
-        subscription = self._subscriptions.pop(room_id, None)
+        subscription = self._subscriptions.get(room_id)
+        self._subscriptions = without_entry(self._subscriptions, room_id)
         if subscription is None:
             return
         await subscription.unsubscribe()

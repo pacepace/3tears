@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 from xml.etree.ElementTree import ParseError
 
@@ -134,7 +135,8 @@ class SamlMetadataResolver:
         :ptype client: httpx.AsyncClient
         """
         self._client = client
-        self._cache: dict[str, SamlIdpMetadata] = {}
+        # a read-only snapshot per issuer, replaced whole: discover() awaits, so a reader never sees it change
+        self._cache: Mapping[str, SamlIdpMetadata] = MappingProxyType({})
 
     async def discover(self, idp_metadata_url: str) -> SamlIdpMetadata:
         """Fetch and cache the metadata at ``idp_metadata_url``.
@@ -154,12 +156,12 @@ class SamlMetadataResolver:
         if entity_id is None:
             raise SamlError("saml metadata document has no entityID.")
         metadata = SamlIdpMetadata(entity_id=entity_id, metadata_xml=metadata_xml)
-        self._cache[idp_metadata_url] = metadata
+        self._cache = MappingProxyType({**self._cache, idp_metadata_url: metadata})
         return metadata
 
     def forget(self, idp_metadata_url: str) -> None:
         """Drop a cached document so the next :meth:`discover` refetches it."""
-        self._cache.pop(idp_metadata_url, None)
+        self._cache = MappingProxyType({held: kept for held, kept in self._cache.items() if held != idp_metadata_url})
 
 
 def peek_entity_id(metadata_xml: str) -> str | None:
