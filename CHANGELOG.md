@@ -17,6 +17,10 @@ for the classes a process happened to import: the hub never imported `MemoriesCo
 undeclared and a user merge's record went out under `_all`. Listed here: core, agent-acl, agent-memory, agent-skills,
 agent-tools, agent-wake, channels, conversations, datasources, mcp, registry, scheduled-jobs, scrape.
 
+**Fixed:** the loader read a listed module's collection classes off its attributes, so a factory's classes (named
+for the module, held in a dict) declared nothing: reports' `pod.tables` recorded none of its 27 tables. It now reads
+them off the class tree by `__module__`.
+
 **Changed:** a registry lookup for a table no listed module declares (`tenancy_of_table`, the new per-table
 `has_write_generation` and `written_l2_first`) keeps its fallback this release, but logs at ERROR once per table and
 lookup and counts `threetears_undeclared_table_total{table, lookup}`. Next release it is refused

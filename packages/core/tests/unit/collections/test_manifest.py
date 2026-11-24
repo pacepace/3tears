@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from prometheus_client import REGISTRY
@@ -82,6 +84,46 @@ print([r.extra_data["loader_ran"] for r in records])
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert result.stdout.strip().splitlines()[-1] == "[False]"
+
+
+_FACTORY_MODULE = """
+from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
+
+_SCHEMA = TableSchema(
+    name="factory_made_rows",
+    primary_key=("row_id",),
+    columns=[Column("row_id", STRING_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
+)
+# held in a dict, bound to no attribute of the module: a factory's class, as reports' pod.tables makes one a table
+_COLLECTIONS = {_SCHEMA.name: collection_for_schema(_SCHEMA, module=__name__)}
+"""
+
+
+@pytest.mark.uncacheable("a fresh interpreter with a distribution of its own is the point")
+def test_a_factory_made_class_bound_to_no_module_attribute_is_recorded(tmp_path: Path) -> None:
+    (tmp_path / "factory_made_collections.py").write_text(_FACTORY_MODULE)
+    dist = tmp_path / "factory_made-0.0.0.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: factory-made\nVersion: 0.0.0\n")
+    (dist / "entry_points.txt").write_text(
+        "[threetears.collections]\nfactory_made_collections = factory_made_collections\n"
+    )
+    script = """
+from threetears.core.collections import load_declared_collections
+loaded = load_declared_collections()
+print("factory_made_collections" in loaded.modules, "factory_made_rows" in loaded.tables)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert result.stdout.strip().splitlines()[-1] == "True True"
 
 
 @pytest.mark.xfail(

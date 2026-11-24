@@ -121,14 +121,31 @@ def _tables_of(module_name: str) -> frozenset[str]:
             "  fix: install what it needs, or, when it needs an optional extra, name the extra on its entry point\n"
             '  ("module [extra]") so it loads only where the extra is installed.\n'
         ) from exc
+    # every collection class the module made, read off the class tree rather than the module's names: a factory's
+    # classes (reports' pod.tables builds one a table, held in a dict) are named for the module but bound to no
+    # attribute of it, and a census of its attributes found none of them
     return frozenset(
         name
-        for value in vars(module).values()
-        if isinstance(value, type)
-        and issubclass(value, BaseCollection)
-        and value.__module__ == module_name
-        and (name := table_named_by_class(value)) is not None
+        for value in _collection_classes()
+        if value.__module__ == module.__name__ and (name := table_named_by_class(value)) is not None
     )
+
+
+def _collection_classes() -> tuple[type, ...]:
+    """every subclass of :class:`BaseCollection` defined in this process, at any depth.
+
+    :return: the classes, each once
+    :rtype: tuple[type, ...]
+    """
+    seen: dict[type, None] = {}
+    pending: list[type] = [BaseCollection]
+    while pending:
+        found: list[type] = pending.pop().__subclasses__()
+        for sub in found:
+            if sub not in seen:
+                seen[sub] = None
+                pending.append(sub)
+    return tuple(seen)
 
 
 def _load() -> DeclaredCollections:
