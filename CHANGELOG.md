@@ -35,6 +35,19 @@ such a table fresh (`why="schema_change"`, one read from L3) when its parts' fin
 (`other_columns_parts`, `columns_hash`), and a copy's start from the volume waits for that fresh full, reading no L3
 (`volume_fulls_other_columns_total`, logged once per reason). A restarted writer meeting a reset record in the epoch
 log starts the table fresh (`why="reset"`) instead of recovering it by key as a lost log.
+### core: a load's intent record names its file unconfirmed before its first commit, beside its loading writer
+
+**Changed (Pace's ruling, 2026-11-23):** a hub that crashed after a load's commit and before any record left rows no
+record named. The broker now names the file unconfirmed before the load's first COMMIT, beside its writer beat's key
+(new optional field `unconfirmed_writer`, `EpochChange.unconfirmed_writer`; `advance_for_write(unconfirmed_writer=,
+repair=)`). The writer's `DeltaRecreator(writers=, generations=)` confirms such a record only once a later record of the
+table names the same file (answered `superseded`: the copy ends that wait with nothing heard and applies the later
+record alone, once) or the named beat is gone (`lost_writes.WriterBeats`: deleted by a clean stop or by the recovery
+that declared the writer dead); never by elapsed time; `pending` meanwhile, copies waiting with no L3 read. A copy's
+wait for an unconfirmed file has its own why, `file_unconfirmed` (it reused `key_not_in_file`), and moves to a later
+record naming the same file. A restarted writer's fold judges a file by its newest record. A tool pod opted in to delta
+files may read the `write-ledger.` beat keys of `{ns}-leases` (read-only, `WRITER_BEAT_KEY_SCOPE`). Mixed roll: a reader
+built before the field ignores it (a 0.95.0 pod reads a load naming no file, as before decision 43).
 
 ### core: keyed reads of several key columns are read by their keys alone on YugabyteDB
 

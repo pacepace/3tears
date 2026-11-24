@@ -551,3 +551,93 @@ async def test_an_unconfirmed_file_reaches_a_source_that_takes_it_and_never_one_
     older = _Source()
     await advance_recording(older, "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE)
     assert older.files == [("results", None)]
+
+
+# --- a load's intent record, beside its loading writer's beat (Pace's ruling of 2026-11-23) -----------------------------
+
+_WRITER = "write-ledger.aibots.hub-0195f3"
+
+
+class _ReaderBeforeIntent(BaseModel):
+    """the stored body as a reader built with decision 43 and before the intent reads it: it ignores the writer."""
+
+    table: str
+    whole_table: bool = False
+    prefixes: list[dict[str, str]] | None = None
+    delta_file: str | None = None
+    unconfirmed_delta_file: str | None = None
+
+
+def test_an_intent_names_its_loading_writer_beside_the_unconfirmed_file_and_reads_it_back() -> None:
+    """Flips if the loading writer's beat key is not stored, or not read back, beside the unconfirmed file: the writer
+    could then not tell a crashed hub from one still loading."""
+    body = epoch_change_body(
+        "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE, unconfirmed_writer=_WRITER
+    )
+    stored = json.loads(body)
+    assert (stored["unconfirmed_delta_file"], stored["unconfirmed_writer"]) == (_FILE, _WRITER)
+    record = read_epoch_change_body(body, "results", "i:1")
+    assert (record.delta_file, record.delta_file_unconfirmed, record.unconfirmed_writer) == (_FILE, True, _WRITER)
+    stopped = read_epoch_change_body(
+        epoch_change_body("results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE), "results", "i:2"
+    )
+    assert stopped.unconfirmed_writer is None, "a stopped load's record names no writer, and is confirmed when asked"
+
+
+def test_older_readers_read_an_intent_as_before_never_as_a_file_to_apply() -> None:
+    """Flips if a reader built before the intent, or before decision 43, would apply the intent's file: the first reads
+    a stopped load's record (copies wait), the second a load naming no file, as before."""
+    body = epoch_change_body(
+        "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE, unconfirmed_writer=_WRITER
+    )
+    before_intent = _ReaderBeforeIntent.model_validate_json(body)
+    assert (before_intent.delta_file, before_intent.unconfirmed_delta_file) == (None, _FILE)
+    before_unconfirmed = _ReaderBeforeUnconfirmed.model_validate_json(body)
+    assert (before_unconfirmed.whole_table, before_unconfirmed.delta_file) == (True, None)
+
+
+def test_a_loading_writer_is_named_only_beside_an_unconfirmed_file() -> None:
+    """Flips if a writer is accepted on a record naming no unconfirmed file: no reader would know what it waits on."""
+    with pytest.raises(ValueError, match="loading writer"):
+        epoch_change_body("results", None, prefixes=_PREFIXES, delta_file=_FILE, unconfirmed_writer=_WRITER)
+    with pytest.raises(ValueError, match="beat key"):
+        epoch_change_body("results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE, unconfirmed_writer="a b")
+
+
+class _IntentSource(_UnconfirmedSource):
+    """a source that records the loading writer too."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writers: list[str | None] = []
+
+    async def advance_with_change(  # type: ignore[override]
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
+        delta_file: str | None = None,
+        unconfirmed_delta_file: str | None = None,
+        unconfirmed_writer: str | None = None,
+    ) -> str:
+        self.writers.append(unconfirmed_writer)
+        return await super().advance_with_change(
+            table_name, rows, prefixes=prefixes, delta_file=delta_file, unconfirmed_delta_file=unconfirmed_delta_file
+        )
+
+
+async def test_an_intents_writer_reaches_a_source_that_takes_it_and_an_older_one_records_a_stopped_load() -> None:
+    """Flips if the writer never reaches a source that takes it, or a source built before it is handed it (its
+    signature refuses it) or loses the unconfirmed file with it."""
+    newer = _IntentSource()
+    await advance_recording(
+        newer, "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE, unconfirmed_writer=_WRITER
+    )
+    assert (newer.unconfirmed, newer.writers) == ([_FILE], [_WRITER])
+    older = _UnconfirmedSource()
+    await advance_recording(
+        older, "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE, unconfirmed_writer=_WRITER
+    )
+    assert older.unconfirmed == [_FILE]

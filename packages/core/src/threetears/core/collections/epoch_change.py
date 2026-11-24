@@ -64,6 +64,18 @@ applies the file. A newer reader never applies it as it stands either: a copy wa
 name holding exactly what L3 holds, marked confirmed
 (:attr:`~threetears.core.collections.delta_files.DeltaKeys.confirmed`); the copies then apply it. Named only on a
 whole-table record of a load's key prefixes, and never beside ``delta_file``.
+
+**A load names its file unconfirmed BEFORE its first commit, with its writer** (stored as ``unconfirmed_writer``,
+read as :attr:`EpochChange.unconfirmed_writer`; Pace's ruling of 2026-11-23, the intent record). A hub that crashed
+after a commit and before any record would leave rows no record names, and a pod could not tell a crashed hub from
+one still copying. So the hub names the file unconfirmed before the load's first commit, beside the key of its own
+liveness: its writer beat in the platform's ``leases`` bucket (:class:`~threetears.core.collections.lost_writes
+.WriterBeats`). The writer confirms such a record only once a later record of the table names the same file
+(the hub's own confirmed record on success, or its unconfirmed record naming no writer on a failure it answered:
+the intent is then superseded and applied by that record alone), or once the named beat is gone: deleted by the
+writer stopping cleanly, or by the platform's recovery once it declared the writer dead. Never by elapsed time. Named
+only beside ``unconfirmed_delta_file``; a reader built before it ignores it (an older pod reads a load naming no
+file, as before ruling C).
 """
 
 from __future__ import annotations
@@ -251,6 +263,10 @@ class EpochChange(BaseModel):
     :ivar delta_file_unconfirmed: the file is a failed load request's (stored as ``unconfirmed_delta_file``, module
         docstring): it may hold rows L3 never took, so it is applied only once the writer has written it again from
         L3 and marked it confirmed; never applied as it stands. Set only on a whole-table record of key prefixes
+    :ivar unconfirmed_writer: for a record naming its file unconfirmed BEFORE the load's first commit (the intent
+        record, module docstring), the key of the loading writer's beat (:class:`~threetears.core.collections
+        .lost_writes.WriterBeats`): the file is confirmed only once a later record names it, or that beat is gone.
+        ``None`` on a record written after the load stopped (decision 43), which the writer confirms when asked
     :ivar scopes: for a keys-unknown record of a commit that saved a delta file, the scopes its transaction touched
         (the states, ``state:CA``, as the writer's seqlock names them; module docstring): what the writer re-reads
         from L3 should the file be lost past the notes' window. ``None`` when unknown, past :data:`_EPOCH_SCOPES_MAX`,
@@ -270,6 +286,7 @@ class EpochChange(BaseModel):
     delta_file: str | None = None
     scopes: list[str] | None = None
     delta_file_unconfirmed: bool = False
+    unconfirmed_writer: str | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -295,6 +312,7 @@ class EpochChange(BaseModel):
         _check_scopes(self.scopes, keys_unknown=self.keys_unknown)
         if self.delta_file_unconfirmed:
             _check_unconfirmed(self.delta_file, None, whole_table=self.whole_table, prefixes=self.prefixes)
+        _check_unconfirmed_writer(self.unconfirmed_writer, self.delta_file if self.delta_file_unconfirmed else None)
         return self
 
 
@@ -327,6 +345,29 @@ def _check_unconfirmed(
         raise ValueError("a record names a delta file confirmed or unconfirmed, never both")
     if not whole_table or not prefixes:
         raise ValueError("an unconfirmed delta file is named only on a whole-table record of a load's key prefixes")
+
+
+def _check_unconfirmed_writer(writer: str | None, unconfirmed: str | None) -> None:
+    """refuse a writer named anywhere but beside an unconfirmed file, or one that is no key.
+
+    :param writer: the loading writer's beat key, or None
+    :ptype writer: str | None
+    :param unconfirmed: the unconfirmed file named beside it, if any
+    :ptype unconfirmed: str | None
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is refused
+    """
+    if writer is None:
+        return
+    if unconfirmed is None:
+        raise ValueError("a record names a loading writer only beside a delta file it names unconfirmed")
+    if not writer or len(writer) > _UNCONFIRMED_WRITER_MAX_CHARS or any(ch.isspace() for ch in writer):
+        raise ValueError(f"a loading writer is named by its beat key, one KV key: got {writer!r}")
+
+
+#: the longest beat key a record names as its loading writer (``write-ledger.<schema>.<process>``)
+_UNCONFIRMED_WRITER_MAX_CHARS: Final = 255
 
 
 def _check_scopes(scopes: Sequence[str] | None, *, keys_unknown: bool) -> None:
@@ -650,6 +691,7 @@ async def advance_recording(
     scopes: Sequence[str] | None = None,
     repair: bool = True,
     unconfirmed_delta_file: str | None = None,
+    unconfirmed_writer: str | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -699,6 +741,9 @@ async def advance_recording(
         (:attr:`EpochChange.delta_file_unconfirmed`), for a source that records it; one that does not records the
         change naming no file, never naming it as ``delta_file``
     :ptype unconfirmed_delta_file: str | None
+    :param unconfirmed_writer: beside ``unconfirmed_delta_file`` on a load's intent record, the loading writer's beat
+        key (:attr:`EpochChange.unconfirmed_writer`), for a source that records it
+    :ptype unconfirmed_writer: str | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -712,6 +757,7 @@ async def advance_recording(
         _check_unconfirmed(
             unconfirmed_delta_file, delta_file, whole_table=rows is None and not keys_unknown, prefixes=prefixes
         )
+    _check_unconfirmed_writer(unconfirmed_writer, unconfirmed_delta_file)
     if not repair:
         return await _advance_recording_once(
             source,
@@ -726,6 +772,7 @@ async def advance_recording(
             delta_file=delta_file,
             scopes=named_scopes,
             unconfirmed_delta_file=unconfirmed_delta_file,
+            unconfirmed_writer=unconfirmed_writer,
         )
     kept_rows = None if rows is None else list(rows)
 
@@ -743,6 +790,7 @@ async def advance_recording(
             delta_file=delta_file,
             scopes=named_scopes,
             unconfirmed_delta_file=unconfirmed_delta_file,
+            unconfirmed_writer=unconfirmed_writer,
         )
 
     try:
@@ -769,6 +817,7 @@ async def _advance_recording_once(
     delta_file: str | None,
     scopes: list[str] | None,
     unconfirmed_delta_file: str | None = None,
+    unconfirmed_writer: str | None = None,
 ) -> str | None:
     """one try of :func:`advance_recording`, its change already checked.
 
@@ -796,6 +845,8 @@ async def _advance_recording_once(
     :ptype scopes: list[str] | None
     :param unconfirmed_delta_file: a failed load request's file, unconfirmed
     :ptype unconfirmed_delta_file: str | None
+    :param unconfirmed_writer: the loading writer's beat key beside it, on a load's intent record
+    :ptype unconfirmed_writer: str | None
     :return: the token the advance wrote
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -823,6 +874,10 @@ async def _advance_recording_once(
         if unconfirmed_delta_file is not None and _takes(source, "unconfirmed_delta_file"):
             # a source built before the field records the load naming no file: never the file as confirmed
             extra["unconfirmed_delta_file"] = unconfirmed_delta_file
+            if unconfirmed_writer is not None and _takes(source, "unconfirmed_writer"):
+                # a source built before it records the intent as a stopped load's record: the writer then confirms it
+                # when asked, as decision 43 does, which the loading hub's own later record supersedes
+                extra["unconfirmed_writer"] = unconfirmed_writer
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
 
@@ -988,6 +1043,9 @@ class _EpochBody(BaseModel):
     #: a failed load request's file (module docstring): named only on a whole-table record, never beside delta_file;
     #: a reader built before it ignores it, and reads the record as a load naming no file
     unconfirmed_delta_file: str | None = None
+    #: the loading writer's beat key, beside unconfirmed_delta_file on a load's intent record; a reader built before
+    #: it ignores it
+    unconfirmed_writer: str | None = None
 
 
 def epoch_change_body(
@@ -1003,6 +1061,7 @@ def epoch_change_body(
     delta_file: str | None = None,
     scopes: Sequence[str] | None = None,
     unconfirmed_delta_file: str | None = None,
+    unconfirmed_writer: str | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -1035,6 +1094,9 @@ def epoch_change_body(
     :param unconfirmed_delta_file: for a whole-table change of key prefixes, a failed load request's file, stored under
         its own field (:attr:`EpochChange.delta_file_unconfirmed`); ``None`` names none
     :ptype unconfirmed_delta_file: str | None
+    :param unconfirmed_writer: beside ``unconfirmed_delta_file`` on a load's intent record, the loading writer's beat
+        key (:attr:`EpochChange.unconfirmed_writer`); ``None`` names none
+    :ptype unconfirmed_writer: str | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, a partition with either, or a delta file name that is
@@ -1052,6 +1114,7 @@ def epoch_change_body(
         _check_unconfirmed(
             unconfirmed_delta_file, delta_file, whole_table=rows is None and not keys_unknown, prefixes=prefixes
         )
+    _check_unconfirmed_writer(unconfirmed_writer, unconfirmed_delta_file)
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
@@ -1065,6 +1128,7 @@ def epoch_change_body(
         delta_file=delta_file,
         scopes=list(scopes) if scopes is not None else None,
         unconfirmed_delta_file=unconfirmed_delta_file,
+        unconfirmed_writer=unconfirmed_writer,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -1161,6 +1225,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             delta_file=body.delta_file if body.unconfirmed_delta_file is None else body.unconfirmed_delta_file,
             scopes=body.scopes,
             delta_file_unconfirmed=body.unconfirmed_delta_file is not None,
+            unconfirmed_writer=body.unconfirmed_writer,
         )
         if body.unconfirmed_delta_file is not None and body.delta_file is not None:
             raise ValueError("a record names a delta file confirmed or unconfirmed, never both")

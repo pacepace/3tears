@@ -29,6 +29,7 @@ from threetears.nats.subject_permissions import (
     AGENT_POD_PLATFORM_BUCKET_SUFFIXES,
     CROSS_PLATFORM_CACHE_INVALIDATE,
     DELTA_FILES_FORWARD_FAMILY,
+    WRITER_BEAT_KEY_SCOPE,
     SERVER_USER_INFO_SUBJECT,
     TOOL_POD_OBJECTS_BUCKET_SUFFIX,
     TOOL_POD_POINTERS_BUCKET_SUFFIX,
@@ -2840,12 +2841,16 @@ class TestToolPodDeltaFileRecreates:
         assert self._FAMILY in pod.subscribe
         assert {s for s in (*pod.publish, *pod.subscribe) if ".forward." in s} == {self._FAMILY}
 
-    def test_the_grant_adds_only_the_family(self) -> None:
+    def test_the_grant_adds_only_the_family_and_a_read_of_the_writer_beats(self) -> None:
+        """Flips if the opt-in grants more than the family and a read of the writer beat keys (a load's intent record
+        is confirmed once its loading writer's beat is gone: 3tears delta_recreate), or the beats as writable."""
         plain = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X, delta_files=True)
         assert set(pod.publish) - set(plain.publish) == {self._FAMILY}
         assert set(pod.subscribe) - set(plain.subscribe) == {self._FAMILY}
-        assert pod.js_resources == plain.js_resources
+        added = [resource for resource in pod.js_resources if resource not in plain.js_resources]
+        assert added == [JsResource.kv_owner_keys(f"{_NS}-leases", scope=WRITER_BEAT_KEY_SCOPE, writable=False)]
+        assert len(pod.js_resources) == len(plain.js_resources) + 1
 
     def test_a_pod_that_has_not_opted_in_holds_no_forward_family(self) -> None:
         plain = build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True)

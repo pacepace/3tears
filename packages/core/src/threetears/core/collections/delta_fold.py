@@ -839,16 +839,16 @@ class DeltaFolds:
                 )
                 continue
             files: dict[str, str] = {}
+            newest_unconfirmed: dict[str, bool] = {}
             for change in walk.changes:
                 assert change.delta_file is not None  # noqa: S101 -- refused above
                 files[change.delta_file] = change.token  # a commit of several records: its newest
+                newest_unconfirmed[change.delta_file] = change.delta_file_unconfirmed
             # a failed load request's file, named unconfirmed, is folded only once the writer has confirmed it from L3
-            # (ruling C): one not confirmed yet is left out here, and told to the fold when a copy's ask confirms it
-            unconfirmed = [
-                change.delta_file
-                for change in walk.changes
-                if change.delta_file_unconfirmed and change.delta_file is not None
-            ]
+            # (ruling C): one not confirmed yet is left out here, and told to the fold when a copy's ask confirms it.
+            # Judged by the file's newest record: a load's intent record that the hub's confirmed record superseded is
+            # folded at that record, as any whole load's
+            unconfirmed = [file for file, still in newest_unconfirmed.items() if still]
             if unconfirmed:
                 waiting = await asyncio.to_thread(_not_confirmed, self.root, name, unconfirmed)
                 if waiting:

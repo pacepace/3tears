@@ -65,6 +65,7 @@ __all__ = [
     "AGENT_POD_PLATFORM_BUCKET_SUFFIXES",
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "DELTA_FILES_FORWARD_FAMILY",
+    "WRITER_BEAT_KEY_SCOPE",
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
@@ -108,6 +109,11 @@ CROSS_PLATFORM_CACHE_INVALIDATE = "threetears.cache.invalidate"
 #: (``threetears.core.collections.delta_recreate``, design-pod-delta-files.md decision 29). Granted to a tool pod whose
 #: registry row opts in (``build_permissions(..., delta_files=True)``, decision 30), the way ``object_store`` is.
 DELTA_FILES_FORWARD_FAMILY: Final = "delta-files"
+
+#: the first token of every writer beat's key in the platform's ``leases`` bucket
+#: (``threetears.core.collections.lost_writes``): a tool pod that opts in to delta files reads them, never writes, to
+#: tell a load's writer gone (``threetears.core.collections.delta_recreate``)
+WRITER_BEAT_KEY_SCOPE: Final = "write-ledger"
 
 #: grammar every L2 key-scope segment must satisfy, matched as a whole string.
 #:
@@ -1510,6 +1516,13 @@ def _with_delta_file_recreates(permissions: PrincipalPermissions) -> PrincipalPe
         permissions,
         publish=(*permissions.publish, family),
         subscribe=(*permissions.subscribe, family),
+        # the writer confirms a load's intent record once the loading writer is gone, read off that writer's beat in
+        # the platform's ``leases`` bucket (``threetears.core.collections.lost_writes.WriterBeats``): a read of the
+        # beat keys alone, never a write, never another key of the bucket
+        js_resources=(
+            *permissions.js_resources,
+            JsResource.kv_owner_keys(f"{_ns()}-leases", scope=WRITER_BEAT_KEY_SCOPE, writable=False),
+        ),
     )
 
 

@@ -40,3 +40,18 @@ async def test_a_write_naming_no_delta_file_appends_as_before() -> None:
     assert "delta_file" not in json.loads(raw)
     record = await EpochGenerationReader(bus).change(_TABLE, written)
     assert record is not None and record.delta_file is None
+
+
+async def test_a_loads_intent_record_names_its_file_unconfirmed_beside_its_loading_writer() -> None:
+    """Flips if the log's source drops the loading writer's beat key from a load's intent record (the writer could then
+    not tell a crashed hub from one still loading), or stores the file as confirmed."""
+    bus = FakeNatsClient()
+    source = EpochGenerationSource(bus)
+    await source.start_log()
+    writer = "write-ledger.platform.hub-0195f3"
+    written = await source.advance_with_change(
+        _TABLE, None, prefixes=[{"state": "VA"}], unconfirmed_delta_file=_FILE, unconfirmed_writer=writer
+    )
+    record = await EpochGenerationReader(bus).change(_TABLE, written)
+    assert record is not None
+    assert (record.delta_file, record.delta_file_unconfirmed, record.unconfirmed_writer) == (_FILE, True, writer)

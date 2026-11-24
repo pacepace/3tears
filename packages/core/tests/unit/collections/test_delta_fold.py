@@ -1005,6 +1005,42 @@ async def test_a_restarted_writer_relearns_its_unfolded_deltas_from_the_epoch_lo
     await writer.folds.close()
 
 
+async def test_a_restarted_writer_relearns_a_load_whose_intent_record_its_confirmed_record_superseded(
+    tmp_path: Path, workers: ProcessWorkers
+) -> None:
+    """Flips if a writer restarting past a load whose hub wrote an intent record (its file named unconfirmed, before its
+    first commit) and then its confirmed record leaves the file out as unconfirmed: the load's rows, every one
+    committed, would be missing from every full published after. The file's newest record says how it stands."""
+    schema = _votes_schema()
+    writer = _writer(tmp_path, schema, workers)
+    log = _Log()
+    first = await writer.commit(
+        [{"state": "TX", "geo_id": g, "votes": g * 7919 % 100003, "note": f"note-{g * 31 % 997}"} for g in range(5000)]
+    )
+    log.append("votes", "inc:1", first)
+    loaded = writer.save(_votes("TX", range(1000, 1008), 2))
+    log.records[("votes", "inc:2")] = EpochChange(
+        table="votes",
+        token="inc:2",
+        whole_table=True,
+        prefixes=[{"state": "TX"}],
+        delta_file=loaded,
+        delta_file_unconfirmed=True,
+        unconfirmed_writer="write-ledger.platform.hub-1",
+    )
+    log.records[("votes", "inc:3")] = EpochChange(
+        table="votes", token="inc:3", whole_table=True, prefixes=[{"state": "TX"}], delta_file=loaded
+    )
+    await writer.folds.close()
+
+    l3 = _L3({"votes": []}, {"votes": ("state", "geo_id")})
+    writer.folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], workers=workers)
+    assert await writer.folds.start(l3, _Generations({"votes": "inc:3"}), changes=log, version=6) == ()
+    assert l3.statements == Counter()
+    assert loaded in writer.folds.unfolded, "a load its confirmed record names is folded, whatever its intent said"
+    await writer.folds.close()
+
+
 # --- a folded table keyed without its state (decision 27: the state in a row column its markers carry) ----------
 
 
