@@ -492,10 +492,21 @@ class FullTable:
 
     :ivar version: the generation token the table as a whole is current to: a state with no part holds no rows at it
     :ivar parts: its parts, one a state
+    :ivar covered_before: what this full covers of the table's delta files, with ``open``: every one saved before this
+        moment (seconds since the epoch, the writer's clock) is folded into it, but those ``open`` names; None when the
+        writer that published it recorded none (an older writer). Why: a recovery after the epoch log is lost
+        (decision 28) reads only the files after the full's coverage, never every file the table kept (decision 51:
+        kept files are history; a cost tracks what changed). The writer's fold takes it at a round's start: the newest
+        commit told, or its writer's oldest commit then in flight if older, so every file saved before it was told by
+        then (``DeltaFolds.committed(in_flight_since=)``)
+    :ivar open: the table's files saved before ``covered_before`` this full does not cover (told and not yet folded,
+        or saved for a commit still in flight): bounded by what is unfolded, never by history
     """
 
     version: str
     parts: tuple[FullPart, ...] = ()
+    covered_before: float | None = None
+    open: tuple[str, ...] = ()
 
     def encode(self) -> dict[str, Any]:
         """the table as the manifest's JSON holds it.
@@ -503,7 +514,11 @@ class FullTable:
         :return: the body
         :rtype: dict[str, Any]
         """
-        return {"version": self.version, "parts": [part.encode() for part in self.parts]}
+        body: dict[str, Any] = {"version": self.version, "parts": [part.encode() for part in self.parts]}
+        if self.covered_before is not None:
+            body["covered_before"] = self.covered_before
+            body["open"] = list(self.open)
+        return body
 
     @classmethod
     def decode(cls, body: Mapping[str, Any]) -> FullTable:
@@ -514,7 +529,13 @@ class FullTable:
         :return: the table
         :rtype: FullTable
         """
-        return cls(version=str(body["version"]), parts=tuple(FullPart.decode(part) for part in body["parts"]))
+        covered = body.get("covered_before")
+        return cls(
+            version=str(body["version"]),
+            parts=tuple(FullPart.decode(part) for part in body["parts"]),
+            covered_before=float(covered) if covered is not None else None,
+            open=tuple(str(file) for file in body.get("open", ())),
+        )
 
 
 @dataclass(frozen=True, slots=True)
