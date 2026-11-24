@@ -1071,19 +1071,25 @@ class DeltaFolds:
 
     async def _rounds(self) -> None:
         """the owner's turn (decision 37): run rounds while there is work, then answer each start applied. Cancelled
-        (:meth:`_cut`), it applies what was posted and cancels the starts' answers, as their wait was cut.
+        (:meth:`_cut`), it applies what was posted and cancels the starts' answers, as their wait was cut; ended by
+        an error, it hands the starts that error and raises it.
 
         :return: nothing
         :rtype: None
         """
         try:
             await self._owned_rounds()
-        except BaseException:
+        except BaseException as error:
             self._drain()
             self._relearning = ()
             answers, self._answers = self._answers, ()
             for answer in answers:
-                answer.cancel()
+                if answer.done():
+                    continue
+                if isinstance(error, asyncio.CancelledError):
+                    answer.cancel()
+                else:
+                    answer.set_exception(error)  # a start waiting raises what ended the rounds
             self._starting = None
             raise
         answers, self._answers = self._answers, ()
@@ -1181,9 +1187,9 @@ class DeltaFolds:
         try:
             for started in starts:
                 await self._relearn(started.reader.generations, started.changes)
-        except (
-            Exception
-        ) as error:  # prawduct:allow prawduct/broad-except -- handed to the starts waiting, which raise it
+        except GenerationUnavailableError as error:
+            # the log could not be read: handed to the starts waiting, which raise it, and the writer's start is
+            # tried again
             answers, self._answers = self._answers, ()
             self._starting = None
             for answer in answers:
@@ -1659,10 +1665,11 @@ class DeltaFolds:
         pages = await asyncio.to_thread(_RowsFile, self.root / pages_file, pa.schema(list(types.items())))
         try:
             casts = tuple(sql_cast(kinds[column]) for column in table.key)
-            # one page of keys at a time, the keyed read's own form (KeyBatch takes each key's values)
+            # one page of keys at a time, as Arrow; the keyed read's batch made from it off the loop
             async for chunk in _reach_pages(self.root / reach_file, table.key):
+                values = await asyncio.to_thread(_arrow_key_values, table.key, chunk)
                 for page in await read_keyed_arrow(
-                    reader.l3, table.name, keys=KeyBatch(table.key, chunk, casts), types=types
+                    reader.l3, table.name, keys=KeyBatch(table.key, values, casts), types=types
                 ):
                     await asyncio.to_thread(pages.write, page)
             for width, values in _prefixes_by_width(table.key, held).items():
@@ -2502,23 +2509,23 @@ def recovery_delta_job(
     return file, int(rows.num_rows), int(count)
 
 
-async def _reach_pages(path: Path, key: Sequence[str]) -> AsyncIterator[list[tuple[Any, ...]]]:
-    """the reach's keys no cleared prefix holds, a batch of the reach file at a time, each key its values: the
-    keyed read's own form (:class:`~threetears.core.keyed.KeyBatch`), one page of keys made at a time and let go.
+async def _reach_pages(path: Path, key: Sequence[str]) -> AsyncIterator[Any]:
+    """the reach's keys no cleared prefix holds, a batch of the reach file at a time, as Arrow key columns: one page
+    of keys at a time, let go once read.
 
     :param path: the reach file
     :ptype path: Path
     :param key: the key columns
     :ptype key: Sequence[str]
-    :return: each page's keys
-    :rtype: AsyncIterator[list[tuple]]
+    :return: each page's keys, a column each
+    :rtype: AsyncIterator[pyarrow.RecordBatch]
     """
     reader = await asyncio.to_thread(_opened_ipc, path)
     for index in range(reader.num_record_batches):
         batch = await asyncio.to_thread(reader.get_batch, index)
         keyed = batch.filter(pc.invert(batch.column(_UNDER)))
         if keyed.num_rows:
-            yield await asyncio.to_thread(_key_values, keyed, key)
+            yield keyed.select(list(key))
 
 
 def _opened_ipc(path: Path) -> Any:
@@ -2532,18 +2539,23 @@ def _opened_ipc(path: Path) -> Any:
     return pa_ipc.open_file(pa.memory_map(str(path)))
 
 
-def _key_values(rows: Any, key: Sequence[str]) -> list[tuple[Any, ...]]:
-    """one page of keys as the keyed read binds them: each key's values (a page, bounded by the reach file's batch).
-    Blocking.
+def _arrow_key_values(key: Sequence[str], keys: Any) -> list[tuple[Any, ...]]:
+    """one page of keys held as Arrow key columns (a page, bounded by its caller's batch) as
+    :class:`~threetears.core.keyed.KeyBatch` takes them today. Blocking: run it on a thread. The fold's recovery and the
+    writer's recreation of a delta file make every keyed read of a page of keys through it.
 
-    :param rows: the page's keys, a column each
-    :ptype rows: pyarrow.RecordBatch
-    :param key: the key columns
+    KEYBATCH ADAPTER (rl095 3t-keybatch): KeyBatch takes one tuple a key until the keyed core takes Arrow key columns;
+    then each caller hands its page to KeyBatch whole and this function goes. Until then it is the one place either
+    turns a page of keys into Python, off the loop.
+
+    :param key: the key columns, in key order
     :ptype key: Sequence[str]
+    :param keys: the page's keys, a column each
+    :ptype keys: pyarrow.Table | pyarrow.RecordBatch
     :return: each key's values
     :rtype: list[tuple]
     """
-    return list(zip(*(rows.column(column).to_pylist() for column in key), strict=True))
+    return list(zip(*(keys.column(column).to_pylist() for column in key), strict=True))
 
 
 def _unlink_work(root: Path, work: str) -> None:

@@ -45,6 +45,7 @@ from threetears.nats.subjects import Subject  # noqa: E402
 from threetears.nats.transport import IncomingMessage  # noqa: E402
 
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+import threetears.core.collections.delta_files as delta_files  # noqa: E402
 import threetears.core.collections.delta_recreate as delta_recreate  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
@@ -54,9 +55,9 @@ from threetears.core.collections.copy_follower import CopyFollower, FollowedTabl
 from threetears.core.collections.delta_files import (  # noqa: E402
     DeltaFileUnreadableError,
     TableDelta,
-    read_delta_file,
     write_delta_file,
 )
+from threetears.core.testing.delta_files import read_delta_file
 from threetears.core.collections.delta_recreate import (  # noqa: E402
     DeltaRecreateRequester,
     DeltaRecreator,
@@ -664,7 +665,10 @@ async def test_the_presence_check_matches_a_large_file_s_keys_in_arrow_never_as_
         decoded.append(value)
         return key_text(value)
 
-    monkeypatch.setattr(delta_recreate, "key_text", counted)
+    # the recreator matches keys through delta_files' Arrow text (_text_column), the one place a key could still be
+    # decoded a value at a time; it imports no key_text of its own
+    assert not hasattr(delta_recreate, "key_text")
+    monkeypatch.setattr(delta_files, "key_text", counted)
     assert await world.recreator.recreate(_RESULTS, name, epoch) == "present"
     assert decoded == [], f"{len(decoded)} keys decoded to Python text"
     short = _save(_volume, _RESULTS, "short5k", rows[:-1])

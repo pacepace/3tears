@@ -61,7 +61,8 @@ from threetears.core.backends.broker_generation import named_delta_files  # noqa
 from threetears.core.backends.protocol import DurableStore, FileLoad, LoadFile, LoadResult  # noqa: E402
 from threetears.core.collections import WRITE_GENERATION  # noqa: E402
 from threetears.core.collections.caller_transaction import CallerTransaction  # noqa: E402
-from threetears.core.collections.delta_files import LoadDelta, read_volume_file, read_delta_file  # noqa: E402
+from threetears.core.collections.delta_files import LoadDelta, read_volume_file  # noqa: E402
+from threetears.core.testing.delta_files import read_delta_file  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
