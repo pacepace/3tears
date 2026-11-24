@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, Callable, Iterator, Mapping, Sequence
+from contextlib import aclosing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -66,6 +67,11 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the (registry, table) pairs whose key-batch caches were told the write in progress's keys as one Arrow batch
+#: (:meth:`CollectionRegistry.keys_told`): a row message of such a table reaches only the caches that take none. A
+#: context value, so it is the write's own and its tasks', never another coroutine's
+_KEYS_TOLD: Final[ContextVar[frozenset[tuple[str, str]]]] = ContextVar("threetears_keys_told", default=frozenset())
 
 # the epoch catch-up's instruments, fetched where they are moved, never held at import: a module that a
 # fresh import of the package runs again would register them twice
@@ -2064,15 +2070,77 @@ class CollectionRegistry:
         return bool(self._derived_caches.get(table_name))
 
     def tell_derived_caches(self, message: CacheInvalidationMessage) -> None:
-        """hand one row message to every cache derived from its table.
+        """hand one row message to every cache derived from its table: within :meth:`keys_told` of its table, only to
+        those that take no key batches (the rest were told the write's keys as one batch).
 
         :param message: the row message
         :ptype message: CacheInvalidationMessage
         :return: nothing
         :rtype: None
         """
-        for registration in tuple(self._derived_caches.get(message.table, ())):
+        for registration in self._row_takers(message.table):
             registration.on_row(message)
+
+    def _row_takers(self, table_name: str) -> tuple[DerivedCacheRegistration, ...]:
+        """the caches derived from ``table_name`` a row message of it is handed to now: every one, less those that take
+        key batches within :meth:`keys_told` of the table.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the registrations
+        :rtype: tuple[DerivedCacheRegistration, ...]
+        """
+        registrations = tuple(self._derived_caches.get(table_name, ()))
+        if (self._origin_id, table_name) not in _KEYS_TOLD.get():
+            return registrations
+        return tuple(registration for registration in registrations if registration.on_keys is None)
+
+    def takes_key_batches(self, table_name: str) -> bool:
+        """whether a cache derived from ``table_name`` takes key batches (a copy, ``on_keys``): a writer then tells it
+        a write's keys once, as Arrow (:meth:`keys_told`).
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: whether one does
+        :rtype: bool
+        """
+        return bool(self._key_batch_takers(table_name))
+
+    def needs_row_messages(self, table_name: str) -> bool:
+        """whether a row message of ``table_name`` built now would reach a derived cache (:meth:`tell_derived_caches`):
+        a writer with no bus builds none when none would.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: whether one would
+        :rtype: bool
+        """
+        return bool(self._row_takers(table_name))
+
+    @contextmanager
+    def keys_told(self, table_name: str, keys: Any, generation: str | None) -> Iterator[None]:
+        """tell every cache derived from ``table_name`` that takes key batches (a copy, ``on_keys``) a local write's
+        keys once, as one Arrow batch at the write's epoch; within the block (and the tasks it starts), the write's row
+        messages reach only the caches that take none. Why: a row message a key handed to the copy built a Python list
+        a key on the event loop, part of ~10 s of loop stalls over a 40-minute local burst replay (2026-11-24); keys
+        are Arrow end to end. A row message is still built for the bus, whose envelope names one row.
+
+        :param table_name: the table written
+        :ptype table_name: str
+        :param keys: the write's keys (``delta_files.entity_key_batch``)
+        :ptype keys: pyarrow.Table
+        :param generation: the epoch the write's commit advanced the table to, or None
+        :ptype generation: str | None
+        :return: a block
+        :rtype: Iterator[None]
+        """
+        for registration in self._key_batch_takers(table_name):
+            registration.on_keys(keys, generation)  # type: ignore[misc]  # narrowed by _key_batch_takers
+        token = _KEYS_TOLD.set(_KEYS_TOLD.get() | {(self._origin_id, table_name)})
+        try:
+            yield
+        finally:
+            _KEYS_TOLD.reset(token)
 
     def row_message(
         self,
@@ -2502,7 +2570,7 @@ class CollectionRegistry:
         # is not a broadcast and must not be skipped when there is no bus (devx,
         # tests, a pod whose NATS is down).
         self.drop_local_scans(table_name)
-        if nats_client is None and not self.has_derived_caches(table_name):
+        if nats_client is None and not self.needs_row_messages(table_name):
             return
         message = self.row_message(
             table_name,

@@ -7,6 +7,8 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -16,6 +18,8 @@ from sqlalchemy import MetaData
 from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.delta_files import entity_key_batch
+from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -246,3 +250,63 @@ class TestAFailedEvictionStillTellsListeners:
             assert set(heard) == set(keys)
         finally:
             l1.reset()
+
+
+class _KeyTaker:
+    """a cache derived from a table that takes key batches (as a copy follower does), and one that takes row messages."""
+
+    def __init__(self, registry: CollectionRegistry, table: str) -> None:
+        self.batches: list[tuple[Any, str | None]] = []
+        self.rows_to_taker: list[Any] = []
+        self.rows_to_other: list[Any] = []
+        registry.register_derived_cache(
+            table,
+            on_row=self.rows_to_taker.append,
+            on_table_dropped=lambda: None,
+            on_partition=lambda partition: None,
+            on_keys=lambda keys, epoch: self.batches.append((keys, epoch)),
+        )
+        registry.register_derived_cache(
+            table, on_row=self.rows_to_other.append, on_table_dropped=lambda: None, on_partition=lambda partition: None
+        )
+
+
+@pytest.mark.parametrize("bus", [False, True])
+async def test_a_write_s_keys_reach_a_cache_taking_key_batches_once_as_arrow_never_a_row_message_a_key(
+    bus: bool,
+) -> None:
+    """Flips if a local write of many keys hands a copy (a cache that takes key batches) a row message a key, which
+    the copy turned into Python lists a key on the event loop (~10 s of loop stalls over a 40-minute local burst
+    replay, 2026-11-24): the copy is told the write's keys once, as one Arrow batch spelled as each row message spells
+    its key; a cache that takes no key batches still hears every row, and with a bus every row is still broadcast."""
+    pa = pytest.importorskip("pyarrow")
+    nats = _CountingNats() if bus else None
+    collection = _collection(nats_client=nats)
+    caches = _KeyTaker(collection.registry, "rows")
+    keys = [f"k{i}" for i in range(300)]
+    await collection.invalidate_cache_many(keys)
+    assert caches.rows_to_taker == [], "the cache taking key batches was handed a row message a key"
+    assert len(caches.batches) == 1
+    batch, _epoch = caches.batches[0]
+    assert batch.equals(pa.table({"k0": pa.array(keys, pa.string())}))
+    assert [message.ids for message in caches.rows_to_other] == [[key] for key in keys]
+    if nats is not None:
+        assert len(nats.published) == len(keys)
+
+
+def test_a_key_batch_spells_each_value_as_its_row_message_does() -> None:
+    """Flips if the Arrow batch a copy is told a write's keys in spells a value otherwise than the row message would
+    (``key_text``): text and integers by Arrow's cast, every other type (a time, a decimal's scale, mixed types) by
+    ``key_text`` itself."""
+    pa = pytest.importorskip("pyarrow")
+    keys: list[tuple[Any, ...]] = [
+        ("VA", 12, datetime(2026, 11, 3, 21, 45, tzinfo=UTC), Decimal("1.5"), True),
+        ("IL", -3, datetime(2026, 11, 4, 1, 0, 0, 5, tzinfo=UTC), Decimal("1.50"), False),
+    ]
+    batch = entity_key_batch(keys)
+    assert batch.column_names == ["k0", "k1", "k2", "k3", "k4"]
+    for at in range(5):
+        assert batch.column(at).to_pylist() == [key_text(key[at]) for key in keys]
+    mixed = entity_key_batch([1, "a"])
+    assert mixed.column(0).to_pylist() == ["1", "a"]
+    assert batch.column(0).type == pa.string()

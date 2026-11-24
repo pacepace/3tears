@@ -42,7 +42,7 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChan
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
-from threetears.core.collections.registry import BEHIND_REASONS  # noqa: E402
+from threetears.core.collections.registry import BEHIND_REASONS, CacheInvalidationMessage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
@@ -2395,3 +2395,32 @@ async def test_a_relabel_never_hides_a_failed_apply_the_next_pass_tries_the_appl
     with follower.reading() as (_cursor, stamp):
         assert stamp == lock.version
     assert follower.status().relabelled == 0
+
+
+async def test_a_run_of_row_messages_is_heard_as_one_arrow_batch_a_table_in_order() -> None:
+    """Flips if the owner's drain of row messages loses one, keeps one of a table it does not follow, or stops past a
+    message that is not a row message (each table's run is built by Arrow off the messages, never a Python list a key:
+    the 2026-11-24 ruling). A message naming the wrong number of key values fails the pass; every message before it
+    is heard and every one after it is applied by the next pass."""
+    (l3, _log, _lock, backend, follower), registry = _world()
+    await _warmed((l3, _log, _lock, backend, follower), 2)
+    l3.put([("VA", 1, 11), ("IL", 4, 44)])
+    for message in (
+        CacheInvalidationMessage(table=_TABLE, ids=["VA", "1"]),
+        CacheInvalidationMessage(table="not_followed", ids=["x"]),
+        CacheInvalidationMessage(table=_TABLE, ids=["IL", "4"]),
+    ):
+        registry.tell_derived_caches(message)
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    l3.put([("OH", 2, 22), ("TX", 7, 77)])
+    for message in (
+        CacheInvalidationMessage(table=_TABLE, ids=["OH", "2"]),
+        CacheInvalidationMessage(table=_TABLE, ids=["VA"]),
+        CacheInvalidationMessage(table=_TABLE, ids=["TX", "7"]),
+    ):
+        registry.tell_derived_caches(message)
+    with pytest.raises(ValueError, match="names 1 key values"):
+        await follower.catch_up()
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held(), "a row message before or after the wrong one was lost"

@@ -108,6 +108,7 @@ __all__ = [
     "build_file_table",
     "check_delta_scope",
     "delta_files_root",
+    "entity_key_batch",
     "fold_delta_tables",
     "joined_key_texts",
     "key_text_table",
@@ -1036,6 +1037,44 @@ def text_key_batch(keys: Sequence[Sequence[str]]) -> Any:
         raise ImportError("a key batch needs pyarrow: install 3tears[snapshot]")
     width = len(keys[0]) if keys else 0
     return pa.table({f"k{at}": pa.array([key[at] for key in keys], pa.string()) for at in range(width)})
+
+
+def entity_key_batch(entity_ids: Sequence[Any]) -> Any:
+    """a write's keys, as the writer names them (a pk value each, or a tuple of them in key order), as one Arrow batch
+    of the shape :func:`text_key_batch` makes: columns named by position, each value in the spelling a row message
+    names it in (:func:`~threetears.core.collections.epoch_change.key_text`). What the registry tells a cache that takes
+    key batches of a local write (``CollectionRegistry.keys_told``) in place of a row message a key.
+
+    Each key column is made Arrow once, from the writer's values: a text or integer column is spelled by Arrow's own
+    cast (an integer's digits, as ``str``), any other (a time, a decimal, a column of mixed types) each value by
+    ``key_text``, so every spelling is the row message's exactly.
+
+    :param entity_ids: the keys, at least one
+    :ptype entity_ids: Sequence[Any]
+    :return: the batch
+    :rtype: pyarrow.Table
+    :raises ImportError: without pyarrow
+    :raises ValueError: when the keys are not all of one width
+    """
+    if not _PYARROW:
+        raise ImportError("a key batch needs pyarrow: install 3tears[snapshot]")
+    columns = list(zip(*entity_ids, strict=True)) if isinstance(entity_ids[0], tuple) else [entity_ids]
+    texts: dict[str, Any] = {}
+    for at, values in enumerate(columns):
+        try:
+            column = pa.array(values)
+        except pa.ArrowInvalid, pa.ArrowTypeError:
+            column = None  # NOSILENT: values Arrow takes as no one type (mixed types): each spelled by key_text below
+        kind = None if column is None else column.type
+        if kind is not None and (
+            pa.types.is_string(kind) or pa.types.is_large_string(kind) or pa.types.is_integer(kind)
+        ):
+            texts[f"k{at}"] = column.cast(pa.string())
+        else:
+            # rare in a key (a time, a decimal, a uuid): its spelling is key_text's, which Arrow's cast does not keep
+            # (a decimal's scale, a time's zone)
+            texts[f"k{at}"] = pa.array([key_text(value) for value in values], pa.string())
+    return pa.table(texts)
 
 
 def _first_written(texts: Any, key: Sequence[str]) -> Any:

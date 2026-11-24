@@ -55,7 +55,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
@@ -909,7 +909,13 @@ class VolumeFulls:
         self.tables: Final = {table.name: table for table in tables}
         self.poll_seconds = poll_seconds
 
-    async def stage(self, backend: FollowerBackend, *, manifest: FullManifest | None = None) -> StagedFull | FullAbsent:
+    async def stage(
+        self,
+        backend: FollowerBackend,
+        *,
+        manifest: FullManifest | None = None,
+        stage_name: Callable[[str], str] | None = None,
+    ) -> StagedFull | FullAbsent:
         """stage each table's parts of the current full beside the copy, a part at a time; :class:`FullAbsent` when no
         full is published, or the current one does not hold every table.
 
@@ -917,6 +923,9 @@ class VolumeFulls:
         :ptype backend: FollowerBackend
         :param manifest: the manifest to load, read already; None reads the current one
         :ptype manifest: FullManifest | None
+        :param stage_name: each table's stage name; None stages in the table's rows stage, as a start does. A running
+            copy's reload stages beside its passes, in a stage of its own (``copy_follower.reload_stage``)
+        :ptype stage_name: Callable[[str], str] | None
         :return: what was staged, or why nothing was
         :rtype: StagedFull | FullAbsent
         :raises FileNotFoundError: when a part the manifest names is not on the volume
@@ -953,7 +962,7 @@ class VolumeFulls:
             held: dict[str | None, str] = {None: entry.version}
             held.update((part.scope, part.version) for part in entry.parts)
             versions[name] = held
-            stage = f"{STAGE_PREFIX}{name}__rows"
+            stage = f"{STAGE_PREFIX}{name}__rows" if stage_name is None else stage_name(name)
             await asyncio.to_thread(backend.drop_stage, stage)
             try:
                 await asyncio.to_thread(backend.stage_rows, stage, name, pa.table({}), table.key)

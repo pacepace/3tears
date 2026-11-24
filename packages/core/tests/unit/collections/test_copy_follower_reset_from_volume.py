@@ -22,6 +22,8 @@ so "the copy equals L3" and "no statement reached L3" are both checked. The cont
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,7 +44,14 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
-from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
+from threetears.core.collections.copy_follower import (  # noqa: E402
+    CopyFollower,
+    FollowedTable,
+    PartialStamp,
+    PreparesStaged,
+    is_reload_stage,
+    reload_stage,
+)
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
     RESET_REASON,
@@ -769,6 +778,157 @@ async def test_a_second_reset_heard_while_the_full_stages_raises_the_bar_and_nev
     assert await world.follower.catch_up()
     assert world.same()
     assert world.l3.statements[_RESET] == 0
+
+
+class _SlowFull:
+    """the backend's staging of ``results``' rows held on a worker thread until released: a big table's full staging.
+    The loop is free meanwhile (the hold is on the staging thread), so a pass may run while it stages."""
+
+    def __init__(self, world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        stage_rows = world.backend.stage_rows
+
+        def staged(stage: str, table: str, rows: Any, key: Any, **kwargs: Any) -> int:
+            if table == _RESET and rows.num_rows:
+                self.entered.set()
+                self.release.wait(timeout=30)
+            return stage_rows(stage, table, rows, key, **kwargs)
+
+        monkeypatch.setattr(world.backend, "stage_rows", staged)
+
+    async def staging(self) -> None:
+        for _ in range(1000):
+            if self.entered.is_set():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the reset table's full never began to stage")
+
+
+async def _waiting_for_full(world: _World) -> list[tuple[Any, ...]]:
+    """``results`` reset and waiting for its full; the copy it serves meanwhile."""
+    old = world.copy(_RESET)
+    world.l3.reset(_RESET, _AFTER_RESET)
+    world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL", "state:TX")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    return old
+
+
+def _publish_reset_full(world: _World, term: int) -> None:
+    reset_at = f"inc:{world.log.count[_RESET]}"
+    publish_full_manifest(
+        world.volume,
+        term=term,
+        tables={
+            _RESET: _entry(world.volume, _RESET, world.l3.held(_RESET), reset_at),
+            _OTHER: _entry(world.volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+
+
+async def test_another_tables_change_applies_while_a_reset_table_stages_its_full(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reload holds the pass lock while it stages its table's full (decision 52): the old reload staged
+    and applied under the lock, so every other table's ready change waited for the whole reload (a local burst
+    replay: commit to publish a median 9.4 s, up to 45 s, behind one). Now the full stages outside the lock: while it
+    stages, another table's change is applied and published within the bound, and the reload then swaps in alone."""
+    world = _World(_volume)
+    await world.started()
+    old = await _waiting_for_full(world)
+    slow = _SlowFull(world, monkeypatch)
+    published: list[Any] = []
+    world.follower.on_change(published.append)
+    _publish_reset_full(world, term=2)
+    try:
+        await slow.staging()
+        world.write(_OTHER, [("VA", 0, 4242), ("IL", 7, 77)])
+        began = time.monotonic()
+        applied = await asyncio.wait_for(world.follower.catch_up(), timeout=5.0)
+        took = time.monotonic() - began
+        assert applied, "the other table's pass did not apply while the reset table's full staged"
+        assert took < 2.0, f"the other table's change waited {took:.2f} s for the reload"
+        assert world.same(_OTHER), "the other table's change was not applied while the full staged"
+        assert published, "the other table's change was not published while the full staged"
+        assert world.copy(_RESET) == old, "the reset table changed before its full swapped in"
+        assert _RESET in world.follower.status().waiting_for_full
+    finally:
+        slow.release.set()
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
+    assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_change_to_the_reset_table_heard_while_its_full_stages_is_applied_after_the_swap(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a change to the reloading table heard while its full stages is lost, applied to the table the reset
+    replaced, or waits with every other table for the reload (decision 52). While the full stages a pass runs (within
+    the bound) and applies the other table's change, never the reset table's: its change stays held, in order, and
+    once the full swaps in it is applied over it, none lost."""
+    world = _World(_volume)
+    await world.started()
+    old = await _waiting_for_full(world)
+    slow = _SlowFull(world, monkeypatch)
+    _publish_reset_full(world, term=2)
+    try:
+        await slow.staging()
+        world.write(_RESET, [("VA", 1, 9191), ("IL", 3, 33)])
+        world.write(_OTHER, [("VA", 2, 5151)])
+        world.write(_RESET, [("VA", 1, 9292)])
+        assert await asyncio.wait_for(world.follower.catch_up(), timeout=5.0)
+        assert world.same(_OTHER)
+        assert world.copy(_RESET) == old, "a change heard while the full staged was applied to the replaced table"
+    finally:
+        slow.release.set()
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same(), "a change heard while the full staged was lost or applied out of order"
+    assert ("VA", 1, 9292) in world.copy(_RESET)
+    assert ("IL", 3, 33) in world.copy(_RESET)
+    assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_backend_that_prepares_a_reload_does_it_outside_the_pass_lock_on_the_reload_s_own_stage(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a backend's heavy work for a reload (``PreparesStaged.prepare_staged``: the pod's rewrite of the
+    table's parts in a worker process) runs under the pass lock, or is handed anything but the reload's own stage
+    (decision 52): while it prepares, another table's change applies; then the reload swaps in."""
+    world = _World(_volume)
+    await world.started()
+    old = await _waiting_for_full(world)
+    entered, release = threading.Event(), threading.Event()
+    prepared: list[list[str | None]] = []
+
+    def prepare_staged(changes: Any) -> None:
+        prepared.append([change.rows for change in changes])
+        entered.set()
+        release.wait(timeout=30)
+
+    monkeypatch.setattr(world.backend, "prepare_staged", prepare_staged, raising=False)
+    assert isinstance(world.backend, PreparesStaged)
+    _publish_reset_full(world, term=2)
+    try:
+        for _ in range(1000):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set(), "the backend was never asked to prepare the reload"
+        assert prepared == [[reload_stage(_RESET)]]
+        assert is_reload_stage(reload_stage(_RESET))
+        world.write(_OTHER, [("VA", 3, 3131)])
+        assert await asyncio.wait_for(world.follower.catch_up(), timeout=5.0)
+        assert world.same(_OTHER)
+        assert world.copy(_RESET) == old
+    finally:
+        release.set()
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
 
 
 async def test_a_reset_heard_while_a_pass_leaves_scopes_out_applies_every_other_table(
