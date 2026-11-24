@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.read_path_support import hook_reads
 from threetears.evals.schema import AsyncDocumentStore, GroupMeasure, ResultReadings, StoreClock
 from threetears.evals.storage import InMemoryDocumentStore, bridge_async_store
 from threetears.evals.testing import RESULT_READINGS_CONFORMANCE_CASES, ResultReadingsConformanceCase
@@ -29,18 +30,6 @@ _STORE_TIME = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 #: What an adapter would scope by, set by the caller and read inside the store's iterator.
 _TENANT: contextvars.ContextVar[str] = contextvars.ContextVar("tenant", default="unset")
-
-
-class _HookedDocuments(dict[tuple[str, str], dict[str, Any]]):
-    """A store's documents, calling the installed hook on each pass a read makes over them."""
-
-    hook: Callable[[], None] | None = None
-
-    # Any: dict's own items view type lives in a private module, and this hands back exactly what dict's does.
-    def items(self) -> Any:
-        if self.hook is not None:
-            self.hook()
-        return super().items()
 
 
 class _FakeAsyncStore(AsyncDocumentStore):
@@ -216,8 +205,7 @@ def loop() -> Iterator[asyncio.AbstractEventLoop]:
 
 def _installer(store: _FakeAsyncStore) -> Callable[[Callable[[], None]], None]:
     """Hook the in-memory store behind ``store``, and return the installer the kit calls."""
-    documents = _HookedDocuments(store.inner.documents)
-    store.inner.documents = documents
+    documents = hook_reads(store.inner)
 
     def install(hook: Callable[[], None]) -> None:
         documents.hook = hook

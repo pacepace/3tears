@@ -645,9 +645,11 @@ async def test_a_case_that_recorded_nothing_wires_and_fails_only_if_asked() -> N
 
 
 def _corrupt(store: InMemoryDocumentStore, *, seam: str, change: Callable[[dict[str, Any]], None]) -> None:
-    for document in store.documents.values():
+    for document in list(store.documents.values()):
         if document.get("doc_type") == "eval_cassette" and document["seam"] == seam:
-            change(document)
+            changed = dict(document)
+            change(changed)
+            store.upsert(changed)
 
 
 def _misfit_payload(document: dict[str, Any]) -> None:
@@ -742,9 +744,9 @@ async def test_a_stale_row_in_another_case_does_not_break_this_case() -> None:
     _wire(_lane(storage, "capture"), other, test_case_id="case-2")
     await other.call("scout_ahead", "scout", area="chapel")
     await other.settle()
-    for document in store.documents.values():
+    for document in list(store.documents.values()):
         if document.get("test_case_id") == "case-2":
-            document["schema_version"] = 5
+            store.upsert(document | {"schema_version": 5})
 
     replay = _replay_session()
     _wire(_lane(storage, "replay"), replay)
@@ -845,8 +847,8 @@ async def test_a_recapture_replaces_the_case_s_whole_recording() -> None:
 async def test_a_recapture_clears_rows_this_build_can_no_longer_read() -> None:
     storage, store = memory_storage()
     await _captured(storage)
-    for document in store.documents.values():
-        document["schema_version"] = 5
+    for document in list(store.documents.values()):
+        store.upsert(document | {"schema_version": 5})
 
     _wire(_lane(storage, "capture"), _capture_session())
     assert off_loop(_recordings, storage) == []

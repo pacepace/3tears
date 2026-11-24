@@ -293,7 +293,7 @@ def _scope_with(
                 )
             )
     if field is not None:
-        store.documents[(REFUSED_SCOPE, "run-1-0")][field] = value
+        store.upsert(store.documents[(REFUSED_SCOPE, "run-1-0")] | {field: value})
     return storage, store, runs
 
 

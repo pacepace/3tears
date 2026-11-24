@@ -1,7 +1,7 @@
 """The readings conformance kit passes on the in-memory reference store, and each of its cases can fail.
 
 * **The reference store conforms.** Every case of ``RESULT_READINGS_CONFORMANCE_CASES`` runs against
-  ``InMemoryDocumentStore``, its backend hook installed on the store's own ``documents`` dict, whose ``items()`` is
+  ``InMemoryDocumentStore``, its backend hook installed on each pass over the store's own ``documents``, whose ``items()`` is
   the one pass a read makes.
 * **No case is vacuous.** :data:`_FAULTS` is a table of wrong stores, each the reference store with one rule broken,
   and the cases each must turn red. A case no fault reaches fails :func:`test_every_case_is_turned_red_by_some_fault`.
@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.read_path_support import hook_reads
 from threetears.evals.schema import DocumentStore, GroupMeasure, ResultReadings, narrow_items, omit_paths
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.testing import (
@@ -25,22 +26,9 @@ from threetears.evals.testing import (
 )
 
 
-class _HookedDocuments(dict[tuple[str, str], dict[str, Any]]):
-    """The store's documents, calling the installed hook on each pass a read makes over them."""
-
-    hook: Callable[[], None] | None = None
-
-    # Any: dict's own items view type lives in a private module, and this hands back exactly what dict's does.
-    def items(self) -> Any:
-        if self.hook is not None:
-            self.hook()
-        return super().items()
-
-
 def _hooked(store: InMemoryDocumentStore) -> Callable[[Callable[[], None]], None]:
-    """Swap the store's documents for hooked ones, and return the installer the kit calls."""
-    documents = _HookedDocuments(store.documents)
-    store.documents = documents
+    """Hook each pass the store's reads make over its documents, and return the installer the kit calls."""
+    documents = hook_reads(store)
 
     def install(hook: Callable[[], None]) -> None:
         documents.hook = hook

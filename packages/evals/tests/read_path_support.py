@@ -9,11 +9,13 @@ that the methods exist, so a forwarding fallback would offer the capability it i
 
 :class:`CountingStore` is the reference store naming each backend call it is asked for, the way a test counts the store
 calls a read makes.
+
+:func:`hook_reads` hooks each pass a reference store's read makes over its documents, for a kit's backend hook.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 from threetears.evals.schema.store_port import DocumentStore, GroupMeasure
@@ -134,3 +136,33 @@ class CountingStore(InMemoryDocumentStore):
             field_in=field_in,
             **field_eq,
         )
+
+
+class HookedDocuments(dict[tuple[str, str], dict[str, Any]]):
+    """A store's documents, calling the installed hook on each pass a read makes over them (``items()``)."""
+
+    hook: Callable[[], None] | None = None
+
+    # Any: dict's own items view type lives in a private module, and this hands back exactly what dict's does.
+    def items(self) -> Any:
+        if self.hook is not None:
+            self.hook()
+        return super().items()
+
+
+def hook_reads(store: InMemoryDocumentStore) -> HookedDocuments:
+    """Hook each pass ``store``'s reads make over its documents; set the hook on what this returns.
+
+    The store reads its documents through its own read-only :attr:`~InMemoryDocumentStore.documents`, so ``store``
+    becomes an instance of a subclass of its own class whose ``documents`` hands each pass a hooked copy: every
+    other method, its own or a fault's, stays as it was.
+    """
+    hooks = HookedDocuments()
+
+    def documents(self: InMemoryDocumentStore) -> Mapping[tuple[str, str], dict[str, Any]]:
+        seen = HookedDocuments(InMemoryDocumentStore.documents.__get__(self))
+        seen.hook = hooks.hook
+        return seen
+
+    store.__class__ = type(f"Hooked{type(store).__name__}", (type(store),), {"documents": property(documents)})
+    return hooks
