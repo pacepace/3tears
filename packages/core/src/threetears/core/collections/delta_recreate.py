@@ -90,6 +90,7 @@ from threetears.core.collections.delta_files import (
     _first_written,
     _key_texts,
     _text_column,
+    _under_texts,
     delta_files_root,
     joined_key_texts,
     key_text_table,
@@ -689,7 +690,12 @@ class DeltaRecreator:
                 delta.arrow(page, every)
         # the record's keys (their text, ``key_text``'s spelling) as Arrow key columns, each once in the order named;
         # what L3 answers is matched against them in Arrow, never a key held as a Python object
-        keys = _first_written(_record_keys(record, table.key), table.key) if record.rows else None
+        # an instant key in its one canonical text (key_text with ``instant``), as L3's rows are matched below
+        keys = (
+            _first_written(key_text_table(_record_keys(record, table.key), table.key, table.instant_keys), table.key)
+            if record.rows
+            else None
+        )
         if keys is None or not keys.num_rows:
             return delta, 0
         return delta, await self._keys_from_l3(table, delta, keys)
@@ -723,7 +729,8 @@ class DeltaRecreator:
             for page in keyed:
                 if page.num_rows:
                     delta.arrow(page, every)
-                    found.append(joined_key_texts(key_text_table(page, table.key), table.key))
+                    # the rail's ``...Z`` of an instant key matched in the record's canonical text, never as given
+                    found.append(joined_key_texts(key_text_table(page, table.key, table.instant_keys), table.key))
         held = pa.concat_arrays(found) if found else pa.array([], pa.string())
         gone = keys.filter(pc.invert(pc.is_in(joined_key_texts(keys, table.key), value_set=held)))
         if gone.num_rows:
@@ -797,23 +804,17 @@ def _keys_lacking(path: Path, table: FollowedTable, record: EpochChange) -> int:
     delta = read_delta_table(path, table=table.name)
     if not record.rows:
         return 0
-    held = _key_texts([_text_column(delta.rows.column(column)) for column in table.key])
-    # the record's keys are its text already (``key_text``), the spelling a file's key columns are matched in
-    named = {
-        column: pa.array([row.ids[index] for row in record.rows], pa.string()) for index, column in enumerate(table.key)
-    }
+    instants = table.instant_keys
+    # every side in key_text's one canonical spelling (an instant's with ``instant``): a file's ``...Z`` and the
+    # record's ``...+00:00`` of one instant are one key; matched as given, every such key read as lacking
+    held = _key_texts([_text_column(delta.rows.column(column), instant=column in instants) for column in table.key])
+    named = key_text_table(_record_keys(record, table.key), table.key, instants)
     lacking = np.asarray(
-        pc.invert(pc.is_in(_key_texts(list(named.values())), value_set=held)).to_numpy(zero_copy_only=False),
+        pc.invert(pc.is_in(joined_key_texts(named, table.key), value_set=held)).to_numpy(zero_copy_only=False),
         dtype=bool,
     )
-    for prefix in delta.prefixes:
-        under = np.ones(len(lacking), dtype=bool)
-        for column, value in prefix.items():
-            under &= np.asarray(
-                pc.equal(named[column], pa.scalar(value, pa.string())).to_numpy(zero_copy_only=False), dtype=bool
-            )
-        lacking &= ~under
-    return int(lacking.sum())
+    under = _under_texts({column: named.column(column) for column in table.key}, len(lacking), delta.prefixes, instants)
+    return int((lacking & ~under).sum())
 
 
 @asynccontextmanager

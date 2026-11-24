@@ -158,7 +158,7 @@ from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, 
 from threetears.core.frozen_state import with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
-from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types, sql_cast
+from threetears.core.collections.schema_backed import DATETIMETZ_TYPE, TableSchema, rail_arrow_types, sql_cast
 from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
@@ -486,14 +486,41 @@ class FoldedTable:
             delta_scope=schema.delta_scope,
         )
 
+    @property
+    def instant_keys(self) -> frozenset[str]:
+        """the key columns of a ``timestamptz`` column (:func:`instant_key_columns`).
+
+        :return: the columns
+        :rtype: frozenset[str]
+        """
+        return instant_key_columns(self.key, self.kinds)
+
     def plain(self) -> tuple[Any, ...]:
         """the table as a worker process is handed it: plain data, and its keep rule's class by name.
 
-        :return: ``(name, key, columns, scope column, scope prefix, keep)``
+        :return: ``(name, key, columns, scope column, scope prefix, keep, instant keys)``
         :rtype: tuple
         """
         column, prefix = self.scope if self.scope is not None else (None, None)
-        return (self.name, self.key, self.columns, column, prefix, self.keep)
+        return (self.name, self.key, self.columns, column, prefix, self.keep, tuple(sorted(self.instant_keys)))
+
+
+def instant_key_columns(key: Sequence[str], kinds: Sequence[tuple[str, str]]) -> frozenset[str]:
+    """the key columns of a ``timestamptz`` column (``DATETIMETZ_TYPE``), as
+    :attr:`~threetears.core.collections.copy_follower.FollowedTable.instant_keys` names a copy's: each key text of one
+    is its instant's one canonical text (``key_text(..., instant=True)``). Why: the rail and a delta file spell an
+    instant ``...Z``, an epoch record and a change note ``....000000+00:00``; the fold and its recovery matched them
+    as plain text, so a recovery of ``result_snapshots_by_id`` failed every round (2026-11-24 replay: 270 failures in
+    20 minutes, pending files 8 -> 37 a round, fold rounds 197 -> 55 a 10 minutes).
+
+    :param key: the key columns
+    :ptype key: Sequence[str]
+    :param kinds: each column's type tag, :attr:`FoldedTable.kinds`
+    :ptype kinds: Sequence[tuple[str, str]]
+    :return: the columns
+    :rtype: frozenset[str]
+    """
+    return frozenset(name for name, kind in kinds if name in key and kind == DATETIMETZ_TYPE)
 
 
 class DeltaFolds:
@@ -2473,7 +2500,10 @@ _NOTED: Final = "_3tears_noted"
 
 def _typed_texts(column: Any, kind: str, arrow_type: Any) -> Any:
     """a key column given as text (a note's) as its column binds (:func:`~threetears.core.collections.copy_follower.
-    typed_text`), each distinct text converted once, then taken a row at a time in Arrow.
+    typed_text`), each distinct text converted once, then taken a row at a time in Arrow. A column the rail answers as
+    text (a ``timestamptz`` that is no ``date_`` column, a ``NUMERIC``, a UUID) stays text: an instant's in its one
+    canonical text (:func:`~threetears.core.collections.delta_files._text_column` with ``instant``), anything else as
+    given (``key_text``'s spelling already).
 
     :param column: the texts
     :ptype column: pyarrow.Array | pyarrow.ChunkedArray
@@ -2484,12 +2514,19 @@ def _typed_texts(column: Any, kind: str, arrow_type: Any) -> Any:
     :return: the values
     :rtype: pyarrow.Array
     """
+    if pa.types.is_string(arrow_type):
+        # Why: typed_text made a datetime of a timestamptz key's text (a Decimal of a NUMERIC's) and Arrow refused it
+        # as a text column (ArrowTypeError: Expected bytes, got a 'datetime.datetime'), so a recovery of a table keyed
+        # by a timestamp (result_snapshots_by_id) failed every round (2026-11-24 replay)
+        return _text_column(column, instant=kind == DATETIMETZ_TYPE)
     encoded = pc.dictionary_encode(column.combine_chunks() if isinstance(column, pa.ChunkedArray) else column)
     values = pa.array([typed_text(kind, text) for text in encoded.dictionary.to_pylist()], arrow_type)
     return values.take(encoded.indices)
 
 
-def _under_prefixes(texts: Mapping[str, Any], count: int, prefixes: Sequence[Mapping[str, str]]) -> Any:
+def _under_prefixes(
+    texts: Mapping[str, Any], count: int, prefixes: Sequence[Mapping[str, str]], instants: Collection[str]
+) -> Any:
     """which rows lie under one of ``prefixes`` (:func:`~threetears.core.collections.delta_files.under_prefix`,
     compared as text), in Arrow.
 
@@ -2499,10 +2536,12 @@ def _under_prefixes(texts: Mapping[str, Any], count: int, prefixes: Sequence[Map
     :ptype count: int
     :param prefixes: the prefixes, as a delta file names them
     :ptype prefixes: Sequence[Mapping[str, str]]
+    :param instants: the key columns of a ``timestamptz`` column, ``texts`` holding each in its canonical text
+    :ptype instants: Collection[str]
     :return: one flag a row
     :rtype: pyarrow.Array
     """
-    return pa.array(_under_texts(texts, count, prefixes))
+    return pa.array(_under_texts(texts, count, prefixes, instants))
 
 
 def _first_each(rows: Any, scope: str | None) -> Any:
@@ -2591,7 +2630,12 @@ def recovery_reach_job(
                 prefixes.append(dict(prefix))
         held.append(rows.select(read).replace_schema_metadata(None).cast(schema))
     from_files = pa.concat_tables(held) if held else schema.empty_table()
-    file_texts = _key_texts([_text_column(from_files.column(column)) for column in table.key])
+    # every key text in its one canonical spelling (key_text, an instant's with ``instant``): a file's ``...Z`` and a
+    # note's ``...+00:00`` of one instant are one key, as the writer's records and the copy name it
+    instants = table.instants
+    file_texts = _key_texts(
+        [_text_column(from_files.column(column), instant=column in instants) for column in table.key]
+    )
     reach = _first_each(from_files.append_column(_TEXT, file_texts), delta_scope)
     if delta_scope is not None:
         reach = reach.rename_columns([_STATE if name == delta_scope else name for name in reach.column_names])
@@ -2603,7 +2647,7 @@ def recovery_reach_job(
         typed = pa.table(
             {column: _typed_texts(noted_texts.column(column), kind_of[column], types[column]) for column in table.key}
         )
-        texts = _key_texts([_text_column(typed.column(column)) for column in table.key])
+        texts = _key_texts([_text_column(typed.column(column), instant=column in instants) for column in table.key])
         noted = _first_each(typed.append_column(_TEXT, texts), None)
         named = pc.is_in(reach.column(_TEXT), value_set=noted.column(_TEXT))
         reach = reach.append_column(_NOTED, pc.fill_null(named, False))
@@ -2613,8 +2657,8 @@ def recovery_reach_job(
         reach = pa.concat_tables([reach, extra.select(reach.column_names)])
     else:
         reach = reach.append_column(_NOTED, pa.repeat(False, reach.num_rows))
-    key_texts = {column: _text_column(reach.column(column)) for column in table.key}
-    reach = reach.append_column(_UNDER, _under_prefixes(key_texts, reach.num_rows, prefixes))
+    key_texts = {column: _text_column(reach.column(column), instant=column in instants) for column in table.key}
+    reach = reach.append_column(_UNDER, _under_prefixes(key_texts, reach.num_rows, prefixes, instants))
     path = base / reach_file
     path.parent.mkdir(parents=True, exist_ok=True)
     with pa.OSFile(str(path), "wb") as sink, pa_ipc.new_file(sink, reach.schema) as writer:
@@ -2647,7 +2691,8 @@ def recovery_unstated_job(
     base = Path(root)
     reach = _read_rows_file(base / reach_file)
     rows = _read_rows_file(base / pages_file)
-    found = _key_texts([_text_column(rows.column(column)) for column in key])
+    instants = instant_key_columns(key, kinds)
+    found = _key_texts([_text_column(rows.column(column), instant=column in instants) for column in key])
     gone = pc.invert(pc.is_in(reach.column(_TEXT), value_set=found))
     unstated = pc.and_(pc.and_(reach.column(_NOTED), gone), pc.is_null(reach.column(_STATE)))
     return bool(pc.any(unstated).as_py())
@@ -2721,7 +2766,7 @@ def recovery_delta_job(
     read = [_read_rows_file(base / file).select(list(types)).cast(schema) for file in pages_files]
     rows = pa.concat_tables(read) if read else schema.empty_table()
     reach = _read_rows_file(base / reach_file)
-    found = _key_texts([_text_column(rows.column(column)) for column in table.key])
+    found = _key_texts([_text_column(rows.column(column), instant=column in table.instants) for column in table.key])
     gone = pc.and_(pc.invert(reach.column(_UNDER)), pc.invert(pc.is_in(reach.column(_TEXT), value_set=found)))
     state = reach.column(_STATE)
     if replaced and table.scope_column is not None:
@@ -3162,6 +3207,7 @@ class _Folding:
     scope_column: str | None
     scope_prefix: str | None
     keep: type[DeltaKeepRule] | None
+    instants: frozenset[str]
 
     @classmethod
     def of(cls, plain: tuple[Any, ...]) -> _Folding:
@@ -3172,8 +3218,8 @@ class _Folding:
         :return: the folding
         :rtype: _Folding
         """
-        name, key, columns, column, prefix, keep = plain
-        return cls(name, tuple(key), tuple(columns), column, prefix, keep)
+        name, key, columns, column, prefix, keep, instants = plain
+        return cls(name, tuple(key), tuple(columns), column, prefix, keep, frozenset(instants))
 
     def scope_of(self, value: Any) -> str:
         """a row's state from its scope column's value (a delete marker's included: the key's, or the state the
@@ -3335,7 +3381,9 @@ def _fold_state(
     if part is not None and not across:
         # refused across a reset: the part and the delta must be of one incarnation
         _newest(table.name, [part.version, version])
-    folded = fold_delta_tables(table.key, held, deltas, {field.name: field.type for field in schema})
+    folded = fold_delta_tables(
+        table.key, held, deltas, {field.name: field.type for field in schema}, instants=table.instants
+    )
     if table.keep is not None:
         folded = table.keep.keep(folded)
     if last_only_state and last is not None and _same_rows(table, schema, folded, last):

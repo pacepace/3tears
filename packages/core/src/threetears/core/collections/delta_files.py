@@ -1214,7 +1214,7 @@ class HeldDeltaRows:
         :return: one flag a key
         :rtype: numpy.ndarray
         """
-        return _under_texts(self._key_columns, self._count, prefixes)
+        return _under_texts(self._key_columns, self._count, prefixes, self._instants)
 
     def apply(self, delta: DeltaTable, positions: Any) -> Any:
         """apply one file to the keys at ``positions`` (those that reach it at its epoch): each under a prefix it clears
@@ -1296,15 +1296,21 @@ class HeldDeltaRows:
         return pa.table([self._columns[name].take(index) for name in self._types], schema=schema), positions
 
 
-def _under_texts(columns: Mapping[str, Any], count: int, prefixes: Sequence[Mapping[str, str]]) -> Any:
+def _under_texts(
+    columns: Mapping[str, Any], count: int, prefixes: Sequence[Mapping[str, str]], instants: Collection[str] = ()
+) -> Any:
     """which of ``count`` keys, their key columns as text, lie under one of ``prefixes`` (:func:`under_prefix`).
 
-    :param columns: each key column's texts (``key_text``'s spelling)
+    :param columns: each key column's texts (``key_text``'s spelling; an instant column's in its canonical text,
+        :func:`_text_column` with ``instant``)
     :ptype columns: Mapping[str, pyarrow.Array | pyarrow.ChunkedArray]
     :param count: the keys
     :ptype count: int
     :param prefixes: the prefixes, as a delta file names them
     :ptype prefixes: Sequence[Mapping[str, str]]
+    :param instants: the key columns of a ``timestamptz`` column: a prefix's value of one is compared in its instant's
+        canonical text (``key_text(..., instant=True)``), as the keys' texts are, whichever spelling the file kept
+    :ptype instants: Collection[str]
     :return: one flag a key
     :rtype: numpy.ndarray
     """
@@ -1312,13 +1318,22 @@ def _under_texts(columns: Mapping[str, Any], count: int, prefixes: Sequence[Mapp
     for prefix in prefixes:
         within = np.ones(count, dtype=bool)
         for column, value in prefix.items():
-            equal = pc.equal(columns[column], pa.scalar(value, pa.string()))
+            # a file's few prefixes, one value each: the one canonical text, never a second spelling of an instant
+            named = key_text(value, instant=True) if column in instants else value
+            equal = pc.equal(columns[column], pa.scalar(named, pa.string()))
             within &= np.asarray(pc.fill_null(equal, False).to_numpy(zero_copy_only=False), dtype=bool)
         under |= within
     return under
 
 
-def fold_delta_tables(key: Sequence[str], held: Any, deltas: Sequence[DeltaTable], types: Mapping[str, Any]) -> Any:
+def fold_delta_tables(
+    key: Sequence[str],
+    held: Any,
+    deltas: Sequence[DeltaTable],
+    types: Mapping[str, Any],
+    *,
+    instants: Collection[str] = (),
+) -> Any:
     """a part's rows with delta files' changes applied in order, exactly as :func:`~threetears.core.testing.delta_files.apply_delta_row` applies each (a
     prefix a file clears taking out every row under it before the file's own changes): in Arrow, a column at a time.
     The writer's fold of a state (:mod:`~threetears.core.collections.delta_fold`). CPU: run it in a worker process.
@@ -1338,6 +1353,10 @@ def fold_delta_tables(key: Sequence[str], held: Any, deltas: Sequence[DeltaTable
     :ptype deltas: Sequence[DeltaTable]
     :param types: each column the part holds, onto its Arrow type, in order
     :ptype types: Mapping[str, pyarrow.DataType]
+    :param instants: the key columns of a ``timestamptz`` column: the part's and the files' keys are matched by each
+        instant's one canonical text (:func:`key_text_table`), whichever spelling each holds (the rail's ``...Z``, a
+        record's ``...+00:00``)
+    :ptype instants: Collection[str]
     :return: the folded rows, typed as ``types``
     :rtype: pyarrow.Table
     :raises ImportError: without pyarrow
@@ -1346,10 +1365,10 @@ def fold_delta_tables(key: Sequence[str], held: Any, deltas: Sequence[DeltaTable
         raise ImportError("a fold needs pyarrow: install 3tears[snapshot]")
     schema = pa.schema(list(types.items()))
     prefixes = [prefix for delta in deltas for prefix in delta.prefixes]
-    changed = [key_text_table(delta.rows, key) for delta in deltas if delta.rows.num_rows]
+    changed = [key_text_table(delta.rows, key, instants) for delta in deltas if delta.rows.num_rows]
     if not changed and not prefixes:
         return held
-    held_keys = key_text_table(held, key)
+    held_keys = key_text_table(held, key, instants)
     hit = np.zeros(held.num_rows, dtype=bool)
     if changed:
         touched = pc.unique(joined_key_texts(pa.concat_tables(changed), key))
@@ -1357,13 +1376,13 @@ def fold_delta_tables(key: Sequence[str], held: Any, deltas: Sequence[DeltaTable
         hit |= np.asarray(named.to_numpy(zero_copy_only=False), dtype=bool)
     if prefixes and held.num_rows:
         columns = {column: held_keys.column(column) for column in key}
-        hit |= _under_texts(columns, held.num_rows, prefixes)
+        hit |= _under_texts(columns, held.num_rows, prefixes, instants)
     if not hit.any() and not changed:
         return held
     kept = pa.array(~hit)
     merged = pa.array(hit)
     keys = _first_written(pa.concat_tables([held_keys.filter(merged), *changed]), key)
-    rows = HeldDeltaRows(key, keys, types)
+    rows = HeldDeltaRows(key, keys, types, instants=instants)
     rows.hold(held.filter(merged))
     everyone = np.arange(keys.num_rows, dtype=np.int64)
     for delta in deltas:
