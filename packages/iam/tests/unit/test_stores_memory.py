@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import timedelta
 
 import pytest
@@ -292,3 +293,45 @@ async def test_the_attempt_limiter_resets_a_lapsed_window_after_other_keys_write
     window = await limiter.record_failure("victim")
     assert window.count == 1
     assert not window.limited
+
+
+# --- cost: the store grows with its keys, never rebuilding everything per write ---
+
+
+async def test_fifty_thousand_puts_then_takes_stay_cheap_per_operation() -> None:
+    """50,000 live keys written then taken: amortised well under 25 us per operation.
+
+    Measured on an M-series laptop: about 4 us per operation (layered, log-structured merges).
+    A store that rebuilt one frozen map per write copies every live key each time -- about
+    25,000 keys per write on average here, hundreds of microseconds each -- and fails this.
+    """
+    clock = _Clock()
+    store = MemoryStateStore(clock=clock)
+    ttl = timedelta(minutes=5)
+    keys = [f"state-{n}" for n in range(50_000)]
+    payload = {"n": 1}
+
+    started = time.perf_counter()
+    for key in keys:
+        await store.put(key, payload, ttl=ttl)
+    for key in keys:
+        assert await store.take(key) == payload
+    per_op = (time.perf_counter() - started) / (2 * len(keys))
+
+    assert await store.get(keys[0]) is None
+    assert per_op < 25e-6, f"{per_op * 1e6:.1f} us per operation over 50,000 puts and takes"
+
+
+async def test_a_shorter_rewrite_does_not_let_the_longer_first_write_show_through() -> None:
+    """A key rewritten with a shorter life is gone at the rewrite's expiry, however layers drop."""
+    clock = _Clock()
+    store = MemoryStateStore(clock=clock)
+    await store.put("k", {"v": 1}, ttl=timedelta(seconds=100))
+    await store.put("k", {"v": 2}, ttl=timedelta(seconds=10))
+    for n in range(64):  # enough writes to push both records through merges and sweeps
+        await store.put(f"other-{n}", {"n": n}, ttl=timedelta(seconds=5))
+    clock.advance(11)
+    for n in range(64):
+        await store.put(f"later-{n}", {"n": n}, ttl=timedelta(seconds=500))
+    assert await store.get("k") is None
+    assert await store.take("k") is None

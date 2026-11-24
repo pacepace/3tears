@@ -18,22 +18,24 @@ event loop. A deployment with more than one process needs a shared store
 (:mod:`~threetears.iam.stores.nats_kv`, :mod:`~threetears.iam.stores.postgres`).
 
 **Memory is bounded by expiry, and optionally by a cap.** An expired entry is swept
-on the next write, not only when it is read: a sign-in that is started and abandoned
+on a later write, not only when it is read: a sign-in that is started and abandoned
 is never read again, and anyone can start one, so a store that dropped entries only
-on read would grow without bound. Each write first removes whatever has expired, in
-expiry order, at amortised constant cost. ``max_entries`` caps the live entries on
-top of that: a write that would add one past it raises :class:`MemoryStoreFullError`
-rather than evicting someone's in-flight state. Overwriting a live key is never
-refused.
+on read would grow without bound. The entries live in append-only frozen layers,
+merged log-structured as they grow, so no map is ever changed in place and a write
+costs amortised O(log n) (see :class:`_ExpiringEntries`). ``max_entries`` caps the
+live entries on top of that: a write that would add one past it raises
+:class:`MemoryStoreFullError` rather than evicting someone's in-flight state.
+Overwriting a live key is never refused.
 """
 
 from __future__ import annotations
 
-import heapq
+import math
 import time
 from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import Any
+from types import MappingProxyType
+from typing import Any, NamedTuple
 
 from threetears.iam.stores.base import (
     AttemptWindow,
@@ -44,10 +46,46 @@ from threetears.iam.stores.base import (
 
 __all__ = ["MemoryAttemptLimiter", "MemoryStateStore", "MemoryStoreFullError", "MemoryTicketStore"]
 
-#: Stale heap slots (keys taken, cleared or rewritten before they expired) tolerated beyond
-#: the live entries before the heap is rebuilt from them. Rebuilding is linear, so doing it
-#: only once the slack doubles keeps each write amortised constant.
-_HEAP_SLACK = 64
+#: Marks a key as taken (popped, redeemed, cleared): it hides every older layer's record for it.
+_TAKEN: Any = object()
+
+
+class _Record(NamedTuple):
+    """One key's newest word in a layer.
+
+    :ivar value: the value, or :data:`_TAKEN` for a take marker
+    :ivar expires_at: when the value stops being live (a marker carries the expiry it hides)
+    :ivar holds_until: the latest expiry this record or any older record it hides reaches; a
+        layer is dropped only once every record in it is past this, so dropping a layer can
+        never let an older still-live record for the same key show through
+    """
+
+    value: Any
+    expires_at: float
+    holds_until: float
+
+
+class _Layer(NamedTuple):
+    """A frozen map of records, with the latest ``holds_until`` among them."""
+
+    records: Mapping[str, _Record]
+    holds_until: float
+
+
+def _layer(records: Mapping[str, _Record]) -> _Layer:
+    return _Layer(MappingProxyType(dict(records)), max((r.holds_until for r in records.values()), default=-math.inf))
+
+
+def _merged(older: _Layer, newer: _Layer, *, bottom: bool, now: float) -> _Layer:
+    """``newer`` over ``older`` as one layer; the bottom layer also sheds markers and expired values.
+
+    Only the bottom layer may shed them: above it, a marker or an expired value still hides an
+    older record for its key. Below the bottom there is nothing left to hide.
+    """
+    records = {**older.records, **newer.records}  # function-local, frozen by _layer
+    if bottom:
+        records = {k: r for k, r in records.items() if r.value is not _TAKEN and r.expires_at > now}
+    return _layer(records)
 
 
 class MemoryStoreFullError(Exception):
@@ -66,11 +104,23 @@ class MemoryStoreFullError(Exception):
 
 
 class _ExpiringEntries[V]:
-    """A dict whose expired entries are swept on write, in expiry order.
+    """Keys with values that expire, held in append-only frozen layers, newest first.
 
-    A min-heap of ``(expires_at, key)`` orders the sweep. A slot whose key was since removed
-    or rewritten with a later expiry is skipped when it surfaces, so removal stays a plain
-    ``dict.pop``.
+    A write or a take appends a one-record layer; whenever the newest layer is at least as
+    large as the one below it the two merge (log-structured, like a binary counter), so there
+    are O(log n) layers and each record is copied O(log n) times: a write costs amortised
+    O(log n) and a lookup checks O(log n) layers, newest first. A take is a marker record that
+    hides the key in every older layer. Every write first sweeps: a layer whose records are all
+    past their ``holds_until`` is dropped whole, and the layers left are merged back into order.
+    No map is ever changed in place -- each layer is a ``MappingProxyType`` built once.
+
+    The expiry is what an entry means (a sign-in's life, an attempt window), not a cache TTL:
+    an entry past it reads as absent, exactly as before.
+
+    The cap counts live entries exactly. ``_bound`` is an upper bound on them, exact until the
+    earliest expiry written since the last compaction (``_exact_until``); a write at the bound
+    after that compacts every layer into one (dropping markers and expired values) to count
+    again. A compaction is linear, and only happens at the cap once something has expired.
     """
 
     def __init__(self, *, clock: Callable[[], float], max_entries: int | None) -> None:
@@ -78,44 +128,83 @@ class _ExpiringEntries[V]:
             raise ValueError(f"max_entries must be at least 1, or None for no cap; got {max_entries}")
         self._clock = clock
         self._max_entries = max_entries
-        self._entries: dict[str, tuple[V, float]] = {}
-        self._expiries: list[tuple[float, str]] = []
+        self._layers: tuple[_Layer, ...] = ()
+        self._bound = 0
+        self._exact_until = math.inf
 
     def put(self, key: str, value: V, *, expires_at: float) -> None:
         """Store ``value`` under ``key`` until ``expires_at``, after sweeping what has expired.
 
         :raises MemoryStoreFullError: ``key`` is new and the live entries are at the cap
         """
-        self._sweep()
-        if self._max_entries is not None and key not in self._entries and len(self._entries) >= self._max_entries:
-            raise MemoryStoreFullError(self._max_entries)
-        self._entries[key] = (value, expires_at)
-        heapq.heappush(self._expiries, (expires_at, key))
+        now = self._clock()
+        self._sweep(now)
+        newest = self._newest(key)
+        live = newest is not None and newest.value is not _TAKEN and newest.expires_at > now
+        if self._max_entries is not None and not live and self._bound >= self._max_entries:
+            if now >= self._exact_until:
+                self._compact(now)
+            if self._bound >= self._max_entries:
+                raise MemoryStoreFullError(self._max_entries)
+        hidden = newest.holds_until if newest is not None else -math.inf
+        self._append(key, _Record(value, expires_at, max(expires_at, hidden)), now)
+        if not live:
+            self._bound += 1
+        self._exact_until = min(self._exact_until, expires_at)
 
     def pop(self, key: str) -> V | None:
         """Remove and return the live value under ``key``, or ``None`` when absent or expired."""
-        found = self._entries.pop(key, None)
-        if found is None or found[1] <= self._clock():
+        now = self._clock()
+        newest = self._newest(key)
+        if newest is None or newest.value is _TAKEN or newest.expires_at <= now:
+            # absent, taken, or expired: an expired newest record already reads as absent
             return None
-        return found[0]
+        self._append(key, _Record(_TAKEN, newest.expires_at, newest.holds_until), now)
+        self._bound -= 1
+        found: V = newest.value
+        return found
 
     def get(self, key: str) -> V | None:
         """The live value under ``key``, or ``None`` when absent or expired."""
-        found = self._entries.get(key)
-        if found is None or found[1] <= self._clock():
+        newest = self._newest(key)
+        if newest is None or newest.value is _TAKEN or newest.expires_at <= self._clock():
             return None
-        return found[0]
+        found: V = newest.value
+        return found
 
-    def _sweep(self) -> None:
-        now = self._clock()
-        while self._expiries and self._expiries[0][0] <= now:
-            _, key = heapq.heappop(self._expiries)
-            found = self._entries.get(key)
-            if found is not None and found[1] <= now:
-                del self._entries[key]
-        if len(self._expiries) > 2 * len(self._entries) + _HEAP_SLACK:
-            self._expiries = [(expires_at, key) for key, (_, expires_at) in self._entries.items()]
-            heapq.heapify(self._expiries)
+    def _newest(self, key: str) -> _Record | None:
+        for layer in self._layers:
+            found = layer.records.get(key)
+            if found is not None:
+                return found
+        return None
+
+    def _append(self, key: str, record: _Record, now: float) -> None:
+        self._layers = self._in_order((_layer({key: record}), *self._layers), now)
+
+    @staticmethod
+    def _in_order(layers: tuple[_Layer, ...], now: float) -> tuple[_Layer, ...]:
+        """``layers`` with each one smaller than the one below it, merging from the top down."""
+        kept: tuple[_Layer, ...] = ()
+        for layer in reversed(layers):  # oldest first, so kept[-1] is the newest so far
+            while kept and len(layer.records) >= len(kept[-1].records):
+                layer = _merged(kept[-1], layer, bottom=len(kept) == 1, now=now)
+                kept = kept[:-1]
+            kept = (*kept, layer)
+        return tuple(reversed(kept))
+
+    def _sweep(self, now: float) -> None:
+        kept = tuple(layer for layer in self._layers if layer.holds_until > now)
+        if len(kept) != len(self._layers):
+            self._layers = self._in_order(kept, now)
+
+    def _compact(self, now: float) -> None:
+        bottom = _Layer(MappingProxyType({}), -math.inf)
+        for layer in reversed(self._layers):
+            bottom = _merged(bottom, layer, bottom=True, now=now)
+        self._layers = (bottom,) if bottom.records else ()
+        self._bound = len(bottom.records)
+        self._exact_until = min((r.expires_at for r in bottom.records.values()), default=math.inf)
 
 
 class MemoryTicketStore:
