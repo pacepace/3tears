@@ -140,7 +140,8 @@ def _collection_classes() -> tuple[type, ...]:
     seen: dict[type, None] = {}
     pending: list[type] = [BaseCollection]
     while pending:
-        for sub in pending.pop().__subclasses__():
+        found: list[type] = pending.pop().__subclasses__()
+        for sub in found:
             if sub not in seen:
                 seen[sub] = None
                 pending.append(sub)
