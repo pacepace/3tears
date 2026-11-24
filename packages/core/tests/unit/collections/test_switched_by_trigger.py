@@ -8,16 +8,22 @@ What these hold:
 - the catalogue read names the trigger, the schema and the tables, and answers the tables that carry it;
 - ``advance_for_write`` given ``TENANT_BY_SCHEMA`` puts an undeclared table's records, rowless ones too, under the
   write's schema; without it they go on ``_all`` as before;
-- a recovery's rowless record of an undeclared table goes under each pod schema holding it, and one in the
-  platform schema stays on ``_all``.
+- a recovery's rowless record of an undeclared table goes under every tenant it may be read under: each pod schema
+  holding it and ``_all`` (one in the platform schema, ``_all`` alone), asking no registry, so nothing is reported
+  undeclared; a declared table keeps its declared tenancy.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+from prometheus_client import REGISTRY
+
+from threetears.core.collections import load_declared_collections
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.lost_writes import announce_window, tables_switched_by_trigger
@@ -100,28 +106,69 @@ async def test_without_its_tenancy_an_undeclared_tables_records_stay_on_all() ->
     assert [tenant for *_, tenant in source.records] == [None]
 
 
-async def _announced(triggered: set[tuple[str, str]]) -> list[str | None]:
-    """a lost write's window of the table announced with no change-note ring: a rowless record a tenant."""
+class _WholeCatalogue(_Catalogue):
+    """the catalogue as a recovery reads it whole: every table of every schema carrying the trigger."""
+
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        answer: list[dict[str, Any]]
+        if args == (NOTE_TRIGGER,):
+            self.asked.append((query, args))
+            answer = [{"table_schema": s, "table_name": table} for s, table in sorted(self.triggered)]
+        else:
+            answer = await super().fetch(query, *args)
+        return answer
+
+
+async def _announced(triggered: set[tuple[str, str]], table: str = _TABLE) -> list[str | None]:
+    """a lost write's window of ``table`` announced with no change-note ring, the switched tables read off the
+    catalogue as a recovery reads them: a rowless record a tenant. The startup loader has run, as in every hub."""
+    load_declared_collections()
     source = _Recorder()
-    catalogue = _Catalogue(triggered)
-    schemas = tuple(sorted(schema for schema, table in triggered if table == _TABLE))
     now = datetime.now(UTC)
     await announce_window(
-        catalogue,
+        _WholeCatalogue(triggered),
         generation_source=source,
         notes_schema="platform",
         since=now,
         until=now,
         why="recovery",
-        tables={_TABLE: schemas},
     )
-    return [tenant for *_, tenant in source.records]
+    return [tenant for name, *_, tenant in source.records if name == table]
+
+
+def _undeclared_count(table: str) -> float:
+    return sum(
+        REGISTRY.get_sample_value("threetears_undeclared_table_total", {"table": table, "lookup": lookup}) or 0.0
+        for lookup in ("tenancy", "write_generation", "l2_first")
+    )
+
+
+async def test_a_recovery_keys_an_undeclared_pod_table_by_every_tenant_and_reports_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flips if recovering a table known only from its trigger (a tool pod's own, undeclared on purpose) asks a
+    registry -- an undeclared ERROR and ``threetears_undeclared_table_total`` in every hub, and a refusal next
+    release -- or invalidates fewer than every tenant it may be read under."""
+    table = "switched_by_trigger_only_recovered_rows"
+    with caplog.at_level(logging.ERROR, logger="threetears.core.collections.undeclared_tables"):
+        tenants = await _announced({("agent_a", table), ("agent_b", table)}, table)
+    assert tenants == [schema_tenant("agent_a"), schema_tenant("agent_b"), None]
+    assert [r for r in caplog.records if table in r.getMessage()] == []
+    assert _undeclared_count(table) == 0.0
+
+
+async def test_a_recovery_keeps_a_declared_tables_declared_tenancy() -> None:
+    """Flips if a declared table (``coordination_counters``, by schema) is recovered under more or fewer tenants
+    than its declaration names."""
+    tenants = await _announced({("agent_a", "coordination_counters")}, "coordination_counters")
+    assert tenants == [schema_tenant("agent_a")]
 
 
 async def test_a_recovery_keys_an_undeclared_pod_table_by_each_schema_holding_it() -> None:
     assert await _announced({("agent_a", _TABLE), ("agent_b", _TABLE)}) == [
         schema_tenant("agent_a"),
         schema_tenant("agent_b"),
+        None,
     ]
 
 
