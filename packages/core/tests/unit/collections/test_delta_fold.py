@@ -204,7 +204,9 @@ class _Writer:
     def tell(self, file: str) -> None:
         """the commit landed: the fold hears its file and the generation it wrote."""
         token = f"inc:{self.files.index(file) + 1}"
-        self.folds.committed({self.schema.name: file}, {self.schema.name: token}, version=self.version)
+        self.folds.committed(
+            {self.schema.name: file}, {self.schema.name: token}, version=self.version, in_flight_since=None
+        )
 
     async def commit(self, rows: Sequence[Mapping[str, Any]] = (), **kwargs: Any) -> str:
         file = self.save(rows, **kwargs)
@@ -1370,7 +1372,10 @@ async def test_a_lost_log_is_recovered_from_the_leftover_files_keys_read_from_l3
     assert not folds.unfolded
     # folding resumes on the recovered full
     folds.committed(
-        {"votes": writer.save(_votes("TX", range(1000, 1004), 3))}, {"votes": f"inc:{len(writer.files)}"}, version=6
+        {"votes": writer.save(_votes("TX", range(1000, 1004), 3))},
+        {"votes": f"inc:{len(writer.files)}"},
+        version=6,
+        in_flight_since=None,
     )
     await folds.wait()
     assert len(reader.statements) == 2, "a commit after the recovery reads nothing"
@@ -1418,7 +1423,7 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     reader.db.execute("UPDATE votes SET votes = 77 WHERE geo_id = 4")
     generations.tokens["votes"] = "again:1"
     later = writer.save([{"state": "TX", "geo_id": 4, "votes": 77}], written=["votes"])
-    folds.committed({"votes": later}, {"votes": "again:1"}, version=6)
+    folds.committed({"votes": later}, {"votes": "again:1"}, version=6, in_flight_since=None)
     await folds.wait()
     assert _recoveries("new_incarnation") == before + 2
     assert _bound_keys(reader.statements[-1]) == [("TX", "4")], "the new incarnation's delta read back by its one key"
@@ -1427,7 +1432,9 @@ async def test_a_new_incarnation_is_recovered_by_key_and_never_read_whole(
     assert _held(tmp_path, "votes") == reader.held()
     # a later commit of that incarnation folds onto the recovered parts with no read
     reads = len(reader.statements)
-    folds.committed({"votes": writer.save(_votes("NC", range(3, 400), 9))}, {"votes": "again:2"}, version=6)
+    folds.committed(
+        {"votes": writer.save(_votes("NC", range(3, 400), 9))}, {"votes": "again:2"}, version=6, in_flight_since=None
+    )
     await folds.wait()
     assert len(reader.statements) == reads
     assert {(row["state"], row["geo_id"]) for row in _held(tmp_path, "votes") if row["state"] == "NC"} == {
@@ -1873,7 +1880,7 @@ async def test_close_within_a_bound_cuts_a_long_round_and_keeps_its_files_for_th
     assert _part(tmp_path, "votes", "state:TX") is None, "the cut round published nothing"
     # the next writer folds it (the mark is there: its keep rule runs at once)
     after = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", workers=workers)
-    after.committed({"votes": file}, {"votes": "inc:1"}, version=6)
+    after.committed({"votes": file}, {"votes": "inc:1"}, version=6, in_flight_since=None)
     await after.wait()
     part = _part(tmp_path, "votes", "state:TX")
     assert part is not None and part.rows == 3
@@ -2090,7 +2097,7 @@ async def test_a_commit_told_while_a_restarted_writer_relearns_is_folded_once_in
     )
     await walking.wait()
     # the newest commit lands and is told while the walk that also names it runs
-    folds.committed({"votes": writer.files[3]}, {"votes": "inc:4"}, version=6)
+    folds.committed({"votes": writer.files[3]}, {"votes": "inc:4"}, version=6, in_flight_since=None)
     await asyncio.sleep(0)
     release.set()
     await started

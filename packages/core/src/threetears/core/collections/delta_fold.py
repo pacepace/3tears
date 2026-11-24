@@ -690,7 +690,7 @@ class DeltaFolds:
         generations: Mapping[str, str],
         *,
         version: int,
-        in_flight_since: float | None = None,
+        in_flight_since: float | None,
     ) -> None:
         """note a commit's delta files and start a round of folds in the background; never waits, never raises for
         a fold. Call it after the commit, on the event loop.
@@ -706,7 +706,8 @@ class DeltaFolds:
         :ptype version: int
         :param in_flight_since: when the writer's oldest transaction still open began, seconds since the epoch, for a
             writer with transactions open beside this commit; None when none is (the orphan sweep leaves every file
-            saved after it)
+            saved after it). Required, no default: a writer that left it out would have a file of a commit still in
+            flight judged older than the fold's coverage, so a consumer must say it at the call
         :ptype in_flight_since: float | None
         :return: nothing
         :rtype: None
