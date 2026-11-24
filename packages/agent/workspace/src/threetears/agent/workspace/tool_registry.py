@@ -18,7 +18,8 @@ __all__ = [
     "registered_tool_builders",
 ]
 
-_TOOL_BUILDERS: list[Callable[..., TearsTool]] = []
+#: the builders in registration order: a tuple replaced whole on each registration, never changed in place
+_TOOL_BUILDERS: tuple[Callable[..., TearsTool], ...] = ()
 
 
 def register_tool_builder(builder: Callable[..., TearsTool]) -> None:
@@ -39,9 +40,10 @@ def register_tool_builder(builder: Callable[..., TearsTool]) -> None:
     :return: None
     :rtype: None
     """
+    global _TOOL_BUILDERS
     if builder in _TOOL_BUILDERS:
         return
-    _TOOL_BUILDERS.append(builder)
+    _TOOL_BUILDERS = (*_TOOL_BUILDERS, builder)
 
 
 def registered_tool_builders() -> tuple[Callable[..., TearsTool], ...]:
@@ -51,4 +53,4 @@ def registered_tool_builders() -> tuple[Callable[..., TearsTool], ...]:
     :return: snapshot of the registry
     :rtype: tuple[Callable[..., TearsTool], ...]
     """
-    return tuple(_TOOL_BUILDERS)
+    return _TOOL_BUILDERS

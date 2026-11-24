@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal, Protocol, TypeAlias
 
 from threetears.interfaces.keyed.filters import (
@@ -78,15 +79,16 @@ _TEXT_TYPES: Final = frozenset({"text", "varchar"})
 _RENDERED_SHAPES: Final = 4096
 
 #: an array statement's text by its shape (:attr:`_KeyedRead._shape`, which columns bind natively, whether bounded):
-#: a shape read again (the same caller's next read) binds its batch's arrays to the text already rendered
-_RENDERED: dict[tuple[Any, ...], str] = {}
+#: a shape read again (the same caller's next read) binds its batch's arrays to the text already rendered. A read-only
+#: map replaced whole, never changed in place (a bounded memo: a new shape copies at most _RENDERED_SHAPES entries)
+_RENDERED: Mapping[tuple[Any, ...], str] = MappingProxyType({})
 
 
 def _remember(shape: tuple[Any, ...], sql: str) -> None:
     """keep ``sql`` as ``shape``'s text, letting the oldest shape go past :data:`_RENDERED_SHAPES`."""
-    if len(_RENDERED) >= _RENDERED_SHAPES:
-        _RENDERED.pop(next(iter(_RENDERED)), None)
-    _RENDERED[shape] = sql
+    global _RENDERED
+    kept = list(_RENDERED.items())[max(0, len(_RENDERED) + 1 - _RENDERED_SHAPES) :]
+    _RENDERED = MappingProxyType({**dict(kept), shape: sql})
 
 
 class DeclaredKey:

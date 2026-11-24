@@ -118,9 +118,9 @@ _COLUMN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
 #: table, each as the database folds it (an unquoted name lower-cased, a quoted one as written)
 Relation = tuple[str | None, str]
 
-#: every ``(relation, key)`` a declaration registered, once each: appended, never looked up and filled (a list a
-#: reader may walk while another thread appends), so two declarations registering at once each add their keys
-_KEYS: list[tuple[Relation, TableKey]] = []
+#: every ``(relation, key)`` a declaration registered, once each: a tuple replaced whole, never changed in place, so a
+#: reader walking it while another thread registers walks one whole value
+_KEYS: tuple[tuple[Relation, TableKey], ...] = ()
 
 #: one SQL identifier: a quoted one (``""`` an escaped quote) or a plain one
 _IDENTIFIER: Final = r'"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*'
@@ -199,7 +199,8 @@ def register_table_keys(table: str, keys: Iterable[TableKey]) -> None:
         raise ValueError(f"{table!r} names no table (schema.table, or a bare table): its keys cannot be registered")
     # a schema built again (``dataclasses.replace``) registers nothing new: the list stays one entry a key however
     # often its declarations are built
-    _KEYS.extend(pair for pair in {(relation, key) for key in keys} if pair not in _KEYS)
+    global _KEYS
+    _KEYS = (*_KEYS, *(pair for pair in {(relation, key) for key in keys} if pair not in _KEYS))
 
 
 def _registered_keys(table: str) -> frozenset[TableKey]:
@@ -301,9 +302,9 @@ class DeclaredIndex:
 
 
 #: every ``(relation, column, text)`` a declared partial index's predicate names as ``column = 'text'``, once each,
-#: appended only (as the keys are): a keyed read pinning that column to that text writes it as the literal
+#: a tuple replaced whole (as the keys are): a keyed read pinning that column to that text writes it as the literal
 #: (:func:`stated_literals`, ``by_conditions(stated=)``)
-_STATED: list[tuple[Relation, str, str]] = []
+_STATED: tuple[tuple[Relation, str, str], ...] = ()
 
 #: one conjunct of a partial index's predicate naming a column equal to a text literal: ``status = 'proposed'``
 _STATED_EQUALITY: Final[re.Pattern[str]] = re.compile(r"\s*\(?\s*\"?(\w+)\"?\s*=\s*'((?:[^']|'')*)'\s*\)?\s*")
@@ -379,6 +380,7 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
     :rtype: None
     :raises ValueError: when ``table`` is no relation's name
     """
+    global _STATED
     relation = _relation(table)
     if relation is None:
         raise ValueError(
@@ -391,7 +393,7 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
                 continue
             stated = (relation, found.group(1).lower(), found.group(2).replace("''", "'"))
             if stated not in _STATED:
-                _STATED.append(stated)
+                _STATED = (*_STATED, stated)
 
 
 def _states(index: DeclaredIndex, by: Mapping[Any, Any], guarded: frozenset[str] = frozenset()) -> bool:
@@ -420,11 +422,11 @@ def stated_literals(table: Any) -> frozenset[tuple[str, str]]:
     relation = _relation(table) if isinstance(table, str) else None
     if relation is None:
         return frozenset()
-    return frozenset((column, text) for named, column, text in list(_STATED) if named == relation)
+    return frozenset((column, text) for named, column, text in _STATED if named == relation)
 
 
-#: every ``(relation, index)`` a declaration registered, once each, appended only (as the keys are)
-_INDEXES: list[tuple[Relation, DeclaredIndex]] = []
+#: every ``(relation, index)`` a declaration registered, once each, a tuple replaced whole (as the keys are)
+_INDEXES: tuple[tuple[Relation, DeclaredIndex], ...] = ()
 
 
 def register_table_indexes(table: str, indexes: Iterable[DeclaredIndex]) -> None:
@@ -442,7 +444,8 @@ def register_table_indexes(table: str, indexes: Iterable[DeclaredIndex]) -> None
     relation = _relation(table)
     if relation is None:
         raise ValueError(f"{table!r} names no table (schema.table, or a bare table): its indexes cannot be registered")
-    _INDEXES.extend(pair for pair in {(relation, index) for index in indexes} if pair not in _INDEXES)
+    global _INDEXES
+    _INDEXES = (*_INDEXES, *(pair for pair in {(relation, index) for index in indexes} if pair not in _INDEXES))
 
 
 def primary_key(table: Any) -> tuple[str, ...] | None:

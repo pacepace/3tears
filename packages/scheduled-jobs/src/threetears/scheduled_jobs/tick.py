@@ -126,8 +126,33 @@ __all__ = [
 #: reap threshold
 _FIRE_RETRY_MAX_SECONDS: Final[float] = 30.0
 
-#: the retries running now, held so none is collected mid-pause
-_RETRYING: set[asyncio.Task[None]] = set()
+#: the retries running now, held so none is collected mid-pause (a frozenset replaced whole, never changed in place)
+_RETRYING: frozenset[asyncio.Task[None]] = frozenset()
+
+
+def _hold_retry(retry: asyncio.Task[None]) -> None:
+    """hold a running retry so it is not collected mid-pause.
+
+    :param retry: the retry's task
+    :ptype retry: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    global _RETRYING
+    _RETRYING = _RETRYING | {retry}
+
+
+def _release_retry(retry: asyncio.Task[None]) -> None:
+    """let a finished retry go (its done callback).
+
+    :param retry: the retry's task
+    :ptype retry: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    global _RETRYING
+    _RETRYING = _RETRYING - {retry}
+
 
 # Drift threshold for the dedicated drift-event log ("actual - scheduled
 # > 60s"). The histogram in :mod:`threetears.scheduled_jobs.metrics`
@@ -603,8 +628,8 @@ async def _dispatch_one(
             name=f"scheduled-fire-retry:{fire_id}",
             logger=log,
         )
-        _RETRYING.add(retry)
-        retry.add_done_callback(_RETRYING.discard)
+        _hold_retry(retry)
+        retry.add_done_callback(_release_retry)
         return
     await _settle_fire(schedule, fire_store, fire_id, emitter, dispatch_started, result, failure)
 

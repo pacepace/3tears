@@ -149,7 +149,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Final, TypeVar
@@ -159,6 +158,7 @@ import asyncpg
 from threetears.core.sql_fragments import FilterValue
 from threetears.core.declared import whole_read
 from threetears.core.fingerprint import postgres_fingerprint_sql
+from threetears.core.frozen_state import EMPTY, with_newest
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
     create_pool_with_startup_timeout,
@@ -489,8 +489,9 @@ _CAST_FROM_TEXT: Final[frozenset[str]] = frozenset(
 )
 
 #: the statements whose refused text parameters were bound as their declared types, most recent last: each is
-#: logged once while it is among the last :data:`_RETRIED_SHAPES_KEPT`, so the record stays bounded
-_RETRIED_SHAPES: Final[OrderedDict[str, None]] = OrderedDict()
+#: logged once while it is among the last :data:`_RETRIED_SHAPES_KEPT`, so the record stays bounded. A read-only map in
+#: least-recently-used order, replaced whole (frozen_state.with_newest), never changed in place
+_RETRIED_SHAPES: Mapping[str, None] = EMPTY
 _RETRIED_SHAPES_KEPT: Final = 1024
 
 _BoundT = TypeVar("_BoundT")
@@ -561,12 +562,11 @@ def _note_typed_retry(sql: str) -> None:
     :return: nothing
     :rtype: None
     """
-    if sql in _RETRIED_SHAPES:
-        _RETRIED_SHAPES.move_to_end(sql)
+    global _RETRIED_SHAPES
+    seen = sql in _RETRIED_SHAPES
+    _RETRIED_SHAPES = with_newest(_RETRIED_SHAPES, sql, None, limit=_RETRIED_SHAPES_KEPT)
+    if seen:
         return
-    _RETRIED_SHAPES[sql] = None
-    while len(_RETRIED_SHAPES) > _RETRIED_SHAPES_KEPT:
-        _RETRIED_SHAPES.popitem(last=False)
     log.info(
         "a statement's text parameters were refused and bound as their declared types; each such call pays "
         "a prepare and a cast round trip",

@@ -147,7 +147,7 @@ def _other_database_records() -> Any:
 
 
 #: schema tables whose record with no tenant was already said: one WARNING per table per process
-_UNTENANTED_SAID: set[str] = set()
+_UNTENANTED_SAID: frozenset[str] = frozenset()
 
 
 def _note_untenanted(table_name: str) -> None:
@@ -167,9 +167,10 @@ def _note_untenanted(table_name: str) -> None:
         ),
         label_names=("table",),
     ).labels(table=table_name).inc()
+    global _UNTENANTED_SAID
     if table_name in _UNTENANTED_SAID:
         return
-    _UNTENANTED_SAID.add(table_name)
+    _UNTENANTED_SAID = _UNTENANTED_SAID | {table_name}
     log.warning(
         "an agent-schema table's change record names no schema; it goes on _all, where its pods do not read it",
         extra={"extra_data": {"table": table_name}},
