@@ -36,7 +36,7 @@ def test_a_key_text_is_exact() -> None:
     keys = [("a", "b"), ("a\x1fb",), ("a\x00b",), ("a", "\x1eb"), ("",), ("", ""), ("ab",), ()]
     texts = [packed_keys.key_text(key) for key in keys]
     assert len(set(texts)) == len(keys)
-    assert not any(packed_keys.SEP in text for text in texts)
+    assert not any("\x00" in text for text in texts)
 
 
 def test_a_batch_names_its_keys_and_no_other() -> None:

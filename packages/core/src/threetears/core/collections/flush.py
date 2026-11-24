@@ -603,6 +603,15 @@ class WriteBuffer:
         """
         return tuple(len(run.writes) for run in self._runs)
 
+    def held_runs(self) -> tuple[_Run, ...]:
+        """the runs as the buffer holds them, oldest first: immutable values, each change a new tuple, so a caller
+        holding one sees it unchanged after any later add, ack or drain.
+
+        :return: the runs
+        :rtype: tuple[_Run, ...]
+        """
+        return self._runs
+
     def pending_count(self) -> int:
         """Return the number of pending writes in the buffer."""
         return self._held

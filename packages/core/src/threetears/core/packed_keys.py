@@ -20,7 +20,6 @@ from typing import Final
 
 __all__ = [
     "NO_KEYS",
-    "SEP",
     "find_sorted",
     "key_text",
     "names",
@@ -33,10 +32,10 @@ __all__ = [
 ]
 
 #: the separator around every text of a batch; no text holds one
-SEP: Final = "\x00"
+_SEP: Final = "\x00"
 
 #: the batch of no keys
-NO_KEYS: Final = SEP
+NO_KEYS: Final = _SEP
 
 #: between a key's parts in its plain text
 _PART: Final = "\x1f"
@@ -60,7 +59,7 @@ def key_text(key: Sequence[str]) -> str:
     :rtype: str
     """
     text = _PART.join(key)
-    if SEP in text or _ESCAPED in text or text.count(_PART) != len(key) - 1:
+    if _SEP in text or _ESCAPED in text or text.count(_PART) != len(key) - 1:
         return _ESCAPED + repr(tuple(key))
     return text
 
@@ -75,7 +74,7 @@ def packed(texts: Sequence[str]) -> str:
     """
     if not texts:
         return NO_KEYS
-    return f"{SEP}{SEP.join(texts)}{SEP}"
+    return f"{_SEP}{_SEP.join(texts)}{_SEP}"
 
 
 def names(batch: str, text: str) -> bool:
@@ -90,7 +89,7 @@ def names(batch: str, text: str) -> bool:
     :return: ``True`` when it does
     :rtype: bool
     """
-    return f"{SEP}{text}{SEP}" in batch
+    return f"{_SEP}{text}{_SEP}" in batch
 
 
 def with_text(batch: str, text: str) -> str:
@@ -103,7 +102,7 @@ def with_text(batch: str, text: str) -> str:
     :return: the new batch
     :rtype: str
     """
-    return f"{batch}{text}{SEP}"
+    return f"{batch}{text}{_SEP}"
 
 
 def without_text(batch: str, text: str) -> str:
@@ -117,7 +116,7 @@ def without_text(batch: str, text: str) -> str:
     :rtype: str
     :raises ValueError: when ``batch`` does not name the key
     """
-    at = batch.index(f"{SEP}{text}{SEP}")
+    at = batch.index(f"{_SEP}{text}{_SEP}")
     return batch[: at + 1] + batch[at + len(text) + 2 :]
 
 
@@ -129,7 +128,7 @@ def texts(batch: str) -> list[str]:
     :return: the texts
     :rtype: list[str]
     """
-    return batch[1:-1].split(SEP) if len(batch) > 1 else []
+    return batch[1:-1].split(_SEP) if len(batch) > 1 else []
 
 
 def offsets_of(texts: Sequence[str]) -> array[int]:

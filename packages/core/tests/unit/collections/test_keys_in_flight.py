@@ -140,7 +140,7 @@ class TestTheWriteBuffer:
         buffer = WriteBuffer()
         for i in range(50):
             await buffer.add("t", i, _write(i))
-        before = vars(buffer)["_runs"]
+        before = buffer.held_runs()
         held = [(run.keys, run.states) for run in before]
         await buffer.add("t", 3, _write(99))
         await buffer.drain()

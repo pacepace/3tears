@@ -98,7 +98,6 @@ __all__ = [
     "VolumeFulls",
     "current_full_manifest",
     "deletable_full_files",
-    "columns_hash",
     "fingerprint_columns",
     "fingerprint_comparable",
     "fingerprint_ipc",
@@ -385,7 +384,7 @@ class _ColumnKind:
     column_type: str
 
 
-def columns_hash(kinds: Sequence[tuple[str, str]]) -> str:
+def _columns_hash(kinds: Sequence[tuple[str, str]]) -> str:
     """the column hash (:func:`fingerprint_columns`) a part of a table made over these columns, typed as the L3 rail
     answers them, is fingerprinted with: what a full's part is compared with to tell a table whose columns changed in
     place (a newer table list adds them, with no reset and no recreate) from one at its schema (decision 12).
@@ -411,7 +410,7 @@ def other_columns_parts(entry: FullTable, kinds: Sequence[tuple[str, str]]) -> t
     :return: the parts over other columns; empty when every comparable part is over these
     :rtype: tuple[FullPart, ...]
     """
-    opening = f"{FINGERPRINT_FORMAT}:{columns_hash(kinds)}-"
+    opening = f"{FINGERPRINT_FORMAT}:{_columns_hash(kinds)}-"
     return tuple(
         part
         for part in entry.parts
