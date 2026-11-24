@@ -355,7 +355,8 @@ class HealthServer:
         self._port = port
         self._host = host
         self._service_name = service_name
-        self._checks: list[HealthCheck] = list(checks) if checks else []
+        # small and bounded (a check per dependency): a tuple replaced whole, never changed in place (decision 45)
+        self._checks: tuple[HealthCheck, ...] = tuple(checks) if checks else ()
         self._metrics_provider = metrics_provider
         self._version = version
         self._server: asyncio.base_events.Server | None = None
@@ -399,7 +400,7 @@ class HealthServer:
         :return: nothing
         :rtype: None
         """
-        self._checks.append(check)
+        self._checks = (*self._checks, check)
 
     def checks_for_tier(self, tier: HealthTier) -> list[HealthCheck]:
         """return the checks a probe of ``tier`` evaluates, in evaluation order.
