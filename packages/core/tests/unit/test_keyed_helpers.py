@@ -59,6 +59,9 @@ from threetears.core.keyset import read_keyset_pages
 from threetears.interfaces.keyed import read_keyed_statements
 from threetears.core.pagination import CursorError
 
+
+pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
+
 _START = datetime(2026, 1, 1)
 
 
@@ -157,7 +160,7 @@ class TestReadKeyed:
     async def test_it_answers_exactly_the_named_keys_once_each(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a key is read twice, a key is dropped, or a row no key names is answered."""
         reader = _Recording(db)
-        keys = KeyBatch(("a", "b"), [("k1", 1), ("k2", 12), ("k1", 1), ("k9", 1)], ("text", "bigint"))
+        keys = KeyBatch(("a", "b"), [["k1", "k2", "k1", "k9"], [1, 12, 1, 1]], ("text", "bigint"))
         rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b", "v"])
         assert sorted((row["a"], row["b"], row["v"]) for row in rows) == [("k1", 1, 1), ("k2", 12, 12)]
         assert len(reader.statements) == 1
@@ -165,7 +168,7 @@ class TestReadKeyed:
     async def test_each_statement_names_at_most_a_batch_of_keys(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a read binds every key in one statement however many there are."""
         reader = _Recording(db)
-        keys = KeyBatch(("a", "b"), [(f"k{i % 10}", i) for i in range(25)], ("text", "bigint"))
+        keys = KeyBatch(("a", "b"), [[f"k{i % 10}" for i in range(25)], [i for i in range(25)]], ("text", "bigint"))
         rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b"], batch=10)
         assert len(rows) == 25
         assert [len(params[0]) for _, params in reader.statements] == [10, 10, 5]
@@ -183,7 +186,7 @@ class TestReadKeyed:
         (Postgres then hash-joins the keys over the whole table), if the bounds take the wrong placeholders beside a
         pinned column, or if they change the rows read."""
         reader = _Recording(db)
-        keys = KeyBatch(("a", "b"), [("k1", 1), ("k1", 11), ("k1", 21), ("k1", 1)], ("text", "bigint"))
+        keys = KeyBatch(("a", "b"), [["k1", "k1", "k1", "k1"], [1, 11, 21, 1]], ("text", "bigint"))
         rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b"], by={"v": AnyOf([1, 21], "integer")})
         assert sorted((row["a"], row["b"]) for row in rows) == [("k1", 1), ("k1", 21)]
         ((sql, params),) = reader.statements
@@ -197,7 +200,7 @@ class TestReadKeyed:
         """Flips if a connection that binds typed arrays natively (asyncpg's, or one saying so) is sent text arrays cast
         in SQL for a column whose values are of its type, if a column given as text there is not kept text, or if the
         L3 rail (JSON parameters) is sent anything but text arrays."""
-        keys = [("k1", 1), ("k2", 12), ("k3", 23)]
+        keys: list[list[Any]] = [["k1", "k2", "k3"], [1, 12, 23]]
         native = _Recording(db)
         native.binds_native_arrays = True  # type: ignore[attr-defined]
         rows = await read_keyed(native, "t", keys=KeyBatch(("a", "b"), keys, ("text", "bigint")), columns=["b"])
@@ -207,7 +210,7 @@ class TestReadKeyed:
         assert params[:2] == (["k1", "k2", "k3"], [1, 12, 23])
         as_text = _Recording(db)
         as_text.binds_native_arrays = True  # type: ignore[attr-defined]
-        given = [(a, str(b)) for a, b in keys]
+        given: list[list[Any]] = [keys[0], [str(b) for b in keys[1]]]
         await read_keyed(as_text, "t", keys=KeyBatch(("a", "b"), given, ("text", "bigint")), columns=["b"])
         assert "unnest($2::text[]::bigint[])" in as_text.statements[0][0]
         rail = _Recording(db)
@@ -217,7 +220,7 @@ class TestReadKeyed:
         assert params[:2] == (["k1", "k2", "k3"], ["1", "12", "23"])
         single = _Recording(db)
         single.binds_native_arrays = True  # type: ignore[attr-defined]
-        await read_keyed(single, "t", keys=KeyBatch(("b",), [(1,), (12,)], ("bigint",)), columns=["b"])
+        await read_keyed(single, "t", keys=KeyBatch(("b",), [[1, 12]], ("bigint",)), columns=["b"])
         assert '"b" = ANY($1::bigint[])' in single.statements[0][0]
         # identity, not truthiness: a mock's auto-attribute (anything but True) is the rail's text arrays
         truthy = _Recording(db)
@@ -233,13 +236,13 @@ class TestReadKeyed:
         native = _Recording(db)
         native.binds_native_arrays = True  # type: ignore[attr-defined]
         rows = await read_keyed(
-            native, "t", keys=KeyBatch(("b",), [(i,) for i in range(2_000)], ("bigint",)), columns=["b"]
+            native, "t", keys=KeyBatch(("b",), [[i for i in range(2_000)]], ("bigint",)), columns=["b"]
         )
         assert sorted(row["b"] for row in rows) == _plain_b(db, 2_000)
         assert [len(params[0]) for _, params in native.statements] == [2_000]
         wide = _Unanswering()
         wide.binds_native_arrays = True  # type: ignore[attr-defined]
-        many = KeyBatch(("b",), [(i,) for i in range(DIRECT_KEY_BATCH + 1)], ("bigint",))
+        many = KeyBatch(("b",), [[i for i in range(DIRECT_KEY_BATCH + 1)]], ("bigint",))
         await read_keyed(wide, "t", keys=many, columns=["b"])
         assert [len(params[0]) for _, params in wide.statements] == [DIRECT_KEY_BATCH, 1]
         joined = _Unanswering()
@@ -254,21 +257,21 @@ class TestReadKeyed:
         is sent more than the rail's batch of keys a statement."""
         rail = _Recording(db)
         rows = await read_keyed(
-            rail, "t", keys=KeyBatch(("b",), [(i,) for i in range(2_000)], ("bigint",)), columns=["b"]
+            rail, "t", keys=KeyBatch(("b",), [[i for i in range(2_000)]], ("bigint",)), columns=["b"]
         )
         assert sorted(row["b"] for row in rows) == _plain_b(db, 2_000)
         assert [len(params[0]) for _, params in rail.statements] == [DEFAULT_KEY_BATCH, DEFAULT_KEY_BATCH]
 
     async def test_by_pins_a_prefix_beside_the_keys(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``by`` is dropped (the read answers rows of every group) or bound to the wrong placeholder."""
-        keys = KeyBatch(("b",), [(1,), (2,), (11,)], ("bigint",))
+        keys = KeyBatch(("b",), [[1, 2, 11]], ("bigint",))
         rows = await read_keyed(ThreadedDuckDB(db), "t", keys=keys, columns=["a", "b"], by={"a": "k1"})
         assert sorted((row["a"], row["b"]) for row in rows) == [("k1", 1), ("k1", 11)]
 
     async def test_an_answer_at_the_cap_is_read_again_in_halves(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if an answer the transport may have cut is kept as if whole."""
         reader = _Recording(db)
-        keys = KeyBatch(("a",), [("k1",), ("k2",), ("k3",), ("k4",)])
+        keys = KeyBatch(("a",), [["k1", "k2", "k3", "k4"]])
         rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b"], row_cap=25)
         assert len(rows) == 40
         assert [len(params[0]) for _, params in reader.statements] == [4, 2, 2]
@@ -276,17 +279,21 @@ class TestReadKeyed:
     async def test_one_key_at_the_cap_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a key that alone fills a statement is read as if its answer were whole."""
         with pytest.raises(KeyTooWide):
-            await read_keyed(ThreadedDuckDB(db), "t", keys=KeyBatch(("a",), [("k1",)]), columns=["a"], row_cap=10)
+            await read_keyed(ThreadedDuckDB(db), "t", keys=KeyBatch(("a",), [["k1"]]), columns=["a"], row_cap=10)
 
     def test_a_key_of_the_wrong_arity_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="has 2 values"):
-            KeyBatch(("a", "b"), [("k1",)])
+        """Flips if a batch holding other than one array a key column, or columns of different lengths (a key
+        missing a part), is taken."""
+        with pytest.raises(ValueError, match="one array a column"):
+            KeyBatch(("a", "b"), [["k1"]])
+        with pytest.raises(ValueError, match="of one length"):
+            KeyBatch(("a", "b"), [["k1", "k2"], [1]])
 
     async def test_records_answers_the_connection_s_own_rows_uncopied(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if read_keyed(records=True) copies a row (into a dict or anything else), drops or repeats one across
         its statements, or answers other rows than the default read; or if the default stops answering dicts."""
         reader = _Rows(db)
-        keys = KeyBatch(("a", "b"), [(f"k{i % 10}", i) for i in range(25)], ("text", "bigint"))
+        keys = KeyBatch(("a", "b"), [[f"k{i % 10}" for i in range(25)], [i for i in range(25)]], ("text", "bigint"))
         records = await read_keyed(reader, "t", keys=keys, columns=["a", "b", "v"], batch=10, records=True)
         assert len(reader.statements) == 3
         assert [id(row) for row in records] == [id(row) for row in reader.answered]
@@ -305,30 +312,30 @@ class TestReadKeyed:
         text rendered anew is another object."""
         native = _Recording(db)
         native.binds_native_arrays = True  # type: ignore[attr-defined]
-        for values in ([(1,), (2,)], [(11,), (12,), (13,)]):
+        for values in ([[1, 2]], [[11, 12, 13]]):
             await read_keyed(native, "t", keys=KeyBatch(("b",), values, ("bigint",)), columns=["b"])
         # one render: the second read sent the very text the first rendered
         assert native.statements[0][0] is native.statements[1][0]
         assert native.statements[1][1] == ([11, 12, 13],)
         # text keys on the same connection: another shape, cast in SQL
-        rows = await read_keyed(native, "t", keys=KeyBatch(("b",), [("1",), ("12",)], ("bigint",)), columns=["b"])
+        rows = await read_keyed(native, "t", keys=KeyBatch(("b",), [["1", "12"]], ("bigint",)), columns=["b"])
         assert sorted(row["b"] for row in rows) == [1, 12]
         assert native.statements[2][0] != native.statements[0][0]
         # a batch sharing its lead is bounded to its values; a scattered one is not: two texts, each right
         reader = _Recording(db)
         lead = await read_keyed(
-            reader, "t", keys=KeyBatch(("a", "b"), [("k1", 1), ("k1", 11)], ("text", "bigint")), columns=["b"]
+            reader, "t", keys=KeyBatch(("a", "b"), [["k1", "k1"], [1, 11]], ("text", "bigint")), columns=["b"]
         )
-        scattered = [(f"k{i}", i) for i in range(10)]
+        scattered = [[f"k{i}" for i in range(10)], list(range(10))]
         spread = await read_keyed(reader, "t", keys=KeyBatch(("a", "b"), scattered, ("text", "bigint")), columns=["b"])
         assert sorted(row["b"] for row in lead) == [1, 11] and sorted(row["b"] for row in spread) == list(range(10))
         assert "= ANY(" in reader.statements[0][0] and "= ANY(" not in reader.statements[1][0]
         # by= a value and by= NULL: two texts
-        await read_keyed(reader, "t", keys=KeyBatch(("b",), [(3,)], ("bigint",)), columns=["b"], by={"stamp": None})
+        await read_keyed(reader, "t", keys=KeyBatch(("b",), [[3]], ("bigint",)), columns=["b"], by={"stamp": None})
         pinned = await read_keyed(
             reader,
             "t",
-            keys=KeyBatch(("b",), [(4,)], ("bigint",)),
+            keys=KeyBatch(("b",), [[4]], ("bigint",)),
             columns=["b"],
             by={"stamp": _START + timedelta(seconds=2)},
         )
@@ -342,7 +349,7 @@ class TestReadKeyed:
 
         def text(column: str) -> str:
             ((sql, _),) = read_keyed_statements(
-                relation, keys=KeyBatch((column,), [(1,)], ("bigint",)), columns=["b"], natively=True
+                relation, keys=KeyBatch((column,), [[1]], ("bigint",)), columns=["b"], natively=True
             )
             return sql
 
@@ -788,7 +795,7 @@ class TestWithoutArrays:
     async def test_a_key_batch_binds_as_a_list(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a list-bound batch reads rows no key names, or binds an array."""
         reader = _Recording(db)
-        keys = KeyBatch(("a", "b"), [("k1", 1), ("k2", 12), ("k9", 1)], as_list=True)
+        keys = KeyBatch(("a", "b"), [["k1", "k2", "k9"], [1, 12, 1]], as_list=True)
         rows = await read_keyed(reader, "t", keys=keys, columns=["a", "b"])
         assert sorted((row["a"], row["b"]) for row in rows) == [("k1", 1), ("k2", 12)]
         sql, params = reader.statements[0]
@@ -799,8 +806,7 @@ class TestWithoutArrays:
         """Flips if a helper writes SQL SQLite cannot run (arrays, casts) where the caller asked for lists."""
         conn = ThreadedSQLite(lite)
         assert (
-            len(await read_keyed(conn, "t", keys=KeyBatch(("a",), [("k1",), ("k2",)], as_list=True), columns=["b"]))
-            == 20
+            len(await read_keyed(conn, "t", keys=KeyBatch(("a",), [["k1", "k2"]], as_list=True), columns=["b"])) == 20
         )
         assert await counts_by(conn, "t", column="b", values=AnyOf([1, 11, 2], as_list=True), by={"a": "k1"}) == {
             1: 1,
@@ -899,7 +905,7 @@ class TestFiltersLocksAndJoins:
         """Flips if a locked read locks the joined key set, or locks in no order (two lockers then deadlock)."""
         reader = _Answering()
         await read_keyed(
-            reader, "links", keys=KeyBatch(("id",), [("a",), ("b",)], ("uuid",)), columns=["id"], lock=Lock.UPDATE
+            reader, "links", keys=KeyBatch(("id",), [["a", "b"]], ("uuid",)), columns=["id"], lock=Lock.UPDATE
         )
         await keyset_page(
             reader,
@@ -983,7 +989,7 @@ class TestDerivedParameters:
             await read_keyed(
                 _Recording(db),
                 Derived("SELECT a, b FROM t WHERE b < $1", (30,)),
-                keys=KeyBatch(("a", "b"), [("k1", 1)]),
+                keys=KeyBatch(("a", "b"), [["k1"], [1]]),
                 columns=["a", "b"],
             )
 
@@ -1064,6 +1070,6 @@ class TestRelations:
     async def test_a_schema_qualified_table_is_quoted_a_segment_at_a_time(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if ``schema.table`` is quoted as one identifier (a table that does not exist)."""
         rows = await read_keyed(
-            ThreadedDuckDB(db), "main.t", keys=KeyBatch(("a", "b"), [("k1", 1)], ("text", "bigint")), columns=["v"]
+            ThreadedDuckDB(db), "main.t", keys=KeyBatch(("a", "b"), [["k1"], [1]], ("text", "bigint")), columns=["v"]
         )
         assert rows == [{"v": 1}]

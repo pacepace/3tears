@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import asyncpg
+import pyarrow as pa
 import pytest
 
 from threetears.core.keyed import (
@@ -108,6 +109,15 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await conn.close()
+
+
+def _arrow_columns(keys: list[tuple[str, str, int]]) -> list[pa.Array]:
+    """the keys as a serving path holds them: one Arrow array a key column."""
+    return [
+        pa.array([key[0] for key in keys]),
+        pa.array([key[1] for key in keys]),
+        pa.array([key[2] for key in keys], pa.int64()),
+    ]
 
 
 class _Settling:
@@ -228,7 +238,8 @@ class TestReadKeyed:
         a scan of a small copy holding only the answer: that skips the lookups the helper must make (it measured
         0.40 ms against 2.30 ms for the keyed lookup, and read 4.6x where the helper is 1.5x the lookup)."""
         keys = list(dict.fromkeys(_keys(2000)))
-        batch = KeyBatch(("state", "geo", "id"), keys, ("text", "text", "bigint"))
+        # a serving path's keys: Arrow columns, bound in Arrow (each column one literal text)
+        batch = KeyBatch(("state", "geo", "id"), _arrow_columns(keys), ("text", "text", "bigint"))
         recorder = PlanRecorder(seeded.conn)
         rows = await read_keyed(recorder, _TABLE, keys=batch, columns=["state", "geo", "id", "votes"])
         assert sorted((r["state"], r["geo"], r["id"]) for r in rows) == sorted(keys)
@@ -252,12 +263,12 @@ class TestReadKeyed:
 
     async def test_a_batch_of_prefixes_reads_their_rows(self, seeded: _Seeded) -> None:
         """Flips if a prefix batch (state, geo) reads past the prefixes' rows."""
-        prefixes = [("S07", f"{g:03d}") for g in range(1, 41)]
+        prefixes = [["S07"] * 40, [f"{g:03d}" for g in range(1, 41)]]
         recorder = PlanRecorder(seeded.conn)
         rows = await read_keyed(
             recorder, _TABLE, keys=KeyBatch(("state", "geo"), prefixes), columns=["state", "geo", "id"]
         )
-        assert len(rows) == len(prefixes) * _IDS
+        assert len(rows) == 40 * _IDS
         _plans_ok(recorder, seeded)
 
 
@@ -753,7 +764,7 @@ class TestKeyedWritesByBatchAndStage:
         ... FROM (unnest ...) AS s WHERE <key> = s.<key>``; the stage's ``DELETE ... WHERE EXISTS`` plus
         ``INSERT ... SELECT``."""
         keys = list(dict.fromkeys(_keys(600)))
-        batch = KeyBatch(("state", "geo", "id"), keys, ("text", "text", "bigint"))
+        batch = KeyBatch(("state", "geo", "id"), _arrow_columns(keys), ("text", "text", "bigint"))
         typed = ([k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys])
         named = "(state, geo, id) IN (SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[]))"
         recorder = _Executes(seeded.conn)
@@ -1049,7 +1060,7 @@ class TestAKeyedReadIsAnIndexCondition:
         ]
         recorder = PlanRecorder(rates.conn)
         rows = await read_keyed(
-            recorder, _RATES, keys=KeyBatch(("model_id",), [(m,) for m in models], ("uuid",)), columns=["id", "kind"]
+            recorder, _RATES, keys=KeyBatch(("model_id",), [[m for m in models]], ("uuid",)), columns=["id", "kind"]
         )
         assert len(rows) == len(models) * _RATES_A_MODEL
         (plan,) = recorder.plans
@@ -1106,7 +1117,7 @@ class TestReadKeyedRecords:
             for row in await grants.conn.fetch(f"SELECT id FROM {_GRANTS} ORDER BY md5(id::text) LIMIT {_GRANT_KEYS}")
         ]
         columns = ["id", "principal_id", "grant_kind", "scope", "date_created"]
-        keys = KeyBatch(("id",), [(key,) for key in ids], ("uuid",))
+        keys = KeyBatch(("id",), [[key for key in ids]], ("uuid",))
         hand = f"SELECT {', '.join(columns)} FROM {_GRANTS} WHERE id = ANY($1::uuid[])"
         recorder = PlanRecorder(grants.conn)
         await read_keyed(recorder, _GRANTS, keys=keys, columns=columns, records=True)

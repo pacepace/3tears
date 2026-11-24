@@ -79,16 +79,17 @@ async def backfill_pages(
     async for rows in keyset_pages(
         conn, f"SELECT {read} FROM {table}", key, page_size=page_size, lead_array=lead_array
     ):
-        groups: list[tuple[Mapping[str, Any], list[tuple[Any, ...]]]] = []
+        groups: list[tuple[Mapping[str, Any], list[list[Any]]]] = []
         for row in rows:
             values = fill(row)
             if values is None:
                 continue
             found = next((keys for held, keys in groups if held == values), None)
             if found is None:
-                found = []
+                found = [[] for _ in key]
                 groups.append((values, found))
-            found.append(tuple(row[column] for column in key))
+            for held, column in zip(found, key, strict=True):
+                held.append(row[column])
         for values, keys in groups:
             batch = KeyBatch(key, keys, casts=tuple(casts))
             written += (await update_keyed(conn, table, values=values, keys=batch)).count

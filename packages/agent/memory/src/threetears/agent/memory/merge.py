@@ -167,7 +167,7 @@ async def delete_colliding_memories(
         conn,
         "memories",
         by={"agent_id": agent_id, "user_id": from_user_id},
-        keys=KeyBatch(("memory_id",), [(memory_id,) for memory_id in memory_ids], casts=("uuid",)),
+        keys=KeyBatch(("memory_id",), [list(memory_ids)], casts=("uuid",)),
         where=[
             Fragment("memories.alias IS NOT NULL"),
             Fragment(
@@ -225,12 +225,12 @@ async def _delete_alias_collisions(
     # every child read by key: the colliding memories (or their media) are all the schema's agent's, so each read pins
     # the agent and names the parents, through the index each table's cascade follows
     pinned = {"agent_id": agent_id}
-    named = [(row["memory_id"],) for row in locked]
+    named = [row["memory_id"] for row in locked]
 
     media_rows = await read_keyed(
         conn,
         "media",
-        keys=KeyBatch(("memory_id",), named, casts=("uuid",)),
+        keys=KeyBatch(("memory_id",), [named], casts=("uuid",)),
         by=pinned,
         columns=["agent_id", "media_id"],
         lock=Lock.UPDATE,
@@ -240,7 +240,7 @@ async def _delete_alias_collisions(
     content_rows = await read_keyed(
         conn,
         "media_content",
-        keys=KeyBatch(("media_id",), [(media_id,) for _, media_id in removed["media"]], casts=("uuid",)),
+        keys=KeyBatch(("media_id",), [[media_id for _, media_id in removed["media"]]], casts=("uuid",)),
         by=pinned,
         columns=["agent_id", "content_id"],
     )
@@ -249,7 +249,7 @@ async def _delete_alias_collisions(
     chunk_rows = await read_keyed(
         conn,
         "memory_chunks",
-        keys=KeyBatch(("memory_id",), named, casts=("uuid",)),
+        keys=KeyBatch(("memory_id",), [named], casts=("uuid",)),
         by=pinned,
         columns=["agent_id", "chunk_id"],
     )
@@ -261,14 +261,14 @@ async def _delete_alias_collisions(
     by_consolidated = await read_keyed(
         conn,
         "memory_consolidations",
-        keys=KeyBatch(("consolidated_memory_id",), named, casts=("uuid",)),
+        keys=KeyBatch(("consolidated_memory_id",), [named], casts=("uuid",)),
         by=pinned,
         columns=edge_columns,
     )
     by_source = await read_keyed(
         conn,
         "memory_consolidations",
-        keys=KeyBatch(("source_memory_id",), named, casts=("uuid",)),
+        keys=KeyBatch(("source_memory_id",), [named], casts=("uuid",)),
         by=pinned,
         columns=edge_columns,
     )
@@ -279,7 +279,7 @@ async def _delete_alias_collisions(
     removed["memory_consolidations"] = list(edges)
 
     deleted = await delete_colliding_memories(
-        conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id, memory_ids=[key for (key,) in named]
+        conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id, memory_ids=named
     )
     removed["memories"] = [(row["agent_id"], row["memory_id"]) for row in deleted]
     return result

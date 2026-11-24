@@ -601,7 +601,7 @@ class SqliteDocumentStore:
         # arrays); each row projected as it is read.
         statements = read_keyed_statements(
             "documents",
-            keys=KeyBatch(("id",), [(doc_id,) for doc_id in wanted], as_list=True),
+            keys=KeyBatch(("id",), [list(wanted)], as_list=True),
             columns=("body",),
             by={"scope_id": scope_id, "doc_type": doc_type},
             batch=_ID_BATCH,
@@ -723,7 +723,7 @@ class SqliteDocumentStore:
             bodies: dict[int, str] = {}
             for batch in read_keyed_statements(
                 "documents",
-                keys=KeyBatch(("seq",), [(seq,) for seq in top], as_list=True),
+                keys=KeyBatch(("seq",), [list(top)], as_list=True),
                 columns=("seq", "body"),
                 by={"scope_id": scope_id, "doc_type": doc_type},
                 batch=_ID_BATCH,

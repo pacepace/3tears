@@ -7,6 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.keyed import binding
 
 
 @pytest.fixture
@@ -25,3 +26,11 @@ def l1_statements() -> Callable[[SQLiteBackend], list[str]]:
         return statements
 
     return trace
+
+
+@pytest.fixture
+def plain_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """the keyed helpers in the no-Arrow mode (a process with no pyarrow: each key column bound as one plain list),
+    for a test pinning that binding: its reader is DuckDB behind a fake standing for asyncpg or the rail, which parses
+    no PostgreSQL array literal. Arrow mode's binding is test_keyed_binding's."""
+    monkeypatch.setattr(binding, "_ARROW", False)

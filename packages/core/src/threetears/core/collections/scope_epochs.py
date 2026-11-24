@@ -556,7 +556,7 @@ class ScopeEpochs:
         again = await read_keyed(
             self._collection.required_l3_pool,
             self.table_name,
-            keys=KeyBatch(("scope",), [(scope,) for scope in named]),
+            keys=KeyBatch(("scope",), [list(named)]),
             columns=_COLUMNS,
         )
         found = {str(row["scope"]): dict(row) for row in again}

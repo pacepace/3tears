@@ -34,6 +34,7 @@ from threetears.core.keyed._filters import (
     narrowing,
 )
 from threetears.core.keyed.counts import rows_affected
+from threetears.core.keyed.binding import binder_for
 from threetears.core.keyed.rows import DEFAULT_KEY_BATCH, KeyBatch
 from threetears.core.keyed.steps import Step, change_relation
 from threetears.core.sql_fragments import quote_identifier
@@ -131,6 +132,7 @@ async def update_keyed(
         batch=batch,
         prefix=prefix,
         natively=binds_native_arrays(conn),
+        binder=binder_for(conn),
     )
     return await _ran(conn, statements, returning)
 
@@ -177,6 +179,7 @@ async def delete_keyed(
         batch=batch,
         prefix=prefix,
         natively=binds_native_arrays(conn),
+        binder=binder_for(conn),
     )
     return await _ran(conn, statements, returning)
 

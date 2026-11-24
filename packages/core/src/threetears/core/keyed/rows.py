@@ -41,6 +41,7 @@ from typing import Any, Literal, overload
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import L3AnswerCutError
+from threetears.core.keyed.binding import binder_for
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -60,6 +61,7 @@ from threetears.interfaces.keyed.rows import (
     DeclaredKey,
     DeclaredScope,
     KeyBatch,
+    KeyChunk,
     KeyColumn,
     KeyColumns,
     KeyValues,
@@ -108,10 +110,15 @@ class _Fit:
     keys: int | None = None
 
 
+def _sliced(keys: KeyChunk, start: int, stop: int | None = None) -> KeyChunk:
+    """keys ``start`` to ``stop`` of a chunk, each column sliced (an Arrow column's slice copies nothing)."""
+    return tuple(column[start:stop] for column in keys)
+
+
 async def _read_split(
-    fetch: Callable[[Sequence[tuple[Any, ...]]], Awaitable[Any]],
+    fetch: Callable[[KeyChunk], Awaitable[Any]],
     size: Callable[[Any], int],
-    keys: Sequence[tuple[Any, ...]],
+    keys: KeyChunk,
     row_cap: int | None,
     table: str | Derived,
     fit: _Fit | None = None,
@@ -120,32 +127,33 @@ async def _read_split(
     cuts it (:class:`~threetears.core.backends.protocol.L3AnswerCutError`: its row cap, or a reply's bytes, as the
     hub's datasource replies are cut): each half is another statement, never the cut answer taken as every row."""
     fit = fit if fit is not None else _Fit()
-    if fit.keys is not None and len(keys) > fit.keys:
+    count = len(keys[0])
+    if fit.keys is not None and count > fit.keys:
         return [
-            *await _read_split(fetch, size, keys[: fit.keys], row_cap, table, fit),
-            *await _read_split(fetch, size, keys[fit.keys :], row_cap, table, fit),
+            *await _read_split(fetch, size, _sliced(keys, 0, fit.keys), row_cap, table, fit),
+            *await _read_split(fetch, size, _sliced(keys, fit.keys), row_cap, table, fit),
         ]
     try:
         answered = await fetch(keys)
     except L3AnswerCutError:
-        if len(keys) == 1:
+        if count == 1:
             raise
         cut = True
     else:
         if row_cap is None or size(answered) < row_cap:
             return [answered]
         cut = False
-    if len(keys) == 1:
+    if count == 1:
         raise KeyTooWide(
-            f"{table}: the key {keys[0]!r} alone reaches the transport's {row_cap} rows a statement; page it "
+            f"{table}: the key {tuple(column[0] for column in keys)!r} alone reaches the transport's {row_cap} rows a statement; page it "
             "(threetears.core.keyed.keyset_page)"
         )
-    half = len(keys) // 2
+    half = count // 2
     if cut:
         fit.keys = half if fit.keys is None else min(fit.keys, half)
     return [
-        *await _read_split(fetch, size, keys[:half], row_cap, table, fit),
-        *await _read_split(fetch, size, keys[half:], row_cap, table, fit),
+        *await _read_split(fetch, size, _sliced(keys, 0, half), row_cap, table, fit),
+        *await _read_split(fetch, size, _sliced(keys, half), row_cap, table, fit),
     ]
 
 
@@ -227,16 +235,17 @@ async def read_keyed(
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where)
+    binder = binder_for(conn)
+    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
     natively = binds_native_arrays(conn)
 
-    async def fetch(chunk: Sequence[tuple[Any, ...]]) -> list[Any]:
+    async def fetch(chunk: KeyChunk) -> list[Any]:
         sql, params = statement.render(chunk, natively)
         return list(await sent_by(conn).fetch(sql, *params))
 
     rows: list[Any] = []
     fit = _Fit()
-    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch):
+    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch, binder):
         for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
             if records:
                 rows.extend(answered)
@@ -285,16 +294,19 @@ async def read_keyed_arrow(
     :raises ValueError: as :func:`read_keyed`
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = keyed_read_statement(table, list(types) if columns is None else columns, keys, by or {}, None, where)
+    binder = binder_for(conn)
+    statement = keyed_read_statement(
+        table, list(types) if columns is None else columns, keys, by or {}, None, where, binder
+    )
     natively = binds_native_arrays(conn)
 
-    async def fetch(chunk: Sequence[tuple[Any, ...]]) -> Any:
+    async def fetch(chunk: KeyChunk) -> Any:
         sql, params = statement.render(chunk, natively)
         return await l3_fetch_arrow(conn, sql, *params, types=types)
 
     tables: list[Any] = []
     fit = _Fit()
-    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch):
+    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch, binder):
         tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit)
     return tables
 
@@ -347,10 +359,14 @@ async def read_joined(
     if missing:
         raise ValueError(f"a joined read of {table} reads its join columns, missing {missing}")
     cast_of = dict(casts or {})
-    values = [tuple(row[on[column]] for column in inner) for row in rows]
-    named = [value for value in values if all(part is not None for part in value)]
+    # the page's rows are Python rows (a page read): their join values taken a column at a time, a row naming a NULL
+    # among them dropped
+    named: list[list[Any]] = [list(map(itemgetter(on[column]), rows)) for column in inner]
+    if any(value is None for column in named for value in column):
+        kept = [key for key in zip(*named, strict=True) if None not in key]
+        named = [list(column) for column in zip(*kept, strict=True)] if kept else [[] for _ in inner]
     joined: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
-    if not named:
+    if not named[0]:
         return joined
     keys = KeyBatch(inner, named, tuple(cast_of.get(column, "text") for column in inner))
     # each row's join values by one itemgetter, not a tuple built a column at a time (6,000 rows: 0.6 ms against 1.8)

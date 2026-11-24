@@ -659,6 +659,8 @@ module = [
     # and a changed-rows read's held keys as an Arrow table (matched in pyarrow.compute and numpy)
     "threetears.core.keyed.held",
     "threetears.core.keyed.changed",
+    # and a key batch's columns bound in Arrow (each column one literal text, written in Arrow's kernels)
+    "threetears.core.keyed.binding",
     "threetears.datasources.export_read",
     "threetears.datasources.partitioned_export",
     # and a datasource read's rows as Arrow (its catalogue types, its pages joined)
@@ -709,6 +711,9 @@ module = [
     "packages.core.tests.unit.test_arrow_keys",
     "packages.core.tests.unit.test_keyed_changed",
     "packages.core.tests.unit.test_keyed_helpers",
+    "packages.core.tests.unit.test_keyed_binding",
+    "packages.core.tests.integration.test_keyed_binding_live",
+    "packages.core.tests.integration.test_keyed_helpers_live",
     "packages.datasources.tests.integration.test_warehouse_arrow_types_live",
     "packages.datasources.tests.unit.test_counted_partitioned_export",
     "packages.datasources.tests.unit.test_export_read",

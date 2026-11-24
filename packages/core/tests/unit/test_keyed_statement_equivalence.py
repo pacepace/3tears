@@ -33,6 +33,9 @@ from threetears.core.keyed import (
     Sort,
 )
 
+
+pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
+
 _GOLDEN = Path(__file__).with_name("keyed_statements.golden.json")
 
 _WHEN = datetime(2026, 11, 11, 12, 30, tzinfo=UTC)
@@ -107,25 +110,23 @@ def _cases() -> dict[str, Case]:
         "read_by.derived": _run(lambda c: keyed.read_by(c, Derived("SELECT 1 AS a"), by={"a": 1}, columns=("a",))),
         # keyed batches
         "read_keyed.one_column": _run(
-            lambda c: keyed.read_keyed(
-                c, "t", keys=KeyBatch(("id",), [(1,), (2,), (1,)], ("bigint",)), columns=("id", "v")
-            )
+            lambda c: keyed.read_keyed(c, "t", keys=KeyBatch(("id",), [[1, 2, 1]], ("bigint",)), columns=("id", "v"))
         ),
         "read_keyed.one_column_native": _run(
             lambda c: keyed.read_keyed(
-                c, "t", keys=KeyBatch(("id",), [(1,), (2,)], ("bigint",)), columns=("id",), by={"tenant": "x"}
+                c, "t", keys=KeyBatch(("id",), [[1, 2]], ("bigint",)), columns=("id",), by={"tenant": "x"}
             ),
             _Recorder(native=True),
         ),
         "read_keyed.native_text_values": _run(
-            lambda c: keyed.read_keyed(c, "t", keys=KeyBatch(("id",), [("1",), ("2",)], ("bigint",)), columns=("id",)),
+            lambda c: keyed.read_keyed(c, "t", keys=KeyBatch(("id",), [["1", "2"]], ("bigint",)), columns=("id",)),
             _Recorder(native=True),
         ),
         "read_keyed.two_columns_bounded": _run(
             lambda c: keyed.read_keyed(
                 c,
                 "t",
-                keys=KeyBatch(("a", "b"), [("s", 1), ("s", 2), ("s", 3)], ("text", "bigint")),
+                keys=KeyBatch(("a", "b"), [["s", "s", "s"], [1, 2, 3]], ("text", "bigint")),
                 columns=("a", "b"),
                 by={"tenant": AnyOf(["x"])},
                 where=[Fragment('t."v" > $1', (5,))],
@@ -135,7 +136,7 @@ def _cases() -> dict[str, Case]:
             lambda c: keyed.read_keyed(
                 c,
                 "t",
-                keys=KeyBatch(("a", "b"), [("s", 1), ("u", 2), ("w", 3)], ("text", "date")),
+                keys=KeyBatch(("a", "b"), [["s", "u", "w"], [1, 2, 3]], ("text", "date")),
                 columns=("a",),
             )
         ),
@@ -143,7 +144,7 @@ def _cases() -> dict[str, Case]:
             lambda c: keyed.read_keyed(
                 c,
                 "t",
-                keys=KeyBatch(("a", "b"), [(None, 1), ("s", 2)], ("text", "bigint"), null_safe=True),
+                keys=KeyBatch(("a", "b"), [[None, "s"], [1, 2]], ("text", "bigint"), null_safe=True),
                 columns=("a", "b"),
                 lock=Lock.UPDATE,
                 where=[Fragment('t."v" = $1', ("q",))],
@@ -153,7 +154,7 @@ def _cases() -> dict[str, Case]:
             lambda c: keyed.read_keyed(
                 c,
                 "documents",
-                keys=KeyBatch(("id",), [("a",), ("b",), ("c",)], as_list=True),
+                keys=KeyBatch(("id",), [["a", "b", "c"]], as_list=True),
                 columns=("body",),
                 by={"scope_id": "s", "doc_type": "run"},
                 batch=2,
@@ -161,7 +162,7 @@ def _cases() -> dict[str, Case]:
         ),
         "read_keyed.as_list_two_columns": _run(
             lambda c: keyed.read_keyed(
-                c, "t", keys=KeyBatch(("a", "b"), [("x", 1), ("y", 2)], as_list=True), columns=("a",), by={"c": 1}
+                c, "t", keys=KeyBatch(("a", "b"), [["x", "y"], [1, 2]], as_list=True), columns=("a",), by={"c": 1}
             )
         ),
         "read_joined": _run(
@@ -296,18 +297,18 @@ def _cases() -> dict[str, Case]:
                 c,
                 "t",
                 values={"v": 1},
-                keys=KeyBatch(("a", "b"), [("x", 1), ("y", 2), ("z", 3)], ("text", "bigint")),
+                keys=KeyBatch(("a", "b"), [["x", "y", "z"], [1, 2, 3]], ("text", "bigint")),
                 by={"tenant": "q"},
                 batch=2,
             )
         ),
         "update_keyed.keys_native": _run(
-            lambda c: keyed.update_keyed(c, "t", values={"v": 1}, keys=KeyBatch(("id",), [(1,), (2,)], ("bigint",))),
+            lambda c: keyed.update_keyed(c, "t", values={"v": 1}, keys=KeyBatch(("id",), [[1, 2]], ("bigint",))),
             _Recorder(native=True),
         ),
         "update_keyed.keys_as_list": _run(
             lambda c: keyed.update_keyed(
-                c, "t", values={"v": 1}, keys=KeyBatch(("a", "b"), [("x", 1), ("y", 2)], as_list=True)
+                c, "t", values={"v": 1}, keys=KeyBatch(("a", "b"), [["x", "y"], [1, 2]], as_list=True)
             )
         ),
         "update_keyed.prefix": _run(lambda c: keyed.update_keyed(c, "t", values={"v": 1}, prefix={"signal": "name/"})),
@@ -320,11 +321,11 @@ def _cases() -> dict[str, Case]:
         ),
         "delete_keyed.null_safe_keys": _run(
             lambda c: keyed.delete_keyed(
-                c, "t", keys=KeyBatch(("a", "b"), [(None, "1"), ("s", "2")], ("text", "uuid"), null_safe=True)
+                c, "t", keys=KeyBatch(("a", "b"), [[None, "s"], ["1", "2"]], ("text", "uuid"), null_safe=True)
             )
         ),
-        "delete_keyed.single_key_text": _run(lambda c: keyed.delete_keyed(c, "t", keys=KeyBatch(("a",), [("x",)]))),
-        "delete_keyed.empty_keys": _run(lambda c: keyed.delete_keyed(c, "t", keys=KeyBatch(("a",), []))),
+        "delete_keyed.single_key_text": _run(lambda c: keyed.delete_keyed(c, "t", keys=KeyBatch(("a",), [["x"]]))),
+        "delete_keyed.empty_keys": _run(lambda c: keyed.delete_keyed(c, "t", keys=KeyBatch(("a",), [[]]))),
         # sweeps
         "delete_before.pages": _run(
             lambda c: keyed.delete_before(
@@ -409,20 +410,20 @@ def _builders() -> dict[str, Sequence[tuple[str, Sequence[Any]]]]:
         "read_value": [built.read_row_statement("t", by={"id": 1, "flag": True}, columns=("v",))],
         "read_keyed.as_list_batches": built.read_keyed_statements(
             "documents",
-            keys=KeyBatch(("id",), [("a",), ("b",), ("c",)], as_list=True),
+            keys=KeyBatch(("id",), [["a", "b", "c"]], as_list=True),
             columns=("body",),
             by={"scope_id": "s", "doc_type": "run"},
             batch=2,
         ),
         "read_keyed.two_columns_bounded": built.read_keyed_statements(
             "t",
-            keys=KeyBatch(("a", "b"), [("s", 1), ("s", 2), ("s", 3)], ("text", "bigint")),
+            keys=KeyBatch(("a", "b"), [["s", "s", "s"], [1, 2, 3]], ("text", "bigint")),
             columns=("a", "b"),
             by={"tenant": AnyOf(["x"])},
             where=[Fragment('t."v" > $1', (5,))],
         ),
         "read_keyed.one_column_native": built.read_keyed_statements(
-            "t", keys=KeyBatch(("id",), [(1,), (2,)], ("bigint",)), columns=("id",), by={"tenant": "x"}, natively=True
+            "t", keys=KeyBatch(("id",), [[1, 2]], ("bigint",)), columns=("id",), by={"tenant": "x"}, natively=True
         ),
         "keyset_page.cursor_by_row": [
             built.keyset_page_statement(
@@ -452,14 +453,14 @@ def _builders() -> dict[str, Sequence[tuple[str, Sequence[Any]]]]:
         "update_keyed.keys_batches": built.update_keyed_statements(
             "t",
             values={"v": 1},
-            keys=KeyBatch(("a", "b"), [("x", 1), ("y", 2), ("z", 3)], ("text", "bigint")),
+            keys=KeyBatch(("a", "b"), [["x", "y", "z"], [1, 2, 3]], ("text", "bigint")),
             by={"tenant": "q"},
             batch=2,
         ),
         "delete_keyed.where_returning": built.delete_keyed_statements(
             "t", by={"key": "k"}, where=[Fragment('"expires_at" > $1', (_WHEN,))], returning=("payload",)
         ),
-        "delete_keyed.empty_keys": built.delete_keyed_statements("t", keys=KeyBatch(("a",), [])),
+        "delete_keyed.empty_keys": built.delete_keyed_statements("t", keys=KeyBatch(("a",), [[]])),
         "delete_before.by_most_pages": [
             built.delete_before_statement("s.t", key=("a", "b"), column="at", before=_WHEN, page=1, by={"purpose": "p"})
         ],

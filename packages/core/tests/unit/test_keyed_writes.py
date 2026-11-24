@@ -42,6 +42,9 @@ from threetears.core.keyed import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
+
+
 @pytest.fixture
 def db() -> Iterator[duckdb.DuckDBPyConnection]:
     """``t``: 10 groups of 10 rows keyed ``(a, b)``, a nullable ``s`` every third row."""
@@ -270,10 +273,14 @@ class TestReadKeyedWhere:
         guard = Fragment('t."v" > $1 AND t."s" IS NOT NULL', (20,))
         expected = sorted((f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2) and b > 20 and b % 3 != 0)
         shapes = [
-            KeyBatch(("a",), [("k1",), ("k2",)]),
-            KeyBatch(("a",), [("k1",), ("k2",)], as_list=True),
-            KeyBatch(("a", "b"), [(f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2)], ("text", "bigint")),
-            KeyBatch(("a",), [("k1",), ("k2",)], null_safe=True),
+            KeyBatch(("a",), [["k1", "k2"]]),
+            KeyBatch(("a",), [["k1", "k2"]], as_list=True),
+            KeyBatch(
+                ("a", "b"),
+                [[f"k{b % 10}" for b in range(100) if b % 10 in (1, 2)], [b for b in range(100) if b % 10 in (1, 2)]],
+                ("text", "bigint"),
+            ),
+            KeyBatch(("a",), [["k1", "k2"]], null_safe=True),
         ]
         for keys in shapes:
             rows = await read_keyed(
@@ -288,7 +295,7 @@ class TestReadKeyedSelected:
         rows = await read_keyed(
             ThreadedDuckDB(db),
             "t",
-            keys=KeyBatch(("a",), [("k1",)]),
+            keys=KeyBatch(("a",), [["k1"]]),
             columns=["b", Selected("CAST(t.v AS VARCHAR)", "v")],
         )
         assert sorted((row["b"], row["v"]) for row in rows) == [(b, str(b)) for b in range(1, 100, 10)]
@@ -343,11 +350,19 @@ class TestWritesByAPrefix:
 
 
 _BATCHES = [
-    KeyBatch(("a",), [("k1",), ("k2",)]),
-    KeyBatch(("a",), [("k1",), ("k2",)], as_list=True),
-    KeyBatch(("a", "b"), [(f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2)], ("text", "bigint")),
-    KeyBatch(("a", "b"), [(f"k{b % 10}", b) for b in range(100) if b % 10 in (1, 2)], as_list=True),
-    KeyBatch(("a",), [("k1",), ("k2",)], null_safe=True),
+    KeyBatch(("a",), [["k1", "k2"]]),
+    KeyBatch(("a",), [["k1", "k2"]], as_list=True),
+    KeyBatch(
+        ("a", "b"),
+        [[f"k{b % 10}" for b in range(100) if b % 10 in (1, 2)], [b for b in range(100) if b % 10 in (1, 2)]],
+        ("text", "bigint"),
+    ),
+    KeyBatch(
+        ("a", "b"),
+        [[f"k{b % 10}" for b in range(100) if b % 10 in (1, 2)], [b for b in range(100) if b % 10 in (1, 2)]],
+        as_list=True,
+    ),
+    KeyBatch(("a",), [["k1", "k2"]], null_safe=True),
 ]
 
 
@@ -371,7 +386,7 @@ class TestWritesByAKeyBatch:
         named = sorted(b for b in range(100) if b % 10 in (1, 2) and b > 20 and b % 3 != 0)
         assert updated.count == len(named)
         assert [row[0] for row in _plain(db, "SELECT b FROM t WHERE v >= 1000 ORDER BY b")] == named
-        assert len(reader.statements) == -(-len(keys.values) // 7)
+        assert len(reader.statements) == -(-len(keys) // 7)
         deleted = await delete_keyed(reader, "t", keys=keys, where=[Fragment('"v" >= $1', (1000,))], returning=["b"])
         assert sorted(row["b"] for row in deleted.rows) == named
         assert _plain(db, "SELECT count(*) FROM t") == [(100 - len(named),)]

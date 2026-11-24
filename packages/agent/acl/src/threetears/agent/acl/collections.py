@@ -1328,7 +1328,7 @@ async def _customer_backfill_plan(conn: Any, *, limit: int, cursor: str | None) 
         found = await k.read_keyed(
             conn,
             "namespaces",
-            keys=k.KeyBatch(("namespace_id",), [(each,) for each in namespace_ids], casts=("uuid",)),
+            keys=k.KeyBatch(("namespace_id",), [list(namespace_ids)], casts=("uuid",)),
             columns=("namespace_id", "customer_id"),
         )
         namespace_customer = {row["namespace_id"]: row["customer_id"] for row in found}
@@ -2020,7 +2020,11 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     pool,
                     "role_assignments",
                     values={"customer_id": customer},
-                    keys=k.KeyBatch(("row_scope", "assignment_id"), keys, casts=("text", "uuid")),
+                    keys=k.KeyBatch(
+                        ("row_scope", "assignment_id"),
+                        [[row_scope for row_scope, _, _ in rows], [assignment for _, assignment, _ in rows]],
+                        casts=("text", "uuid"),
+                    ),
                 )
             written.extend(rows)
         return CustomerBackfillPage(read=plan.read, written=tuple(written), next_cursor=plan.next_cursor)

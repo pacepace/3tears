@@ -1,7 +1,8 @@
 """keyed reads' statements: the rows a batch of keys (or key prefixes) names, a bounded batch a statement.
 
-The one spelling of the keyed batch read. Each key column's values are bound as one text array, the array cast as a
-whole to the column's type, so the column is compared with values of its own type and its index is read by them::
+The one spelling of the keyed batch read. Each key column's values are bound as ONE array (a plain column's list, or
+an Arrow column's literal text written in Arrow's kernels: ``$1::text::uuid[]``), the array cast as a whole to the
+column's type, so the column is compared with values of its own type and its index is read by them::
 
     SELECT <columns> FROM <table> AS t WHERE t."id" = ANY($1::text[]::uuid[]) AND t."tenant" = $2
 
@@ -19,8 +20,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from operator import itemgetter
-from typing import Annotated, Any, Final, TypeAlias
+from typing import Annotated, Any, Final, Literal, Protocol, TypeAlias
 
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -40,7 +40,12 @@ __all__ = [
     "ANY_ROWS_CAP",
     "DEFAULT_KEY_BATCH",
     "DIRECT_KEY_BATCH",
+    "PLAIN_KEYS",
+    "BindKind",
+    "SplitText",
     "KeyBatch",
+    "KeyBinder",
+    "KeyChunk",
     "KeyTooWide",
     "key_chunks",
     "keyed_read_statement",
@@ -132,24 +137,60 @@ class KeyTooWide(ValueError):
 
 
 @dataclass(frozen=True)
+class SplitText:
+    """a key column bound as ONE text, its values' texts joined by ``delimiter`` (a code point none of them holds),
+    split back in SQL: ``string_to_array($1::text, chr(31))::uuid[]``. ``string_to_array`` and ``chr`` are immutable,
+    so a custom plan folds the array into a constant, as it does a bound list (``$1::text[]::uuid[]``): the planner
+    sees the same array and plans the same; an array literal's parse (``array_in``) is stable, evaluated again at each
+    estimate and never folded (2,000 UUIDs: 1.2-2.3 ms of planning against 0.3-0.7, measured 2026-11-23).
+
+    :param delimiter: the code point between two values
+    :ptype delimiter: int
+    :param null: the code point a null value is written as (none of the values holds it); None when none is null
+    :ptype null: int | None
+    """
+
+    delimiter: int
+    null: int | None = None
+
+
+#: how one key column's values are bound (:meth:`KeyBinder.array`): as they are, of the column's type (asyncpg's own
+#: typed arrays); as a list of texts the statement casts (``$n::text[]::<type>[]``); as ONE text split back in SQL
+#: (:class:`SplitText`: an Arrow column's texts joined in Arrow's kernels, so no value of it is ever a Python object on
+#: the way in); or as ONE text, the array's literal (``$n::text::<type>[]``: a database with no ``string_to_array``,
+#: DuckDB behind a reader, or the rare column no delimiter fits)
+BindKind: TypeAlias = Literal["native", "text", "literal"] | SplitText
+
+#: one statement's keys: one sequence a key column, in key order, all of one length (a plain list's slice, or an Arrow
+#: array's zero-copy slice)
+KeyChunk: TypeAlias = tuple[Sequence[Any], ...]
+
+
+@dataclass(frozen=True)
 class KeyBatch:
-    """the keys a read names: a leading part of a key, one tuple a key.
+    """the keys a read names: a leading part of a key, one array a key column (column-major, never one tuple a key).
+
+    Each of ``keys`` is one key column's values, in key order: a ``pyarrow`` array (a serving path's keys, bound as one
+    text literal written in Arrow's kernels: ``threetears.core.keyed`` does, wherever pyarrow imports) or a plain
+    sequence (a process with no Arrow: its values bound as one array). The i-th key is each column's i-th value.
 
     :param columns: the key columns, TRUSTED identifiers, in key order
     :ptype columns: tuple[str, ...]
-    :param values: one tuple a key, a value a column; each key is read once however often named
-    :ptype values: Sequence[Sequence[Any]]
+    :param keys: one array a key column, in ``columns``' order, all of one length; each key is read once however
+        often named
+    :ptype keys: Sequence[pyarrow.Array | Sequence[Any]]
     :param casts: each column's SQL type its text is cast back to; ``text`` for every column when empty
     :ptype casts: tuple[str, ...]
     :param null_safe: a ``None`` in a key matches the rows holding none in that column (``IS NOT DISTINCT FROM``):
         a scope column's NULL bucket
     :ptype null_safe: bool
     :param as_list: bind the keys as a list of placeholders (``(c1, c2) IN (($1, $2), ...)``), each value as it is,
-        for a database with no arrays (Redshift, SQLite); a statement's text then follows its batch's size
+        for a database with no arrays (Redshift, SQLite); a statement's text then follows its batch's size. Its
+        driver binds a placeholder a value, so each value is a Python object at the bind (an Arrow column's too)
     :ptype as_list: bool
     :param as_text: with ``as_list``, each key column's text as a TRUSTED SQL expression over ``t`` (its canonical
         text: ``CAST(t."n" AS VARCHAR)``); the key is then compared as ONE text, each column's text written as its
-        length, ``:`` and the text, against one bind a key, ``values`` giving each key's column texts. One scalar
+        length, ``:`` and the text, against one bind a key, ``keys`` giving each column's texts. One scalar
         ``IN`` of texts, where Redshift plans a list of tuples key by key (528 four-column keys: 4.4 s of planning
         against 0.11 s). The length marks keep it exact: no two keys of different texts join alike. A read's only;
         a NULL part is no text (pin it ``IS NULL`` in ``by``). Empty: the columns are compared as they are
@@ -157,7 +198,7 @@ class KeyBatch:
     """
 
     columns: tuple[str, ...]
-    values: Sequence[Sequence[Any]]
+    keys: Sequence[Any]
     casts: tuple[str, ...] = field(default=())
     null_safe: bool = False
     as_list: bool = False
@@ -170,9 +211,13 @@ class KeyBatch:
             raise ValueError("a key batch bound as a list matches by equality; a null-safe batch binds arrays")
         if self.casts and len(self.casts) != len(self.columns):
             raise ValueError(f"a key batch casts each of its {len(self.columns)} columns, got {len(self.casts)}")
-        for key in self.values:
-            if len(key) != len(self.columns):
-                raise ValueError(f"a key of {self.columns} has {len(self.columns)} values, got {tuple(key)!r}")
+        if len(self.keys) != len(self.columns):
+            raise ValueError(
+                f"a key batch of {self.columns} holds one array a column ({len(self.columns)}), got {len(self.keys)}"
+            )
+        lengths = {len(column) for column in self.keys}
+        if len(lengths) > 1:
+            raise ValueError(f"a key batch of {self.columns} holds columns of one length, got {sorted(lengths)}")
         if self.as_text:
             if not self.as_list:
                 raise ValueError("a key batch spelled as text is bound as a list of texts (as_list)")
@@ -181,9 +226,15 @@ class KeyBatch:
                     f"a key batch spelled as text names the text of each of its {len(self.columns)} columns, "
                     f"got {len(self.as_text)}"
                 )
-            for key in self.values:
-                if not all(isinstance(part, str) for part in key):
-                    raise ValueError(f"a key batch spelled as text gives each key's column texts, got {tuple(key)!r}")
+            for column in self.keys:
+                kind = getattr(column, "type", None)
+                texts = str(kind) in _ARROW_TEXT_TYPES if kind is not None else all(isinstance(v, str) for v in column)
+                if not texts:
+                    raise ValueError(f"a key batch spelled as text gives each column's texts, got {kind or column!r}")
+
+    def __len__(self) -> int:
+        """the keys named, a repeat counted each time it is named."""
+        return len(self.keys[0])
 
     def cast(self, index: int) -> str:
         """the SQL type column ``index``'s text is cast back to.
@@ -196,12 +247,113 @@ class KeyBatch:
         return self.casts[index] if self.casts else "text"
 
 
+#: the Arrow types whose values are already the texts a text-spelled batch compares
+_ARROW_TEXT_TYPES: Final = frozenset({"string", "large_string", "string_view"})
+
+
+class KeyBinder(Protocol):
+    """how a batch's key columns become a statement's binds: :data:`PLAIN_KEYS` for plain sequences (here, with no
+    third-party import), ``threetears.core.keyed``'s Arrow binder for Arrow columns (its kernels, never a Python
+    object a key)."""
+
+    def distinct(self, keys: KeyBatch) -> KeyChunk:
+        """the batch's distinct keys, in the order first named, as columns."""
+        ...
+
+    def array(self, values: Sequence[Any], cast: str, natively: bool) -> tuple[Any, BindKind]:
+        """one key column's values as ONE bind, and how the statement casts it."""
+        ...
+
+    def distinct_values(self, values: Sequence[Any]) -> Sequence[Any]:
+        """one key column's distinct values."""
+        ...
+
+    def listed(self, values: Sequence[Any]) -> list[Any]:
+        """one key column's values as Python values, a placeholder each (``as_list``: the driver binds them so)."""
+        ...
+
+
 def _text(value: Any) -> str | None:
     """a key value as the text its array binds: its ISO form for a date or time, ``str`` otherwise."""
     if value is None:
         return None
     isoformat = getattr(value, "isoformat", None)
     return str(isoformat()) if callable(isoformat) else str(value)
+
+
+class _PlainKeys:
+    """:class:`KeyBinder` of plain sequences: a process with no Arrow. Each column bound as one list, of its values
+    where the connection binds the type natively, else of their texts (a column of str bound as it is)."""
+
+    def distinct(self, keys: KeyBatch) -> KeyChunk:
+        columns = tuple(self._plain(column) for column in keys.keys)
+        if len(columns) == 1:
+            return (list(dict.fromkeys(columns[0])),)
+        unique = list(dict.fromkeys(zip(*columns, strict=True)))
+        if not unique:
+            return tuple([] for _ in columns)
+        return tuple(map(list, zip(*unique, strict=True)))
+
+    def array(self, values: Sequence[Any], cast: str, natively: bool) -> tuple[Any, BindKind]:
+        # judged by the values' distinct types, not value by value (2,000 keys: a few types)
+        kinds = set(map(type, values))
+        if natively and cast.lower() not in _TEXT_TYPES and not any(issubclass(kind, str) for kind in kinds):
+            return list(values), "native"
+        if kinds <= {str, type(None)}:
+            return list(values), "text"
+        return [_text(value) for value in values], "text"
+
+    def distinct_values(self, values: Sequence[Any]) -> Sequence[Any]:
+        return list(dict.fromkeys(values))
+
+    def listed(self, values: Sequence[Any]) -> list[Any]:
+        return list(self._plain(values))
+
+    @staticmethod
+    def _plain(values: Sequence[Any]) -> Sequence[Any]:
+        if hasattr(values, "to_pylist"):
+            raise TypeError(
+                "an Arrow key column binds through threetears.core.keyed (its Arrow binder), never value by value here"
+            )
+        return values
+
+
+#: the binder of plain sequences, the one a pure statement builder uses when given none
+PLAIN_KEYS: Final[KeyBinder] = _PlainKeys()
+
+
+def _typed_array(place: int, cast: str, kind: BindKind, once: bool = False) -> str:
+    """placeholder ``place``'s array of a key column of SQL type ``cast``, bound as ``kind``: of the column's type
+    natively, a text array cast as a whole to it, or one text (the array's literal) cast to it.
+
+    One text's array is made from it in SQL, so where a generic plan may evaluate it a row at a time (a bound beside
+    the keys, on the inner side of a nested loop: 10,000 keys split or parsed 10,000 times, 84-97 ms against 41 for a
+    bound list on PostgreSQL 16, measured 2026-11-23) it is made ``once``: a scalar subquery, an InitPlan run once a
+    statement (35 ms).
+
+    :param place: the placeholder's number
+    :ptype place: int
+    :param cast: the column's SQL type
+    :ptype cast: str
+    :param kind: how its values are bound
+    :ptype kind: BindKind
+    :param once: one text's array made once a statement (an InitPlan), not where it stands
+    :ptype once: bool
+    :return: the placeholder's SQL
+    :rtype: str
+    """
+    textual = cast.lower() in _TEXT_TYPES
+    array = "text[]" if textual else f"{cast}[]"
+    if isinstance(kind, SplitText):
+        null = "" if kind.null is None else f", chr({kind.null})"
+        split = f"string_to_array(${place}::text, chr({kind.delimiter}){null})"
+        typed = split if textual else f"{split}::{array}"
+        return f"(SELECT {typed})::{array}" if once else typed
+    if kind == "literal":
+        return f"(SELECT ${place}::text::{array})::{array}" if once else f"${place}::text::{array}"
+    if textual:
+        return f"${place}::text[]"
+    return f"${place}::{cast}[]" if kind == "native" else f"${place}::text[]::{cast}[]"
 
 
 @dataclass(frozen=True)
@@ -214,6 +366,7 @@ class _KeyedRead:
     by: Mapping[str, Any]
     lock: Lock | None = None
     where: Sequence[Fragment] = ()
+    binder: KeyBinder = PLAIN_KEYS
 
     def _guards(self, before: int) -> tuple[list[str], list[Any]]:
         """the ``where`` fragments, renumbered past the ``before`` parameters the statement already binds."""
@@ -231,70 +384,68 @@ class _KeyedRead:
         ordered = ", ".join(f"t.{quote_identifier(column)}" for column in self.keys.columns)
         return f"{sql} ORDER BY {ordered}{self.lock.of('t')}"
 
-    def render(self, chunk: Sequence[tuple[Any, ...]], natively: bool = False) -> tuple[str, tuple[Any, ...]]:
+    def render(self, chunk: KeyChunk, natively: bool = False) -> tuple[str, tuple[Any, ...]]:
         """the statement naming ``chunk``'s keys, and its parameters.
 
-        :param chunk: the keys
-        :ptype chunk: Sequence[tuple[Any, ...]]
-        :param natively: whether the connection binds typed arrays natively (:func:`binds_native_arrays`): a column
-            whose values are of its type (no str) is then bound as ``$n::<type>[]`` from the values themselves
+        :param chunk: the keys, one sequence a key column (:func:`key_chunks`)
+        :ptype chunk: KeyChunk
+        :param natively: whether the connection binds typed arrays natively (:func:`binds_native_arrays`): a plain
+            column whose values are of its type (no str) is then bound as ``$n::<type>[]`` from the values themselves
         :ptype natively: bool
         :return: the statement, and its parameters
         :rtype: tuple[str, tuple[Any, ...]]
         """
         width = len(self.keys.columns)
+        count = len(chunk[0])
         if self.keys.as_list:
             head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
             columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
+            listed = [self.binder.listed(column) for column in chunk]
             if self.keys.as_text:
-                return self._text_list(head, chunk)
+                return self._text_list(head, listed, count)
             if width == 1:
-                named = f"{columns[0]} IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
+                named = f"{columns[0]} IN ({', '.join(f'${place + 1}' for place in range(count))})"
             else:
                 rows = ", ".join(
                     "(" + ", ".join(f"${row * width + index + 1}" for index in range(width)) + ")"
-                    for row in range(len(chunk))
+                    for row in range(count)
                 )
                 named = f"({', '.join(columns)}) IN ({rows})"
-            conditions, pinned = by_conditions(self.by, first=len(chunk) * width + 1, alias="t")
-            guards, guarded = self._guards(len(chunk) * width + len(pinned))
+            conditions, pinned = by_conditions(self.by, first=count * width + 1, alias="t")
+            guards, guarded = self._guards(count * width + len(pinned))
             where = " AND ".join([named, *conditions, *guards])
-            return self._locked(f"{head} WHERE {where}"), (
-                *(value for key in chunk for value in key),
-                *pinned,
-                *guarded,
-            )
-        # each key column's values bound as one array: of the column's type where the connection binds it natively
-        # and the values are of it, else a text array cast as a whole to it. The column is compared with values of its
-        # own type, never wrapped or compared element by element through a cast, so the planner reads the key's index
-        # by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
-        held = [list(map(itemgetter(index), chunk)) for index in range(width)]
-        native = self._native(held, natively)
-        arrays = tuple(
-            values if native[index] else [_text(value) for value in values] for index, values in enumerate(held)
-        )
-        bounded: tuple[list[Any], ...] = ()
+            values = listed[0] if width == 1 else [value for key in zip(*listed, strict=True) for value in key]
+            return self._locked(f"{head} WHERE {where}"), (*values, *pinned, *guarded)
+        # each key column's values bound as ONE array: of the column's type where the connection binds it natively,
+        # a text array, or the array's literal text, each cast as a whole to the column's type. The column is compared
+        # with values of its own type, never wrapped or compared element by element through a cast, so the planner
+        # reads the key's index by them (an Index Cond), as a hand-written "col = ANY($1::uuid[])" would
+        bound = [self.binder.array(values, self.keys.cast(index), natively) for index, values in enumerate(chunk)]
+        arrays = tuple(value for value, _ in bound)
+        kinds = tuple(kind for _, kind in bound)
+        tight: tuple[tuple[Any, BindKind], ...] = ()
         if width > 1 and not self.keys.null_safe:
-            bounded = self._tight_values(arrays, len(chunk))
+            tight = self._tight_values(chunk, count, natively)
         guarded = [param for fragment in self.where for param in fragment.params]
-        # the statement's text follows only its shape (which columns bind natively, whether bounded): rendered once a
+        # the statement's text follows only its shape (how each column binds, whether bounded): rendered once a
         # shape, here or by an earlier read of the same shape, and each batch binds its own arrays to it
-        shape = (self._shape, native, bool(bounded))
+        tight_kinds = tuple(kind for _, kind in tight)
+        shape = (self._shape, kinds, tight_kinds)
         sql = _RENDERED.get(shape)
         if sql is None:
-            sql = self._array_text(native, bool(bounded))
+            sql = self._array_text(kinds, tight_kinds)
             _remember(shape, sql)
-        return sql, (*arrays, *self._by[1], *bounded, *guarded)
+        return sql, (*arrays, *self._by[1], *(value for value, _ in tight), *guarded)
 
-    def _text_list(self, head: str, chunk: Sequence[tuple[Any, ...]]) -> tuple[str, tuple[Any, ...]]:
+    def _text_list(self, head: str, listed: Sequence[list[Any]], count: int) -> tuple[str, tuple[Any, ...]]:
         """a list batch spelled as text (:attr:`KeyBatch.as_text`): the key's length-marked text in one scalar ``IN``
         of one bind a key."""
         spelled = " || ".join(f"CAST(LENGTH({text}) AS VARCHAR) || ':' || {text}" for text in self.keys.as_text)
-        named = f"({spelled}) IN ({', '.join(f'${place + 1}' for place in range(len(chunk)))})"
-        conditions, pinned = by_conditions(self.by, first=len(chunk) + 1, alias="t")
-        guards, guarded = self._guards(len(chunk) + len(pinned))
+        named = f"({spelled}) IN ({', '.join(f'${place + 1}' for place in range(count))})"
+        conditions, pinned = by_conditions(self.by, first=count + 1, alias="t")
+        guards, guarded = self._guards(count + len(pinned))
         where = " AND ".join([named, *conditions, *guards])
-        texts = ("".join(f"{len(part)}:{part}" for part in key) for key in chunk)
+        texts = ("".join(f"{len(part)}:{part}" for part in key) for key in zip(*listed, strict=True))
         return self._locked(f"{head} WHERE {where}"), (*texts, *pinned, *guarded)
 
     @cached_property
@@ -317,12 +468,12 @@ class _KeyedRead:
             tuple((fragment.sql, len(fragment.params)) for fragment in self.where),
         )
 
-    def _array_text(self, native: tuple[bool, ...], bounded: bool) -> str:
+    def _array_text(self, kinds: tuple[BindKind, ...], tight: tuple[BindKind, ...]) -> str:
         """the array statement's text: ``= ANY`` for one key column, else the keys joined as rows (null-safe, or by
-        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``bounded``)."""
+        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``tight`` names their binds)."""
         width = len(self.keys.columns)
         head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
-        typed = [self._typed_array(index + 1, index, native[index]) for index in range(width)]
+        typed = [_typed_array(index + 1, self.keys.cast(index), kinds[index]) for index in range(width)]
         conditions, pinned = self._by
         columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
         if width == 1 and not self.keys.null_safe:
@@ -345,17 +496,18 @@ class _KeyedRead:
         first = width + len(pinned) + 1
         bounds = (
             [
-                f"t.{quote_identifier(column)} = ANY({self._typed_array(first + index, index, native[index])})"
+                f"t.{quote_identifier(column)} = "
+                f"ANY({_typed_array(first + index, self.keys.cast(index), tight[index], once=True)})"
                 for index, column in enumerate(self.keys.columns)
             ]
-            if bounded
+            if tight
             else []
         )
         guards, _ = self._guards(width + len(pinned) + len(bounds))
         where = " AND ".join([named, *conditions, *bounds, *guards])
         return self._locked(f"{batched_join_hint(IN_SUBQUERY, 't')}{head} WHERE {where}")
 
-    def _tight_values(self, arrays: tuple[list[Any], ...], keys: int) -> tuple[list[Any], ...]:
+    def _tight_values(self, chunk: KeyChunk, keys: int, natively: bool) -> tuple[tuple[Any, BindKind], ...]:
         """each key column's distinct values, bound beside the keys (``t."a" = ANY($n)``) when their cross product
         names at most :data:`_TIGHT_BOUND_FACTOR` times the keys; none otherwise.
 
@@ -365,33 +517,15 @@ class _KeyedRead:
         (600 keys over 50 states, 200 geographies and 30 ids) names the whole table by them, so it gets none and is
         read by its keys, one lookup a key.
         """
-        distinct = [list(dict.fromkeys(values)) for values in arrays]
+        distinct = [self.binder.distinct_values(values) for values in chunk]
         product = 1
         for values in distinct:
             product *= len(values)
         if product > _TIGHT_BOUND_FACTOR * keys:
             return ()
-        return tuple(distinct)
-
-    def _native(self, held: Sequence[list[Any]], natively: bool) -> tuple[bool, ...]:
-        """which key columns bind their values as they are: on a connection binding typed arrays natively, each
-        column of a type other than text whose values hold no str (a caller's text form stays text, cast in SQL).
-        Judged by the values' distinct types, not value by value (2,000 keys: a few types)."""
-        if not natively:
-            return (False,) * len(self.keys.columns)
         return tuple(
-            self.keys.cast(index).lower() not in _TEXT_TYPES
-            and not any(issubclass(kind, str) for kind in set(map(type, values)))
-            for index, values in enumerate(held)
+            self.binder.array(values, self.keys.cast(index), natively) for index, values in enumerate(distinct)
         )
-
-    def _typed_array(self, place: int, column: int, native: bool) -> str:
-        """placeholder ``place``'s array of key column ``column``: of the column's type, bound natively, or a text
-        array cast as a whole to it."""
-        cast = self.keys.cast(column)
-        if cast.lower() in _TEXT_TYPES:
-            return f"${place}::text[]"
-        return f"${place}::{cast}[]" if native else f"${place}::text[]::{cast}[]"
 
 
 def keyed_read_statement(
@@ -401,6 +535,7 @@ def keyed_read_statement(
     by: Mapping[str, Any],
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    binder: KeyBinder = PLAIN_KEYS,
 ) -> _KeyedRead:
     """the statement a keyed read of ``columns`` sends each batch of ``keys``: its ``render(chunk, natively)`` writes
     a batch's text and binds (``threetears.core.keyed.read_keyed`` renders each batch as it reads it, halving one its
@@ -418,6 +553,8 @@ def keyed_read_statement(
     :ptype lock: Lock | None
     :param where: filters beside the key, each a fragment written as ``t."col"`` from ``$1``
     :ptype where: Sequence[Fragment]
+    :param binder: how the key columns bind (:data:`PLAIN_KEYS`, or ``threetears.core.keyed``'s Arrow binder)
+    :ptype binder: KeyBinder
     :return: the statement
     :rtype: _KeyedRead
     :raises ValueError: when no column is named
@@ -425,24 +562,28 @@ def keyed_read_statement(
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
     selected = ", ".join(selected_column(column) for column in columns)
-    return _KeyedRead(table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where))
+    return _KeyedRead(table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where), binder=binder)
 
 
-def key_chunks(keys: KeyBatch, batch: int) -> list[list[tuple[Any, ...]]]:
-    """``keys``' distinct keys, in the order first named, ``batch`` of them a chunk: one statement each.
+def key_chunks(keys: KeyBatch, batch: int, binder: KeyBinder = PLAIN_KEYS) -> list[KeyChunk]:
+    """``keys``' distinct keys, in the order first named, ``batch`` of them a chunk (one sequence a key column): one
+    statement each.
 
     :param keys: the keys
     :ptype keys: KeyBatch
     :param batch: the most keys a statement names
     :ptype batch: int
+    :param binder: how the key columns are read (:data:`PLAIN_KEYS`, or ``threetears.core.keyed``'s Arrow binder)
+    :ptype binder: KeyBinder
     :return: the chunks
-    :rtype: list[list[tuple[Any, ...]]]
+    :rtype: list[KeyChunk]
     :raises ValueError: when ``batch`` is under one
     """
     if batch < 1:
         raise ValueError(f"a keyed read names at least one key a statement, got {batch}")
-    unique = list(dict.fromkeys(map(tuple, keys.values)))
-    return [unique[start : start + batch] for start in range(0, len(unique), batch)]
+    unique = binder.distinct(keys)
+    total = len(unique[0])
+    return [tuple(column[start : start + batch] for column in unique) for start in range(0, total, batch)]
 
 
 def read_keyed_statements(
@@ -455,6 +596,7 @@ def read_keyed_statements(
     natively: bool = False,
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
+    binder: KeyBinder = PLAIN_KEYS,
 ) -> list[tuple[str, tuple[Any, ...]]]:
     """every statement a keyed read of ``table`` by ``keys`` (within ``by``) sends, ``batch`` keys each, and its
     binds: what ``threetears.core.keyed.read_keyed`` sends a transport that never cuts an answer.
@@ -475,9 +617,11 @@ def read_keyed_statements(
     :ptype lock: Lock | None
     :param where: filters beside the key, each a fragment written as ``t."col"`` from ``$1``
     :ptype where: Sequence[Fragment]
+    :param binder: how the key columns bind (:data:`PLAIN_KEYS`, or ``threetears.core.keyed``'s Arrow binder)
+    :ptype binder: KeyBinder
     :return: each statement and its binds, a chunk of keys each; none for no keys
     :rtype: list[tuple[str, tuple[Any, ...]]]
     :raises ValueError: when no column is named, ``batch`` is under one, or a key does not match the columns
     """
-    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where)
-    return [statement.render(chunk, natively) for chunk in key_chunks(keys, batch)]
+    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
+    return [statement.render(chunk, natively) for chunk in key_chunks(keys, batch, binder)]

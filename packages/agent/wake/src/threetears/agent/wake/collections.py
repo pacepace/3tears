@@ -429,7 +429,7 @@ async def _read_one(
     :return: the row, or None
     :rtype: dict[str, Any] | None
     """
-    rows = await read_keyed(pool, table, keys=KeyBatch((key,), [(value,)], ("uuid",)), columns=columns, by=by)
+    rows = await read_keyed(pool, table, keys=KeyBatch((key,), [[value]], ("uuid",)), columns=columns, by=by)
     return rows[0] if rows else None
 
 
@@ -1563,7 +1563,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             self.l3_pool,
             _FIRES,
             values={"status": "failed", "error": REAPED_DISPATCH_ERROR},
-            keys=KeyBatch(("fire_id",), [(fire_id,) for fire_id in fire_ids], ("uuid",)),
+            keys=KeyBatch(("fire_id",), [list(fire_ids)], ("uuid",)),
             by={"status": "dispatching"},
             returning=_REAPED_COLUMNS,
         )
