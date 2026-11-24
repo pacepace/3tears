@@ -291,7 +291,8 @@ class BackgroundDispatch:
         # Fires whose finalize write failed since the last join -- counted, the first few named --
         # and the first such failure: join raises them, so a lost record is not reported as recorded.
         self._unrecorded_count = 0
-        self._unrecorded: list[tuple[str, UUID]] = []
+        # at most UNRECORDED_FIRES_NAMED, flushed each pass: a tuple replaced whole, never changed in place (decision 45)
+        self._unrecorded: tuple[tuple[str, UUID], ...] = ()
         self._first_unrecorded_error: Exception | None = None
         self._closed = False
 
@@ -349,7 +350,7 @@ class BackgroundDispatch:
             await asyncio.sleep(0)
         if self._unrecorded_count:
             count, unrecorded, cause = self._unrecorded_count, self._unrecorded, self._first_unrecorded_error
-            self._unrecorded_count, self._unrecorded, self._first_unrecorded_error = 0, [], None
+            self._unrecorded_count, self._unrecorded, self._first_unrecorded_error = 0, (), None
             raise FireNotRecordedError(count, unrecorded) from cause
 
     async def aclose(self) -> None:
@@ -773,7 +774,7 @@ class BackgroundDispatch:
         emitter.inc_fire_unrecorded()
         self._unrecorded_count += 1
         if len(self._unrecorded) < UNRECORDED_FIRES_NAMED:
-            self._unrecorded.append((kind, fire_id))
+            self._unrecorded = (*self._unrecorded, (kind, fire_id))
         if self._first_unrecorded_error is None:
             self._first_unrecorded_error = exc
 

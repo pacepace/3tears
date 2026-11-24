@@ -46,7 +46,7 @@ the junk name itself.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -139,12 +139,13 @@ class _Call:
 
     :ivar name: the name fragments so far, joined
     :ivar verdict: ``pending`` until a name arrives, then ``released`` or ``dropped``
-    :ivar held: the chunks built from this call's fragments while it was pending, in order
+    :ivar held: the chunks built from this call's fragments while it was pending, in order: a tuple replaced whole,
+        never changed in place (Pace, decision 45)
     """
 
     name: str = ""
     verdict: Literal["pending", "released", "dropped"] = "pending"
-    held: list[ChatGenerationChunk] = field(default_factory=list)
+    held: tuple[ChatGenerationChunk, ...] = ()
 
 
 class JunkToolCallStreamFilter:
@@ -216,12 +217,14 @@ class JunkToolCallStreamFilter:
             out.append(chunk)
         else:
             for index in dict.fromkeys([*held, *held_blocks]):
-                self._calls[index].held.append(
+                call = self._calls[index]
+                call.held = (
+                    *call.held,
                     _bare_chunk(
                         chunk,
                         content=held_blocks.get(index, []) if isinstance(content, list) else "",
                         tool_call_chunks=held.get(index, []),
-                    )
+                    ),
                 )
             remainder = _rebuilt_chunk(chunk, content=kept_blocks if isinstance(content, list) else content, kept=kept)
             if remainder is not None:
@@ -241,7 +244,7 @@ class JunkToolCallStreamFilter:
         for call in self._calls.values():
             if call.verdict == "pending":
                 out.extend(call.held)
-                call.held = []
+                call.held = ()
         return out
 
     def _take_name(self, fragment: ToolCallChunk) -> list[ChatGenerationChunk]:
@@ -271,10 +274,10 @@ class JunkToolCallStreamFilter:
                     )
                 _warn_dropped(call.name)
                 call.verdict = "dropped"
-                call.held = []
+                call.held = ()
             elif call.verdict == "pending":
                 call.verdict = "released"
-                released, call.held = call.held, []
+                released, call.held = list(call.held), ()
         return released
 
 

@@ -662,11 +662,13 @@ class _SourceRegistry:
     the new source doesn't ``cover``.
     """
 
-    sources: list[PriceSource] = field(default_factory=default_price_sources)
+    # module state, small and bounded (a source per provider family): a tuple replaced whole, never changed in place
+    # (Pace, decision 45)
+    sources: tuple[PriceSource, ...] = field(default_factory=lambda: tuple(default_price_sources()))
 
     def register(self, source: PriceSource) -> None:
         # Insert before the final (catch-all) entry, so the catch-all always remains last.
-        self.sources.insert(len(self.sources) - 1, source)
+        self.sources = (*self.sources[:-1], source, self.sources[-1])
 
     def resolve(self, provider: str) -> PriceSource:
         for source in self.sources:

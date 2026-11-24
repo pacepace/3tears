@@ -217,11 +217,11 @@ async def _delete_alias_collisions(
         :attr:`MemoryRepointResult.removed`; nothing repointed yet
     :rtype: MemoryRepointResult
     """
-    result = MemoryRepointResult()
-    removed = result.removed
+    # filled call-locally, then handed to the result whole: the result is never changed after it is built
+    removed = _per_table(_REMOVED_TABLES)
     locked = await lock_colliding_memories(conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id)
     if not locked:
-        return result
+        return MemoryRepointResult(removed=removed)
     # every child read by key: the colliding memories (or their media) are all the schema's agent's, so each read pins
     # the agent and names the parents, through the index each table's cascade follows
     pinned = {"agent_id": agent_id}
@@ -282,7 +282,7 @@ async def _delete_alias_collisions(
         conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id, memory_ids=named
     )
     removed["memories"] = [(row["agent_id"], row["memory_id"]) for row in deleted]
-    return result
+    return MemoryRepointResult(removed=removed)
 
 
 async def repoint_user(
@@ -324,13 +324,14 @@ async def repoint_user(
     :return: keys removed + repointed, grouped by table
     :rtype: MemoryRepointResult
     """
-    result = await _delete_alias_collisions(
+    collisions = await _delete_alias_collisions(
         conn,
         from_user_id=from_user_id,
         to_user_id=to_user_id,
         agent_id=agent_id,
     )
-    repointed = result.repointed
+    # filled call-locally, then handed to the result whole: the result is never changed after it is built
+    repointed = _per_table(_REPOINTED_TABLES)
     repointed["memories"] = await repoint_user_rows(
         conn,
         user_column="user_id",
@@ -370,6 +371,7 @@ async def repoint_user(
         to_user_id=to_user_id,
         touch_column=None,
     )
+    result = MemoryRepointResult(repointed=repointed, removed=collisions.removed)
     removed = result.removed
     log.info(
         "repointed memories from user %s to %s (deleted %d alias collision(s), cascading to %d media, "

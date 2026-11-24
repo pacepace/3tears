@@ -137,7 +137,8 @@ class _DispositionPlan:
     """
 
     def __init__(self) -> None:
-        self.dispositions: list[CriterionDisposition] = []
+        # one per criterion of the request, a handful: a tuple replaced whole, never changed in place (decision 45)
+        self.dispositions: tuple[CriterionDisposition, ...] = ()
 
     def answer(self, key: str, disposition: Disposition, detail: str | None = None) -> None:
         """Record how one criterion was handled.
@@ -149,7 +150,8 @@ class _DispositionPlan:
         :param detail: specifics -- why unsatisfiable, which rule applied
         :ptype detail: str | None
         """
-        self.dispositions.append(CriterionDisposition(criterion_key=key, disposition=disposition, detail=detail))
+        answered = CriterionDisposition(criterion_key=key, disposition=disposition, detail=detail)
+        self.dispositions = (*self.dispositions, answered)
 
 
 def attributed_failure(failure: SearchFailure, *, provider_instance: str, egress_name: str) -> SearchFailure:

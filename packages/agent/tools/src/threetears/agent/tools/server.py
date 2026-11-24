@@ -1088,7 +1088,8 @@ class ToolServer:
         # lifecycle hooks the OWNER of this server registers before ``serve()``, run once the
         # connection exists and before anything is subscribed or registered. see
         # :meth:`add_connected_callback`.
-        self._connected_callbacks: list[Callable[["NatsClient"], Awaitable[None]]] = []
+        # small and bounded (a callback per lifecycle owner): a tuple replaced whole, never changed in place
+        self._connected_callbacks: tuple[Callable[["NatsClient"], Awaitable[None]], ...] = ()
 
     def add_connected_callback(self, callback: Callable[["NatsClient"], Awaitable[None]]) -> None:
         """register a hook run once this server's NATS connection is established.
@@ -1112,7 +1113,7 @@ class ToolServer:
         :return: nothing
         :rtype: None
         """
-        self._connected_callbacks.append(callback)
+        self._connected_callbacks = (*self._connected_callbacks, callback)
 
     def attach_object_resolution_cache(self, cache: "ObjectResolutionCache") -> None:
         """hand the self-provisioned object resolver the pod's two-tier resolution store.

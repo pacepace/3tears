@@ -15,14 +15,14 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from threetears.core.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entries, without_entry
 from threetears.core.serialization import json_datetime
 from threetears.nats import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, Subjects
 from threetears.observe import contain, get_logger
@@ -174,7 +174,7 @@ def _replace_endpoint_status(
     :rtype: ToolEndpoint
     """
     projected_status = status if endpoint.pod_id == pod_id else endpoint.status
-    return replace(endpoint, status=projected_status, definitions=dict(endpoint.definitions))
+    return replace(endpoint, status=projected_status, definitions=frozen(endpoint.definitions))
 
 
 def _default_ttl() -> timedelta:
@@ -388,7 +388,7 @@ class ToolEndpoint:
     :param date_last_heartbeat: timestamp of last heartbeat from this pod
     :ptype date_last_heartbeat: datetime
     :param definitions: the definitions this pod announced, by digest
-    :ptype definitions: dict[str, AnnouncedDefinition]
+    :ptype definitions: Mapping[str, AnnouncedDefinition]
     :param verified_publisher: whether the registration that last wrote this copy came from a
         publisher whose identity was verified; a pod id that has registered verified may not be
         re-registered by an unverified manifest
@@ -406,7 +406,9 @@ class ToolEndpoint:
     status: str = "pending"
     in_flight: int = 0
     date_last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
-    definitions: dict[str, AnnouncedDefinition] = field(default_factory=dict)
+    # a few per copy: a read-only snapshot rebuilt whole when a definition is added or dropped, never changed in
+    # place; an announcement's instants are its own slotted fields, updated in place (Pace, decision 45)
+    definitions: Mapping[str, AnnouncedDefinition] = field(default_factory=frozen)
     verified_publisher: bool = False
     holder_jkt: str | None = None
     proves_delegation: bool = False
@@ -428,8 +430,10 @@ class ToolEndpoint:
         digest = definition.digest
         held = self.definitions.get(digest)
         if held is None:
-            self.definitions[digest] = AnnouncedDefinition(
-                definition=definition, first_announced=now, last_announced=now
+            self.definitions = with_entry(
+                self.definitions,
+                digest,
+                AnnouncedDefinition(definition=definition, first_announced=now, last_announced=now),
             )
         elif now > held.last_announced:
             held.last_announced = now
@@ -445,10 +449,14 @@ class ToolEndpoint:
         for digest, announcement in incoming.items():
             held = self.definitions.get(digest)
             if held is None:
-                self.definitions[digest] = AnnouncedDefinition(
-                    definition=announcement.definition,
-                    first_announced=announcement.first_announced,
-                    last_announced=announcement.last_announced,
+                self.definitions = with_entry(
+                    self.definitions,
+                    digest,
+                    AnnouncedDefinition(
+                        definition=announcement.definition,
+                        first_announced=announcement.first_announced,
+                        last_announced=announcement.last_announced,
+                    ),
                 )
             else:
                 held.first_announced = min(held.first_announced, announcement.first_announced)
@@ -477,8 +485,8 @@ class ToolEndpoint:
         :rtype: list[str]
         """
         dropped = [digest for digest, held in self.definitions.items() if not held.is_live(now, ttl)]
-        for digest in dropped:
-            del self.definitions[digest]
+        if dropped:
+            self.definitions = without_entries(self.definitions, dropped)
         return dropped
 
     def to_dict(self) -> dict[str, Any]:
@@ -519,7 +527,7 @@ class ToolEndpoint:
             status=data.get("status", "unavailable"),
             in_flight=0,
             date_last_heartbeat=datetime.fromisoformat(data["date_last_heartbeat"]),
-            definitions={announcement.definition.digest: announcement for announcement in announcements},
+            definitions=frozen((announcement.definition.digest, announcement) for announcement in announcements),
             verified_publisher=data["verified_publisher"],
             holder_jkt=data.get("holder_jkt"),
             proves_delegation=data.get("proves_delegation", False),
@@ -597,7 +605,7 @@ class CatalogEntry:
     :param full_name: composite key as name@version
     :ptype full_name: str
     :param endpoints: list of pod endpoints serving this tool
-    :ptype endpoints: list[ToolEndpoint]
+    :ptype endpoints: Sequence[ToolEndpoint]
     :param date_registered: timestamp when tool was first registered
     :ptype date_registered: datetime
     """
@@ -605,7 +613,9 @@ class CatalogEntry:
     tool_name: str
     tool_version: str
     full_name: str
-    endpoints: list[ToolEndpoint] = field(default_factory=list)
+    # a few copies per tool: a tuple replaced whole when a copy is added, replaced or removed, never changed in place
+    # (Pace, decision 45)
+    endpoints: Sequence[ToolEndpoint] = ()
     date_registered: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -797,11 +807,12 @@ class CatalogEntry:
         :param endpoint: endpoint to add or update
         :ptype endpoint: ToolEndpoint
         """
-        for i, existing in enumerate(self.endpoints):
+        held = tuple(self.endpoints)
+        for i, existing in enumerate(held):
             if existing.pod_id == endpoint.pod_id:
-                self.endpoints[i] = endpoint
+                self.endpoints = (*held[:i], endpoint, *held[i + 1 :])
                 return
-        self.endpoints.append(endpoint)
+        self.endpoints = (*held, endpoint)
 
     def remove_endpoint(self, pod_id: str) -> bool:
         """remove endpoint for specified pod.
@@ -811,9 +822,10 @@ class CatalogEntry:
         :return: True if endpoint was found and removed, False otherwise
         :rtype: bool
         """
-        for i, endpoint in enumerate(self.endpoints):
+        held = tuple(self.endpoints)
+        for i, endpoint in enumerate(held):
             if endpoint.pod_id == pod_id:
-                self.endpoints.pop(i)
+                self.endpoints = held[:i] + held[i + 1 :]
                 return True
         return False
 

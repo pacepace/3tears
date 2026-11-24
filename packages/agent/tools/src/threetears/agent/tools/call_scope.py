@@ -48,7 +48,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Iterator
 from uuid import UUID
 
 from threetears.core.security.door_request import DoorCredential
@@ -57,6 +57,7 @@ from threetears.interfaces.media import ObjectStore
 from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
+    "CallCleanupHooks",
     "ContextFactory",
     "ToolCallScope",
     "build_call_scope",
@@ -74,6 +75,38 @@ if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
+
+
+class CallCleanupHooks:
+    """the cleanup hooks one call registered, in registration order.
+
+    The scope is frozen and reached by every coroutine (and ``to_thread`` worker) of its call, so its one changing
+    field lives here: a small, bounded tuple replaced whole on each add, never changed in place (Pace, decision 45),
+    so the dispatch task iterating it on a hard timeout never sees it change under it.
+    """
+
+    __slots__ = ("hooks",)
+
+    def __init__(self) -> None:
+        self.hooks: tuple[Callable[[], None], ...] = ()
+
+    def add(self, hook: Callable[[], None]) -> None:
+        """append ``hook``, replacing the tuple whole.
+
+        :param hook: zero-arg synchronous callback
+        :ptype hook: Callable[[], None]
+        :return: nothing
+        :rtype: None
+        """
+        self.hooks = (*self.hooks, hook)
+
+    def __iter__(self) -> Iterator[Callable[[], None]]:
+        """the hooks in registration order, from the snapshot held when iteration starts.
+
+        :return: an iterator over the hooks
+        :rtype: Iterator[Callable[[], None]]
+        """
+        return iter(self.hooks)
 
 
 @dataclass(frozen=True)
@@ -141,7 +174,7 @@ class ToolCallScope:
         process-group kill so a hard timeout REAPS the process instead of leaving
         an orphaned child holding memory. Empty on the normal path; never invoked
         when the tool returns on its own.
-    :ptype cleanup_hooks: list[Callable[[], None]]
+    :ptype cleanup_hooks: CallCleanupHooks
     """
 
     context: CallContext = field(default_factory=CallContext)
@@ -151,7 +184,7 @@ class ToolCallScope:
     engagement_resolver: "EngagementScopeResolver | None" = None
     principal_is_tool_pod: bool = False
     credential: DoorCredential | None = None
-    cleanup_hooks: list[Callable[[], None]] = field(default_factory=list)
+    cleanup_hooks: CallCleanupHooks = field(default_factory=CallCleanupHooks)
 
     def door_credential(self) -> DoorCredential | None:
         """what a tool presents at a platform door for this call.
@@ -315,7 +348,7 @@ def register_call_cleanup(hook: Callable[[], None]) -> None:
     scope = _current_scope.get()
     if scope is None:
         raise RuntimeError(no_call_scope_message("register_call_cleanup"))
-    scope.cleanup_hooks.append(hook)
+    scope.cleanup_hooks.add(hook)
 
 
 def get_current_context() -> ToolContextManager:

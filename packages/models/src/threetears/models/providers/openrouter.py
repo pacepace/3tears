@@ -59,8 +59,9 @@ SDK's reply and keeps only part of it (``cost``, ``cost_details``, and token cou
 from __future__ import annotations
 
 import copy
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextvars import ContextVar
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self
 
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -226,15 +227,16 @@ class _ReplySlot:
 
     :ivar usage: the ``usage`` seen and not yet put on a message, or ``None``
     :ptype usage: dict[str, Any] | None
-    :ivar response: the response-level fields seen and not yet put on a message
-    :ptype response: dict[str, Any]
+    :ivar response: the response-level fields seen and not yet put on a message: a read-only snapshot replaced whole,
+        never changed in place, since the slot outlives the call that made it (Pace, decision 45)
+    :ptype response: Mapping[str, Any]
     """
 
     __slots__ = ("response", "usage")
 
     def __init__(self) -> None:
         self.usage: dict[str, Any] | None = None
-        self.response: dict[str, Any] = {}
+        self.response: Mapping[str, Any] = MappingProxyType({})
 
     def observe(self, reply: Any) -> None:  # noqa: ANN401 -- an SDK ChatResult or ChatStreamChunk
         """keep what ``reply`` sent: its ``usage``, and its response-level fields that carry a value.
@@ -255,9 +257,9 @@ class _ReplySlot:
         usage = sent.get("usage")
         if isinstance(usage, dict):
             self.usage = usage
-        for name in _RESPONSE_FIELDS:
-            if sent.get(name) is not None:
-                self.response[name] = sent[name]
+        seen = {name: sent[name] for name in _RESPONSE_FIELDS if sent.get(name) is not None}
+        if seen:
+            self.response = MappingProxyType({**self.response, **seen})
 
     def pending(self) -> bool:
         """whether something seen has not yet been put on a message.
@@ -277,9 +279,9 @@ class _ReplySlot:
         if self.usage is not None:
             keys["openrouter_usage"] = self.usage
         if self.response:
-            keys["openrouter_response"] = self.response
+            keys["openrouter_response"] = dict(self.response)
         self.usage = None
-        self.response = {}
+        self.response = MappingProxyType({})
         return keys
 
     def mark_chunk(self, chunk: ChatGenerationChunk) -> ChatGenerationChunk:

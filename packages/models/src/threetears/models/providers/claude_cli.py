@@ -1176,8 +1176,8 @@ class _StructuredAttempts:
         self._inputs: Mapping[str, dict[str, Any]] = MappingProxyType({})
         self.rejected_output: dict[str, Any] | None = None
         self.rejection: str | None = None
-        #: Every attempt the CLI rejected, oldest first.
-        self.rejected: list[dict[str, Any]] = []
+        #: Every attempt the CLI rejected, oldest first: a tuple replaced whole, never changed in place.
+        self.rejected: tuple[dict[str, Any], ...] = ()
 
     def saw(self, blocks: list[Any]) -> None:
         """Note every ``StructuredOutput`` call among an assistant message's blocks.
@@ -1201,7 +1201,7 @@ class _StructuredAttempts:
             if isinstance(block, ToolResultBlock) and block.is_error and block.tool_use_id in self._inputs:
                 self.rejected_output = self._inputs[block.tool_use_id]
                 self.rejection = _content_text(block.content) or None
-                self.rejected.append(self.rejected_output)
+                self.rejected = (*self.rejected, self.rejected_output)
 
 
 #: The tool-call template placeholders the model leaks as a parameter name, wrapping a whole

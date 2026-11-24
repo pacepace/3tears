@@ -222,7 +222,8 @@ class _RoomConnection:
     :ivar websocket: the live socket
     :ivar user_id: authenticated principal
     :ivar customer_id: the principal's customer
-    :ivar joined_rooms: rooms this connection is currently a member of
+    :ivar joined_rooms: rooms this connection is currently a member of: a frozenset replaced whole, never changed in
+        place, since evictions reach it from outside the socket's own loop (Pace, decision 45)
     :ivar lock: serializes room actions and evictions on this connection
     :ivar expires_at: unix seconds at which the connection's credential expires (the validator's
         ``exp`` claim), or ``None`` when the validator reported none
@@ -237,7 +238,7 @@ class _RoomConnection:
     websocket: Any
     user_id: str
     customer_id: str
-    joined_rooms: set[str] = field(default_factory=set)
+    joined_rooms: frozenset[str] = frozenset()
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     expires_at: float | None = None
     heard_from_peer: bool = True
@@ -752,7 +753,7 @@ class WebSocketHandler:
             # a room it already left is not left a second time.
             async with connection.lock:
                 rooms_to_leave = sorted(connection.joined_rooms)
-                connection.joined_rooms.clear()
+                connection.joined_rooms = frozenset()
                 if self._room_fanout is not None:
                     for room_id in rooms_to_leave:
                         try:
@@ -1418,7 +1419,7 @@ class WebSocketHandler:
         if frame.type == "join":
             await self._handle_join(websocket, frame, connection_id, connection)
         elif frame.type == "leave":
-            await self._handle_leave(frame, connection_id, connection.joined_rooms)
+            await self._handle_leave(frame, connection_id, connection)
         elif frame.type == "editor.op":
             await self._handle_editor_op(websocket, frame, connection)
         elif frame.type in _TRANSIENT_FRAME_TYPES:
@@ -1535,9 +1536,9 @@ class WebSocketHandler:
         if room_id in connection.joined_rooms:
             return
         await self._room_fanout.join_room(room_id, connection_id, connection.user_id, connection.customer_id)
-        connection.joined_rooms.add(room_id)
+        connection.joined_rooms = connection.joined_rooms | {room_id}
 
-    async def _handle_leave(self, frame: Frame, connection_id: str, joined_rooms: set[str]) -> None:
+    async def _handle_leave(self, frame: Frame, connection_id: str, connection: _RoomConnection) -> None:
         """remove the connection from a room it joined (task-02).
 
         leave is not authorization-gated — a member may always drop their
@@ -1547,14 +1548,14 @@ class WebSocketHandler:
         :ptype frame: Frame
         :param connection_id: this socket's stable id
         :ptype connection_id: str
-        :param joined_rooms: connection-local joined-room set (mutated)
-        :ptype joined_rooms: set[str]
+        :param connection: the connection, whose joined rooms lose the room
+        :ptype connection: _RoomConnection
         """
         room_id = frame.room
         if room_id is None or self._room_fanout is None:
             return
         await self._room_fanout.leave_room(room_id, connection_id)
-        joined_rooms.discard(room_id)
+        connection.joined_rooms = connection.joined_rooms - {room_id}
 
     async def _handle_editor_op(self, websocket: Any, frame: Frame, connection: _RoomConnection) -> None:
         """authorize ``entry.write``, append durably, then broadcast with the seq.
@@ -1840,7 +1841,7 @@ class WebSocketHandler:
         :return: nothing
         :rtype: None
         """
-        connection.joined_rooms.discard(room_id)
+        connection.joined_rooms = connection.joined_rooms - {room_id}
         if self._room_fanout is not None:
             await self._room_fanout.leave_room(room_id, connection_id)
         await _safe_send(

@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from threetears.core.frozen_state import without_entry
 from threetears.core.tool_wire import RegistrationManifest, ToolManifestEntry
 from threetears.core.testing.kv import FakeKvBucket
 from threetears.nats import IncomingMessage, set_default_namespace
@@ -358,7 +359,7 @@ async def test_a_write_that_failed_is_tried_again_on_the_next_registration() -> 
     assert held is not None
     copy = held.get_endpoint(_POD)
     assert copy is not None
-    del copy.definitions[second.digest]
+    copy.definitions = without_entry(copy.definitions, second.digest)
 
     await catalog.register(entry("threetears.calculator", "1.0.0", endpoint(_POD, tool_definition=first, first=now)))
 

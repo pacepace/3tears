@@ -239,16 +239,18 @@ class ToolContextManager:
         self.agent_id = agent_id
 
         # Local projection of collection data for this conversation.
-        # Populated by load_context(), updated by write methods.
-        self.items: list[dict[str, Any]] = []
+        # Populated by load_context(), updated by write methods. Bounded (the variable cap and the result LRU) and read
+        # across awaits, so a tuple replaced whole on each change, never changed in place (Pace, decision 45).
+        self.items: Sequence[dict[str, Any]] = ()
 
         # Ordered projection of surfaced memory-ref rows (FIFO), mirror
         # of the rows persisted via :class:`MemoryRefsCollection`. The
         # list preserves insertion order so the prompt renders items
         # chronologically and FIFO eviction drops the oldest first.
         # Each entry is a dict with keys
-        # ``{item_id, item_type, short_desc, date_added}``.
-        self._memory_refs_projection: list[dict[str, Any]] = []
+        # ``{item_id, item_type, short_desc, date_added}``. Capped at the FIFO capacity: a tuple replaced whole on each
+        # change, never changed in place (Pace, decision 45).
+        self._memory_refs_projection: Sequence[dict[str, Any]] = ()
 
         # Workflow state (transient, single-turn, in-memory only): a read-only snapshot replaced whole on each change
         self._workflow: Mapping[str, Any] | None = None
@@ -267,29 +269,27 @@ class ToolContextManager:
         projection stays empty and surfacing operations become no-ops.
         """
         entities = await self._collection.find_by_conversation(self.conversation_id, self.agent_id)
-        self.items = []
-        for entity in entities:
-            self.items.append(entity.to_dict())
-        self._memory_refs_projection = []
+        self.items = tuple(entity.to_dict() for entity in entities)
+        self._memory_refs_projection = ()
         # the constructor refuses a refs collection without an agent; the agent check only narrows the type
         if self._memory_refs is not None and self.agent_id is not None:
             refs = await self._memory_refs.find_by_conversation(
                 self.conversation_id,
                 self.agent_id,
             )
-            for ref in refs:
-                # entity.date_created post-v014 (was date_added pre-rename).
-                # the in-memory projection key stays "date_added" because
-                # the prompt-builder format references it; the in-memory
-                # dict shape is decoupled from the L3 column names.
-                self._memory_refs_projection.append(
-                    {
-                        "item_id": str(ref.item_id),
-                        "item_type": ref.item_type,
-                        "short_desc": ref.short_desc,
-                        "date_added": ref.date_created.isoformat() if ref.date_created else "",
-                    },
-                )
+            # entity.date_created post-v014 (was date_added pre-rename).
+            # the in-memory projection key stays "date_added" because
+            # the prompt-builder format references it; the in-memory
+            # dict shape is decoupled from the L3 column names.
+            self._memory_refs_projection = tuple(
+                {
+                    "item_id": str(ref.item_id),
+                    "item_type": ref.item_type,
+                    "short_desc": ref.short_desc,
+                    "date_added": ref.date_created.isoformat() if ref.date_created else "",
+                }
+                for ref in refs
+            )
 
     # ------------------------------------------------------------------
     # Variables
@@ -338,9 +338,9 @@ class ToolContextManager:
         context_id_str = str(returned_id)  # convert at border: tool-facing context-id string handle returned to caller
 
         # Update local projection
-        self.items = [i for i in self.items if not (i["context_type"] == "variable" and i["key"] == key)]
+        self.items = tuple(i for i in self.items if not (i["context_type"] == "variable" and i["key"] == key))
         data["context_id"] = returned_id
-        self.items.append(data)
+        self.items = (*self.items, data)
 
         return context_id_str
 
@@ -370,7 +370,7 @@ class ToolContextManager:
         if target is None:
             return False
 
-        self.items = [i for i in self.items if i is not target]
+        self.items = tuple(i for i in self.items if i is not target)
         await self._collection.delete((self.conversation_id, target["context_id"]))
         return True
 
@@ -535,8 +535,8 @@ class ToolContextManager:
             )
             if first_written is not None:
                 data["date_created"] = first_written
-            self.items = [i for i in self.items if i.get("context_id") != returned_id]
-        self.items.append(data)
+            self.items = tuple(i for i in self.items if i.get("context_id") != returned_id)
+        self.items = (*self.items, data)
 
         # LRU eviction
         if self._result_limit is not None:
@@ -552,7 +552,7 @@ class ToolContextManager:
                     )
                 }
                 if evicted_ids:
-                    self.items = [i for i in self.items if str(i["context_id"]) not in evicted_ids]
+                    self.items = tuple(i for i in self.items if str(i["context_id"]) not in evicted_ids)
 
         return str(returned_id)  # convert at border: tool-facing context-id string handle returned to caller
 
@@ -669,7 +669,7 @@ class ToolContextManager:
         # every storage tier (local projection, L1, L2, L3).
         existing = await self.get_item_by_type_and_key(context_type, key)
         if existing is not None:
-            self.items = [i for i in self.items if i is not existing]
+            self.items = tuple(i for i in self.items if i is not existing)
             await self._collection.delete(
                 (self.conversation_id, existing["context_id"]),
             )
@@ -697,7 +697,7 @@ class ToolContextManager:
                 collection=self._collection,
             )
         )
-        self.items.append(data)
+        self.items = (*self.items, data)
         return str(context_id)  # convert at border: tool-facing context-id string handle returned to caller
 
     async def delete_item_by_type_and_key(
@@ -722,7 +722,7 @@ class ToolContextManager:
         if existing is None:
             result = False
         else:
-            self.items = [i for i in self.items if i is not existing]
+            self.items = tuple(i for i in self.items if i is not existing)
             await self._collection.delete(
                 (self.conversation_id, existing["context_id"]),
             )
@@ -755,7 +755,7 @@ class ToolContextManager:
         await self._collection.save_entity(
             self._collection.entity_class(data, is_new=True, collection=self._collection)
         )
-        self.items.append(data)
+        self.items = (*self.items, data)
         return str(context_id)  # convert at border: tool-facing context-id string handle returned to caller
 
     def get_slots(self) -> dict[str, dict[str, Any]]:
@@ -910,7 +910,8 @@ class ToolContextManager:
         now = datetime.now(UTC)
 
         if len(self._memory_refs_projection) >= _MEMORY_REF_FIFO_CAPACITY:
-            oldest = self._memory_refs_projection.pop(0)
+            oldest = self._memory_refs_projection[0]
+            self._memory_refs_projection = self._memory_refs_projection[1:]
             if self._memory_refs is not None:
                 await self._memory_refs.delete(
                     (self.conversation_id, UUID(oldest["item_id"])),
@@ -920,7 +921,8 @@ class ToolContextManager:
         # purpose: the prompt-builder format already references this
         # key and the in-memory dict is not the L3 schema. canonical
         # storage uses ``date_created`` / ``date_updated`` per v014.
-        self._memory_refs_projection.append(
+        self._memory_refs_projection = (
+            *self._memory_refs_projection,
             {
                 "item_id": item_id,
                 "item_type": item_type,

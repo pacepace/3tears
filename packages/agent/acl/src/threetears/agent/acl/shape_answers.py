@@ -200,7 +200,8 @@ class ShapeDependencies:
         # changed, so each change rebuilds the snapshots whole
         self._changed: Mapping[str, Mapping[str, _Generation]] = EMPTY
         self._fence = 0
-        self._listeners: list[Callable[[frozenset[str] | None], None]] = []
+        # small and bounded (a listener per watcher): a tuple replaced whole, never changed in place (decision 45)
+        self._listeners: tuple[Callable[[frozenset[str] | None], None], ...] = ()
         self._watching: Callable[[], bool] | None = None
         self._lock = threading.Lock()
 
@@ -274,11 +275,13 @@ class ShapeDependencies:
         :return: a call that removes it
         :rtype: Callable[[], None]
         """
-        self._listeners.append(listener)
+        self._listeners = (*self._listeners, listener)
 
         def remove() -> None:
-            if listener in self._listeners:
-                self._listeners.remove(listener)
+            held = self._listeners
+            if listener in held:
+                at = held.index(listener)
+                self._listeners = held[:at] + held[at + 1 :]
 
         return remove
 
