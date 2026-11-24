@@ -82,36 +82,6 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="SharedArrowStore",
-        attr_name="_part_keys",
-        rationale=(
-            "each part file of this process's own memory-backed store by its (device, inode), so the byte tally "
-            "drops it as a sweep removes it; derived from the files the store wrote, as local, and recorded afresh "
-            "at a restart"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="_HeldFiles",
-        attr_name="_dirs",
-        rationale=(
-            "each directory of this process's own memory-backed store with the files (device, inode, bytes) it "
-            "held as it took its name, so a status read counts them without walking the directory; another pod "
-            "has nothing to do with them, and a restart records afresh what the directory holds"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/shared_arrow.py",
-        class_name="_HeldFiles",
-        attr_name="_links",
-        rationale=(
-            "how many of this store's directories hold each file (by device and inode), so a hard-linked file is "
-            "counted once and its bytes go with its last directory; derived from _dirs, as local and as "
-            "short-lived"
-        ),
-    ),
-    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/builtin/analyze_media.py",
         class_name="AnalyzeMediaTool",
         attr_name="_analyzers",
