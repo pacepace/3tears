@@ -2758,6 +2758,36 @@ class _ConnectionHealth:
         self.refused_publishes = MappingProxyType({**dict(kept), subject: time.monotonic()})
 
 
+def _without_first[T](held: tuple[T, ...], item: T) -> tuple[T, ...]:
+    """``held`` without its first ``item``, as a new tuple; ``held`` itself when ``item`` is not in it.
+
+    :param held: the tuple
+    :ptype held: tuple
+    :param item: what to leave out
+    :ptype item: Any
+    :return: the new tuple
+    :rtype: tuple
+    """
+    if item not in held:
+        return held
+    at = held.index(item)
+    return held[:at] + held[at + 1 :]
+
+
+class _ReconnectHooks:
+    """the consumer-registered post-reconnect hooks, in the order they run.
+
+    Shared by an opener's every reconnect dispatcher and the client that adopts it, so a hook registered after
+    connect is dispatched on the next reconnect. A small, bounded tuple replaced whole on each change, never changed
+    in place (Pace, decision 45): a dispatch iterating the hooks never sees them change under it.
+    """
+
+    __slots__ = ("held",)
+
+    def __init__(self) -> None:
+        self.held: tuple[ReconnectCallback, ...] = ()
+
+
 class _ConnectionOpener:
     """opens a connection the way :meth:`NatsClient.connect` opened the first one.
 
@@ -2824,10 +2854,10 @@ class _ConnectionOpener:
         self._primary_url = primary_url
         self._client_name = client_name
         # nats-py reads its single ``reconnected_cb`` slot at reconnect time; the dispatcher below
-        # closes over this list, which the client adopts, so a consumer callback registered through
+        # closes over this holder, which the client adopts, so a consumer callback registered through
         # :meth:`NatsClient.add_reconnect_callback` is dispatched on every reconnect of every
         # current connection.
-        self.reconnect_callbacks: list[ReconnectCallback] = []
+        self.reconnect_callbacks = _ReconnectHooks()
         # shared by every connection's error/reconnect dispatchers and read by :attr:`NatsClient.is_healthy`
         # and :meth:`NatsClient.publish_refused_since`: a refused request is never answered, so its caller's
         # deadline is the only other sign of it
@@ -2884,7 +2914,7 @@ class _ConnectionOpener:
             # name what the last one did not: a refusal it heard says nothing of this one
             health.clear()
             await _on_reconnected()
-            for callback in list(reconnect_callbacks):
+            for callback in reconnect_callbacks.held:
                 try:
                     await callback()
                 except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
@@ -3339,11 +3369,13 @@ class NatsClient:
         # (:func:`with_reply_route`, which states the cost), so no coroutine sees it change under it.
         self._reply_routes: Mapping[str, _NatsPyClient] = MappingProxyType({})
         # durable push consumers, which a handover moves by rebinding the durable on the successor.
-        self._push_consumers: list[JetStreamPushConsumer] = []
+        # small and bounded (a durable per consumer this client binds): a tuple replaced whole, never changed in place
+        # (Pace, decision 45), like the other two lists below
+        self._push_consumers: tuple[JetStreamPushConsumer, ...] = ()
         # durable pull consumers, which a restoration after a reconnect binds again when the server
         # lost their durable (:meth:`_restore_once`). a handover needs no list of them: each follows
         # the current connection at its next fetch.
-        self._pull_consumers: list[JetStreamPullConsumer] = []
+        self._pull_consumers: tuple[JetStreamPullConsumer, ...] = ()
         # every stream this client DECLARED -- through :meth:`ensure_jetstream_stream`, and the backing
         # stream of every bucket declared through :meth:`ensure_kv_bucket` -- keyed by stream name,
         # carrying the exact config it was declared with, WHATEVER its storage. a NATS restart deletes
@@ -3386,7 +3418,7 @@ class NatsClient:
         # renewal loop's own: the longest request this client makes, which :meth:`renew_credential`
         # states when the owner arms it.
         self._longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS
-        self._subscriptions: list[Subscription] = []
+        self._subscriptions: tuple[Subscription, ...] = ()
         self._buckets: Mapping[str, NatsKvBucket] = MappingProxyType({})
         # one lock PER BUCKET NAME, serializing the opens of that bucket only: a bind-only open of an
         # absent bucket waits for its declarer (up to KvTimings.bind_wait_for_declarer_seconds), and a
@@ -3395,8 +3427,8 @@ class NatsClient:
         self._kv_locks: Mapping[str, asyncio.Lock] = MappingProxyType({})
         # consumer-registered post-reconnect hooks. nats-py exposes a SINGLE reconnect callback slot
         # (wired in :meth:`connect` to a dispatcher that fans out to this list), so the wrapper owns
-        # the fan-out here. :meth:`connect` rebinds this to the same list the dispatcher closes over.
-        self._reconnect_callbacks: list[ReconnectCallback] = []
+        # the fan-out here. :meth:`connect` rebinds this to the same holder the dispatcher closes over.
+        self._reconnect_callbacks = _ReconnectHooks()
         # the liveness signals (:meth:`is_healthy`) and refused subjects (:meth:`publish_refused_since`);
         # :meth:`connect` rebinds this to the one its connections' error/reconnect dispatchers write, so
         # the counts reflect the live connection
@@ -3615,7 +3647,7 @@ class NatsClient:
         # a server shutting down (a rolling restart) tells its clients first; this one moves to a
         # successor then, the way a renewal does, instead of losing what is in flight to a reconnect.
         opener.lame_duck_handler = client._move_off_lame_duck_server
-        # adopt the SAME list and dict every connection's callbacks close over, so an
+        # adopt the SAME hooks and health every connection's callbacks close over, so an
         # ``add_reconnect_callback`` append is dispatched on the next reconnect and
         # :attr:`is_healthy` reads the live counts.
         client._reconnect_callbacks = opener.reconnect_callbacks
@@ -3623,7 +3655,8 @@ class NatsClient:
         # FIRST in the list, ahead of every consumer hook: what a NATS restart wiped is put back
         # before anything registered later runs against it. it only starts a task, so it never
         # holds up the hooks after it.
-        client._reconnect_callbacks.insert(0, client._restore_after_reconnect)
+        hooks = client._reconnect_callbacks
+        hooks.held = (client._restore_after_reconnect, *hooks.held)
         return client
 
     def add_reconnect_callback(self, callback: ReconnectCallback) -> None:
@@ -3646,7 +3679,8 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        self._reconnect_callbacks.append(callback)
+        hooks = self._reconnect_callbacks
+        hooks.held = (*hooks.held, callback)
 
     async def _restore_after_reconnect(self) -> None:
         """start putting back what a NATS restart may have wiped; registered first by :meth:`connect`.
@@ -3746,8 +3780,8 @@ class NatsClient:
             # refill still owed from an earlier round -- one that raised, or was cancelled -- is
             # taken up here too.
             self._start_refills()
-        self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
-        self._pull_consumers = [consumer for consumer in self._pull_consumers if not consumer.is_stopped]
+        self._push_consumers = tuple(consumer for consumer in self._push_consumers if not consumer.is_closed)
+        self._pull_consumers = tuple(consumer for consumer in self._pull_consumers if not consumer.is_stopped)
         durables: list[JetStreamPushConsumer | JetStreamPullConsumer] = [*self._push_consumers, *self._pull_consumers]
         for consumer in durables:
             try:
@@ -4504,7 +4538,7 @@ class NatsClient:
                     sub.move_to(raw_sub, successor, hold=min(hold, retire_after).total_seconds())
                     for sub, raw_sub in moving
                 ]
-                self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
+                self._push_consumers = tuple(consumer for consumer in self._push_consumers if not consumer.is_closed)
                 js = successor.jetstream()
                 handovers.extend(
                     asyncio.create_task(consumer.move_to(js, successor), name=f"nats-handover:{consumer.durable}")
@@ -5812,7 +5846,7 @@ class NatsClient:
                 feed=feed,
                 connection=connection,
             )
-            self._subscriptions.append(sub)
+            self._subscriptions = (*self._subscriptions, sub)
 
         # the SUB is only in nats-py's pending buffer when connection.subscribe returns, so a
         # message published at once -- a request from another connection, say -- could reach a
@@ -5896,8 +5930,7 @@ class NatsClient:
                 what="dispatch task raised while unwinding",
                 extra={"subject": sub.subject.path, "error": str(exc)},
             )
-        if sub in self._subscriptions:
-            self._subscriptions.remove(sub)
+        self._subscriptions = _without_first(self._subscriptions, sub)
 
     async def drain(self, sub: Subscription, *, timeout: float) -> bool:
         """end a subscription without dropping what it was given: the server stops routing to it, every message
@@ -5949,8 +5982,7 @@ class NatsClient:
             )
             await _unsubscribe_quietly(raw_subscription, subject=sub.subject)
         await cancel_and_wait(sub.dispatch_task)
-        if sub in self._subscriptions:
-            self._subscriptions.remove(sub)
+        self._subscriptions = _without_first(self._subscriptions, sub)
         return drained
 
     # ------------------------------------------------------------------
@@ -6965,7 +6997,7 @@ class NatsClient:
                 connection=connection,
                 stream=stream,
             )
-            self._push_consumers.append(consumer)
+            self._push_consumers = (*self._push_consumers, consumer)
         log.info(
             "jetstream durable consumer subscribed: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s",
             subject.path,
@@ -7242,8 +7274,7 @@ class NatsClient:
         )
         # stopped handles leave as new ones arrive, so a process that binds and stops consumers for
         # its whole life without ever reconnecting does not keep every one it ever made.
-        self._pull_consumers = [held for held in self._pull_consumers if not held.is_stopped]
-        self._pull_consumers.append(consumer)
+        self._pull_consumers = (*(held for held in self._pull_consumers if not held.is_stopped), consumer)
         log.info(
             "jetstream pull consumer bound: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s batch=%d",
             subject.path,
