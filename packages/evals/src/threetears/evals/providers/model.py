@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import cache
+from types import MappingProxyType
 from typing import Any, Final, Self, get_args
 
 import httpx
@@ -449,8 +450,9 @@ class _Live:
         self._timeout = _REQUEST_TIMEOUT if timeout is None else timeout
         self._headers = dict(headers) if headers is not None else None
         self._opened: httpx.AsyncClient | None = None
-        self._logged: set[tuple[str, ...]] = set()
-        self._unbounded: set[str] = set()
+        # The distinct notes and reasons logged once each: a handful per model, so frozensets grown whole.
+        self._logged: frozenset[tuple[str, ...]] = frozenset()
+        self._unbounded: frozenset[str] = frozenset()
         #: What the last :meth:`refresh_prices` found, or ``None`` before the first.
         self.last_refresh: PriceRefresh | None = None
         #: The catalogue read this model's last ``refresh_prices`` made, belonging to the task that made it
@@ -531,7 +533,7 @@ class _Live:
 
     def _log_moves(self, notes: tuple[str, ...]) -> None:
         if notes and notes not in self._logged:
-            self._logged.add(notes)
+            self._logged = self._logged | {notes}
             log.info(
                 "eval.providers sends the closest settings the model takes provider=%s model=%s: %s",
                 self.provider,
@@ -929,7 +931,7 @@ class _Live:
     def _unbounded_because(self, why: str) -> None:
         """No ceiling, logged at WARNING once per reason: an enforced cap holds such a call against nothing."""
         if why not in self._unbounded:
-            self._unbounded.add(why)
+            self._unbounded = self._unbounded | {why}
             log.warning(
                 "eval.providers price_ceiling cannot bound a call provider=%s model=%s: %s",
                 self.provider,
@@ -1727,7 +1729,8 @@ class Clients:
         self.catalogue = catalogue if catalogue is not None else Catalogue()
         self._http = http
         self._owned_http = http if own_http else None
-        self._models: dict[tuple[str, str, float | None], Model] = {}
+        # One model per (role, model, temperature) a run asks for (a handful), so a frozen map rebuilt whole.
+        self._models: Mapping[tuple[str, str, float | None], Model] = MappingProxyType({})
 
     def __call__(
         self, role: CompletionRole, model: str | None, *, temperature: float | None = None
@@ -1767,7 +1770,7 @@ class Clients:
                     catalogue=self.catalogue,
                     http=self._http,
                 )
-            self._models[key] = built
+            self._models = MappingProxyType({**self._models, key: built})
         return _Lease(built)
 
     async def refresh_prices(self) -> PriceRefresh:
@@ -1876,7 +1879,7 @@ class Clients:
 
         :raises ExceptionGroup: One or more models, or the client, failed to close.
         """
-        models, self._models = list(self._models.values()), {}
+        models, self._models = list(self._models.values()), MappingProxyType({})
         owned, self._owned_http = self._owned_http, None
         failures: list[Exception] = []
         for model in models:

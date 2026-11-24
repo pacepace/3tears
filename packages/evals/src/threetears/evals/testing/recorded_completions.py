@@ -293,6 +293,10 @@ class ReplayedCompletion:
 #: What a recording holds under one key: the request settings it was recorded under, and its calls in index order.
 _Recorded = tuple[ClientRequestSettings | None, list[ReplayedCompletion]]
 
+#: What a client holds under one key, as :data:`_Recorded`, its calls a tuple: the client's maps are frozen values,
+#: rebuilt whole on each append.
+_Held = tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]
+
 #: The one model a recording holds calls of, and the one temperature they were sent at.
 _Client = tuple[str, float | None]
 
@@ -364,28 +368,32 @@ class RecordedCompletions:
         self.mode: Literal["record", "replay"] = "replay" if inner is None else "record"
         self._inner = inner
         self._settings = settings
-        self._recorded = {key: (held, list(calls)) for key, (held, calls) in recorded.items()}
+        # One recording's keys, calls and cells (tens to hundreds), so every map and set below is a frozen value rebuilt
+        # whole on each change, under the lock.
+        self._recorded: Mapping[str, _Held] = MappingProxyType(
+            {key: (held, tuple(calls)) for key, (held, calls) in recorded.items()}
+        )
         #: The cell each recorded call names, by key in index order (``None`` for a call that names none). Built empty
         #: here; :meth:`record` and :meth:`replay` set it from the file they read.
-        self._cells: dict[str, list[_CellAsk | None]] = {
-            key: [None] * len(calls) for key, (_, calls) in recorded.items()
-        }
+        self._cells: Mapping[str, Sequence[_CellAsk | None]] = MappingProxyType(
+            {key: (None,) * len(calls) for key, (_, calls) in recorded.items()}
+        )
         #: Replaying, the head of each key's user message, as the file keeps it: what a miss names its nearest by. Set by
         #: :meth:`replay`.
         self._heads: dict[str, str] = {}
         #: Replaying, how many times each cell has asked each key, so a cell's second ask of a prompt is served its
         #: second call.
-        self._asks: dict[tuple[str, _CellCoordinates], int] = {}
+        self._asks: Mapping[tuple[str, _CellCoordinates], int] = MappingProxyType({})
         #: Recording, the ask number each cell's next ask of each prompt (by its digest) takes, given as it is asked.
-        self._next_ask: dict[tuple[str, _CellCoordinates], int] = {}
+        self._next_ask: Mapping[tuple[str, _CellCoordinates], int] = MappingProxyType({})
         #: Replaying, each cell line (a cell less its repeat) that matches none the recording names, bound to the
         #: recorded line it stands for: the one line its first unmatched ask could only have been (:meth:`_index_of`).
-        self._bound: dict[_CellLine, _CellLine] = {}
+        self._bound: Mapping[_CellLine, _CellLine] = MappingProxyType({})
         #: Replaying, every recorded line a cell has asked as itself: never bound to a cell that matches none.
-        self._live: set[_CellLine] = set()
+        self._live: frozenset[_CellLine] = frozenset()
         self._remedy = _rerecord_remedy(path, rerecord)
         #: Each key's served calls, by index, with the eval run each went to (None outside every one).
-        self._taken: dict[str, dict[int, RunningEval | None]] = {}
+        self._taken: Mapping[str, Mapping[int, RunningEval | None]] = MappingProxyType({})
         self._lock = threading.Lock()
         # The file's size when this client last read or wrote it: a different size on disk means another client in
         # this process appended to it, or it was removed, and the indexes are read again before the next append.
@@ -431,7 +439,7 @@ class RecordedCompletions:
         path.parent.mkdir(parents=True, exist_ok=True)
         recorded, cells, _ = _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else ({}, {}, {})
         client = cls(path, inner=inner, settings=settings, recorded=recorded)
-        client._cells = cells
+        client._cells = MappingProxyType(cells)
         return client
 
     @classmethod
@@ -459,7 +467,7 @@ class RecordedCompletions:
         """
         recorded, cells, heads = _readable_replay(path, _rerecord_remedy(path, rerecord))
         client = cls(path, inner=None, settings=settings, recorded=recorded, rerecord=rerecord)
-        client._cells = cells
+        client._cells = MappingProxyType(cells)
         client._heads = heads
         return client
 
@@ -613,7 +621,7 @@ class RecordedCompletions:
                     key = _call_key(system, user, response_format, model, temperature, self._settings)
                     held = [tag.ask for tag in self._cells.get(key, []) if tag is not None and tag[:4] == coordinates]
                     ask = max(held, default=-1) + 1
-            self._next_ask[(prompt, coordinates)] = ask + 1
+            self._next_ask = MappingProxyType({**self._next_ask, (prompt, coordinates): ask + 1})
         return _CellAsk(*coordinates, ask)
 
     def _serve(self, system: str, user: str, response_format: dict[str, Any] | None) -> ReplayedCompletion:
@@ -640,11 +648,11 @@ class RecordedCompletions:
         asking = running_eval()
         with self._lock:
             _, calls = self._recorded[key]
-            taken = self._taken.setdefault(key, {})
+            taken = self._taken.get(key, MappingProxyType({}))
             index = self._index_of(key, cell, user)
             if index is None:
                 raise self._spent(user, len(calls), taken.values(), asking)
-            taken[index] = asking
+            self._taken = MappingProxyType({**self._taken, key: MappingProxyType({**taken, index: asking})})
         return calls[index]
 
     def _index_of(self, key: str, cell: CellIdentity | None, user: str) -> int | None:
@@ -680,10 +688,10 @@ class RecordedCompletions:
         ask = 0
         if coordinates is not None:
             ask = self._asks.get((key, coordinates), 0)
-            self._asks[(key, coordinates)] = ask + 1
+            self._asks = MappingProxyType({**self._asks, (key, coordinates): ask + 1})
             line = coordinates[:3]
             if line in self._lines():
-                self._live.add(line)
+                self._live = self._live | {line}
                 if (bound := next((by for by, to in self._bound.items() if to == line), None)) is not None:
                     raise RecordingRefused(
                         self.path,
@@ -752,7 +760,7 @@ class RecordedCompletions:
                 + ": its calls are not this cell's",
                 self._remedy,
             )
-        self._bound[line] = stands_for
+        self._bound = MappingProxyType({**self._bound, line: stands_for})
         recorded = _ranked(tags, (*stands_for, repeat))
         return recorded[ask] if recorded[ask] not in taken else None
 
@@ -796,9 +804,8 @@ class RecordedCompletions:
         key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings)
         with _APPEND_LOCK, self._lock:
             if _file_size(self.path) != self._size:
-                self._recorded, self._cells, _ = (
-                    _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {}, {})
-                )
+                reread, cells, _ = _read_recording(self.path, self._remedy) if self.path.exists() else ({}, {}, {})
+                self._recorded, self._cells = MappingProxyType(dict(reread)), MappingProxyType(cells)
             if self._recorded and (held := _client_of(self._recorded)) != (members["model"], members["temperature"]):
                 raise RecordingRefused(
                     self.path,
@@ -806,8 +813,8 @@ class RecordedCompletions:
                     f"{members['model']!r} at {members['temperature']!r}: a recording holds one model at one temperature",
                     "record this client into a file of its own",
                 )
-            _, calls = self._recorded.setdefault(key, (self._settings, []))
-            tags = self._cells.setdefault(key, [])
+            kept, calls = self._recorded.get(key, (self._settings, ()))
+            tags = self._cells.get(key, ())
             line = {
                 "recorder_version": _FORMAT_VERSION,
                 "recorded_at": datetime.now(UTC).isoformat(),
@@ -822,8 +829,10 @@ class RecordedCompletions:
             }
             with self.path.open("a", encoding="utf-8") as recording:
                 recording.write(json.dumps(line, ensure_ascii=False, allow_nan=False) + "\n")
-            calls.append(_completion_of(members, sent, extra))
-            tags.append(tag)
+            self._recorded = MappingProxyType(
+                {**self._recorded, key: (kept, (*calls, _completion_of(members, sent, extra)))}
+            )
+            self._cells = MappingProxyType({**self._cells, key: (*tags, tag)})
             self._size = _file_size(self.path)
 
     async def refresh_prices(self) -> None:
@@ -961,14 +970,14 @@ def _readable_replay(path: Path, remedy: str) -> _Read:
     return read
 
 
-def _client_of(recorded: Mapping[str, _Recorded]) -> _Client:
+def _client_of(recorded: Mapping[str, _Held]) -> _Client:
     """The one model and temperature a non-empty recording's calls hold (:func:`_read_recording` holds it to one)."""
     first = next(call for _, calls in recorded.values() for call in calls)
     return first.model, first.temperature
 
 
 def _lookup(
-    recorded: Mapping[str, _Recorded], prompt: RecordedPrompt, settings: ClientRequestSettings | None
+    recorded: Mapping[str, _Held], prompt: RecordedPrompt, settings: ClientRequestSettings | None
 ) -> tuple[str | None, list[ClientRequestSettings | None]]:
     """The key ``prompt`` is recorded under for ``settings``; else ``None`` and every other settings value it is under."""
     model, temperature = _client_of(recorded)

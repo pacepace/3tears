@@ -43,8 +43,9 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Final, Literal, get_args
 
 from threetears.evals.analysis.report.forms import PageForms
@@ -230,9 +231,10 @@ class Tally:
     def __init__(self) -> None:
         """Start an empty tally."""
         self._turns: list[TurnCost] = []
-        self._calls: Counter[tuple[WriterRole, int]] = Counter()
-        self._bounces: dict[tuple[WriterRole, int], list[BounceKind]] = {}
-        self._transcripts: dict[str, str] = {}
+        # One entry per (role, round) or session of one writing (tens), so frozen maps rebuilt whole on each record.
+        self._calls: Mapping[tuple[WriterRole, int], int] = MappingProxyType({})
+        self._bounces: Mapping[tuple[WriterRole, int], tuple[BounceKind, ...]] = MappingProxyType({})
+        self._transcripts: Mapping[str, str] = MappingProxyType({})
         self._sent = 0
 
     @property
@@ -269,7 +271,7 @@ class Tally:
         :param calls: How many calls to add.
         :ptype calls: int
         """
-        self._calls[(role, round)] += calls
+        self._calls = MappingProxyType({**self._calls, (role, round): self._calls.get((role, round), 0) + calls})
 
     def record_bounce(self, role: WriterRole, round: int, kind: BounceKind) -> None:
         """Count one bounce of a role's round: a submission sent back with what was wrong with it.
@@ -281,7 +283,9 @@ class Tally:
         :param kind: Which check sent it back.
         :ptype kind: BounceKind
         """
-        self._bounces.setdefault((role, round), []).append(kind)
+        self._bounces = MappingProxyType(
+            {**self._bounces, (role, round): (*self._bounces.get((role, round), ()), kind)}
+        )
 
     def bounces(self) -> dict[BounceKind, int]:
         """Every bounce of every round, counted by kind: each kind present, a kind no round bounced as ``0``.
@@ -300,7 +304,7 @@ class Tally:
         :param digest: The sha256 of its messages' canonical JSON.
         :ptype digest: str
         """
-        self._transcripts[session] = digest
+        self._transcripts = MappingProxyType({**self._transcripts, session: digest})
 
     def spent_usd(self) -> float | None:
         """What every turn cost together, or ``None`` when a reply was unpriced. A turn whose reply never came adds
@@ -379,8 +383,8 @@ class Tally:
         rolled["unpriced_turns"] = sum(1 for turn in turns if turn.cost_usd is None)
         rolled["unpriced_reasons"] = sorted({turn.pricing_failure for turn in turns if turn.pricing_failure})
         rolled["admitted_on_estimate"] = sum(1 for turn in turns if turn.admitted_on_estimate)
-        rolled["tool_calls"] = sum(self._calls[key] for key in keys)
-        bounces = [kind for key in keys for kind in self._bounces.get(key, [])]
+        rolled["tool_calls"] = sum(self._calls.get(key, 0) for key in keys)
+        bounces = [kind for key in keys for kind in self._bounces.get(key, ())]
         rolled["bounces"] = len(bounces)
         rolled["bounce_kinds"] = dict(sorted(Counter(bounces).items()))
         rolled["wall_s"] = sum(turn.wall_s for turn in turns)

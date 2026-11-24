@@ -30,11 +30,11 @@ import inspect
 import json
 import os
 import threading
-from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
@@ -127,7 +127,9 @@ class ToolRecording:
         """Name the file; nothing is read before :meth:`begin`."""
         self.path = path
         self.mode: Literal["record", "replay"] = "replay"
-        self._answers: dict[tuple[str, int], Any] = {}
+        # One recording's answers (tens to hundreds), so a frozen map: read whole from the file, rebuilt whole on a
+        # kept answer.
+        self._answers: Mapping[tuple[str, int], Any] = MappingProxyType({})
         self._lock = threading.Lock()
 
     def begin(self) -> None:
@@ -139,18 +141,20 @@ class ToolRecording:
         self.mode = "record" if rerecord or not self.path.is_file() else "replay"
         if rerecord:
             self.path.unlink(missing_ok=True)
-        self._answers = {}
+        self._answers = MappingProxyType({})
         if not self.path.is_file():
             return
+        answers: dict[tuple[str, int], Any] = {}
         for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
             try:
                 held = json.loads(line)
-                self._answers[(held["key"], held["occurrence"])] = held["answer"]
+                answers[(held["key"], held["occurrence"])] = held["answer"]
             except (ValueError, KeyError, TypeError) as unreadable:
                 raise ToolRecordingMiss(
                     f"{self.path} line {number} is not a line a tool recording writes ({unreadable}); record it again "
                     "with RECORD=1"
                 ) from unreadable
+        self._answers = MappingProxyType(answers)
 
     def served(self, key: str, occurrence: int, tool: str, params: Mapping[str, Any]) -> Any:
         """The answer recorded for one ask.
@@ -171,7 +175,7 @@ class ToolRecording:
         with self._lock:
             if (key, occurrence) in self._answers:
                 return
-            self._answers[(key, occurrence)] = answer
+            self._answers = MappingProxyType({**self._answers, (key, occurrence): answer})
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = {
                 "key": key,
@@ -206,7 +210,8 @@ class CellTools:
         self._fault: ApparatusError | None = None
         self._recording = recording
         self._case: str = ""
-        self._asked: Counter[str] = Counter()
+        # How often each distinct ask was made on one case (tens), so a frozen map rebuilt whole per ask.
+        self._asked: Mapping[str, int] = MappingProxyType({})
         #: Every call that succeeded, in order: what a grader reads as the outcome's ``calls``.
         self.calls: list[RecordedCall] = []
 
@@ -240,8 +245,8 @@ class CellTools:
     async def _call(self, tool: str, /, **parameters: Any) -> Any:
         """One call of one tool: replayed, or made and recorded, or made; a rig fault is remembered."""
         key = canonical_digest({"case": self._case, "tool": tool, "params": parameters})
-        occurrence = self._asked[key]
-        self._asked[key] += 1
+        occurrence = self._asked.get(key, 0)
+        self._asked = MappingProxyType({**self._asked, key: occurrence + 1})
         try:
             if self._recording is not None and self._recording.mode == "replay":
                 value = self._recording.served(key, occurrence, tool, parameters)
