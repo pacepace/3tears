@@ -261,7 +261,7 @@ def _scan_method(
                 symbol=f"{cls.name}.{name}",
                 reason=(
                     f"{cls.name}.{name} holds a dict or set changed in place in {method.name}(): keep it an "
-                    f"immutable value (MappingProxyType, frozenset, tuple; threetears.core.collections.frozen_state) "
+                    f"immutable value (MappingProxyType, frozenset, tuple; threetears.core.frozen_state) "
                     f"and assign the next one whole"
                 ),
             )

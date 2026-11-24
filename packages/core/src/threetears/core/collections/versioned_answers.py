@@ -93,7 +93,7 @@ from pydantic import ValidationError
 from sqlalchemy import MetaData
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.derived import BuildLock, BuildLockHeld, DerivedCollection
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.core.collections.generation import L2_WRITE_GENERATION, WriteGenerationDeclaration
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (

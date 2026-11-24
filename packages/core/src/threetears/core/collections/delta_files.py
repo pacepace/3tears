@@ -78,7 +78,7 @@ from typing import Any, BinaryIO, Final
 
 from threetears.core.backends.arrow_reply import _rail_value
 from threetears.core.collections.epoch_change import key_text
-from threetears.core.collections.frozen_state import frozen, with_entry
+from threetears.core.frozen_state import frozen, with_entry
 from threetears.observe import get_logger
 
 try:

@@ -29,7 +29,6 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, TypeVar
 
@@ -39,6 +38,7 @@ from pydantic import BaseModel
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
+from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.security.door_skeleton import (
     DoorAccounting,
     KeysUnavailableError,
@@ -515,7 +515,7 @@ class InProcessEnvelopeLedger:
         self._clock = clock if clock is not None else (lambda: datetime.now(UTC))
         self._retention = retention
         #: a read-only snapshot replaced whole on each spend (decision 41), as it always was rebuilt
-        self._spent: Mapping[str, datetime] = MappingProxyType({})
+        self._spent: Mapping[str, datetime] = EMPTY
 
     @property
     def retention(self) -> timedelta:
@@ -558,7 +558,7 @@ class InProcessEnvelopeLedger:
         fresh = nonce not in kept
         if fresh:
             kept[nonce] = issued_at
-        self._spent = MappingProxyType(kept)
+        self._spent = frozen(kept)
         return fresh
 
 

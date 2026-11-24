@@ -719,7 +719,7 @@ _KNOWN_VIOLATIONS = (
 )
 
 #: Where an object's dict or set state is never changed in place after ``__init__``: its owner assigns the next
-#: immutable value whole (threetears.core.collections.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,
+#: immutable value whole (threetears.core.frozen_state). Nothing in _ALLOWLIST excuses a change here (Pace,
 #: 2026-11-23: "small, owner-only, under the pass lock" is no exception).
 _IMMUTABLE_ROOTS = (_REPO_ROOT / "packages/core/src/threetears/core/collections",)
 

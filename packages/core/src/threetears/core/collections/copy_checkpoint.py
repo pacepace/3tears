@@ -73,7 +73,7 @@ from threetears.core import keyed
 from threetears.core.keyed import InlineDuckDB, WholeReads, run_inline
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange
 from threetears.core.cache.duckdb_binds import KEYS, run_joined
-from threetears.core.collections.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
+from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
 from threetears.core.ddl.change_notes import DEFAULT_NOTE_FENCE
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 

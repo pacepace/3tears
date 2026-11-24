@@ -5,20 +5,29 @@ which tables wait, why, at what mark. Each such value is a read-only snapshot (a
 ``frozenset``, a tuple), and a change builds the next snapshot and assigns it in one statement. A reader holding the old
 snapshot (a status, a coroutine across an await, a thread handed it) never sees it change under it. Each is per table
 or per state, never per key (per-key state is Arrow), so rebuilding one is cheap.
+
+Stdlib only: shared_arrow, security and the collections import it, so it imports no pyarrow, asyncpg or
+threetears.core.collections (shared_arrow importing that package is a cycle; security runs without the arrow extra).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from types import MappingProxyType
+from typing import Any, Final
 
 __all__ = [
+    "EMPTY",
     "frozen",
     "with_entries",
     "with_entry",
+    "with_newest",
     "without_entries",
     "without_entry",
 ]
+
+#: the empty snapshot, shared: it never changes, so every owner may start from it
+EMPTY: Final[Mapping[Any, Any]] = MappingProxyType({})
 
 
 def frozen[K, V](entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> Mapping[K, V]:
@@ -45,6 +54,27 @@ def with_entry[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
     :rtype: Mapping
     """
     return MappingProxyType({**mapping, key: value})
+
+
+def with_newest[K, V](mapping: Mapping[K, V], key: K, value: V, *, limit: int | None = None) -> Mapping[K, V]:
+    """``mapping`` with ``key`` set to ``value`` as its newest entry, the oldest dropped past ``limit`` (a least
+    recently used order: the first entry is the oldest).
+
+    :param mapping: the snapshot
+    :ptype mapping: Mapping
+    :param key: the key
+    :ptype key: Any
+    :param value: its value
+    :ptype value: Any
+    :param limit: the most entries kept; None keeps every one
+    :ptype limit: int | None
+    :return: the new snapshot
+    :rtype: Mapping
+    """
+    kept = [(held, was) for held, was in mapping.items() if held != key]
+    if limit is not None:
+        kept = kept[max(0, len(kept) + 1 - limit) :]
+    return MappingProxyType({**dict(kept), key: value})
 
 
 def with_entries[K, V](mapping: Mapping[K, V], entries: Mapping[K, V]) -> Mapping[K, V]:

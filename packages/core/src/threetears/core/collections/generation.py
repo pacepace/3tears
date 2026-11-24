@@ -40,7 +40,7 @@ from threetears.core.backends.broker_generation import (
     note_advanced_generation,
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
 

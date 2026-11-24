@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Protocol
 
 from threetears.core.collections.base import BaseCollection, EntityT
-from threetears.core.collections.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.core.collections.tier_reads import ReadTier
 from threetears.core.coordination.distributed_lock import LockHeld, nats_distributed_lock
 from threetears.core.coordination.lease import LeaseUnavailable

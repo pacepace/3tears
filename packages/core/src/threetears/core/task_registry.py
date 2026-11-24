@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from types import MappingProxyType
 from uuid import UUID
+
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 
 __all__ = ["KeyedTaskRegistry"]
 
@@ -34,7 +35,7 @@ class KeyedTaskRegistry:
 
     def __init__(self) -> None:
         # a read-only snapshot replaced whole on each change (decision 41); one entry per running task, not per row
-        self._tasks: Mapping[UUID, asyncio.Task[object]] = MappingProxyType({})
+        self._tasks: Mapping[UUID, asyncio.Task[object]] = EMPTY
 
     def register(self, key: UUID, task: asyncio.Task[object]) -> None:
         """register a running task so it can later be cancelled by key.
@@ -45,7 +46,7 @@ class KeyedTaskRegistry:
         :ptype task: asyncio.Task[object]
         :rtype: None
         """
-        self._tasks = MappingProxyType({**self._tasks, key: task})
+        self._tasks = with_entry(self._tasks, key, task)
 
     def pop(self, key: UUID) -> asyncio.Task[object] | None:
         """remove and return a key's task, if any (pop-before-cancel).
@@ -60,8 +61,7 @@ class KeyedTaskRegistry:
         :rtype: asyncio.Task[object] | None
         """
         task = self._tasks.get(key)
-        if task is not None:
-            self._tasks = MappingProxyType({held: each for held, each in self._tasks.items() if held != key})
+        self._tasks = without_entry(self._tasks, key)
         return task
 
     def get(self, key: UUID) -> asyncio.Task[object] | None:
@@ -87,7 +87,7 @@ class KeyedTaskRegistry:
         :rtype: None
         """
         if self._tasks.get(key) is task:
-            self._tasks = MappingProxyType({held: each for held, each in self._tasks.items() if held != key})
+            self._tasks = without_entry(self._tasks, key)
 
     def __len__(self) -> int:
         """number of tasks currently registered.

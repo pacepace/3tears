@@ -89,7 +89,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
@@ -97,6 +97,7 @@ from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
+from threetears.core.frozen_state import EMPTY, with_entries, without_entries
 from threetears.core.eviction import (
     BUDGET_BYTES,
     EVICTED_AGE_SECONDS,
@@ -1693,7 +1694,7 @@ class MappedTables:
         # set before anything is mapped, so a constructor that fails part way unmaps what it mapped (:meth:`_unmap`)
         # and raises its own error; unset, the unmap raised AttributeError in its place (a runner out of descriptors
         # mapping a version's 2240 files was reported as a missing attribute, 2026-11-21)
-        self.tables: Mapping[str, Any] = MappingProxyType({})
+        self.tables: Mapping[str, Any] = EMPTY
         self._by_inode: dict[Any, Any] = {}
         self._maps: list[Any] = []
         self._descriptor: int | None = None
@@ -1776,7 +1777,7 @@ class MappedTables:
         # freed in turns, a joined table before the parts it joins (:func:`_free_in_turns`): a part freed while a
         # joined table still holds its arrays frees nothing, and the joined table freed last would free them all at once
         held = [*self._by_inode.values(), *self.tables.values()]
-        self.tables = MappingProxyType({})
+        self.tables = EMPTY
         self._by_inode = {}
         _free_in_turns(held)
         for mapped in self._maps:
@@ -1894,7 +1895,7 @@ class _KeptVersions:
 
     def __init__(self) -> None:
         #: a read-only snapshot replaced whole under ``_lock`` (decision 41); one entry per store
-        self._kept: Mapping[str, MappedVersion] = MappingProxyType({})
+        self._kept: Mapping[str, MappedVersion] = EMPTY
         self._lock = threading.Lock()
         #: the kept mappings a thread waits to revoke, each once however often it is kept again
         self._watched: weakref.WeakSet[MappedVersion] = weakref.WeakSet()
@@ -1914,7 +1915,7 @@ class _KeptVersions:
         """
         with self._lock:
             kept = self._kept.get(root)
-            self._kept = _without_entries(self._kept, (root,))
+            self._kept = without_entries(self._kept, (root,))
             if kept is not None and kept.name == version and kept.unpark():
                 self.hits += 1
                 return kept
@@ -1952,7 +1953,7 @@ class _KeptVersions:
             if keep and mapped.park() and not self._watch(root, mapped):
                 keep = False
             if keep:
-                self._kept = _with_entries(self._kept, {root: mapped})
+                self._kept = with_entries(self._kept, {root: mapped})
         if not keep:
             mapped.close()
 
@@ -2026,7 +2027,7 @@ class _KeptVersions:
         with self._lock:
             kept = self._kept.get(root) is mapped
             if kept:
-                self._kept = _without_entries(self._kept, (root,))
+                self._kept = without_entries(self._kept, (root,))
             self._watched.discard(mapped)
         if kept:
             mapped.close()
@@ -2850,38 +2851,6 @@ def serving_fallback_counted(what: str) -> None:
     _SERVING_FALLBACKS.labels(tier=_TIER, name=what).inc()
 
 
-# decision 41: the store's bookkeeping maps and sets are read-only snapshots its owner replaces whole under ``_state``.
-# These two build the next snapshot; threetears.core.collections.frozen_state has the same, but importing that package
-# here is a cycle (its delta_save imports this module).
-def _with_entries[K, V](mapping: Mapping[K, V], entries: Mapping[K, V]) -> Mapping[K, V]:
-    """``mapping`` with every entry of ``entries`` set, as a new read-only snapshot.
-
-    :param mapping: the snapshot
-    :ptype mapping: Mapping
-    :param entries: the entries to set
-    :ptype entries: Mapping
-    :return: the new snapshot
-    :rtype: Mapping
-    """
-    return MappingProxyType({**mapping, **entries})
-
-
-def _without_entries[K, V](mapping: Mapping[K, V], keys: Iterable[K]) -> Mapping[K, V]:
-    """``mapping`` without any of ``keys``, as a new read-only snapshot (the same one when it holds none of them).
-
-    :param mapping: the snapshot
-    :ptype mapping: Mapping
-    :param keys: the keys
-    :ptype keys: Iterable
-    :return: the new snapshot
-    :rtype: Mapping
-    """
-    gone = frozenset(keys)
-    if not gone & mapping.keys():
-        return mapping
-    return MappingProxyType({held: value for held, value in mapping.items() if held not in gone})
-
-
 class _RevokeFiles:
     """a store's open revoke files, version -> descriptor, in a holder of their own: the store's finalizer is handed
     the holder (never the store), and reads whichever snapshot it holds as the store is collected.
@@ -2892,7 +2861,7 @@ class _RevokeFiles:
     __slots__ = ("held",)
 
     def __init__(self) -> None:
-        self.held: Mapping[str, int] = MappingProxyType({})
+        self.held: Mapping[str, int] = EMPTY
 
 
 def _close_all(revoke_files: _RevokeFiles) -> None:
@@ -2903,7 +2872,7 @@ def _close_all(revoke_files: _RevokeFiles) -> None:
     :return: nothing
     :rtype: None
     """
-    descriptors, revoke_files.held = revoke_files.held, MappingProxyType({})
+    descriptors, revoke_files.held = revoke_files.held, EMPTY
     for descriptor in descriptors.values():
         with contextlib.suppress(OSError):  # NOSILENT: closed already
             os.close(descriptor)
@@ -2957,9 +2926,9 @@ class SharedArrowStore:
         self._readers: weakref.WeakSet[SharedArrowReader] = weakref.WeakSet()
         #: slots reserved and not yet claimed or discarded, with the bytes each may take; a slot in pieces
         #: (:meth:`reserve_pieces`) is here a piece at a time, each written piece at the bytes it holds
-        self._slots: Mapping[str, int] = MappingProxyType({})
+        self._slots: Mapping[str, int] = EMPTY
         #: each open slot in pieces: its bounds and its pieces, in order (each piece also in ``_slots``)
-        self._pieces: Mapping[str, _OpenPieces] = MappingProxyType({})
+        self._pieces: Mapping[str, _OpenPieces] = EMPTY
         #: pieces claimed, every result's together
         self._pieces_used = 0
         #: what serves a worker the next piece of its slot, started with the first slot in pieces
@@ -2968,12 +2937,12 @@ class SharedArrowStore:
         #: results claimed and not yet closed
         self._claimed: frozenset[str] = frozenset()
         #: each claimed result's bytes, counted once at its claim, until its files are gone (a publish's room)
-        self._claimed_bytes: Mapping[str, int] = MappingProxyType({})
+        self._claimed_bytes: Mapping[str, int] = EMPTY
         #: hand-offs being written, with the bytes each may take; and hand-offs written and not yet released
-        self._handing: Mapping[str, int] = MappingProxyType({})
+        self._handing: Mapping[str, int] = EMPTY
         self._handed: frozenset[str] = frozenset()
         #: each written hand-off's bytes, counted once as its write ends, until its files are gone (a publish's room)
-        self._handed_bytes: Mapping[str, int] = MappingProxyType({})
+        self._handed_bytes: Mapping[str, int] = EMPTY
         self._handoffs_made = 0
         self._published = 0
         self._retired = 0
@@ -2992,7 +2961,7 @@ class SharedArrowStore:
         self._evicted_bytes = 0
         #: the manifest of every version the directory holds under its name, by name: what a publish on it starts
         #: from, and what a sweep compares a retired version's with to find the part files no version names any more
-        self._manifests: Mapping[str, _Manifest] = MappingProxyType({})
+        self._manifests: Mapping[str, _Manifest] = EMPTY
         #: each part file's (device, inode), by its path under the parts directory (``{part dir}/{file}``): what the
         #: tally drops as the file is removed
         self._part_keys: dict[str, tuple[int, int]] = {}
@@ -3363,7 +3332,7 @@ class SharedArrowStore:
             if self._committed_bytes() + max_bytes > self._max_bytes:
                 return None
             made = f"s-{uuid.uuid7().hex}"
-            self._slots = _with_entries(self._slots, {made: max_bytes})
+            self._slots = with_entries(self._slots, {made: max_bytes})
             return made
 
         slot_id = self._with_room(reserved)
@@ -3406,9 +3375,9 @@ class SharedArrowStore:
             room = self._piece_room(piece_bytes, least)
             if room is not None:
                 piece = _piece_name(slot_id, 0)
-                self._slots = _with_entries(self._slots, {piece: room})
+                self._slots = with_entries(self._slots, {piece: room})
                 opened = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=[piece])
-                self._pieces = _with_entries(self._pieces, {slot_id: opened})
+                self._pieces = with_entries(self._pieces, {slot_id: opened})
             return room
 
         first = self._with_room(reserved)
@@ -3479,7 +3448,7 @@ class SharedArrowStore:
             path = self._segments / staging
             with os.scandir(path) as listing:
                 held = sum(entry.stat().st_size for entry in listing if entry.is_file() and entry.name != carried)
-            self._slots = _with_entries(self._slots, {full: held})
+            self._slots = with_entries(self._slots, {full: held})
             least = pieces.minimum
 
         def reserved() -> int | None:
@@ -3488,7 +3457,7 @@ class SharedArrowStore:
             room = self._piece_room(pieces.piece_bytes, least)
             if room is not None:
                 following = _piece_name(slot_id, index + 1)
-                self._slots = _with_entries(self._slots, {following: room})
+                self._slots = with_entries(self._slots, {following: room})
                 pieces.names.append(following)
             return room
 
@@ -3524,13 +3493,13 @@ class SharedArrowStore:
             elif slot.slot_id not in self._slots:
                 raise KeyError(f"slot {slot.slot_id} is not open")
             else:
-                self._slots = _without_entries(self._slots, (slot.slot_id,))
+                self._slots = without_entries(self._slots, (slot.slot_id,))
             path = self._segments / slot.slot_id
             written = path.is_dir()
             if written:
                 files = _directory_files(path)
                 self._claimed = self._claimed | {slot.slot_id}
-                self._claimed_bytes = _with_entries(self._claimed_bytes, {slot.slot_id: sum(files.values())})
+                self._claimed_bytes = with_entries(self._claimed_bytes, {slot.slot_id: sum(files.values())})
                 self._held.add(path, files)
         if not written:
             self.sweep()
@@ -3554,9 +3523,9 @@ class SharedArrowStore:
         opened = self._pieces.get(slot_id)
         if opened is None:
             raise KeyError(f"slot {slot_id} is not open")
-        self._pieces = _without_entries(self._pieces, (slot_id,))
+        self._pieces = without_entries(self._pieces, (slot_id,))
         pieces = opened.names
-        self._slots = _without_entries(self._slots, pieces)
+        self._slots = without_entries(self._slots, pieces)
         target = self._segments / slot_id
         written = [self._segments / piece for piece in pieces if (self._segments / piece).is_dir()]
         if not written:
@@ -3582,8 +3551,8 @@ class SharedArrowStore:
         """
         with self._state:
             opened = self._pieces.get(slot.slot_id)
-            self._pieces = _without_entries(self._pieces, (slot.slot_id,))
-            self._slots = _without_entries(self._slots, (slot.slot_id, *(() if opened is None else opened.names)))
+            self._pieces = without_entries(self._pieces, (slot.slot_id,))
+            self._slots = without_entries(self._slots, (slot.slot_id, *(() if opened is None else opened.names)))
         self.sweep()
 
     def hand(self, tables: Mapping[str, Any], *, max_bytes: int | None = None) -> HandedTables:
@@ -3628,7 +3597,7 @@ class SharedArrowStore:
         def reserved() -> bool | None:
             if self._committed_bytes() + bound > self._max_bytes:
                 return None
-            self._handing = _with_entries(self._handing, {handoff_id: bound})
+            self._handing = with_entries(self._handing, {handoff_id: bound})
             return True
 
         if self._with_room(reserved) is None:
@@ -3651,12 +3620,12 @@ class SharedArrowStore:
         except BaseException:
             remove_tree(staging, log=log, what="a failed hand-off's staging directory")
             with self._state:
-                self._handing = _without_entries(self._handing, (handoff_id,))
+                self._handing = without_entries(self._handing, (handoff_id,))
             raise
         with self._state:
-            self._handing = _without_entries(self._handing, (handoff_id,))
+            self._handing = without_entries(self._handing, (handoff_id,))
             self._handed = self._handed | {handoff_id}
-            self._handed_bytes = _with_entries(self._handed_bytes, {handoff_id: written})
+            self._handed_bytes = with_entries(self._handed_bytes, {handoff_id: written})
             self._handoffs_made += 1
         return HandedTables(root=str(self._root), handoff_id=handoff_id, tables=tuple(tables), nbytes=written)
 
@@ -3737,14 +3706,14 @@ class SharedArrowStore:
         with self._state:
             retired, cached = self._sweep_versions(gone)
             revokers = self._revokers.held
-            self._revokers.held = _without_entries(revokers, retired)
+            self._revokers.held = without_entries(revokers, retired)
             for name in retired:
                 revoker = revokers.get(name)
                 if revoker is not None:
                     os.close(revoker)
             # a version's manifest leaves with the version: the files it alone named go with it
             manifests = self._manifests
-            self._manifests = _without_entries(manifests, retired)
+            self._manifests = without_entries(manifests, retired)
             dying = self._freed([manifests[name] for name in retired if name in manifests])
             if cached or self._evictable:
                 # nothing cached before or now (the usual sweep) changes no gauge: no work on a lease's release
@@ -3778,7 +3747,7 @@ class SharedArrowStore:
                 for each in self._claimed_bytes
                 if each not in self._claimed and not (self._segments / each).exists()
             ]
-            self._claimed_bytes = _without_entries(self._claimed_bytes, gone_claims)
+            self._claimed_bytes = without_entries(self._claimed_bytes, gone_claims)
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
@@ -3972,11 +3941,11 @@ class SharedArrowStore:
                 continue
             text = _manifest_text(entry)
             if text is not None:
-                self._manifests = _with_entries(self._manifests, {entry.name: _parsed_manifest(text)})
+                self._manifests = with_entries(self._manifests, {entry.name: _parsed_manifest(text)})
             # a version kept from an earlier process: revocable as any, once nothing of that process waits on it
             revoker = _locked(entry, fcntl.LOCK_EX, _REVOKE_FILE)
             if revoker is not None:
-                self._revokers.held = _with_entries(self._revokers.held, {entry.name: revoker})
+                self._revokers.held = with_entries(self._revokers.held, {entry.name: revoker})
 
     def _sweep_parts_on_disk(self) -> None:
         """at the start, after the first sweep: remove every part file no version kept names (a publish that died
@@ -4139,7 +4108,7 @@ class SharedArrowStore:
                 return False
             name, used_ns, nbytes = picked
             revoker = self._revokers.held[name]
-            self._revokers.held = _without_entries(self._revokers.held, (name,))
+            self._revokers.held = without_entries(self._revokers.held, (name,))
         os.close(revoker)
         path = self._versions / name
         try:
@@ -4308,7 +4277,7 @@ class SharedArrowStore:
         gone_handoffs = [
             each for each in self._handed_bytes if each not in self._handed and not (self._handoffs / each).exists()
         ]
-        self._handed_bytes = _without_entries(self._handed_bytes, gone_handoffs)
+        self._handed_bytes = without_entries(self._handed_bytes, gone_handoffs)
 
     def _write_version(self, name: str, tables: Mapping[str, Any], base: Path | None = None) -> None:
         """write a version: its new files into a part directory of its own, its manifest under a staging name, renamed
@@ -4392,10 +4361,10 @@ class SharedArrowStore:
             os.rename(staging, self._versions / name)
             with self._state:
                 if revoker is not None:
-                    self._revokers.held = _with_entries(self._revokers.held, {name: revoker})
+                    self._revokers.held = with_entries(self._revokers.held, {name: revoker})
                     revoker = None
                 # the publish's _pending until it is current, so no sweep retires it before it is recorded
-                self._manifests = _with_entries(self._manifests, {name: replace(manifest, file_bytes=len(text))})
+                self._manifests = with_entries(self._manifests, {name: replace(manifest, file_bytes=len(text))})
                 self._recorded_parts(part_dir, made)
                 if imported is not None:
                     self._recorded_parts(imported, kept)
