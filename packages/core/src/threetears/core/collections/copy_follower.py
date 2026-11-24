@@ -48,6 +48,13 @@ waited for the same way; a commit too big to list cannot be recreated by key (it
 table waits for the writer's recovery full (decision 28) when it starts from the volume. Counted by why
 (``copy_follower_delta_file_waits_total``) and logged at WARNING; L3 is read once, by the writer, never by every pod.
 
+**No full is asked for too** (Pace's ruling of 2026-11-24). A copy starting from the volume whose current full lacks
+an opted-in table (none published: a new or emptied volume) asks the writer for it through the same request
+(:class:`FullRecreate`, ``DeltaRecreateRequester.full``) at each look while it waits, one table a look (the writer's
+rebuild publishes every table its full lacks), and reads nothing from L3 meanwhile. Why: a writer whose load has nothing
+new to write never begins a write, and its fold, started at a write's begin, never rebuilt the full; every copy waited
+for ever. Counted (``copy_follower_full_requests_total``) and logged at WARNING when the answer changes.
+
 **Bounded.** What this process holds of a change is a page of rows at a time: each page is staged as it is read.
 The keys pending are the change's. A first warm reads each table a page at a time, by an order an index serves
 (:attr:`FollowedTable.order`).
@@ -101,7 +108,7 @@ from collections.abc import Set as AbstractSet
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING
+from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING, runtime_checkable
 
 from threetears.interfaces.keyed.rows import DeclaredKey, DeclaredScope, KeyColumns
 from threetears.observe import PeriodicTask, contain, get_logger, retry_until_done
@@ -186,6 +193,7 @@ __all__ = [
     "FollowerPhase",
     "FileRecreate",
     "FollowerStatus",
+    "FullRecreate",
     "PartialStamp",
     "require_generation_by_trigger",
     "typed_text",
@@ -299,6 +307,15 @@ _RECREATE_ASKS = counter(
     "copy_follower_delta_file_recreate_requests_total",
     description="a copy follower's requests to the writer to recreate a missing or unreadable delta file, by table and "
     "outcome",
+    label_names=("table", "outcome"),
+)
+
+#: the copy's asks for a table's full the volume's current full lacks, by table and outcome: ``present``,
+#: ``recovering`` (the writer's fold rebuilds it from L3 and publishes it), ``no_writer`` or ``failed`` (asked again)
+_FULL_ASKS = counter(
+    "copy_follower_full_requests_total",
+    description="a copy follower's asks to the writer for a table's full the volume's current full lacks, by table and "
+    "outcome; the copy waits for that full and reads nothing from L3",
     label_names=("table", "outcome"),
 )
 
@@ -1130,6 +1147,25 @@ class FileRecreate(Protocol):
         :ptype epoch: str
         :return: ``recreated``, ``present``, ``recovering``, ``no_writer``, ``failed``, ``pending`` (a load's intent
             whose writer may still be loading: asked again) or ``superseded`` (a later record applies the file)
+        :rtype: str
+        """
+        ...
+
+
+@runtime_checkable
+class FullRecreate(Protocol):
+    """asks the writer for a table's full the volume's current full lacks: the copy's side of
+    :meth:`~threetears.core.collections.delta_recreate.DeltaRecreateRequester.full`. A ``recreate`` that has it is
+    asked while a start waits for the full (module docstring, "No full is asked for too"); one without it asks nothing.
+    """
+
+    async def full(self, table: str) -> str:
+        """ask once; never raises for an answer the copy can wait out.
+
+        :param table: the table
+        :ptype table: str
+        :return: ``present``, ``recovering`` (the writer's fold publishes it), ``no_writer`` or ``failed`` (asked
+            again at the next look)
         :rtype: str
         """
         ...
@@ -3225,9 +3261,11 @@ class CopyFollower:
         staged: StagedFull | None = None
         #: the last reason logged: each new one is logged once, not at every look
         said = ""
+        #: the writer's last answer to the copy's ask for a full, by the table asked: logged only when it changes
+        heard = ""
 
         async def looked() -> bool:
-            nonlocal staged, said
+            nonlocal staged, said, heard
             if self._status.phase is FollowerPhase.STOPPED:
                 return True
             try:
@@ -3243,12 +3281,42 @@ class CopyFollower:
                     "a copy waits for the full on the volume, reading nothing from L3",
                     extra={"extra_data": {"reason": found.reason}},
                 )
-            self._say(FollowerPhase.WAITING, f"waiting for the full: {found.reason}")
+            reason = found.reason
+            if found.lacking and isinstance(self._recreate, FullRecreate):
+                # the writer may never begin a write (its load has nothing new), so its fold would never rebuild the
+                # full: asked at every look, one table (its rebuild publishes every table lacking), never read from L3
+                answer = await self._ask_full(self._recreate, found.lacking[0])
+                if f"{found.lacking[0]}:{answer}" != heard:
+                    heard = f"{found.lacking[0]}:{answer}"
+                    log.warning(
+                        "a copy waiting for the full asked the writer for it",
+                        extra={
+                            "extra_data": {"table": found.lacking[0], "lacking": list(found.lacking), "answer": answer}
+                        },
+                    )
+                reason = f"{reason} (asked the writer for {found.lacking[0]}: {answer})"
+            self._say(FollowerPhase.WAITING, f"waiting for the full: {reason}")
             return False
 
         # the platform's never-give-up loop (threetears.observe), at the volume's own pace: a look every poll_seconds
         await retry_until_done(looked, first_delay=fulls.poll_seconds, max_delay=fulls.poll_seconds)
         return staged
+
+    @staticmethod
+    async def _ask_full(asks: FullRecreate, table: str) -> str:
+        """ask the writer once for ``table``'s full; counted by outcome. The requester answers every way a request can
+        fail (``no_writer``, ``failed``) and never raises for one (:class:`FullRecreate`), so nothing is caught here.
+
+        :param asks: the requester
+        :ptype asks: FullRecreate
+        :param table: the table
+        :ptype table: str
+        :return: the writer's answer (:class:`FullRecreate`)
+        :rtype: str
+        """
+        answer = await asks.full(table)
+        _FULL_ASKS.labels(table=table, outcome=answer).inc()
+        return answer
 
     async def _warm_tables(self, whys: Mapping[str, str]) -> None:
         """take these tables' marks at the head and read each whole at the next apply, counted by why.

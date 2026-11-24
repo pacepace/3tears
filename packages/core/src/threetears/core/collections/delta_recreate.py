@@ -49,7 +49,18 @@ while the named beat is kept (:class:`~threetears.core.collections.lost_writes.W
 deleted it) the file is confirmed from L3 as above. Never by elapsed time. A writer given no beats to read never
 confirms an intent the hub has not superseded (logged).
 
-Counted (``delta_file_recreations_total`` by outcome, ``delta_file_recreate_keys_read_total``) and logged at WARNING.
+**No full at all** (Pace's ruling of 2026-11-24: "We have a mechanism to recover bad files; it should also detect no
+files"). A copy starting from the volume whose current full lacks a table (none published: a new or emptied volume)
+asks the writer for that table's full through the same request, ``{"table": ..., "want": "full"}``
+(:meth:`DeltaRecreateRequester.full`). The writer answers through its fold (:class:`MissingFulls`,
+:meth:`~threetears.core.collections.delta_fold.DeltaFolds.full_owed`): ``present`` when the full holds it, else
+``recovering`` once the fold is set to rebuild it from L3 (decision 14's cold start, its one whole read) and publish
+it, with no write begun; the copy reads nothing from L3 and waits for that full. A writer given no fold for it refuses
+(the copy asks again). An older writer refuses the request too (it names no file): the copy asks again, and the newer
+writer answers it.
+
+Counted (``delta_file_recreations_total`` by outcome, ``delta_file_recreate_keys_read_total``,
+``delta_full_requests_total``) and logged at WARNING.
 """
 
 from __future__ import annotations
@@ -111,6 +122,7 @@ __all__ = [
     "DeltaRecreateRequester",
     "DeltaRecreator",
     "LostDeltaRecovery",
+    "MissingFulls",
     "serving_recreates",
 ]
 
@@ -160,6 +172,20 @@ _KEYS_READ = counter(
 )
 
 
+#: copies' asks for a table's full the current one lacks, answered by the writer, by table and outcome: ``present``
+#: (the full holds it), ``recovering`` (its fold rebuilds it from L3 and publishes it), ``refused`` (a table it does not
+#: fold, or no fold wired)
+_FULL_ASKS = counter(
+    "delta_full_requests_total",
+    description="the writer's answers to copies' asks for a table's full the volume's current full lacks, by table and "
+    "outcome; recovering: its fold rebuilds the full from L3 once, with no write begun",
+    label_names=("table", "outcome"),
+)
+
+#: the body's ``want`` naming a request for a table's full, not a file
+_WANT_FULL: Final = "full"
+
+
 class _RefusedError(ValueError):
     """a recreate request the writer refuses: a table that does not opt in, a record that does not name the file asked
     for, no delta files' directory on the writer. Framed back to the copy, which counts it ``failed`` and asks again.
@@ -168,16 +194,18 @@ class _RefusedError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class _Request:
-    """a copy's request that the writer recreate one epoch's delta file.
+    """a copy's request that the writer recreate one epoch's delta file, or (``full``) publish a table's full.
 
     :ivar table: the table
-    :ivar file: the file's name under the delta files' directory, as the epoch's record names it
-    :ivar epoch: the epoch whose record names it
+    :ivar file: the file's name under the delta files' directory, as the epoch's record names it; empty for a full
+    :ivar epoch: the epoch whose record names it; empty for a full
+    :ivar full: whether the copy asks for the table's full (module docstring, "No full at all")
     """
 
     table: str
     file: str
     epoch: str
+    full: bool = False
 
     def encode(self) -> bytes:
         """the request's body: JSON.
@@ -185,6 +213,8 @@ class _Request:
         :return: the bytes
         :rtype: bytes
         """
+        if self.full:
+            return json.dumps({"table": self.table, "want": _WANT_FULL}).encode()
         return json.dumps({"table": self.table, "file": self.file, "epoch": self.epoch}).encode()
 
     @classmethod
@@ -201,6 +231,11 @@ class _Request:
             body = json.loads(payload)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"a recreate request is not JSON: {exc}") from exc
+        if isinstance(body, dict) and body.get("want") == _WANT_FULL:
+            table = body.get("table")
+            if not isinstance(table, str) or not table:
+                raise ValueError(f"a request for a full names a table, as text: got {body!r}")
+            return cls(table=table, file="", epoch="", full=True)
         fields = [body.get(name) if isinstance(body, dict) else None for name in ("table", "file", "epoch")]
         if not all(isinstance(value, str) and value for value in fields):
             raise ValueError(f"a recreate request names a table, a file and an epoch, as text: got {body!r}")
@@ -232,6 +267,24 @@ class LostDeltaRecovery(Protocol):
         :ptype file: str
         :return: nothing
         :rtype: None
+        """
+        ...
+
+
+class MissingFulls(Protocol):
+    """the writer's fold, asked for a table's full a copy found the volume's current full lacking (module docstring,
+    "No full at all"). :meth:`~threetears.core.collections.delta_fold.DeltaFolds.full_owed` is the fold's own; a writer
+    whose fold starts only with a write wraps it to start the fold first (the reports pod's store).
+    """
+
+    async def full_owed(self, table: str) -> bool:
+        """whether the current full lacks ``table``; when it does, the fold is set to rebuild it from L3 and publish
+        it, and this returns without waiting for that.
+
+        :param table: the table
+        :ptype table: str
+        :return: True when a full is owed (the copy waits for it), False when the current full holds the table
+        :rtype: bool
         """
         ...
 
@@ -302,6 +355,9 @@ class DeltaRecreator:
     :param generations: the tables' current generations, to walk the log past an intent record for the record that
         supersedes it; None reads no such record
     :ptype generations: GenerationSource | None
+    :param fulls: the writer's fold, asked for a table's full a copy found lacking (:class:`MissingFulls`); None
+        refuses such an ask (the copy asks again)
+    :ptype fulls: MissingFulls | None
     """
 
     def __init__(
@@ -316,7 +372,9 @@ class DeltaRecreator:
         folds: _ConfirmedFolds | None = None,
         writers: _WriterLiveness | None = None,
         generations: GenerationSource | None = None,
+        fulls: MissingFulls | None = None,
     ) -> None:
+        self._fulls = fulls
         self._writers = writers
         self._generations = generations
         self._tables = {table.name: table for table in tables}
@@ -342,7 +400,37 @@ class DeltaRecreator:
         :raises Exception: what the recreation raised (framed back likewise)
         """
         request = _Request.decode(payload)
+        if request.full:
+            return (await self.full(request.table)).encode()
         return (await self.recreate(request.table, request.file, request.epoch)).encode()
+
+    async def full(self, table: str) -> str:
+        """a copy's ask for ``table``'s full (module docstring, "No full at all"): the fold says whether the current full
+        holds it, and when not is set to rebuild it from L3 and publish it; never waits for that publish.
+
+        :param table: the table
+        :ptype table: str
+        :return: ``present`` (the full holds it) or ``recovering`` (the fold publishes it; the copy waits for it)
+        :rtype: str
+        :raises ValueError: when the ask is refused: a table that does not opt in, or no fold wired to rebuild it
+        """
+        if table not in self._tables or self._fulls is None:
+            _FULL_ASKS.labels(table=table, outcome="refused").inc()
+            raise _RefusedError(
+                f"{table}: not a table whose full this writer publishes"
+                if table not in self._tables
+                else f"{table}: no fold is wired to rebuild a missing full"
+            )
+        owed = await self._fulls.full_owed(table)
+        outcome = _Outcome.RECOVERING if owed else _Outcome.PRESENT
+        _FULL_ASKS.labels(table=table, outcome=outcome.value).inc()
+        if owed:
+            log.warning(
+                "a copy found no full of a table on the volume: the writer's fold rebuilds it from L3 and publishes it, "
+                "with no write begun",
+                extra={"extra_data": {"table": table}},
+            )
+        return outcome.value
 
     async def recreate(self, table: str, file: str, epoch: str) -> str:
         """recreate one epoch's file once: a request for it while it is being recreated waits for that recreation.
@@ -759,7 +847,29 @@ class DeltaRecreateRequester:
             recreation raised or the request did not cross
         :rtype: str
         """
-        payload = _Request(table=table, file=file, epoch=epoch).encode()
+        return await self._asked(_Request(table=table, file=file, epoch=epoch))
+
+    async def full(self, table: str) -> str:
+        """ask once for ``table``'s full, which the volume's current full lacks (module docstring, "No full at all").
+
+        :param table: the table
+        :ptype table: str
+        :return: ``present``, ``recovering``, ``no_writer`` when none answered, ``failed`` when the writer refused or
+            the request did not cross
+        :rtype: str
+        """
+        return await self._asked(_Request(table=table, file="", epoch="", full=True))
+
+    async def _asked(self, request: _Request) -> str:
+        """send one request and read the writer's answer.
+
+        :param request: the request
+        :ptype request: _Request
+        :return: the writer's :class:`_Outcome`, ``no_writer`` or ``failed``
+        :rtype: str
+        """
+        table, file, epoch = request.table, request.file, request.epoch
+        payload = request.encode()
         try:
             reply = await forward(
                 self._nats, self._key, payload, timeout=self._timeout, family=DELTA_FILES_FORWARD_FAMILY

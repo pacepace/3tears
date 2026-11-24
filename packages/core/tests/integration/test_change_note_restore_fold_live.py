@@ -25,7 +25,7 @@ from threetears.nats.change_log import ChangeLogState
 
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.change_notes import NotedChange
-from threetears.core.collections.epoch_change import EpochChange, read_epoch_change_body
+from threetears.core.collections.epoch_change import EpochChange, EpochWalk, read_epoch_change_body
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.note_ring import install_note_ring
 
@@ -58,6 +58,9 @@ class _Log:
 
     async def epoch_at(self, seq: int) -> EpochChange | None:
         raise AssertionError(f"a restore reads no record of the lost log ({seq})")
+
+    async def changes_after(self, table_name: str, after: str, upto: str) -> EpochWalk:
+        raise AssertionError(f"a restore reads no record of the lost log ({table_name} after {after} up to {upto})")
 
     async def start_log(self) -> str:
         raise AssertionError("a restore declares its log through begin_restore")

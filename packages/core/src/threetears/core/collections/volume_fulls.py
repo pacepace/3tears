@@ -858,9 +858,14 @@ class FullAbsent:
     """no full a copy can load yet: it waits for the writer to publish one, never reading L3 whole.
 
     :ivar reason: why, for the follower's status
+    :ivar lacking: the tables no full holds (no manifest at all: every table), or holds over other columns than their
+        schema's: the ones the copy asks the writer for (``CopyFollower``'s wait, ``DeltaRecreateRequester.full``), so
+        a writer whose fold never started (no write begun) still rebuilds them. Empty when a part of the full is only
+        missing for now (a newer full swept it): nothing to ask for, the next look finds the newer full
     """
 
     reason: str
+    lacking: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -917,10 +922,13 @@ class VolumeFulls:
         if manifest is None:
             manifest = await asyncio.to_thread(current_full_manifest, self.root)
         if manifest is None:
-            return FullAbsent("no full on the volume yet; the writer publishes one")
+            return FullAbsent("no full on the volume yet; the writer publishes one", lacking=tuple(sorted(self.tables)))
         missing = sorted(set(self.tables) - set(manifest.tables))
         if missing:
-            return FullAbsent(f"full {manifest.name} does not hold {missing} yet; the writer publishes one that does")
+            return FullAbsent(
+                f"full {manifest.name} does not hold {missing} yet; the writer publishes one that does",
+                lacking=tuple(missing),
+            )
         for name, table in self.tables.items():
             # a table whose columns changed in place (decision 12): its parts hold the old columns, so the copy waits
             # for the writer's fresh full, as for a missing one, never reading L3
@@ -930,7 +938,8 @@ class VolumeFulls:
                 _OTHER_COLUMNS.labels(table=name).inc()
                 return FullAbsent(
                     f"full {manifest.name} holds {name} over other columns than its schema ({len(other)} parts, "
-                    f"{other[0].fingerprint}); the writer starts it fresh and publishes one over its columns"
+                    f"{other[0].fingerprint}); the writer starts it fresh and publishes one over its columns",
+                    lacking=(name,),
                 )
         versions: dict[str, dict[str | None, str]] = {}
         marks: dict[str, str] = {}

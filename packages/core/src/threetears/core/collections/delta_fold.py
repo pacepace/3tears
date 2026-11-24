@@ -68,6 +68,16 @@ lease is taken during its read is refused at the publish, deletes only its own n
 reader sees. A copy never reads L3 whole: it waits for the manifest (:class:`~threetears.core.collections.
 volume_fulls.VolumeFulls`).
 
+**No full, and no write begun** (Pace's ruling of 2026-11-24: the mechanism that recovers bad files also detects no
+files). A writer whose load has nothing new to write never begins, so a fold started only at a write's begin never
+rebuilt a full the volume lacks, and every copy waited for it for ever (a pod started on an empty volume while L3 held
+the data: local burst replay, 2026-11-24). Now :meth:`DeltaFolds.lacking` names the tables the current full lacks (one
+manifest read: a volume holding its fulls costs nothing more), and :meth:`DeltaFolds.full_owed` answers a copy's ask
+for a table's full (``delta_recreate``): a fold already started looks again before its next round, and its rebuild
+(the same cold start, the one whole read) publishes the full with no commit told. A fold not started yet is started by
+its writer at the term its lease holds (the consumer's: the reports pod's store starts it when it takes the lease and
+the full lacks a table), never per load.
+
 **A restarted writer re-learns its unfolded deltas** (decisions 22 and 24). The fold's memory of each state's deltas
 since its last fold dies with its process. :meth:`DeltaFolds.start` learns it again from the NATS epoch log, never
 from a listing of the volume and never from L3: the current full says which version each part is current to, and
@@ -401,7 +411,13 @@ class _Confirmed:
     epoch: str
 
 
-_Command = _Told | _Started | _Fresh | _LostFile | _Confirmed
+@dataclass(frozen=True, slots=True)
+class _Recheck:
+    """a copy asked for a table's full the current one lacks (:meth:`DeltaFolds.full_owed`): the round looks for every
+    table the full lacks before its next fold, and rebuilds them."""
+
+
+_Command = _Told | _Started | _Fresh | _LostFile | _Confirmed | _Recheck
 
 
 @dataclass(frozen=True, slots=True)
@@ -993,6 +1009,55 @@ class DeltaFolds:
             "from its record's notes, else its states",
         )
 
+    @property
+    def started(self) -> bool:
+        """whether a writer's :meth:`start` has run or been posted: only then does the fold know how to read L3 and at
+        what term to publish, so only then can it rebuild a full on its own.
+
+        :return: True once started
+        :rtype: bool
+        """
+        return self._reader is not None or any(isinstance(command, _Started) for command in self._inbox)
+
+    async def lacking(self) -> tuple[str, ...]:
+        """the folded tables the current full on the volume does not hold (none published: every one), or holds over
+        other columns than their schema's (decision 12's schema change, found here as :meth:`_relearn` finds it): the
+        ones a rebuild from L3 is owed for. One read of the current manifest, on a thread; no part is opened.
+
+        :return: the tables, sorted; empty when the full holds every one
+        :rtype: tuple[str, ...]
+        :raises ValueError: when the current manifest does not read back
+        """
+        current = await asyncio.to_thread(current_full_manifest, self.root)
+        return _lacking(current, self.tables)
+
+    async def full_owed(self, table: str) -> bool:
+        """a copy's ask for ``table``'s full (:class:`~threetears.core.collections.delta_recreate.MissingFulls`): when
+        the current full lacks it, a fold already started looks again before its next round, so its rebuild (the cold
+        start, decision 14) publishes the full with no commit told; never waits for that. A fold not started cannot
+        (it knows neither L3 nor its term): said, and left to the writer's start, which rebuilds every table lacking.
+
+        :param table: the table
+        :ptype table: str
+        :return: whether a full of the table is owed (False: the current full holds it)
+        :rtype: bool
+        :raises KeyError: when the writer does not fold the table
+        :raises ValueError: when the current manifest does not read back
+        """
+        if table not in self.tables:
+            raise KeyError(table)
+        lacking = await self.lacking()
+        if table not in lacking:
+            return False
+        if self.started:
+            self._post(_Recheck())
+        else:
+            log.warning(
+                "a copy asked for a table's full before the writer's fold started: the writer's start rebuilds it",
+                extra={"extra_data": {"table": table, "lacking": list(lacking)}},
+            )
+        return True
+
     def confirmed(self, table: str, *, file: str, epoch: str) -> None:
         """a failed load request's file, its record naming it unconfirmed, written again by the writer from L3 and
         marked confirmed (``delta_recreate.DeltaRecreator`` tells it, ruling C of
@@ -1078,6 +1143,9 @@ class DeltaFolds:
                 # an ask of the table: a rebuild that read its generation before it is owed again (:meth:`_fresh_fulls`)
                 self._asked = with_entry(self._asked, command.table, self._asked.get(command.table, 0) + 1)
                 self._owe_fresh(command.table, command.why)
+            elif isinstance(command, _Recheck):
+                # _fresh_fulls reads the manifest and rebuilds each table it lacks: no table named, none to forget
+                self._recheck = True
             else:
                 self._apply_lost(command)
         if commands:
@@ -1976,6 +2044,28 @@ class _LostReach:
     scopes: tuple[str, ...] = ()
     detail: str = ""
     fallback: tuple[str, ...] = ()
+
+
+def _lacking(current: FullManifest | None, tables: Mapping[str, FoldedTable]) -> tuple[str, ...]:
+    """the tables ``current`` does not hold, or holds over other columns than their schema's (:meth:`DeltaFolds.
+    lacking`).
+
+    :param current: the current manifest; None when none is published
+    :ptype current: FullManifest | None
+    :param tables: the folded tables, by name
+    :ptype tables: Mapping[str, FoldedTable]
+    :return: their names, sorted
+    :rtype: tuple[str, ...]
+    """
+    if current is None:
+        return tuple(sorted(tables))
+    return tuple(
+        sorted(
+            name
+            for name, table in tables.items()
+            if name not in current.tables or other_columns_parts(current.tables[name], table.kinds)
+        )
+    )
 
 
 def _table_scopes(table: FoldedTable, record: EpochChange) -> tuple[str, ...]:
