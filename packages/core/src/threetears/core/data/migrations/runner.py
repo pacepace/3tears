@@ -35,7 +35,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Mapping, Protocol
+from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Protocol
 
 from threetears.core.ddl.ddl_lock import DdlLockPolicy
 from threetears.core.ddl.errors import (
@@ -122,6 +122,23 @@ class _RunWindowAnnouncer(Protocol):
         ...
 
 
+class _LivePackages(Mapping[str, PackageMigrations]):
+    """a read-only window onto a runner's packages that reads its current snapshot at each access (so a handle taken
+    before a registration sees it), the runner replacing that snapshot whole."""
+
+    def __init__(self, current: Callable[[], Mapping[str, PackageMigrations]]) -> None:
+        self._current = current
+
+    def __getitem__(self, name: str) -> PackageMigrations:
+        return self._current()[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._current())
+
+    def __len__(self) -> int:
+        return len(self._current())
+
+
 class MigrationRunner:
     """
     canonical migration runner composing registered packages.
@@ -151,7 +168,8 @@ class MigrationRunner:
             announces none, said at WARNING after every run that applied a migration
         :ptype announcer: _RunWindowAnnouncer | None
         """
-        self._packages: dict[str, PackageMigrations] = {}
+        #: replaced whole at each registration
+        self._packages: Mapping[str, PackageMigrations] = MappingProxyType({})
         self._lock_policy = lock_policy if lock_policy is not None else DdlLockPolicy()
         self._announcer = announcer
 
@@ -162,12 +180,12 @@ class MigrationRunner:
         the hub CLI walks this mapping to render ``migrations status``,
         ``migrations history``, and ``migrations current`` for every
         registered package without reaching into the runner's private
-        storage. the returned object is a :class:`types.MappingProxyType`
-        wrapper over the internal dict: it supports ``in``, ``len``,
-        iteration, and ``.keys()``/``.values()``/``.items()`` /
-        ``.get()`` with the same semantics as the underlying dict, but
-        mutation attempts (``packages["x"] = y``, ``packages.pop(...)``,
-        ``packages.clear()``) raise :class:`TypeError`. this protects
+        storage. the returned object is a read-only :class:`Mapping` over
+        the runner's current snapshot (which :meth:`register` replaces
+        whole): it supports ``in``, ``len``, iteration, and
+        ``.keys()``/``.values()``/``.items()`` / ``.get()``, but mutation
+        attempts (``packages["x"] = y``, ``del packages["x"]``) raise
+        :class:`TypeError` and it has no ``pop`` or ``clear``. this protects
         the runner's registration invariants (one :class:`
         PackageMigrations` per name; topological ordering relies on
         consistent membership) from accidental caller-side edits while
@@ -183,7 +201,7 @@ class MigrationRunner:
             :class:`PackageMigrations`
         :rtype: Mapping[str, PackageMigrations]
         """
-        return MappingProxyType(self._packages)
+        return _LivePackages(lambda: self._packages)
 
     def register(self, package: PackageMigrations) -> None:
         """
@@ -196,7 +214,7 @@ class MigrationRunner:
         :param package: package-scoped migration registrations
         :ptype package: PackageMigrations
         """
-        self._packages[package.name] = package
+        self._packages = MappingProxyType({**self._packages, package.name: package})
 
     @traced
     async def apply_for_platform_schema(self, store: DataStore | MigrationSession, target: int | None = None) -> int:

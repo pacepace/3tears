@@ -31,6 +31,8 @@ release resets. A connection starts with both unknown, so its first release rese
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Final
 
 import asyncpg
@@ -41,6 +43,8 @@ __all__ = ["session_settings_connection_class"]
 
 #: the two settings a borrower changes on a pooled platform connection
 _TRACKED: Final = ("search_path", "statement_timeout")
+#: nothing known of either tracked setting
+_UNKNOWN: Final[Mapping[str, str | None]] = MappingProxyType(dict.fromkeys(_TRACKED))
 
 #: a plain session ``SET`` of a tracked setting, the one statement a value is learned from; one statement only, so
 #: skipping it never skips another
@@ -81,7 +85,8 @@ def session_settings_connection_class(
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self._held: dict[str, str | None] = dict.fromkeys(_TRACKED)
+            #: replaced whole
+            self._held: Mapping[str, str | None] = _UNKNOWN
 
         def get_reset_query(self) -> str:
             """``SET search_path`` back to the pool's, only when it may have moved.
@@ -100,7 +105,7 @@ def session_settings_connection_class(
             :rtype: None
             """
             if _CHANGES_SESSION_RE.search(query):
-                self._held = dict.fromkeys(_TRACKED)
+                self._held = _UNKNOWN
 
         async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:
             """send ``query``, unless it is a plain SET of a value this session already holds.
@@ -123,10 +128,10 @@ def session_settings_connection_class(
             if not self.is_in_transaction() and self._held[setting] == value:
                 return "SET"
             # unknown until it has been sent, and still unknown after it when a rollback may undo it
-            self._held[setting] = None
+            self._held = MappingProxyType({**self._held, setting: None})
             status = await super().execute(query, timeout=timeout)
             if not self.is_in_transaction():
-                self._held[setting] = value
+                self._held = MappingProxyType({**self._held, setting: value})
             return status
 
         async def fetch(self, query: str, *args: Any, **kwargs: Any) -> list[Any]:

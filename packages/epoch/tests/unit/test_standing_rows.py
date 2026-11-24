@@ -39,6 +39,10 @@ class _FakeAgentsDb:
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
         self.fail_next = 0
 
+    async def answers_from_yugabyte(self) -> bool:
+        """a PostgreSQL reader's: its keyed batches bounded beside their keys, and the question sent nowhere."""
+        return False
+
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         self.statements.append((sql, params))
         if self.fail_next:

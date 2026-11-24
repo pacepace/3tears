@@ -15,7 +15,8 @@ schemas that include every package's tables in one coherent step.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from types import MappingProxyType
 from typing import Any, TYPE_CHECKING
 
 from threetears.core.collections.generation import WriteGeneration
@@ -85,10 +86,11 @@ class PackageMigrations:
         self._name = name
         self._scope = scope
         self._depends_on = tuple(depends_on)
-        self._versions: dict[int, MigrationFunc] = {}
-        self._descriptions: dict[int, str] = {}
-        self._step_names: set[str] = set()
-        self._downgrades: dict[int, MigrationFunc] = {}
+        #: each replaced whole as migrations register
+        self._versions: Mapping[int, MigrationFunc] = MappingProxyType({})
+        self._descriptions: Mapping[int, str] = MappingProxyType({})
+        self._step_names: frozenset[str] = frozenset()
+        self._downgrades: Mapping[int, MigrationFunc] = MappingProxyType({})
         self._write_generation_tables: list[str] = []
 
     @property
@@ -263,7 +265,7 @@ class PackageMigrations:
                 msg = f"package {self._name!r}: step name {name!r} already registered"
                 raise DuplicateVersionError(msg)
             self._register(n, func, name)
-            self._step_names.add(name)
+            self._step_names = self._step_names | {name}
             return func
 
         return decorator
@@ -283,8 +285,8 @@ class PackageMigrations:
         if n in self._versions:
             msg = f"package {self._name!r}: migration version {n} already registered"
             raise DuplicateVersionError(msg)
-        self._versions[n] = func
-        self._descriptions[n] = description
+        self._versions = MappingProxyType({**self._versions, n: func})
+        self._descriptions = MappingProxyType({**self._descriptions, n: description})
 
     def downgrade(self, n: int) -> Callable[[MigrationFunc], MigrationFunc]:
         """
@@ -316,7 +318,7 @@ class PackageMigrations:
             if n in self._downgrades:
                 msg = f"package {self._name!r}: downgrade for version {n} already registered"
                 raise DuplicateVersionError(msg)
-            self._downgrades[n] = func
+            self._downgrades = MappingProxyType({**self._downgrades, n: func})
             return func
 
         return decorator

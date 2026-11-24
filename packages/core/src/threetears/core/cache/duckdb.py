@@ -752,14 +752,15 @@ class DuckDBBackend:
             name: tuple(tuple(key) for key in keys) for name, keys in (scope_keys or {}).items()
         }
         #: every table created, with its primary key's columns in key order (a key-less table's, the key kept for it)
-        self._primary_keys: dict[str, tuple[str, ...]] = {}
+        self._primary_keys: Mapping[str, tuple[str, ...]] = MappingProxyType({})
         #: every key-less table created, with the key this backend keeps for it
-        self._keyless: dict[str, KeyColumns] = {}
+        self._keyless: Mapping[str, KeyColumns] = MappingProxyType({})
         #: every table created, with the columns it holds NOT NULL (its primary key's)
-        self._not_null: dict[str, frozenset[str]] = {}
+        self._not_null: Mapping[str, frozenset[str]] = MappingProxyType({})
         self._db: Any = None  # duckdb.DuckDBPyConnection
         self._initialized: bool = False
-        self._schema_info: dict[str, dict[str, str]] = {}
+        #: per table, each replaced whole (under ``_db_lock``) as tables are created
+        self._schema_info: Mapping[str, Mapping[str, str]] = MappingProxyType({})
         self._local: threading.local = threading.local()
         self._pool_lock: threading.Lock = threading.Lock()
         self._pooled_connections: list[Any] = []
@@ -910,11 +911,18 @@ class DuckDBBackend:
                     log.debug(f"DuckDB table already registered, skipping: {table.name}")
                     continue
                 self._db.execute(self._generate_create_table(table))
-                self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
-                self._not_null[table.name] = frozenset(col.name for col in table.columns if col.primary_key)
-                self._primary_keys[table.name] = tuple(col.name for col in table.primary_key.columns)
+                codes = MappingProxyType({col.name: self._column_code(table.name, col) for col in table.columns})
+                self._schema_info = MappingProxyType({**self._schema_info, table.name: codes})
+                self._not_null = MappingProxyType(
+                    {**self._not_null, table.name: frozenset(col.name for col in table.columns if col.primary_key)}
+                )
+                self._primary_keys = MappingProxyType(
+                    {**self._primary_keys, table.name: tuple(col.name for col in table.primary_key.columns)}
+                )
                 if table.name in self._keyless_names:
-                    self._keyless[table.name] = tuple(col.name for col in table.columns if col.primary_key)
+                    self._keyless = MappingProxyType(
+                        {**self._keyless, table.name: tuple(col.name for col in table.columns if col.primary_key)}
+                    )
                 new_tables += 1
                 log.debug(f"Created DuckDB table: {table.name}")
             if not self._initialized:
@@ -2329,7 +2337,7 @@ class DuckDBBackend:
                 contain(exc, log=log, what="duckdb L1 backend close: a connection did not close")
         self._db = None
         self._initialized = False
-        self._schema_info = {}
+        self._schema_info = MappingProxyType({})
 
     def is_initialized(self) -> bool:
         """Return True if the backend has been initialized."""

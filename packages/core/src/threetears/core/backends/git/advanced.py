@@ -15,6 +15,8 @@ One :class:`AdvancedListener` serves every repository a process opens on one cli
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel
@@ -89,7 +91,8 @@ class AdvancedListener:
         :rtype: None
         """
         self._nats = nats
-        self._receivers: dict[tuple[str, str], AdvancedReceiver] = {}
+        #: per repository branch, replaced whole
+        self._receivers: Mapping[tuple[str, str], AdvancedReceiver] = MappingProxyType({})
         self._subscription: Subscription | None = None
 
     async def register(self, key: str, branch: str, receiver: AdvancedReceiver) -> None:
@@ -104,7 +107,7 @@ class AdvancedListener:
         :return: None
         :rtype: None
         """
-        self._receivers[(key, branch)] = receiver
+        self._receivers = MappingProxyType({**self._receivers, (key, branch): receiver})
         if self._subscription is None:
             # sender-posture: trigger-only -- the message only prompts a fetch; what changed is read from git
             self._subscription = await self._nats.subscribe_typed(
@@ -124,7 +127,7 @@ class AdvancedListener:
         :return: None
         :rtype: None
         """
-        self._receivers.pop((key, branch), None)
+        self._receivers = MappingProxyType({at: held for at, held in self._receivers.items() if at != (key, branch)})
         if not self._receivers and self._subscription is not None:
             subscription, self._subscription = self._subscription, None
             await self._nats.unsubscribe(subscription)

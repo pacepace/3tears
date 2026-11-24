@@ -36,6 +36,7 @@ import re
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Final
 
 from threetears.core.keyed._filters import binds_native_arrays
@@ -551,8 +552,9 @@ class WholeScanGuard:
         self._conn = conn
         self._threshold = threshold_rows
         self._share = paged_share
-        self._sizes: dict[str, int] = {}
-        self._returned: dict[str, int] = {}
+        #: both read-only snapshots, replaced whole
+        self._sizes: Mapping[str, int] = MappingProxyType({})
+        self._returned: Mapping[str, int] = MappingProxyType({})
         self._problems: list[str] = []
         self._yugabyte: bool | None = None
         #: every statement seen, in order
@@ -597,9 +599,10 @@ class WholeScanGuard:
     async def _size(self, relation: str) -> int:
         if relation not in self._sizes:
             schema, _, table = relation.partition(".")
-            self._sizes[relation] = int(
+            size = int(
                 await self._conn.fetchval(f'SELECT count(*) FROM "{schema}"."{table}"')  # noqa: S608 - plan's names
             )
+            self._sizes = MappingProxyType({**self._sizes, relation: size})
         return self._sizes[relation]
 
     async def _plan(self, sql: str, args: Sequence[Any]) -> list[str]:
@@ -645,7 +648,8 @@ class WholeScanGuard:
     async def _count(self, relations: list[str], rows: int) -> None:
         if len(relations) == 1:
             await self._size(relations[0])
-            self._returned[relations[0]] = self._returned.get(relations[0], 0) + rows
+            relation = relations[0]
+            self._returned = MappingProxyType({**self._returned, relation: self._returned.get(relation, 0) + rows})
 
     async def fetch(self, sql: str, *args: Any) -> Any:
         """``fetch``, after its plan is judged."""

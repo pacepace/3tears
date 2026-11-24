@@ -20,7 +20,7 @@ import asyncio
 from collections.abc import Mapping
 from uuid import UUID
 
-from threetears.core.frozen_state import EMPTY, with_entry, without_entry
+from threetears.core.frozen_state import EMPTY, frozen, with_entry, without_entry
 
 __all__ = ["KeyedTaskRegistry"]
 
@@ -103,7 +103,7 @@ class KeyedTaskRegistry:
         if not held:
             return
         await asyncio.gather(*held.values(), return_exceptions=True)
-        self._tasks = MappingProxyType({key: task for key, task in self._tasks.items() if held.get(key) is not task})
+        self._tasks = frozen((key, task) for key, task in self._tasks.items() if held.get(key) is not task)
 
     def __len__(self) -> int:
         """number of tasks currently registered.
