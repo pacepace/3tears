@@ -55,7 +55,6 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from operator import itemgetter
@@ -187,6 +186,39 @@ _DEFAULT_L2_BUCKET = "checkpoints"
 #: delete of it lands. During a long NATS outage every written key lands here; past this many the
 #: oldest is dropped with a WARNING naming it, and reads of it may again meet what L2 still holds.
 _L2_WRITE_BYPASS_LIMIT: Final = 4096
+
+
+def _bypass_holds(chunks: tuple[tuple[str, ...], ...], key: str) -> bool:
+    """whether ``key`` is in the write bypass ``chunks``.
+
+    :param chunks: the bypass, oldest chunk first
+    :ptype chunks: tuple[tuple[str, ...], ...]
+    :param key: an L2 key
+    :ptype key: str
+    :return: ``True`` when some chunk holds it
+    :rtype: bool
+    """
+    return any(key in chunk for chunk in chunks)
+
+
+def _bypass_without(chunks: tuple[tuple[str, ...], ...], key: str) -> tuple[tuple[str, ...], ...]:
+    """the write bypass ``chunks`` with ``key`` lifted, a new tuple; the same one when no chunk holds it.
+
+    Only the chunk holding the key is rebuilt (an emptied chunk is dropped); the rest are kept as they are.
+
+    :param chunks: the bypass, oldest chunk first
+    :ptype chunks: tuple[tuple[str, ...], ...]
+    :param key: the L2 key to lift
+    :ptype key: str
+    :return: the bypass without it
+    :rtype: tuple[tuple[str, ...], ...]
+    """
+    for at, chunk in enumerate(chunks):
+        if key in chunk:
+            kept = tuple(held for held in chunk if held != key)
+            return (*chunks[:at], *((kept,) if kept else ()), *chunks[at + 1 :])
+    return chunks
+
 
 #: separates the customer from the caller's own thread id inside a stored
 #: ``thread_id``. a UUID's text form contains no ``/``, so the split point is
@@ -707,8 +739,11 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._cache_bypassed_threads: frozenset[str] = frozenset()
         # write: L2 keys whose put and then delete both failed, so the key may still hold an older
         # checkpoint. lifted by the next put or delete of that key that lands; bounded by
-        # _L2_WRITE_BYPASS_LIMIT, oldest first.
-        self._l2_write_bypassed: OrderedDict[str, None] = OrderedDict()
+        # _L2_WRITE_BYPASS_LIMIT, oldest first. A ring of immutable chunks, oldest first, replaced
+        # whole: a failed write appends its keys as one chunk and the cap drops the oldest whole
+        # chunks, so a change costs O(chunks) and never copies a key, and a reader holding the
+        # tuple never sees it change.
+        self._l2_write_bypassed: tuple[tuple[str, ...], ...] = ()
         if l2_cache is not None and not isinstance(l2_cache, CheckpointL2RevisionCache):
             # said once per saver, not per read: such a cache is never refilled from an L3 read
             log.info(
@@ -728,6 +763,18 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: CheckpointScope
         """
         return self._scope
+
+    @property
+    def l2_write_bypass(self) -> tuple[tuple[str, ...], ...]:
+        """the L2 keys this saver reads from L3 alone after their write and delete both failed.
+
+        An immutable snapshot, oldest chunk first: a failed write appends its keys as one chunk.
+        Status and tests read it; it never changes under a holder.
+
+        :return: the bypassed L2 keys, as chunks
+        :rtype: tuple[tuple[str, ...], ...]
+        """
+        return self._l2_write_bypassed
 
     def customer_for_config(self, config: Mapping[str, Any] | None) -> UUID | None:
         """the customer a config-bearing call addresses, per this saver's scope.
@@ -1028,7 +1075,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 contain(exc, log=log, what="L2 checkpoint write failed; deleting the cached entry so readers use L3")
             else:
                 # the key now holds the newest checkpoint
-                self._l2_write_bypassed.pop(key, None)
+                self._l2_write_bypassed = _bypass_without(self._l2_write_bypassed, key)
                 return
         try:
             await self.l2_delete(thread_id, checkpoint_ns, customer=customer)
@@ -1048,10 +1095,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :return: nothing
         :rtype: None
         """
-        self._l2_write_bypassed[key] = None
-        self._l2_write_bypassed.move_to_end(key)
-        if len(self._l2_write_bypassed) > _L2_WRITE_BYPASS_LIMIT:
-            dropped, _ = self._l2_write_bypassed.popitem(last=False)
+        # a key already bypassed moves to the newest end, held once
+        chunks = (*_bypass_without(self._l2_write_bypassed, key), (key,))
+        held = sum(len(chunk) for chunk in chunks)
+        dropped_chunks = 0
+        while held > _L2_WRITE_BYPASS_LIMIT:
+            held -= len(chunks[dropped_chunks])
+            dropped_chunks += 1
+        self._l2_write_bypassed = chunks[dropped_chunks:]
+        for dropped in (old for chunk in chunks[:dropped_chunks] for old in chunk):
             log.warning(
                 "L2 write bypass is full; the oldest key returns to the caches and may meet an older checkpoint",
                 extra={"l2_bucket": self._l2_bucket, "l2_key": dropped, "limit": _L2_WRITE_BYPASS_LIMIT},
@@ -1087,7 +1139,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except Exception as exc:
             raise CheckpointCacheError(f"L2 checkpoint delete failed ({type(exc).__name__})") from exc
         # the key holds nothing now, so nothing older can be read from it
-        self._l2_write_bypassed.pop(key, None)
+        self._l2_write_bypassed = _bypass_without(self._l2_write_bypassed, key)
 
     async def l2_delete_prefix(self, prefix: str) -> bool:
         """sweep every L2 key under ``prefix``, reporting whether it happened.
@@ -1263,9 +1315,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         # a thread whose purge could not clear a cache is read from L3 alone: what the cache
         # still holds is the erased thread
-        bypassed = (
-            self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
-            or self.l2_key(thread_id, checkpoint_ns, customer=customer) in self._l2_write_bypassed
+        l2_key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
+        bypassed = self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads or (
+            _bypass_holds(self._l2_write_bypassed, l2_key)
         )
         # the L2 key's revision as read BEFORE the L3 query; the refill after that query lands
         # only if the key is unchanged since (:meth:`_refill_l2`). None: no refill.

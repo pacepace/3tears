@@ -681,6 +681,54 @@ class TestAWriteBypassLiftsWhenTheKeyIsWrittenAgain:
         await saver.aget_tuple({"configurable": {"thread_id": f"t-{limit}", "checkpoint_ns": ""}})
         assert l2.gets == ["t-0"], "the oldest key was dropped from the bypass; the newest is still on it"
 
+    async def test_a_key_bypassed_again_moves_to_the_newest_end_held_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        limit = 4096
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+
+        with caplog.at_level(logging.WARNING):
+            for n in range(limit):
+                await saver.l2_put(f"t-{n}", "", b"cp")
+            await saver.l2_put("t-0", "", b"cp")  # again: newest now, and still one entry
+            await saver.l2_put(f"t-{limit}", "", b"cp")
+
+        full = [r for r in caplog.records if "write bypass is full" in r.getMessage()]
+        assert [vars(r)["l2_key"] for r in full] == ["t-1"], "t-0 moved to the newest end, so t-1 is the oldest"
+        await saver.aget_tuple({"configurable": {"thread_id": "t-0", "checkpoint_ns": ""}})
+        await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
+        assert l2.gets == ["t-1"]
+
+    async def test_a_failed_write_adds_one_chunk_and_never_copies_the_held_keys(self) -> None:
+        """the cost check: 4096 keys through repeated failed writes, each one appending a chunk.
+
+        A failed write builds the next tuple of chunks from the ones already held, by reference: every
+        chunk still held after it is the very object held before it, so no key is ever copied.
+        """
+        l2 = _DictL2Cache()
+        l2.fail_put = RuntimeError("nats: timeout")
+        l2.fail_delete = RuntimeError("nats: timeout")
+        limit = 4096
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2, scope=_UNSCOPED)
+
+        for n in range(limit + 2):
+            before = saver.l2_write_bypass
+            await saver.l2_put(f"t-{n}", "", b"cp")
+            after = saver.l2_write_bypass
+            assert isinstance(after, tuple) and after[-1] == (saver.l2_key(f"t-{n}", ""),), (
+                "one new chunk, holding the failed write's key"
+            )
+            if n % 512 and n < limit - 1:
+                continue  # the whole by-reference walk below is itself O(chunks); sampled, and every write past the cap
+            kept = after[:-1]
+            assert all(a is b for a, b in zip(kept, before[len(before) - len(kept) :], strict=True)), (
+                "the chunks already held are kept by reference, never rebuilt"
+            )
+        assert sum(len(chunk) for chunk in saver.l2_write_bypass) == limit
+
     async def test_a_reused_failure_does_not_grow_its_traceback(self) -> None:
         l2 = _DictL2Cache()
         l2.fail_put = RuntimeError("nats: timeout")
