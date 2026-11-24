@@ -17,9 +17,10 @@ refuses unless it is a fast-forward.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from datetime import timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from threetears.core.coordination import HeldLease, KVLease, LeaseLossReason, LeaseUnavailable
@@ -96,7 +97,8 @@ class WriterRole:
         self._takeover = takeover
         self._forward_timeout = forward_timeout
         self._log_extra = {"lease_key": lease_key, **(log_extra or {})}
-        self._handlers: dict[str, ForwardHandler] = {}
+        #: per served name, replaced whole
+        self._handlers: Mapping[str, ForwardHandler] = MappingProxyType({})
         self._held: HeldLease | None = None
         self._serving: AsyncExitStack | None = None
         self._claiming = asyncio.Lock()
@@ -151,7 +153,7 @@ class WriterRole:
         """
         if name in self._handlers:
             raise ValueError(f"{name!r} is already served on {self.lease_key}")
-        self._handlers[name] = handler
+        self._handlers = MappingProxyType({**self._handlers, name: handler})
         if self._serving is not None:
             await self._serve_one(self._serving, name, handler)
 
