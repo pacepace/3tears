@@ -108,7 +108,7 @@ async def test_a_selected_expression_reaches_the_warehouse_as_written() -> None:
     rows = await read_keyed(
         reader,
         "enr.lsf_runs",
-        keys=KeyBatch(("run_id",), [(7,)], as_list=True),
+        keys=KeyBatch(("run_id",), [[7]], as_list=True),
         columns=["run_id", Selected("CAST(t.copied_at AS VARCHAR)", "copied_at")],
     )
     assert rows == [{"run_id": 7, "copied_at": "2026-11-03 20:00:00.123"}]
@@ -284,7 +284,7 @@ async def test_one_key_wider_than_a_reply_is_refused_not_split() -> None:
     """Flips if a cut answer for one key is retried, swallowed, or taken as that key's rows."""
     reader = DatasourceReader(_Client([{"a": 1}], truncated=True), "redshift")  # type: ignore[arg-type]
     with pytest.raises(DatasourceAnswerCut):
-        await read_keyed(reader, "t", keys=KeyBatch(("a",), [(1,)], as_list=True), columns=["a"])
+        await read_keyed(reader, "t", keys=KeyBatch(("a",), [[1]], as_list=True), columns=["a"])
 
 
 class _RowCappedHub:

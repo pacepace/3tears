@@ -137,7 +137,7 @@ def test_its_transaction_commits_on_a_clean_exit_and_rolls_back_on_an_error(conn
 def test_reads_answer_as_the_threaded_reader_does(conn: duckdb.DuckDBPyConnection) -> None:
     """Flips if an inline keyed read or drain answers other rows than the plain statement."""
     db = InlineDuckDB(conn)
-    rows = run_inline(read_keyed(db, "t", keys=KeyBatch(("a",), [("k3",)]), columns=["a", "b"]))
+    rows = run_inline(read_keyed(db, "t", keys=KeyBatch(("a",), [["k3"]]), columns=["a", "b"]))
     assert sorted((row["a"], row["b"]) for row in rows) == sorted(
         conn.execute("SELECT a, b FROM t WHERE a = 'k3'").fetchall()
     )
@@ -228,9 +228,7 @@ def test_a_keyed_read_into_arrow_runs_inline_typed_as_asked(conn: duckdb.DuckDBP
     conn.execute("BEGIN TRANSACTION")
     conn.execute("INSERT INTO t VALUES ('k9', 900, 9)")  # only this transaction sees it
     types = {"b": pa.int32(), "a": pa.string(), "v": pa.int64()}
-    tables = run_inline(
-        read_keyed_arrow(InlineDuckDB(conn), "t", keys=KeyBatch(("a",), [("k3",), ("k9",)]), types=types)
-    )
+    tables = run_inline(read_keyed_arrow(InlineDuckDB(conn), "t", keys=KeyBatch(("a",), [["k3", "k9"]]), types=types))
     read = pa.concat_tables(tables)
     assert read.schema == pa.schema(list(types.items()))
     assert sorted(zip(read["a"].to_pylist(), read["b"].to_pylist(), read["v"].to_pylist(), strict=True)) == sorted(
@@ -241,7 +239,7 @@ def test_a_keyed_read_into_arrow_runs_inline_typed_as_asked(conn: duckdb.DuckDBP
 def test_the_threaded_reader_answers_the_same_arrow(conn: duckdb.DuckDBPyConnection) -> None:
     """Flips if ThreadedDuckDB's Arrow read answers other rows or types than the inline one."""
     types = {"a": pa.string(), "b": pa.int64()}
-    keys = KeyBatch(("a",), [("k1",), ("k2",)])
+    keys = KeyBatch(("a",), [["k1", "k2"]])
     inline = pa.concat_tables(run_inline(read_keyed_arrow(InlineDuckDB(conn), "t", keys=keys, types=types)))
     threaded = pa.concat_tables(asyncio.run(read_keyed_arrow(ThreadedDuckDB(conn), "t", keys=keys, types=types)))
     assert threaded.schema == inline.schema
@@ -258,7 +256,7 @@ def test_records_answers_what_the_any_it_replaces_answers(conn: duckdb.DuckDBPyC
         return {"tenant": seed.tenant, "id": seed.index, "v": None if seed.null else seed.tie}
 
     async def helper(c: Any) -> Any:
-        keys = KeyBatch(("id",), [(i,) for i in ids], ("bigint",))
+        keys = KeyBatch(("id",), [[i for i in ids]], ("bigint",))
         return await read_keyed(c, "r", keys=keys, columns=["tenant", "id", "v"], by={"tenant": 0}, records=True)
 
     run_inline(
@@ -284,7 +282,7 @@ def test_a_where_fragment_holding_a_top_level_or_never_widens_past_the_pins(conn
 
     selected = conn.execute(literal_select("t", columns=["a", "b"], by={"a": "k1"}, where=[every])).fetchall()
     assert sorted(selected) == pinned
-    batch = run_inline(read_keyed(db, "t", keys=KeyBatch(("a",), [("k1",)]), columns=["a", "b"], where=[every]))
+    batch = run_inline(read_keyed(db, "t", keys=KeyBatch(("a",), [["k1"]]), columns=["a", "b"], where=[every]))
     assert sorted((row["a"], row["b"]) for row in batch) == pinned
     counted = run_inline(counts_by(db, "t", column="b", by={"a": "k1"}, where=[every]))
     assert sum(counted.values()) == len(pinned)

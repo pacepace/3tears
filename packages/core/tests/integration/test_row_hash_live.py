@@ -123,7 +123,7 @@ async def test_only_changed_rows_are_read_again_on_the_database(conn: asyncpg.Co
     stored = await read_keyed(
         conn,
         "results",
-        keys=KeyBatch(("id",), [(row[0],) for row in _ROWS], casts=("bigint",)),
+        keys=KeyBatch(("id",), [[row[0] for row in _ROWS]], casts=("bigint",)),
         columns=["id", hashed],
     )
     held: dict[tuple[Any, ...], str | None] = {(row["id"],): row[ROW_HASH_COLUMN] for row in stored}
@@ -243,7 +243,7 @@ async def test_the_rows_after_applying_the_changes_are_a_full_read_s_on_the_data
         copy = await read_keyed(
             db,
             "seeded",
-            keys=KeyBatch(columns=("tenant",), values=[("t0",)]),
+            keys=KeyBatch(columns=("tenant",), keys=[["t0"]]),
             columns=[*columns, row_hash_selected(hashed, await dialect_of(db))],
         )
         held: dict[tuple[Any, ...], str | None] = {

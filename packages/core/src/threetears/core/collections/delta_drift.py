@@ -320,7 +320,8 @@ class DeltaDriftSampler:
         pages = await read_keyed_arrow(
             self._l3,
             table.name,
-            keys=KeyBatch(table.key, list(drawn.keys), casts),
+            # the sample's keys a column each (a bounded sample, drawn on a thread as Python texts for its comparisons)
+            keys=KeyBatch(table.key, [list(column) for column in zip(*drawn.keys, strict=True)], casts),
             types=rail_arrow_types(table.columns),
         )
         upto = await self._generation(table.name)

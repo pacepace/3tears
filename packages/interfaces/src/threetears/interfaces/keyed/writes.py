@@ -35,7 +35,14 @@ from threetears.interfaces.keyed.filters import (
     renumbered,
 )
 from threetears.interfaces.keyed.keys import stated_literals
-from threetears.interfaces.keyed.rows import _TEXT_TYPES, DEFAULT_KEY_BATCH, KeyBatch, _text
+from threetears.interfaces.keyed.rows import (
+    DEFAULT_KEY_BATCH,
+    PLAIN_KEYS,
+    KeyBatch,
+    KeyBinder,
+    KeyChunk,
+    _typed_array,
+)
 
 __all__ = [
     "Increment",
@@ -92,19 +99,21 @@ class Increment:
     amount: Any
 
 
-def _named(keys: KeyBatch, chunk: Sequence[tuple[Any, ...]], first: int, natively: bool) -> tuple[str, list[Any]]:
-    """the condition naming ``chunk``'s keys in a write, placeholders from ``first``: one array a column (a text
-    array cast to the column's type where the connection binds no typed arrays), a list of placeholders for a
-    database with none, ``IS NOT DISTINCT FROM`` each key for a null-safe batch.
+def _named(keys: KeyBatch, chunk: KeyChunk, first: int, natively: bool, binder: KeyBinder) -> tuple[str, list[Any]]:
+    """the condition naming ``chunk``'s keys in a write, placeholders from ``first``: ONE array a column (a plain
+    column's list, of its type where the connection binds it natively, else of texts; an Arrow column's literal text),
+    a list of placeholders for a database with none, ``IS NOT DISTINCT FROM`` each key for a null-safe batch.
 
     :param keys: the batch's shape
     :ptype keys: KeyBatch
-    :param chunk: the keys of one statement
-    :ptype chunk: Sequence[tuple[Any, ...]]
+    :param chunk: the keys of one statement, one sequence a key column
+    :ptype chunk: KeyChunk
     :param first: the first placeholder's number
     :ptype first: int
     :param natively: whether the connection binds typed arrays natively
     :ptype natively: bool
+    :param binder: how the key columns bind
+    :ptype binder: KeyBinder
     :return: the condition and its parameters
     :rtype: tuple[str, list[Any]]
     """
@@ -114,28 +123,23 @@ def _named(keys: KeyBatch, chunk: Sequence[tuple[Any, ...]], first: int, nativel
         )
     columns = [quote_identifier(column) for column in keys.columns]
     width = len(columns)
+    count = len(chunk[0])
     if keys.as_list:
+        listed = [binder.listed(column) for column in chunk]
         if width == 1:
-            marks = ", ".join(f"${first + place}" for place in range(len(chunk)))
-            return f"{columns[0]} IN ({marks})", [key[0] for key in chunk]
+            marks = ", ".join(f"${first + place}" for place in range(count))
+            return f"{columns[0]} IN ({marks})", listed[0]
         rows = ", ".join(
-            "(" + ", ".join(f"${first + row * width + index}" for index in range(width)) + ")"
-            for row in range(len(chunk))
+            "(" + ", ".join(f"${first + row * width + index}" for index in range(width)) + ")" for row in range(count)
         )
-        return f"({', '.join(columns)}) IN ({rows})", [value for key in chunk for value in key]
+        return f"({', '.join(columns)}) IN ({rows})", [value for key in zip(*listed, strict=True) for value in key]
     arrays: list[Any] = []
     typed: list[str] = []
-    for index in range(width):
+    for index, values in enumerate(chunk):
         cast = keys.cast(index)
-        values = [key[index] for key in chunk]
-        textual = cast.lower() in _TEXT_TYPES
-        native = natively and not textual and not any(isinstance(value, str) for value in values)
-        arrays.append(values if native else [_text(value) for value in values])
-        place = first + index
-        if textual:
-            typed.append(f"${place}::text[]")
-        else:
-            typed.append(f"${place}::{cast}[]" if native else f"${place}::text[]::{cast}[]")
+        bound, kind = binder.array(values, cast, natively)
+        arrays.append(bound)
+        typed.append(_typed_array(first + index, cast, kind))
     if keys.null_safe:
         unnested = ", ".join(f"unnest({array}) AS k{index}" for index, array in enumerate(typed))
         joined = " AND ".join(f"{column} IS NOT DISTINCT FROM k.k{index}" for index, column in enumerate(columns))
@@ -186,13 +190,14 @@ def _returning(columns: Sequence[str]) -> str:
     return f" RETURNING {', '.join(quote_identifier(column) for column in columns)}" if columns else ""
 
 
-def _chunks(keys: KeyBatch | None, batch: int) -> list[list[tuple[Any, ...]]] | list[None]:
+def _chunks(keys: KeyBatch | None, batch: int, binder: KeyBinder) -> list[KeyChunk] | list[None]:
     if keys is None:
         return [None]
     if batch < 1:
         raise ValueError(f"a keyed write names at least one key a statement, got {batch}")
-    unique = list(dict.fromkeys(tuple(key) for key in keys.values))
-    return [unique[start : start + batch] for start in range(0, len(unique), batch)]
+    unique = binder.distinct(keys)
+    total = len(unique[0])
+    return [tuple(column[start : start + batch] for column in unique) for start in range(0, total, batch)]
 
 
 def _statements(
@@ -207,14 +212,15 @@ def _statements(
     batch: int,
     prefix: Mapping[str, str] | None,
     natively: bool,
+    binder: KeyBinder,
 ) -> list[tuple[str, list[Any]]]:
     """an ``UPDATE ... SET <assignments>`` (a ``DELETE`` when None) once a batch of ``keys`` (once when None)."""
     statements: list[tuple[str, list[Any]]] = []
     first = len(head_params) + 1
-    for chunk in _chunks(keys, batch):
+    for chunk in _chunks(keys, batch, binder):
         if keys is not None and not chunk:
             continue
-        named = None if chunk is None or keys is None else _named(keys, chunk, first, natively)
+        named = None if chunk is None or keys is None else _named(keys, chunk, first, natively, binder)
         named_rows, params = _guarded(by, where, table, first, named, prefix=prefix)
         tail = _returning(returning)
         if assignments is None:
@@ -236,6 +242,7 @@ def update_keyed_statements(
     batch: int = DEFAULT_KEY_BATCH,
     prefix: Mapping[str, str] | None = None,
     natively: bool = False,
+    binder: KeyBinder = PLAIN_KEYS,
 ) -> list[tuple[str, list[Any]]]:
     """every statement setting ``values`` on the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name, and
     its binds: what ``threetears.core.keyed.update_keyed`` sends.
@@ -261,6 +268,8 @@ def update_keyed_statements(
     :ptype prefix: Mapping[str, str] | None
     :param natively: whether the connection binds typed arrays natively (asyncpg's own)
     :ptype natively: bool
+    :param binder: how the key columns bind (``PLAIN_KEYS``, or ``threetears.core.keyed``'s Arrow binder)
+    :ptype binder: KeyBinder
     :return: each statement and its binds, one a batch of keys (one for ``by`` alone); none for an empty batch
     :rtype: list[tuple[str, list[Any]]]
     :raises ValueError: when ``values`` is empty, neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix
@@ -291,6 +300,7 @@ def update_keyed_statements(
         batch=batch,
         prefix=prefix,
         natively=natively,
+        binder=binder,
     )
 
 
@@ -304,6 +314,7 @@ def delete_keyed_statements(
     batch: int = DEFAULT_KEY_BATCH,
     prefix: Mapping[str, str] | None = None,
     natively: bool = False,
+    binder: KeyBinder = PLAIN_KEYS,
 ) -> list[tuple[str, list[Any]]]:
     """every statement deleting the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name, and its binds:
     what ``threetears.core.keyed.delete_keyed`` sends.
@@ -324,6 +335,8 @@ def delete_keyed_statements(
     :ptype prefix: Mapping[str, str] | None
     :param natively: whether the connection binds typed arrays natively (asyncpg's own)
     :ptype natively: bool
+    :param binder: how the key columns bind (``PLAIN_KEYS``, or ``threetears.core.keyed``'s Arrow binder)
+    :ptype binder: KeyBinder
     :return: each statement and its binds
     :rtype: list[tuple[str, list[Any]]]
     :raises ValueError: when neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix is empty or not text
@@ -339,6 +352,7 @@ def delete_keyed_statements(
         batch=batch,
         prefix=prefix,
         natively=natively,
+        binder=binder,
     )
 
 

@@ -296,7 +296,7 @@ async def _fetch_embeddings(
         rows = await read_keyed(
             with_options(l3_pool, customer_scope=customer_scope),
             table_name,
-            keys=KeyBatch(("id",), [(row_id,) for row_id in ids], ("uuid",)),
+            keys=KeyBatch(("id",), [list(ids)], ("uuid",)),
             columns=_EMBEDDING_COLUMNS,
         )
         for row in rows:

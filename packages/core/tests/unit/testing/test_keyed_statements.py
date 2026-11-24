@@ -26,6 +26,9 @@ from threetears.core.keyed import (
 )
 from threetears.core.testing.keyed_statements import decode, keyed_fetch
 
+
+pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
+
 _T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _NOW = datetime(2026, 11, 10, 13, 0, tzinfo=UTC)
 
@@ -81,7 +84,7 @@ async def test_a_keyed_read_answers_the_rows_its_keys_and_tenant_name() -> None:
     found = await read_keyed(
         store,
         "items",
-        keys=KeyBatch(("item",), [(k,) for k in wanted], ("uuid",)),
+        keys=KeyBatch(("item",), [[k for k in wanted]], ("uuid",)),
         columns=["item", "n"],
         by={"tenant": tenant},
     )
@@ -199,7 +202,7 @@ async def test_keyed_fetch_answers_each_read_by_key_in_turn_and_hands_every_othe
             return await fetch(sql, *args)
 
     pool = _Pool()
-    keys = KeyBatch(columns=("id",), values=[(first["id"],)], casts=("uuid",))
+    keys = KeyBatch(columns=("id",), keys=[[first["id"]]], casts=("uuid",))
     assert await read_keyed(pool, "widgets", keys=keys, columns=("id", "name")) == [first]
     await keyset_page(pool, "widgets", columns=("id", "name"), by={"tenant": 1}, order=(Sort("name"),), limit=5)
     assert await read_keyed(pool, "gadgets", keys=keys, columns=("id",)) == []

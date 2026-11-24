@@ -144,8 +144,16 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
     :return: the statement, its remaining parameters and the table; or None
     :rtype: tuple[str, list[Any], pyarrow.Table] | None
     """
-    long = [i for i, p in enumerate(params) if isinstance(p, list | tuple) and len(p) >= _ARROW_LIST_FROM]
-    if not _PYARROW or not long:
+    if not _PYARROW:
+        return None
+    # an Arrow array (a key batch's column, bound in Arrow by threetears.core.keyed.binding) at any length: DuckDB
+    # binds no Arrow array as a parameter, and it is never made Python values here
+    long = [
+        i
+        for i, p in enumerate(params)
+        if isinstance(p, pa.Array | pa.ChunkedArray) or (isinstance(p, list | tuple) and len(p) >= _ARROW_LIST_FROM)
+    ]
+    if not long:
         return None
     found = _placeholders(query)
     if not found:
@@ -175,6 +183,14 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
     return "".join(pieces), [params[i] for i in kept], row
 
 
+def _plain(params: Sequence[Any]) -> list[Any]:
+    """the parameters as DuckDB binds them value by value: an Arrow array a statement could not read from the
+    variable (its placeholders not matched to its parameters) made its Python values, slow but exact."""
+    if not _PYARROW:
+        return list(params)
+    return [p.to_pylist() if isinstance(p, pa.Array | pa.ChunkedArray) else p for p in params]
+
+
 def run_bound(conn: Any, query: str, params: Sequence[Any], answer: Callable[[Any], _T]) -> _T:
     """``answer(conn.execute(query, params))``, each list parameter of :data:`_ARROW_LIST_FROM` values or more bound
     through Arrow (module docstring): the same rows, the same plan, none of DuckDB's per-value pandas probes.
@@ -194,7 +210,7 @@ def run_bound(conn: Any, query: str, params: Sequence[Any], answer: Callable[[An
     """
     plan = _through_arrow(query, params)
     if plan is None:
-        return answer(conn.execute(query, list(params)))
+        return answer(conn.execute(query, _plain(params)))
     rewritten, bound, row = plan
     conn.register(_RELATION, row)
     try:

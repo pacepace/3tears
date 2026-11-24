@@ -191,7 +191,7 @@ async def read_reached(
             break
         cast = cast or cast_of(nodes)
         level = await read_keyed(
-            conn, table, keys=KeyBatch((on,), [(node,) for node in nodes], (cast,)), columns=read, by=by, batch=batch
+            conn, table, keys=KeyBatch((on,), [list(nodes)], (cast,)), columns=read, by=by, batch=batch
         )
     return list(answered.values())
 

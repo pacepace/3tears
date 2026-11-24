@@ -79,7 +79,7 @@ async def test_a_selected_column_reads_what_the_hand_written_cast_read(conn: asy
         helper=lambda c: read_keyed(
             c,
             "t",
-            keys=KeyBatch(("k",), [(k,) for k in keys], ("int",)),
+            keys=KeyBatch(("k",), [[k for k in keys]], ("int",)),
             columns=["k", Selected("CAST(t.s AS VARCHAR)", "s")],
             by={"tenant": "t0"},
         ),

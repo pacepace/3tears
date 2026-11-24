@@ -26,6 +26,7 @@ pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
+from threetears.core.testing.keyed_statements import as_lists, bound_values  # noqa: E402
 from threetears.core.collections.copy_follower import FollowedTable  # noqa: E402
 from threetears.core.collections.delta_drift import DeltaDriftSampler  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
@@ -76,7 +77,10 @@ class _L3:
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         await asyncio.sleep(0)
         self.statements.append((sql, params))
-        return run_bound(self.db.cursor(), sql, params, _dict_rows)
+        # L3's array literals (Arrow mode's one text a key column) read back as the lists DuckDB binds
+        # each key column a list again (Arrow mode binds one text): DuckDB runs L3's statement
+        listed, lists = as_lists(sql, params)
+        return run_bound(self.db.cursor(), listed, lists, _dict_rows)
 
 
 class _Log:
@@ -164,9 +168,10 @@ async def test_only_keyed_reads_of_the_sampled_keys_reach_l3(tmp_path: Path) -> 
     assert len(l3.statements) == 1
     sql, params = l3.statements[0]
     # the key columns bound as one array each, one entry a sampled key (then the planner's hints, deduplicated)
-    states, geo_ids = params[0], params[1]
+    states, geo_ids = bound_values(sql, params, 1), bound_values(sql, params, 2)
     assert len(set(zip(states, geo_ids, strict=True))) == len(states) == 3
-    answered = run_bound(l3.db.cursor(), sql, params, _dict_rows)
+    listed, lists = as_lists(sql, params)
+    answered = run_bound(l3.db.cursor(), listed, lists, _dict_rows)
     assert {(row["state"], str(row["geo_id"])) for row in answered} == set(zip(states, geo_ids, strict=True))
     assert _sampled("equal") >= 3
 

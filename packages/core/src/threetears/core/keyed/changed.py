@@ -701,14 +701,20 @@ async def _read_changed(
             # keys: 4.4 s of planning against 0.11 s). The parts are NULL-free: a NULL part is pinned above
             KeyBatch(
                 columns=tuple(key_columns[at] for at in present),
-                values=[tuple(str(texts[at]) for at in present) for texts in map(canonical, pattern_keys)],
+                keys=[
+                    list(column)
+                    for column in zip(
+                        *(tuple(str(texts[at]) for at in present) for texts in map(canonical, pattern_keys)),
+                        strict=True,
+                    )
+                ],
                 as_list=True,
                 as_text=tuple(text for text in spelled if text is not None),
             )
             if dialect is Dialect.REDSHIFT and len(present) > 1 and None not in spelled
             else KeyBatch(
                 columns=tuple(key_columns[at] for at in present),
-                values=[tuple(key[at] for at in present) for key in pattern_keys],
+                keys=[[key[at] for key in pattern_keys] for at in present],
                 casts=tuple(order[at].cast or "text" for at in present),
                 as_list=dialect is Dialect.REDSHIFT,
             )

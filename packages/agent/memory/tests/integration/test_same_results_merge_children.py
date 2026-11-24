@@ -74,7 +74,7 @@ async def test_the_collision_s_chunks_are_the_tuple_set_s(conn: asyncpg.Connecti
             helper=lambda c: read_keyed(
                 c,
                 "memory_chunks",
-                keys=KeyBatch(("memory_id",), [(memory,) for memory in named], casts=("uuid",)),
+                keys=KeyBatch(("memory_id",), [[memory for memory in named]], casts=("uuid",)),
                 by={"agent_id": agent},
                 columns=["agent_id", "chunk_id"],
             ),
@@ -97,7 +97,7 @@ async def test_the_collision_s_contents_are_the_tuple_set_s(conn: asyncpg.Connec
             helper=lambda c: read_keyed(
                 c,
                 "media_content",
-                keys=KeyBatch(("media_id",), [(media,) for media in named], casts=("uuid",)),
+                keys=KeyBatch(("media_id",), [[media for media in named]], casts=("uuid",)),
                 by={"agent_id": agent},
                 columns=["agent_id", "content_id"],
             ),

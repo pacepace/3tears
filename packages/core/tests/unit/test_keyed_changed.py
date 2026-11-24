@@ -40,6 +40,9 @@ from threetears.core.keyed import (
 from threetears.core.testing.same_results import Seeded, assert_same_results
 from threetears.interfaces.keyed import HashEncoding
 
+
+pytestmark = pytest.mark.usefixtures("plain_keys")  # the no-Arrow binding these tests pin (conftest)
+
 _HASHED = (
     HashColumn("name"),
     HashColumn("votes", HashKind.INTEGER),
@@ -294,7 +297,7 @@ def test_the_rows_after_applying_the_changes_are_a_full_read_s(conn: duckdb.Duck
         copy = await read_keyed(
             db,
             "seeded",
-            keys=KeyBatch(columns=("tenant",), values=[("t0",)]),
+            keys=KeyBatch(columns=("tenant",), keys=[["t0"]]),
             columns=[*columns, row_hash_selected(hashed, Dialect.DUCKDB)],
         )
         held = {("t0", found["id"]): ("0" * 32 if found["id"] % 3 == 0 else found[ROW_HASH_COLUMN]) for found in copy}
@@ -760,7 +763,7 @@ def grouped_same_results(dialect: Dialect) -> dict[str, Any]:
         copy = await read_keyed(
             db,
             "seeded_groups",
-            keys=KeyBatch(columns=("tenant",), values=[("t0",)]),
+            keys=KeyBatch(columns=("tenant",), keys=[["t0"]]),
             columns=[*columns, row_hash_selected(hashed, dialect)],
         )
         rows = {("t0", found["grp"], found["id"]): dict(found) for found in copy}
@@ -1023,7 +1026,12 @@ def test_a_key_batch_spelled_as_text_reads_the_rows_the_tuple_list_reads(text_ke
         read_keyed(
             reader,
             "keyed",
-            keys=KeyBatch(("a", "b", "n", "d", "f"), [_texts(key) for key in named], as_list=True, as_text=_KEY_TEXTS),
+            keys=KeyBatch(
+                ("a", "b", "n", "d", "f"),
+                [list(column) for column in zip(*map(_texts, named), strict=True)],
+                as_list=True,
+                as_text=_KEY_TEXTS,
+            ),
             columns=["a", "b", "n", "v"],
         )
     )
@@ -1035,8 +1043,13 @@ def test_a_key_batch_spelled_as_text_reads_the_rows_the_tuple_list_reads(text_ke
             "keyed",
             keys=KeyBatch(
                 ("a", "b", "n", "d", "f"),
-                [("ab", "c", 1, Decimal("1.50"), True), ("", "1:a", 1, Decimal("1.50"), True)]
-                + [("x\x1fy", "z", -3, Decimal("-0.05"), False), ("Peña ✓", "選挙", 10, Decimal("0"), False)],
+                [
+                    ["ab", "", "x\x1fy", "Peña ✓"],
+                    ["c", "1:a", "z", "選挙"],
+                    [1, 1, -3, 10],
+                    [Decimal("1.50"), Decimal("1.50"), Decimal("-0.05"), Decimal("0")],
+                    [True, True, False, False],
+                ],
                 as_list=True,
             ),
             columns=["a", "b", "n", "v"],
@@ -1049,13 +1062,13 @@ def test_a_key_batch_spelled_as_text_is_a_read_s_list_of_texts_one_a_column() ->
     """Flips if a text-spelled batch is taken bound as arrays, with a text per column missing, with a value that is no
     text (a NULL part is pinned IS NULL, never spelled), or by a write (its texts are written over ``t``)."""
     with pytest.raises(ValueError, match="as a list"):
-        KeyBatch(("a", "b"), [("x", "y")], as_text=('t."a"', 't."b"'))
+        KeyBatch(("a", "b"), [["x"], ["y"]], as_text=('t."a"', 't."b"'))
     with pytest.raises(ValueError, match="each of its 2 columns"):
-        KeyBatch(("a", "b"), [("x", "y")], as_list=True, as_text=('t."a"',))
+        KeyBatch(("a", "b"), [["x"], ["y"]], as_list=True, as_text=('t."a"',))
     with pytest.raises(ValueError, match="text"):
-        KeyBatch(("a", "b"), [("x", None)], as_list=True, as_text=('t."a"', 't."b"'))
+        KeyBatch(("a", "b"), [["x"], [None]], as_list=True, as_text=('t."a"', 't."b"'))
     with pytest.raises(ValueError, match="text"):
-        KeyBatch(("a", "b"), [("x", 1)], as_list=True, as_text=('t."a"', 't."b"'))
+        KeyBatch(("a", "b"), [["x"], [1]], as_list=True, as_text=('t."a"', 't."b"'))
     db = duckdb.connect()
     db.execute("CREATE TABLE w (a VARCHAR, b VARCHAR, v BIGINT)")
     with pytest.raises(ValueError, match="read"):
@@ -1064,7 +1077,7 @@ def test_a_key_batch_spelled_as_text_is_a_read_s_list_of_texts_one_a_column() ->
                 InlineDuckDB(db),
                 "w",
                 values={"v": 1},
-                keys=KeyBatch(("a", "b"), [("x", "y")], as_list=True, as_text=('t."a"', 't."b"')),
+                keys=KeyBatch(("a", "b"), [["x"], ["y"]], as_list=True, as_text=('t."a"', 't."b"')),
             )
         )
     db.close()

@@ -15,6 +15,7 @@ import pytest
 
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
+from threetears.core.testing.keyed_statements import bound_values
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import (
     EpochGenerationReader,
@@ -46,9 +47,10 @@ class _FakeAgentsDb:
         assert f"FROM {_TABLE} AS t" in sql or f'FROM "{_TABLE}" AS t' in sql, sql
         if len(params) == 1:
             # a slice's read by the key's leading part (the customers bound as one text array)
-            customers = {UUID(customer) for customer in params[0]}
+            customers = {UUID(customer) for customer in bound_values(sql, params, 1)}
             return [dict(row) for (customer, _), row in self.rows.items() if customer in customers]
-        named = {(UUID(customer), UUID(agent)) for customer, agent in zip(params[0], params[1], strict=True)}
+        customers_bound, agents = bound_values(sql, params, 1), bound_values(sql, params, 2)
+        named = {(UUID(customer), UUID(agent)) for customer, agent in zip(customers_bound, agents, strict=True)}
         return [dict(row) for key, row in self.rows.items() if key in named]
 
 
@@ -111,8 +113,8 @@ async def test_the_set_is_read_whole_only_cold_and_each_change_by_its_whole_key(
     assert await rows.keys() == sorted([(standing["customer_id"], standing["id"]), (added["customer_id"], added["id"])])
     assert cold.calls == 1
     assert len(db.statements) == 2
-    for _sql, params in db.statements:
-        assert len(params[0]) == 1 and len(params[1]) == 1, "one changed row, named by its whole key"
+    for sql, params in db.statements:
+        assert len(bound_values(sql, params, 1)) == len(bound_values(sql, params, 2)) == 1, "one row, its whole key"
 
 
 async def test_a_slice_is_read_by_its_prefix_and_nothing_else_held_moves() -> None:
@@ -222,7 +224,7 @@ async def test_the_rows_are_read_by_key_and_judged_again() -> None:
 
     assert [(r["customer_id"], r["id"]) for r in found] == sorted((r["customer_id"], r["id"]) for r in held[1:])
     assert all(r["name"] == "a" for r in found)
-    assert [len(params[0]) for _sql, params in db.statements] == [2, 2, 1]
+    assert [len(bound_values(sql, params, 1)) for sql, params in db.statements] == [2, 2, 1]
     assert await _set(_FakeAgentsDb([]), _Cold(_FakeAgentsDb([]))).read(("name",)) == []
 
 
@@ -277,8 +279,8 @@ async def test_a_row_written_between_the_cold_read_and_the_follow_is_read() -> N
         await registry.stop_invalidation_listener()
 
     assert await rows.count() == 2
-    assert [params[:2] for _sql, params in db.statements] == [
-        ([f"{between['customer_id']}"], [f"{between['id']}"]),
+    assert [[bound_values(sql, params, place) for place in (1, 2)] for sql, params in db.statements] == [
+        [[f"{between['customer_id']}"], [f"{between['id']}"]],
     ], "only the row written between is read by key"
 
 

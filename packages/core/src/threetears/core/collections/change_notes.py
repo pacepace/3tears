@@ -461,7 +461,7 @@ async def _noted_whole_since(
             scan(notes, ("id", "noted_at"), where=[Fragment("t.key_text IS NULL AND t.table_name = $1", (table,))]),
         )
         held = [
-            (str(note["id"]),)
+            str(note["id"])
             for note in looked
             if note["noted_at"] >= reach and (until is None or note["noted_at"] <= until)
         ]
@@ -470,7 +470,7 @@ async def _noted_whole_since(
         for note in await read_keyed(
             pool,
             notes,
-            keys=KeyBatch(("id",), held, casts=("uuid",)),
+            keys=KeyBatch(("id",), [held], casts=("uuid",)),
             columns=("tenant", Selected("t.columns::text", "reach")),
         ):
             reaches.setdefault(None if note["tenant"] is None else str(note["tenant"]), []).append(note["reach"])

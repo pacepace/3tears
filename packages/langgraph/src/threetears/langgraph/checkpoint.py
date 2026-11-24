@@ -2308,7 +2308,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 await delete_keyed(
                     counted,
                     "checkpoint_writes",
-                    keys=KeyBatch(("thread_id",), [(thread,) for thread in storage_thread_ids]),
+                    keys=KeyBatch(("thread_id",), [list(storage_thread_ids)]),
                     where=[Fragment(_PRUNED_WRITE, marker)],
                 )
             ).count
@@ -2316,7 +2316,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 await delete_keyed(
                     counted,
                     "checkpoints",
-                    keys=KeyBatch(("thread_id",), [(thread,) for thread in storage_thread_ids]),
+                    keys=KeyBatch(("thread_id",), [list(storage_thread_ids)]),
                     where=[Fragment(_PRUNED_CHECKPOINT, marker)],
                 )
             ).count

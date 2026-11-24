@@ -33,6 +33,8 @@ from unittest.mock import AsyncMock
 
 __all__ = [
     "KeyedStatement",
+    "as_lists",
+    "bound_values",
     "decode",
     "keyed_fetch",
 ]
@@ -214,6 +216,7 @@ def decode(sql: str, args: Sequence[Any]) -> KeyedStatement:
     :rtype: KeyedStatement
     :raises ValueError: when the statement, or one of its conditions, is not one the helpers write
     """
+    sql, args = _arrays(sql, args)
     seeking = _SEEKING.match(sql)
     if seeking is not None:
         return _seeking_count(seeking, args)
@@ -355,6 +358,95 @@ def _same(held: Any, bound: Any) -> bool:
     return bool(held == bound) or (isinstance(bound, str) and not isinstance(held, str) and str(held) == bound)
 
 
+#: one element of an array literal: a quoted text (``\\`` escaping), or a bare one (``NULL`` a null)
+_ELEMENT: Final = re.compile(r'"((?:[^"\\]|\\.)*)"|([^,{}"]*)')
+
+#: a key column's array made once a statement (``(SELECT <array>)::<type>[]``, an InitPlan): read as the array itself
+_ONCE: Final = re.compile(
+    r"\(SELECT (string_to_array\(\$\d+::text, chr\(\d+\)(?:, chr\(\d+\))?\)(?:::[\w\[\]]+)?|\$\d+::text::[\w\[\]]+)\)"
+    r"::[\w\[\]]+"
+)
+
+#: a key column bound as one text split back in SQL (threetears.interfaces.keyed.rows.SplitText)
+_SPLIT: Final = re.compile(r"string_to_array\(\$(\d+)::text, chr\((\d+)\)(?:, chr\((\d+)\))?\)((?:::[\w\[\]]+)?)")
+
+#: a key column bound as one text, the array's literal (``$1::text::uuid[]``)
+_LITERAL_ARRAY: Final = re.compile(r"\$(\d+)::text::\w+\[\]")
+
+
+def _literal_values(bound: str) -> list[Any]:
+    """an array literal (``{"a",NULL,b}``) read back into its texts, a null as None."""
+    if not (bound.startswith("{") and bound.endswith("}")):
+        raise ValueError(f"an array literal the decoder cannot read: {bound[:80]}")
+    body = bound[1:-1]
+    values: list[Any] = []
+    at = 0
+    while at < len(body):
+        element = _ELEMENT.match(body, at)
+        if element is None:
+            raise ValueError(f"an array literal the decoder cannot read: {bound[:80]}")
+        quoted, bare = element.group(1), element.group(2)
+        if quoted is not None:
+            values.append(re.sub(r"\\(.)", r"\1", quoted))
+        else:
+            values.append(None if bare.strip() == "NULL" else bare.strip())
+        at = element.end() + 1
+    return values
+
+
+def _arrays(sql: str, args: Sequence[Any]) -> tuple[str, list[Any]]:
+    """the statement with each key column's array spelled as its placeholder, and the arguments with each such
+    column's bind read back into its values: a list as it is (no-Arrow mode), one text split back as the SQL splits it,
+    or an array literal."""
+    sql = _ONCE.sub(lambda matched: matched.group(1), sql)
+    values = list(args)
+    for split in _SPLIT.finditer(sql):
+        place, delimiter, null = int(split.group(1)), chr(int(split.group(2))), split.group(3)
+        text = values[place - 1]
+        if isinstance(text, str):
+            parts = text.split(delimiter) if text else []
+            values[place - 1] = [None if null is not None and part == chr(int(null)) else part for part in parts]
+    for literal in _LITERAL_ARRAY.finditer(sql):
+        place = int(literal.group(1))
+        if isinstance(values[place - 1], str):
+            values[place - 1] = _literal_values(values[place - 1])
+    return _SPLIT.sub(lambda matched: f"${matched.group(1)}", sql), values
+
+
+def as_lists(sql: str, args: Sequence[Any]) -> tuple[str, list[Any]]:
+    """the statement and its arguments with each key column bound as a list again (``$1::text[]::uuid[]``), however
+    the helper bound it: for a fake running a PostgreSQL statement on DuckDB, which binds a list.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param args: its bound values, in placeholder order
+    :ptype args: Sequence[Any]
+    :return: the statement and its arguments, each key column a list
+    :rtype: tuple[str, list[Any]]
+    """
+    _, values = _arrays(sql, args)
+    listed = _ONCE.sub(lambda matched: matched.group(1), sql)
+    listed = _SPLIT.sub(lambda matched: f"${matched.group(1)}::text[]{matched.group(4)}", listed)
+    return _LITERAL_ARRAY.sub(lambda matched: matched.group(0).replace("::text::", "::text[]::"), listed), values
+
+
+def bound_values(sql: str, args: Sequence[Any], place: int) -> list[Any]:
+    """placeholder ``place``'s key column as its values, however the helper bound it: a list (no-Arrow mode), or the
+    one text Arrow mode binds (:mod:`threetears.core.keyed.binding`), read back as ``sql`` splits or parses it. For
+    a fake reader standing in for PostgreSQL.
+
+    :param sql: the statement
+    :ptype sql: str
+    :param args: its bound values, in placeholder order
+    :ptype args: Sequence[Any]
+    :param place: the placeholder's number, from 1
+    :ptype place: int
+    :return: the column's values
+    :rtype: list[Any]
+    """
+    return list(_arrays(sql, args)[1][place - 1])
+
+
 def _value(text: str, args: Sequence[Any]) -> Any:
     place = re.fullmatch(_PLACE, text.strip())
     if place is not None:
@@ -386,7 +478,7 @@ def _condition(text: str, args: Sequence[Any]) -> _Condition:
     tupled = _TUPLE_IN.match(text)
     if tupled is not None:
         columns = [_column(item) for item in tupled.group(1).split(",")]
-        arrays = [args[int(place) - 1] for place in _UNNEST.findall(tupled.group(2))]
+        arrays = [list(args[int(place) - 1]) for place in _UNNEST.findall(tupled.group(2))]
         if len(arrays) != len(columns):
             raise ValueError(f"a key batch the decoder cannot read: {text}")
         keys = list(zip(*arrays, strict=True))

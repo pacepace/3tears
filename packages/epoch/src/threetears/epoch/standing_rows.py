@@ -321,7 +321,7 @@ class StandingRows:
         rows = await read_keyed(
             self._pool,
             standing.table,
-            keys=KeyBatch(standing.key, keys, standing.key_types),
+            keys=KeyBatch(standing.key, [list(column) for column in zip(*keys, strict=True)], standing.key_types),
             columns=wanted,
             batch=page,
         )
@@ -358,7 +358,7 @@ class StandingRows:
         found = await read_keyed(
             self._pool,
             standing.table,
-            keys=KeyBatch(standing.key, [key], standing.key_types),
+            keys=KeyBatch(standing.key, [[part] for part in key], standing.key_types),
             columns=standing.columns,
         )
         self._hold(key, found[0] if found else None)
