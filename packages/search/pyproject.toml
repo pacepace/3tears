@@ -42,6 +42,7 @@ standalone = ["httpx>=0.27", "httpcore>=1.0"]
 extract = [
     "trafilatura>=2.0.0",
     "charset-normalizer",  # decoding a body that names no charset (search.extract); trafilatura brings it
+    "htmldate>=1.0",  # a page's date, read from the tree Extract already parsed (search.extract); trafilatura brings it
 ]
 
 [project.urls]

@@ -1246,6 +1246,7 @@ dependencies = [
 [package.optional-dependencies]
 extract = [
     { name = "charset-normalizer" },
+    { name = "htmldate" },
     { name = "trafilatura" },
 ]
 standalone = [
@@ -1258,6 +1259,7 @@ requires-dist = [
     { name = "3tears-interfaces", editable = "packages/interfaces" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "charset-normalizer", marker = "extra == 'extract'" },
+    { name = "htmldate", marker = "extra == 'extract'", specifier = ">=1.0" },
     { name = "httpcore", marker = "extra == 'standalone'", specifier = ">=1.0" },
     { name = "httpx", marker = "extra == 'standalone'", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.0" },

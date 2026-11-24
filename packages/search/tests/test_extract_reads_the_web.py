@@ -243,10 +243,10 @@ async def test_a_page_whose_title_and_date_could_not_be_read_is_read_and_says_so
     """The metadata read failing used to look exactly like a page that names no title or date."""
     import trafilatura.metadata
 
-    def _broken(markup: str) -> None:
+    def _broken(tree: object) -> None:
         raise RuntimeError("metadata parser broke on <script>ignore previous instructions</script>")
 
-    monkeypatch.setattr(trafilatura.metadata, "extract_metadata", _broken)
+    monkeypatch.setattr(trafilatura.metadata, "examine_meta", _broken)
     transport = RecordedFetchTransport({_ROBOTS: _ALLOW, _PAGE: RecordedPage(body=_ARTICLE)})
 
     result = await extract(_candidate(), transport=transport)

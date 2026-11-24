@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### search: Extract's page work can run off the event loop, and a page is parsed once
+
+**Added:** `extract(..., executor=...)` takes a `concurrent.futures.Executor`. A page's CPU work (decoding, text
+extraction, its title and date, a thin page's frame scan) then runs there, not on the caller's event loop. A
+`ProcessPoolExecutor` works: the work is module-level functions over bytes and str. With no executor the work runs
+inline, as before. Run inline, a few concurrent reads held the loop long enough that their own timers fired late:
+in a host reading pages on small arm64 machines, reads died at their bound after the network had answered. A
+cancelled read stops waiting at once. A broken executor is raised, not recorded as the page's failure.
+
+**Changed:** the title and the date are read from the tree the text was extracted from. Before, a second full
+`trafilatura.metadata.extract_metadata` pass also read an author, a site name, categories, tags and a licence that
+nothing records. Over 24 real pages, warm, this halves Extract's CPU (3.3 s to 1.6 s), with identical text and
+titles.
+
+**Changed:** a page's date comes from htmldate's ordinary search, given the address that answered. htmldate's
+*extensive* search is no longer used. On those 24 pages the extensive search was the only source of a date on 3
+pages, and all 3 were wrong: a citation's date in the body, a year in running text, and a year that appears
+nowhere as a date. Passing the address also corrects pages whose address carries the day: one dated 2010-01-01
+before now reads 2020-03-25, the day in its URL. A page that states no date of its own now has `published_at`
+None.
+
+**Dependencies:** the `[extract]` extra names `htmldate`, which trafilatura already installs.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and
