@@ -108,6 +108,18 @@ from threetears.nats.subjects import set_default_namespace
 
 set_default_namespace("3tears")
 dataset_before = "pyarrow.dataset" in sys.modules
+loaded_before = set(sys.modules)
+dataset_calls = []
+if dataset_before:
+    # imported at startup (core.shared_arrow, on the main thread, as the no-lazy-imports rule has it): the read
+    # must still never go through it. pq.read_table opens its files through pyarrow.dataset.dataset
+    import pyarrow.dataset as ds
+
+    def _refused(*args, **kwargs):
+        dataset_calls.append(1)
+        raise RuntimeError("the read went through the dataset machinery")
+
+    ds.dataset = _refused
 sink = io.BytesIO()
 pq.write_table(pa.Table.from_pylist([{"race": "s1", "votes": Decimal("1.5")}]), sink)
 key, prefix, bucket = "p/0000_part_00.parquet", "p/", "b"
@@ -126,7 +138,12 @@ rows = asyncio.run(
     read_export(Store(), DatasourceExportResult(row_count=1, bucket=bucket, object_prefix=prefix, manifest_path="p/manifest"), bucket=bucket)
 )
 assert rows == [{"race": "s1", "votes": Decimal("1.5")}], rows
-print(json.dumps({"before": dataset_before, "after": "pyarrow.dataset" in sys.modules}))
+print(json.dumps({
+    "before": dataset_before,
+    "after": "pyarrow.dataset" in sys.modules,
+    "imported_by_the_read": sorted(n for n in set(sys.modules) - loaded_before if n.startswith("pyarrow")),
+    "dataset_calls": len(dataset_calls),
+}))
 """
 
 
@@ -134,10 +151,14 @@ def test_a_parquet_file_is_read_natively_never_through_the_dataset_machinery() -
     """an export's files are read with the native parquet reader over their bytes: the dataset machinery a
     ``pq.read_table`` goes through is never imported (its first import, on a reader thread, holds the interpreter
     lock), and no read calls back into a Python file object. Six threads reading an export's files at once that way
-    held the event loop 0.1 s (cobalt prod, 2026-10-31)."""
+    held the event loop 0.1 s (cobalt prod, 2026-10-31). Where startup already imported pyarrow.dataset (core's
+    shared_arrow does, on the main thread, when duckdb is installed: no lazy imports), the read still imports nothing
+    of pyarrow's and never calls the dataset machinery, which is refused for the read."""
     done = subprocess.run([sys.executable, "-c", _FIRST_READ], capture_output=True, text=True, check=True)  # noqa: S603
     seen = json.loads(done.stdout.strip().splitlines()[-1])
-    assert seen == {"before": False, "after": False}, seen
+    assert seen["after"] == seen["before"], seen
+    assert seen["imported_by_the_read"] == [], seen
+    assert seen["dataset_calls"] == 0, seen
 
 
 class TestReadExport:
