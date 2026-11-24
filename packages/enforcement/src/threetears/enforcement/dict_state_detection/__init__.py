@@ -10,13 +10,18 @@ per-repo configuration goes through :class:`DictStateConfig`;
 :func:`run_dict_state_enforcement` is the pytest-friendly entry point
 that orchestrates the detection / allowlist-integrity walkers, applies
 the in-code allowlist + known-violations filtering, and fails in
-strict mode.
+strict mode. In the trees a repo names immutable (``immutable_roots``) it also refuses a dict or set attribute
+changed in place after ``__init__`` (:mod:`.mutation`).
 """
 
 from threetears.enforcement.dict_state_detection.config import (
     AllowlistRationaleError,
     DictStateAllowlistEntry,
     DictStateConfig,
+)
+from threetears.enforcement.dict_state_detection.mutation import (
+    find_mutated_state_violations,
+    find_stale_immutable_debts,
 )
 from threetears.enforcement.dict_state_detection.runner import (
     run_dict_state_enforcement,
@@ -33,6 +38,8 @@ __all__ = [
     "DictStateConfig",
     "filter_against_allowlist",
     "find_dict_state_violations",
+    "find_mutated_state_violations",
     "find_stale_allowlist_entries",
+    "find_stale_immutable_debts",
     "run_dict_state_enforcement",
 ]

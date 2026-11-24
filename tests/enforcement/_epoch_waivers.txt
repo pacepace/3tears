@@ -1,7 +1,6 @@
 # epoch-discipline waivers: sites a detector matches that are not what its rule forbids.
 # <rule> :: <path> :: <function> :: <symbol> :: <count> :: <reason>. Pinned by count, like the allowlists.
 whole-drop :: packages/core/src/threetears/core/collections/registry.py :: CollectionRegistry.apply_epoch_change :: drop_table :: 2 :: a record naming the whole table is that write's change (an operator's reset, counted why=reset; an older writer's whole record, counted why=whole_record); no keyed commit is recorded as one
-whole-drop :: packages/core/src/threetears/core/collections/registry.py :: CollectionRegistry.clear :: _derived_caches.clear :: 1 :: registry teardown: clear() forgets the registry's own derived-cache handles at shutdown; it serves nothing afterwards
 whole-drop :: packages/datasources/src/threetears/datasources/drivers/redshift_driver.py :: RedshiftDriver.close :: _cache.clear :: 1 :: closing the driver drains its pooled CONNECTIONS (_cache holds sockets, not rows)
 whole-drop :: packages/evals/src/threetears/evals/run/judge_service.py :: JudgeService.aclose :: _client_cache.clear :: 1 :: closing the judge service releases its model CLIENT handles; no data rows are cached there
 whole-drop :: packages/models/src/threetears/models/cache.py :: ModelCache.clear :: _cache.clear :: 1 :: ModelCache holds provider model listings fetched from provider APIs, not collection rows; no epoch covers provider catalogues

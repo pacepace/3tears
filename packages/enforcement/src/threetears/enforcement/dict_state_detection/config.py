@@ -171,6 +171,13 @@ class DictStateConfig:
         and matching as :attr:`allowlist`; the distinction is purely
         semantic (allowed forever vs. tracked for fix). reusing the
         same dataclass keeps the matching logic uniform.
+    :ivar immutable_roots: trees (directories or modules) where an object's dict or set state is never changed in
+        place after ``__init__`` (:func:`~threetears.enforcement.dict_state_detection.mutation
+        .find_mutated_state_violations`): its owner assigns the next immutable value whole. :attr:`allowlist`
+        excuses nothing here (Pace, 2026-11-23: "small, owner-only, under the lock" is no exception).
+    :ivar immutable_known_violations: changes in place under :attr:`immutable_roots` tracked for a redesign, matched by
+        ``(file, class_name, attr_name)`` and audited for staleness like :attr:`known_violations`. A debt list, never
+        an allowance: each entry says what the redesign is.
     """
 
     repo_root: Path
@@ -179,3 +186,5 @@ class DictStateConfig:
     mode_env_var: str = "DICT_STATE_ENFORCEMENT_MODE"
     allowlist: tuple[DictStateAllowlistEntry, ...] = ()
     known_violations: tuple[DictStateAllowlistEntry, ...] = ()
+    immutable_roots: tuple[Path, ...] = ()
+    immutable_known_violations: tuple[DictStateAllowlistEntry, ...] = ()

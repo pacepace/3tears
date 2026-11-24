@@ -43,6 +43,10 @@ from threetears.enforcement.common import (
 from threetears.enforcement.dict_state_detection.config import (
     DictStateConfig,
 )
+from threetears.enforcement.dict_state_detection.mutation import (
+    find_mutated_state_violations,
+    find_stale_immutable_debts,
+)
 from threetears.enforcement.dict_state_detection.walkers import (
     filter_against_allowlist,
     find_dict_state_violations,
@@ -90,8 +94,17 @@ def run_dict_state_enforcement(
             config.repo_root,
         )
         aggregated.extend(true_violations)
+        if config.immutable_roots:
+            mutated = find_mutated_state_violations(config.immutable_roots, config.repo_root)
+            changed, _tracked = filter_against_allowlist(
+                mutated, (), config.immutable_known_violations, config.repo_root
+            )
+            aggregated.extend(changed)
 
     if walker in {"allowlist_integrity", "all"}:
+        aggregated.extend(
+            find_stale_immutable_debts(config.immutable_roots, config.immutable_known_violations, config.repo_root)
+        )
         aggregated.extend(
             find_stale_allowlist_entries(
                 src_roots,
