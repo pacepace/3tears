@@ -711,7 +711,7 @@ def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], 
     :ptype table: FollowedTable
     :param batches: the batches heard, the owner's snapshot
     :ptype batches: Sequence[pyarrow.Table]
-    :param staged: the keys at their epochs earlier passes staged (a table that opts in to delta files; else empty)
+    :param staged: the keys at their epochs earlier passes staged and no apply has taken yet
     :ptype staged: Sequence[pyarrow.Table]
     :param held: the scopes a write in progress holds
     :ptype held: frozenset[str]
@@ -732,9 +732,19 @@ def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], 
         left = left if left.num_rows else None
     if staged and rows.num_rows:
         before = _joined(staged, schema)
-        bring = before.filter(pa.array(_in(joined_key_texts(before, key), joined_key_texts(rows, key))))
-        if bring.num_rows:
-            rows = _distinct(pa.concat_tables([rows, bring]), [*key, _EPOCH])
+        # a key heard again at an epoch an earlier pass staged it at (its row broadcast and its epoch's record, one
+        # before the pass and one after) is staged already: read again, it was read twice for one change (the live
+        # refresh test, 2 runs in 6, 2026-11-24). Each record's keys are read once; a key heard with no epoch has none
+        # to match and is read as before
+        again = pc.and_(
+            pc.is_valid(rows.column(_EPOCH)),
+            pa.array(_in(joined_key_texts(rows, [*key, _EPOCH]), joined_key_texts(before, [*key, _EPOCH]))),
+        )
+        rows = rows.filter(pc.invert(pc.fill_null(again, False)))
+        if table.delta_files and rows.num_rows:
+            bring = before.filter(pa.array(_in(joined_key_texts(before, key), joined_key_texts(rows, key))))
+            if bring.num_rows:
+                rows = _distinct(pa.concat_tables([rows, bring]), [*key, _EPOCH])
     keys = _distinct(rows, key).sort_by([(column, "ascending") for column in key])
     positions = pc.index_in(joined_key_texts(rows, key), value_set=joined_key_texts(keys, key)).cast(pa.int64())
     pairs = rows.append_column(_AT, positions).sort_by([(_AT, "ascending")])
@@ -4449,7 +4459,9 @@ class CopyFollower:
                 continue
             self._reading = name
             try:
-                staged_before = self._staged_heard.get(name, ()) if table.delta_files else ()
+                # every table's: a key heard again at an epoch staged already is not read again (_taken); a table
+                # that opts in to delta files also merges each such key again from every epoch staged
+                staged_before = self._staged_heard.get(name, ())
                 take = await asyncio.to_thread(_taken, table, batches, staged_before, held)
                 staged = await self._stage_keyed(table, take, keys_stage, rows_stage, held)
             except _FileWaitError as wait:
