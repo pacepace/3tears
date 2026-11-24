@@ -165,6 +165,7 @@ if TYPE_CHECKING:
     RedshiftConnection = Any
     RedshiftCursor = Any
 
+from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.core.sql_fragments import FilterValue
 from threetears.core.declared import whole_read
 from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
@@ -1107,7 +1108,8 @@ class RedshiftDriver(Driver):
         self._closed = False
         # each fingerprinted relation's boolean columns, kept once a fingerprint has used them and
         # forgotten when one fails, so a relation rebuilt with a column turned boolean is read again
-        self._boolean_columns: dict[str, frozenset[str]] = {}
+        # (one per relation fingerprinted: a few; replaced whole, on the event loop, never from the worker thread)
+        self._boolean_columns: Mapping[str, frozenset[str]] = EMPTY
         # read by :func:`observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
         self._datasource_name = datasource_name
@@ -2747,7 +2749,7 @@ class RedshiftDriver(Driver):
         relation_key_expression(key)
         known = self._boolean_columns.get(relation)
 
-        def _do_sync(conn: RedshiftConnection) -> list[tuple[Any, ...]]:
+        def _do_sync(conn: RedshiftConnection) -> tuple[list[tuple[Any, ...]], frozenset[str]]:
             cursor = conn.cursor()
             try:
                 booleans = known if known is not None else _read_boolean_columns(cursor, relation)
@@ -2770,28 +2772,27 @@ class RedshiftDriver(Driver):
                     ),
                     "pyformat",
                 )
-                try:
-                    if values:
-                        cursor.execute(sql, values)
-                    else:
-                        cursor.execute(sql)
-                    rows = [tuple(row) for row in cursor.fetchall()] if group_by else [tuple(cursor.fetchone())]
-                except (
-                    Exception
-                ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
-                    self._boolean_columns.pop(relation, None)
-                    raise
-                # kept only once it has carried a fingerprint through
-                self._boolean_columns[relation] = booleans
-                return rows
+                if values:
+                    cursor.execute(sql, values)
+                else:
+                    cursor.execute(sql)
+                rows = [tuple(row) for row in cursor.fetchall()] if group_by else [tuple(cursor.fetchone())]
+                return rows, booleans
             finally:
                 cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
 
-        result: list[tuple[Any, ...]] = await self._acquire_and_run(_op)
-        return result
+        try:
+            result: tuple[list[tuple[Any, ...]], frozenset[str]] = await self._acquire_and_run(_op)
+        except Exception:  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
+            self._boolean_columns = without_entry(self._boolean_columns, relation)
+            raise
+        rows, booleans = result
+        # kept only once it has carried a fingerprint through
+        self._boolean_columns = with_entry(self._boolean_columns, relation, booleans)
+        return rows
 
     @property
     def export_config(self) -> ExportConfig | None:

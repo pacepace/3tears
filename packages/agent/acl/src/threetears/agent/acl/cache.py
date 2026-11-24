@@ -65,17 +65,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import RLock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
+from threetears.core.frozen_state import EMPTY, frozen, with_newest, without_entries, without_entry
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
 from threetears.agent.acl.types import GroupMembership, Trail
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 __all__ = [
+    "ACL_CACHE_LAYER_MAX_ENTRIES",
     "AclCache",
     "ActorMembershipEntry",
     "ActorMembershipKey",
@@ -86,6 +88,12 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the most entries each layer holds, the least recently stored dropped past it. Each layer is a read-only
+#: snapshot replaced whole on a store, so a reader never sees one change under it. The bound is the per-caller
+#: cache's (DEFAULT_CALLER_CACHE_MAX_ENTRIES): a layer is keyed per actor or per group and scope, the same order
+#: of count as callers; a dropped entry is simply loaded again on its next miss, never served stale.
+ACL_CACHE_LAYER_MAX_ENTRIES: Final = 10_000
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +247,9 @@ class AclCache:
     ) -> None:
         self.membership_loader = membership_loader
         self.grant_loader = grant_loader
-        self._membership: dict[ActorMembershipKey, ActorMembershipEntry] = {}
-        self._group_namespace: dict[GroupNamespaceKey, GroupNamespaceEntry] = {}
-        self._group_type_customer: dict[
-            GroupTypeCustomerKey,
-            GroupTypeCustomerEntry,
-        ] = {}
+        self._membership: Mapping[ActorMembershipKey, ActorMembershipEntry] = EMPTY
+        self._group_namespace: Mapping[GroupNamespaceKey, GroupNamespaceEntry] = EMPTY
+        self._group_type_customer: Mapping[GroupTypeCustomerKey, GroupTypeCustomerEntry] = EMPTY
         self._lock = RLock()
         # moved by every eviction; see :meth:`read_fence`
         self._evictions = 0
@@ -331,9 +336,9 @@ class AclCache:
         :rtype: None
         """
         self._evictions += 1
-        self._membership.clear()
-        self._group_namespace.clear()
-        self._group_type_customer.clear()
+        self._membership = EMPTY
+        self._group_namespace = EMPTY
+        self._group_type_customer = EMPTY
 
     def _size_locked(self) -> int:
         """total entries; the caller holds the lock.
@@ -432,7 +437,7 @@ class AclCache:
         )
         with self._lock:
             if self._trusted_locked() and not self._fence_moved(fence):
-                self._membership[key] = entry
+                self._membership = with_newest(self._membership, key, entry, limit=ACL_CACHE_LAYER_MAX_ENTRIES)
         return entry
 
     def invalidate_membership(self, key: ActorMembershipKey) -> None:
@@ -449,7 +454,7 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            self._membership.pop(key, None)
+            self._membership = without_entry(self._membership, key)
 
     def invalidate_membership_for_actor(
         self,
@@ -525,7 +530,9 @@ class AclCache:
         )
         with self._lock:
             if self._trusted_locked() and not self._fence_moved(fence):
-                self._group_namespace[key] = entry
+                self._group_namespace = with_newest(
+                    self._group_namespace, key, entry, limit=ACL_CACHE_LAYER_MAX_ENTRIES
+                )
         return entry
 
     def invalidate_group_namespace(self, key: GroupNamespaceKey) -> None:
@@ -538,7 +545,7 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            self._group_namespace.pop(key, None)
+            self._group_namespace = without_entry(self._group_namespace, key)
 
     def invalidate_namespace(self, namespace_id: UUID) -> None:
         """drop every per-namespace entry whose key names ``namespace_id``.
@@ -554,9 +561,9 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            doomed = [key for key in self._group_namespace if key.namespace_id == namespace_id]
-            for key in doomed:
-                del self._group_namespace[key]
+            self._group_namespace = without_entries(
+                self._group_namespace, [key for key in self._group_namespace if key.namespace_id == namespace_id]
+            )
 
     def invalidate_group(self, group_id: UUID) -> None:
         """drop every entry that names ``group_id`` in either assignment layer.
@@ -575,12 +582,13 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            ns_doomed = [ns_key for ns_key in self._group_namespace if ns_key.group_id == group_id]
-            for ns_key in ns_doomed:
-                del self._group_namespace[ns_key]
-            tc_doomed = [tc_key for tc_key in self._group_type_customer if tc_key.group_id == group_id]
-            for tc_key in tc_doomed:
-                del self._group_type_customer[tc_key]
+            self._group_namespace = without_entries(
+                self._group_namespace, [ns_key for ns_key in self._group_namespace if ns_key.group_id == group_id]
+            )
+            self._group_type_customer = without_entries(
+                self._group_type_customer,
+                [tc_key for tc_key in self._group_type_customer if tc_key.group_id == group_id],
+            )
 
     # -----------------------------------------------------------------
     # type+customer layer
@@ -631,7 +639,9 @@ class AclCache:
         )
         with self._lock:
             if self._trusted_locked() and not self._fence_moved(fence):
-                self._group_type_customer[key] = entry
+                self._group_type_customer = with_newest(
+                    self._group_type_customer, key, entry, limit=ACL_CACHE_LAYER_MAX_ENTRIES
+                )
         return entry
 
     def invalidate_group_type_customer(
@@ -647,7 +657,7 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            self._group_type_customer.pop(key, None)
+            self._group_type_customer = without_entry(self._group_type_customer, key)
 
     # -----------------------------------------------------------------
     # bulk operations
@@ -717,14 +727,12 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            doomed = [
-                key
+            self._group_namespace = frozen(
+                (key, entry)
                 for key, entry in self._group_namespace.items()
-                if entry.role_ids is None or role_id in entry.role_ids
-            ]
-            for key in doomed:
-                del self._group_namespace[key]
-            self._group_type_customer.clear()
+                if entry.role_ids is not None and role_id not in entry.role_ids
+            )
+            self._group_type_customer = EMPTY
 
     def evict_group_row(self, group_id: UUID) -> None:
         """a ``groups`` row changed: evict what was resolved through that group.
@@ -741,14 +749,15 @@ class AclCache:
         """
         with self._lock:
             self.invalidate_group(group_id)
-            self._membership.pop(ActorMembershipKey(actor_kind="group", actor_id=group_id), None)
-            doomed = [
-                key
-                for key, entry in self._membership.items()
-                if any(membership.group_id == group_id for membership in entry.memberships)
-            ]
-            for key in doomed:
-                del self._membership[key]
+            own = ActorMembershipKey(actor_kind="group", actor_id=group_id)
+            self._membership = without_entries(
+                self._membership,
+                [
+                    key
+                    for key, entry in self._membership.items()
+                    if key == own or any(membership.group_id == group_id for membership in entry.memberships)
+                ],
+            )
 
     def drop_membership_layer(self) -> None:
         """empty the membership layer, for a change to ``group_members`` whose reach is unknown.
@@ -758,7 +767,7 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            self._membership.clear()
+            self._membership = EMPTY
 
     def drop_assignment_layers(self) -> None:
         """empty both assignment layers, for a change to ``role_assignments`` or ``roles`` whose reach is unknown.
@@ -768,8 +777,8 @@ class AclCache:
         """
         with self._lock:
             self._evictions += 1
-            self._group_namespace.clear()
-            self._group_type_customer.clear()
+            self._group_namespace = EMPTY
+            self._group_type_customer = EMPTY
 
     @property
     def size(self) -> int:
