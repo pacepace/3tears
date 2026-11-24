@@ -703,8 +703,8 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
         return read(path, **checks)
 
     class CountedRows(delta_files.HeldDeltaRows):
-        def __init__(self, *args: Any) -> None:
-            super().__init__(*args)
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
             merges.append(self)
 
     monkeypatch.setattr(copy_follower, "read_delta_table", counted_read)

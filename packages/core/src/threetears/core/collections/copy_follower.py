@@ -495,11 +495,13 @@ def _heard_schema(key: Sequence[str]) -> Any:
     return pa.schema([(column, pa.string()) for column in key] + [(_EPOCH, pa.string())])
 
 
-def _heard_batch(key: Sequence[str], keys: Any, epoch: str | None) -> Any:
-    """keys heard at one epoch, as one immutable batch (decision 37: one batch a change heard, never edited).
+def _heard_batch(table: FollowedTable, keys: Any, epoch: str | None) -> Any:
+    """keys heard at one epoch, as one immutable batch (decision 37: one batch a change heard, never edited), a
+    timestamp key column's in its canonical text (:attr:`FollowedTable.instant_keys`): a record, a change note and a
+    delta file spell one instant differently, and a key is matched by its text.
 
-    :param key: the table's key columns, in key order
-    :ptype key: Sequence[str]
+    :param table: the table
+    :ptype table: FollowedTable
     :param keys: one row a key, its key columns' values as text, in key order (by position)
     :ptype keys: pyarrow.Table
     :param epoch: the epoch they were heard at; None when heard with none
@@ -507,8 +509,11 @@ def _heard_batch(key: Sequence[str], keys: Any, epoch: str | None) -> Any:
     :return: the batch
     :rtype: pyarrow.Table
     """
+    key = table.key
     count = keys.num_rows
-    columns = [keys.column(at).combine_chunks().cast(pa.string()) for at in range(len(key))]
+    named = pa.table({column: keys.column(at) for at, column in enumerate(key)})
+    texts = key_text_table(named, key, table.instant_keys)
+    columns = [texts.column(column).combine_chunks() for column in key]
     epochs = pa.nulls(count, pa.string()) if epoch is None else pa.repeat(pa.scalar(epoch, pa.string()), count)
     return pa.Table.from_arrays([*columns, epochs], schema=_heard_schema(key))
 
@@ -1243,6 +1248,19 @@ class FollowedTable:
         """
         assert self.scope is not None  # noqa: S101 -- asked only of a scoped table
         return f"{self.scope[1]}{value}"
+
+    @property
+    def instant_keys(self) -> frozenset[str]:
+        """the key columns of a ``timestamptz`` column (``DATETIMETZ_TYPE``): each matched by its instant's one
+        canonical text (:func:`~threetears.core.collections.epoch_change.key_text` with ``instant``), because the
+        rail, a delta file, an epoch record and a change note spell one instant in different texts.
+
+        :return: the columns
+        :rtype: frozenset[str]
+        """
+        return frozenset(
+            column.name for column in self.columns if column.name in self.key and column.column_type == DATETIMETZ_TYPE
+        )
 
     @property
     def scope_in_key(self) -> int | None:
@@ -2160,7 +2178,7 @@ class CopyFollower:
         if isinstance(message, _KeysHeard):
             self._hear(
                 message.table,
-                _heard_batch(self._tables[message.table].key, message.keys, message.epoch),
+                _heard_batch(self._tables[message.table], message.keys, message.epoch),
                 held=message.held,
             )
         elif isinstance(message, _PartitionHeard):
@@ -2968,7 +2986,7 @@ class CopyFollower:
         if reach.prefixes:
             self._clear_heard(table, wait.epoch, reach.prefixes)
         # the file's own keys: what the wait was for, never counted as held past it
-        self._hear(table, _heard_batch(self._tables[table].key, reach.keys, wait.epoch), held=False)
+        self._hear(table, _heard_batch(self._tables[table], reach.keys, wait.epoch), held=False)
 
     def _file_read(self, table: str, name: str, *, why: str) -> None:
         """a waited-for file reads (its reach heard first, :meth:`_hear_file`), or a full now holds its epoch: it is no
@@ -4352,7 +4370,9 @@ class CopyFollower:
         :rtype: pyarrow.Table
         """
         mine = self._copy_rows_of_keys(table, table.key, [keys.column(column) for column in table.key])
-        return key_text_table(mine, table.key).append_column(_SCOPE, self._scopes_of_rows(table, mine))
+        return key_text_table(mine, table.key, table.instant_keys).append_column(
+            _SCOPE, self._scopes_of_rows(table, mine)
+        )
 
     async def _keys_of_cleared_prefixes(self) -> None:
         """name, at its epoch, every key a cleared prefix reaches (:meth:`_clear_heard`): each key of it the copy
@@ -4379,11 +4399,11 @@ class CopyFollower:
                 reached: list[Any] = []
                 for columns, lead, batch in _prefix_batches(table.key, prefixes):
                     mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
-                    reached.append(key_text_table(mine, table.key))
+                    reached.append(key_text_table(mine, table.key, table.instant_keys))
                 known = (*self._heard[name], *self._staged_heard.get(name, ()))
                 reached.append(await asyncio.to_thread(_under, table, known, prefixes))
                 keys = _distinct(pa.concat_tables(reached), table.key)
-                self._hear(name, _heard_batch(table.key, keys, epoch), held=False)
+                self._hear(name, _heard_batch(table, keys, epoch), held=False)
 
     async def _stage_keyed(
         self,
@@ -4452,7 +4472,9 @@ class CopyFollower:
             if table.scope is not None and at is None:
                 # the row L3 holds now beside the one the copy holds (a delete's, a move's): a key whose new row is of
                 # a held scope (a row new to the copy, or moved into it) waits too
-                found = key_text_table(rows, key).append_column(_SCOPE, self._scopes_of_rows(table, rows))
+                found = key_text_table(rows, key, table.instant_keys).append_column(
+                    _SCOPE, self._scopes_of_rows(table, rows)
+                )
                 scopes = _distinct(pa.concat_tables([mine, found]), [*key, _SCOPE])
                 chunk_texts = joined_key_texts(chunk, key)
                 scopes = scopes.filter(pa.array(_in(joined_key_texts(scopes, key), chunk_texts)))
@@ -4464,7 +4486,11 @@ class CopyFollower:
                         left_out[chunk_positions[~stays]] = True
                         chunk_positions = chunk_positions[stays]
                         chunk = chunk.filter(pa.array(stays))
-                        rows = rows.filter(pa.array(~_in(joined_key_texts(key_text_table(rows, key), key), left_texts)))
+                        rows = rows.filter(
+                            pa.array(
+                                ~_in(joined_key_texts(key_text_table(rows, key, table.instant_keys), key), left_texts)
+                            )
+                        )
                         scopes = scopes.filter(pa.array(~_in(joined_key_texts(scopes, key), left_texts)))
                 row_scopes.append(scopes)
             if not chunk.num_rows:
@@ -4585,7 +4611,7 @@ class CopyFollower:
             if epoch in whys:
                 fell(whys[epoch], plan.keys_at[epoch], None)
         types = self._reads[table.name].types
-        rows = HeldDeltaRows(table.key, take.keys, types)
+        rows = HeldDeltaRows(table.key, take.keys, types, instants=table.instant_keys)
         rows.hold(self._held_arrow(table, take.keys.filter(pa.array(~from_l3))))
         applied: dict[str, Any] = {}
         held: tuple[str, DeltaTable] | None = None
@@ -4811,7 +4837,7 @@ class CopyFollower:
                 of = self._scopes_of_rows(table, mine)
                 hit = _in(of, held_scopes) if held_scopes is not None and mine.num_rows else None
                 if hit is not None and hit.any():
-                    values = key_text_table(mine, [last]).column(last)
+                    values = key_text_table(mine, [last], table.instant_keys).column(last)
                     # the prefix values a held scope's rows sit under: one a prefix of the batch, never one a row
                     late = set(pc.unique(values.filter(pa.array(hit))).to_pylist())
                     waiting += [
@@ -4830,7 +4856,7 @@ class CopyFollower:
                 if mine.num_rows:
                     scopes.update(_scope_set(of))
                 if mine.num_rows and table.scope is None:
-                    replaced.append(key_text_table(mine, table.key))
+                    replaced.append(key_text_table(mine, table.key, table.instant_keys))
                 if mine.num_rows:
                     await asyncio.to_thread(
                         self._backend.stage_keys,
@@ -4864,7 +4890,7 @@ class CopyFollower:
                         break
                     scopes.update(_scope_set(of))
                     if table.scope is None:
-                        replaced.append(key_text_table(page, table.key))
+                        replaced.append(key_text_table(page, table.key, table.instant_keys))
                     await asyncio.to_thread(
                         self._backend.stage_keys,
                         keys_stage,
@@ -5195,7 +5221,9 @@ class CopyFollower:
         if part.scope is not None and table.scope is not None and table.scope_in_key in (0, None):
             return None
         assert self._fulls is not None  # noqa: S101 -- a drift check runs only for a follower started from the volume
-        return key_text_table(read_full_part(self._fulls.root, part).select(list(table.key)), table.key)
+        return key_text_table(
+            read_full_part(self._fulls.root, part).select(list(table.key)), table.key, table.instant_keys
+        )
 
     def _state_ipc(self, table: FollowedTable, part: FullPart, keys: Any) -> bytes:
         """the copy's rows of one state, as an Arrow IPC stream for the worker that fingerprints them: a local read
