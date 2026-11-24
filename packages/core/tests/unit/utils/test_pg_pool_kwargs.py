@@ -1081,8 +1081,9 @@ class _Stop(Exception):
 class TestPlatformServerSettings:
     """every platform pool starts its sessions with the platform's settings under the caller's own."""
 
-    #: the platform's startup settings: the HNSW iterative scan the nearest read's recall rests on
-    platform = {"hnsw.iterative_scan": "relaxed_order"}
+    #: the platform's startup settings: the HNSW iterative scan the nearest read's recall rests on, and custom plans
+    #: every run (a keyed read's generic plan from the sixth run collapsed)
+    platform = {"hnsw.iterative_scan": "relaxed_order", "plan_cache_mode": "force_custom_plan"}
 
     async def _settings_sent(
         self, *, platform_settings: bool = True, server_settings: dict[str, str] | None = None
@@ -1117,13 +1118,18 @@ class TestPlatformServerSettings:
 
     async def test_a_pool_with_no_settings_of_its_own_starts_with_the_platforms(self) -> None:
         """Flips if a platform pool's sessions start without the HNSW iterative scan (a small owner beside a heavy one
-        then gets fewer nearest rows than it asked for)."""
+        then gets fewer nearest rows than it asked for) or without forced custom plans (a keyed read then plans
+        generically from its sixth run)."""
         assert await self._settings_sent() == self.platform
 
     async def test_the_callers_settings_are_kept_and_win(self) -> None:
         """Flips if the caller's search_path is dropped, or the platform's value overrides one the caller names."""
         sent = await self._settings_sent(server_settings={"search_path": "s1", "hnsw.iterative_scan": "strict_order"})
-        assert sent == {"hnsw.iterative_scan": "strict_order", "search_path": "s1"}
+        assert sent == {
+            "hnsw.iterative_scan": "strict_order",
+            "plan_cache_mode": "force_custom_plan",
+            "search_path": "s1",
+        }
         assert await self._settings_sent(server_settings={"search_path": "s2"}) == {
             **self.platform,
             "search_path": "s2",

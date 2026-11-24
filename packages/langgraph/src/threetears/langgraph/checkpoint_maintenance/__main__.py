@@ -38,9 +38,8 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from typing import TextIO
 
-import asyncpg
-
 from threetears.core.operator import operator_command
+from threetears.core.utils.pg_pool_kwargs import create_pool_with_startup_timeout, get_pg_pool_kwargs
 from threetears.langgraph.checkpoint import DELTA_COUNTERS_METADATA_KEY, ThreeTierCheckpointSaver
 from threetears.langgraph.checkpoint_maintenance import (
     DEFAULT_BATCH,
@@ -204,7 +203,16 @@ async def _run(args: argparse.Namespace, out: TextIO) -> int:
     :rtype: int
     """
     server_settings = {"search_path": args.schema} if args.schema else None
-    pool = await asyncpg.create_pool(args.dsn, min_size=1, max_size=2, server_settings=server_settings)
+    # a platform pool: its sessions start with the platform's settings, among them custom plans every run, so the
+    # walk's keyed page (one statement run page after page) is never planned generically from its sixth run
+    pool = await create_pool_with_startup_timeout(
+        args.dsn,
+        pool_name="checkpoint_maintenance",
+        min_size=1,
+        max_size=2,
+        server_settings=server_settings,
+        **get_pg_pool_kwargs(),
+    )
     try:
         executor = AsyncpgPoolAdapter(pool)
         if args.action == "report":
