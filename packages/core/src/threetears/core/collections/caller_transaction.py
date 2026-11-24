@@ -55,7 +55,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from itertools import repeat
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from threetears.core.backends.broker_generation import (
@@ -310,13 +310,15 @@ class CallerTransaction:
         self._outermost: CallerTransaction | None = None
         self._token: Token[tuple[CallerTransaction, ...]] | None = None
         self._transaction: Any = None
+        # the transaction's own state, owned by the task that runs it: each map a read-only snapshot replaced whole,
+        # never changed in place, so what a thread is handed is never changed under it
         # what each table that opts in to delta files was written, by table: saved as its file before the commit
-        self._deltas: dict[str, TableDelta] = {}
-        self._saved_delta_files: dict[str, str] = {}
-        self._committed_generations: dict[str, str] = {}
+        self._deltas: Mapping[str, TableDelta] = MappingProxyType({})
+        self._saved_delta_files: Mapping[str, str] = MappingProxyType({})
+        self._committed_generations: Mapping[str, str] = MappingProxyType({})
         # the scopes (states) the writer's seqlock touched in this transaction (ScopeEpochs.touch), each once: its
         # commit names them beside its delta files (decision 31)
-        self._scopes: dict[str, None] = {}
+        self._scopes: frozenset[str] = frozenset()
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -327,7 +329,7 @@ class CallerTransaction:
         :return: table -> its file's name
         :rtype: Mapping[str, str]
         """
-        return dict(self._saved_delta_files)
+        return self._saved_delta_files
 
     @property
     def committed_generations(self) -> Mapping[str, str]:
@@ -339,7 +341,7 @@ class CallerTransaction:
         :return: table -> the token
         :rtype: Mapping[str, str]
         """
-        return dict(self._committed_generations)
+        return self._committed_generations
 
     def _delta_of(self, collection: BaseCollection[Any]) -> TableDelta:
         """the delta this transaction keeps for ``collection``'s table, made at its first write.
@@ -352,7 +354,7 @@ class CallerTransaction:
         delta = self._deltas.get(collection.table_name)
         if delta is None:
             delta = collection.table_delta()
-            self._deltas[collection.table_name] = delta
+            self._deltas = MappingProxyType({**self._deltas, collection.table_name: delta})
         return delta
 
     def record_rows(
@@ -543,7 +545,7 @@ class CallerTransaction:
         :return: nothing
         :rtype: None
         """
-        self._scopes.update(dict.fromkeys(scopes))
+        self._scopes = self._scopes | frozenset(scopes)
 
     def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
         """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those
@@ -679,12 +681,12 @@ class CallerTransaction:
             # saved before the commit, so every committed version has its file; a save that fails ends the
             # transaction as a body that raised does, rolled back and settled, and its error is the caller's
             try:
-                self._saved_delta_files = await self._save_delta_files()
+                self._saved_delta_files = MappingProxyType(await self._save_delta_files())
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- the commit is refused: rolled back and settled, then re-raised
                 await self._end(type(error), error, error.__traceback__)
                 raise
             finally:
-                self._deltas.clear()
+                self._deltas = MappingProxyType({})
         suppressed, generation_failure = await self._end(exc_type, exc, traceback)
         if generation_failure is not None and exc_type is None:
             raise generation_failure
@@ -713,7 +715,7 @@ class CallerTransaction:
         # a commit names its delta files: its l3.tx.commit carries them to the broker that writes its epoch records,
         # and an advance this process records itself names them. Only a commit that landed: a record naming the file
         # of a commit that failed would hand every copy rows L3 never took
-        files = self._saved_delta_files if exc_type is None else {}
+        files: Mapping[str, str] = self._saved_delta_files if exc_type is None else MappingProxyType({})
         # the states only a commit with a delta file names, bounded: one too wide names none (decision 31)
         scopes = (recordable_scopes(self._scopes) or []) if files else []
         landed = False
@@ -732,15 +734,12 @@ class CallerTransaction:
                 _OPEN.reset(self._token)
                 self._token = None
             if self._outermost is None:
-                advanced: dict[str, str] = {}
-                with (
-                    naming_delta_files(files if landed else {}),
-                    naming_commit_scopes(scopes if landed else []),
-                    collecting_advanced_generations(advanced),
-                ):
-                    generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
+                with naming_delta_files(files if landed else {}), naming_commit_scopes(scopes if landed else []):
+                    generation_failure, advanced = await asyncio.shield(
+                        self._settle_collecting(committed=exc_type is None)
+                    )
                 if landed and exc_type is None:
-                    self._committed_generations = {**reply_generations_since(before), **advanced}
+                    self._committed_generations = MappingProxyType({**reply_generations_since(before), **advanced})
         return bool(suppressed), generation_failure
 
     async def _save_delta_files(self) -> dict[str, str]:
@@ -752,7 +751,10 @@ class CallerTransaction:
             that no write recorded, or no delta files directory configured
         :raises OSError: when a file cannot be written
         """
-        enrolled, reaches, deltas = self._enrolled, self._reaches, dict(self._deltas)
+        # frozen as handed over: a thread counts them while the loop runs on, and never sees a list the loop changes
+        enrolled = tuple(self._enrolled)
+        reaches = tuple((collection, tuple(prefixes)) for collection, prefixes in self._reaches)
+        deltas = self._deltas
         if not deltas and len(enrolled) < _SETTLE_OFF_LOOP_ROWS:
             owed = _owed_deltas(enrolled, reaches, deltas)
         elif not deltas and not enrolled:
@@ -761,6 +763,22 @@ class CallerTransaction:
             # a key a row of a commit of 33,786 rows: counted off the loop, as settling groups them
             owed = await asyncio.to_thread(_owed_deltas, enrolled, reaches, deltas)
         return await save_delta_files(owed)
+
+    async def _settle_collecting(
+        self, *, committed: bool
+    ) -> tuple[GenerationUnavailableError | None, Mapping[str, str]]:
+        """:meth:`_settle`, collecting the token each advance it makes writes, by table: the collector is this task's
+        own (the shielded settle's), and the caller gets a read-only copy back, never a dict the settle fills.
+
+        :param committed: as :meth:`_settle`
+        :ptype committed: bool
+        :return: the first failure to advance, and table -> the token its advance wrote
+        :rtype: tuple[GenerationUnavailableError | None, Mapping[str, str]]
+        """
+        advanced: dict[str, str] = {}
+        with collecting_advanced_generations(advanced):
+            failure = await self._settle(committed=committed)
+        return failure, MappingProxyType(dict(advanced))
 
     async def _settle(self, *, committed: bool) -> GenerationUnavailableError | None:
         """evict every key a write joined to this transaction touched, from L1 and L2, and broadcast it.
@@ -840,7 +858,7 @@ class CallerTransaction:
 
 def _owed_deltas(
     enrolled: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
-    reaches: Sequence[tuple[_PrefixSettling, list[dict[str, str]]]],
+    reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]],
     deltas: Mapping[str, TableDelta],
 ) -> dict[str, TableDelta]:
     """the delta each table that opts in owes a file for, checked whole: every key a write enrolled for the table is
@@ -849,7 +867,7 @@ def _owed_deltas(
     :param enrolled: the transaction's enrollments
     :ptype enrolled: Sequence[tuple[BaseCollection, Any, dict[str, Any] | None]]
     :param reaches: the key prefixes it deleted, by collection
-    :ptype reaches: Sequence[tuple[_PrefixSettling, list[dict[str, str]]]]
+    :ptype reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]]
     :param deltas: what its writes recorded, by table
     :ptype deltas: Mapping[str, TableDelta]
     :return: table -> its delta, for each table that opts in

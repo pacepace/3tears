@@ -36,12 +36,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from threetears.nats import DELTA_FILES_FORWARD_FAMILY
@@ -241,8 +242,10 @@ class DeltaRecreator:
         self._recovery = recovery
         self._page_size = page_size
         self._root = root
-        #: each file being recreated, onto its one recreation: a request for it meanwhile waits for that one
-        self._flight: dict[str, asyncio.Task[_Outcome]] = {}
+        #: each file being recreated, onto its one recreation: a request for it meanwhile waits for that one. A
+        #: read-only snapshot replaced whole on the loop: a request adds its file's flight, and the flight removes
+        #: itself as it ends (:meth:`_recreate_once`), so each entry has one holder
+        self._flight: Mapping[str, asyncio.Task[_Outcome]] = MappingProxyType({})
 
     async def answer(self, payload: bytes) -> bytes:
         """the forward handler: a request's body in, the outcome's word out.
@@ -275,17 +278,11 @@ class DeltaRecreator:
         """
         request = _Request(table=table, file=file, epoch=epoch)
         flight = self._flight.get(request.file)
-        if flight is None:
+        if flight is None or flight.done():
             flight = asyncio.get_running_loop().create_task(
                 self._recreate_once(request), name=f"recreate delta file {request.file}"
             )
-            self._flight[request.file] = flight
-
-            def landed(done: asyncio.Task[_Outcome]) -> None:
-                if self._flight.get(request.file) is done:
-                    del self._flight[request.file]
-
-            flight.add_done_callback(landed)
+            self._flight = MappingProxyType({**self._flight, request.file: flight})
         # shielded: a copy whose request is cancelled (its timeout) does not cancel the recreation the others wait for
         return (await asyncio.shield(flight)).value
 
@@ -299,6 +296,12 @@ class DeltaRecreator:
             # counted, and raised on to every copy waiting for it (framed back by serve_owner, logged there)
             _RECREATIONS.labels(table=request.table, outcome="failed").inc()
             raise
+        finally:
+            # the flight lets its own entry go as it ends: a request after it starts a recreation of its own
+            if self._flight.get(request.file) is asyncio.current_task():
+                self._flight = MappingProxyType(
+                    {file: flight for file, flight in self._flight.items() if file != request.file}
+                )
         _RECREATIONS.labels(table=request.table, outcome=outcome.value).inc()
         return outcome
 
