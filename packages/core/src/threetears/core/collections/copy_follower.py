@@ -3198,7 +3198,9 @@ class CopyFollower:
                     await self._drained()
                     reason = resolved if resolved is not None else self._registry.behind_reason(name)
                 noted = self._registry.take_notes_resolved(name)
-                if noted is not None:
+                # a table loaded from the volume never makes a checkpoint due from the notes: no checkpoint holds it
+                # (refused at construction), and a start loads it from the volume's full and never needs its notes
+                if noted is not None and (self._fulls is None or name not in self._fulls.tables):
                     self._noted[name] = min(self._noted.get(name, noted), noted)
                 if reason is not None:
                     # the registry's reason (BEHIND_REASONS): the status and collection_epoch_behind_total say the same

@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a table the copy loads from the volume never makes a checkpoint due from the change notes
+
+**Fixed:** an epoch a `CopyFollower` took from the change notes on a table in its `fulls=` made a checkpoint due a
+quarter note fence later and set `copy_checkpoint_notes_unsaved_age_seconds`, though no checkpoint holds that table
+and a start loads it from the volume's full, never its notes. Only the tables the checkpoint holds keep that trigger.
+
 ### core: the writer rebuilds and recovers a table with NUMERIC or enum columns
 
 **Fixed:** `DeltaFolds.start` and its rebuild and recovery of a full refused any table with a `NUMERIC(p, s)`, enum or

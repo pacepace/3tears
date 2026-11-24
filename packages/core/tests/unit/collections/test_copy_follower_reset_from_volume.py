@@ -22,7 +22,8 @@ so "the copy equals L3" and "no statement reached L3" are both checked. The cont
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -39,6 +40,8 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
+from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
@@ -934,3 +937,174 @@ async def test_a_reset_heard_while_a_cleared_prefix_is_named_puts_no_key_of_the_
     assert _RESET not in world.follower.status().pending, "keys of the replaced table were put back pending"
     assert world.copy(_RESET) == old, "keys of the replaced table were applied to the copy while it waits"
     assert world.l3.statements[_RESET] == 0
+
+
+# --- an epoch taken from the change notes makes a checkpoint due only for a table no full on the volume holds --------
+
+
+class _Notes:
+    """the change notes as the broker's l3.noted_keys door answers them: one page of the keys given, for any table."""
+
+    def __init__(self, keys: Sequence[tuple[str, ...]]) -> None:
+        self.keys = tuple(keys)
+
+    async def noted_keys(self, table: str, **_: Any) -> NotedKeysPage:
+        return NotedKeysPage(keys=self.keys, whole_table=False, next=None)
+
+
+class _Store:
+    """an Object Store in memory."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    async def put(self, name: str, data: bytes) -> None:
+        self.objects[name] = data
+
+    async def get(self, name: str) -> bytes:
+        return self.objects[name]
+
+    async def require_room(self, objects: Sequence[tuple[str, int]]) -> int:
+        return sum(size for _, size in objects)
+
+    async def list_names(self, *, prefix: str = "") -> list[str]:
+        return [n for n in self.objects if n.startswith(prefix)]
+
+    async def retire(self, names: list[str]) -> None:
+        for name in names:
+            self.objects.pop(name, None)
+
+
+class _Pointers:
+    """a pointer bucket in memory: create-if-absent and compare-and-set by revision."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, tuple[bytes, int]] = {}
+        self.revision = 0
+
+    async def get_entry(self, *, key: str) -> tuple[bytes, int] | None:
+        return self.entries.get(key)
+
+    async def create(self, *, key: str, value: bytes, ttl: Any = None) -> int | None:
+        if key in self.entries:
+            return None
+        self.revision += 1
+        self.entries[key] = (value, self.revision)
+        return self.revision
+
+    async def update(self, *, key: str, value: bytes, revision: int, ttl: Any = None) -> int | None:
+        held = self.entries.get(key)
+        if held is None or held[1] != revision:
+            return None
+        self.revision += 1
+        self.entries[key] = (value, self.revision)
+        return self.revision
+
+    async def delete(self, *, key: str, revision: int | None = None, marker_ttl: Any = None) -> bool:
+        return self.entries.pop(key, None) is not None
+
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        return [k for k in self.entries if k.startswith(prefix)]
+
+
+class _Checkpointed(_World):
+    """the world, its follower also keeping a checkpoint of ``plain`` (the opted-in tables' full is on the volume
+    alone) and reading the change notes."""
+
+    def __init__(self, volume: Path) -> None:
+        super().__init__(volume)
+        self.store, self.pointers = _Store(), _Pointers()
+        self.checkpoints = CopyCheckpoints(
+            name="noted",
+            tables=[_followed(_PLAIN)],
+            backend=self.backend,
+            store=self.store,
+            pointers=self.pointers,
+            retire=self.store.retire,
+            owner="a",
+            encode_stamp=lambda stamp: {"version": stamp.version, "epochs": stamp.epochs},
+            decode_stamp=lambda data: SimpleNamespace(**data, pending=frozenset()),
+        )
+        self.registry.set_noted_keys_reader(_Notes([("VA", "1")]))
+        self.follower = CopyFollower(
+            self.registry,
+            [_followed(_RESET), _followed(_OTHER), _followed(_PLAIN)],
+            self.backend,
+            self.l3,
+            settled=self.lock.settled,
+            generation=self.log.current,
+            changes=self.log,
+            page_size=50,
+            stamp_table="scope_epochs",
+            checkpoints=self.checkpoints,
+            fulls=VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
+        )
+
+    def seq(self) -> int:
+        return Checkpoint.decode(next(iter(self.pointers.entries.values()))[0]).seq
+
+    def too_large(self, table: str, since: datetime) -> None:
+        """a commit too large to record its keys, its record naming no delta file: its keys are in the change notes,
+        bracketed from ``since``."""
+        self.l3.put(table, [("VA", 1, 999)])
+        self.log.count[table] += 1
+        token = f"{self.log.incarnation[table]}:{self.log.count[table]}"
+        self.log.records[(table, token)] = EpochChange(
+            table=table, token=token, keys_unknown=True, noted_between=(since, since + timedelta(seconds=1))
+        )
+        self.lock.commit("state:VA")
+
+    def notes_age(self) -> float | None:
+        return REGISTRY.get_sample_value("copy_checkpoint_notes_unsaved_age_seconds", {"base": self.checkpoints.base})
+
+
+async def _checkpointed_world(volume: Path) -> _Checkpointed:
+    world = _Checkpointed(volume)
+    await world.started()
+    await world.follower.checkpointed()
+    assert world.seq() == 1, "the first warm of plain made one due"
+    return world
+
+
+async def test_an_epoch_from_the_notes_on_a_table_the_copy_loads_from_the_volume_makes_no_checkpoint_due(
+    _volume: Path,
+) -> None:
+    """Flips if an epoch taken from the change notes on a table whose full is on the volume makes a checkpoint due or
+    sets ``copy_checkpoint_notes_unsaved_age_seconds``: no checkpoint holds that table, and a start loads it from the
+    volume and never needs its notes, so the old trigger wrote a checkpoint of the other tables for nothing and showed
+    an age no checkpoint could end."""
+    world = await _checkpointed_world(_volume)
+    world.too_large(_RESET, datetime.now(UTC) - timedelta(minutes=3))  # past a quarter of the 10-minute fence
+
+    assert await world.follower.catch_up()
+    await world.follower.checkpointed()
+
+    assert world.seq() == 1, "a notes epoch on a table loaded from the volume made a checkpoint due"
+    assert world.checkpoints.noted_due_in() is None
+    assert world.notes_age() == 0.0
+    world.follower.stop()
+
+
+async def test_with_both_kinds_of_table_only_an_epoch_from_the_notes_on_a_checkpointed_table_makes_one_due(
+    _volume: Path,
+) -> None:
+    """Flips if the older notes epoch of a table loaded from the volume sets when a checkpoint is due, or if one of a
+    table the checkpoint holds stops making it due: the trigger and its gauge follow the checkpointed table alone."""
+    world = await _checkpointed_world(_volume)
+    world.too_large(_RESET, datetime.now(UTC) - timedelta(minutes=3))
+    world.too_large(_PLAIN, datetime.now(UTC) - timedelta(seconds=60))
+
+    assert await world.follower.catch_up()
+    await world.follower.checkpointed()
+
+    assert world.seq() == 1, "the volume table's older epoch made the checkpoint due"
+    age = world.notes_age()
+    assert age is not None and 60 <= age < 120, "plain's epoch alone waits: a minute old, not yet due"
+
+    world.too_large(_PLAIN, datetime.now(UTC) - timedelta(minutes=3))
+    assert await world.follower.catch_up()
+    await world.follower.checkpointed()
+
+    assert world.seq() == 2, "plain's epoch a quarter fence old makes the checkpoint due"
+    assert world.notes_age() == 0.0
+    world.follower.stop()
