@@ -107,9 +107,11 @@ from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, 
 from threetears.core.collections.caller_transaction import CallerTransaction, save_delta_files
 from threetears.core.backends.broker_generation import (
     collecting_advanced_generations,
+    collecting_load_answers,
     committed_generations_record,
     named_delta_files,
     naming_delta_files,
+    naming_unconfirmed_delta_files,
     reply_generations_since,
 )
 from threetears.core.collections.delta_files import (
@@ -120,7 +122,7 @@ from threetears.core.collections.delta_files import (
     check_delta_scope,
 )
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, WholeReach
+from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, WholeReach, records_changes
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.declared import whole_read
@@ -224,6 +226,20 @@ def _coerced_page(
     rows = [_coerce_row_fn(schema, row) for row in stepped(page, LoopTurns(loop), every)]
     emptied([page], loop)
     return rows
+
+
+def _load_requests_failed() -> Any:
+    # fetched where it is moved, never held at import: a fresh import of the package would register it twice
+    return counter(
+        "threetears_load_requests_failed_total",
+        description=(
+            "load_files requests of a table that opts in to delta files that failed, by table and owner of their "
+            "epoch record: 'hub' (the broker answered; it names the file unconfirmed when rows committed), 'hub_none' "
+            "(it answered that none committed), 'process' (a direct pool: this process names the file unconfirmed), "
+            "'unanswered' (no answer: a cancel or a lost reply; no record is written here)"
+        ),
+        label_names=("table", "owner"),
+    )
 
 
 def _deletes_settled_by_key() -> Any:
@@ -3476,8 +3492,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             :class:`CallerTransaction` names them (``delta_files``, ``committed_generations``), for the writer's
             :meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`. The delete of the prefixes the load
             replaces comes first, then each request that committed, in the order each landed. A request that failed
-            is never handed (its file may hold rows L3 never took, and its record names none); the requests that
-            committed before it were. A callback, not the return value: a load that fails after some requests
+            is never handed (its file may hold rows L3 never took, and its record names it unconfirmed: the fold hears
+            it once the writer has confirmed it from L3, ``DeltaFolds.confirmed``); the requests that committed before
+            it were. A callback, not the return value: a load that fails after some requests
             committed raises, and the fold must still hear the ones that did. It must not raise
             (``DeltaFolds.committed`` never does)
         :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
@@ -3546,20 +3563,32 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 # broker's reply on a pod, from this process's advance on a direct pool
                 before = committed_generations_record()
                 advanced: dict[str, str] = {}
+                # the broker's answer, success or failure: the rows it committed (function-local, this request's)
+                answers: list[int] = []
                 # the request names its file: the broker's epoch record of it does, and so does this process's own
                 # advance on a direct pool (decision 11: saved before the request's commits)
                 landed = False
                 try:
-                    with naming_delta_files(named), collecting_advanced_generations(advanced):
-                        result = await store.load_files(
-                            self.table_name,
-                            request,
-                            columns=columns,
-                            constants=dict(constants or {}),
-                            rows_per_transaction=per_transaction,
-                            timeout_ms=bound,
-                            key_prefixes=[dict(prefix) for prefix in reach.prefixes],
-                        )
+                    with (
+                        naming_delta_files(named),
+                        collecting_advanced_generations(advanced),
+                        collecting_load_answers(answers),
+                    ):
+                        try:
+                            result = await store.load_files(
+                                self.table_name,
+                                request,
+                                columns=columns,
+                                constants=dict(constants or {}),
+                                rows_per_transaction=per_transaction,
+                                timeout_ms=bound,
+                                key_prefixes=[dict(prefix) for prefix in reach.prefixes],
+                            )
+                        except (Exception, asyncio.CancelledError) as exc:
+                            if named:
+                                # kept (named by an unconfirmed record), or an orphan for the sweep
+                                landed = await self._after_failed_request(named, reach, answers, exc)
+                            raise
                         if delta is not None:
                             # one epoch a request, each naming its own file: a file holding a later request's rows
                             # would hand a copy rows L3 does not hold yet, or never will once that request fails
@@ -3569,7 +3598,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                     landed = True
                 finally:
                     if named:
-                        # a request that failed is named with no delta file (below): its file is an orphan
+                        # a request that failed is kept when a record names its file unconfirmed (the writer confirms
+                        # it from L3), else an orphan for the sweep
                         OWN_DELTA_SAVES.settled(list(named.values()), landed=landed)
                 if on_commit is not None and named:
                     # only here, after the request and its advance landed: a request that raised hands nothing
@@ -3584,9 +3614,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 written = sum(await _all_or_first_failure([one(request) for request in requests]))
         except (Exception, asyncio.CancelledError) as exc:
             # the load commits as it goes: the requests and transactions before a failure stay
-            # committed, and a reply lost or timed out may follow a load the broker finished. Named with no delta
-            # file: the failed request's file may hold rows L3 never took, so a copy reads its prefixes instead
-            await self._drop_and_advance_after_failure("load from files failed", exc, reach=reach)
+            # committed, and a reply lost or timed out may follow a load the broker finished. A table that opts in to
+            # delta files had each failed request's record settled by its owner (_after_failed_request): never a record
+            # of this process's naming no file, which every copy would read back from L3 (ruling C of 2026-11-23)
+            if delta is None:
+                await self._drop_and_advance_after_failure("load from files failed", exc, reach=reach)
             raise
         if reload and written >= ANALYZE_AFTER_ROWS and isinstance(store, AnalyzingStore):
             # Only a reload is analysed here, once, after its last request (coordinator 2026-11-15, within Pace's
@@ -3615,6 +3647,116 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 requests=len(requests),
             )
         return written
+
+    async def _after_failed_request(
+        self, named: Mapping[str, str], reach: WholeReach, answers: Sequence[int], failure: BaseException
+    ) -> bool:
+        """settle the epoch record of a load request of a table that opts in to delta files that failed (ruling C of
+        2026-11-23). The request commits a transaction per ``rows_per_transaction`` rows, so a leading part of its file's
+        rows may be in L3; its file holds every row it sent.
+
+        - A direct pool (this process writes its records): this process advances once, its record naming the file
+          unconfirmed, and applies it here as a follower would; the writer confirms the file from L3 before any copy
+          applies it.
+        - A pod whose broker answered: the broker owns the record (one naming the file unconfirmed when rows committed,
+          none when none did); this process writes none.
+        - A pod with no answer (a cancel, a lost reply): no record is written here; the broker records the request if
+          it goes on to commit (decision 26). Counted and logged.
+
+        Never raises: the request's own failure is the one the caller gets.
+
+        :param named: the request's delta file, by table
+        :ptype named: Mapping[str, str]
+        :param reach: the load's key prefixes
+        :ptype reach: WholeReach
+        :param answers: the rows the broker answered it committed, one an answer (none: no answer)
+        :ptype answers: Sequence[int]
+        :param failure: the request's failure
+        :ptype failure: BaseException
+        :return: whether a record names the file (unconfirmed), so it is kept rather than swept as an orphan
+        :rtype: bool
+        """
+        file = named.get(self.table_name)
+        registry = self.registry
+        source = None if registry is None else registry.generation_source
+        if file is None:
+            return False
+        if registry is not None and source is not None and records_changes(source):
+            _load_requests_failed().labels(table=self.table_name, owner="process").inc()
+            try:
+                await self._advance_unconfirmed(registry, reach, file, failure=type(failure).__name__)
+            # prawduct:allow prawduct/broad-except -- the request's own failure is raised; this one is recorded
+            except Exception as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what="a failed load request's epoch naming its file unconfirmed was not advanced",
+                    extra={"table": self.table_name, "file": file, "failure": type(failure).__name__},
+                    level="error",
+                )
+            return True
+        if answers:
+            committed = answers[-1]
+            _load_requests_failed().labels(table=self.table_name, owner="hub" if committed else "hub_none").inc()
+            log.warning(
+                "a load request failed and its broker answered: the broker's record names its file unconfirmed when "
+                "rows committed (the writer confirms it from L3), none when none did; this process writes none",
+                extra={
+                    "extra_data": {
+                        "table": self.table_name,
+                        "file": file,
+                        "committed": committed,
+                        "failure": type(failure).__name__,
+                    }
+                },
+            )
+            return committed > 0
+        _load_requests_failed().labels(table=self.table_name, owner="unanswered").inc()
+        log.error(
+            "a load request failed with no answer from its broker (a cancel or a lost reply): this process writes no "
+            "record; the broker records the request if it commits",
+            extra={"extra_data": {"table": self.table_name, "file": file, "failure": type(failure).__name__}},
+        )
+        return False
+
+    async def _advance_unconfirmed(self, registry: Any, reach: WholeReach, file: str, **detail: Any) -> None:
+        """advance once for a failed load request on a direct pool, the record naming its file unconfirmed, and apply
+        the epoch here as a follower hears it: a copy here waits for the writer to confirm the file, reading nothing
+        from L3 (:meth:`CollectionRegistry.apply_epoch_change`).
+
+        :param registry: the collection's registry
+        :ptype registry: CollectionRegistry
+        :param reach: the load's key prefixes
+        :ptype reach: WholeReach
+        :param file: the request's delta file
+        :ptype file: str
+        :param detail: more to log
+        :ptype detail: Any
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the generation had to advance and could not
+        """
+        # the request's own naming of its file (confirmed) ends here: only the unconfirmed name is recorded
+        with naming_delta_files({}), naming_unconfirmed_delta_files({self.table_name: file}):
+            bump = await self._bump_after_commit(None, reach=reach)
+        if bump.token is not None:
+            await registry.apply_epoch_change(
+                EpochChange(
+                    table=self.table_name,
+                    token=bump.token,
+                    whole_table=True,
+                    prefixes=[dict(prefix) for prefix in reach.prefixes],
+                    delta_file=file,
+                    delta_file_unconfirmed=True,
+                )
+            )
+        log.warning(
+            "a load request failed on a direct pool: its epoch names its file unconfirmed, for the writer to confirm "
+            "from L3 before any copy applies it",
+            extra={"extra_data": {"table": self.table_name, "file": file, "generation": bump.token, **detail}},
+        )
+        if bump.failure is not None:
+            raise bump.failure
 
     async def _delete_replaced(
         self,

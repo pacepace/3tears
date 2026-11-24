@@ -52,6 +52,18 @@ commit's transaction touched, and the writer recovers by re-reading just those s
 (:meth:`~threetears.core.collections.delta_fold.DeltaFolds.recover_table`). Bounded (:data:`_EPOCH_SCOPES_MAX`, each
 :data:`_SCOPE_MAX_CHARS`): a commit touching more names none, and its recovery then has only the notes. Rolled out as
 :attr:`delta_file` was: optional, an older reader ignores it, a record from an older writer names none.
+
+**A load request that failed after committing some rows names its file unconfirmed** (stored as
+``unconfirmed_delta_file``; read as :attr:`EpochChange.delta_file` with :attr:`EpochChange.delta_file_unconfirmed`
+set; ruling C of 2026-11-23). A load commits a transaction per 50k rows, so a request that fails part way leaves a
+leading part of its file's rows in L3, and its file (saved before the request, holding every row it sent) may hold
+rows L3 never took. Its record names the file under a field of its own, never ``delta_file``: an older reader ignores
+the unknown field and reads the record as a load naming no file (its prefixes read again, as before), so it never
+applies the file. A newer reader never applies it as it stands either: a copy waits, as for a lost file (decision
+29), and the writer reads the request's keys (from the file) from L3 by key, once, and writes the file again under its
+name holding exactly what L3 holds, marked confirmed
+(:attr:`~threetears.core.collections.delta_files.DeltaKeys.confirmed`); the copies then apply it. Named only on a
+whole-table record of a load's key prefixes, and never beside ``delta_file``.
 """
 
 from __future__ import annotations
@@ -236,6 +248,9 @@ class EpochChange(BaseModel):
         (module docstring); ``None`` from a writer that names none, or one built before the field
     :ivar delta_file: the commit's delta file of the table, its name under the delta files' directory (module
         docstring); ``None`` for a table that does not opt in, and from a writer built before the field
+    :ivar delta_file_unconfirmed: the file is a failed load request's (stored as ``unconfirmed_delta_file``, module
+        docstring): it may hold rows L3 never took, so it is applied only once the writer has written it again from
+        L3 and marked it confirmed; never applied as it stands. Set only on a whole-table record of key prefixes
     :ivar scopes: for a keys-unknown record of a commit that saved a delta file, the scopes its transaction touched
         (the states, ``state:CA``, as the writer's seqlock names them; module docstring): what the writer re-reads
         from L3 should the file be lost past the notes' window. ``None`` when unknown, past :data:`_EPOCH_SCOPES_MAX`,
@@ -254,6 +269,7 @@ class EpochChange(BaseModel):
     database: str | None = None
     delta_file: str | None = None
     scopes: list[str] | None = None
+    delta_file_unconfirmed: bool = False
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -277,7 +293,40 @@ class EpochChange(BaseModel):
         _check_noted_between(self.noted_between, keys_unknown=self.keys_unknown)
         _check_delta_file(self.delta_file)
         _check_scopes(self.scopes, keys_unknown=self.keys_unknown)
+        if self.delta_file_unconfirmed:
+            _check_unconfirmed(self.delta_file, None, whole_table=self.whole_table, prefixes=self.prefixes)
         return self
+
+
+def _check_unconfirmed(
+    unconfirmed: str | None,
+    delta_file: str | None,
+    *,
+    whole_table: bool,
+    prefixes: Sequence[Mapping[str, str]] | None,
+) -> None:
+    """refuse an unconfirmed delta file anywhere but a load's record: a whole-table record of key prefixes naming no
+    confirmed file beside it (module docstring).
+
+    :param unconfirmed: the unconfirmed file's name
+    :ptype unconfirmed: str | None
+    :param delta_file: the confirmed file named beside it, if any
+    :ptype delta_file: str | None
+    :param whole_table: whether the record is whole-table
+    :ptype whole_table: bool
+    :param prefixes: the record's key prefixes
+    :ptype prefixes: Sequence[Mapping[str, str]] | None
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is refused
+    """
+    if unconfirmed is None:
+        raise ValueError("a record marks a delta file unconfirmed only when it names one")
+    _check_delta_file(unconfirmed)
+    if delta_file is not None:
+        raise ValueError("a record names a delta file confirmed or unconfirmed, never both")
+    if not whole_table or not prefixes:
+        raise ValueError("an unconfirmed delta file is named only on a whole-table record of a load's key prefixes")
 
 
 def _check_scopes(scopes: Sequence[str] | None, *, keys_unknown: bool) -> None:
@@ -600,6 +649,7 @@ async def advance_recording(
     delta_file: str | None = None,
     scopes: Sequence[str] | None = None,
     repair: bool = True,
+    unconfirmed_delta_file: str | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -645,6 +695,10 @@ async def advance_recording(
     :ptype scopes: Sequence[str] | None
     :param repair: hand a failed advance to the process's ledger for retry; ``False`` for the retry itself
     :ptype repair: bool
+    :param unconfirmed_delta_file: a whole-table change's unconfirmed file, a failed load request's
+        (:attr:`EpochChange.delta_file_unconfirmed`), for a source that records it; one that does not records the
+        change naming no file, never naming it as ``delta_file``
+    :ptype unconfirmed_delta_file: str | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -654,6 +708,10 @@ async def advance_recording(
     _check_delta_file(delta_file)
     named_scopes = list(scopes) if scopes and keys_unknown else None
     _check_scopes(named_scopes, keys_unknown=keys_unknown)
+    if unconfirmed_delta_file is not None:
+        _check_unconfirmed(
+            unconfirmed_delta_file, delta_file, whole_table=rows is None and not keys_unknown, prefixes=prefixes
+        )
     if not repair:
         return await _advance_recording_once(
             source,
@@ -667,6 +725,7 @@ async def advance_recording(
             reason=reason,
             delta_file=delta_file,
             scopes=named_scopes,
+            unconfirmed_delta_file=unconfirmed_delta_file,
         )
     kept_rows = None if rows is None else list(rows)
 
@@ -683,6 +742,7 @@ async def advance_recording(
             reason=reason,
             delta_file=delta_file,
             scopes=named_scopes,
+            unconfirmed_delta_file=unconfirmed_delta_file,
         )
 
     try:
@@ -708,6 +768,7 @@ async def _advance_recording_once(
     reason: str | None,
     delta_file: str | None,
     scopes: list[str] | None,
+    unconfirmed_delta_file: str | None = None,
 ) -> str | None:
     """one try of :func:`advance_recording`, its change already checked.
 
@@ -733,6 +794,8 @@ async def _advance_recording_once(
     :ptype delta_file: str | None
     :param scopes: a keys-unknown change's scopes
     :ptype scopes: list[str] | None
+    :param unconfirmed_delta_file: a failed load request's file, unconfirmed
+    :ptype unconfirmed_delta_file: str | None
     :return: the token the advance wrote
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -757,6 +820,9 @@ async def _advance_recording_once(
             extra["delta_file"] = delta_file
         if scopes and keys_unknown and _takes(source, "scopes"):
             extra["scopes"] = scopes
+        if unconfirmed_delta_file is not None and _takes(source, "unconfirmed_delta_file"):
+            # a source built before the field records the load naming no file: never the file as confirmed
+            extra["unconfirmed_delta_file"] = unconfirmed_delta_file
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
 
@@ -919,6 +985,9 @@ class _EpochBody(BaseModel):
     delta_file: str | None = None
     #: after the delta file: named only on a keys-unknown record, which no keyed record's form is cut from
     scopes: list[str] | None = None
+    #: a failed load request's file (module docstring): named only on a whole-table record, never beside delta_file;
+    #: a reader built before it ignores it, and reads the record as a load naming no file
+    unconfirmed_delta_file: str | None = None
 
 
 def epoch_change_body(
@@ -933,6 +1002,7 @@ def epoch_change_body(
     database: str | None = None,
     delta_file: str | None = None,
     scopes: Sequence[str] | None = None,
+    unconfirmed_delta_file: str | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -962,6 +1032,9 @@ def epoch_change_body(
     :param scopes: for a keys-unknown change, the scopes its commit touched (:attr:`EpochChange.scopes`); ``None``
         names none
     :ptype scopes: Sequence[str] | None
+    :param unconfirmed_delta_file: for a whole-table change of key prefixes, a failed load request's file, stored under
+        its own field (:attr:`EpochChange.delta_file_unconfirmed`); ``None`` names none
+    :ptype unconfirmed_delta_file: str | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, a partition with either, or a delta file name that is
@@ -975,6 +1048,10 @@ def epoch_change_body(
     _check_noted_between(noted_between, keys_unknown=keys_unknown)
     _check_scopes(scopes, keys_unknown=keys_unknown)
     check_whole_reach(prefixes, reason, whole_table=rows is None and not keys_unknown)
+    if unconfirmed_delta_file is not None:
+        _check_unconfirmed(
+            unconfirmed_delta_file, delta_file, whole_table=rows is None and not keys_unknown, prefixes=prefixes
+        )
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
@@ -987,6 +1064,7 @@ def epoch_change_body(
         database=database,
         delta_file=delta_file,
         scopes=list(scopes) if scopes is not None else None,
+        unconfirmed_delta_file=unconfirmed_delta_file,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -1078,10 +1156,15 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             reason=body.reason,
             noted_between=body.noted_between,
             database=body.database,
-            delta_file=body.delta_file,
+            # an unconfirmed file is read under the one name every reader of a record's file takes, marked so: each
+            # that applies a file checks the mark (module docstring)
+            delta_file=body.delta_file if body.unconfirmed_delta_file is None else body.unconfirmed_delta_file,
             scopes=body.scopes,
+            delta_file_unconfirmed=body.unconfirmed_delta_file is not None,
         )
-    except ValidationError as exc:
+        if body.unconfirmed_delta_file is not None and body.delta_file is not None:
+            raise ValueError("a record names a delta file confirmed or unconfirmed, never both")
+    except (ValidationError, ValueError) as exc:
         raise GenerationUnavailableError(
             f"the change record of {table_name!r} at {token!r} is malformed: {exc}"
         ) from exc

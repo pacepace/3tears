@@ -79,6 +79,22 @@ def _epochs_applied() -> Any:
     )
 
 
+def _unconfirmed_files_waited() -> Any:
+    return counter(
+        "collection_unconfirmed_delta_files_waited_total",
+        description="a failed load request's epochs, naming their file unconfirmed, that copies here wait for the writer "
+        "to confirm from L3 (ruling C of 2026-11-23); nothing is read from L3 by the copy",
+        label_names=("table",),
+    )
+
+
+#: how a copy is told to wait for a failed load request's unconfirmed file (``WantedFile.why``): the wait whose file,
+#: though it reads, is read again only once the writer has answered for it (``CopyFollower``'s rule for a file lacking a
+#: key its record named), so the copy never applies the request's own file, only the one the writer wrote again from
+#: L3. Why this word and not one of its own: the copy's wait rule keys on it, and the copy follower is not changed here
+UNCONFIRMED_FILE_WAIT: Final = "key_not_in_file"
+
+
 #: every reason a followed table falls behind, and what ends it: the one list the metric's description and the
 #: ERROR are built from, so neither can leave a reason out
 BEHIND_REASONS: Final[dict[str, str]] = {
@@ -453,8 +469,10 @@ class WantedFile:
     :ivar table: the table
     :ivar epoch: the epoch whose record names the file
     :ivar file: the file's name under the delta files' directory, as the record names it
-    :ivar why: ``file_missing`` (not on the volume, or no volume mounted) or ``file_unreadable`` (there, and not a
-        delta file of the table: :class:`~threetears.core.collections.delta_files.DeltaFileUnreadableError`)
+    :ivar why: ``file_missing`` (not on the volume, or no volume mounted), ``file_unreadable`` (there, and not a
+        delta file of the table: :class:`~threetears.core.collections.delta_files.DeltaFileUnreadableError`), or
+        :data:`UNCONFIRMED_FILE_WAIT` (a failed load request's file, which reads, and is applied only once the writer
+        has written it again from L3)
     :ivar keys_unknown: the record lists no rows (a commit too big to list, decision 21): its keys are only in the file,
         so the writer cannot recreate it by key and recovers the table instead (decision 28); otherwise the record
         names its key prefixes (a load's or a clear's) and the file is recreated under its name
@@ -1244,6 +1262,15 @@ class CollectionRegistry:
                 self.drop_table(
                     change.table, reason=f"epoch {change.token} reset the table", why="reset", token=change.token
                 )
+            elif change.prefixes and change.delta_file is not None and change.delta_file_unconfirmed:
+                if not await self._apply_unconfirmed_prefixes(change):
+                    # no copy here waits for files: this process's own caches drop the prefixes, as for a load naming
+                    # no file (a read-through of each key on demand, never a copy reading the prefixes)
+                    await self.drop_partitions(
+                        change.table,
+                        change.prefixes,
+                        reason=f"epoch {change.token} loaded key prefixes; its file is unconfirmed",
+                    )
             elif change.prefixes and change.delta_file is not None and await self._apply_file_prefixes(change):
                 pass
             elif change.prefixes:
@@ -1279,7 +1306,37 @@ class CollectionRegistry:
                 batched=bool(batched),
             )
 
-    async def _apply_file_prefixes(self, change: EpochChange) -> bool:
+    async def _apply_unconfirmed_prefixes(self, change: EpochChange) -> bool:
+        """apply a failed load request's epoch, whose record names its file unconfirmed (ruling C of 2026-11-23): from
+        the file once the writer has written it again from L3 (marked confirmed), as any load's; until then never from
+        the file (it may hold rows L3 never took) and never from L3: each copy waits for the writer, as for a lost file
+        (decision 29), and asks it to confirm the file (:class:`~threetears.core.collections.delta_recreate.
+        DeltaRecreator`).
+
+        The wait is told as :data:`UNCONFIRMED_FILE_WAIT`: a file that reads is read again only once the writer has
+        answered for it, so the copy never applies the request's own file.
+
+        :param change: a whole-table record of key prefixes naming its file unconfirmed
+        :ptype change: EpochChange
+        :return: ``True`` once applied from the confirmed file, or once each copy waiting for files is told to wait;
+            ``False`` when no copy here waits for files, for this process's own caches to drop the prefixes
+        :rtype: bool
+        :raises OSError: when the volume itself fails the read (an errno): the pass fails and is tried again
+        """
+        assert change.delta_file is not None and change.prefixes  # noqa: S101 -- the caller's condition
+        reach = await self._file_reach(change)
+        if not isinstance(reach, str) and reach.confirmed:
+            return await self._apply_file_prefixes(change, known=reach)
+        why = reach if isinstance(reach, str) else UNCONFIRMED_FILE_WAIT
+        _unconfirmed_files_waited().labels(table=change.table).inc()
+        log.warning(
+            "a failed load request's epoch names its file unconfirmed: copies wait for the writer to write it again "
+            "from L3, reading nothing from L3 themselves",
+            extra={"extra_data": {"table": change.table, "epoch": change.token, "file": change.delta_file, "why": why}},
+        )
+        return await self._file_wanted(change, why, keys_unknown=False)
+
+    async def _apply_file_prefixes(self, change: EpochChange, *, known: DeltaKeys | None = None) -> bool:
         """apply a load's or a clear's epoch from the delta file its record names: the table's own caches drop it as
         for any load; a derived cache that takes files (``on_file_prefixes``) is told the prefixes the file clears and
         the epoch, and every key the file names is applied as its row message would be, stamped with the epoch. A
@@ -1291,6 +1348,8 @@ class CollectionRegistry:
 
         :param change: a whole-table record naming its key prefixes and its delta file
         :ptype change: EpochChange
+        :param known: the file's reach, already read; None reads it
+        :ptype known: DeltaKeys | None
         :return: ``True`` once applied, or once each copy waiting for files is told the file cannot be had
             (:meth:`_file_wanted`); ``False`` when it cannot be had (missing or unreadable) and no copy waits for files,
             for the prefixes to be read again as before
@@ -1298,7 +1357,7 @@ class CollectionRegistry:
         :raises OSError: when the volume itself fails the read (an errno): the pass fails and is tried again
         """
         assert change.delta_file is not None and change.prefixes  # noqa: S101 -- the caller's condition
-        reach = await self._file_reach(change)
+        reach = known if known is not None else await self._file_reach(change)
         if isinstance(reach, str):
             if await self._file_wanted(change, reach, keys_unknown=False):
                 return True

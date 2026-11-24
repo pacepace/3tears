@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 from threetears.core.backends.broker_generation import (
     named_commit_scopes,
     named_delta_files,
+    named_unconfirmed_delta_files,
     note_advanced_generation,
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
@@ -936,6 +937,7 @@ async def advance_for_write(
     reason: str | None = None,
     delta_file: str | None = None,
     scopes: Sequence[str] | None = None,
+    unconfirmed_delta_file: str | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -980,6 +982,10 @@ async def advance_for_write(
         (``COMMIT_SCOPES_FIELD``); ``None`` takes the ones the commit being settled in this context named
         (``naming_commit_scopes``). Named only on a keys-unknown record that names a delta file
     :ptype scopes: Sequence[str] | None
+    :param unconfirmed_delta_file: a whole-table change's file of a load request that failed after it may have
+        committed some rows (``EpochChange.delta_file_unconfirmed``): the broker passes the one the request named;
+        ``None`` takes the one named in this context (``naming_unconfirmed_delta_files``), none when none is
+    :ptype unconfirmed_delta_file: str | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -999,6 +1005,11 @@ async def advance_for_write(
                 f"(CollectionRegistry.set_l3_schema, or the broker's schema=)"
             )
     file = delta_file if delta_file is not None else named_delta_files().get(table_name)
+    unconfirmed = (
+        unconfirmed_delta_file
+        if unconfirmed_delta_file is not None
+        else named_unconfirmed_delta_files().get(table_name)
+    )
     token = await advance_recording(
         source,
         table_name,
@@ -1012,6 +1023,7 @@ async def advance_for_write(
         delta_file=file,
         # only a keys-unknown record of a commit with a delta file: its keys are in that file alone (decision 31)
         scopes=(scopes if scopes is not None else named_commit_scopes()) if keys_unknown and file else None,
+        unconfirmed_delta_file=unconfirmed,
     )
     if isinstance(token, str) and token:
         # a commit settling in this context collects it: a writer folds its delta files by the generation it wrote

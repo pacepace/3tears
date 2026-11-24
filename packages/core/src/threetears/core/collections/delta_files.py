@@ -145,6 +145,13 @@ _WRITTEN_METADATA: Final = b"threetears.delta.written"
 _PREFIXES_METADATA: Final = b"threetears.delta.prefixes"
 #: the file's schema metadata: the format's version
 _FORMAT_METADATA: Final = b"threetears.delta.format"
+#: the file's schema metadata, on a file the writer wrote again from L3 for a failed load request (ruling C of
+#: 2026-11-23): its rows are exactly what L3 holds for the request's keys, so a copy may apply it although its record
+#: names it unconfirmed (``EpochChange.delta_file_unconfirmed``). Absent from every other file; a reader built before it
+#: ignores it, and the format's version stays: an older reader never reads an unconfirmed record's file at all
+_CONFIRMED_METADATA: Final = b"threetears.delta.confirmed"
+#: the value of :data:`_CONFIRMED_METADATA`: where the rows were read from
+_CONFIRMED_FROM_L3: Final = b"l3"
 #: this format's version: rows and delete markers in one table, as :data:`_DELETED_COLUMN` tells them apart, each
 #: row naming the columns its write set (:data:`_WRITTEN_COLUMN`), the key prefixes it clears first
 #: (:data:`_PREFIXES_METADATA`), zstd inside, the IPC bytes closed by their checksum (:data:`_CHECKSUM_MARK`).
@@ -435,19 +442,28 @@ class TableDelta:
                 segments.append(("deleted", _marker_table(part, self.key, state, self.types)))
         return segments
 
-    def table(self, write_id: str) -> Any:
+    def table(self, write_id: str, *, confirmed: bool = False) -> Any:
         """every part as one Arrow table, rows and delete markers in the order written, each row naming the columns
         its write set, with the file's metadata. Blocking: run it on a thread.
 
         :param write_id: the write's unique id
         :ptype write_id: str
+        :param confirmed: the rows were read from L3 for a failed load request's keys (:data:`_CONFIRMED_METADATA`)
+        :ptype confirmed: bool
         :return: the file's table
         :rtype: pyarrow.Table
         :raises ImportError: without pyarrow
         :raises ValueError: when a write names a column the table does not have
         """
         return build_file_table(
-            self.name, self.types, self.key, self.defaults, self.prefixes, self.segments(), write_id
+            self.name,
+            self.types,
+            self.key,
+            self.defaults,
+            self.prefixes,
+            self.segments(),
+            write_id,
+            confirmed=confirmed,
         )
 
 
@@ -540,6 +556,8 @@ def build_file_table(
     prefixes: Sequence[Mapping[str, str]],
     segments: Sequence[tuple[Any, ...]],
     write_id: str,
+    *,
+    confirmed: bool = False,
 ) -> Any:
     """a delta file's table from its segments (:meth:`TableDelta.segments`): each typed as the table's columns, its
     rows marked deleted or not and each naming the columns its write set, joined in order, with the file's metadata.
@@ -559,6 +577,8 @@ def build_file_table(
     :ptype segments: Sequence[tuple]
     :param write_id: the write's unique id
     :ptype write_id: str
+    :param confirmed: mark the file confirmed from L3 (:data:`_CONFIRMED_METADATA`)
+    :ptype confirmed: bool
     :return: the file's table
     :rtype: pyarrow.Table
     :raises ImportError: without pyarrow
@@ -606,16 +626,17 @@ def build_file_table(
         ]
     )
     joined = pa.concat_tables(joined_segments) if joined_segments else schema.empty_table()
-    return joined.replace_schema_metadata(
-        {
-            _TABLE_METADATA: name.encode(),
-            _WRITE_METADATA: write_id.encode(),
-            _KEY_METADATA: json.dumps(list(key)).encode(),
-            _WRITTEN_METADATA: json.dumps([list(named) for named in sets]).encode(),
-            _PREFIXES_METADATA: json.dumps(list(prefixes)).encode(),
-            _FORMAT_METADATA: _DELTA_FORMAT,
-        }
-    )
+    metadata = {
+        _TABLE_METADATA: name.encode(),
+        _WRITE_METADATA: write_id.encode(),
+        _KEY_METADATA: json.dumps(list(key)).encode(),
+        _WRITTEN_METADATA: json.dumps([list(named) for named in sets]).encode(),
+        _PREFIXES_METADATA: json.dumps(list(prefixes)).encode(),
+        _FORMAT_METADATA: _DELTA_FORMAT,
+    }
+    if confirmed:
+        metadata[_CONFIRMED_METADATA] = _CONFIRMED_FROM_L3
+    return joined.replace_schema_metadata(metadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,6 +671,7 @@ class DeltaTable:
     :ivar written: per row, an index into ``sets``: the columns its write set in a row L3 already held
     :ivar sets: the distinct column sets the rows' writes set
     :ivar prefixes: the key prefixes the write cleared before them, as text (:func:`_prefix_text`)
+    :ivar confirmed: the writer wrote it again from L3 for a failed load request's keys (:data:`_CONFIRMED_METADATA`)
     """
 
     table: str
@@ -660,6 +682,7 @@ class DeltaTable:
     written: Any
     sets: tuple[frozenset[str], ...]
     prefixes: tuple[dict[str, str], ...] = ()
+    confirmed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -671,12 +694,15 @@ class DeltaKeys:
     :ivar keys: one row a key, each key column's values as text (``key_text``), named as the key's columns
     :ivar prefixes: the key prefixes it clears before its rows, as text
     :ivar table: the table the file holds rows of
+    :ivar confirmed: the writer wrote it again from L3 for a failed load request's keys (:data:`_CONFIRMED_METADATA`):
+        a record naming it unconfirmed may be applied from it
     """
 
     key: tuple[str, ...]
     keys: Any
     prefixes: tuple[dict[str, str], ...]
     table: str = ""
+    confirmed: bool = False
 
 
 @contextmanager
@@ -893,8 +919,17 @@ def read_delta_table(path: Path, *, table: str | None = None) -> DeltaTable:
             if low.as_py() < 0 or high.as_py() >= len(sets):
                 raise IndexError(f"a row names written set {high.as_py()} of the file's {len(sets)}")
         rows = read.drop_columns([_DELETED_COLUMN, _WRITTEN_COLUMN])
+        confirmed = metadata.get(_CONFIRMED_METADATA) == _CONFIRMED_FROM_L3
     return DeltaTable(
-        table=named, write=write, key=key, rows=rows, deleted=deleted, written=written, sets=sets, prefixes=prefixes
+        table=named,
+        write=write,
+        key=key,
+        rows=rows,
+        deleted=deleted,
+        written=written,
+        sets=sets,
+        prefixes=prefixes,
+        confirmed=confirmed,
     )
 
 
@@ -933,7 +968,8 @@ def read_delta_file_keys(path: Path, *, table: str | None = None) -> DeltaKeys:
         keys = pa_ipc.open_file(pa.BufferReader(body), options=options).read_all()
         keys.validate(full=True)
         texts = key_text_table(keys, key)
-    return DeltaKeys(key=key, keys=_first_written(texts, key), prefixes=prefixes, table=named)
+        confirmed = metadata.get(_CONFIRMED_METADATA) == _CONFIRMED_FROM_L3
+    return DeltaKeys(key=key, keys=_first_written(texts, key), prefixes=prefixes, table=named, confirmed=confirmed)
 
 
 def key_text_table(rows: Any, key: Sequence[str]) -> Any:
@@ -1369,7 +1405,7 @@ def _fsync_directory(directory: Path) -> None:
         os.close(handle)
 
 
-def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
+def write_delta_file(root: Path, delta: TableDelta, write_id: str, *, confirmed: bool = False) -> str:
     """save ``delta`` as its file under ``root``: written under a temporary name, flushed, renamed to its own name,
     the directory flushed. Blocking: where it runs is CPU (the rows typed, joined, compressed and hashed), so a serving
     process's write saves its files in a worker process (:func:`~threetears.core.collections.delta_save.save_in_worker`);
@@ -1384,12 +1420,14 @@ def write_delta_file(root: Path, delta: TableDelta, write_id: str) -> str:
     :ptype delta: TableDelta
     :param write_id: the write's unique id
     :ptype write_id: str
+    :param confirmed: mark it written again from L3 for a failed load request's keys (:data:`_CONFIRMED_METADATA`)
+    :ptype confirmed: bool
     :return: the file's name under ``root`` (:func:`_delta_file_name`)
     :rtype: str
     :raises ValueError: when the table or write id cannot name a file
     :raises OSError: when the file cannot be written
     """
-    return write_table_file(root, delta.name, write_id, delta.table(write_id))
+    return write_table_file(root, delta.name, write_id, delta.table(write_id, confirmed=confirmed))
 
 
 def write_table_file(root: Path, table_name: str, write_id: str, table: Any) -> str:

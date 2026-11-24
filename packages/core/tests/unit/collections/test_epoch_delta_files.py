@@ -464,3 +464,90 @@ async def test_a_pod_s_commit_names_the_generations_its_broker_reply_named() -> 
     async with CallerTransaction(_Conn()) as direct:
         pass
     assert direct.committed_generations == {}
+
+
+# --- a failed load request's file, named unconfirmed (ruling C of 2026-11-23) ------------------------------------------
+
+_PREFIXES = [{"state": "VA"}]
+
+
+class _ReaderBeforeUnconfirmed(BaseModel):
+    """the stored body as a 0.95 reader built before the unconfirmed field reads it: it knows the delta file and a
+    load's prefixes, and ignores a field it does not know."""
+
+    table: str
+    whole_table: bool = False
+    prefixes: list[dict[str, str]] | None = None
+    delta_file: str | None = None
+
+
+def test_an_unconfirmed_file_is_stored_under_its_own_field_and_read_back_marked() -> None:
+    """Flips if a failed load request's file is stored as ``delta_file`` (a reader that applies it would hold rows L3
+    never took) or read back unmarked."""
+    body = epoch_change_body("results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE)
+    stored = json.loads(body)
+    assert stored["unconfirmed_delta_file"] == _FILE and "delta_file" not in stored
+    record = read_epoch_change_body(body, "results", "i:1")
+    assert (record.delta_file, record.delta_file_unconfirmed, record.prefixes) == (_FILE, True, _PREFIXES)
+    whole = epoch_change_body("results", None, prefixes=_PREFIXES, delta_file=_FILE)
+    named = read_epoch_change_body(whole, "results", "i:2")
+    assert named.delta_file_unconfirmed is False
+
+
+def test_a_reader_built_before_the_unconfirmed_field_reads_it_as_a_load_naming_no_file() -> None:
+    """Flips if a reader built before the field (a pod not yet upgraded, mid-roll) would apply the unconfirmed file:
+    it must read the record as a load of its prefixes naming no file, as before the ruling."""
+    body = epoch_change_body("results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE)
+    older = _ReaderBeforeUnconfirmed.model_validate_json(body)
+    assert (older.whole_table, older.prefixes, older.delta_file) == (True, _PREFIXES, None)
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        {"rows": [ChangedRow(ids=["a"])]},
+        {"rows": None, "keys_unknown": True},
+        {"rows": None},
+        {"rows": None, "prefixes": _PREFIXES, "delta_file": _FILE},
+    ],
+)
+def test_an_unconfirmed_file_is_named_only_on_a_loads_prefix_record_and_never_beside_a_file(
+    form: dict[str, Any],
+) -> None:
+    """Flips if an unconfirmed file is accepted on a keyed or keys-unknown record, on a whole-table record naming no
+    prefix, or beside a confirmed file: no reader would know which to apply."""
+    rows = form.pop("rows")
+    with pytest.raises(ValueError, match="unconfirmed|never both"):
+        epoch_change_body("results", rows, unconfirmed_delta_file=_FILE, **form)
+
+
+class _UnconfirmedSource(_Source):
+    """a source that records the unconfirmed field."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unconfirmed: list[str | None] = []
+
+    async def advance_with_change(  # type: ignore[override]
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
+        delta_file: str | None = None,
+        unconfirmed_delta_file: str | None = None,
+    ) -> str:
+        self.unconfirmed.append(unconfirmed_delta_file)
+        return await super().advance_with_change(table_name, rows, prefixes=prefixes, delta_file=delta_file)
+
+
+async def test_an_unconfirmed_file_reaches_a_source_that_takes_it_and_never_one_that_does_not() -> None:
+    """Flips if an advance naming an unconfirmed file hands it to a source as ``delta_file`` (a source built before the
+    field would record it confirmed), or never hands it to one that takes it."""
+    newer = _UnconfirmedSource()
+    await advance_recording(newer, "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE)
+    assert (newer.unconfirmed, newer.files) == ([_FILE], [("results", None)])
+    older = _Source()
+    await advance_recording(older, "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE)
+    assert older.files == [("results", None)]
