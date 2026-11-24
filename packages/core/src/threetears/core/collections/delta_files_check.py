@@ -81,7 +81,7 @@ def _probe(root: Path) -> None:
     :rtype: None
     :raises OSError: when any step fails
     """
-    token = uuid.uuid4().hex
+    token = uuid.uuid7().hex
     partial = root / f"{_PROBE_PREFIX}{token}.partial"
     final = root / f"{_PROBE_PREFIX}{token}"
     try:

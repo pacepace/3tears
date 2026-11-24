@@ -623,7 +623,7 @@ def _write_renamed(final: Path, write: Any) -> None:
     final.parent.mkdir(parents=True, exist_ok=True)
     if final.exists():
         raise FileExistsError(f"{final} exists; a full's files are never overwritten")
-    partial = final.parent / f".{final.name}.{uuid.uuid4().hex}{_PARTIAL_SUFFIX}"
+    partial = final.parent / f".{final.name}.{uuid.uuid7().hex}{_PARTIAL_SUFFIX}"
     renamed = False
     try:
         with partial.open("wb") as sink:
@@ -661,7 +661,7 @@ def write_full_part(root: Path, table: str, scope: str | None, rows: Any, versio
         raise ImportError("a full needs pyarrow: install 3tears[snapshot]")
     if not _TABLE_NAME.match(table):
         raise ValueError(f"a full's table must be an identifier, got {table!r}")
-    file = f"{_FULLS}/{_PARTS}/{table}/{uuid.uuid4().hex}{_SUFFIX}"
+    file = f"{_FULLS}/{_PARTS}/{table}/{uuid.uuid7().hex}{_SUFFIX}"
     metadata = {_TABLE_METADATA: table.encode(), _VERSION_METADATA: version.encode()}
     if scope is not None:
         metadata[_SCOPE_METADATA] = scope.encode()

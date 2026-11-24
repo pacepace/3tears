@@ -926,7 +926,7 @@ async def save_delta_files(deltas: Mapping[str, TableDelta]) -> dict[str, str]:
             f"{sorted(deltas)}: the table opts in to delta files and no delta files directory is configured "
             f"(THREETEARS_DELTA_FILES_DIR); the write is refused rather than committed without its file"
         )
-    write_id = uuid.uuid4().hex
+    write_id = uuid.uuid7().hex
     # in flight from here until the commit settles (:data:`~threetears.core.collections.delta_files.OWN_DELTA_SAVES`): what the orphan sweep goes by
     names = OWN_DELTA_SAVES.saving(list(deltas), write_id)
     try:
