@@ -20,7 +20,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.observe.background import cancel_and_wait, spawn_background
-from threetears.observe.build_once import BuildOnce
+from threetears.observe.build_once import BuildOnce, WeakBuildOnce
 from threetears.observe.containment import ContainedLevel, contain, contained, remove_tree
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.frozen_weak import FrozenWeakKeys, FrozenWeakSet, FrozenWeakValues
@@ -61,6 +61,7 @@ __all__ = [
     "PeriodicTask",
     "ThreeTearsLogger",
     "TickResult",
+    "WeakBuildOnce",
     "clear_context",
     "NOISY_LIBRARY_LOGGERS",
     "configure_logging",

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 
 import pytest
 
-from threetears.observe import BuildOnce
+from threetears.observe import BuildOnce, WeakBuildOnce
 
 _THREADS = 8
 
@@ -218,3 +220,31 @@ class TestACostBound:
     def test_a_negative_cap_is_refused(self) -> None:
         with pytest.raises(ValueError, match="0 or more"):
             BuildOnce(cost=len, max_cost=-1)
+
+
+def test_a_weak_build_once_builds_once_per_live_key_and_lets_the_key_go() -> None:
+    """``WeakBuildOnce``: one build per key object, a stale value rebuilt, nothing kept alive, and a key that
+    cannot be held weakly refused before any build."""
+
+    class Reader:
+        """weakly referable, hashed by identity."""
+
+    builds: list[int] = []
+
+    def build() -> int:
+        builds.append(1)
+        return len(builds)
+
+    cache: WeakBuildOnce[Reader, int] = WeakBuildOnce(is_current=lambda value: value != 2)
+    first, second = Reader(), Reader()
+    assert cache.get(first, build) == 1
+    assert cache.get(first, build) == 1
+    assert cache.get(second, build) == 2
+    assert cache.get(second, build) == 3  # 2 is not current: rebuilt
+    held = weakref.ref(first)
+    del first
+    gc.collect()
+    assert held() is None
+    with pytest.raises(TypeError):
+        cache.get(3, build)  # type: ignore[arg-type]
+    assert len(builds) == 3

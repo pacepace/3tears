@@ -117,9 +117,9 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:_socket_transport#0:_tra
 # rationale: nats-py TcpTransport._io_writer: the asyncio stream writer over the connection's socket (replaced on TLS upgrade and on reconnect); its public .transport is the asyncio transport the bound goes on; nats-py offers no public accessor
 packages/nats/src/threetears/nats/_nats_py_internals.py:_socket_transport#0:_io_writer
 # rationale: asyncio _SelectorSocketTransport._buffer: the transport's write buffer, read by the bounded _get_sendmsg_buffer exactly as asyncio's own reads it; created once per transport, only emptied
-packages/nats/src/threetears/nats/_nats_py_internals.py:bound_transport#0:_buffer
+packages/nats/src/threetears/nats/_nats_py_internals.py:_bound_sends#0:_buffer
 # rationale: asyncio _SelectorSocketTransport._get_sendmsg_buffer: replaced on one NATS connection's transport so each sendmsg is offered at most SEND_BOUND_BYTES and the kernel's copy holds the loop a fraction of a turn; asyncio has no public bound per send, and a socket option (SO_SNDBUF) would cap every connection's throughput
-packages/nats/src/threetears/nats/_nats_py_internals.py:bound_transport#0:_get_sendmsg_buffer
+packages/nats/src/threetears/nats/_nats_py_internals.py:_bound_sends#0:_get_sendmsg_buffer
 # rationale: asyncio _SelectorSocketTransport._buffer: send_bound_gaps reads how much of a write left the write buffer after one bounded send (the proof the bound holds on a real socket), then empties it so the transport closes at once; asyncio offers get_write_buffer_size, but the views are also cleared, which has no public form
 packages/nats/src/threetears/nats/_nats_py_internals.py:send_bound_gaps#0:_buffer
 # rationale: asyncio selector_events._SelectorSocketTransport: the class whose send path the bound relies on, checked by name (a missing class is reported, never raised); asyncio exports no public name for it

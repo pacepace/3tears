@@ -10,6 +10,7 @@ every statement in the form it had.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, Final
@@ -17,7 +18,7 @@ from typing import Any, Final
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 
-from threetears.observe import FrozenWeakKeys, get_logger
+from threetears.observe import WeakBuildOnce, get_logger
 from threetears.observe.metrics import gauge
 
 __all__ = ["check_index_hints", "known_on_yugabyte", "l3_on_yugabyte"]
@@ -67,9 +68,22 @@ async def l3_on_yugabyte(l3: Any) -> bool:
     return bool(rows) and _YUGABYTE_VERSION_MARK in str(rows[0]["v"])
 
 
-#: readers whose database was asked once (a pool, the rail's proxy): a reader's database does not change under it.
-#: Held weakly, replaced whole
-_ASKED: FrozenWeakKeys[Any, bool] = FrozenWeakKeys()
+def _answered_or_asking(asked: asyncio.Task[bool]) -> bool:
+    """whether a reader's ask may still be handed out: asking now, or answered; one that failed or was cancelled is
+    asked again.
+
+    :param asked: the reader's ask
+    :ptype asked: asyncio.Task[bool]
+    :return: whether it may
+    :rtype: bool
+    """
+    return not asked.done() or (not asked.cancelled() and asked.exception() is None)
+
+
+#: each reader's one ask of its database (a pool, the rail's proxy): a reader's database does not change under it.
+#: Built once per reader, the first caller's ask shared by every caller meanwhile; keyed weakly, so a reader's ask
+#: goes with it
+_ASKED: Final[WeakBuildOnce[Any, asyncio.Task[bool]]] = WeakBuildOnce(is_current=_answered_or_asking)
 
 #: asyncpg pools whose database was asked once, by ``id``, each held beside its answer. A pool is slotted with no
 #: ``__weakref__``, so it cannot sit in :data:`_ASKED`; before this every keyed read through a pool -- the hub's and
@@ -100,28 +114,9 @@ async def known_on_yugabyte(l3: Any) -> bool:
     if not type(l3).__weakrefoffset__:
         # a reader that cannot be held weakly is asked each time
         return await l3_on_yugabyte(l3)
-    known = _ASKED.get(l3)
-    if known is not None:
-        return known
-    answer = await l3_on_yugabyte(l3)
-    _keep_answer(l3, answer)
-    return answer
-
-
-def _keep_answer(l3: Any, answer: bool) -> None:
-    """keep ``l3``'s answer: :data:`_ASKED` replaced whole, read here after the question's await so an answer kept for
-    another reader meanwhile stays. Two callers that both find a reader unasked each ask it once and keep the same
-    answer: no object is built, nothing is registered twice.
-
-    :param l3: the reader
-    :ptype l3: Any
-    :param answer: whether its database is YugabyteDB
-    :ptype answer: bool
-    :return: nothing
-    :rtype: None
-    """
-    global _ASKED
-    _ASKED = _ASKED.with_entry(l3, answer)
+    asked = _ASKED.get(l3, lambda: asyncio.ensure_future(l3_on_yugabyte(l3)))
+    # shielded: a caller cancelled while it waits leaves the ask running for the others
+    return await asyncio.shield(asked)
 
 
 async def _pool_on_yugabyte(pool: asyncpg.Pool) -> bool:
