@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 from uuid import uuid7
 
 from threetears.agent.tools.base_tool import TearsTool
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.agent.tools.server import (
     ToolRegistrationRefused,
     ToolServer,
@@ -142,12 +144,13 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         self._identity_token = identity_token
         self._tool_server: ToolServer | None = None
         self._serve_task: asyncio.Task[None] | None = None
-        self._resources: dict[str, Any] = {}
-        self._tool_names: dict[str, list[str]] = {}
+        # read-only snapshots per spec key, replaced whole on each change
+        self._resources: Mapping[str, Any] = frozen()
+        self._tool_names: Mapping[str, tuple[str, ...]] = frozen()
         # one lock per spec key: two overlapping rebuilds of one spec would each
         # forget, build and register, and the second registration would overwrite
         # the first's bookkeeping -- a resource never closed, tools never tracked.
-        self._spec_locks: dict[str, asyncio.Lock] = {}
+        self._spec_locks: Mapping[str, asyncio.Lock] = frozen()
 
     @property
     def pod_id(self) -> str:
@@ -361,10 +364,11 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             await cancel_and_wait(self._serve_task)
             self._serve_task = None
 
-        for resource in self._resources.values():
+        resources = self._resources
+        for resource in resources.values():
             await self.close_resource(resource)
-        self._resources.clear()
-        self._tool_names.clear()
+        self._resources = frozen()
+        self._tool_names = frozen()
 
         log.info("dynamic tool pod stopped: pod_id=%s", self._pod_id)
 
@@ -443,7 +447,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             the server is serving, the reduced manifest is published first
         """
         key = self.spec_key(spec)
-        async with self._spec_locks.setdefault(key, asyncio.Lock()):
+        async with self._spec_lock(key):
             _known, had_tools = await self._forget(key)
             try:
                 built = await self.build_tools(spec)
@@ -525,7 +529,7 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: true when the spec was known (tools or resource removed)
         :rtype: bool
         """
-        async with self._spec_locks.setdefault(key, asyncio.Lock()):
+        async with self._spec_lock(key):
             removed, _had_tools = await self._forget(key)
         server = self._tool_server
         if removed and server is not None and server.is_connected:
@@ -536,6 +540,20 @@ class DynamicToolPod(ABC, Generic[SpecT]):
                 self._pod_id,
             )
         return removed
+
+    def _spec_lock(self, key: str) -> asyncio.Lock:
+        """the one lock of a spec key, made on first use (no await between the read and the assignment).
+
+        :param key: spec key
+        :ptype key: str
+        :return: its lock
+        :rtype: asyncio.Lock
+        """
+        lock = self._spec_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._spec_locks = with_entry(self._spec_locks, key, lock)
+        return lock
 
     async def _forget(self, key: str) -> tuple[bool, bool]:
         """drop a spec's tools and close its resource, publishing nothing.
@@ -548,8 +566,10 @@ class DynamicToolPod(ABC, Generic[SpecT]):
         :return: whether the spec was known, and whether it had tools
         :rtype: tuple[bool, bool]
         """
-        tool_keys = self._tool_names.pop(key, None)
-        resource = self._resources.pop(key, None)
+        tool_keys = self._tool_names.get(key)
+        resource = self._resources.get(key)
+        self._tool_names = without_entry(self._tool_names, key)
+        self._resources = without_entry(self._resources, key)
         server = self._tool_server
         if tool_keys is not None and server is not None:
             for tool_key in tool_keys:
@@ -601,6 +621,8 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             return
         for tool in built.tools:
             server.register(tool)
-        self._tool_names[built.key] = [f"{tool.mcp_name()}@{tool.mcp_version()}" for tool in built.tools]
+        self._tool_names = with_entry(
+            self._tool_names, built.key, tuple(f"{tool.mcp_name()}@{tool.mcp_version()}" for tool in built.tools)
+        )
         if built.resource is not None:
-            self._resources[built.key] = built.resource
+            self._resources = with_entry(self._resources, built.key, built.resource)

@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
 from pydantic import SecretStr
 
 from threetears.core.collections import CallerTransaction
+from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entry
 from threetears.core.utils.atomic_write import atomic_write_sync
 from threetears.core.backends.git.envelope import DEFAULT_ISSUER, ForwardEnvelope, GitDirReplayAnchor
 from threetears.core.backends.git.advanced import AdvancedListener, RepoAdvanced, publish_advanced
@@ -379,18 +380,19 @@ def _with_trailers(message: str, trailers: Mapping[str, str]) -> str:
 class PendingWrite:
     """a save into a pending tail's folder, under the repository's lock (:meth:`GitRepo.pending`)."""
 
-    def __init__(self, scope: str | None, marked: set[str]) -> None:
+    def __init__(self, scope: str | None, mark: Callable[[str | None, Sequence[str]], None]) -> None:
         """start the save.
 
         :param scope: the tail's folder
         :ptype scope: str | None
-        :param marked: the folder's uncommitted paths, added to as the save writes
-        :ptype marked: set[str]
+        :param mark: marks paths the save wrote as the folder's uncommitted ones (the repository's, which replaces its
+            snapshot whole)
+        :ptype mark: Callable[[str | None, Sequence[str]], None]
         :return: None
         :rtype: None
         """
         self.scope = scope
-        self._marked = marked
+        self._mark = mark
         self.written: list[str] = []
 
     def wrote(self, paths: Sequence[str]) -> None:
@@ -406,7 +408,7 @@ class PendingWrite:
         outside = [path for path in checked if not _covers(self.scope, path)]
         if outside:
             raise ValueError(f"a save into {self.scope!r} wrote outside it: {', '.join(outside)}")
-        self._marked.update(checked)
+        self._mark(self.scope, checked)
         self.written.extend(checked)
 
 
@@ -461,9 +463,9 @@ class GitRepo:
         self._last_push_at: datetime | None = None
         self._opened = False
         self._log = {"key": config.key, "branch": config.branch}
-        self._tails: dict[str | None, PendingTail] = {}
-        #: each tail's files written and not yet committed
-        self._pending: dict[str | None, set[str]] = {}
+        self._tails: Mapping[str | None, PendingTail] = frozen()
+        #: each tail's files written and not yet committed; per tail folder, replaced whole on the loop
+        self._pending: Mapping[str | None, frozenset[str]] = frozen()
         self._commit_listeners: list[Committed] = []
 
     # ------------------------------------------------------------------ lifecycle
@@ -723,7 +725,7 @@ class GitRepo:
                     extra={"extra_data": {**self._log, "paths": recovered[:_DIRTY_LOG_LIMIT]}},
                 )
             for scope in list(self._tails):
-                await asyncio.to_thread(self._restore_scope, scope)
+                await self._restore_tail(scope)
             if self.config.remote_url is not None:
                 await self._catch_up_with_origin()
             await self._notice_head()
@@ -803,11 +805,11 @@ class GitRepo:
         for other in self._tails:
             if other is None or scope is None or _covers(other, scope) or _covers(scope, other):
                 raise ValueError(f"a pending tail over {scope!r} overlaps the one over {other!r}")
-        self._tails[scope] = tail
-        self._pending[scope] = set()
+        self._tails = with_entry(self._tails, scope, tail)
+        self._pending = with_entry(self._pending, scope, frozenset())
         if self._opened and self.is_writer:
             async with self._lock:
-                await asyncio.to_thread(self._restore_scope, scope)
+                await self._restore_tail(scope)
                 await self._replay_tail(scope)
 
     def remove_tail(self, scope: str | None) -> PendingTail | None:
@@ -819,8 +821,10 @@ class GitRepo:
         :rtype: PendingTail | None
         """
         key = _scope_key(scope)
-        self._pending.pop(key, None)
-        return self._tails.pop(key, None)
+        tail = self._tails.get(key)
+        self._pending = without_entry(self._pending, key)
+        self._tails = without_entry(self._tails, key)
+        return tail
 
     def pending_paths(self, scope: str | None = None) -> set[str]:
         """the files saved and not yet committed.
@@ -857,7 +861,7 @@ class GitRepo:
         async with self._lock:
             self._require_writer()
             await self._notice_head()
-            save = PendingWrite(key, self._pending.setdefault(key, set()))
+            save = PendingWrite(key, self._mark_pending)
             yield save
             if save.written:
                 head = await asyncio.to_thread(self.git.head)
@@ -942,38 +946,75 @@ class GitRepo:
                 )
         return result
 
-    def _restore_scope(self, scope: str | None) -> None:
-        """put a tail's folder back as HEAD has it: its saved files and every tracked change. BLOCKING.
+    def _mark_pending(self, scope: str | None, paths: Sequence[str]) -> None:
+        """mark ``paths`` as a tail's files written and not yet committed. On the loop; a tail removed meanwhile keeps
+        nothing.
+
+        :param scope: the tail's folder
+        :ptype scope: str | None
+        :param paths: the paths
+        :ptype paths: Sequence[str]
+        :return: None
+        :rtype: None
+        """
+        held = self._pending.get(scope)
+        if held is not None:
+            self._pending = with_entry(self._pending, scope, held | frozenset(paths))
+
+    def _clear_pending(self, scopes: Sequence[str | None]) -> None:
+        """mark no file of these tails as uncommitted (a commit took them). On the loop.
+
+        :param scopes: the tails' folders
+        :ptype scopes: Sequence[str | None]
+        :return: None
+        :rtype: None
+        """
+        self._pending = with_entries(self._pending, {scope: frozenset() for scope in scopes if scope in self._pending})
+
+    async def _restore_tail(self, scope: str | None) -> None:
+        """put a tail's folder back as HEAD has it (:meth:`_restore_scope`), then mark none of its files uncommitted.
 
         :param scope: the folder
         :ptype scope: str | None
         :return: None
         :rtype: None
         """
+        await asyncio.to_thread(self._restore_scope, scope, self._pending.get(scope, frozenset()))
+        self._clear_pending([scope])
+
+    def _restore_scope(self, scope: str | None, pending: frozenset[str]) -> None:
+        """put a tail's folder back as HEAD has it: its saved files and every tracked change. BLOCKING.
+
+        :param scope: the folder
+        :ptype scope: str | None
+        :param pending: its saved files
+        :ptype pending: frozenset[str]
+        :return: None
+        :rtype: None
+        """
         changed = {path for status, path in self.git.dirty(None if scope is None else [scope]) if status != "??"}
-        paths = sorted(changed | self._pending.get(scope, set()))
+        paths = sorted(changed | pending)
         if paths:
             self.git.restore(paths)
             log.info(
                 "git_store.tail.reset: a tail's folder was put back as HEAD has it before its replay",
                 extra={"extra_data": {**self._log, "scope": scope, "paths": paths[:_DIRTY_LOG_LIMIT]}},
             )
-        self._pending[scope] = set()
 
-    async def _replay_tail(self, scope: str | None) -> set[str]:
+    async def _replay_tail(self, scope: str | None) -> frozenset[str]:
         """rebuild a tail's saved edits and mark its files as the store's. Call under the lock, on the writer.
 
         :param scope: the folder
         :ptype scope: str | None
         :return: the folder's uncommitted paths
-        :rtype: set[str]
+        :rtype: frozenset[str]
         """
-        save = PendingWrite(scope, self._pending.setdefault(scope, set()))
+        save = PendingWrite(scope, self._mark_pending)
         save.wrote(list(await self._tails[scope].replay(self)))
         if save.written:
             head = await asyncio.to_thread(self.git.head)
             await self._tell(await asyncio.to_thread(self._rows_in_tree, sorted(set(save.written)), head or ""))
-        return self._pending[scope]
+        return self._pending.get(scope, frozenset())
 
     async def _flush_tails(self, paths: Sequence[str]) -> tuple[list[str], dict[str, str], list[str | None]]:
         """the saved edits a commit of ``paths`` takes along: every tail whose folder it touches. Under the lock.
@@ -1030,7 +1071,7 @@ class GitRepo:
                 sorted({path for _, path in await asyncio.to_thread(self.git.dirty, sorted(marked))}) if marked else []
             )
             if not dirty:
-                marked.clear()  # the saved edits net to no change: nothing to commit
+                self._clear_pending([scope])  # the saved edits net to no change: nothing to commit
                 return CommitResult(sha=None)
             full = _with_trailers(message, await tail.trailers(self))
             root = self.config.work_tree
@@ -1047,7 +1088,7 @@ class GitRepo:
                 )
 
             sha = await self._uninterrupted(stage_and_commit())
-            marked.clear()
+            self._clear_pending([scope])
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
             await self._reported(sha, await asyncio.to_thread(self._rows_of, changes, head_before, sha, True))
             pushed = await self._push_after_commit()
@@ -1237,7 +1278,7 @@ class GitRepo:
             if head is not None and not await asyncio.to_thread(self.git.is_ancestor, head, remote):
                 raise DivergedError(branch, head, remote)
             for scope in list(self._tails):
-                await asyncio.to_thread(self._restore_scope, scope)
+                await self._restore_tail(scope)
             try:
                 await asyncio.to_thread(self.git.merge_ff_only, f"origin/{branch}")
             finally:
@@ -1671,8 +1712,7 @@ class GitRepo:
                 await self._replay_tail(scope)
             raise
         await asyncio.to_thread(self._clear_journal)
-        for scope in scopes:
-            self._pending[scope].clear()
+        self._clear_pending(scopes)
         return sha, taken
 
     async def _uninterrupted(self, work: Awaitable[_T]) -> _T:
@@ -1863,8 +1903,7 @@ class GitRepo:
                 )
 
             sha = await self._uninterrupted(stage_and_commit())
-            for scope in scopes:
-                self._pending[scope].clear()
+            self._clear_pending(scopes)
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
             rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)
             await self._reported(sha, rows)
@@ -2110,8 +2149,7 @@ class GitRepo:
                 # new writer rebuilds them; on a clone of its own they would block following origin
                 if self.config.clone == "own":
                     await asyncio.to_thread(self.git.restore, sorted(self.pending_paths()))
-                for marked in self._pending.values():
-                    marked.clear()
+                self._clear_pending(list(self._pending))
             if not self.is_writer and self.config.clone == "own" and self.config.remote_url is not None:
                 await self._catch_up_with_origin()
             return await self._notice_head()

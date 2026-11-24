@@ -62,6 +62,10 @@ def _dict_rows(result: Any) -> list[dict[str, Any]]:
 class _L3:
     """L3 as a DuckDB answering ``fetch``; records every statement and its parameters."""
 
+    async def answers_from_yugabyte(self) -> bool:
+        """a PostgreSQL reader's: its keyed batches bounded beside their keys, and the question sent nowhere."""
+        return False
+
     def __init__(self) -> None:
         self.db = duckdb.connect(":memory:")
         _OPENED.append(self.db.close)

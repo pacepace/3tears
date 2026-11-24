@@ -203,7 +203,8 @@ class SQLiteBackend:
         self._release: weakref.finalize[Any, Any] | None = None
         self._anchor_conn: sqlite3.Connection | None = None
         self._initialized: bool = False
-        self._schema_info: dict[str, dict[str, str]] = {}
+        #: per table, each replaced whole as tables are created
+        self._schema_info: Mapping[str, Mapping[str, str]] = MappingProxyType({})
         self._local: threading.local = threading.local()
         #: re-entrant: a finalizer run on a thread holding it (a collection inside reset's close of every connection)
         #: may make that thread's connection here, as a collected FeatureCache's R-Tree drop does; a plain lock waited
@@ -211,13 +212,14 @@ class SQLiteBackend:
         self._pool_lock: threading.RLock = threading.RLock()
         self._pooled_connections: list[sqlite3.Connection] = []
         #: every table's declared policy (:mod:`threetears.core.eviction`); an undeclared table is refused
-        self._policies: dict[str, Declared] = {}
+        self._policies: Mapping[str, Declared] = MappingProxyType({})
         #: the EVICTABLE tables, the only ones whose rows the ledger keeps a recency of
-        self._evictable_tables: set[str] = set()
+        self._evictable_tables: frozenset[str] = frozenset()
         self._policy_epoch = -1
         #: each table's primary-key columns, as created
-        self._table_keys: dict[str, tuple[str, ...]] = {}
-        self._counters: dict[str, TableCounters] = {}
+        self._table_keys: Mapping[str, tuple[str, ...]] = MappingProxyType({})
+        #: per table, bound on its first read and replaced whole
+        self._counters: Mapping[str, TableCounters] = MappingProxyType({})
 
     @property
     def store_name(self) -> str:
@@ -298,21 +300,21 @@ class SQLiteBackend:
         :rtype: None
         """
         declare_l1_table(table, policy)
-        self._policies[table] = policy
+        self._policies = MappingProxyType({**self._policies, table: policy})
         self._policy_epoch = -1
 
     @property
-    def _evictable(self) -> set[str]:
+    def _evictable(self) -> frozenset[str]:
         """the tables whose rows the ledger may evict: declared ``EVICTABLE``, and not since declared ``KEEP``.
 
         :return: their names
-        :rtype: set[str]
+        :rtype: frozenset[str]
         """
         if self._policy_epoch != POLICY_EPOCH[0]:
             current = policies_declared(Tier.L1)
-            self._evictable_tables = {
+            self._evictable_tables = frozenset(
                 table for table in self._policies if (current.get(table) or self._policies[table]).evictable
-            }
+            )
             self._policy_epoch = POLICY_EPOCH[0]
         return self._evictable_tables
 
@@ -370,8 +372,11 @@ class SQLiteBackend:
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
             self.declare(table.name, policies[table.name])
-            self._table_keys[table.name] = tuple(col.name for col in table.columns if col.primary_key)
-            self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
+            self._table_keys = MappingProxyType(
+                {**self._table_keys, table.name: tuple(col.name for col in table.columns if col.primary_key)}
+            )
+            codes = MappingProxyType({col.name: self._column_code(table.name, col) for col in table.columns})
+            self._schema_info = MappingProxyType({**self._schema_info, table.name: codes})
             new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
 
@@ -606,7 +611,10 @@ class SQLiteBackend:
         :return: the counters
         :rtype: TableCounters
         """
-        bound = self._counters[table] = self.budget.counters(self, table)
+        # two threads binding one table at once each assign a snapshot; the one lost is bound again on its next read,
+        # to the same counters (the ledger binds each once)
+        bound = self.budget.counters(self, table)
+        self._counters = MappingProxyType({**self._counters, table: bound})
         return bound
 
     def select_batch(
@@ -1112,12 +1120,12 @@ class SQLiteBackend:
             self._release = None
             self._path = None
         self._initialized = False
-        self._schema_info = {}
-        self._policies = {}
-        self._evictable_tables = set()
+        self._schema_info = MappingProxyType({})
+        self._policies = MappingProxyType({})
+        self._evictable_tables = frozenset()
         self._policy_epoch = -1
-        self._table_keys = {}
-        self._counters = {}
+        self._table_keys = MappingProxyType({})
+        self._counters = MappingProxyType({})
 
     def is_initialized(self) -> bool:
         """Return True if the backend has been initialized."""

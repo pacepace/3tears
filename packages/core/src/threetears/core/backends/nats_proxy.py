@@ -64,6 +64,7 @@ from threetears.core.backends.broker_generation import (
     named_changed_rows,
     named_commit_scopes,
     named_delta_files,
+    note_load_answer,
     record_reply_generations,
 )
 from threetears.core.backends.protocol import (
@@ -1481,6 +1482,10 @@ class NatsProxyL3Backend:
                 extra={"extra_data": detail},
             )
             raise
+        # the broker answered, success or failure: it owns the request's epoch record (a failure that committed rows
+        # names the request's delta file unconfirmed), and the caller is told the rows it committed
+        committed = response.get("row_count")
+        note_load_answer(committed if isinstance(committed, int) and committed >= 0 else 0)
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 load_files")
         record_reply_generations(response, ends_write=True)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from threetears.core.backends.git.advanced import AdvancedListener
@@ -62,7 +63,8 @@ class GitRepos:
         self._nats = nats
         self._config_for = config_for
         self._listener = None if nats is None else AdvancedListener(nats)
-        self._repos: dict[str, GitRepo] = {}
+        #: per repository, replaced whole
+        self._repos: Mapping[str, GitRepo] = MappingProxyType({})
         self._callbacks: list[RowsChanged] = []
         self._opening = asyncio.Lock()
 
@@ -82,7 +84,7 @@ class GitRepos:
             for callback in self._callbacks:
                 repo.on_rows_changed(callback)
             await repo.open()
-            self._repos[config.key] = repo
+            self._repos = MappingProxyType({**self._repos, config.key: repo})
             return repo
 
     async def repo(self, key: str) -> GitRepo:
@@ -137,9 +139,9 @@ class GitRepos:
         :return: None
         :rtype: None
         """
-        for repo in list(self._repos.values()):
+        for repo in self._repos.values():
             await repo.aclose()
-        self._repos.clear()
+        self._repos = MappingProxyType({})
 
 
 class RoutedGitStore:
@@ -164,7 +166,8 @@ class RoutedGitStore:
         """
         self.repos = repos
         self._route = route
-        self._stores: dict[str, GitDurableStore] = {}
+        #: per repository, replaced whole
+        self._stores: Mapping[str, GitDurableStore] = MappingProxyType({})
 
     async def store(self, key: str) -> GitDurableStore:
         """the store of one repository, opening it on first use.
@@ -178,7 +181,7 @@ class RoutedGitStore:
         store = self._stores.get(key)
         if store is None or store.repo is not repo:
             store = GitDurableStore(repo)
-            self._stores[key] = store
+            self._stores = MappingProxyType({**self._stores, key: store})
         return store
 
     async def _store_for(self, table: str, values: Mapping[str, Any], conn: Any) -> GitDurableStore:

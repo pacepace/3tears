@@ -335,11 +335,3 @@ class TestTheResolverUsesTheCollection:
         await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
         assert handle.s3_key == _KEY
         assert len(nc.requests) == 1
-
-    async def test_without_a_cache_the_in_process_dict_still_serves(self) -> None:
-        """a pod that declared no collection tables keeps the historical behaviour."""
-        nc = _RecordingResolveNats(_ok())
-        resolver = HubObjectResolver(nc, request_timeout_seconds=5.0)  # type: ignore[arg-type]
-        await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
-        await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
-        assert len(nc.requests) == 1

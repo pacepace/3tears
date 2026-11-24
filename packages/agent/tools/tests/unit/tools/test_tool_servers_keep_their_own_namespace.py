@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from packages.agent.tools.tests.testing_utils import RecordingResolutionCache
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver, ResolveEngagementScopeError
 from threetears.agent.tools.object_resolver import ResolveObjectError
@@ -160,6 +161,8 @@ async def test_a_server_s_subjects_stay_in_its_namespace_after_another_server_re
     server_b = ToolServer(nats_client=nc_b, namespace="nsb", pod_id=_POD_B)
     server_a.register(_StubTool())
     server_b.register(_StubTool())
+    server_a.attach_object_resolution_cache(RecordingResolutionCache())
+    server_b.attach_object_resolution_cache(RecordingResolutionCache())
     async with _serving(server_b), _serving(server_a):
         await server_a.publish_registration()
         # A registered last: B's discovery probe, then its own registration, are built after it

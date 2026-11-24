@@ -355,7 +355,7 @@ class ShmAutosize:
         self._measure: Callable[[], Sample] = measure or (lambda: _measured(volume, stores, Path(cgroup_root)))
         self._peak = 0
         #: the needs handed, by id: never twice
-        self._handed: set[str] = set()
+        self._handed: frozenset[str] = frozenset()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -410,7 +410,7 @@ class ShmAutosize:
                     exc, log=log, what="shared-memory autosize: the actuator refused a need; asked again next sample"
                 )
             else:
-                self._handed.add(need.request_id)
+                self._handed = self._handed | {need.request_id}
                 log.warning(
                     "shared-memory autosize asked for a larger volume",
                     extra={

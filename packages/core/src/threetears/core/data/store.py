@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -34,6 +35,16 @@ log = get_logger(__name__)
 _SESSION_STORE_AGENT_ID = UUID(int=0)
 
 _RAW_BACKEND_KEY = "_raw"
+
+
+class _Created:
+    """the collections a store and its bound views created, by table: a read-only snapshot replaced whole.
+
+    :ivar collections: each table's collection
+    """
+
+    def __init__(self) -> None:
+        self.collections: Mapping[str, BaseCollection[Any]] = MappingProxyType({})
 
 
 class DataStore:
@@ -86,7 +97,9 @@ class DataStore:
         self._registry = registry
         self._config: CoreConfig = config or DefaultCoreConfig()
         self._schema_name = f"agent_{agent_id.hex}"
-        self._collections: dict[str, BaseCollection[Any]] = {}
+        #: each created table's collection; a bound view (:meth:`_bound_view`) shares its store's, so a table a
+        #: migration body creates is the store's
+        self._created = _Created()
         self._session: MigrationSession | None = None
         self._holds_ddl_lock = False
 
@@ -207,7 +220,7 @@ class DataStore:
             registry=self._registry,
             config=self._config,
         )
-        self._collections[table_def.name] = collection
+        self._created.collections = MappingProxyType({**self._created.collections, table_def.name: collection})
 
         return collection
 
@@ -276,7 +289,7 @@ class DataStore:
         :rtype: BaseCollection
         :raises KeyError: if table has not been created via create_table
         """
-        result = self._collections[table_name]
+        result = self._created.collections[table_name]
         return result
 
     @asynccontextmanager
@@ -313,7 +326,7 @@ class DataStore:
         :rtype: DataStore
         """
         view = DataStore(self._agent_id, self._registry, self._config)
-        view._collections = self._collections
+        view._created = self._created
         view._session = session
         view._holds_ddl_lock = holds_ddl_lock
         return view

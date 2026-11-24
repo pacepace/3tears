@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
+from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.security.door_skeleton import (
     DoorAccounting,
     KeysUnavailableError,
@@ -513,7 +514,8 @@ class InProcessEnvelopeLedger:
         """
         self._clock = clock if clock is not None else (lambda: datetime.now(UTC))
         self._retention = retention
-        self._spent: dict[str, datetime] = {}
+        #: a read-only snapshot replaced whole on each spend (decision 41), as it always was rebuilt
+        self._spent: Mapping[str, datetime] = EMPTY
 
     @property
     def retention(self) -> timedelta:
@@ -552,10 +554,11 @@ class InProcessEnvelopeLedger:
         if issued_at.tzinfo is None:
             raise ValueError("InProcessEnvelopeLedger.record_unique requires a timezone-aware issued_at")
         horizon = self._clock() - self._retention
-        self._spent = {key: when for key, when in self._spent.items() if when >= horizon}
-        fresh = nonce not in self._spent
+        kept = {key: when for key, when in self._spent.items() if when >= horizon}
+        fresh = nonce not in kept
         if fresh:
-            self._spent[nonce] = issued_at
+            kept[nonce] = issued_at
+        self._spent = frozen(kept)
         return fresh
 
 

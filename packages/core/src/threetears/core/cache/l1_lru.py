@@ -44,6 +44,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Protocol
 
 from threetears.core.eviction import (
@@ -225,7 +226,8 @@ class L1Ledger:
         self._threaded = thread
         self._lock = threading.Lock()
         self._budget = budget
-        self._tables: dict[tuple[int, str], _Table] = {}
+        #: per (store, table), replaced whole under the lock; a reader takes it without the lock
+        self._tables: Mapping[tuple[int, str], _Table] = MappingProxyType({})
         self._stores: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
         self._estimated = 0
         #: measured real bytes per estimated byte of the EVICTABLE tables
@@ -235,7 +237,8 @@ class L1Ledger:
         self._sizing_failed = False
         self._jobs: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
-        self._counters: dict[tuple[int, str], TableCounters] = {}
+        #: per (store, table), replaced whole
+        self._counters: Mapping[tuple[int, str], TableCounters] = MappingProxyType({})
 
     # --- joining ---
 
@@ -268,10 +271,11 @@ class L1Ledger:
         """
         with self._lock:
             self._stores.pop(id(store), None)
-            for key in [key for key in self._tables if key[0] == id(store)]:
-                self._estimated -= self._tables.pop(key).estimated
-            for key in [key for key in self._counters if key[0] == id(store)]:
-                del self._counters[key]
+            self._estimated -= sum(held.estimated for key, held in self._tables.items() if key[0] == id(store))
+            self._tables = MappingProxyType({key: held for key, held in self._tables.items() if key[0] != id(store)})
+            self._counters = MappingProxyType(
+                {key: bound for key, bound in self._counters.items() if key[0] != id(store)}
+            )
 
     @property
     def budget(self) -> int:
@@ -307,9 +311,12 @@ class L1Ledger:
         key = (id(store), table)
         bound = self._counters.get(key)
         if bound is None:
-            bound = self._counters[key] = TableCounters(
+            # two threads binding one table at once each assign a snapshot; the one lost is bound again on its next
+            # read, to the same labelled counters, so nothing is counted wrong
+            bound = TableCounters(
                 hits=HITS.labels(tier=_TIER, name=table), misses=MISSES.labels(tier=_TIER, name=table)
             )
+            self._counters = MappingProxyType({**self._counters, key: bound})
         return bound
 
     # --- the hot path ---
@@ -372,7 +379,8 @@ class L1Ledger:
         with self._lock:
             held = self._tables.get((id(store), table))
             if held is None:
-                held = self._tables[(id(store), table)] = _Table(store=weakref.ref(store), name=table)
+                held = _Table(store=weakref.ref(store), name=table)
+                self._tables = MappingProxyType({**self._tables, (id(store), table): held})
             for key, size in sized:
                 entry = held.order.get(key)
                 if entry is None:
@@ -421,8 +429,9 @@ class L1Ledger:
         :rtype: None
         """
         with self._lock:
-            held = self._tables.pop((id(store), table), None)
+            held = self._tables.get((id(store), table))
             if held is not None:
+                self._tables = MappingProxyType({key: kept for key, kept in self._tables.items() if kept is not held})
                 self._estimated -= held.estimated
 
     # --- the budget ---

@@ -6,11 +6,13 @@ import json
 from datetime import datetime
 from collections.abc import Callable
 from typing import Any
+from uuid import UUID
 from unittest.mock import AsyncMock
 
 from sqlalchemy import MetaData
 
 from threetears.core.backends.protocol import RawL3Pool
+from threetears.interfaces.media import ObjectHandle
 
 from threetears.agent.tools.collections import context_items_table
 
@@ -285,3 +287,21 @@ class FakePool(RawL3Pool):
             return "UPDATE 0"
 
         return "0"
+
+
+class RecordingResolutionCache:
+    """an in-memory resolution store of the ``ObjectResolutionCache`` shape, for a test's one resolver.
+
+    a test double: the pod's real store is ``ObjectResolutionCollection`` (L1 + L2).
+    """
+
+    def __init__(self) -> None:
+        self.handles: dict[tuple[UUID, UUID], ObjectHandle] = {}
+
+    async def lookup(self, customer_id: UUID, object_id: UUID) -> ObjectHandle | None:
+        """the remembered handle for the pair, or None."""
+        return self.handles.get((customer_id, object_id))
+
+    async def remember(self, customer_id: UUID, handle: ObjectHandle) -> None:
+        """remember ``handle`` for the pair."""
+        self.handles = {**self.handles, (customer_id, handle.object_id): handle}

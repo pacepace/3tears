@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
@@ -39,6 +39,8 @@ from typing import Final
 
 from threetears.observe import BuildOnce, get_logger
 from threetears.observe.metrics import counter
+
+from threetears.core.frozen_state import EMPTY, with_entry
 
 __all__ = [
     "DOOR_PROOF_REQUIRED_EARLY_ENV",
@@ -185,7 +187,8 @@ class DoorProofSwitch:
         self._required_early = required_early
         self._today = today
         self._lock = threading.Lock()
-        self._absent: dict[str, tuple[int, datetime]] = {}
+        #: a read-only snapshot replaced whole under the lock (decision 41); bounded by MAX_COUNTED_SENDERS
+        self._absent: Mapping[str, tuple[int, datetime]] = EMPTY
 
     @property
     def door(self) -> str:
@@ -243,7 +246,7 @@ class DoorProofSwitch:
                 if sender not in self._absent and len(self._absent) >= MAX_COUNTED_SENDERS:
                     sender = _UNCLAIMED
                 count = self._absent.get(sender, (0, now))[0] + 1
-                self._absent[sender] = (count, now)
+                self._absent = with_entry(self._absent, sender, (count, now))
             counter(
                 _ABSENT_COUNTER,
                 description="messages that reached a door without the proof it is adopting",
@@ -294,7 +297,8 @@ class DoorProofModes:
         self._required_early = required_early
         self._today = today
         self._lock = threading.Lock()
-        self._switches: dict[str, DoorProofSwitch] = {}
+        #: a read-only snapshot replaced whole under the lock (decision 41); one entry per door
+        self._switches: Mapping[str, DoorProofSwitch] = EMPTY
 
     @classmethod
     def parse(cls, spec: str, *, today: Callable[[], date] = _utc_today) -> DoorProofModes:
@@ -335,7 +339,7 @@ class DoorProofModes:
             switch = self._switches.get(window.door)
             if switch is None:
                 switch = DoorProofSwitch(window, required_early=window.door in self._required_early, today=self._today)
-                self._switches[window.door] = switch
+                self._switches = with_entry(self._switches, window.door, switch)
             elif switch.window != window:
                 raise ValueError(f"door {window.door!r} already has a window {switch.window}; got {window}")
         return switch

@@ -43,7 +43,6 @@ import asyncio
 import functools
 import hashlib
 import json
-from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -52,6 +51,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.langgraph.embeddings import EmbeddingUnavailableError, embed_documents, embed_query
 from threetears.observe.text_block import under
 from threetears.observe import contain, get_logger
@@ -204,6 +204,29 @@ class _Ranking:
         return [tool.name for tool in self.unranked]
 
 
+def _most_recent[V](cache: Mapping[str, V], key: str, value: V, size: int) -> Mapping[str, V]:
+    """``cache`` with ``key`` set to ``value`` as its most recent entry, its oldest dropped past ``size``.
+
+    The same snapshot when ``key`` already holds ``value`` last, so a repeated hit rebuilds nothing.
+
+    :param cache: the LRU snapshot, oldest first
+    :ptype cache: Mapping[str, V]
+    :param key: the entry's key
+    :ptype key: str
+    :param value: its value
+    :ptype value: V
+    :param size: the most entries kept
+    :ptype size: int
+    :return: the next snapshot
+    :rtype: Mapping[str, V]
+    """
+    if cache and tuple(cache)[-1] == key and cache[key] is value:
+        return cache
+    entries = list(without_entry(cache, key).items())
+    entries.append((key, value))
+    return frozen(entries[-size:] if size > 0 else ())
+
+
 class ToolRelevanceIndex:
     """Embeds tool name+description and a query; returns a relevant top-K subset.
 
@@ -243,15 +266,15 @@ class ToolRelevanceIndex:
             latency_ceiling_s if search_latency_ceiling_s is None else search_latency_ceiling_s
         )
         self._cache_size = cache_size
-        # content_hash -> {tool_name: embedding_vector}. OrderedDict as a
-        # simple bounded LRU (move-to-end on hit, popitem(last=False) on
-        # overflow) -- no external cache dependency needed at this size.
-        self._cache: OrderedDict[str, dict[str, list[float] | None]] = OrderedDict()
+        # content_hash -> {tool_name: embedding_vector}. A read-only snapshot in LRU order (oldest
+        # first), replaced whole: a hit moves its entry last, an insert past the bound drops the
+        # oldest. Bounded by cache_size tool sets (one entry per tool set, never per tool or query).
+        self._cache: Mapping[str, dict[str, list[float] | None]] = frozen()
         # content_hash -> the embedding of that tool set, while it runs. Its own task, so the
         # latency ceiling cancels a caller's wait and not the work: a catalog that takes longer
         # than the ceiling to embed still lands in the cache for the next turn, and turns that
         # arrive together share one embedding call.
-        self._inflight: dict[str, asyncio.Task[dict[str, list[float] | None]]] = {}
+        self._inflight: Mapping[str, asyncio.Task[dict[str, list[float] | None]]] = frozen()
 
     async def _embed_tool_set(self, tools: list[BaseTool]) -> dict[str, list[float] | None]:
         """Return ``{tool_name: vector}`` for ``tools``, via cache when possible.
@@ -264,13 +287,13 @@ class ToolRelevanceIndex:
         content_hash = _tool_set_content_hash(tools)
         cached = self._cache.get(content_hash)
         if cached is not None:
-            self._cache.move_to_end(content_hash)
+            self._cache = _most_recent(self._cache, content_hash, cached, self._cache_size)
             return cached
 
         task = self._inflight.get(content_hash)
         if task is None:
             task = asyncio.get_running_loop().create_task(self._embed_and_cache(content_hash, list(tools)))
-            self._inflight[content_hash] = task
+            self._inflight = with_entry(self._inflight, content_hash, task)
             task.add_done_callback(functools.partial(self._forget_inflight, content_hash))
         return await asyncio.shield(task)
 
@@ -281,7 +304,7 @@ class ToolRelevanceIndex:
         caller that outlived the latency ceiling is no longer awaiting it, so its exception
         is marked retrieved here rather than reported again by the event loop.
         """
-        self._inflight.pop(content_hash, None)
+        self._inflight = without_entry(self._inflight, content_hash)
         if not done.cancelled():
             done.exception()
 
@@ -315,10 +338,7 @@ class ToolRelevanceIndex:
                 len(unranked),
                 extra={"extra_data": {"unranked_tools": unranked}},
             )
-        self._cache[content_hash] = embeddings
-        self._cache.move_to_end(content_hash)
-        while len(self._cache) > self._cache_size:
-            self._cache.popitem(last=False)
+        self._cache = _most_recent(self._cache, content_hash, embeddings, self._cache_size)
         return embeddings
 
     async def _rank(self, tools: list[BaseTool], query: str) -> _Ranking:

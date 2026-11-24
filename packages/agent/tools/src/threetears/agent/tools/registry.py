@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.observe import contain, get_logger
 
 __all__ = [
@@ -25,15 +27,16 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
-        self._factories: dict[str, ToolFactory] = {}
+        # a read-only snapshot, replaced whole on each register or unregister
+        self._factories: Mapping[str, ToolFactory] = frozen()
 
     def register(self, tool_type: str, factory: ToolFactory) -> None:
         """Register a factory function for a tool type."""
-        self._factories[tool_type] = factory
+        self._factories = with_entry(self._factories, tool_type, factory)
 
     def unregister(self, tool_type: str) -> None:
         """Remove a registered factory."""
-        self._factories.pop(tool_type, None)
+        self._factories = without_entry(self._factories, tool_type)
 
     def list_types(self) -> list[str]:
         """Return registered tool type names."""

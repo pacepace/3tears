@@ -17,7 +17,10 @@ routes a cancel to whichever worker holds the task.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from uuid import UUID
+
+from threetears.core.frozen_state import EMPTY, frozen, with_entry, without_entry
 
 __all__ = ["KeyedTaskRegistry"]
 
@@ -31,7 +34,8 @@ class KeyedTaskRegistry:
     """
 
     def __init__(self) -> None:
-        self._tasks: dict[UUID, asyncio.Task[object]] = {}
+        # a read-only snapshot replaced whole on each change (decision 41); one entry per running task, not per row
+        self._tasks: Mapping[UUID, asyncio.Task[object]] = EMPTY
 
     def register(self, key: UUID, task: asyncio.Task[object]) -> None:
         """register a running task so it can later be cancelled by key.
@@ -42,7 +46,7 @@ class KeyedTaskRegistry:
         :ptype task: asyncio.Task[object]
         :rtype: None
         """
-        self._tasks[key] = task
+        self._tasks = with_entry(self._tasks, key, task)
 
     def pop(self, key: UUID) -> asyncio.Task[object] | None:
         """remove and return a key's task, if any (pop-before-cancel).
@@ -56,7 +60,9 @@ class KeyedTaskRegistry:
         :return: the registered task, or ``None`` if none is active
         :rtype: asyncio.Task[object] | None
         """
-        return self._tasks.pop(key, None)
+        task = self._tasks.get(key)
+        self._tasks = without_entry(self._tasks, key)
+        return task
 
     def get(self, key: UUID) -> asyncio.Task[object] | None:
         """return a key's task without removing it.
@@ -81,7 +87,23 @@ class KeyedTaskRegistry:
         :rtype: None
         """
         if self._tasks.get(key) is task:
-            del self._tasks[key]
+            self._tasks = without_entry(self._tasks, key)
+
+    async def drain(self) -> None:
+        """await every task registered now, then forget those tasks.
+
+        a task's failure or cancellation is returned by the wait, not raised: a drain at shutdown waits out the
+        work in flight and is not the place its faults are reported. a task registered while the drain waits is
+        not awaited and stays registered.
+
+        :return: nothing
+        :rtype: None
+        """
+        held = self._tasks
+        if not held:
+            return
+        await asyncio.gather(*held.values(), return_exceptions=True)
+        self._tasks = frozen((key, task) for key, task in self._tasks.items() if held.get(key) is not task)
 
     def __len__(self) -> int:
         """number of tasks currently registered.

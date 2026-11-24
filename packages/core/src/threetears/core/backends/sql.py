@@ -36,6 +36,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal, TYPE_CHECKING
 from urllib.parse import urlparse, urlsplit
 from urllib.request import url2pathname
@@ -751,7 +752,7 @@ class SqlL3Backend:
         # table name -> TableSchema. when a schema is registered for a table the
         # structured DurableStore ops generate schema-aware SQL + run the per-column
         # read/write codec; otherwise the generic SELECT */INSERT path is used.
-        self._schemas: dict[str, TableSchema] = {}
+        self._schemas: Mapping[str, TableSchema] = MappingProxyType({})
         # capability sniff (mirrors the ``hasattr(self._pool, "transaction")`` check in
         # ``transaction`` below): a namespace-aware transport such as
         # ``NatsProxyL3Backend`` carries ``accepts_scoped_reads = True`` and routes
@@ -813,7 +814,7 @@ class SqlL3Backend:
         :return: nothing
         :rtype: None
         """
-        self._schemas[table] = schema
+        self._schemas = MappingProxyType({**self._schemas, table: schema})
 
     # ── L3Backend: raw-SQL transport (delegate to the pool) ─────────────────────────
     # ``namespace`` + extra ``**kwargs`` (e.g. NatsProxy's ``customer_scope``) are

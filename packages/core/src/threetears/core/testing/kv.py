@@ -90,6 +90,7 @@ from uuid import uuid7
 
 from pydantic import BaseModel
 
+from threetears.core.frozen_state import frozen, with_entry, without_entry
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
 from threetears.nats.errors import (
     KvBucketNotFoundError,
@@ -158,6 +159,21 @@ class _Refill:
     owed: bool = False
 
 
+def _without_one[T](held: tuple[T, ...], gone: T) -> tuple[T, ...]:
+    """``held`` without its first ``gone`` (by equality, as ``list.remove``).
+
+    :param held: the items
+    :ptype held: tuple
+    :param gone: the one to drop
+    :ptype gone: Any
+    :return: the rest, in order
+    :rtype: tuple
+    :raises ValueError: when ``held`` has no ``gone``, as ``list.remove`` does
+    """
+    at = held.index(gone)
+    return held[:at] + held[at + 1 :]
+
+
 # parity-with: threetears.nats.kv.KvBucketLike
 class FakeKvBucket:
     """in-memory fake mirroring :class:`threetears.nats.NatsKvBucket`.
@@ -213,16 +229,18 @@ class FakeKvBucket:
         self._storage = storage
         self._direct = direct
         self._max_bytes = max_bytes
-        self._entries: dict[str, _Entry] = {}
+        # every map below is a read-only snapshot replaced whole: a fake that changed one in place could hide the very
+        # races (a reader holding it across an await) it exists to catch
+        self._entries: Mapping[str, _Entry] = frozen()
         # the stored size of each key's latest message (its value or its deletion marker), and their
         # total: what a bounded bucket counts against ``max_bytes``
-        self._sizes: dict[str, int] = {}
+        self._sizes: Mapping[str, int] = frozen()
         self._stored_bytes = 0
         # the revision of each deleted key's marker: its latest message once its value is gone.
-        self._markers: dict[str, int] = {}
+        self._markers: Mapping[str, int] = frozen()
         # the bucket-clock time the server removes a marker given a lifetime (``delete``'s
         # ``marker_ttl``), by key; a marker absent here lives as long as the bucket.
-        self._marker_expiry: dict[str, timedelta] = {}
+        self._marker_expiry: Mapping[str, timedelta] = frozen()
         self._revision = 0
         self._date_created = datetime.now(UTC)
         # set by vanish(): the stream is gone until the next operation recreates it.
@@ -233,7 +251,7 @@ class FakeKvBucket:
         # TTL lapse without sleeping.
         self._elapsed = timedelta(0)
         # one queue per open watch_key iterator, keyed by the key it watches.
-        self._key_watchers: dict[str, list[asyncio.Queue[KvKeyUpdate]]] = {}
+        self._key_watchers: Mapping[str, tuple[asyncio.Queue[KvKeyUpdate], ...]] = frozen()
 
     async def _arrive(self) -> None:
         """what every operation does first: yield to the loop, fail if unreachable, heal if vanished.
@@ -263,8 +281,8 @@ class FakeKvBucket:
             self._vanished = False
             self._date_created = datetime.now(UTC)
             self._revision = 0
-            self._markers.clear()
-            self._marker_expiry.clear()
+            self._markers = frozen()
+            self._marker_expiry = frozen()
 
     def advance_clock(self, delta: timedelta) -> None:
         """move this bucket's clock forward, lapsing any per-entry TTL it passes.
@@ -290,7 +308,7 @@ class FakeKvBucket:
         entry = self._entries.get(key)
         if entry is not None and entry.expires_at is not None and self._elapsed >= entry.expires_at:
             # the server removes a lapsed entry's message, leaving no marker behind.
-            del self._entries[key]
+            self._entries = without_entry(self._entries, key)
             self._forget_size(key)
             entry = None
         return entry
@@ -324,9 +342,11 @@ class FakeKvBucket:
         expires_at = self._expiry(ttl)
         self._store_size(key, len(value))
         self._revision += 1
-        self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=expires_at)
-        self._markers.pop(key, None)
-        self._marker_expiry.pop(key, None)
+        self._entries = with_entry(
+            self._entries, key, _Entry(value=value, revision=self._revision, expires_at=expires_at)
+        )
+        self._markers = without_entry(self._markers, key)
+        self._marker_expiry = without_entry(self._marker_expiry, key)
         self._notify(KvKeyUpdate(key=key, value=value, revision=self._revision))
         return self._revision
 
@@ -346,11 +366,11 @@ class FakeKvBucket:
         expires_at = self._expiry(ttl)
         self._store_size(key, len(_DELETE_MARKER_HEADERS))
         self._revision += 1
-        self._markers[key] = self._revision
+        self._markers = with_entry(self._markers, key, self._revision)
         if expires_at is None:
-            self._marker_expiry.pop(key, None)
+            self._marker_expiry = without_entry(self._marker_expiry, key)
         else:
-            self._marker_expiry[key] = expires_at
+            self._marker_expiry = with_entry(self._marker_expiry, key, expires_at)
         self._notify(KvKeyUpdate(key=key, value=None, revision=self._revision))
 
     def _store_size(self, key: str, payload: int) -> None:
@@ -381,7 +401,7 @@ class FakeKvBucket:
                 f"({self._stored_bytes} held, {size} more, bound {bound})"
             )
         self._stored_bytes += size - (old or 0)
-        self._sizes[key] = size
+        self._sizes = with_entry(self._sizes, key, size)
 
     def _forget_size(self, key: str) -> None:
         """stop counting ``key``'s message, which the server no longer holds.
@@ -391,7 +411,8 @@ class FakeKvBucket:
         :return: None
         :rtype: None
         """
-        self._stored_bytes -= self._sizes.pop(key, 0)
+        self._stored_bytes -= self._sizes.get(key, 0)
+        self._sizes = without_entry(self._sizes, key)
 
     def _marker(self, key: str) -> int | None:
         """the revision of ``key``'s deletion marker, or ``None`` once it has none or it lapsed.
@@ -404,8 +425,8 @@ class FakeKvBucket:
         expires_at = self._marker_expiry.get(key)
         if expires_at is not None and self._elapsed >= expires_at:
             # the server removes a lapsed marker as it does a lapsed entry, leaving the key nothing
-            del self._marker_expiry[key]
-            del self._markers[key]
+            self._marker_expiry = without_entry(self._marker_expiry, key)
+            self._markers = without_entry(self._markers, key)
             self._forget_size(key)
         return self._markers.get(key)
 
@@ -490,7 +511,7 @@ class FakeKvBucket:
         await self._arrive()
         queue: asyncio.Queue[KvKeyUpdate] = asyncio.Queue()
         # registered and read with no await between, so no write can fall between the two.
-        self._key_watchers.setdefault(key, []).append(queue)
+        self._key_watchers = with_entry(self._key_watchers, key, (*self._key_watchers.get(key, ()), queue))
         try:
             latest = self._latest_message(key)
             if latest is not None:
@@ -498,11 +519,11 @@ class FakeKvBucket:
             while True:
                 yield await queue.get()
         finally:
-            watchers = self._key_watchers.get(key, [])
-            if queue in watchers:
-                watchers.remove(queue)
-            if not watchers:
-                self._key_watchers.pop(key, None)
+            watchers = tuple(held for held in self._key_watchers.get(key, ()) if held is not queue)
+            if watchers:
+                self._key_watchers = with_entry(self._key_watchers, key, watchers)
+            else:
+                self._key_watchers = without_entry(self._key_watchers, key)
 
     def _expiry(self, ttl: timedelta | None) -> timedelta | None:
         """the bucket-clock removal time for an entry written now with ``ttl``.
@@ -568,10 +589,10 @@ class FakeKvBucket:
         """
         if date_created is not None and date_created.tzinfo is None:
             raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
-        self._entries.clear()
-        self._markers.clear()
-        self._marker_expiry.clear()
-        self._sizes.clear()
+        self._entries = frozen()
+        self._markers = frozen()
+        self._marker_expiry = frozen()
+        self._sizes = frozen()
         self._stored_bytes = 0
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
         self._vanished = False
@@ -593,10 +614,10 @@ class FakeKvBucket:
         :return: None
         :rtype: None
         """
-        self._entries.clear()
-        self._markers.clear()
-        self._marker_expiry.clear()
-        self._sizes.clear()
+        self._entries = frozen()
+        self._markers = frozen()
+        self._marker_expiry = frozen()
+        self._sizes = frozen()
         self._stored_bytes = 0
         self._vanished = True
 
@@ -867,7 +888,7 @@ class FakeKvBucket:
         # a real delete publishes a marker, which is the key's latest message from now on. marked
         # first: a bounded bucket may refuse the marker, and then the value stays.
         self._mark_deleted(key, marker_ttl)
-        del self._entries[key]
+        self._entries = without_entry(self._entries, key)
         return True
 
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
@@ -932,8 +953,9 @@ class FakeChangeLog:
         self._max_bytes: int | None = None
         self._max_age: timedelta | None = None
         self._bytes = 0
-        self._seen_ids: dict[str, int] = {}
-        self._watchers: dict[str, list[asyncio.Queue[KvKeyUpdate]]] = {}
+        #: both read-only snapshots, replaced whole
+        self._seen_ids: Mapping[str, int] = frozen()
+        self._watchers: Mapping[str, tuple[asyncio.Queue[KvKeyUpdate], ...]] = frozen()
         self.unreachable: Exception | None = None
         #: a test sets it to fail appends: called with each msg_id, it returns the error to raise, or None
         self.refuse_append: Callable[[str], Exception | None] | None = None
@@ -1001,7 +1023,7 @@ class FakeChangeLog:
             self._max_age = max_age
             self._entries = []
             self._bytes = 0
-            self._seen_ids = {}
+            self._seen_ids = frozen()
             self._next_seq = first_seq or 1
         state = await self.state()
         assert state is not None
@@ -1090,7 +1112,7 @@ class FakeChangeLog:
         self._next_seq += 1
         self._entries.append(ChangeLogEntry(seq=seq, key=key, value=value))
         self._bytes += size
-        self._seen_ids[msg_id] = seq
+        self._seen_ids = with_entry(self._seen_ids, msg_id, seq)
         for watched, queues in self._watchers.items():
             if _subject_matches(watched, key):
                 for queue in queues:
@@ -1186,7 +1208,7 @@ class FakeChangeLog:
         """
         self._granted(key)
         queue: asyncio.Queue[KvKeyUpdate] = asyncio.Queue()
-        self._watchers.setdefault(key, []).append(queue)
+        self._watchers = with_entry(self._watchers, key, (*self._watchers.get(key, ()), queue))
         try:
             latest = await self.last(key) if self._present else None
             if latest is not None:
@@ -1194,7 +1216,7 @@ class FakeChangeLog:
             while True:
                 yield await queue.get()
         finally:
-            self._watchers[key].remove(queue)
+            self._watchers = with_entry(self._watchers, key, _without_one(self._watchers[key], queue))
 
     def age_out(self, upto: int) -> None:
         """drop every record up to and including sequence ``upto``, oldest first, as retention does.
@@ -1329,15 +1351,19 @@ class FakeNatsClient:
         if bucket_age is not None and bucket_age < timedelta(0):
             raise ValueError(f"FakeNatsClient bucket_age must not be negative, got {bucket_age}")
         self._bucket_age = bucket_age
-        self._buckets: dict[str, FakeKvBucket] = {}
-        for name in declared_buckets:
-            # declared by ANOTHER identity: this client only binds them, so it never recreates one
-            self._buckets[name] = self._new_bucket(name=name, ttl=None, storage="memory", direct=None, may_create=False)
+        # every map and set below is a read-only snapshot replaced whole
+        # declared by ANOTHER identity: this client only binds them, so it never recreates one
+        self._buckets: Mapping[str, FakeKvBucket] = frozen(
+            {
+                name: self._new_bucket(name=name, ttl=None, storage="memory", direct=None, may_create=False)
+                for name in declared_buckets
+            }
+        )
         self._namespace = namespace
         self.published: list[Any] = []
         # every JetStream publish, in order: (subject, payload)
         self.jetstream_published: list[tuple[Subject, bytes]] = []
-        self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
+        self._subscribers: Mapping[str, tuple[tuple[Any, Any], ...]] = frozen()
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
         #: what :meth:`ping` answers: whether the broker answers a round trip; a test sets it False for one that
         #: has stopped answering while the connection still reads as connected
@@ -1345,14 +1371,14 @@ class FakeNatsClient:
         # what the real client remembers: every bucket this client declared through
         # :meth:`ensure_kv_bucket` with a create, on memory or file storage, and so puts back after a
         # reconnect. names only -- the fake bucket carries its own config.
-        self._remembered: set[str] = set()
+        self._remembered: frozenset[str] = frozenset()
         # bucket name -> the declarer's refill (``ensure_kv_bucket(on_restored=...)``) and whether the
         # bucket is owed it, as the real client remembers it with the declaration.
-        self._refills: dict[str, _Refill] = {}
+        self._refills: Mapping[str, _Refill] = frozen()
         # bucket name -> the declaration's ``still_wanted``, asked before each restoration
-        self._still_wanted: dict[str, Callable[[], Awaitable[bool]]] = {}
+        self._still_wanted: Mapping[str, Callable[[], Awaitable[bool]]] = frozen()
         # change log name -> its in-memory log, shared by every caller of :meth:`change_log`
-        self._change_logs: dict[str, FakeChangeLog] = {}
+        self._change_logs: Mapping[str, FakeChangeLog] = frozen()
 
     @property
     def namespace(self) -> str:
@@ -1397,7 +1423,11 @@ class FakeNatsClient:
         :return: the one in-memory log by that name
         :rtype: FakeChangeLog
         """
-        return self._change_logs.setdefault(name, FakeChangeLog(name))
+        held = self._change_logs.get(name)
+        if held is None:
+            held = FakeChangeLog(name)
+            self._change_logs = with_entry(self._change_logs, name, held)
+        return held
 
     async def restart_broker(self) -> None:
         """lose every bucket to a broker restart, put back the remembered ones, then run the reconnect hooks.
@@ -1418,7 +1448,7 @@ class FakeNatsClient:
         :return: None
         :rtype: None
         """
-        for name, still_wanted in list(self._still_wanted.items()):
+        for name, still_wanted in self._still_wanted.items():
             if name not in self._remembered:
                 continue
             try:
@@ -1435,9 +1465,9 @@ class FakeNatsClient:
                 wanted = True
             if not wanted:
                 # forgotten instead of put back, as the real restoration does
-                self._remembered.discard(name)
-                self._refills.pop(name, None)
-                del self._still_wanted[name]
+                self._remembered = self._remembered - {name}
+                self._refills = without_entry(self._refills, name)
+                self._still_wanted = without_entry(self._still_wanted, name)
         for name, bucket in self._buckets.items():
             if name in self._remembered:
                 bucket.wipe()
@@ -1469,7 +1499,7 @@ class FakeNatsClient:
         :return: None
         :rtype: None
         """
-        for name, refill in list(self._refills.items()):
+        for name, refill in self._refills.items():
             if not refill.owed:
                 continue
             try:
@@ -1558,7 +1588,7 @@ class FakeNatsClient:
             raw_subject, payload = args
             if not isinstance(payload, bytes | bytearray | memoryview):
                 raise PublishError(f"publish positional payload must be bytes-like; got {type(payload).__name__}")
-            for callback, message_type in list(self._subscribers.get(str(raw_subject), [])):
+            for callback, message_type in self._subscribers.get(str(raw_subject), ()):
                 await callback(message_type.model_validate_json(bytes(payload)))
             return
         if subject is None or message is None:
@@ -1566,7 +1596,7 @@ class FakeNatsClient:
                 "publish requires either positional (subject, payload_bytes) or kwargs subject= and message="
             )
         self.published.append(message)
-        for callback, message_type in list(self._subscribers.get(str(subject), [])):
+        for callback, message_type in self._subscribers.get(str(subject), ()):
             await callback(message_type.model_validate_json(message.model_dump_json()))
 
     async def publish_raw(
@@ -1649,7 +1679,9 @@ class FakeNatsClient:
         """
         del queue, max_in_flight, deadletter_on_failure
         entry: tuple[Any, Any] = (cb, message_type)
-        self._subscribers.setdefault(str(subject), []).append(entry)
+        self._subscribers = with_entry(
+            self._subscribers, str(subject), (*self._subscribers.get(str(subject), ()), entry)
+        )
         return FakeSubscription(subject=subject, entry=entry)
 
     async def unsubscribe(self, sub: object) -> None:
@@ -1672,9 +1704,11 @@ class FakeNatsClient:
         entries = self._subscribers.get(subject)
         if entries is None or sub.entry not in entries:
             return
-        entries.remove(sub.entry)
-        if not entries:
-            del self._subscribers[subject]
+        entries = _without_one(entries, sub.entry)
+        if entries:
+            self._subscribers = with_entry(self._subscribers, subject, entries)
+        else:
+            self._subscribers = without_entry(self._subscribers, subject)
 
     async def kv_bucket(
         self,
@@ -1725,7 +1759,7 @@ class FakeNatsClient:
             bucket = self._new_bucket(
                 name=name, ttl=ttl if isinstance(ttl, timedelta) else None, storage=storage, direct=direct
             )
-            self._buckets[name] = bucket
+            self._buckets = with_entry(self._buckets, name, bucket)
         return bucket
 
     async def ensure_kv_bucket(
@@ -1837,7 +1871,7 @@ class FakeNatsClient:
             )
         if bucket is None:
             bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct, max_bytes=max_bytes)
-            self._buckets[name] = bucket
+            self._buckets = with_entry(self._buckets, name, bucket)
         elif create_if_missing:
             # a declaration CREATES a lost bucket with its own shape; a live one keeps its TTL and
             # storage unless the declarer owns the bucket, as the real declaration reconciles them only then
@@ -1866,18 +1900,18 @@ class FakeNatsClient:
         # the real declaration replaces the client's one cached handle with one opened as it asked
         bucket.set_may_create(create_if_missing)
         if create_if_missing:
-            self._remembered.add(name)
+            self._remembered = self._remembered | {name}
             # the latest declaration's refill is the one remembered; one that keeps a refill keeps
             # whatever is still owed
             if still_wanted is None:
-                self._still_wanted.pop(name, None)
+                self._still_wanted = without_entry(self._still_wanted, name)
             else:
-                self._still_wanted[name] = still_wanted
+                self._still_wanted = with_entry(self._still_wanted, name, still_wanted)
             refill = self._refills.get(name)
             if on_restored is None:
-                self._refills.pop(name, None)
+                self._refills = without_entry(self._refills, name)
             elif refill is None:
-                self._refills[name] = _Refill(on_restored=on_restored)
+                self._refills = with_entry(self._refills, name, _Refill(on_restored=on_restored))
             else:
                 refill.on_restored = on_restored
         return bucket

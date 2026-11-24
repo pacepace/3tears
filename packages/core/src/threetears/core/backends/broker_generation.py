@@ -86,14 +86,18 @@ __all__ = [
     "BrokerGenerationSource",
     "GenerationReader",
     "collecting_advanced_generations",
+    "collecting_load_answers",
     "committed_generations_record",
     "forget_reply_generations",
     "named_changed_rows",
     "named_commit_scopes",
     "named_delta_files",
+    "named_unconfirmed_delta_files",
     "naming_changed_rows",
     "naming_commit_scopes",
     "naming_delta_files",
+    "naming_unconfirmed_delta_files",
+    "note_load_answer",
     "note_advanced_generation",
     "record_reply_generations",
     "reply_generations_since",
@@ -127,7 +131,8 @@ CHANGED_ROWS_FIELD: Final = "changed_rows"
 #: for a load of a table that opts in (each request names its own file, holding that request's rows), so the broker
 #: that advances each table's generation names the file in every epoch record it writes for the commit or the request
 #: (``EpochChange.delta_file``; ``design-pod-delta-files.md``, decisions 4 and 17). A load request that fails after
-#: committing some of its rows must name no file in its record: the file holds rows L3 did not take. A broker built
+#: committing some of its rows names its file unconfirmed (``unconfirmed_delta_file``, ruling C of 2026-11-23): the file
+#: may hold rows L3 did not take, so no copy applies it until the writer has written it again from L3. A broker built
 #: before it ignores it, and its records name no file. The hub imports this name.
 DELTA_FILES_FIELD: Final = "delta_files"
 
@@ -171,6 +176,76 @@ def named_delta_files() -> dict[str, str]:
 #: past the change notes' window (``design-pod-delta-files.md``, decision 31). A broker built before it ignores it,
 #: and its records name none. The hub imports this name.
 COMMIT_SCOPES_FIELD: Final = "scopes"
+
+#: the unconfirmed delta files of the advance being made in this context, by table (:func:`naming_unconfirmed_delta_files`)
+_UNCONFIRMED_DELTA_FILES: ContextVar[Mapping[str, str]] = ContextVar("threetears_unconfirmed_delta_files", default={})
+
+
+@contextmanager
+def naming_unconfirmed_delta_files(files: Mapping[str, str]) -> Iterator[None]:
+    """name, unconfirmed, the delta files of a load request that failed after it may have committed some rows, by
+    table: an advance a process writes its own record for inside this block names each so
+    (:func:`~threetears.core.collections.generation.advance_for_write`, ``EpochChange.delta_file_unconfirmed``). For a
+    process that owns its load's records (a direct pool); a pod's broker names them itself. Replaces what an enclosing
+    block named.
+
+    :param files: table -> the request's delta file's name; empty names none
+    :ptype files: Mapping[str, str]
+    :return: a context in which the advance names them unconfirmed
+    :rtype: Iterator[None]
+    """
+    token = _UNCONFIRMED_DELTA_FILES.set(dict(files))
+    try:
+        yield
+    finally:
+        _UNCONFIRMED_DELTA_FILES.reset(token)
+
+
+def named_unconfirmed_delta_files() -> dict[str, str]:
+    """the unconfirmed delta files of the advance being made in this context, by table.
+
+    :return: table -> its unconfirmed delta file's name; empty when none is named
+    :rtype: dict[str, str]
+    """
+    return dict(_UNCONFIRMED_DELTA_FILES.get())
+
+
+#: where an ``l3.load_files`` request made in this context notes the broker's answer: the rows the broker says it
+#: committed, success or failure (:func:`collecting_load_answers`); None when nothing collects them
+_LOAD_ANSWERS: ContextVar[list[int] | None] = ContextVar("threetears_load_answers", default=None)
+
+
+@contextmanager
+def collecting_load_answers(into: list[int]) -> Iterator[None]:
+    """collect into ``into`` the rows the broker answered it committed, for each ``l3.load_files`` request made inside
+    this block, success or failure (:func:`note_load_answer`). How a pod tells a request the broker answered (it owns
+    the request's epoch record: one naming the file unconfirmed when rows committed, none when none did) from one that
+    had no answer (a cancel, a lost reply). ``into`` is the caller's own, local to the one request.
+
+    :param into: the rows each answer named, appended as answers arrive
+    :ptype into: list[int]
+    :return: a context in which answers are collected
+    :rtype: Iterator[None]
+    """
+    token = _LOAD_ANSWERS.set(into)
+    try:
+        yield
+    finally:
+        _LOAD_ANSWERS.reset(token)
+
+
+def note_load_answer(rows: int) -> None:
+    """note the broker's answer to an ``l3.load_files`` request, where this context collects them; nothing otherwise.
+
+    :param rows: the rows the answer says the broker committed
+    :ptype rows: int
+    :return: nothing
+    :rtype: None
+    """
+    into = _LOAD_ANSWERS.get()
+    if into is not None:
+        into.append(rows)
+
 
 #: the scopes the commit being made in this context touched (:func:`naming_commit_scopes`)
 _COMMIT_SCOPES: ContextVar[tuple[str, ...]] = ContextVar("threetears_commit_scopes", default=())

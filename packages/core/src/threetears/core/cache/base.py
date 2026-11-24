@@ -47,7 +47,7 @@ MISSING = object()
 
 
 def build_select_clause(
-    schema: dict[str, str] | None,
+    schema: Mapping[str, str] | None,
     table: str,
     columns: Sequence[str] | None,
 ) -> str:
@@ -59,7 +59,7 @@ def build_select_clause(
     :param schema: the table's registered column-to-type mapping, or
         ``None``/empty when the table is not registered; validation is
         skipped then and the engine reports unknown columns itself
-    :ptype schema: dict[str, str] | None
+    :ptype schema: Mapping[str, str] | None
     :param table: target table name, used in error messages
     :ptype table: str
     :param columns: requested projection, or ``None`` for all columns;

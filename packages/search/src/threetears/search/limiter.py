@@ -83,6 +83,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final
 
 from threetears.search.contracts import RateLimitDecision
@@ -216,9 +217,11 @@ class InProcessRateLimiter:
         self._max_tracked_keys = max_tracked_keys
         self._clock = clock
         self._sleep = sleep
-        # The SR-O2 allowlist entry this module's docstring argues for, and the
-        # only mutable state here: pair -> live bucket, per-process by nature.
-        self._buckets: dict[tuple[str, str], _Bucket] = {}
+        # pair -> live bucket, per-process by nature: a read-only snapshot replaced whole when a
+        # pair is first tracked or the full ones are evicted (soft-capped at max_tracked_keys), never
+        # per acquisition. (threetears.core.frozen_state's shape, inline: this package
+        # does not depend on threetears.core.)
+        self._buckets: Mapping[tuple[str, str], _Bucket] = MappingProxyType({})
 
     @property
     def tracked_key_count(self) -> int:
@@ -340,7 +343,7 @@ class InProcessRateLimiter:
         if bucket is None:
             self._evict_full(now)
             bucket = _Bucket(tokens=policy.burst_tokens, updated_at=now)
-            self._buckets[key] = bucket
+            self._buckets = MappingProxyType({**self._buckets, key: bucket})
         else:
             elapsed = max(0.0, now - bucket.updated_at)
             bucket.tokens = min(policy.burst_tokens, bucket.tokens + elapsed * policy.rate_per_second)
@@ -366,8 +369,11 @@ class InProcessRateLimiter:
         """
         if len(self._buckets) < self._max_tracked_keys:
             return
-        for tracked_key, bucket in list(self._buckets.items()):
+        kept: dict[tuple[str, str], _Bucket] = {}
+        for tracked_key, bucket in self._buckets.items():
             policy = self._policy_for(tracked_key)
             refilled = bucket.tokens + max(0.0, now - bucket.updated_at) * policy.rate_per_second
-            if refilled >= policy.burst_tokens:
-                del self._buckets[tracked_key]
+            if refilled < policy.burst_tokens:
+                kept[tracked_key] = bucket
+        if len(kept) < len(self._buckets):
+            self._buckets = MappingProxyType(kept)
