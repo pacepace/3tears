@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import mapbox_vector_tile
+import pyarrow as pa
 import pytest
 from shapely.geometry import Polygon
 from sqlalchemy import Column as SAColumn
@@ -20,7 +21,7 @@ from sqlalchemy import Integer, LargeBinary, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.geo import FeatureCache, LayerDefinition, TileCollection, check_cache_scope
+from threetears.geo import BOUNDS_COLUMNS, FeatureCache, LayerDefinition, TileCollection, check_cache_scope
 from threetears.geo.bands import AggregateSpec, FeatureSpec
 from threetears.geo.tiles import BoundingBox, tile_bounds, tile_for_point
 from threetears.object_store.filesystem import FilesystemObjectStore
@@ -89,9 +90,9 @@ def _shared_l1(name: str) -> SQLiteBackend:
 def _source(
     registry: CollectionRegistry, tmp_path: Path, scope: str, rows: list[dict[str, Any]], calls: list[str]
 ) -> TileCollection:
-    async def _loader(layer: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+    async def _loader(layer: str, version: int, bounds: BoundingBox) -> pa.Table:
         calls.append(scope)
-        return list(rows)
+        return pa.Table.from_pylist(list(rows))
 
     return TileCollection(
         registry,
@@ -143,8 +144,8 @@ class TestFeatures:
         )
 
         def _cache(scope: str) -> FeatureCache:
-            async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
-                return []
+            async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
+                return pa.table({})
 
             return FeatureCache(
                 registry,
@@ -152,7 +153,9 @@ class TestFeatures:
                 None,
                 None,
                 loader=_loader,
-                bounds_of=lambda row: BoundingBox(-1, -1, 1, 1),
+                bounds_of=lambda rows: pa.table(
+                    {name: [-1.0 if name.startswith("min") else 1.0] * rows.num_rows for name in BOUNDS_COLUMNS}
+                ),
                 feature_id_column="geoid",
                 cache_scope=scope,
             )

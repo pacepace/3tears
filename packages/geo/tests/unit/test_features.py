@@ -13,8 +13,10 @@ import asyncio
 import gc
 import random
 import sqlite3
+import tracemalloc
 from typing import Any
 
+import pyarrow as pa
 import pytest
 from sqlalchemy import Column as SAColumn
 from sqlalchemy import Integer, MetaData, String, Table
@@ -22,7 +24,7 @@ from sqlalchemy import Integer, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.geo.features import FeatureCache
+from threetears.geo.features import BOUNDS_COLUMNS, FeatureCache
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
@@ -30,15 +32,40 @@ from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 SCOPE = "ds_test"
 
 
-async def _empty_loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
-    return []
+#: a test layer's columns: an id and its bounds under names of its own, as a real layer's bbox
+#: columns would be (real layers decode geometry)
+_SCHEMA = pa.schema(
+    [("feature_id", pa.string()), *((name, pa.float64()) for name in ("west", "south", "east", "north"))]
+)
 
 
-def _row_bounds(row: dict[str, Any]) -> BoundingBox:
+def _table(rows: list[dict[str, Any]]) -> pa.Table:
+    """test rows -- an id and a :class:`BoundingBox` each -- as the Arrow table a loader answers."""
+    return pa.table(
+        {
+            "feature_id": [row["feature_id"] for row in rows],
+            "west": [row["bounds"].min_lon for row in rows],
+            "south": [row["bounds"].min_lat for row in rows],
+            "east": [row["bounds"].max_lon for row in rows],
+            "north": [row["bounds"].max_lat for row in rows],
+        },
+        schema=_SCHEMA,
+    )
+
+
+def _ids(found: pa.Table) -> list[Any]:
+    """the feature ids of a cache's answer, in its order."""
+    ids: list[Any] = found.column("feature_id").to_pylist()
+    return ids
+
+
+async def _empty_loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
+    return _table([])
+
+
+def _row_bounds(rows: pa.Table) -> pa.Table:
     """test rows carry their bounds directly; real layers decode geometry."""
-    bounds = row["bounds"]
-    assert isinstance(bounds, BoundingBox)
-    return bounds
+    return rows.select(["west", "south", "east", "north"]).rename_columns(list(BOUNDS_COLUMNS))
 
 
 @pytest.fixture
@@ -191,9 +218,9 @@ class TestChunkCoverage:
     def _counting_cache(request: pytest.FixtureRequest, rows: list[dict[str, Any]]) -> tuple[FeatureCache, list[Any]]:
         calls: list[Any] = []
 
-        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
             calls.append(bounds)
-            return [row for row in rows if row["bounds"].intersects(bounds)]
+            return _table([row for row in rows if row["bounds"].intersects(bounds)])
 
         metadata = MetaData()
         Table(
@@ -245,8 +272,8 @@ class TestChunkCoverage:
         second = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
 
         assert len(calls) == 1
-        assert first == second
-        assert [row["feature_id"] for row in second] == ["a"]
+        assert first.equals(second)
+        assert _ids(second) == ["a"]
 
     async def test_results_are_filtered_to_the_requested_rectangle(self, request: pytest.FixtureRequest) -> None:
         """a chunk is coarser than a tile, so its extra rows must not leak.
@@ -261,7 +288,7 @@ class TestChunkCoverage:
 
         tile = tile_for_point(-112.10, 33.40, 12)
         found = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
-        assert [row["feature_id"] for row in found] == ["near"]
+        assert _ids(found) == ["near"]
 
     async def test_a_different_generation_is_loaded_separately(self, request: pytest.FixtureRequest) -> None:
         # coverage is per generation: reusing version 1's chunk for version 2
@@ -287,9 +314,9 @@ def _recording_loader(rows: list[dict[str, Any]]) -> tuple[Any, list[BoundingBox
     """a loader answering ``rows`` by rectangle, and the list of every rectangle it was asked for."""
     calls: list[BoundingBox] = []
 
-    async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+    async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
         calls.append(bounds)
-        return [row for row in rows if row["bounds"].intersects(bounds)]
+        return _table([row for row in rows if row["bounds"].intersects(bounds)])
 
     return _loader, calls
 
@@ -348,7 +375,7 @@ class TestWithoutL1TheLoaderIsAskedOnce:
 
         assert len(calls) == 1, f"expected one loader call with no L1, got {len(calls)}"
         assert calls[0] == tile_bounds(_Z3)
-        assert [r["feature_id"] for r in found] == ["a"]
+        assert _ids(found) == ["a"]
 
     async def test_nothing_is_kept_between_reads(self, request: pytest.FixtureRequest) -> None:
         # with no L1 there is nothing to evict from, so anything kept would grow for the life of
@@ -383,7 +410,7 @@ class TestAWideRectangleIsOneLoad:
         cache = _cache_over(request, loader)
 
         found = await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
-        assert [r["feature_id"] for r in found] == ["in"]
+        assert _ids(found) == ["in"]
 
     async def test_a_tile_inside_it_is_served_with_no_loader_call(self, request: pytest.FixtureRequest) -> None:
         tile = _inside_z3()
@@ -400,7 +427,7 @@ class TestAWideRectangleIsOneLoad:
         found = await cache.features_in_bbox("tracts", 1, bounds)
 
         assert len(calls) == 1, f"a z12 tile inside a loaded z3 rectangle went back to the loader ({len(calls)} calls)"
-        assert [r["feature_id"] for r in found] == ["near"]
+        assert _ids(found) == ["near"]
 
     async def test_a_tile_whose_chunk_crosses_the_edge_loads_that_chunk(self, request: pytest.FixtureRequest) -> None:
         # a z12 tile on the z3 tile's eastern edge touches the z8 chunk beyond it, which the z3 load
@@ -433,7 +460,7 @@ class TestAWideRectangleIsOneLoad:
         found = await cache.features_in_bbox("tracts", 1, tile_bounds(_inside_z3()))
 
         assert len(calls) == 1
-        assert [r["feature_id"] for r in found] == ["wide"]
+        assert _ids(found) == ["wide"]
 
 
 class TestHeldRowsAreBounded:
@@ -464,7 +491,7 @@ class TestHeldRowsAreBounded:
         again = await cache.features_in_bbox("tracts", 1, tile_bounds(first))
 
         assert len(calls) == 3, "the first chunk should have been evicted to hold the second"
-        assert [r["feature_id"] for r in again] == ["a"]
+        assert _ids(again) == ["a"]
 
     async def test_within_the_bound_both_stay_held(self, request: pytest.FixtureRequest) -> None:
         first, second, rows = self._two_chunks()
@@ -543,7 +570,7 @@ class TestEvictionOrderAndSharing:
 
         found = await cache.features_in_bbox("tracts", 1, b_bounds)
         assert len(calls) == 3, "b should still be held"
-        assert [row["feature_id"] for row in found] == ["s"], "a feature b still holds was dropped with a"
+        assert _ids(found) == ["s"], "a feature b still holds was dropped with a"
         assert cache.indexed_keys_in_bbox("tracts", 1, b_bounds) == ["s"]
 
     async def test_eviction_is_logged(self, request: pytest.FixtureRequest, caplog: pytest.LogCaptureFixture) -> None:
@@ -571,7 +598,7 @@ class TestOneReadNeverFlushesTheWorkingSet:
 
         await cache.features_in_bbox("tracts", 1, tile_bounds(small))
         found = await cache.features_in_bbox("tracts", 1, tile_bounds(dense))
-        assert sorted(row["feature_id"] for row in found) == ["d0", "d1", "d2"]
+        assert sorted(_ids(found)) == ["d0", "d1", "d2"]
 
         await cache.features_in_bbox("tracts", 1, tile_bounds(small))
         assert len(calls) == 2, "the dense chunk flushed the chunk held before it"
@@ -590,7 +617,7 @@ class TestOneReadNeverFlushesTheWorkingSet:
 
         found = await cache.features_in_bbox("tracts", 1, wide)
         assert len(calls) == 1
-        assert len(found) == 5
+        assert found.num_rows == 5
         await cache.features_in_bbox("tracts", 1, tile_bounds(inner))
         assert len(calls) == 2, "a wide read over half the bound covered its chunks"
 
@@ -620,15 +647,15 @@ class TestOneRuleForEveryReadPath:
         no_id = {"feature_id": None, "bounds": good["bounds"]}
         outside = {"feature_id": "outside", "bounds": BoundingBox(10.0, 10.0, 11.0, 11.0)}
 
-        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
             # a loader answering a little more than asked, as a coarse bbox-column query can
-            return [good, no_id, outside]
+            return _table([good, no_id, outside])
 
         cache = _cache_over(request, _loader, l1=path != "no-l1")
         bounds = tile_bounds(_Z3) if path == "wide" else tile_bounds(tile)
 
         found = await cache.features_in_bbox("tracts", 1, bounds)
-        assert [row["feature_id"] for row in found] == ["good"]
+        assert _ids(found) == ["good"]
 
 
 class TestAReadInProgressKeepsWhatItDependsOn:
@@ -641,11 +668,11 @@ class TestAReadInProgressKeepsWhatItDependsOn:
         b_released = asyncio.Event()
         b_requested = asyncio.Event()
 
-        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
             if bounds == b_chunk:
                 b_requested.set()
                 await b_released.wait()
-            return [row for row in rows if row["bounds"].intersects(bounds)]
+            return _table([row for row in rows if row["bounds"].intersects(bounds)])
 
         cache = _cache_over(request, _loader, max_cached_rows=2)
         a_bounds, b_bounds = tile_bounds(a_tile), tile_bounds(b_tile)
@@ -658,7 +685,7 @@ class TestAReadInProgressKeepsWhatItDependsOn:
         b_released.set()
 
         found = await read_a
-        assert sorted(row["feature_id"] for row in found) == ["a", "b"], "a chunk the read held was evicted under it"
+        assert sorted(_ids(found)) == ["a", "b"], "a chunk the read held was evicted under it"
 
 
 class TestLayersAndInstancesDoNotLeak:
@@ -687,7 +714,7 @@ class TestLayersAndInstancesDoNotLeak:
 
         found = await first.features_in_bbox("tracts", 1, tile_bounds(a_tile))
         assert len(calls) == 3, "the first cache's chunk should still be covered"
-        assert [row["feature_id"] for row in found] == ["f"], "one cache's eviction removed the other's index entry"
+        assert _ids(found) == ["f"], "one cache's eviction removed the other's index entry"
 
 
 class TestOneReadClaimsAtMostHalfTheBound:
@@ -704,7 +731,7 @@ class TestOneReadClaimsAtMostHalfTheBound:
 
         await cache.features_in_bbox("tracts", 1, tile_bounds(held))
         found = await cache.features_in_bbox("tracts", 1, spanning)
-        assert sorted(row["feature_id"] for row in found) == ["r0", "r1", "r2", "r3"]
+        assert sorted(_ids(found)) == ["r0", "r1", "r2", "r3"]
 
         loads = len(calls)
         await cache.features_in_bbox("tracts", 1, tile_bounds(held))
@@ -740,7 +767,7 @@ class TestACollectedCache:
         assert entries() == 1
         assert survivor.indexed_keys_in_bbox("tracts", 1, tile_bounds(tile)) == ["f"]
         found = await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
-        assert [row["feature_id"] for row in found] == ["f"]
+        assert _ids(found) == ["f"]
         assert len(calls) == 2, "the surviving cache's chunk should still be covered"
 
 
@@ -865,5 +892,65 @@ class TestAnL1HoldingAnOlderCachesTables:
 
         found = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
 
-        assert [row["feature_id"] for row in found] == ["mine"]
+        assert _ids(found) == ["mine"]
         assert cache.indexed_keys_in_bbox("tracts", 1, tile_bounds(tile)) == ["mine"]
+
+
+class TestHeldRowsAreArrow:
+    """what a pod keeps scales with the features it holds, so it is Arrow: each held chunk is one
+    immutable table, never a Python object per feature (Pace, 2026-11-24)."""
+
+    async def test_a_held_feature_costs_no_python_object(self, request: pytest.FixtureRequest) -> None:
+        """Flips if held rows become Python objects again: 20,000 held features (40 chunks of 500) grow
+        the Python heap by under 16 bytes each. a row dict alone is ~180 bytes, which the cache held one
+        of per feature before (with a per-feature holder count beside it)."""
+        tiles = [_chunk_tile(dx) for dx in range(40)]
+        rows = [_point_row(f"f{dx}-{n}", tile) for dx, tile in enumerate(tiles) for n in range(500)]
+        source = _table(rows)
+        by_chunk = {
+            tile_bounds(TileId(z=FeatureCache.chunk_zoom, x=tile.x // 16, y=tile.y // 16)): source.slice(dx * 500, 500)
+            for dx, tile in enumerate(tiles)
+        }
+
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> pa.Table:
+            # a fresh copy per call, as a driver answers
+            return by_chunk[bounds].take(pa.array(range(500)))
+
+        cache = _cache_over(request, _loader, max_cached_rows=100_000)
+        cache.ensure_index()
+        assert len(by_chunk) == 40
+        gc.collect()
+        tracemalloc.start()
+        try:
+            before = tracemalloc.get_traced_memory()[0]
+            for tile in tiles:
+                await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+            gc.collect()
+            grown = tracemalloc.get_traced_memory()[0] - before
+        finally:
+            tracemalloc.stop()
+        assert grown / 20_000 < 16, f"{grown / 20_000:.0f} bytes of Python heap per held feature"
+
+    async def test_a_feature_across_three_chunks_stays_indexed_while_any_holds_it(
+        self, request: pytest.FixtureRequest
+    ) -> None:
+        """Flips if release asks only the chunks next to the evicted one rather than every chunk the
+        evicted rows reach: a feature spanning chunks a, b and c stays answered from c after a and b go."""
+        a, b, c, far, farther = _chunk_tile(0), _chunk_tile(1), _chunk_tile(2), _chunk_tile(9), _chunk_tile(12)
+        a_bounds, c_bounds = tile_bounds(a), tile_bounds(c)
+        wide = {
+            "feature_id": "w",
+            "bounds": BoundingBox(a_bounds.min_lon, a_bounds.min_lat, c_bounds.max_lon, c_bounds.max_lat),
+        }
+        loader, calls = _recording_loader([wide, _point_row("far", far), _point_row("farther", farther)])
+        cache = _cache_over(request, loader, max_cached_rows=3)
+
+        for tile in (b, a, c, far):  # far evicts b, the least recently read
+            await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+        await cache.features_in_bbox("tracts", 1, c_bounds)
+        await cache.features_in_bbox("tracts", 1, tile_bounds(farther))  # evicts a: c alone now holds w
+
+        assert cache.indexed_keys_in_bbox("tracts", 1, c_bounds) == ["w"]
+        loads = len(calls)
+        assert _ids(await cache.features_in_bbox("tracts", 1, c_bounds)) == ["w"]
+        assert len(calls) == loads, "c should still be held"

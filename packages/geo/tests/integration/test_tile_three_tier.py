@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import mapbox_vector_tile
+import pyarrow as pa
 import pytest
 from shapely.geometry import Polygon
 from sqlalchemy import Column as SAColumn
@@ -114,9 +115,9 @@ def _make_pod(
     isolated separately, by giving each test its own tile version.
     """
 
-    async def _loader(layer: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+    async def _loader(layer: str, version: int, bounds: BoundingBox) -> pa.Table:
         calls.append(name)
-        return list(rows)
+        return pa.Table.from_pylist(list(rows))
 
     backend = SQLiteBackend(f"geo_tiles_{isolation}_{name}")
     backend.initialize(_metadata(cache_scope))

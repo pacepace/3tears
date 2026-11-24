@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import mapbox_vector_tile
+import pyarrow as pa
 import pytest
+import shapely
 from shapely.geometry import Polygon
 
 from sqlalchemy import Column as SAColumn
@@ -24,7 +26,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.geo.bands import UNDECODABLE_PROPERTY, AggregateSpec, FeatureSpec
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
-from threetears.geo.features import FeatureCache
+from threetears.geo.features import BOUNDS_COLUMNS, FeatureCache
 from threetears.geo.geometry import UndecodableGeometry, decode_geometry
 from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
@@ -77,9 +79,9 @@ def _make_collection(
     calls: list[tuple[str, int, BoundingBox]] = []
     source = rows if rows is not None else []
 
-    async def _loader(layer: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+    async def _loader(layer: str, version: int, bounds: BoundingBox) -> pa.Table:
         calls.append((layer, version, bounds))
-        return list(source)
+        return pa.Table.from_pylist(list(source))
 
     registry = CollectionRegistry()
     registry.configure(l1_backend=None, l2_client=None, l3_pool=None)
@@ -546,8 +548,8 @@ class TestDurableTierFailures:
         registry = CollectionRegistry()
         registry.configure(l1_backend=None, l2_client=None, l3_pool=None)
 
-        async def _loader(layer: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
-            return []
+        async def _loader(layer: str, version: int, bounds: BoundingBox) -> pa.Table:
+            return pa.table({})
 
         return TileCollection(
             registry,
@@ -616,15 +618,14 @@ class TestThroughAFeatureCache:
         calls: list[tuple[str, int, BoundingBox]] = []
         layer = _tracts_layer(minzoom=0)
 
-        async def _loader(name: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+        async def _loader(name: str, version: int, bounds: BoundingBox) -> pa.Table:
             calls.append((name, version, bounds))
-            return [_tract_row("a", lon=_PHOENIX_LON, lat=_PHOENIX_LAT)]
+            return pa.Table.from_pylist([_tract_row("a", lon=_PHOENIX_LON, lat=_PHOENIX_LAT)])
 
-        def _bounds_of(row: dict[str, Any]) -> BoundingBox:
-            geometry = layer.geometry_of(row)
-            assert geometry is not None
-            min_lon, min_lat, max_lon, max_lat = geometry.bounds
-            return BoundingBox(min_lon, min_lat, max_lon, max_lat)
+        def _bounds_of(rows: pa.Table) -> pa.Table:
+            # the whole column at once, as a real layer's extractor does
+            boxes = shapely.bounds(shapely.from_wkb(rows.column("geometry_wkb").to_numpy(zero_copy_only=False)))
+            return pa.table({name: boxes[:, i] for i, name in enumerate(BOUNDS_COLUMNS)})
 
         backend: SQLiteBackend | None = None
         if l1:
