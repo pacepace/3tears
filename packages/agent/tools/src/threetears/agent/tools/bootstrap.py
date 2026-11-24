@@ -60,7 +60,7 @@ from prometheus_client.metrics_core import Metric
 from sqlalchemy import MetaData
 from threetears.core.arrow_pool import use_system_pool_if_installed
 from threetears.core.backends import BrokerGenerationSource
-from threetears.core.collections import bind_collections_bucket
+from threetears.core.collections import bind_collections_bucket, load_declared_collections
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.tenancy import PodTenants
@@ -812,6 +812,10 @@ class ToolServerBootstrap:
         # allocator (arrow_copy, 2026-11-15), and its per-thread heaps kept what a refresh freed (reports, 946 MiB
         # against 456, 2026-10-26). Buffers already allocated stay where they were, so this is the first step.
         use_system_pool_if_installed()
+        # every collection module the installed packages list, imported once before the loop starts: the registry
+        # lookups (tenancy, write generation, L2-first) then know every declared table, not only those this pod's
+        # code happened to import (threetears.core.collections.manifest)
+        load_declared_collections()
         executor_workers = self.size_to_cpu_quota()
         try:
             asyncio.run(self._run_on_executor(executor_workers))

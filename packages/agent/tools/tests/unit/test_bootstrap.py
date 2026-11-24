@@ -1190,6 +1190,24 @@ class TestConfigFaultIsTerminal:
 
         assert server.serve_called is True
 
+    def test_run_loads_the_declared_collections_before_serving(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the pod imports every listed collection module at its start, before the loop serves."""
+        order: list[str] = []
+        monkeypatch.setattr(bootstrap_module, "load_declared_collections", lambda: order.append("load"))
+        server = _FakeToolServer()
+        server.serve_event.set()
+        real_run = asyncio.run
+
+        def _run(coro: Any) -> Any:
+            order.append("serve")
+            return real_run(coro)
+
+        monkeypatch.setattr(asyncio, "run", _run)
+
+        _SucceedingBootstrap(server).run()
+
+        assert order == ["load", "serve"]
+
 
 def test_signal_handler_uses_service_name_in_task_name() -> None:
     bootstrap = ToolServerBootstrap("my-svc")

@@ -30,6 +30,11 @@ dependencies = [
     "sqlalchemy",
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.agent.skills.collections" = "threetears.agent.skills.collections"
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 

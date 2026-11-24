@@ -37,6 +37,11 @@ dependencies = [
     "sqlalchemy",
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.scheduled_jobs.collections" = "threetears.scheduled_jobs.collections"
+
 [project.optional-dependencies]
 # ``prometheus_client`` is optional at runtime -- the metrics module
 # degrades gracefully to no-op when the wheel is absent (mirrors

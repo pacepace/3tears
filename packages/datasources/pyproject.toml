@@ -53,6 +53,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.datasources.collections" = "threetears.datasources.collections"
+
 [project.optional-dependencies]
 # every secondary concrete driver backend lives behind an extras key so
 # Hub/agent consumers that don't use a given backend don't pay the

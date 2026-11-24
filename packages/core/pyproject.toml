@@ -33,6 +33,11 @@ dependencies = [
     "pydantic-core",  # to_jsonable_python (core.serialization); pydantic pins the release
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.core.coordination.tables" = "threetears.core.coordination.tables"
+
 [project.optional-dependencies]
 # The signed-token and encryption half of core.security (identity tokens, proofs of possession,
 # service envelopes, sealing), and the NATS L3 proxy, which signs its door requests with it. The

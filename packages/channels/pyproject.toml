@@ -22,6 +22,11 @@ dependencies = [
     "sqlalchemy",
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.channels.presence.collection" = "threetears.channels.presence.collection"
+
 [project.optional-dependencies]
 slack = ["slack-bolt>=1.28", "slack-sdk>=3.41", "aiohttp>=3.9"]
 discord = ["discord.py>=2.7"]

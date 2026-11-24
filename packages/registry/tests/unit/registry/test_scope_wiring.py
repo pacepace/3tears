@@ -321,3 +321,27 @@ class TestTheTeardownSeamIsBoundInEveryAuthorizerMode:
         assert callable(on_shutdown)
         # the bug was a NameError raised the moment this ran
         asyncio.run(on_shutdown())
+
+
+def test_the_registry_loads_the_declared_collections_at_its_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`python -m threetears.registry` imports every listed collection module before it serves.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: nothing
+    :rtype: None
+    """
+    monkeypatch.setenv("THREETEARS_REGISTRY_ALLOW_ALL_TOOLS", "true")
+    order: list[str] = []
+    monkeypatch.setattr(server_module, "load_declared_collections", lambda: order.append("load"))
+
+    class _CapturingServer:
+        def __init__(self, **kwargs: object) -> None:
+            order.append("server")
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
+    runpy.run_module("threetears.registry", run_name="__main__")
+    assert order == ["load", "server"]

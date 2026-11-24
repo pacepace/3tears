@@ -93,6 +93,12 @@ dependencies = [
     "soupsieve",  # CSS selector errors (scrape.extraction); beautifulsoup4 brings it
 ]
 
+# the modules defining this package's collection classes, imported at process start by
+# threetears.core.collections.load_declared_collections(), so every registry lookup knows their tables
+[project.entry-points."threetears.collections"]
+"threetears.scrape.collections" = "threetears.scrape.collections"
+"threetears.scrape.health" = "threetears.scrape.health"
+
 [project.optional-dependencies]
 # reprobe.py books a blocked target's next probe as a scheduled-jobs
 # `relative_delay` job, for a caller that is event-driven rather than
