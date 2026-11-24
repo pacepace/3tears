@@ -174,6 +174,17 @@ class TestAShapesActor:
             await actors.load_for_user(first)
         assert store.reads == []
 
+    async def test_the_least_recently_used_shapes_are_let_go_first(self) -> None:
+        store = _HeldStore()
+        actors = ShapeActors(store, max_shapes=4)
+        read_again, unread = (actors.actor_for(AccessShape.of([_row(uuid4(), uuid4(), None)])) for _ in range(2))
+        actors.actor_for(AccessShape.of([_row(uuid4(), uuid4(), None)]))
+        assert len(await actors.load_for_user(read_again)) == 1
+        actors.actor_for(AccessShape.of([_row(uuid4(), uuid4(), None)]))
+        assert len(await actors.load_for_user(read_again)) == 1
+        with pytest.raises(LookupError):
+            await actors.load_for_user(unread)
+
     async def test_groups_and_agents_are_read_from_the_real_loader(self) -> None:
         store = _HeldStore()
         estate = _Estate(store)

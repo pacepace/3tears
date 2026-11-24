@@ -59,7 +59,8 @@ they were given. it, too, changes no evaluation.
 public surface — answers shared per access shape:
 
 - :class:`AccessShape` — a person's direct memberships, which is all of them
-  the evaluator reads; :class:`ShapeActors` evaluates as a shape rather than a
+  the evaluator reads; :class:`AccessShapeInterner` hands back one object per equal
+  shape; :class:`ShapeActors` evaluates as a shape rather than a
   person, and :func:`~threetears.agent.acl.access_shapes.access_footprint` names what an
   answer can reach.
 - :class:`AccessShapeAnswers` — one answer per shape in L1 and L2, derived once
@@ -149,6 +150,7 @@ from threetears.agent.acl.builtin_roles import (
 )
 from threetears.agent.acl.access_shapes import (
     AccessShape,
+    AccessShapeInterner,
     ShapeActors,
 )
 from threetears.agent.acl.access_tables import ACCESS_TABLES, bind_acl_cache_to_access_tables
@@ -268,6 +270,7 @@ from threetears.agent.acl.write_eviction import evict_after_rbac_write
 __all__ = [
     "AccessShape",
     "AccessShapeAnswers",
+    "AccessShapeInterner",
     "ShapeActors",
     "ShapeAnswer",
     "ShapeAnswerOutcome",
