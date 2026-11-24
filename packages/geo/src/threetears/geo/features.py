@@ -34,7 +34,6 @@ dropped when it is garbage-collected.
 
 from __future__ import annotations
 
-import asyncio
 import secrets
 import weakref
 from collections.abc import Awaitable, Callable, Mapping
@@ -49,8 +48,10 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
 from threetears.core.frozen_state import EMPTY, with_entry, with_newest, without_entry
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.geo.bounds import BOUNDS_COLUMNS, BoundsOf
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import MAX_MERCATOR_LATITUDE, BoundingBox, TileId, bounds_to_tile_range, tile_bounds
+from threetears.geo.workers import read_bounds
 from threetears.observe import contain, get_logger, traced
 
 __all__ = ["BOUNDS_COLUMNS", "BoundsOf", "FeatureCache", "FeatureEntity", "FeatureLoader"]
@@ -62,13 +63,6 @@ log = get_logger(__name__)
 #: the caller owns the query, because only the caller knows the datasource.
 FeatureLoader = Callable[[str, int, BoundingBox], Awaitable[pa.Table]]
 
-#: the columns a :data:`BoundsOf` answers, in :class:`BoundingBox` field order
-BOUNDS_COLUMNS: tuple[str, str, str, str] = ("min_lon", "min_lat", "max_lon", "max_lat")
-
-#: every row's bounding rectangle, for a whole table at once: a table of the four float
-#: :data:`BOUNDS_COLUMNS`, one row per row of its argument, in its order. a row whose geometry
-#: will not decode may answer nulls: it then intersects nothing
-BoundsOf = Callable[[pa.Table], pa.Table]
 
 #: one covered chunk: ``(layer, source_version, chunk tile key)``
 _ChunkMarker = tuple[str, int, tuple[int, int, int]]
@@ -410,9 +404,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             ids = table.column(self.feature_id_column)
         if table.num_rows < loaded:
             log.debug("dropped %d source rows with no %s", loaded - table.num_rows, self.feature_id_column)
-        # off the loop: a bounds read decodes a whole table's geometry (shapely's and Arrow's C loops, which let go of
-        # the interpreter lock); it is the caller's callable, so it cannot cross to a worker process
-        found = await asyncio.to_thread(self._bounds_of, table)
+        # off the loop: a layer's own geometry columns are read in a worker process over shared memory, any other
+        # callable on a thread (threetears.geo.workers.read_bounds)
+        found = await read_bounds(self._bounds_of, table)
         if found.num_rows != table.num_rows or any(name not in found.column_names for name in BOUNDS_COLUMNS):
             raise ValueError(
                 f"bounds_of answered {found.num_rows} row(s) of {found.column_names} for {table.num_rows} row(s); "

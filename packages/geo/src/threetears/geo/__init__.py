@@ -28,7 +28,8 @@ from threetears.geo.collection import (
     TileEntity,
     ViewportRequest,
 )
-from threetears.geo.features import BOUNDS_COLUMNS, BoundsOf, FeatureCache, FeatureEntity, FeatureLoader
+from threetears.geo.bounds import BOUNDS_COLUMNS, BoundsOf
+from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
 from threetears.geo.geometry import (
     UndecodableGeometry,
     decode_geometry,
@@ -49,6 +50,7 @@ from threetears.geo.overlay import (
     replace_features,
 )
 from threetears.geo.scope import MAX_CACHE_SCOPE_LENGTH, check_cache_scope
+from threetears.geo.workers import GeometryColumns
 from threetears.geo.tiles import (
     MAX_MERCATOR_LATITUDE,
     TILE_EXTENT,
@@ -69,6 +71,7 @@ __all__ = [
     "BandResult",
     "BoundsOf",
     "FeatureCache",
+    "GeometryColumns",
     "FeatureEntity",
     "FeatureLoader",
     "LayerDefinition",
