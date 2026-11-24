@@ -437,10 +437,7 @@ class ScopeEpochs:
         )
         self._rows = frozen({str(row["scope"]): row for row in rows})
         self._since = int(record) if record is not None else 0
-        built = _Building()
-        for row in rows:
-            built.apply(row)
-        self._held = built.snapshot()
+        self._held = _snapshot_of(rows)
         return self._held
 
     async def _read_changed(self) -> list[dict[str, Any]]:
@@ -571,10 +568,7 @@ class ScopeEpochs:
         self._rows = frozen(rows)
         record = self._rows.get(WHOLE)
         self._since = int(record["epoch"]) if record is not None else 0
-        built = _Building()
-        for row in self._rows.values():
-            built.apply(row)
-        self._held = built.snapshot()
+        self._held = _snapshot_of(self._rows.values())
         return self._held
 
     def _merge(self, held: EpochSnapshot, changed: list[dict[str, Any]]) -> EpochSnapshot:
@@ -592,11 +586,8 @@ class ScopeEpochs:
         moved = [row for row in changed if self._rows.get(str(row["scope"])) != row]
         if not moved:
             return held
-        built = _Building.of(held)
         self._rows = with_entries(self._rows, {str(row["scope"]): row for row in moved})
-        for row in moved:
-            built.apply(row)
-        self._held = built.snapshot()
+        self._held = _snapshot_of(moved, held)
         return self._held
 
     async def settled(self) -> EpochSnapshot | Unsettled:
@@ -898,76 +889,52 @@ class ScopeEpochs:
         return self._collection.add_l1_change_listener(lambda _scope: listener())
 
 
-class _Building:
-    """a snapshot being built from the rows read: every row of a whole read, or a held snapshot and the rows of a change.
+def _snapshot_of(rows: Iterable[Mapping[str, Any]], held: EpochSnapshot | None = None) -> EpochSnapshot:
+    """the snapshot built from the rows read: every row of a whole read, or a held snapshot and the rows of a change,
+    each row replacing what was held of its scope. One way to read a row for both, so a read of the changes answers
+    what a whole read would. The maps it builds are this call's own; the snapshot holds read-only copies.
 
-    One way to read a row for both, so a read of the changes answers what a whole read would.
+    :param rows: the rows, in order
+    :ptype rows: Iterable[Mapping[str, Any]]
+    :param held: the snapshot held, to start from; None to start from nothing
+    :ptype held: EpochSnapshot | None
+    :return: the snapshot
+    :rtype: EpochSnapshot
     """
-
-    def __init__(self) -> None:
-        self.version = 0
-        self.writing: int | None = None
-        self.writing_since: datetime | None = None
-        self.epochs: dict[str, int] = {}
-        self.previous: dict[str, int | None] = {}
-        self.pending: set[str] = set()
-
-    @classmethod
-    def of(cls, held: EpochSnapshot) -> _Building:
-        """a building that starts from ``held``.
-
-        :param held: the snapshot held
-        :ptype held: EpochSnapshot
-        :return: the building
-        :rtype: _Building
-        """
-        built = cls()
-        built.version, built.writing, built.writing_since = held.version, held.writing, held.writing_since
-        built.epochs, built.previous, built.pending = dict(held.epochs), dict(held.previous), set(held.pending)
-        return built
-
-    def apply(self, row: Mapping[str, Any]) -> None:
-        """take one row as read, replacing what the building held of its scope.
-
-        :param row: the row
-        :ptype row: Mapping[str, Any]
-        :return: nothing
-        :rtype: None
-        """
+    version, writing, writing_since = (
+        (0, None, None) if held is None else (held.version, held.writing, held.writing_since)
+    )
+    epochs: dict[str, int] = {} if held is None else dict(held.epochs)
+    previous: dict[str, int | None] = {} if held is None else dict(held.previous)
+    pending: set[str] = set() if held is None else set(held.pending)
+    for row in rows:
         scope = str(row["scope"])
-        previous = None if row["previous_epoch"] is None else int(row["previous_epoch"])
+        before = None if row["previous_epoch"] is None else int(row["previous_epoch"])
         if scope == WHOLE:
-            self.version = int(row["epoch"])
-            self.writing = None if row["writing"] is None else int(row["writing"])
-            self.writing_since = None if self.writing is None else _instant(row["date_updated"])
-            self.previous[scope] = previous
-            return
+            version = int(row["epoch"])
+            writing = None if row["writing"] is None else int(row["writing"])
+            writing_since = None if writing is None else _instant(row["date_updated"])
+            previous[scope] = before
+            continue
         if row["pending"] is not None:
-            self.pending.add(scope)
+            pending.add(scope)
         else:
-            self.pending.discard(scope)
+            pending.discard(scope)
         if int(row["epoch"]) > 0:
-            self.epochs[scope] = int(row["epoch"])
-            self.previous[scope] = previous
+            epochs[scope] = int(row["epoch"])
+            previous[scope] = before
         else:
             # a scope only touched has not moved yet: it has no epoch to name
-            self.epochs.pop(scope, None)
-            self.previous.pop(scope, None)
-
-    def snapshot(self) -> EpochSnapshot:
-        """the snapshot built.
-
-        :return: the snapshot
-        :rtype: EpochSnapshot
-        """
-        return EpochSnapshot(
-            version=self.version,
-            writing=self.writing,
-            epochs=self.epochs,
-            previous=self.previous,
-            writing_since=self.writing_since,
-            pending=frozenset(self.pending),
-        )
+            epochs.pop(scope, None)
+            previous.pop(scope, None)
+    return EpochSnapshot(
+        version=version,
+        writing=writing,
+        epochs=frozen(epochs),
+        previous=frozen(previous),
+        writing_since=writing_since,
+        pending=frozenset(pending),
+    )
 
 
 def _instant(value: Any) -> datetime:

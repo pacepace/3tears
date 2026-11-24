@@ -196,7 +196,7 @@ _COLLECTED_WHILE_RESETTING = textwrap.dedent(
         def close(self):
             gc.collect()
 
-    backend._pooled_connections.append(Collecting())
+    backend._pooled_connections = (*backend._pooled_connections, Collecting())
     resetting = threading.Thread(target=backend.reset, daemon=True)
     resetting.start()
     resetting.join(20)

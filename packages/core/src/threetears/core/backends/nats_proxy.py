@@ -2231,9 +2231,10 @@ class _ProxyConnection:
         :rtype: None
         """
         self._backend = backend
-        # the rows the open transaction's statements were named as changing, by table and key, sent
-        # on its commit (CHANGED_ROWS_FIELD); emptied when the transaction ends
-        self.tx_changed_rows: dict[str, dict[tuple[str, ...], Any]] = {}
+        # the rows the open transaction's statements were named as changing, one (table, rows) chunk per
+        # statement, appended whole on the loop and folded by key (newest wins) on its commit
+        # (CHANGED_ROWS_FIELD); emptied when the transaction ends
+        self.tx_changed_rows: tuple[tuple[str, tuple[Mapping[str, Any], ...]], ...] = ()
         # set to the broker-minted tx_id while a transaction is open;
         # reset to None on commit or rollback.
         self.tx_id: UUID | None = None
@@ -2275,6 +2276,17 @@ class _ProxyConnection:
         """
         return _ProxyTransaction(self, self._backend, namespace)
 
+    def _note_changed_rows(self) -> None:
+        """keep the rows this statement is named as changing for the transaction's commit. On the loop, before the
+        statement's request is built (which may run on a thread).
+
+        :return: None
+        :rtype: None
+        """
+        named = named_changed_rows()
+        if named:
+            self.tx_changed_rows = (*self.tx_changed_rows, *((table, tuple(rows)) for table, rows in named.items()))
+
     def _tx_payload(
         self, query: str, params: Sequence[Any], loop: asyncio.AbstractEventLoop | None = None
     ) -> dict[str, Any]:
@@ -2291,10 +2303,6 @@ class _ProxyConnection:
         :return: the request payload
         :rtype: dict[str, Any]
         """
-        for table, rows in named_changed_rows().items():
-            held = self.tx_changed_rows.setdefault(table, {})
-            for row in rows:
-                held[tuple(str(each) for each in row["ids"])] = row
         return {
             "correlation_id": str(uuid7()),
             "identity_token": self._backend.forwarded_identity_token(),
@@ -2319,6 +2327,7 @@ class _ProxyConnection:
         """
         if self.tx_id is None:
             return self._backend.statement_request_bytes(query, params)
+        self._note_changed_rows()
         return len(
             self._backend.encode_request(
                 Subjects.l3_tx("execute", namespace=self._backend.ns).path, self._tx_payload(query, params)
@@ -2368,6 +2377,7 @@ class _ProxyConnection:
                 "for the lifetime of the session",
             )
         offload = _offloaded(params)
+        self._note_changed_rows()
         payload = (
             await asyncio.to_thread(self._tx_payload, query, params, asyncio.get_running_loop())
             if offload
@@ -2450,6 +2460,7 @@ class _ProxyConnection:
                 "for the lifetime of the session",
             )
         offload = _offloaded(params)
+        self._note_changed_rows()
         payload = (
             await asyncio.to_thread(self._tx_payload, query, params, asyncio.get_running_loop())
             if offload
@@ -2544,6 +2555,7 @@ class _ProxyConnection:
                 "for the lifetime of the session",
             )
         offload = _offloaded(params)
+        self._note_changed_rows()
         payload = (
             await asyncio.to_thread(self._tx_payload, query, params, asyncio.get_running_loop())
             if offload
@@ -3022,8 +3034,13 @@ class _ProxyTransaction:
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.commit/rollback request payload field
         }
         action: Literal["commit", "rollback"] = "rollback" if exc_type is not None else "commit"
-        named = {table: list(rows.values()) for table, rows in self._connection.tx_changed_rows.items() if rows}
-        self._connection.tx_changed_rows = {}
+        folded: dict[str, dict[tuple[str, ...], Any]] = {}
+        for table, rows in self._connection.tx_changed_rows:
+            held = folded.setdefault(table, {})
+            for row in rows:
+                held[tuple(str(each) for each in row["ids"])] = row
+        named = {table: list(rows.values()) for table, rows in folded.items() if rows}
+        self._connection.tx_changed_rows = ()
         if action == "commit" and named:
             payload[CHANGED_ROWS_FIELD] = named
         files = named_delta_files() if action == "commit" else {}

@@ -44,7 +44,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
 from pydantic import SecretStr
 
 from threetears.core.collections import CallerTransaction
-from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entry
+from threetears.core.frozen_state import EMPTY, frozen, with_entries, with_entry, without_entry
 from threetears.core.utils.atomic_write import atomic_write_sync
 from threetears.core.backends.git.envelope import DEFAULT_ISSUER, ForwardEnvelope, GitDirReplayAnchor
 from threetears.core.backends.git.advanced import AdvancedListener, RepoAdvanced, publish_advanced
@@ -281,9 +281,9 @@ class _Plan:
     :ivar conflicts: rows whose compare-and-swap missed
     """
 
-    writes: dict[str, bytes | None] = field(default_factory=dict)
-    rows: list[tuple[str, Mapping[str, Any], bool]] = field(default_factory=list)
-    conflicts: list[ConflictedRow] = field(default_factory=list)
+    writes: Mapping[str, bytes | None] = EMPTY
+    rows: tuple[tuple[str, Mapping[str, Any], bool], ...] = ()
+    conflicts: tuple[ConflictedRow, ...] = ()
 
 
 def _message_with_trailers(message: str, trailers: Mapping[str, str] | None) -> str:
@@ -393,7 +393,8 @@ class PendingWrite:
         """
         self.scope = scope
         self._mark = mark
-        self.written: list[str] = []
+        #: every path the save wrote, replaced whole on each :meth:`wrote`
+        self.written: tuple[str, ...] = ()
 
     def wrote(self, paths: Sequence[str]) -> None:
         """say which files the save wrote: they are the store's, uncommitted, until the next commit takes them.
@@ -409,7 +410,7 @@ class PendingWrite:
         if outside:
             raise ValueError(f"a save into {self.scope!r} wrote outside it: {', '.join(outside)}")
         self._mark(self.scope, checked)
-        self.written.extend(checked)
+        self.written = (*self.written, *checked)
 
 
 class GitRepo:
@@ -455,9 +456,10 @@ class GitRepo:
         self._replay_anchor = replay_anchor
         self._lock = asyncio.Lock()
         self._seen_head: str | None = None
-        self._listeners: list[RowsChanged] = []
+        #: replaced whole on add and remove: a listener being told never sees the tuple change under it
+        self._listeners: tuple[RowsChanged, ...] = ()
         self._role: WriterRole | None = None
-        self._tasks: list[PeriodicTask] = []
+        self._tasks: tuple[PeriodicTask, ...] = ()
         self._push_blocked: str | None = None
         self._last_push_error: str | None = None
         self._last_push_at: datetime | None = None
@@ -466,7 +468,8 @@ class GitRepo:
         self._tails: Mapping[str | None, PendingTail] = frozen()
         #: each tail's files written and not yet committed; per tail folder, replaced whole on the loop
         self._pending: Mapping[str | None, frozenset[str]] = frozen()
-        self._commit_listeners: list[Committed] = []
+        #: replaced whole on add and remove
+        self._commit_listeners: tuple[Committed, ...] = ()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -528,16 +531,15 @@ class GitRepo:
         :rtype: None
         """
         name = f"git-store:{self.config.lease_key}"
-        self._tasks.append(
-            PeriodicTask(self._watch, interval=self.config.watch_interval, name=f"{name}:watch", logger=log)
-        )
-        self._tasks.append(
-            PeriodicTask(self._sweep, interval=self.config.sweep_interval, name=f"{name}:sweep", logger=log)
-        )
+        tasks = [
+            PeriodicTask(self._watch, interval=self.config.watch_interval, name=f"{name}:watch", logger=log),
+            PeriodicTask(self._sweep, interval=self.config.sweep_interval, name=f"{name}:sweep", logger=log),
+        ]
         if self.config.push == "interval" and self.config.remote_url is not None:
-            self._tasks.append(
+            tasks.append(
                 PeriodicTask(self._interval_push, interval=self.config.push_interval, name=f"{name}:push", logger=log)
             )
+        self._tasks = (*self._tasks, *tasks)
         for task in self._tasks:
             task.start()
 
@@ -549,7 +551,7 @@ class GitRepo:
         """
         for task in self._tasks:
             await task.stop()
-        self._tasks.clear()
+        self._tasks = ()
         if self._listener is not None and self.config.clone == "own":
             await self._listener.unregister(self.config.key, self.config.branch)
         if self._role is not None:
@@ -914,11 +916,13 @@ class GitRepo:
         :return: a function that stops the calls
         :rtype: Callable[[], None]
         """
-        self._commit_listeners.append(callback)
+        self._commit_listeners = (*self._commit_listeners, callback)
 
         def remove() -> None:
-            if callback in self._commit_listeners:
-                self._commit_listeners.remove(callback)
+            held = self._commit_listeners
+            if callback in held:
+                at = held.index(callback)
+                self._commit_listeners = (*held[:at], *held[at + 1 :])
 
         return remove
 
@@ -1615,7 +1619,10 @@ class GitRepo:
         :raises ValueError: for a compare-and-swap on a table with no version column, or a row the
             layout cannot place
         """
-        plan = _Plan()
+        # built in this call, then handed back whole as a read-only plan
+        writes: dict[str, bytes | None] = {}
+        rows: list[tuple[str, Mapping[str, Any], bool]] = []
+        conflicts: list[ConflictedRow] = []
         root = self.config.work_tree
         for change in changes:
             path = locate(self.layout, root, change.table, change.pk, change.row)
@@ -1624,8 +1631,8 @@ class GitRepo:
                     continue  # deleting a row that has no file: nothing to do
                 raise ValueError(f"the layout cannot place a new {change.table} row {dict(change.pk)}")
             key = path.as_posix()
-            if key in plan.writes:
-                current = plan.writes[key]
+            if key in writes:
+                current = writes[key]
             else:
                 target = root / key
                 current = target.read_bytes() if target.is_file() else None
@@ -1637,27 +1644,27 @@ class GitRepo:
                         f"it is refused rather than written unfenced"
                     )
                 if current is None:
-                    plan.conflicts.append(ConflictedRow(change.table, change.pk, "deleted", change.cas))
+                    conflicts.append(ConflictedRow(change.table, change.pk, "deleted", change.cas))
                     continue
                 stored = self.layout.decode(change.table, path, current)
                 if not same_version(stored.get(column), change.cas):
-                    plan.conflicts.append(ConflictedRow(change.table, change.pk, "changed", change.cas))
+                    conflicts.append(ConflictedRow(change.table, change.pk, "changed", change.cas))
                     continue
             if change.row is None:
                 if current is not None:
-                    plan.writes[key] = None
-                    plan.rows.append((change.table, change.pk, True))
+                    writes[key] = None
+                    rows.append((change.table, change.pk, True))
                 continue
             if current is not None and change.on_conflict == "ignore":
                 continue
             if current is not None and change.on_conflict == "raise":
-                plan.conflicts.append(ConflictedRow(change.table, change.pk, "exists"))
+                conflicts.append(ConflictedRow(change.table, change.pk, "exists"))
                 continue
             data = self.layout.encode(change.table, change.row)
             if data != current:
-                plan.writes[key] = data
-                plan.rows.append((change.table, change.pk, False))
-        return plan
+                writes[key] = data
+                rows.append((change.table, change.pk, False))
+        return _Plan(writes=frozen(writes), rows=tuple(rows), conflicts=tuple(conflicts))
 
     async def _write_and_commit(
         self, plan: _Plan, message: str, author: Author, date: datetime | None, *, moving: set[str] | None = None
@@ -1989,7 +1996,11 @@ class GitRepo:
                 return CommitResult(sha=None)
             sha, taken = await self._uninterrupted(
                 self._write_and_commit(
-                    _Plan(writes=writes), message, author or self.config.committer, None, moving=set(moves or {})
+                    _Plan(writes=frozen(writes)),
+                    message,
+                    author or self.config.committer,
+                    None,
+                    moving=set(moves or {}),
                 )
             )
             changes = await asyncio.to_thread(self.git.changed, head_before, sha)
@@ -2014,11 +2025,13 @@ class GitRepo:
         :return: a function that stops the calls
         :rtype: Callable[[], None]
         """
-        self._listeners.append(callback)
+        self._listeners = (*self._listeners, callback)
 
         def remove() -> None:
-            if callback in self._listeners:
-                self._listeners.remove(callback)
+            held = self._listeners
+            if callback in held:
+                at = held.index(callback)
+                self._listeners = (*held[:at], *held[at + 1 :])
 
         return remove
 

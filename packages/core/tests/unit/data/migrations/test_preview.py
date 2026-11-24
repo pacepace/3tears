@@ -276,8 +276,12 @@ class TestPreviewStoreType:
 
     def test_preview_store_captured_ddl_filters_bookkeeping(self) -> None:
         """captured_ddl excludes BOOKKEEPING kind entries."""
-        ps = PreviewStore(underlying=object())
-        ps.captured.append(CapturedStatement(sql="CREATE TABLE foo", params=(), kind="DDL"))
-        ps.captured.append(CapturedStatement(sql="INSERT INTO _schema_migrations", params=(), kind="BOOKKEEPING"))
+        ps = PreviewStore(
+            underlying=object(),
+            captured=(
+                CapturedStatement(sql="CREATE TABLE foo", params=(), kind="DDL"),
+                CapturedStatement(sql="INSERT INTO _schema_migrations", params=(), kind="BOOKKEEPING"),
+            ),
+        )
         ddl = ps.captured_ddl()
         assert ddl == ["CREATE TABLE foo"]

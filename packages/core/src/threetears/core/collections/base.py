@@ -827,9 +827,9 @@ class BaseCollection(ABC, Generic[EntityT]):
     # ``type(self)._missing_nats_warned_tables = ...`` assignment in
     # :meth:`_warn_missing_nats_client_once`; declared here so the
     # attribute is typed + present on the base.
-    _missing_nats_warned_tables: ClassVar[set[str]] = set()
-    #: tables whose "runs without L2 by design" INFO line has been logged, once per process
-    _no_l2_announced_tables: ClassVar[set[str]] = set()
+    _missing_nats_warned_tables: ClassVar[frozenset[str]] = frozenset()
+    #: tables whose "runs without L2 by design" INFO line has been logged, once per process; replaced whole
+    _no_l2_announced_tables: ClassVar[frozenset[str]] = frozenset()
 
     #: this process's L1 for the table, as the registry bound it; ``None`` when it caches nowhere
     _l1: Any
@@ -4409,7 +4409,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         announced = BaseCollection._no_l2_announced_tables
         if self.table_name in announced:
             return
-        announced.add(self.table_name)
+        BaseCollection._no_l2_announced_tables = announced | {self.table_name}
         log.info(
             "collection runs without L2 by design: table=%s -- L1 + L3 only, no KV copy and no "
             "invalidation broadcast (built with nats_client=NO_L2)",
@@ -4432,11 +4432,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         if getattr(self, "_no_l2_by_design", False):
             return
         cls = type(self)
-        warned: set[str] = getattr(cls, "_missing_nats_warned_tables", None) or set()
+        warned: frozenset[str] = getattr(cls, "_missing_nats_warned_tables", None) or frozenset()
         if self.table_name in warned:
             return
-        warned.add(self.table_name)
-        cls._missing_nats_warned_tables = warned
+        cls._missing_nats_warned_tables = warned | {self.table_name}
         log.warning(
             "collection invalidation is silently disabled: table=%s -- "
             "consumer pods will serve stale L1 entries until the "

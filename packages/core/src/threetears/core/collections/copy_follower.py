@@ -93,7 +93,7 @@ import asyncio
 import os
 import secrets
 import time
-from collections import deque
+from itertools import chain
 from datetime import UTC, datetime
 from decimal import Decimal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
@@ -121,7 +121,7 @@ from threetears.core.collections.delta_files import (
     read_delta_table,
 )
 from threetears.core.collections.epoch_change import key_text
-from threetears.core.frozen_state import frozen, with_entries, with_entry, without_entries, without_entry
+from threetears.core.frozen_state import frozen, with_chunk, with_entries, with_entry, without_entries, without_entry
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.registry import CacheInvalidationMessage, WantedFile
 from threetears.core.collections.scope_epochs import ScopeEpochs
@@ -1808,8 +1808,9 @@ class CopyFollower:
         # keyed by table is per-table bookkeeping, small; every per-key part is an immutable Arrow batch, one a change
         # heard (never edited: a new change is a new batch), and a pass works on a snapshot of the batches (their
         # references) and hands back what it left pending as one new batch.
-        #: the messages for the owner, in the order sent (the one thing others touch: they append)
-        self._inbox: deque[Any] = deque()
+        #: the messages for the owner, in the order sent (the one thing others touch: they append): an append-only log
+        #: of immutable chunks replaced whole (with_chunk), which the owner takes whole when it drains
+        self._inbox: tuple[tuple[Any, ...], ...] = ()
         #: each table's keys heard and not yet staged: immutable batches (key columns as text, ``__epoch``)
         self._heard: Mapping[str, tuple[Any, ...]] = frozen({name: () for name in self._tables})
         #: each table's keys heard and not yet staged, counted (a key heard twice since the last pass counts twice
@@ -1825,9 +1826,10 @@ class CopyFollower:
         self._partitions_staged: Mapping[str, tuple[Mapping[str, str], ...]] = frozen()
         self._lock = asyncio.Lock()
         self._poked = asyncio.Event()
-        self._removers: list[Callable[[], None]] = []
+        self._removers: tuple[Callable[[], None], ...] = ()
         self._status = FollowerStatus()
-        self._listeners: list[Callable[[Any], None]] = []
+        #: replaced whole on add and remove
+        self._listeners: tuple[Callable[[Any], None], ...] = ()
         #: rows applied since :meth:`take_rows_since_mark` was last called (the checkpoint's trigger)
         self._rows_since_mark = 0
         #: what is staged beside the copy and not yet applied, by table
@@ -1935,7 +1937,7 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        self._inbox.append(message)
+        self._inbox = with_chunk(self._inbox, (message,))
         self._poked.set()
 
     def _on_row(self, table: str) -> Callable[[CacheInvalidationMessage], None]:
@@ -2043,7 +2045,9 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        self._apply_messages(len(self._inbox))
+        taken, self._inbox = self._inbox, ()
+        messages = tuple(chain.from_iterable(taken))
+        self._apply_messages(messages, 0, len(messages))
 
     async def _drained(self) -> None:
         """:meth:`_drain` a run of :data:`_MESSAGES_PER_TURN` at a time, letting the loop run between, until the inbox
@@ -2054,36 +2058,56 @@ class CopyFollower:
         """
         # the runs the inbox holds now beyond its last: a bounded count, never a loop on what arrives meanwhile (a
         # message posted while the loop runs between joins the last run, drained with no await)
-        for _ in range((len(self._inbox) - 1) // _MESSAGES_PER_TURN):
-            self._apply_messages(_MESSAGES_PER_TURN)
+        taken, self._inbox = self._inbox, ()
+        messages = tuple(chain.from_iterable(taken))
+        runs = max(0, (len(messages) - 1) // _MESSAGES_PER_TURN)
+        for run in range(runs):
+            self._apply_messages(messages, run * _MESSAGES_PER_TURN, (run + 1) * _MESSAGES_PER_TURN)
             await asyncio.sleep(0)
+        left = messages[runs * _MESSAGES_PER_TURN :]
+        if left:
+            # ahead of what was posted meanwhile, drained with it and no await
+            self._inbox = (left, *self._inbox)
         self._drain()
 
-    def _apply_messages(self, count: int) -> None:
-        """apply the first ``count`` messages of the inbox, in order (:meth:`_drain`).
+    def _apply_messages(self, messages: tuple[Any, ...], start: int, stop: int) -> None:
+        """apply ``messages[start:stop]``, taken from the inbox, in order (:meth:`_drain`). One that raises is spent,
+        as each before it; every message after it, to the end of ``messages``, goes back to the front of the inbox.
 
-        :param count: how many
-        :ptype count: int
+        :param messages: the messages taken
+        :ptype messages: tuple[Any, ...]
+        :param start: the first to apply
+        :ptype start: int
+        :param stop: one past the last to apply
+        :ptype stop: int
         :return: nothing
         :rtype: None
         """
         # function-local: each table's run of row messages, as columns, flushed as one batch before any other message
         runs: dict[str, tuple[list[list[str]], list[str | None]]] = {}
-        for _ in range(count):
-            message = self._inbox.popleft()
-            if isinstance(message, CacheInvalidationMessage):
-                if message.table not in self._tables:
+        spent = start
+        try:
+            for index in range(start, stop):
+                spent = index + 1
+                message = messages[index]
+                if isinstance(message, CacheInvalidationMessage):
+                    if message.table not in self._tables:
+                        continue
+                    width = len(self._tables[message.table].key)
+                    columns, epochs = runs.setdefault(message.table, ([[] for _ in range(width)], []))
+                    for column, value in zip(columns, message.ids, strict=True):
+                        column.append(value)
+                    epochs.append(message.generation)
                     continue
-                width = len(self._tables[message.table].key)
-                columns, epochs = runs.setdefault(message.table, ([[] for _ in range(width)], []))
-                for column, value in zip(columns, message.ids, strict=True):
-                    column.append(value)
-                epochs.append(message.generation)
-                continue
+                self._flush_rows(runs)
+                runs = {}
+                self._apply_message(message)
             self._flush_rows(runs)
-            runs = {}
-            self._apply_message(message)
-        self._flush_rows(runs)
+            spent = len(messages)
+        finally:
+            # raised: as the queue it was, what follows the message that raised stays the owner's to apply, first
+            if spent < len(messages):
+                self._inbox = (messages[spent:], *self._inbox)
 
     def _flush_rows(self, runs: Mapping[str, tuple[list[list[str]], list[str | None]]]) -> None:
         """each table's run of row messages heard, as one batch.
@@ -2986,30 +3010,28 @@ class CopyFollower:
                 f"follow {unfollowed} in the registry and schedule its catch-up pass before a copy follower hears them"
             )
         for name in self._tables:
-            self._removers.append(
-                self._registry.register_derived_cache(
-                    name,
-                    on_row=self._on_row(name),
-                    on_table_dropped=self._on_dropped(name),
-                    on_caught_up=self._on_caught_up,
-                    on_partition=self._on_partition(name),
-                    on_table_reset=self._on_reset(name),
-                    on_file_prefixes=self._on_file_prefixes(name) if name in self._cleared else None,
-                    on_file_wanted=self._on_file_wanted(name) if name in self._cleared else None,
-                    on_keys=self._on_keys(name),
-                )
+            remover = self._registry.register_derived_cache(
+                name,
+                on_row=self._on_row(name),
+                on_table_dropped=self._on_dropped(name),
+                on_caught_up=self._on_caught_up,
+                on_partition=self._on_partition(name),
+                on_table_reset=self._on_reset(name),
+                on_file_prefixes=self._on_file_prefixes(name) if name in self._cleared else None,
+                on_file_wanted=self._on_file_wanted(name) if name in self._cleared else None,
+                on_keys=self._on_keys(name),
             )
+            self._removers = (*self._removers, remover)
         if self._stamp_table is not None:
             # the writer's stamp moved (a write begun, a commit on any replica): a pass reads it; nothing of the stamp
             # table itself is read or kept
-            self._removers.append(
-                self._registry.register_derived_cache(
-                    self._stamp_table,
-                    on_row=self._on_stamp_moved,
-                    on_table_dropped=self.poke,
-                    on_partition=self._on_stamp_slice,
-                )
+            remover = self._registry.register_derived_cache(
+                self._stamp_table,
+                on_row=self._on_stamp_moved,
+                on_table_dropped=self.poke,
+                on_partition=self._on_stamp_slice,
             )
+            self._removers = (*self._removers, remover)
 
     def adopt_marks(self, marks: Mapping[str, str | None]) -> None:
         """take each table's mark from a checkpoint: the catch-up walks the log from there.
@@ -5292,8 +5314,15 @@ class CopyFollower:
         :return: a call that removes it
         :rtype: Callable[[], None]
         """
-        self._listeners.append(listener)
-        return lambda: self._listeners.remove(listener) if listener in self._listeners else None
+        self._listeners = (*self._listeners, listener)
+
+        def remove() -> None:
+            held = self._listeners
+            if listener in held:
+                at = held.index(listener)
+                self._listeners = (*held[:at], *held[at + 1 :])
+
+        return remove
 
     def stop(self) -> None:
         """stop hearing the registry.
@@ -5303,7 +5332,7 @@ class CopyFollower:
         """
         for remove in self._removers:
             remove()
-        self._removers = []
+        self._removers = ()
         if self._checkpointing is not None:
             self._checkpointing.cancel()
         if self._checkpoint_wake is not None:

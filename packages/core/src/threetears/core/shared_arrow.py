@@ -2486,12 +2486,12 @@ class _OpenPieces:
 
     :ivar piece_bytes: the most one piece may take
     :ivar minimum: the least room a piece is reserved at
-    :ivar names: its pieces so far, in order
+    :ivar names: its pieces so far, in order; replaced whole (under the store's lock) as a piece is added
     """
 
     piece_bytes: int
     minimum: int
-    names: list[str]
+    names: tuple[str, ...]
 
 
 def _serve_pieces(answer: weakref.WeakMethod[Callable[[Mapping[str, Any]], dict[str, Any]]], listener: Any) -> None:
@@ -2738,7 +2738,7 @@ class SharedArrowStore:
         #: with it (references per directory, never an object per file)
         self._part_keys: Mapping[str, Any] = EMPTY
         #: part files a sweep could not remove (under the parts directory), retried by the next
-        self._unremoved: list[str] = []
+        self._unremoved: tuple[str, ...] = ()
         #: the sweep a publish leaves, on a thread of its own: due once more, and the thread running it (one at most)
         self._settling = threading.Condition()
         self._settle_due = False
@@ -3148,7 +3148,7 @@ class SharedArrowStore:
             if room is not None:
                 piece = _piece_name(slot_id, 0)
                 self._slots = with_entries(self._slots, {piece: room})
-                opened = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=[piece])
+                opened = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=(piece,))
                 self._pieces = with_entries(self._pieces, {slot_id: opened})
             return room
 
@@ -3230,7 +3230,7 @@ class SharedArrowStore:
             if room is not None:
                 following = _piece_name(slot_id, index + 1)
                 self._slots = with_entries(self._slots, {following: room})
-                pieces.names.append(following)
+                pieces.names = (*pieces.names, following)
             return room
 
         room = self._with_room(reserved)
@@ -3492,7 +3492,7 @@ class SharedArrowStore:
                 self._evictable = frozen((name, self._only_named(name)) for name in cached)
                 self._held_changed(self._held.bytes)
             dying.extend(self._unremoved)
-            self._unremoved = []
+            self._unremoved = ()
             self._sweep_segments(gone)
             self._sweep_handoffs(gone)
             self._retired += len(retired)
@@ -3668,7 +3668,7 @@ class SharedArrowStore:
         dir_names = pc.list_element(rels, 0)
         file_names = pc.list_element(rels, 1)
         with self._state:
-            self._unremoved.extend(failed)
+            self._unremoved = (*self._unremoved, *failed)
             for dir_name in pc.unique(dir_names).to_pylist():
                 recorded = self._part_keys.get(dir_name)
                 if recorded is None:
@@ -4265,7 +4265,8 @@ class _HeldVersion:
         self.superseded = False
         #: cursors finished reads handed back, each with its count of temporary objects when it was made: the next read
         #: borrows one instead of registering every table again on a new cursor; closed as the version is let go
-        self.free: list[tuple[Any, int]] = []
+        #: replaced whole, under the reader's lock
+        self.free: tuple[tuple[Any, int], ...] = ()
 
     def borrow(self) -> tuple[Any, int]:
         """a cursor of the connection with this version's tables registered on it (a registration is the cursor's
@@ -4276,7 +4277,8 @@ class _HeldVersion:
         :rtype: tuple[duckdb.DuckDBPyConnection, int]
         """
         if self.free:
-            return self.free.pop()
+            borrowed, self.free = self.free[-1], self.free[:-1]
+            return borrowed
         cursor = self.connection.cursor()
         try:
             for name, table in self.mapped.tables.items():
@@ -4296,7 +4298,7 @@ class _HeldVersion:
         :rtype: None
         """
         try:
-            free, self.free = self.free, []
+            free, self.free = self.free, ()
             for cursor, _ in free:
                 cursor.close()
             self.connection.close()
@@ -4387,7 +4389,8 @@ class _Admission:
         self._wait = wait
         self._turn = threading.Condition()
         self._running = 0
-        self._waiting: collections.deque[object] = collections.deque()
+        #: the reads waiting, first come first; replaced whole under ``_turn``
+        self._waiting: tuple[object, ...] = ()
         #: the slots each thread holds: a thread already in a read runs no second query at once, so a read it opens
         #: inside one takes no other slot (and would wait forever on its own if it did)
         self._held = threading.local()
@@ -4409,14 +4412,14 @@ class _Admission:
             return
         me = object()
         with self._turn:
-            self._waiting.append(me)
+            self._waiting = (*self._waiting, me)
             _READS_QUEUED.inc()
             try:
                 admitted = self._turn.wait_for(
                     lambda: self._running < self.slots and self._waiting[0] is me, timeout=self._wait
                 )
             finally:
-                self._waiting.remove(me)
+                self._waiting = tuple(each for each in self._waiting if each is not me)
                 _READS_QUEUED.dec()
             if not admitted:
                 self._turn.notify_all()
@@ -4586,7 +4589,7 @@ class SharedArrowReader:
             with self._lock:
                 held.reads -= 1
                 if clean:
-                    held.free.append((cursor, made))
+                    held.free = (*held.free, (cursor, made))
                 done = held.superseded and held.reads == 0
             if not clean:
                 cursor.close()

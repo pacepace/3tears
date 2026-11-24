@@ -70,6 +70,7 @@ import hashlib
 import json
 import os
 import re
+from itertools import chain
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -78,7 +79,7 @@ from typing import Any, BinaryIO, Final
 
 from threetears.core.backends.arrow_reply import _rail_value
 from threetears.core.collections.epoch_change import key_text
-from threetears.core.frozen_state import frozen, with_entry
+from threetears.core.frozen_state import frozen, with_chunk, with_entry
 from threetears.observe import get_logger
 
 try:
@@ -302,7 +303,9 @@ class TableDelta:
     :ivar types: each column's Arrow type, in the table's column order (``rail_arrow_types``)
     :ivar key: the key columns, in key order
     :ivar parts: each write's part, ``("rows", rows, written)``, ``("arrow", table, written)`` or
-        ``("deletes", keys, ())``; ``written`` is one set of columns for every row, or a list of one a row
+        ``("deletes", keys, ())``; ``written`` is one set of columns for every row, or a list of one a row. An
+        append-only log of immutable chunks, replaced whole (:func:`~threetears.core.frozen_state.with_chunk`): read it
+        in order with ``itertools.chain.from_iterable``
     :ivar entries: rows written and keys deleted so far: one a key the transaction enrolled
     :ivar defaults: each column whose database default is a fixed value, and that value as the rail answers it
         (``TableSchema.delta_file_defaults``): a row written without the column was inserted with it, so the file's
@@ -317,10 +320,10 @@ class TableDelta:
     name: str
     types: Mapping[str, Any]
     key: tuple[str, ...]
-    parts: list[tuple[Any, ...]] = field(default_factory=list)
+    parts: tuple[tuple[tuple[Any, ...], ...], ...] = ()
     entries: int = 0
     defaults: Mapping[str, Any] = field(default_factory=dict)
-    prefixes: list[dict[str, str]] = field(default_factory=list)
+    prefixes: tuple[dict[str, str], ...] = ()
     scope_column: str | None = None
 
     def clears(self, prefixes: Sequence[Mapping[str, Any]]) -> None:
@@ -345,7 +348,7 @@ class TableDelta:
             if not named or set(named) != set(self.key[: len(named)]):
                 raise ValueError(f"{self.name}: {dict(prefix)} is not a key prefix of {list(self.key)}")
             if named not in self.prefixes:
-                self.prefixes.append(named)
+                self.prefixes = (*self.prefixes, named)
 
     def rows(self, rows: Sequence[Mapping[str, Any]], written: Written) -> None:
         """add rows written, each keyed by column, and the columns their write set.
@@ -359,7 +362,7 @@ class TableDelta:
         :rtype: None
         """
         if rows:
-            self.parts.append(("rows", rows, written))
+            self.parts = with_chunk(self.parts, (("rows", rows, written),))
             self.entries += len(rows)
 
     def arrow(self, rows: Any, written: Sequence[str]) -> None:
@@ -373,7 +376,7 @@ class TableDelta:
         :rtype: None
         """
         if rows.num_rows:
-            self.parts.append(("arrow", rows, written))
+            self.parts = with_chunk(self.parts, (("arrow", rows, written),))
             self.entries += int(rows.num_rows)
 
     def deletes(self, keys: Sequence[Sequence[Any]] | Any, *, scope: Any = None) -> None:
@@ -394,7 +397,7 @@ class TableDelta:
         """
         if len(keys):
             check_delta_scope(self.name, self.scope_column, scope)
-            self.parts.append(("deletes", keys, (), scope))
+            self.parts = with_chunk(self.parts, (("deletes", keys, (), scope),))
             self.entries += len(keys)
 
     def load(self, given: Sequence[Any], counts: Sequence[int], constants: Mapping[str, Any]) -> None:
@@ -413,7 +416,7 @@ class TableDelta:
         :rtype: None
         """
         if given:
-            self.parts.append(("load", list(given), list(counts), dict(constants)))
+            self.parts = with_chunk(self.parts, (("load", list(given), list(counts), dict(constants)),))
             self.entries += sum(counts)
 
     def segments(self) -> list[tuple[Any, ...]]:
@@ -429,7 +432,7 @@ class TableDelta:
         if not _PYARROW:
             raise ImportError("a delta file needs pyarrow: install 3tears[snapshot]")
         segments: list[tuple[Any, ...]] = []
-        for kind, part, *rest in self.parts:
+        for kind, part, *rest in chain.from_iterable(self.parts):
             if kind == "rows":
                 segments.append(("typed", _rows_table(part, self.types, self.defaults), rest[0]))
             elif kind == "arrow":

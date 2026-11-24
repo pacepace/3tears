@@ -57,6 +57,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
+from threetears.core.frozen_state import frozen, with_entries
 from threetears.core.security.door_proof import DoorProofSwitch, DoorWindow, ProofOutcome
 from threetears.core.security.identity_token import jwk_thumbprint
 
@@ -320,9 +321,10 @@ class JwksKeyring:
 
     overlap: timedelta = ROTATION_OVERLAP
     clock: Callable[[], float] = time.monotonic
-    _keys: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
-    _verified: set[str] = field(default_factory=set, init=False)
-    _missing_since: dict[str, float] = field(default_factory=dict, init=False)
+    # each a read-only snapshot, replaced whole by a merge: a reader never sees one change under it
+    _keys: Mapping[str, dict[str, Any]] = field(default_factory=frozen, init=False)
+    _verified: frozenset[str] = field(default_factory=frozenset, init=False)
+    _missing_since: Mapping[str, float] = field(default_factory=frozen, init=False)
 
     def adopt(self, keys: list[dict[str, Any]], *, verified: bool, additive: bool = False) -> KeyringMerge:
         """fold one taken reply's keys in.
@@ -352,10 +354,9 @@ class JwksKeyring:
         retired: list[str] = []
         held: list[str] = []
         if additive:
-            for kid in added:
-                self._keys[kid] = dict(seen[kid])
-                if verified:
-                    self._verified.add(kid)
+            self._keys = with_entries(self._keys, {kid: dict(seen[kid]) for kid in added})
+            if verified:
+                self._verified = self._verified | frozenset(added)
         else:
             self._fold(seen, verified=verified, now=now, retired=retired, held=held)
         return KeyringMerge(added=added, retired=tuple(retired), held=tuple(held))
@@ -376,23 +377,28 @@ class JwksKeyring:
         :return: nothing
         :rtype: None
         """
+        # this call's own copies, assigned whole at the end
+        keys = dict(self._keys)
+        missing_since = dict(self._missing_since)
+        trusted = set(self._verified)
         for kid, entry in seen.items():
-            if verified or kid not in self._verified:
+            if verified or kid not in trusted:
                 # the one place a kid is bound to material: a verified reply always, an unverified
                 # reply only for a kid no verified reply has vouched for
-                self._keys[kid] = dict(entry)
-            self._missing_since.pop(kid, None)
+                keys[kid] = dict(entry)
+            missing_since.pop(kid, None)
             if verified:
-                self._verified.add(kid)
-        for kid in sorted(set(self._keys) - set(seen)):
-            first_missed = self._missing_since.setdefault(kid, now)
-            if kid not in self._verified or now - first_missed >= self.overlap.total_seconds():
-                del self._keys[kid]
-                del self._missing_since[kid]
-                self._verified.discard(kid)
+                trusted.add(kid)
+        for kid in sorted(set(keys) - set(seen)):
+            first_missed = missing_since.setdefault(kid, now)
+            if kid not in trusted or now - first_missed >= self.overlap.total_seconds():
+                del keys[kid]
+                del missing_since[kid]
+                trusted.discard(kid)
                 retired.append(kid)
             else:
                 held.append(kid)
+        self._keys, self._missing_since, self._verified = frozen(keys), frozen(missing_since), frozenset(trusted)
 
     def document(self) -> dict[str, Any]:
         """the trusted keys as a JWKS document, a fresh copy each call.

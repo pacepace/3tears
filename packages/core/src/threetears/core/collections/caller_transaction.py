@@ -52,7 +52,7 @@ import asyncio
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from itertools import repeat
+from itertools import chain, repeat
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
@@ -74,6 +74,7 @@ from threetears.core.collections.delta_files import (
 from threetears.core.collections.delta_save import save_in_worker
 from threetears.core.collections.epoch_change import ChangedRow, recordable_scopes
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.frozen_state import with_chunk
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
 from threetears.observe import get_logger
 
@@ -171,6 +172,64 @@ def shared_advance_for(table_name: str) -> SharedAdvance | None:
 _SETTLE_OFF_LOOP_ROWS: Final = 64
 
 _ByCollection = dict[int, tuple["BaseCollection[Any]", list[Any], list[dict[str, Any] | None]]]
+
+#: one enrollment: the collection that wrote a row, its key, and the row as the write saw it
+type _Enrollment = tuple["BaseCollection[Any]", Any, dict[str, Any] | None]
+
+#: one restatement: how many enrollments were made before it, the collection, and each key onto its row as stored
+type _Restatement = tuple[int, "BaseCollection[Any]", Mapping[Any, dict[str, Any]]]
+
+
+def _enrollments(
+    chunks: Sequence[tuple[_Enrollment, ...]],
+    restated: Sequence[tuple[_Restatement, ...]],
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> list[_Enrollment]:
+    """a transaction's enrollments, in order, each restatement laid over the latest enrollment of each of its keys
+    made before it (:meth:`CallerTransaction.restate_many`); pure, so a thread may make them.
+
+    :param chunks: the enrollments, oldest chunk first
+    :ptype chunks: Sequence[tuple[_Enrollment, ...]]
+    :param restated: the restatements, oldest chunk first
+    :ptype restated: Sequence[tuple[_Restatement, ...]]
+    :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the enrollments, a list of this call's own
+    :rtype: list[_Enrollment]
+    """
+    turns = LoopTurns(loop) if loop is not None else None
+    enrolled = list(chain.from_iterable(chunks))
+    for upto, collection, rows in chain.from_iterable(restated):
+        left = dict(rows)
+        indices = range(upto - 1, -1, -1)
+        for index in indices if turns is None else stepped(indices, turns):
+            if not left:
+                break
+            enrolled_by, key, _ = enrolled[index]
+            if enrolled_by is collection and key in left:
+                enrolled[index] = (collection, key, left.pop(key))
+    return enrolled
+
+
+def _grouped_enrollments(
+    chunks: Sequence[tuple[_Enrollment, ...]],
+    restated: Sequence[tuple[_Restatement, ...]],
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> tuple[list[_Enrollment], _ByCollection, dict[str, SharedAdvance]]:
+    """:func:`_enrollments`, then :func:`_grouped` of them, in one call; pure, so a thread may make them.
+
+    :param chunks: the enrollments, oldest chunk first
+    :ptype chunks: Sequence[tuple[_Enrollment, ...]]
+    :param restated: the restatements, oldest chunk first
+    :ptype restated: Sequence[tuple[_Restatement, ...]]
+    :param loop: the caller's event loop, handed the thread's turns; None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the enrollments, and their grouping as :func:`_grouped` makes it
+    :rtype: tuple[list[_Enrollment], _ByCollection, dict[str, SharedAdvance]]
+    """
+    enrolled = _enrollments(chunks, restated, loop)
+    by_collection, shared = _grouped(enrolled, loop)
+    return enrolled, by_collection, shared
 
 
 def _mixed_writes(table: str) -> str:
@@ -282,9 +341,11 @@ class CallerTransaction:
         "_committed_generations",
         "_deltas",
         "_enrolled",
+        "_enrolled_count",
         "_options",
         "_outermost",
         "_reaches",
+        "_restated",
         "_saved_delta_files",
         "_scopes",
         "_token",
@@ -303,10 +364,15 @@ class CallerTransaction:
         """
         self.conn = conn
         self._options = options
-        self._enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]] = []
+        # every key the transaction's writes enrolled, in order: append-only chunks, each a tuple, merged
+        # log-structured (with_chunk) and replaced whole, never changed in place; restatements are laid over them when
+        # read (_enrollments), so a thread handed them never sees them change
+        self._enrolled: tuple[tuple[_Enrollment, ...], ...] = ()
+        self._enrolled_count = 0
+        self._restated: tuple[tuple[_Restatement, ...], ...] = ()
         # the key prefixes deleted whole, a table's collection and prefixes each: settled by prefix, never a key at a
-        # time. A list: a transaction deletes the prefixes of a table or two, looked up by name
-        self._reaches: list[tuple[_PrefixSettling, list[dict[str, str]]]] = []
+        # time. A tuple replaced whole: a transaction deletes the prefixes of a table or two, looked up by name
+        self._reaches: tuple[tuple[_PrefixSettling, tuple[dict[str, str], ...]], ...] = ()
         self._outermost: CallerTransaction | None = None
         self._token: Token[tuple[CallerTransaction, ...]] | None = None
         self._transaction: Any = None
@@ -490,7 +556,7 @@ class CallerTransaction:
         """
         if self._reaches:
             self._refuse_keyed_beside_prefixes((collection.table_name,))
-        self._enrolled.append((collection, entity_id, row))
+        self._enroll_chunk(((collection, entity_id, row),))
 
     @staticmethod
     def enrollments(
@@ -533,7 +599,19 @@ class CallerTransaction:
         """
         if self._reaches:
             self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments})
-        self._enrolled.extend(enrollments)
+        self._enroll_chunk(tuple(enrollments))
+
+    def _enroll_chunk(self, chunk: tuple[_Enrollment, ...]) -> None:
+        """append ``chunk`` to the enrollments, which are replaced whole.
+
+        :param chunk: the enrollments, in order
+        :ptype chunk: tuple[_Enrollment, ...]
+        :return: nothing
+        :rtype: None
+        """
+        if chunk:
+            self._enrolled = with_chunk(self._enrolled, chunk)
+            self._enrolled_count += len(chunk)
 
     def note_scopes(self, scopes: Sequence[str]) -> None:
         """record that this transaction's writes touched ``scopes`` (the states, ``state:CA``, as the writer's seqlock
@@ -565,13 +643,18 @@ class CallerTransaction:
         :raises ValueError: when the transaction wrote keyed rows of the table
         """
         table = collection.table_name
-        if any(enrolled.table_name == table for enrolled, _, _ in self._enrolled):
+        if any(enrolled.table_name == table for chunk in self._enrolled for enrolled, _, _ in chunk):
             raise ValueError(_mixed_writes(table))
-        held = next((prefixes for each, prefixes in self._reaches if each.table_name == table), None)
-        if held is None:
-            held = []
-            self._reaches.append((collection, held))
-        held.extend(dict(prefix) for prefix in prefixes if dict(prefix) not in held)
+        reaches = self._reaches
+        at = next((index for index, (each, _) in enumerate(reaches) if each.table_name == table), None)
+        owner, held = (collection, ()) if at is None else reaches[at]
+        kept = list(held)
+        for prefix in prefixes:
+            named = dict(prefix)
+            if named not in kept:
+                kept.append(named)
+        entry = (owner, tuple(kept))
+        self._reaches = (*reaches, entry) if at is None else (*reaches[:at], entry, *reaches[at + 1 :])
 
     def _refuse_keyed_beside_prefixes(self, tables: Iterable[str]) -> None:
         """refuse a keyed write of a table whose prefixes this transaction deleted (:meth:`enroll_prefixes`).
@@ -603,40 +686,33 @@ class CallerTransaction:
         :return: nothing
         :rtype: None
         """
-        for index in range(len(self._enrolled) - 1, -1, -1):
-            enrolled, key, _ = self._enrolled[index]
-            if enrolled is collection and key == entity_id:
-                self._enrolled[index] = (collection, entity_id, row)
-                break
+        self._restated = with_chunk(
+            self._restated, ((self._enrolled_count, collection, MappingProxyType({entity_id: row})),)
+        )
 
     def restate_many(
         self, collection: BaseCollection[Any], rows: Mapping[Any, dict[str, Any]], turns: LoopTurns | None = None
     ) -> None:
         """:meth:`restate` each key of ``rows`` with its row, in one pass over the enrollments.
 
-        A key a time would search the enrollments once a key: a bulk delete of 5,000 rows restated in about a
-        second and a half that way. A delete of many keys restates them from a worker thread taking turns with the
-        loop (``turns``): 33,786 keys restated in 2.6 ms, in one stretch on the loop (2026-11-16). The pass covers
-        the enrollments made before the call: one a concurrent write makes meanwhile keeps its own row.
+        Recorded here, on the loop, as one restatement replaced whole into the transaction's; it is laid over the
+        enrollments when they are read (:func:`_enrollments`), off the loop for a large transaction: a bulk delete of
+        5,000 rows restated a key at a time took about a second and a half, and 33,786 keys restated in one pass held
+        the loop 2.6 ms (2026-11-16). It covers the enrollments made before the call: one a later write makes keeps its
+        own row.
 
         :param collection: the collection that enrolled them
         :ptype collection: BaseCollection[Any]
         :param rows: each key, as enrolled, onto the row it now names
         :ptype rows: Mapping[Any, dict[str, Any]]
-        :param turns: the restating thread's turns with the caller's loop (:func:`~threetears.core.loop_turns.stepped`);
-            None to restate them in one call
+        :param turns: turns with the caller's loop while ``rows`` is copied (:func:`~threetears.core.loop_turns.stepped`);
+            None to copy it in one call
         :ptype turns: LoopTurns | None
         :return: nothing
         :rtype: None
         """
-        left = dict(rows)
-        indices = range(len(self._enrolled) - 1, -1, -1)
-        for index in indices if turns is None else stepped(indices, turns):
-            if not left:
-                break
-            enrolled, key, _ = self._enrolled[index]
-            if enrolled is collection and key in left:
-                self._enrolled[index] = (collection, key, left.pop(key))
+        held = dict(rows.items() if turns is None else stepped(rows.items(), turns))
+        self._restated = with_chunk(self._restated, ((self._enrolled_count, collection, MappingProxyType(held)),))
 
     async def __aenter__(self) -> CallerTransaction:
         """open the transaction and make it findable from the writes that join it.
@@ -752,8 +828,8 @@ class CallerTransaction:
         :raises OSError: when a file cannot be written
         """
         # frozen as handed over: a thread counts them while the loop runs on, and never sees a list the loop changes
-        enrolled = tuple(self._enrolled)
-        reaches = tuple((collection, tuple(prefixes)) for collection, prefixes in self._reaches)
+        enrolled = tuple(chain.from_iterable(self._enrolled))
+        reaches = self._reaches
         deltas = self._deltas
         if not deltas and len(enrolled) < _SETTLE_OFF_LOOP_ROWS:
             owed = _owed_deltas(enrolled, reaches, deltas)
@@ -795,19 +871,20 @@ class CallerTransaction:
             when every advance that was owed was made
         :rtype: GenerationUnavailableError | None
         """
-        enrolled = list(self._enrolled)
-        self._enrolled.clear()
-        reaches = list(self._reaches)
-        self._reaches.clear()
-        count = len(enrolled)
+        chunks, restated, reaches, count = self._enrolled, self._restated, self._reaches, self._enrolled_count
+        self._enrolled, self._restated, self._reaches, self._enrolled_count = (), (), (), 0
         if count < _SETTLE_OFF_LOOP_ROWS:
-            by_collection, shared = _grouped(enrolled)
+            enrolled, by_collection, shared = _grouped_enrollments(chunks, restated)
         else:
             # a commit of 33,786 rows held the loop 41-71 ms here grouping its keys and building a change record
             # a key (the WD2 bench, 2026-11-16, 179 columns, save_rows and save_arrow alike); on a thread the loop
             # is handed a turn every half millisecond (LoopTurns). Pure work over this transaction's own list, awaited
             # before anything is settled, so the order every cache hears its keys in is unchanged
-            by_collection, shared = await asyncio.to_thread(_grouped, enrolled, asyncio.get_running_loop())
+            enrolled, by_collection, shared = await asyncio.to_thread(
+                _grouped_enrollments, chunks, restated, asyncio.get_running_loop()
+            )
+        # the chunks no longer hold the rows alone: the enrollments do, freed off the loop below (_released)
+        del chunks, restated
         sharing = _SHARED.set(shared)
         try:
             failure = await self._settle_each(by_collection)

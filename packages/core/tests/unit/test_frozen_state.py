@@ -10,6 +10,7 @@ import pytest
 from threetears.core.frozen_state import (
     EMPTY,
     frozen,
+    with_chunk,
     with_entries,
     with_entry,
     with_newest,
@@ -57,6 +58,21 @@ def test_the_newest_goes_last_and_the_oldest_go_past_the_limit() -> None:
     assert list(with_newest(held, "a", 1)) == ["b", "c", "a"]
     assert list(with_newest(held, "d", 4, limit=2)) == ["c", "d"]
     assert list(held) == ["a", "b", "c"]
+
+
+def test_a_chunked_log_keeps_every_entry_in_order_in_few_chunks() -> None:
+    log: tuple[tuple[int, ...], ...] = ()
+    seen = []
+    for each in range(1_000):
+        before = log
+        log = with_chunk(log, (each,))
+        seen.append(before)
+
+    assert [entry for chunk in log for entry in chunk] == list(range(1_000))
+    assert len(log) <= 11
+    assert [entry for chunk in seen[500] for entry in chunk] == list(range(500))
+    assert with_chunk(log, ()) is log
+    assert [entry for chunk in with_chunk(log, (7, 8)) for entry in chunk][-2:] == [7, 8]
 
 
 def test_it_imports_without_pyarrow_asyncpg_or_the_collections() -> None:

@@ -65,7 +65,8 @@ class GitRepos:
         self._listener = None if nats is None else AdvancedListener(nats)
         #: per repository, replaced whole
         self._repos: Mapping[str, GitRepo] = MappingProxyType({})
-        self._callbacks: list[RowsChanged] = []
+        #: replaced whole on add
+        self._callbacks: tuple[RowsChanged, ...] = ()
         self._opening = asyncio.Lock()
 
     async def add(self, config: GitRepoConfig) -> GitRepo:
@@ -129,7 +130,7 @@ class GitRepos:
         :return: None
         :rtype: None
         """
-        self._callbacks.append(callback)
+        self._callbacks = (*self._callbacks, callback)
         for repo in self._repos.values():
             repo.on_rows_changed(callback)
 

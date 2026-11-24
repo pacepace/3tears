@@ -4442,40 +4442,39 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 extra={"extra_data": {"table": self.table_name, "keys": len(named)}},
             )
             raise
-        if loop is not None:
-            await asyncio.to_thread(self._restate_deleted, transaction, deleted, loop)
-        else:
-            self._restate_deleted(transaction, deleted)
+        # the rows keyed off the loop for many keys; restated on the loop, where the transaction's state is replaced
+        restated = (
+            await asyncio.to_thread(self._restated_rows, deleted, loop)
+            if loop is not None
+            else self._restated_rows(deleted)
+        )
+        transaction.restate_many(self, restated)
         log.debug(
             "bulk delete written on the caller's transaction, its rows returned",
             extra={"extra_data": {"table": self.table_name, "rows": len(deleted)}},
         )
         return len(named)
 
-    def _restate_deleted(
+    def _restated_rows(
         self,
-        transaction: CallerTransaction,
         deleted: Mapping[tuple[Any, ...], dict[str, Any]],
         loop: asyncio.AbstractEventLoop | None = None,
-    ) -> None:
-        """restate each key :meth:`_delete_rows_returning` enrolled with the row its delete returned
-        (:meth:`CallerTransaction.restate_many`); for a thread.
+    ) -> dict[Any, dict[str, Any]]:
+        """each key :meth:`_delete_rows_returning` enrolled, as enrolled, onto the row its delete returned, for
+        :meth:`CallerTransaction.restate_many`; pure, so a thread may make them.
 
-        :param transaction: the caller's transaction
-        :ptype transaction: CallerTransaction
         :param deleted: each deleted row, under its key as a tuple in key order
         :ptype deleted: Mapping[tuple[Any, ...], dict[str, Any]]
         :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
             or off any loop (a few keys: no turn taken)
         :ptype loop: asyncio.AbstractEventLoop | None
-        :return: nothing
-        :rtype: None
+        :return: key -> its row, a dict of this call's own
+        :rtype: dict[Any, dict[str, Any]]
         """
         turns = LoopTurns(loop) if loop is not None else None
         many = len(self.schema.pk_columns) > 1
         items = deleted.items()
-        rows = {key if many else key[0]: row for key, row in (items if turns is None else stepped(items, turns))}
-        transaction.restate_many(self, rows, turns)
+        return {key if many else key[0]: row for key, row in (items if turns is None else stepped(items, turns))}
 
     async def read_rows_led_by(
         self,
