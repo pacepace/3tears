@@ -20,11 +20,14 @@ on nothing, so any package may hold its lazily built objects here without a new 
 from __future__ import annotations
 
 import threading
+import weakref
 from collections.abc import Callable, Hashable, Mapping
 from types import MappingProxyType
 from typing import cast
 
-__all__ = ["BuildOnce"]
+from threetears.observe.frozen_weak import FrozenWeakKeys
+
+__all__ = ["BuildOnce", "WeakBuildOnce"]
 
 #: marks "no value stored" apart from a stored value that happens to be ``None`` or ``False``.
 _MISSING: object = object()
@@ -212,3 +215,75 @@ class BuildOnce[K: Hashable, V]:
             self._values = MappingProxyType({})
             self._costs = MappingProxyType({})
             self._total_cost = 0
+
+
+class WeakBuildOnce[K, V]:
+    """:class:`BuildOnce` keyed weakly: a value built at most once per key object, however many threads ask first,
+    and gone with its key (held in a :class:`~threetears.observe.frozen_weak.FrozenWeakKeys`, replaced whole under
+    the lock), so a cache keyed by a connection, a pool or a reader never keeps one alive.
+
+    A key must be hashable and weakly referable; a build for one that is not would be kept nowhere, so :meth:`get`
+    refuses it with ``TypeError`` before building.
+
+    :param is_current: whether a stored value may still be handed out; ``None`` means always
+    :ptype is_current: Callable[[V], bool] | None
+    """
+
+    def __init__(self, *, is_current: Callable[[V], bool] | None = None) -> None:
+        """
+        prepares an empty cache.
+
+        :param is_current: whether a stored value may still be handed out; ``None`` means always
+        :ptype is_current: Callable[[V], bool] | None
+        """
+        # read without the lock, replaced whole under it
+        self._values: FrozenWeakKeys[K, V] = FrozenWeakKeys()
+        self._lock = threading.Lock()
+        self._is_current = is_current
+
+    def _usable(self, value: object) -> bool:
+        """whether *value*, as read from storage, may be handed out.
+
+        :param value: a stored value, or the missing marker
+        :ptype value: object
+        :return: ``True`` when it is present and current
+        :rtype: bool
+        """
+        usable = value is not _MISSING
+        if usable and self._is_current is not None:
+            usable = self._is_current(cast("V", value))
+        return usable
+
+    def get(self, key: K, build: Callable[[], V]) -> V:
+        """the value for *key*, built by *build* when there is none or it is no longer current.
+
+        *build* runs while this instance's lock is held, so it must not call back into this same instance.
+
+        :param key: which value (held weakly)
+        :ptype key: K
+        :param build: makes the value; called at most once per missing or stale key
+        :ptype build: Callable[[], V]
+        :return: the one value for *key*
+        :rtype: V
+        :raises TypeError: *key* cannot be held weakly
+        """
+        weakref.ref(key)
+        found: object = self._values.get(key, cast("V", _MISSING))
+        if not self._usable(found):
+            with self._lock:
+                found = self._values.get(key, cast("V", _MISSING))
+                if not self._usable(found):
+                    built = build()
+                    self._values = self._values.with_entry(key, built)
+                    found = built
+        return cast("V", found)
+
+    def peek(self, key: object) -> V | None:
+        """the value stored for *key*, current or not, without building one.
+
+        :param key: which value
+        :ptype key: object
+        :return: the stored value, or ``None`` when there is none (or *key* cannot be held weakly)
+        :rtype: V | None
+        """
+        return self._values.get(key)

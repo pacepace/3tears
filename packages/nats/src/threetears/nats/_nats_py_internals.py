@@ -97,6 +97,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from nats.aio.client import NO_RESPONDERS_STATUS, PING_PROTO, Client
@@ -117,7 +118,7 @@ from nats.nuid import NUID
 from nats.protocol.command import PUB_OP
 
 from threetears.nats._asyncio_send_path import TRANSPORT_NAME, send_path_gaps
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, WeakBuildOnce, get_logger
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -206,6 +207,10 @@ _IOV_MAX: Final[int] = os.sysconf("SC_IOV_MAX")
 
 #: asyncio's plain socket transport class (typeshed does not declare it)
 _SOCKET_TRANSPORT: Final[type[asyncio.Transport]] = selector_events._SelectorSocketTransport  # type: ignore[attr-defined]
+
+#: the socket transports whose sends are bounded, each bounded once (:func:`bound_transport`); keyed weakly, so a
+#: transport leaves when it is collected
+_BOUNDED: Final[WeakBuildOnce[object, bool]] = WeakBuildOnce()
 
 #: the transport classes a large publish has found unbounded (logged once each)
 _UNBOUNDED_KINDS: BuildOnce[type, bool] = BuildOnce()
@@ -445,30 +450,27 @@ def bound_transport(transport: asyncio.BaseTransport, *, bound: int = SEND_BOUND
     :return: True when its sends are bounded (now or before)
     :rtype: bool
     """
-    if _is_bounded(transport):
-        return True
     if not isinstance(transport, _SOCKET_TRANSPORT):
         kind = type(transport)
         if transport.get_extra_info("sslcontext") is None:
             _UNBOUNDED_KINDS.get(kind, lambda: _warn_unbounded(kind))
         return False
-    socket_transport = cast("_SendmsgTransport", transport)
-    socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer, bound)
-    return True
+    return _BOUNDED.get(transport, partial(_bound_sends, cast("_SendmsgTransport", transport), bound))
 
 
-def _is_bounded(transport: object) -> bool:
-    """whether ``transport``'s sends are bounded already: the transport itself says so (its ``_get_sendmsg_buffer``
-    is a :class:`_BoundedSends`), so no process-wide record of bounded transports is kept beside it.
+def _bound_sends(socket_transport: _SendmsgTransport, bound: int) -> bool:
+    """bound one socket transport's sends: its ``_get_sendmsg_buffer`` replaced by a :class:`_BoundedSends`. Built
+    once per transport through :data:`_BOUNDED`.
 
-    :param transport: the asyncio transport
-    :ptype transport: object
-    :return: whether it is bounded
+    :param socket_transport: asyncio's socket transport
+    :ptype socket_transport: _SendmsgTransport
+    :param bound: the most bytes one ``sendmsg`` is offered
+    :ptype bound: int
+    :return: True, the mark that it is bounded
     :rtype: bool
     """
-    if not isinstance(transport, _SOCKET_TRANSPORT):
-        return False
-    return isinstance(cast("_SendmsgTransport", transport)._get_sendmsg_buffer, _BoundedSends)
+    socket_transport._get_sendmsg_buffer = _BoundedSends(socket_transport._buffer, bound)
+    return True
 
 
 def bound_socket_sends(connection: Client) -> None:
@@ -496,7 +498,7 @@ def sends_are_bounded(connection: Client) -> bool:
     :rtype: bool
     """
     transport = _socket_transport(connection)
-    return transport is not None and _is_bounded(transport)
+    return transport is not None and _BOUNDED.peek(transport) is not None
 
 
 def _check_subject(subject: str) -> None:

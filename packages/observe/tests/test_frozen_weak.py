@@ -32,7 +32,8 @@ def test_a_weak_set_is_replaced_whole_and_holds_nothing_alive() -> None:
 
 def test_weak_keys_map_values_by_a_live_key_and_drop_dead_keys_on_the_next_build() -> None:
     key, other = _Thing(), _Thing()
-    held: FrozenWeakKeys[_Thing, int] = FrozenWeakKeys().with_entry(key, 1)
+    empty: FrozenWeakKeys[_Thing, int] = FrozenWeakKeys()
+    held = empty.with_entry(key, 1)
     moved = held.with_entry(key, 2).with_entry(other, 3)
     assert held[key] == 1 and moved[key] == 2 and moved.get(other) == 3
     assert key in moved and moved.get(_Thing(), -1) == -1
@@ -47,7 +48,8 @@ def test_weak_keys_map_values_by_a_live_key_and_drop_dead_keys_on_the_next_build
 
 def test_weak_values_read_none_once_the_value_is_gone() -> None:
     value, other = _Thing(), _Thing()
-    held: FrozenWeakValues[int, _Thing] = FrozenWeakValues().with_entry(1, value).with_entry(2, other)
+    empty: FrozenWeakValues[int, _Thing] = FrozenWeakValues()
+    held = empty.with_entry(1, value).with_entry(2, other)
     assert held.get(1) is value and held.get(3) is None
     assert list(held.values()) == [value, other]
     assert held.without_key(3) is held
