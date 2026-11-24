@@ -152,9 +152,22 @@ DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0
 #: without pgvector loaded keeps it as a placeholder; ybhnsw applies the owner pin inside its scan and returned 10 of 10
 #: either way. Probes: scratchpad a100/hnsw/probe.py, probe_startup.py.
 #:
+#: ``plan_cache_mode = force_custom_plan`` (design-pod-delta-files.md, decision 39): PostgreSQL and YugabyteDB switch a
+#: prepared statement (asyncpg's statement cache) to a generic plan from its sixth run when that plan's estimate is no
+#: worse than the custom plans' average. A keyed read's key arrays are unknown to a generic plan, so composite keyed
+#: reads collapsed from the sixth run: 50,000 keys on PostgreSQL 16 ~90 -> ~440 ms, YugabyteDB 2026.1's Arrow-mode
+#: composite binding ~15 -> ~430 ms. Every statement on a platform session (keyed or not: the hub's L3 pool serves all
+#: of them) is planned for its own values; the cost is a planning a run, which measured nothing at the platform's sizes
+#: (2026-11-23, testament pool, PostgreSQL 16 and YugabyteDB 2026.1: a 600-row prefix read 0.3 ms and a 600-key read
+#: 1.6 ms either way). asyncpg still skips the parse. Held by
+#: packages/core/tests/integration/test_keyed_custom_plans_live.py.
+#:
 #: A pool on a database the platform does not own (a datasource's, behind a pooler that may refuse an unknown startup
 #: parameter) passes ``platform_settings=False``.
-_PLATFORM_SERVER_SETTINGS: dict[str, str] = {"hnsw.iterative_scan": "relaxed_order"}
+_PLATFORM_SERVER_SETTINGS: dict[str, str] = {
+    "hnsw.iterative_scan": "relaxed_order",
+    "plan_cache_mode": "force_custom_plan",
+}
 
 #: env var operators use to tune ``max_inactive_connection_lifetime``
 #: without a code change. verbose on purpose -- it is an operator tuning
@@ -844,7 +857,8 @@ async def create_pool_with_startup_timeout(
         ``asyncpg.connect``
     :ptype connect: Callable[..., Awaitable[asyncpg.Connection]] | None
     :param platform_settings: whether the pool's sessions start with the platform's startup settings
-        (``hnsw.iterative_scan = relaxed_order``) under the caller's ``server_settings`` (the caller's keys win);
+        (``hnsw.iterative_scan = relaxed_order``, ``plan_cache_mode = force_custom_plan``) under the caller's
+        ``server_settings`` (the caller's keys win);
         False for a database the platform does not own
     :ptype platform_settings: bool
     :param create_pool_kwargs: everything else ``asyncpg.create_pool`` takes (``min_size``,
