@@ -47,12 +47,12 @@ from threetears.evals.schema.store_port import (
     order_and_page,
 )
 
-__all__ = ["MAX_DOCUMENTS", "InMemoryDocumentStore"]
+__all__ = ["InMemoryDocumentStore"]
 
 #: The most documents one in-memory store holds. It is for tests, examples and quick runs, never a host's evidence:
 #: the largest test writes 60,001 documents (``test_reads_past_fifty_thousand``), and a quick run's few thousand fit
 #: far below it. A write past it is refused, naming a real adapter: past it, a store belongs in one.
-MAX_DOCUMENTS: Final = 250_000
+_MAX_DOCUMENTS: Final = 250_000
 
 #: How many writes the newest layer takes before it is sealed into the layers below. Each write rebuilds the newest
 #: layer whole, so it is kept small; sealed layers merge two of a size into one (log-structured), so a document is
@@ -135,7 +135,7 @@ class InMemoryDocumentStore:
 
     Each document is kept beside its etag, keyed by ``(scope_id, id)``, in layers that are never changed in place: a
     write rebuilds the small newest layer whole (:data:`_FRESH_LIMIT`), which is sealed into the layers below when it
-    fills, two of a size merging into one. It holds at most :data:`MAX_DOCUMENTS`.
+    fills, two of a size merging into one. It holds at most :data:`_MAX_DOCUMENTS`.
     """
 
     def __init__(self) -> None:
@@ -179,12 +179,12 @@ class InMemoryDocumentStore:
         """Write ``document`` under ``key`` (``None`` deletes it), with a fresh etag, under the lock: the newest layer
         rebuilt whole, sealed into the layers below when it fills.
 
-        :raises RuntimeError: The write would hold more than :data:`MAX_DOCUMENTS`.
+        :raises RuntimeError: The write would hold more than :data:`_MAX_DOCUMENTS`.
         """
         live = self._entry(key) is not None
-        if document is not None and not live and self._count >= MAX_DOCUMENTS:
+        if document is not None and not live and self._count >= _MAX_DOCUMENTS:
             raise RuntimeError(
-                f"an in-memory store holds at most {MAX_DOCUMENTS} documents, and this write would hold more: "
+                f"an in-memory store holds at most {_MAX_DOCUMENTS} documents, and this write would hold more: "
                 "it is for tests and quick runs; use a real store adapter"
             )
         if document is None:

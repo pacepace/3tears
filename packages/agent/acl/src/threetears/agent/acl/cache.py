@@ -77,7 +77,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
 __all__ = [
-    "ACL_CACHE_LAYER_MAX_ENTRIES",
     "AclCache",
     "ActorMembershipEntry",
     "ActorMembershipKey",
@@ -93,7 +92,7 @@ log = get_logger(__name__)
 #: snapshot replaced whole on a store, so a reader never sees one change under it. The bound is the per-caller
 #: cache's (DEFAULT_CALLER_CACHE_MAX_ENTRIES): a layer is keyed per actor or per group and scope, the same order
 #: of count as callers; a dropped entry is simply loaded again on its next miss, never served stale.
-ACL_CACHE_LAYER_MAX_ENTRIES: Final = 10_000
+_ACL_CACHE_LAYER_MAX_ENTRIES: Final = 10_000
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +436,7 @@ class AclCache:
         )
         with self._lock:
             if self._trusted_locked() and not self._fence_moved(fence):
-                self._membership = with_newest(self._membership, key, entry, limit=ACL_CACHE_LAYER_MAX_ENTRIES)
+                self._membership = with_newest(self._membership, key, entry, limit=_ACL_CACHE_LAYER_MAX_ENTRIES)
         return entry
 
     def invalidate_membership(self, key: ActorMembershipKey) -> None:
@@ -531,7 +530,7 @@ class AclCache:
         with self._lock:
             if self._trusted_locked() and not self._fence_moved(fence):
                 self._group_namespace = with_newest(
-                    self._group_namespace, key, entry, limit=ACL_CACHE_LAYER_MAX_ENTRIES
+                    self._group_namespace, key, entry, limit=_ACL_CACHE_LAYER_MAX_ENTRIES
                 )
         return entry
 
@@ -640,7 +639,7 @@ class AclCache:
         with self._lock:
             if self._trusted_locked() and not self._fence_moved(fence):
                 self._group_type_customer = with_newest(
-                    self._group_type_customer, key, entry, limit=ACL_CACHE_LAYER_MAX_ENTRIES
+                    self._group_type_customer, key, entry, limit=_ACL_CACHE_LAYER_MAX_ENTRIES
                 )
         return entry
 
