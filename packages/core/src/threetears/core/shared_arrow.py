@@ -3653,7 +3653,11 @@ class SharedArrowStore:
             return
         removed: list[str] = []
         failed: list[str] = []
+        # the thread hands the interpreter lock over whenever it has held it its share (LoopTurns), as a let-go's frees
+        # do (_free_in_turns): an unlink lets the lock go only for its system call, and the thread takes it straight back
+        turns = LoopTurns()
         for rel in files:
+            turns.take()
             try:
                 os.unlink(self._parts / rel)
             except FileNotFoundError:
@@ -3669,25 +3673,33 @@ class SharedArrowStore:
         rels = pc.split_pattern(pa.array(removed, pa.string()), "/", max_splits=1)
         dir_names = pc.list_element(rels, 0)
         file_names = pc.list_element(rels, 1)
+        # function-local: the directories' tallies as changed, replaced in the store's map once. Why: replaced a
+        # directory at a time, the map was copied once a directory, and a version's 2,236 part directories held the
+        # loop 36-73 ms in one stretch (its late span matched this call's, pool hosts 2026-11-25)
+        kept_by_dir: dict[str, Any] = {}
+        cleared: list[str] = []
         with self._state:
             self._unremoved = (*self._unremoved, *failed)
+            part_keys = self._part_keys
             for dir_name in pc.unique(dir_names).to_pylist():
-                recorded = self._part_keys.get(dir_name)
+                turns.take()
+                recorded = part_keys.get(dir_name)
                 if recorded is None:
                     continue
                 gone = pc.is_in(recorded["name"], value_set=file_names.filter(pc.equal(dir_names, dir_name)))
                 if not pc.any(gone).as_py():
                     continue
                 kept = recorded.filter(pc.invert(gone))
-                self._part_keys = (
-                    with_entries(self._part_keys, {dir_name: kept})
-                    if kept.num_rows
-                    else without_entries(self._part_keys, (dir_name,))
-                )
+                if kept.num_rows:
+                    kept_by_dir[dir_name] = kept
+                else:
+                    cleared.append(dir_name)
                 directory = self._parts / dir_name
                 if self._held.drop(directory, recorded.filter(gone)["inode"]) == 0:
                     emptied.append(directory)
+            self._part_keys = without_entries(with_entries(part_keys, kept_by_dir), cleared)
         for directory in emptied:
+            turns.take()
             try:
                 os.rmdir(directory)
             except FileNotFoundError:
