@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core (git store): a write-buffered flush is one commit
+
+**Added:** `GitDurableStore.transaction()`, a change set over the repository opened the way a database store opens
+a transaction. `flush_pending` takes its batch path for a git-backed table now: every row a flush writes lands in
+one commit, where it was one commit per row. A row changed since it was read refuses the whole set, and the flush
+falls back to its per-entity path, as for a database transaction that failed. A commit has no row or byte bound,
+so `max_rows` / `max_bytes` do not split a flush's commit.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of

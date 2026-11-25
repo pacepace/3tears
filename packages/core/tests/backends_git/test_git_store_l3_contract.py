@@ -2,16 +2,14 @@
 
 The same tier Postgres and SQLite run: a row written whole and read back, the conflict mode a write asks for, the
 compare-and-swap on ``date_updated``, deletes, composite keys, equality scans, many rows at once, and a transaction
--- here a change set, committed as one commit (``GitRepo.change``). The git store is a store of JSON files, so it
+-- here a change set, committed as one commit (``GitDurableStore.transaction``, ``GitRepo.change``). The git store is a store of JSON files, so it
 does not run the second tier (typed values from a registered schema, column-wise updates, raw SQL); that is what it
 is, not a gap.
 """
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import AsyncIterator
-from typing import Any
 
 import pytest
 
@@ -47,10 +45,6 @@ async def store(make_repo: MakeRepo) -> AsyncIterator[GitDurableStore]:
 
 class TestTheGitStoreKeepsTheL3Contract(DurableStoreContract):
     duplicate_error = ChangeConflictError
-
-    def begin(self, store: Any) -> contextlib.AbstractAsyncContextManager[Any]:
-        change: contextlib.AbstractAsyncContextManager[Any] = store.repo.change("contract: a transaction")
-        return change
 
 
 class TestCollectionsOverTheGitStore(CollectionOverStoreContract):

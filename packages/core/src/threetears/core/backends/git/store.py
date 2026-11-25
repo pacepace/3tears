@@ -10,6 +10,8 @@ unchanged. A table is a set of files the repository's layout places; a row is on
   (``conn=cs``) sees the set's own writes first.
 - **Writes are never loose.** With ``conn`` a :class:`~threetears.core.backends.git.change.ChangeSet`, the
   write joins it and lands in its one commit. With no ``conn``, the write is a commit of its own.
+  :meth:`GitDurableStore.transaction` opens a change set as a database store opens a transaction, so a
+  write-buffered flush is one commit.
 - **Compare-and-swap works**: a write carrying ``cas`` (the ``date_updated`` the writer read) lands
   only while the file still holds that version, and a row deleted since is a miss. A miss returns
   0, the protocol's "nothing written", and the collection raises
@@ -22,6 +24,7 @@ unchanged. A table is a set of files the repository's layout places; a row is on
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -149,6 +152,23 @@ class GitDurableStore:
         return None if data is None else self.repo.layout.decode(table, path, data)
 
     # ------------------------------------------------------------------ writes
+
+    def transaction(self, namespace: str | None = None) -> contextlib.AbstractAsyncContextManager[ChangeSet]:
+        """a change set over the repository, as a database store's transaction: every write handed it (``conn=``)
+        lands in its ONE commit when the block ends cleanly, and none does when it raises or a row it writes changed
+        since it was read (:class:`ChangeConflictError`, the whole set refused).
+
+        What a write-buffered flush opens (``flush_pending``'s batch), so the rows a flush writes are one commit, not
+        one commit each. A commit has no row or byte bound, so a flush's ``max_rows`` / ``max_bytes`` never split it:
+        the batch is the buffer's, whatever its size. A change set forwarded to a writer in another process is one
+        request, so its size is the forward's to carry.
+
+        :param namespace: unused; a database store's schema routing, taken for the same shape
+        :ptype namespace: str | None
+        :return: an async context manager yielding the change set
+        :rtype: contextlib.AbstractAsyncContextManager[ChangeSet]
+        """
+        return self.repo.change("flush: buffered writes")
 
     async def _precheck(self, change: Change) -> ConflictedRow | None:
         """the early answer to a write: would it apply to the current row?

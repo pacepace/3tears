@@ -20,7 +20,9 @@ writing one working tree race each other and every cache goes stale.
   in front, unchanged.
 - A product brings a `RowCodec` (`JsonCodec` ships) and a `Layout` (`TemplateLayout` places rows by
   path templates; a product can write its own).
-- `GitRepo.change()` gathers collection saves into ONE commit. A save carries the version it read;
+- `GitRepo.change()` gathers collection saves into ONE commit; `GitDurableStore.transaction()` opens the same
+  change set the way a database store opens a transaction, so a write-buffered flush (`flush_pending`) is one
+  commit, not one per row. A save carries the version it read;
   a row changed since refuses the whole set (`ChangeConflictError`). A hand edit in the way is never
   written over (`HandEditPendingError`); `commit_paths` adopts hand edits.
 - One writer per repository holds a NATS lease (`KVLease.hold`); other processes forward change

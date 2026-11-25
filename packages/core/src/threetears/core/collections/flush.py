@@ -776,8 +776,8 @@ def _resolve_batch_backend(
     The atomic-batch path is only taken when **every** pending collection resolves to
     the **same** backend object AND that backend exposes a usable ``transaction()``.
     Any of: an unregistered table, a missing backend, divergent backends, or a backend
-    without ``transaction()`` (e.g. a git-backed ``DurableStore``) → ``None``, so the
-    caller degrades to the per-entity loop.
+    without ``transaction()`` → ``None``, so the caller degrades to the per-entity loop.
+    (The git store's ``transaction()`` is a change set: its batch is one commit.)
 
     :param sorted_pending: toposorted pending writes.
     :ptype sorted_pending: list[PendingWrite]
@@ -1094,7 +1094,7 @@ async def flush_pending(
     through ``persist_to_store``. **Graceful degrade**: on ANY exception in the batch
     path the fresh set falls back to the per-entity loop, which keeps the
     ``_is_fk_violation`` classification + re-enqueue intact. A backend without
-    ``transaction()`` (e.g. a git-backed ``DurableStore``) degrades to the per-entity
+    ``transaction()`` degrades to the per-entity
     loop directly. The total returned is the sum of both paths' flushed counts.
 
     :param write_buffer: the coalescing write buffer to drain.
@@ -1165,8 +1165,8 @@ async def flush_pending(
                 )
                 flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
         else:
-            # No single shared transaction-capable backend (e.g. git-backed
-            # DurableStore): degrade the fresh set to the per-entity loop directly.
+            # No single shared transaction-capable backend: degrade the fresh set to the
+            # per-entity loop directly.
             flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
 
     if already_failed:
