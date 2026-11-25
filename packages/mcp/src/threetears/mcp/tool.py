@@ -30,7 +30,7 @@ from typing import Any
 
 import jsonschema
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 
 from threetears.mcp.context import CallContext
 
@@ -252,8 +252,9 @@ def _type_text(text: str) -> str:
 #: names an annotation's text may use beside the type itself, which no import binds
 _BUILTIN_NAMES = frozenset({"None", "Optional", "Union", "typing.Optional", "typing.Union"})
 
-#: warnings already given, so a tool rebuilt on every listing warns once: (tool, parameter, annotation)
-_WARNED: set[tuple[str, str, str]] = set()
+#: warnings already given, so a tool rebuilt on every listing warns once: (tool, parameter, annotation). BuildOnce: two
+#: threads building the same tool at once still warn once
+_WARNED: BuildOnce[tuple[str, str, str], bool] = BuildOnce()
 
 
 @dataclass(frozen=True)
@@ -460,6 +461,29 @@ def _evaluated(handler: ToolHandler, annotation: Any) -> tuple[Any, bool]:
         return text, False
 
 
+def _warn_unread_annotation(tool_name: str, parameter: str, annotation: str) -> bool:
+    """log, once per tool, parameter and annotation, that an annotation could not be read as the call context.
+
+    :param tool_name: the tool
+    :ptype tool_name: str
+    :param parameter: the handler's parameter
+    :ptype parameter: str
+    :param annotation: the annotation's text
+    :ptype annotation: str
+    :return: True, the mark that it was logged
+    :rtype: bool
+    """
+    _log.warning(
+        "McpTool %r: the annotation %r of the handler's parameter %r cannot be evaluated and "
+        "names nothing its module imports, so it is not passed the call context; if it means "
+        "CallContext, import CallContext from threetears.mcp in that module",
+        tool_name,
+        annotation,
+        parameter,
+    )
+    return True
+
+
 def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[str, Any]) -> str | None:
     """the name of ``handler``'s parameter annotated :class:`CallContext`, or ``None``.
 
@@ -504,17 +528,10 @@ def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[
             and parameter.kind not in _VARIADIC
             and not _known(annotation, names.get())
         ):
-            key = (tool_name, parameter.name, annotation)
-            if key not in _WARNED:
-                _WARNED.add(key)
-                _log.warning(
-                    "McpTool %r: the annotation %r of the handler's parameter %r cannot be evaluated and "
-                    "names nothing its module imports, so it is not passed the call context; if it means "
-                    "CallContext, import CallContext from threetears.mcp in that module",
-                    tool_name,
-                    annotation,
-                    parameter.name,
-                )
+            _WARNED.get(
+                (tool_name, parameter.name, annotation),
+                lambda: _warn_unread_annotation(tool_name, parameter.name, annotation),
+            )
     if not found:
         return None
     if len(found) > 1:
