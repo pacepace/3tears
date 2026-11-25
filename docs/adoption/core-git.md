@@ -2,8 +2,9 @@
 
 `threetears.core.backends.git` -- a git working tree as the durable tier (L3): rows as files, every change
 set one commit, one writer per repository. Part of [`core`](core.md), an L3 beside
-`threetears.core.backends.sql` and `threetears.core.backends.nats_proxy`; import it by its own path
-(`threetears.core.backends` does not load it).
+`threetears.core.backends.sql`, `threetears.core.backends.nats_proxy` and the SQLite file
+([core-sqlite.md](core-sqlite.md) compares the three); import it by its own path (`threetears.core.backends` does not
+load it). It keeps the first tier of the L3 contract every store keeps (`packages/core/tests/l3_contract.py`).
 
 ## Problem
 

@@ -117,7 +117,7 @@ Consequences:
   coherent. Run L1 + L3 and add NATS when you scale out.
 - **L3 is the only thing you cannot omit.**
 
-### Three ways to reach L3
+### Four ways to reach L3
 
 1. **Direct pool** -- the process holds DB credentials and you pass a connection pool.
    The pool is **duck-typed**: any object with `async` `.execute()` / `.fetch()` /
@@ -129,8 +129,12 @@ Consequences:
    **not** part of the package (see §13).
 3. **A git working tree** (`threetears.core.backends.git`, with the `nats` extra) -- rows
    are files and every change set is one commit, with one writer per repository held by a
-   NATS lease. [core-git.md](adoption/core-git.md) covers when to choose it; the rest of
-   this guide uses a PostgreSQL L3.
+   NATS lease. [core-git.md](adoption/core-git.md) covers when to choose it.
+4. **One SQLite file** (`SqliteL3Backend`) -- one process on one machine, no database server, no NATS; the same
+   collections as over Postgres, moved between the two by the L3 URL (`l3_store`). [core-sqlite.md](adoption/core-sqlite.md)
+   compares the three stores and says when to choose each.
+
+The rest of this guide uses a PostgreSQL L3.
 
 ### The L3 broker's subjects
 
@@ -227,7 +231,7 @@ Unless noted, these are exported from `threetears.core` (see §15).
 | Decision | Options | Guidance |
 |---|---|---|
 | **Single pod or multiple?** | one / many | One → **skip L2/NATS**. Many → add NATS for L2 and cross-pod invalidation. |
-| **How does the process reach L3?** | direct pool / NATS proxy / git working tree | Trusted service with DB creds → direct pool. Sandboxed worker without creds → proxy (and you must provide the broker -- §13). Rows that belong in a repository → git ([core-git.md](adoption/core-git.md)). |
+| **How does the process reach L3?** | direct pool / NATS proxy / git working tree / SQLite file | Trusted service with DB creds → direct pool. Sandboxed worker without creds → proxy (and you must provide the broker -- §13). Rows that belong in a repository → git ([core-git.md](adoption/core-git.md)). One process on one machine with no database server → a SQLite file ([core-sqlite.md](adoption/core-sqlite.md)). |
 | **How are tables defined?** | `DataStore` dynamic / hand-written `BaseCollection` | Start with `DataStore` -- its collections inherit all three tiers (incl. L2) from the registry. Drop to hand-written subclasses for bespoke serialization or composite-PK control. |
 | **Which packages?** | `3tears` / `3tears[nats]` / + `agent-memory` | KV/relational caching → `3tears` (`3tears[nats]` for L2 or a git L3). Semantic memory/search → add `agent-memory` and **enable pgvector**. |
 | **Flush strategy** | `ALWAYS`, `ON_CHECKPOINT`, `ON_SCHEDULE`, `ON_SHUTDOWN` | `ALWAYS` = write-through, simplest to reason about. Buffered strategies trade durability latency for throughput (§10). |

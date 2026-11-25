@@ -21,6 +21,8 @@ if TYPE_CHECKING:
         parse_rowcount,
     )
     from threetears.core.backends.sql import SqlL3Backend, bound_request_connection
+    from threetears.core.backends.l3_url import l3_store
+    from threetears.core.backends.sqlite_file import SqliteL3Backend
 
 _LAZY: dict[str, tuple[str, str]] = {
     "BrokerGenerationSource": ("threetears.core.backends.broker_generation", "BrokerGenerationSource"),
@@ -33,6 +35,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "RowcountUnreadableError": ("threetears.core.backends.protocol", "RowcountUnreadableError"),
     "parse_rowcount": ("threetears.core.backends.protocol", "parse_rowcount"),
     "SqlL3Backend": ("threetears.core.backends.sql", "SqlL3Backend"),
+    "SqliteL3Backend": ("threetears.core.backends.sqlite_file", "SqliteL3Backend"),
+    "l3_store": ("threetears.core.backends.l3_url", "l3_store"),
     "bound_request_connection": ("threetears.core.backends.sql", "bound_request_connection"),
 }
 
@@ -45,8 +49,10 @@ __all__ = [
     "NatsProxyL3Backend",
     "RowcountUnreadableError",
     "SqlL3Backend",
+    "SqliteL3Backend",
     "bound_request_connection",
     "check_reply_row_count",
+    "l3_store",
     "parse_rowcount",
 ]
 

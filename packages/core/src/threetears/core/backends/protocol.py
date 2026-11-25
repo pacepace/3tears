@@ -59,6 +59,7 @@ __all__ = [
     "PrefixDeletingStore",
     "RawL3Pool",
     "RowcountUnreadableError",
+    "SchemaRegisteringStore",
     "TruncatingStore",
     "load_requests",
     "load_wait_seconds",
@@ -289,6 +290,27 @@ class DurableStore(Protocol):
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return every row matching the equality ``filters`` (all rows when ``None``/empty)."""
+        ...
+
+
+@runtime_checkable
+class SchemaRegisteringStore(Protocol):
+    """A durable store that takes a table's :class:`TableSchema` before the table is used.
+
+    A schema-backed collection hands its schema to such a store when it is built: ``SqlL3Backend`` generates its
+    statements from it, ``SqliteL3Backend`` also creates or checks the table in its file.
+    """
+
+    def register_schema(self, table: str, schema: Any) -> None:
+        """take ``schema`` as ``table``'s.
+
+        :param table: the table's name
+        :ptype table: str
+        :param schema: its :class:`~threetears.core.collections.schema_backed.TableSchema`
+        :ptype schema: Any
+        :return: nothing
+        :rtype: None
+        """
         ...
 
 

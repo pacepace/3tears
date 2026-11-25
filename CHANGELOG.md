@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: SQLite as an L3, and one L3 contract every store keeps
+
+**Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of
+one process on one machine with no database server and no NATS. It serves `SchemaBackedCollection` and
+`DurableStoreCollection` as Postgres does -- save, read, the compare-and-swap on `cas_column` (and the NULL-safe and
+ordered ones), delete, scans in key pages, many-row writes, truncate, a caller's transaction -- with the statements
+the Postgres store generates (`$N` and `::type` rewritten), so a collection behaves the same on either. The file is
+in WAL mode with every commit synced (a write that returned survives SIGKILL), held by one process (`flock`;
+`SqliteStoreLockedError` for a second), and carries a format version (`SqliteStoreFormatError` for a file of
+another). Registering a schema creates its table, or adds a new nullable or defaulted column to the stored one and
+refuses any other change. `health()` answers a readiness probe. Raw SQL written for Postgres alone fails as SQLite
+reports it, so change notes, scope epochs, delta files, Arrow copies and partition loads stay Postgres features.
+
+**Added:** `l3_store(url)`: one setting picks the L3, `sqlite:///<path>` or a `postgresql://` DSN (a pool started the
+platform's way, `init_connection` on each connection), closed when the block ends.
+
+**Added:** `SchemaRegisteringStore` (`threetears.core.backends.protocol`): a schema-backed collection registers its
+schema with any store that takes one, not only `SqlL3Backend`.
+
+**Tests:** `packages/core/tests/l3_contract.py` is the behaviour an L3 owes, run unchanged against Postgres (the
+integration suite), SQLite and the git store: every store keeps the first tier (a row written whole, conflict modes,
+compare-and-swap, deletes, composite keys, scans, many rows, a transaction, and a `DurableStoreCollection` over it
+with L2 and without); Postgres and SQLite keep the schema tier on top. Docs: `docs/adoption/core-sqlite.md` compares
+the three L3s and says when to use each.
+
+**Fixed:** `processes.name_process` returned `Any` where it is declared `bool` (`typecheck.sh core` failed).
+
 ### core: every process knows every declared collection table
 
 **Added:** an entry-point group, `threetears.collections`: each package lists the modules defining its collection

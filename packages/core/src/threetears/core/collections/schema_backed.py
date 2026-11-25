@@ -81,6 +81,7 @@ from threetears.core.backends.protocol import (
     LoadingStore,
     OrderedDurableStore,
     PrefixDeletingStore,
+    SchemaRegisteringStore,
     TruncatingStore,
     copy_bounds,
     load_requests,
@@ -2872,15 +2873,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
 
     def _register_schema(self) -> None:
-        """register :attr:`schema` with the resolved ``SqlL3Backend``, if any.
+        """register :attr:`schema` with the resolved L3 store, when it takes schemas.
 
-        a non-``SqlL3Backend`` backend (or ``None``) is left untouched.
+        ``SqlL3Backend`` generates its statements from the schema; ``SqliteL3Backend`` also creates or checks the
+        table. A store without ``register_schema`` (a git store), or ``None``, is left untouched.
 
         :return: nothing
         :rtype: None
         """
         backend = self.l3_pool
-        if isinstance(backend, SqlL3Backend):
+        if isinstance(backend, SchemaRegisteringStore):
             backend.register_schema(self.schema.name, self.schema)
 
     def _durable_store(self) -> DurableStore | None:

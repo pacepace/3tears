@@ -51,6 +51,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/registry.py::CollectionRegistry.drop_table",
             # the L3 backend's truncate; its callers announce or are listed
             f"{_CORE}/backends/sql.py::SqlL3Backend.truncate",
+            # the SQLite L3's truncate, the same primitive over a file (a DELETE with no WHERE: SQLite has no TRUNCATE)
+            f"{_CORE}/backends/sqlite_file.py::SqliteL3Backend.truncate",
             # the DuckDB L1 backend: its partition swaps and staged changes are the primitives callers reach
             f"{_CORE}/cache/duckdb.py::DuckDBBackend",
         }
@@ -59,6 +61,9 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
         {
             # a local cache table's trim to its cap (L1 only: it refuses any other connection); no L3 row, no epoch
             f"{_CORE}/keyed/deletes.py::delete_oldest",
+            # the SQLite L3's truncate: SqlL3Backend.truncate's statement over a file, spelled as a DELETE with no WHERE
+            # (SQLite has no TRUNCATE); its one caller, SchemaBackedCollection._truncate_l3, is listed for whole-drop
+            f"{_CORE}/backends/sqlite_file.py::SqliteL3Backend.truncate",
             # the keyed write helpers: the statements they send ARE the write their caller asked for, judged at each
             # call site by the table it hands them (walkers._KEYED_WRITES)
             f"{_CORE}/keyed/writes.py::apply_stage",
