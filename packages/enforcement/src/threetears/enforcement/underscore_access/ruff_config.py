@@ -16,7 +16,10 @@ matching a separator-free pattern against the basename anywhere beneath it.
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 __all__ = ["all_exempted_files", "exempted_files", "is_vendored", "ruff_configs", "slf001_globs"]
@@ -62,16 +65,33 @@ def is_vendored(path: Path, repo_root: Path) -> bool:
     return False
 
 
+def _owned_files(base: Path, repo_root: Path, wanted: Callable[[str], bool]) -> list[Path]:
+    """every file under *base* whose name is *wanted*, in one walk that never enters what :func:`is_vendored` excludes.
+
+    the walk prunes a vendored directory, or one holding its own ``.git``, instead of listing it and
+    filtering after: ``.venv`` alone is most of a workspace's directories. what it returns is what
+    ``base.rglob`` filtered by :func:`is_vendored` returned, file for file.
+    """
+    found: list[Path] = []
+    for directory, subdirectories, names in os.walk(base):
+        here = Path(directory)
+        subdirectories[:] = [
+            sub for sub in subdirectories if sub not in _VENDORED and not os.path.lexists(here / sub / ".git")
+        ]
+        found.extend(here / name for name in names if wanted(name) and not is_vendored(here / name, repo_root))
+    return found
+
+
+_CONFIG_NAMES = frozenset({"pyproject.toml", "ruff.toml", ".ruff.toml"})
+
+
 def ruff_configs(repo_root: Path) -> list[Path]:
     """every file ruff would read a per-file ignore from, under *repo_root*."""
     configs: list[Path] = []
-    for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
-        for path in repo_root.rglob(name):
-            if is_vendored(path, repo_root):
-                continue
-            if path.name == "pyproject.toml" and "[tool.ruff" not in path.read_text(errors="replace"):
-                continue  # a pyproject with no ruff section configures nothing
-            configs.append(path)
+    for path in _owned_files(repo_root, repo_root, _CONFIG_NAMES.__contains__):
+        if path.name == "pyproject.toml" and "[tool.ruff" not in path.read_text(errors="replace"):
+            continue  # a pyproject with no ruff section configures nothing
+        configs.append(path)
     return sorted(configs)
 
 
@@ -95,8 +115,11 @@ def exempted_files(config: Path, pattern: str, repo_root: Path) -> list[Path]:
     whatever single file sits at the config's root and every other file of that name unscanned.
     """
     base = config.parent
-    matched = base.glob(pattern) if "/" in pattern else base.rglob(pattern)
-    return sorted(p for p in matched if p.suffix == ".py" and not is_vendored(p, repo_root))
+    if "/" in pattern:
+        return sorted(p for p in base.glob(pattern) if p.suffix == ".py" and not is_vendored(p, repo_root))
+    return sorted(
+        p for p in _owned_files(base, repo_root, lambda name: fnmatch.fnmatchcase(name, pattern)) if p.suffix == ".py"
+    )
 
 
 def all_exempted_files(repo_root: Path) -> list[Path]:
