@@ -6455,6 +6455,37 @@ class BaseCollection(ABC, Generic[EntityT]):
             return entity_key_batch(entity_ids)
         return await asyncio.to_thread(entity_key_batch, entity_ids)
 
+    async def adopt_stored_row(self, row: Mapping[str, Any]) -> None:
+        """take a row the durable tier already holds, written there outside this collection, into every cache.
+
+        For a writer that owns its L3 write itself -- a coordinator that materialises a file, renames it into place
+        and stages it, for its own crash recovery -- and then must make the caches say what L3 now holds. As a save
+        that committed does: this process's L1 takes the row (as a row this process decided, so no read in flight
+        caches an older one over it), L2 takes it, a switched-on collection advances its write generation, and every
+        peer is told to drop its copy. L3 is not touched.
+
+        :param row: the row as L3 holds it, every key column included
+        :ptype row: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises KeyError: when the row lacks a key column
+        :raises GenerationUnavailableError: when a switched-on collection could not advance its generation; the
+            caches still took the row and the peers were told
+        :raises KvError: when L2 is this collection's store and refused the row
+        """
+        data = dict(row)
+        columns = self.primary_key_columns
+        missing = [column for column in columns if column not in data]
+        if missing:
+            raise KeyError(f"{self.table_name}.adopt_stored_row: the row lacks the key column {missing[0]!r}")
+        entity_id: Any = data[columns[0]] if len(columns) == 1 else tuple(data[column] for column in columns)
+        bump = await self._bump_after_commit([self.changed_row(entity_id, data)])
+        self.write_to_cache_sync(data)
+        await self._save_to_l2(entity_id, data)
+        await self._announce_row(entity_id, bump=bump, row=data)
+        if bump.failure is not None:
+            raise bump.failure
+
     async def announce_flushed(self, rows: Sequence[dict[str, Any]]) -> None:
         """say that a flush of the write buffer has committed ``rows`` of this table to L3.
 

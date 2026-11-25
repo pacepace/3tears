@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a durable-store collection names its store table, and adopts a row L3 already holds
+
+**Added:** `DurableStoreCollection(..., store_table=...)` and its `store_table` property: the name the durable store
+knows the table by, when it is not the collection's `table_name`. The caches (L1, L2, the cross-pod invalidation)
+key by `table_name`; `fetch_one`, `upsert`, `delete` and `scan` go to `store_table`. Many collections, each cached
+under a name of its own, can stand over one store table (a git layout's bare `scenes`). `None` keeps `table_name`.
+
+**Added:** `BaseCollection.adopt_stored_row(row)`: a row the durable tier already holds, written outside the
+collection, taken into every cache as a committed save is -- this process's L1 (fenced as a row this process
+decided), L2, the write generation of a switched-on collection, and the broadcast that drops every peer's copy. L3
+is not touched. It replaces writing L1, L2 and the broadcast through private members.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of
