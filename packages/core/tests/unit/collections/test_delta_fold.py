@@ -40,6 +40,7 @@ from threetears.core.collections import delta_files, delta_fold  # noqa: E402
 from threetears.core.testing.delta_copies import NO_COPIES, SetCopies  # noqa: E402
 from threetears.core.collections.delta_copy_beats import CopyBeats  # noqa: E402
 from threetears.core.coordination.lease import KVLease  # noqa: E402
+from threetears.nats.errors import KvError  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
@@ -703,6 +704,36 @@ async def test_removing_a_gone_copy_s_beat_lets_its_files_go_and_only_the_recove
     await other.stop()
     assert [beat.copy for beat in (await reader.positions()).beats] == [], "a clean stop deletes the copy's beat"
     await writer.folds.close()
+
+
+class _UnreadableBucket:
+    """a leases bucket whose every listing fails as a KV read does (the client's ``KvError``)."""
+
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        raise KvError(f"KV list_keys failed: prefix={prefix}")
+
+
+class _UnreadableLease(KVLease):
+    """a lease factory over :class:`_UnreadableBucket`."""
+
+    async def bucket(self) -> Any:
+        return _UnreadableBucket()
+
+
+async def test_a_failed_read_of_the_beats_refuses_every_delete_and_is_counted_as_an_l2_failure() -> None:
+    """Flips if a beats read the KV refuses is swallowed by a log line alone (epoch discipline's l2-swallow: it goes
+    through degrade_l2, counted on threetears_l2_degraded_total) or answers anything but a refusal: a read that fails
+    deletes nothing that round (decision 54's first rule)."""
+
+    def degraded() -> float:
+        labels = {"table": "delta-copies", "op": "read_beats", "reason": "transport"}
+        return REGISTRY.get_sample_value("threetears_l2_degraded_total", labels) or 0.0
+
+    before = degraded()
+    positions = await CopyBeats(_UnreadableLease(FakeNatsClient(), pod_id="reports")).positions()
+    assert positions.refused == "read_failed"
+    assert positions.judge("votes", "inc:1") != "delete"
+    assert degraded() == before + 1
 
 
 def test_a_fold_that_deletes_refuses_to_start_without_the_copies_positions(tmp_path: Path) -> None:

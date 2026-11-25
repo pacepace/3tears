@@ -41,17 +41,18 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 from threetears.core.collections.generation import split_generation_token
+from threetears.core.collections.l2_degrade import degrade_l2
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
-from threetears.nats.errors import NatsClientError
+from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 
-__all__ = ["COPY_BEAT_SCOPE", "CopyBeat", "CopyBeats", "CopyPositions", "CopyPositionsReader"]
+__all__ = ["CopyBeat", "CopyBeats", "CopyPositions", "CopyPositionsReader"]
 
 log = get_logger(__name__)
 
 #: the key segment, under the pod's own key scope, every copy's beat is kept under
-COPY_BEAT_SCOPE: Final = "delta-copies"
+_COPY_BEAT_SCOPE: Final = "delta-copies"
 
 #: how often a copy renews its beat: the writers' own interval (``lost_writes._BEAT_SECONDS``)
 _BEAT_SECONDS: Final = 5.0
@@ -255,7 +256,7 @@ class CopyBeats(CopyPositionsReader):
         return _BEAT_SECONDS
 
     def _key(self, copy: str) -> str:
-        return self._lease.stored_key(f"{COPY_BEAT_SCOPE}.{copy}")
+        return self._lease.stored_key(f"{_COPY_BEAT_SCOPE}.{copy}")
 
     def _own(self) -> str:
         if self._copy is None:
@@ -317,7 +318,7 @@ class CopyBeats(CopyPositionsReader):
         """
         try:
             bucket = await self._lease.bucket()
-            keys = await bucket.list_keys(prefix=self._lease.stored_key(f"{COPY_BEAT_SCOPE}."))
+            keys = await bucket.list_keys(prefix=self._lease.stored_key(f"{_COPY_BEAT_SCOPE}."))
             beats: list[CopyBeat] = []
             for key in sorted(keys):
                 entry = await bucket.get_entry(key=key)
@@ -332,12 +333,16 @@ class CopyBeats(CopyPositionsReader):
                         extra={"extra_data": {"key": key, "error": str(exc)}},
                     )
                     return CopyPositions(refused="unreadable")
-        except (NatsClientError, OSError, TimeoutError) as exc:
-            # a failed read keeps every file this round, said; the next delete reads again
+        except KvError as exc:
+            # a failed read keeps every file this round, counted and said as every L2 failure is; the next delete reads
+            # again. KvError is the whole of what a KV read raises (the client translates every transport failure into
+            # it); anything else is no failed read but a fault, and is raised
             _BEATS_READ.labels(outcome="read_failed").inc()
-            log.warning(
-                "the copies' beats could not be read: the fold deletes no delta file this round",
-                extra={"extra_data": {"error": repr(exc)}},
+            degrade_l2(
+                exc,
+                table=_COPY_BEAT_SCOPE,
+                op="read_beats",
+                what="the copies' beats could not be read: the fold deletes no delta file this round",
             )
             return CopyPositions(refused="read_failed")
         _BEATS_READ.labels(outcome="read").inc()
@@ -362,7 +367,7 @@ class CopyBeats(CopyPositionsReader):
             now = self._now()
             removed: list[str] = []
             live = 0
-            for key in sorted(await bucket.list_keys(prefix=self._lease.stored_key(f"{COPY_BEAT_SCOPE}."))):
+            for key in sorted(await bucket.list_keys(prefix=self._lease.stored_key(f"{_COPY_BEAT_SCOPE}."))):
                 entry = await bucket.get_entry(key=key)
                 if entry is None:
                     continue
