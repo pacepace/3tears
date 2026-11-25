@@ -20,7 +20,7 @@ import pytest
 from threetears.nats import Subject
 from threetears.nats.errors import RequestTimeoutError
 
-from threetears.core.backends.nats_proxy import NatsProxyL3Backend, _ProxyConnection
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.exceptions import DataLayerUnavailableError
 
@@ -152,7 +152,9 @@ async def test_a_transaction_without_a_deadline_and_a_serving_read_keep_five_sec
     assert begin["statement_timeout_ms"] == 5000
 
 
-def test_a_deadline_under_one_millisecond_is_refused() -> None:
+@pytest.mark.asyncio
+async def test_a_deadline_under_one_millisecond_is_refused() -> None:
     """Flips if a transaction may ask a deadline no request can meet."""
-    with pytest.raises(ValueError, match="at least 1"):
-        _ProxyConnection(_proxy(_QueuedHub())).transaction(timeout_ms=0)
+    async with _proxy(_QueuedHub()).acquire() as conn:
+        with pytest.raises(ValueError, match="at least 1"):
+            conn.transaction(timeout_ms=0)
