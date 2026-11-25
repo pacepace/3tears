@@ -61,7 +61,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -76,6 +76,7 @@ from threetears.core.collections.copy_parts import (
     WHOLE_PART,
     Locator,
     PartRule,
+    part_name,
     parts_of_keys,
     split_parts,
     tier_of,
@@ -84,12 +85,14 @@ from threetears.core.collections.copy_parts import (
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
     JobContext,
+    JobResult,
     MappedSegment,
     Parts,
     PiecedSlot,
     SegmentSlot,
     SharedArrowPool,
     SharedArrowStore,
+    VersionFile,
     merged_rows,
     version_files,
 )
@@ -108,7 +111,11 @@ __all__ = [
     "ChangePage",
     "MergePolicy",
     "Merged",
+    "ReloadScope",
+    "ReloadStale",
+    "Reloaded",
     "SharedCopyBackend",
+    "StagedReload",
     "apply_job",
     "file_name",
     "held_parts",
@@ -196,6 +203,8 @@ class AppliedTables:
     :ivar deleted: each changed table's keys the change deleted
     :ivar parts: each changed table's parts as the change leaves them, by name (held parts mapped, rewritten parts as
         written); a part the change dropped is absent
+    :ivar reloaded: the tables a reload's publish replaced (:meth:`SharedCopyBackend.publish_reload`), whole or by
+        scope: their parts are here, their reloaded rows are not in ``rows`` (only the changes applied over them)
     """
 
     root: str
@@ -203,6 +212,7 @@ class AppliedTables:
     rows: Mapping[str, pa.Table]
     deleted: Mapping[str, pa.Table]
     parts: Mapping[str, Mapping[str, pa.Table]]
+    reloaded: frozenset[str] = frozenset()
 
 
 class ApplyHooks(Protocol):
@@ -306,6 +316,42 @@ class Merged:
     parts: tuple[str, ...]
 
 
+class ReloadStale(LookupError):
+    """a per-scope reload staged under a table's rule that is not its rule now (the table crossed the size floor):
+    nothing is published, and the reload is read again."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReloadScope:
+    """the scope values a per-scope reload replaces of its table: their rows, and nothing else of it.
+
+    :ivar column: the table's declared scope column (its rule's ``scope_column`` when the table is split)
+    :ivar values: the values, as text
+    """
+
+    column: str
+    values: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class Reloaded:
+    """one table a reload staged (:meth:`SharedCopyBackend.stage_reload`), as its publish is told it: the files the
+    reload worker wrote, never their rows.
+
+    :ivar table: the table
+    :ivar parts: each part staged and its file in the store (a claimed result's, held until the publish)
+    :ivar located: its locator's file (:data:`LOCATED_PREFIX`); None for none
+    :ivar scope: the scope values it replaces; None for the whole table
+    :ivar rule: the rule it was cut by
+    """
+
+    table: str
+    parts: tuple[tuple[str, str], ...]
+    located: str | None
+    scope: ReloadScope | None
+    rule: PartRule
+
+
 @dataclass(frozen=True, slots=True)
 class ApplyPlan:
     """what :func:`apply_job` is told beside the pages it is handed: names and schemas, never rows.
@@ -319,6 +365,8 @@ class ApplyPlan:
     :ivar merges: the tier merges a per-run table's whole change lands in (:class:`MergePolicy`)
     :ivar instants: each table and its key columns holding an instant as text, kept in one spelling
         (``arrow_keys.stored_instants``)
+    :ivar reloads: the tables a reload staged, put in place of the version's before the pages apply over them
+        (:meth:`SharedCopyBackend.publish_reload`); none for a change
     """
 
     root: str
@@ -329,16 +377,19 @@ class ApplyPlan:
     hooks: ApplyHooks | None
     merges: MergePolicy = ByCount()
     instants: tuple[tuple[str, frozenset[str]], ...] = ()
+    reloads: tuple[Reloaded, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _Outcome:
-    """what the apply worker gives back: each part written (its result table's name) or dropped (None)."""
+    """what the apply worker gives back: each part written (its result table's name) or dropped (None), and each part
+    a reload staged that the publish links as it is (its file)."""
 
     parts: tuple[tuple[str, str, str | None], ...]
     rows: int
     written_bytes: int
     worker: int
+    staged: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -778,13 +829,18 @@ def _apply_table(
     change: _Settled,
     files: Mapping[str, Any],
     result: _Result,
+    locators: Mapping[str, Locator] = EMPTY,
 ) -> Mapping[str, pa.Table]:
-    """one table's change, its parts written into the result; its parts as the change leaves them, for the hooks."""
+    """one table's change, its parts written into the result; its parts as the change leaves them, for the hooks.
+    ``locators`` names a table's locator in place of its file's (a per-scope reload's, over the version's)."""
     rule, schema = tables.rules[table], tables.schemas[table]
     key = rule.key
     held = _parts_of(files, table)
     located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
-    locator = Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
+    if table in locators:
+        locator = locators[table]
+    else:
+        locator = Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
     named = change.named if change.named.num_rows else None
     written = change.rows if change.rows.num_rows else None
     after: dict[str, pa.Table] = {}
@@ -835,6 +891,7 @@ def _apply_pages(
     files: Mapping[str, Any],
     pages: Sequence[tuple[str, str, pa.Table]],
     result: _Result,
+    locators: Mapping[str, Locator] = EMPTY,
 ) -> tuple[Mapping[str, _Settled], Mapping[str, Mapping[str, pa.Table]]]:
     """each table's pages settled and applied into the result."""
     by_table: dict[str, list[tuple[str, pa.Table]]] = {}
@@ -853,14 +910,18 @@ def _apply_pages(
         )
         for table, table_pages in sorted(by_table.items())
     )
-    after = frozen((table, _apply_table(tables, table, change, files, result)) for table, change in settled.items())
+    after = frozen(
+        (table, _apply_table(tables, table, change, files, result, locators)) for table, change in settled.items()
+    )
     return settled, after
 
 
 def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     """a change applied in the apply worker (:class:`SharedCopyBackend`): its pages mapped from the hand-off, the
     version it applies to mapped, and each part it rewrites written into the job's result, then the hooks' derived
-    tables into the same result.
+    tables into the same result. A reload's publish (``plan.reloads``) first puts each reloaded table's staged parts in
+    place of the version's (:func:`_reloaded`), and its pages (the changes applied since the reload was given) apply
+    over them.
 
     :param context: the job's version (None for the first change), its pages (``p<n>``) and its result slot
     :ptype context: JobContext
@@ -870,7 +931,7 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     :rtype: _Outcome
     """
     version = None if context.version is None else context.version.name
-    files = EMPTY if version is None else version_files(plan.root, version)
+    base: Mapping[str, Any] = EMPTY if version is None else version_files(plan.root, version)
     mapped = EMPTY if context.tables is None else context.tables.tables
     pages = [(kind, table, mapped[f"p{at}"]) for at, (kind, table) in enumerate(plan.pages)]
     tables = _Tables(
@@ -886,25 +947,200 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     rows = 0
     with slot.writing() as step:
         result = _Result(step, [])
-        settled, after = _apply_pages(tables, files, pages, result)
+        view = _reloaded(tables, base, plan.reloads, result)
+        files = view.files
+        settled, after = _apply_pages(tables, files, [*view.pages, *pages], result, view.locators)
         rows += sum(change.rows.num_rows for change in settled.values())
         if plan.hooks is not None:
+            left = {**dict.fromkeys(view.tables, EMPTY), **after}
             applied = AppliedTables(
                 root=plan.root,
                 version=version,
                 rows=frozen((table, change.rows) for table, change in settled.items()),
                 deleted=frozen((table, change.deleted) for table, change in settled.items()),
                 parts=frozen(
-                    (table, _as_left(_parts_of(files, table), parts, result, table)) for table, parts in after.items()
+                    (table, _as_left(_parts_of(files, table), parts, result, table)) for table, parts in left.items()
                 ),
+                reloaded=view.tables,
             )
             derived = [page for page in plan.hooks.derive(applied) if page.table not in settled]
             if derived:
                 more, _ = _apply_pages(
-                    replace(tables, whole=frozenset()), files, [(p.kind, p.table, p.rows) for p in derived], result
+                    replace(tables, whole=frozenset()),
+                    files,
+                    [(p.kind, p.table, p.rows) for p in derived],
+                    result,
+                    view.locators,
                 )
                 rows += sum(change.rows.num_rows for change in more.values())
-    return _Outcome(parts=tuple(result.parts), rows=rows, written_bytes=result.written_bytes, worker=os.getpid())
+    parts, staged = _settled_parts(base, view.swaps, result.parts)
+    return _Outcome(parts=parts, rows=rows, written_bytes=result.written_bytes, worker=os.getpid(), staged=staged)
+
+
+def _reload_job(
+    context: JobContext, plan: ApplyPlan, scopes: tuple[tuple[str, ReloadScope], ...], check: Any
+) -> _Outcome:
+    """a reload staged in the reload worker (:meth:`SharedCopyBackend.stage_reload`): each reloaded table's rows cut
+    into its parts as a whole change's are (:func:`apply_job` with ``plan.whole``, over no version), written into the
+    job's result, which is held until its publish. A per-scope table's rows must all be of its scope values.
+
+    :param context: the job's pages (``p<n>``) and its result slot; no version
+    :ptype context: JobContext
+    :param plan: the reload's tables, every one of them whole, and no hooks
+    :ptype plan: ApplyPlan
+    :param scopes: each per-scope table and the values it replaces
+    :ptype scopes: tuple[tuple[str, ReloadScope], ...]
+    :param check: the product's hooks run over the staged tables in this worker (:class:`ApplyHooks`; what they derive
+        is the publish's, never staged); None for none
+    :ptype check: ApplyHooks | None
+    :return: each part written, the rows, the bytes written, this process
+    :rtype: _Outcome
+    :raises ValueError: for a per-scope table's row outside its scope values
+    """
+    mapped = EMPTY if context.tables is None else context.tables.tables
+    for table, scope in scopes:
+        allowed = pa.array(sorted(scope.values), pa.string())
+        for at, (_kind, paged) in enumerate(plan.pages):
+            if paged != table:
+                continue
+            values = pc.cast(mapped[f"p{at}"][scope.column], pa.string())
+            outside = pc.sum(pc.invert(pc.fill_null(pc.is_in(values, value_set=allowed), False))).as_py()
+            if outside:
+                raise ValueError(f"a reload of {table}'s {sorted(scope.values)} holds {outside} rows of other values")
+    return apply_job(context, replace(plan, hooks=None if check is None else _Checked(check)))
+
+
+@dataclass(frozen=True, slots=True)
+class _Checked:
+    """a product's hooks run over a reload as it stages: what they derive is dropped (derived tables are the
+    publish's, over the version it publishes on)."""
+
+    hooks: Any
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        self.hooks.derive(applied)
+        return ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ReloadView:
+    """a version's files with a reload's staged tables in place: what a reload's publish applies its pages over.
+
+    :ivar files: the version's files, each reloaded table's replaced (whole, or its scope's parts)
+    :ivar swaps: each part put in (its staged file) or taken out (None) of the version
+    :ivar pages: pages applied first: a per-scope reload of a table held as one part, as a change (its held rows of
+        those values deleted, the reload's rows upserted)
+    :ivar locators: each per-scope reloaded table's locator, the reload's over the version's
+    :ivar tables: the tables reloaded
+    """
+
+    files: Mapping[str, Any]
+    swaps: tuple[tuple[str, str, str | None], ...] = ()
+    pages: tuple[tuple[str, str, pa.Table], ...] = ()
+    locators: Mapping[str, Locator] = EMPTY
+    tables: frozenset[str] = frozenset()
+
+
+def _scope_part(part: str) -> str:
+    """the scope value's part name a part is of: a tier's scope, else the part's own name."""
+    tier = tier_of(part)
+    return part if tier is None else tier[0]
+
+
+def _reloaded(tables: _Tables, files: Mapping[str, Any], reloads: Sequence[Reloaded], result: _Result) -> _ReloadView:
+    """``files`` with each reloaded table's staged parts in place (:class:`_ReloadView`): a whole reload's every held
+    part out and its staged parts in; a per-scope reload of a split table its scope values' parts alike; a per-scope
+    reload of a table held as one part a change applied first. A per-scope locator is the reload's over the
+    version's, written into the result.
+
+    :raises ReloadStale: for a per-scope reload staged under a rule that is not the table's now
+    :raises ValueError: for a per-scope reload naming a scope column that is not its split table's
+    """
+    if not reloads:
+        return _ReloadView(files=files)
+    view = dict(files)
+    swaps: list[tuple[str, str, str | None]] = []
+    pages: list[tuple[str, str, pa.Table]] = []
+    locators: list[tuple[str, Locator]] = []
+    for reload in reloads:
+        table, scope = reload.table, reload.scope
+        rule, schema = tables.rules[table], tables.schemas[table]
+        held = _parts_of(files, table)
+        located_name = f"{LOCATED_PREFIX}{table}"
+        if scope is not None and rule != reload.rule:
+            raise ReloadStale(
+                f"{table} is held by another rule than its reload was staged by; the reload is read again"
+            )
+        if scope is not None and not rule.split:
+            if WHOLE_PART in held:
+                rows = _map(held[WHOLE_PART], schema)
+                values = pc.cast(rows[scope.column], pa.string())
+                gone = rows.filter(pc.is_in(values, value_set=pa.array(sorted(scope.values), pa.string())))
+                pages.append((KEYS, table, gone.select(list(rule.key))))
+            pages.extend((ROWS, table, _map(Path(path), schema)) for _, path in sorted(reload.parts))
+            continue
+        if scope is not None and scope.column != rule.scope_column:
+            raise ValueError(f"{table} is split by {rule.scope_column!r}, not {scope.column!r}")
+        names = None if scope is None else {part_name(value) for value in scope.values}
+        stray = sorted(part for part, _ in reload.parts if names is not None and _scope_part(part) not in names)
+        if stray:
+            raise ValueError(f"a reload of {table} staged parts outside its scope: {stray}")
+        for part in sorted(held):
+            if names is None or _scope_part(part) in names:
+                del view[file_name(table, part)]
+                swaps.append((table, part, None))
+        for part, path in reload.parts:
+            view[file_name(table, part)] = VersionFile(Path(path), Path(path).stat().st_size)
+            swaps.append((table, part, path))
+        held_located = _parts_of(files, located_name)
+        if scope is None:
+            if WHOLE_PART in held_located:
+                del view[file_name(located_name, WHOLE_PART)]
+                swaps.append((located_name, WHOLE_PART, None))
+            if reload.located is not None:
+                path = reload.located
+                view[file_name(located_name, WHOLE_PART)] = VersionFile(Path(path), Path(path).stat().st_size)
+                swaps.append((located_name, WHOLE_PART, path))
+        elif reload.located is not None:
+            now = Locator(_map(held_located[WHOLE_PART])) if WHOLE_PART in held_located else Locator()
+            merged = now.overlaid(Locator(_map(Path(reload.located))))
+            result.write(located_name, WHOLE_PART, merged.located)
+            locators.append((table, merged))
+    return _ReloadView(
+        files=frozen(view.items()),
+        swaps=tuple(swaps),
+        pages=tuple(pages),
+        locators=frozen(locators),
+        tables=frozenset(reload.table for reload in reloads),
+    )
+
+
+def _settled_parts(
+    base: Mapping[str, Any],
+    swaps: Sequence[tuple[str, str, str | None]],
+    written: Sequence[tuple[str, str, str | None]],
+) -> tuple[tuple[tuple[str, str, str | None], ...], tuple[tuple[str, str, str], ...]]:
+    """each part's last word: a reload's swap, then what the job wrote or dropped over it. A part dropped that the
+    version never held is left out (a staged part the changes over it emptied).
+
+    :return: the parts written (their result names) or dropped, and the staged parts linked as they are (their files)
+    """
+    last: dict[tuple[str, str], tuple[bool, str | None]] = {}
+    for table, part, path in swaps:
+        last[(table, part)] = (True, path)
+    for table, part, name in written:
+        last[(table, part)] = (False, name)
+    parts: list[tuple[str, str, str | None]] = []
+    staged: list[tuple[str, str, str]] = []
+    for (table, part), (swapped, ref) in last.items():
+        if ref is None:
+            if file_name(table, part) in base:
+                parts.append((table, part, None))
+        elif swapped:
+            staged.append((table, part, ref))
+        else:
+            parts.append((table, part, ref))
+    return tuple(parts), tuple(staged)
 
 
 def _as_left(
@@ -956,6 +1192,64 @@ def _merge_job(context: JobContext, plan: _MergePlan) -> tuple[str, str, tuple[s
 
 
 # -- the serving process's side ------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class StagedReload:
+    """a reload staged by the reload worker (:meth:`SharedCopyBackend.reload_run`): its tables' parts written into the
+    store, held there until :meth:`SharedCopyBackend.publish_reload` links them or :meth:`close` lets them go.
+
+    :ivar reloads: each table staged, its files
+    :ivar rows: the rows staged
+    :ivar written_bytes: the bytes written
+    :ivar worker: the process that staged it
+    :ivar segment: the staged files, held; None for a reload of no rows
+    """
+
+    reloads: tuple[Reloaded, ...]
+    rows: int
+    written_bytes: int
+    worker: int
+    segment: MappedSegment | None
+
+    async def close(self) -> None:
+        """let the staged files go (once published, the version holds them). Harmless twice.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self.segment is not None:
+            await asyncio.to_thread(self.segment.close)
+
+
+async def _staged(
+    running: Coroutine[Any, Any, JobResult], rules: Mapping[str, PartRule], scopes: Mapping[str, ReloadScope]
+) -> StagedReload:
+    """a reload's staging awaited, and its result held as a :class:`StagedReload`."""
+    done = await running
+    outcome: _Outcome = done.value
+    files = EMPTY if done.segment is None else done.segment.files
+    staged: dict[str, list[tuple[str, str]]] = {}
+    for table, part, name in outcome.parts:
+        if name is not None:
+            staged.setdefault(table, []).append((part, str(files[name])))
+    reloads = tuple(
+        Reloaded(
+            table=table,
+            parts=tuple(sorted(staged.get(table, ()))),
+            located=dict(staged.get(f"{LOCATED_PREFIX}{table}", ())).get(WHOLE_PART),
+            scope=scopes.get(table),
+            rule=rule,
+        )
+        for table, rule in sorted(rules.items())
+    )
+    return StagedReload(
+        reloads=reloads,
+        rows=outcome.rows,
+        written_bytes=outcome.written_bytes,
+        worker=outcome.worker,
+        segment=done.segment,
+    )
 
 
 class SharedCopyBackend:
@@ -1039,6 +1333,37 @@ class SharedCopyBackend:
         """
         self._rules = _checked(self._schemas, rules)
 
+    @property
+    def store(self) -> SharedArrowStore:
+        """the store the versions are published in.
+
+        :return: the store
+        :rtype: SharedArrowStore
+        """
+        return self._store
+
+    def _unknown(self, pages: Sequence[ChangePage], whole: Collection[str]) -> None:
+        unknown = sorted(
+            {page.table for page in pages if page.table not in self._rules} | (set(whole) - set(self._rules))
+        )
+        if unknown:
+            raise ValueError(f"a change to tables the copy does not hold: {unknown}")
+
+    def _plan(
+        self, pages: Sequence[ChangePage], whole: Collection[str], reloads: tuple[Reloaded, ...] = ()
+    ) -> ApplyPlan:
+        return ApplyPlan(
+            root=str(self._store.root),
+            schemas=tuple(self._schemas.items()),
+            rules=tuple(self._rules.items()),
+            pages=tuple((page.kind, page.table) for page in pages),
+            whole=frozenset(whole),
+            hooks=self._hooks,
+            merges=self._merges,
+            instants=self._instants,
+            reloads=reloads,
+        )
+
     async def apply(
         self, pages: Sequence[ChangePage], *, whole: Collection[str] = (), mark: int | None = None
     ) -> Applied:
@@ -1055,28 +1380,52 @@ class SharedCopyBackend:
         :rtype: Applied
         :raises Exception: what the apply raised; ``BrokenProcessPool`` when its worker died. Nothing is published
         """
-        unknown = sorted(
-            {page.table for page in pages if page.table not in self._rules} | (set(whole) - set(self._rules))
-        )
-        if unknown:
-            raise ValueError(f"a change to tables the copy does not hold: {unknown}")
+        self._unknown(pages, whole)
+        return await self._applied(pages, whole, mark, ())
+
+    async def publish_reload(
+        self,
+        staged: StagedReload,
+        pages: Sequence[ChangePage] = (),
+        *,
+        whole: Collection[str] = (),
+        mark: int | None = None,
+    ) -> Applied:
+        """publish a reload the reload worker staged (:meth:`stage_reload`) on the version current now, in the apply
+        worker: each reloaded table's staged parts in place of the version's (whole, or its scope values' parts),
+        ``pages`` (the changes to those tables applied since the reload was given) applied over them, then the
+        hooks, all in one version. A table in ``whole`` (a change since the reload replaced it whole) keeps that
+        change's rows, not the reload's. The staged parts are linked, never copied; ``staged`` stays its owner's to
+        close.
+
+        :param staged: the reload
+        :ptype staged: StagedReload
+        :param pages: the changes applied over it, in order
+        :ptype pages: Sequence[ChangePage]
+        :param whole: the tables those changes replaced whole
+        :ptype whole: Collection[str]
+        :param mark: the mark published beside it; None keeps the version's
+        :ptype mark: int | None
+        :return: what it published (its rows: the reload's and the changes')
+        :rtype: Applied
+        :raises ReloadStale: for a per-scope reload staged under a rule that is not its table's now. Nothing is
+            published on any failure
+        """
+        self._unknown(pages, whole)
+        reloads = tuple(reload for reload in staged.reloads if reload.table not in set(whole))
+        applied = await self._applied(pages, whole, mark, reloads)
+        return replace(applied, rows=applied.rows + staged.rows)
+
+    async def _applied(
+        self, pages: Sequence[ChangePage], whole: Collection[str], mark: int | None, reloads: tuple[Reloaded, ...]
+    ) -> Applied:
         sent = [page for page in pages if page.rows.num_rows]
         async with self._applying:
             current = self._store.current
             base = None if current is None else current.name
-            plan = ApplyPlan(
-                root=str(self._store.root),
-                schemas=tuple(self._schemas.items()),
-                rules=tuple(self._rules.items()),
-                pages=tuple((page.kind, page.table) for page in sent),
-                whole=frozenset(whole),
-                hooks=self._hooks,
-                merges=self._merges,
-                instants=self._instants,
-            )
             done = await self._pool.run(
                 apply_job,
-                plan,
+                self._plan(sent, whole, reloads),
                 read=False if base is None else base,
                 tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
                 result_pieces=_APPLY_PIECE_BYTES,
@@ -1091,6 +1440,8 @@ class SharedCopyBackend:
                     await asyncio.to_thread(done.segment.close)
             self._next += 1
         parts: dict[str, dict[str, bool]] = {}
+        for table, part, _path in outcome.staged:
+            parts.setdefault(table, {})[part] = True
         for table, part, name in outcome.parts:
             parts.setdefault(table, {})[part] = name is not None
         return Applied(
@@ -1101,12 +1452,70 @@ class SharedCopyBackend:
             worker=outcome.worker,
         )
 
+    def reload_run(
+        self,
+        pool: SharedArrowPool,
+        pages: Sequence[ChangePage],
+        *,
+        tables: Collection[str],
+        scopes: Mapping[str, ReloadScope] = EMPTY,
+        check: ApplyHooks | None = None,
+    ) -> Coroutine[Any, Any, StagedReload]:
+        """a reload's staging in ``pool``'s worker (the reload lane's, never the apply worker): ``tables``' rows cut
+        into parts by their rules now, written into the store and held there until :meth:`publish_reload`.
+
+        Returns the staging to await, holding the pages only until they are handed over: the caller lets its own go
+        before awaiting it, so the serving process holds none of a reload's rows while it stages.
+
+        :param pool: the reload lane's pool, over this backend's store
+        :ptype pool: SharedArrowPool
+        :param pages: the reload's rows pages
+        :ptype pages: Sequence[ChangePage]
+        :param tables: the tables it reloads (a table with no page is reloaded empty)
+        :ptype tables: Collection[str]
+        :param scopes: each table reloaded by scope and its values; every other is reloaded whole
+        :ptype scopes: Mapping[str, ReloadScope]
+        :param check: hooks run in the reload worker over the staged tables (what they derive is dropped)
+        :ptype check: ApplyHooks | None
+        :return: the staging
+        :rtype: Coroutine[Any, Any, StagedReload]
+        :raises ValueError: for a table the copy does not hold, a keys page, a page of a table not reloaded, or a
+            scope of a table not reloaded or with no scope column
+        """
+        named = frozenset(tables)
+        self._unknown(pages, named)
+        wrong = sorted({page.table for page in pages if page.kind != ROWS or page.table not in named})
+        if wrong:
+            raise ValueError(f"a reload is rows pages of the tables it reloads, not pages of {wrong}")
+        for table, scope in scopes.items():
+            if table not in named:
+                raise ValueError(f"a scope for {table!r}, a table the reload does not reload")
+            if scope.column not in self._schemas[table].names:
+                raise ValueError(f"{table} has no column {scope.column!r} to reload by")
+        sent = [page for page in pages if page.rows.num_rows]
+        plan = replace(self._plan(sent, named), hooks=None)
+        rules = frozen((table, self._rules[table]) for table in sorted(named))
+        running = pool.run(
+            _reload_job,
+            plan,
+            tuple(sorted(scopes.items())),
+            check,
+            read=False,
+            tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
+            result_pieces=_APPLY_PIECE_BYTES,
+            result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
+        )
+        return _staged(running, rules, frozen(scopes))
+
     def _publish_change(
         self, version: str, base: str | None, outcome: _Outcome, segment: MappedSegment | None, mark: int | None
     ) -> None:
-        """publish a change's result on its base (a thread's: IO alone, each written part linked, never copied)."""
+        """publish a change's result on its base (a thread's: IO alone, each written part linked, never copied; a
+        reload's staged parts linked from where it staged them)."""
         files = EMPTY if segment is None else segment.files
         by_table: dict[str, dict[str, Path | None]] = {}
+        for table, part, path in outcome.staged:
+            by_table.setdefault(table, {})[part] = Path(path)
         for table, part, name in outcome.parts:
             by_table.setdefault(table, {})[part] = None if name is None else files[name]
         if base is None:

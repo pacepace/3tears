@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the copy's reload lane: a reload stages in a worker of its own and publishes in order
+
+**Added:** `threetears.core.collections.copy_reload.ReloadLane`, step 3T-4 of `design-copy-worker-backend.md`
+(decision 3; reports' decision 52, moved from its `shared_backend` reload lane). A whole-table reload, or a per-scope
+one (`ReloadScope`: a state's rows), stages in one reload worker process (`copy-reload`, its own `SharedArrowPool`),
+never the apply worker, so the apply lane applies every other change meanwhile. The staged parts are held in the store
+(`StagedReload`) and published through the apply lane in order (`ApplyLane.submit_reload`,
+`SharedCopyBackend.publish_reload`): linked in place of the table's (whole, or its scope's parts; a table held as one
+part has its scope's rows replaced), with the changes given to its tables since the reload (`ApplyLane.watch`,
+`ChangeWatch`, Arrow, bounded) applied over them in the same version, and a newer change's mark kept. Bounded
+(`max_reloads`, `max_bytes`, `max_replay_bytes`: past it `ReloadOverrun`); a dead reload worker fails its reload
+(`ReloadWorkerDied`) and is replaced for the next; `Reload.cancel()` before the publish's turn publishes nothing
+(`ReloadCancelled`). A reload's failure fails no change behind it. `SharedArrowPool.run` lets the caller's handed
+tables go once they are in the store, so the serving process holds none of a reload's rows while it stages.
+
 ### core: the copy's apply lane, and a copied table's instants, whole per-run changes and part names
 
 **Added:** `threetears.core.collections.copy_lane.ApplyLane`, step 3T-3 of `design-copy-worker-backend.md`, moved from

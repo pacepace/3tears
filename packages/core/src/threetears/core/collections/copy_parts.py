@@ -425,6 +425,21 @@ class Locator:
         pairs = pa.Table.from_arrays([named, part_of], schema=_LOCATED)
         return Locator(pa.concat_tables([kept, pairs]).combine_chunks())
 
+    def overlaid(self, newer: Locator) -> Locator:
+        """this locator with every value ``newer`` places placed as it places it (a per-scope reload's locator over the
+        copy's): one hash lookup, no row read.
+
+        :param newer: the pairs that win
+        :ptype newer: Locator
+        :return: the locator after them
+        :rtype: Locator
+        """
+        if not newer.located.num_rows:
+            return self
+        values = newer.located[_VALUE].combine_chunks()
+        kept = self.located.filter(pc.invert(pc.is_in(self.located[_VALUE], value_set=values)))
+        return Locator(pa.concat_tables([kept, newer.located.cast(_LOCATED)]).combine_chunks())
+
 
 def parts_of_keys(rule: PartRule, keys: pa.Table, locator: Locator | None = None) -> pa.Array:
     """each key's part: :data:`WHOLE_PART` for a table held as one part, its scope column's value for a key holding

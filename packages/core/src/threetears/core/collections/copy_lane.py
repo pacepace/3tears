@@ -29,6 +29,14 @@ a per-run table makes it due again.
 change it was applying given once more to the fresh one; a second death fails the change with
 :class:`ApplyWorkerDied`, loudly (logged as an error, counted), and the changes behind it as above.
 
+**A reload's publish** (:mod:`~threetears.core.collections.copy_reload`) is a step of this lane like a change: a
+reload stages in a worker of its own while this lane applies on, and its finished staged version is given here
+(:meth:`ApplyLane.submit_reload`) to publish in order. The changes given after the reload (:meth:`ApplyLane.watch`
+marks the point) to the tables it reloads were applied to the copy meanwhile; they are kept (Arrow, bounded) and
+applied again over the reload in its one publish (reports' decision 52: a change heard during a reload is applied over
+its full after the swap), so no version shows the reload without them. A reload whose publish fails, or that was
+cancelled, publishes nothing and fails no change behind it: the copy is whole without it.
+
 **State.** The queue is a tuple replaced whole, read and written on the event loop alone, under the lane's condition;
 counters are ints of this object, written only by its task.
 """
@@ -41,15 +49,19 @@ from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from typing import Final
 
-from threetears.core.collections.shared_copy import Applied, ChangePage, SharedCopyBackend
+from threetears.core.collections.shared_copy import Applied, ChangePage, SharedCopyBackend, StagedReload
 from threetears.observe import contain, get_logger
 
 __all__ = [
     "ApplyLane",
     "ApplyLaneFull",
     "ApplyWorkerDied",
+    "ChangeWatch",
     "EarlierChangeFailed",
     "LaneStatus",
+    "ReloadCancelled",
+    "ReloadOverrun",
+    "ReloadStep",
 ]
 
 log = get_logger(__name__)
@@ -78,6 +90,83 @@ class EarlierChangeFailed(RuntimeError):
     """a change queued behind one that failed: not applied, so it never lands on a copy missing the earlier one."""
 
 
+class ReloadCancelled(RuntimeError):
+    """a reload cancelled before its publish: nothing of it is published."""
+
+
+class ReloadOverrun(LookupError):
+    """the changes given during a reload to the tables it reloads passed the bytes kept to apply over it: nothing is
+    published, and the reload is read again (its full holds them now)."""
+
+
+class ChangeWatch:
+    """the changes applied after a point to some tables, kept (their pages, Arrow) to apply over a reload of them
+    (:meth:`ApplyLane.watch`). Its attributes are replaced whole, on the event loop, by the lane alone.
+
+    :ivar tables: the tables watched
+    :ivar after: changes given after this one are kept (the lane's count of changes given)
+    :ivar max_bytes: the most bytes of pages kept; past it the watch is :attr:`overrun` and keeps none
+    :ivar pages: the pages kept, in the order applied
+    :ivar whole: the tables a kept change replaced whole (their pages before it are not kept)
+    :ivar nbytes: the bytes kept
+    :ivar newer_mark: whether a change given after the point published a mark (the reload's own is older then)
+    :ivar overrun: whether more than ``max_bytes`` was kept
+    """
+
+    def __init__(self, tables: frozenset[str], after: int, max_bytes: int) -> None:
+        self.tables = tables
+        self.after = after
+        self.max_bytes = max_bytes
+        self.pages: tuple[ChangePage, ...] = ()
+        self.whole: frozenset[str] = frozenset()
+        self.nbytes = 0
+        self.newer_mark = False
+        self.overrun = False
+
+    def keep(self, pages: Sequence[ChangePage], whole: frozenset[str], mark: int | None) -> None:
+        """keep a change applied after the point: its pages of the watched tables, a whole one's replacing those
+        kept of its tables. Called by the lane alone, on the event loop.
+
+        :param pages: the change's pages
+        :ptype pages: Sequence[ChangePage]
+        :param whole: the tables it replaced whole
+        :ptype whole: frozenset[str]
+        :param mark: its mark
+        :ptype mark: int | None
+        :return: nothing
+        :rtype: None
+        """
+        if mark is not None:
+            self.newer_mark = True
+        replaced = whole & self.tables
+        mine = tuple(page for page in pages if page.table in self.tables)
+        if self.overrun or not (mine or replaced):
+            return
+        kept = tuple(page for page in self.pages if page.table not in replaced) + mine
+        self.pages, self.whole = kept, self.whole | replaced
+        self.nbytes = sum(page.rows.nbytes for page in kept)
+        if self.nbytes > self.max_bytes:
+            self.pages, self.nbytes, self.overrun = (), 0, True
+
+
+class ReloadStep:
+    """a staged reload's publish, as the lane takes it (:meth:`ApplyLane.submit_reload`).
+
+    :ivar staged: the reload, staged (its owner closes it)
+    :ivar watch: the changes kept to apply over it
+    :ivar mark: its mark
+    :ivar cancelled: set before its turn, it publishes nothing
+    :ivar publishing: set as its turn starts: past this point it is not cancelled
+    """
+
+    def __init__(self, staged: StagedReload, watch: ChangeWatch, mark: int | None) -> None:
+        self.staged = staged
+        self.watch = watch
+        self.mark = mark
+        self.cancelled = False
+        self.publishing = False
+
+
 @dataclass(frozen=True, slots=True)
 class LaneStatus:
     """what a lane holds and has done.
@@ -90,6 +179,7 @@ class LaneStatus:
     :ivar restarts: apply workers that died and were replaced
     :ivar waits: submits that waited for room
     :ivar last_error: the last failure, as text; None for none
+    :ivar reloads: reloads published (not counted in ``applied``)
     """
 
     queued: int
@@ -100,6 +190,7 @@ class LaneStatus:
     restarts: int
     waits: int
     last_error: str | None
+    reloads: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +200,10 @@ class _Change:
     mark: int | None
     nbytes: int
     done: asyncio.Future[Applied]
+    #: its place in the order given (:class:`ChangeWatch`)
+    seq: int = 0
+    #: a reload's publish in place of a change; None for a change
+    reload: ReloadStep | None = None
 
 
 class ApplyLane:
@@ -157,6 +252,11 @@ class ApplyLane:
         self._restarts = 0
         self._waits = 0
         self._last_error: str | None = None
+        #: changes given so far: each change's place in the order
+        self._given = 0
+        #: the reloads' watches: replaced whole, on the loop
+        self._watches: tuple[ChangeWatch, ...] = ()
+        self._reloads = 0
 
     def status(self) -> LaneStatus:
         """what the lane holds and has done.
@@ -173,6 +273,7 @@ class ApplyLane:
             restarts=self._restarts,
             waits=self._waits,
             last_error=self._last_error,
+            reloads=self._reloads,
         )
 
     def _room(self, nbytes: int) -> bool:
@@ -180,17 +281,60 @@ class ApplyLane:
             return True
         return len(self._queue) < self._max_changes and self._queued_bytes + nbytes <= self._max_bytes
 
-    def _change(self, pages: Sequence[ChangePage], whole: Collection[str], mark: int | None) -> _Change:
+    def _change(
+        self, pages: Sequence[ChangePage], whole: Collection[str], mark: int | None, reload: ReloadStep | None = None
+    ) -> _Change:
         if self._closing:
             raise RuntimeError("the copy's apply lane is closed")
         held = tuple(pages)
+        self._given += 1
         return _Change(
             pages=held,
             whole=frozenset(whole),
             mark=mark,
             nbytes=sum(page.rows.nbytes for page in held),
             done=asyncio.get_running_loop().create_future(),
+            seq=self._given,
+            reload=reload,
         )
+
+    def watch(self, tables: Collection[str], *, max_bytes: int) -> ChangeWatch:
+        """keep, from now, every change given after this call to ``tables`` as it applies: what a reload of them
+        applies over itself as it publishes (:meth:`submit_reload`). On the event loop.
+
+        :param tables: the tables
+        :ptype tables: Collection[str]
+        :param max_bytes: the most bytes of pages it keeps (:class:`ChangeWatch`)
+        :ptype max_bytes: int
+        :return: the watch
+        :rtype: ChangeWatch
+        """
+        watch = ChangeWatch(frozenset(tables), self._given, max_bytes)
+        self._watches = (*self._watches, watch)
+        return watch
+
+    def unwatch(self, watch: ChangeWatch) -> None:
+        """stop keeping changes for ``watch`` (its reload published, failed or cancelled). Harmless twice.
+
+        :param watch: the watch
+        :ptype watch: ChangeWatch
+        :return: nothing
+        :rtype: None
+        """
+        self._watches = tuple(held for held in self._watches if held is not watch)
+
+    async def submit_reload(self, step: ReloadStep) -> asyncio.Future[Applied]:
+        """queue a staged reload's publish behind the changes given before it, waiting for room as :meth:`submit`.
+        Its turn applies the changes its watch kept over it, in one version; past its turn it is not cancelled.
+
+        :param step: the reload's publish
+        :ptype step: ReloadStep
+        :return: what it published, or why it did not (:class:`ReloadCancelled`, :class:`ReloadOverrun`, the
+            apply's own)
+        :rtype: asyncio.Future[Applied]
+        :raises RuntimeError: when the lane is closed
+        """
+        return await self._submitted(self._change((), (), step.mark, step))
 
     def _queued(self, change: _Change) -> asyncio.Future[Applied]:
         """take a change into the queue (under ``_changed``, room checked) and wake the lane."""
@@ -215,7 +359,10 @@ class ApplyLane:
         :rtype: asyncio.Future[Applied]
         :raises RuntimeError: when the lane is closed
         """
-        change = self._change(pages, whole, mark)
+        return await self._submitted(self._change(pages, whole, mark))
+
+    async def _submitted(self, change: _Change) -> asyncio.Future[Applied]:
+        """take a change into the queue, waiting for room while the lane is full."""
         async with self._changed:
             if self._held or not self._room(change.nbytes):
                 # held in the order given: a change given later never takes the room before this one
@@ -351,6 +498,9 @@ class ApplyLane:
                 self._changed.notify_all()
 
     async def _apply(self, change: _Change) -> None:
+        if change.reload is not None:
+            await self._publish_reload(change, change.reload)
+            return
         try:
             applied = await self._applied_once_more(change)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the caller hears it through its future
@@ -378,12 +528,69 @@ class ApplyLane:
                 )
             raise
         self._applied += 1
+        for watch in self._watches:
+            if change.seq > watch.after:
+                watch.keep(change.pages, change.whole, change.mark)
+        self._merge_after(applied)
+        if not change.done.done():
+            change.done.set_result(applied)
+
+    def _merge_after(self, applied: Applied) -> None:
         rules = self._backend.rules
         if any(rules[table].split and rules[table].run_column is not None for table in applied.parts if table in rules):
             self._merge_due = True
             self._merge_turn = True
+
+    async def _publish_reload(self, change: _Change, step: ReloadStep) -> None:
+        """a reload's publish in its turn: the changes its watch kept applied over it, in one version; or nothing,
+        cancelled or overrun. A failure fails no change behind it."""
+        self.unwatch(step.watch)
+        watch = step.watch
+        try:
+            if step.cancelled:
+                raise ReloadCancelled("the reload was cancelled before its publish")
+            step.publishing = True
+            if watch.overrun:
+                raise ReloadOverrun(
+                    f"the changes given during the reload of {sorted(watch.tables)} passed the {watch.max_bytes} "
+                    f"bytes kept to apply over it; the reload is read again"
+                )
+            # a change given after the reload published a newer mark: the version keeps that one
+            mark = None if watch.newer_mark else step.mark
+            applied = await self._reload_once_more(step, mark)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the reload's caller hears it through its future; the copy is whole without it
+            if not isinstance(exc, ReloadCancelled):
+                self._failed += 1
+                self._last_error = f"a reload: {type(exc).__name__}: {exc}"
+                contain(exc, log=log, what="a reload's publish failed; nothing of it published", level="error")
+            if not change.done.done():
+                change.done.set_exception(exc)
+            return
+        except BaseException:
+            if not change.done.done():
+                change.done.set_exception(
+                    RuntimeError("the copy's apply lane stopped while publishing this reload; it may be published")
+                )
+            raise
+        self._reloads += 1
+        self._merge_after(applied)
         if not change.done.done():
             change.done.set_result(applied)
+
+    async def _reload_once_more(self, step: ReloadStep, mark: int | None) -> Applied:
+        """a reload's publish; given once more to a fresh apply worker when its worker died."""
+        watch = step.watch
+        for attempt in range(2):
+            try:
+                return await self._backend.publish_reload(step.staged, watch.pages, whole=watch.whole, mark=mark)
+            except BrokenProcessPool as died:
+                self._restarts += 1
+                if attempt:
+                    raise ApplyWorkerDied(
+                        "the copy's apply worker died publishing a reload, and again in a fresh worker"
+                    ) from died
+                log.warning("the copy's apply worker died publishing a reload; a fresh one publishes it once more")
+        raise AssertionError("unreachable")
 
     async def _applied_once_more(self, change: _Change) -> Applied:
         """the change applied; given once more to a fresh worker when its worker died (the pool replaces it)."""

@@ -5314,6 +5314,10 @@ class SharedArrowPool:
         except asyncio.CancelledError:
             submitting.add_done_callback(_abandon_submitted)
             raise
+        # handed over (in the store's shared memory now): the caller's rows are not held here while the job runs, so
+        # a caller that lets its own go holds none of them (a copy's reload stages its whole table so,
+        # ``copy_reload.ReloadLane``)
+        del tables
         claimed = False
         try:
             # a dead worker's BrokenProcessPool is said, and its pool marked for replacing, by the future's own
