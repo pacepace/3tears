@@ -140,6 +140,9 @@ class CallContext:
     async def wait_cancelled(self) -> None:
         """wait until the call is cancelled.
 
+        it returns only on cancellation: a call that ends normally never sets the signal, so a waiter
+        started outside the handler's task is stopped by whoever started it once the call returns.
+
         :return: nothing, once the call is cancelled
         :rtype: None
         """

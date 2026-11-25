@@ -101,7 +101,7 @@ async def build(*, target: str, ctx: CallContext) -> dict:
 | `progress_token` | The token the client sent to ask for progress, or `None`. |
 | `report_progress(progress, total=None, message=None)` | Sends `notifications/progress` for this call. It sends nothing when the client sent no token. Each value must be finite and greater than the last, as the protocol requires; a value that isn't raises `ValueError`. |
 | `log(level, data, *, logger=None)` | Sends a `notifications/message` entry to the client on this call's stream. On protocol 2026-07-28 and later it is sent only when the request opted in at that level or below (the `io.modelcontextprotocol/logLevel` key of its `_meta`). |
-| `cancelled`, `wait_cancelled()` | Set when the call is cancelled: the client sent `notifications/cancelled` or went away. The handler itself sees the cancellation as `CancelledError` at its next `await`. The signal is for work the call started outside its own task, such as a worker thread or a task in a longer-lived group. |
+| `cancelled`, `wait_cancelled()` | Set when the call is cancelled: the client sent `notifications/cancelled` or went away. The handler itself sees the cancellation as `CancelledError` at its next `await`. The signal is for work the call started outside its own task, such as a worker thread or a task in a longer-lived group. `wait_cancelled()` returns only on cancellation; a call that ends normally never sets it, so whoever starts such a waiter stops it when the call returns. |
 | `tool_name`, `request_id` | The tool being called and the call's protocol request id. |
 
 The context holds no MCP SDK type, so a handler needs no SDK import to use it. Its parameter is
@@ -110,9 +110,10 @@ default of `None` to keep the handler callable without one; the server passes a 
 tool whose handler declares two, a positional-only one, one named as an input property, or one that
 names `CallContext` in any other form (`list[CallContext]`, `CallContext | int`) is refused when the
 `McpTool` is built. An annotation that cannot be evaluated (a type imported only for type checking) is
-read as written, so `CallContext` and dotted names ending in it are still found; under an alias
-(`CallContext as Ctx`) it cannot be, and the server logs a warning naming the parameter instead of
-passing it nothing in silence. An argument with the context's name, admitted by a
+read by the import statements of the handler's module: a name imported from `threetears.mcp`, an alias
+of it included, or the qualified `threetears.mcp.CallContext`, is the call context, and the
+`CallContext` that `threetears.core` exports is not. One that names nothing the module imports is
+logged as a warning, once per tool and parameter, instead of passing it nothing in silence. An argument with the context's name, admitted by a
 schema that allows extra properties, is refused as an input validation error before the handler runs.
 A test of a handler builds its own `CallContext(tool_name=..., progress_token=..., progress_sender=...,
 log_sender=...)` with senders that record what they are given.

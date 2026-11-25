@@ -15,6 +15,14 @@ Branches, stacked: `feat/mcp-call-context` (chunk 01, off `feat/mcp-drop-sdk1`) 
 that order after `feat/mcp-drop-sdk1`.
 Critic mode: one review per chunk (each branch is reviewed and merged on its own).
 
+## Requirements Confidence
+
+**Level:** Medium
+
+**Why:** the goal rests on a consumer's stated need (real progress for each phase of a long call, each
+phase also logged, before the result, and stopping on cancellation); the shape of the surface is
+inferred, and the decisions below are not owner rulings.
+
 ## Goals
 
 A 3tears-mcp tool handler is called as `handler(**arguments)` and sees nothing of the request, so it
@@ -42,13 +50,16 @@ owner to rule on each; the last (the logging capability) is the one the README c
 
 - [DECISION: the context is found by the parameter's annotation, `CallContext`, not by a parameter
   name | the request was "detected by signature"; a fixed name would collide with tool arguments. An
-  annotation that cannot be evaluated (a type imported only for type checking) is matched as written,
-  `CallContext` or a dotted name ending in it. `CallContext | None` (or `Optional[CallContext]`) is the
-  context too, and is passed one. Any other form that names `CallContext` (`list[CallContext]`,
-  `CallContext | int`) is refused at construction, since the handler would otherwise run without a
-  context in silence. Each parameter's annotation is evaluated on its own, so one that fails does not
-  hide another; one that cannot be evaluated and is not an input property (an alias imported only for
-  type checking) is logged as a warning when the tool is built]
+  annotation that cannot be evaluated (a type imported only for type checking) is read by the import
+  statements of the handler's module: a name imported from `threetears.mcp` (an alias included) or the
+  qualified `threetears.mcp.CallContext` is the context, and `threetears.core`'s own `CallContext` (a
+  tool dispatch's identity envelope) is not. `CallContext | None` (or `Optional[CallContext]`, or
+  either inside `Annotated`) is the context too, and is passed one. Any other form that names it
+  (`list[CallContext]`, `CallContext | int`) is refused at construction, since the handler would
+  otherwise run without a context in silence. Each parameter's annotation is evaluated on its own, so
+  one that fails does not hide another; one that cannot be evaluated, is not an input property and
+  names nothing its module imports is logged as a warning, once per tool and parameter. The name
+  `CallContext` is kept beside core's: reading by imports, not the name, tells the two apart]
 - [DECISION: the context is a 3tears class with no SDK type in its surface; its senders are plain
   callables | consumer code must not need to import an SDK type to get these, and a handler's own
   test builds a context with recording senders]

@@ -32,6 +32,7 @@ from threetears.mcp.auth import Identity
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
 
+from . import relative_type_checking_handlers, type_checking_handlers
 from .conftest import LoopbackMcp
 
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
@@ -267,6 +268,74 @@ class TestTheHandlerDeclaresTheContext:
         schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
         assert _tool(handler, input_schema=schema).context_parameter == "ctx"
 
+    def test_the_family_cores_call_context_is_not_taken_for_this_one(self, caplog: pytest.LogCaptureFixture) -> None:
+        """``threetears.core`` exports a ``CallContext`` too; imported for type checking, it stays the handler's."""
+        with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
+            assert _tool(type_checking_handlers.core_context).context_parameter is None
+            assert _tool(type_checking_handlers.core_context_list).context_parameter is None
+        assert [r for r in caplog.records if r.name == "threetears.mcp.tool"] == []
+
+    def test_an_alias_imported_for_type_checking_is_found(self) -> None:
+        assert _tool(type_checking_handlers.aliased_mcp_context).context_parameter == "ctx"
+
+    def test_an_annotated_context_that_cannot_be_evaluated_is_found(self) -> None:
+        assert _tool(type_checking_handlers.annotated_aliased_context).context_parameter == "ctx"
+
+    def test_a_quoted_type_argument_is_read_by_the_modules_imports_whatever_the_parameter_order(self) -> None:
+        """``list["CallContext"]`` names the context in a module that imports it; it is refused either way."""
+
+        async def first(*, items: list["CallContext"] | None = None) -> str:  # noqa: UP037
+            return "ok"
+
+        async def after_an_unevaluable_one(  # noqa: UP037
+            *,
+            row: Row,  # type: ignore[name-defined]  # noqa: F821
+            items: list["CallContext"] | None = None,
+        ) -> str:
+            return "ok"
+
+        schema = {"type": "object", "properties": {"row": {"type": "object"}}}
+        for handler in (first, after_an_unevaluable_one):
+            with pytest.raises(ValueError, match="names CallContext in a form the server cannot pass"):
+                _tool(handler, input_schema=schema)
+
+    def test_a_quoted_alias_inside_an_unevaluable_annotation_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="names CallContext in a form the server cannot pass"):
+            _tool(type_checking_handlers.quoted_aliased_context_list)
+
+    def test_a_quoted_optional_context_is_found(self) -> None:
+        """``Optional["CallContext"]``, the PEP 484 forward-reference form, in text and evaluated."""
+
+        async def evaluated(*, ctx: Optional["CallContext"] = None) -> str:  # noqa: UP037, UP045
+            return "ok"
+
+        assert _tool(evaluated).context_parameter == "ctx"
+        assert _tool(type_checking_handlers.quoted_optional_alias).context_parameter == "ctx"
+
+    def test_annotated_prose_metadata_is_not_read_as_names(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
+            assert _tool(type_checking_handlers.annotated_with_prose_metadata).context_parameter is None
+        assert [r for r in caplog.records if r.name == "threetears.mcp.tool"] == []
+
+    def test_a_relative_type_checking_import_is_accounted_for(self, caplog: pytest.LogCaptureFixture) -> None:
+        """a relatively imported name is bound: no warning, and its ``CallContext`` is never the MCP one."""
+        with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
+            assert _tool(relative_type_checking_handlers.relative_peer).context_parameter is None
+            assert _tool(relative_type_checking_handlers.relative_lookalike_context).context_parameter is None
+        assert [r for r in caplog.records if r.name == "threetears.mcp.tool"] == []
+
+    def test_a_bracket_inside_quoted_metadata_does_not_end_the_annotated(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """read as text (the type is imported only for type checking), a quoted ``]`` is metadata, not syntax."""
+        with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
+            assert _tool(type_checking_handlers.bracket_in_metadata_context).context_parameter == "ctx"
+            assert _tool(type_checking_handlers.bracket_in_metadata_row).context_parameter is None
+        assert [r for r in caplog.records if r.name == "threetears.mcp.tool"] == []
+
+    def test_a_literal_value_naming_the_class_is_not_an_annotation_of_it(self) -> None:
+        assert _tool(type_checking_handlers.literal_naming_it).context_parameter is None
+
     def test_an_unevaluable_annotation_that_is_not_an_input_is_warned_about(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -276,7 +345,9 @@ class TestTheHandlerDeclaresTheContext:
             return "ok"
 
         with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
-            tool = _tool(handler)
+            tool = _tool(handler, name=f"warned-{uuid4()}")
+            # a provider that rebuilds its tools on every listing does not repeat the warning
+            _tool(handler, name=tool.name)
         assert tool.context_parameter is None
         warnings = [r.getMessage() for r in caplog.records if r.name == "threetears.mcp.tool"]
         assert len(warnings) == 1

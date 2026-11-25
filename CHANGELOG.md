@@ -48,9 +48,10 @@ handlers send them builds its transport with `json_response=False`.
 The parameter may be annotated `CallContext | None` (or `Optional[CallContext]`); the server passes a
 context either way. A tool whose handler declares two context parameters, a positional-only one, one
 named as an input property, or one that names `CallContext` in any other form is refused with
-`ValueError` when the `McpTool` is built. An annotation that cannot be evaluated is read as written;
-one that cannot be recognised that way (an alias imported only for type checking) is logged as a
-warning when the tool is built. The server does not declare the `logging` capability; whether it
+`ValueError` when the `McpTool` is built. An annotation that cannot be evaluated (a type imported only
+for type checking) is read by its module's import statements, so an alias of the call context is
+found and `threetears.core`'s own `CallContext` is not taken for it; one that names nothing the module
+imports is logged as a warning, once per tool and parameter. The server does not declare the `logging` capability; whether it
 should is open (see the README's call-context section). A call that passes an argument named
 as the context (a schema allowing extra properties lets it through) is refused as an input validation
 error before the handler runs. The context holds no MCP SDK type.
