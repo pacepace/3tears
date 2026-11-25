@@ -2780,3 +2780,44 @@ async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_tur
     lock.commit("state:IL")
     assert await follower.catch_up()
     assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+
+
+async def test_a_large_stage_is_cut_and_a_moved_scope_left_out_of_it_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if a pass's stage past the bound has its keys' scopes found (``staged_of``), or a scope the stamp moved under is
+    found among its keys (``leaving_keys_of``) and taken out of its bookkeeping (``without_keys_of``), in the serving
+    process: on a thread they took 6.3 ms, 14.7 ms and 12.6 ms of its CPU at 100,000 keys and 64 ms, 163 ms and 156 ms
+    at 1,000,000 (2026-11-25). The moved scope's keys still leave the change and the rest applies."""
+    lock = _Scopes()
+    count = INLINE_KEYS
+    l3, log, backend, follower = _scoped_world(lock, page_size=count * 2)
+    await asyncio.to_thread(l3.put, _rows("VA", count) + _rows("IL", count))
+    await asyncio.to_thread(log.commit, [("VA", i) for i in range(count)] + [("IL", i) for i in range(count)])
+    await follower.warm()
+    assert await follower.catch_up()
+    settled_va = await asyncio.to_thread(_of, backend, "VA")
+    jobs.clear()
+    seen = {
+        name: _here(monkeypatch, name, lambda key, *rest: sum(getattr(t, "num_rows", 0) for t in rest))
+        for name in ("staged_of", "leaving_keys_of", "without_keys_of")
+    }
+    await asyncio.to_thread(l3.put, _rows("VA", count, votes=4) + _rows("IL", count, votes=5))
+    await asyncio.to_thread(log.commit, [("VA", i) for i in range(count)] + [("IL", i) for i in range(count)])
+    lock.commit("state:VA", "state:IL")
+
+    def moves() -> None:
+        # between the pass's two reads of the record: another load commits VA
+        l3.put([("VA", 1, 41)])
+        log.commit([("VA", 1)])
+        lock.commit("state:VA")
+
+    lock.on_read = (lock.reads + 2, moves)
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_of, backend, "IL") == await asyncio.to_thread(_l3_of, l3, "IL")
+    assert await asyncio.to_thread(_of, backend, "VA") == settled_va
+    assert {"staged_scopes_job", "leaving_keys_job", "without_keys_job"} <= set(jobs), f"cut here: {jobs}"
+    assert not [name for name, calls in seen.items() if calls], f"cut here: {seen}"
+    lock.on_read = None
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
