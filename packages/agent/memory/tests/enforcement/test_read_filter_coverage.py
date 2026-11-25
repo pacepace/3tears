@@ -119,6 +119,7 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "l2_epoch_change": "reads one epoch's change record from L2, for a catch-up pass: the keys it changed, no row",
     "read_rows_led_by": "the generic leading-key scan the framework's cascade and cache warmers use",
     "save_entity": "a write of an entity the caller already holds; it returns no other row",
+    "adopt_stored_row": "caches a row the caller itself wrote to L3; it reads and returns no row",
     "save_to_store": "the L3 leg of save_entity; writes the caller's own entity",
     "save_ordered_to_store": "the ordered L3 write behind save_entity; writes the caller's own entities",
     "save_many_to_store": (
