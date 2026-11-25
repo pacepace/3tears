@@ -42,22 +42,19 @@ implementation notes:
 from __future__ import annotations
 
 import ast
-import hashlib
-import io
 import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from threetears.observe import BuildOnce
 from threetears.enforcement.common import (
     Violation,
-    clear_with_parse_cache,
     is_private_name,
     iter_python_files,
     note_unscanned,
 )
+from threetears.enforcement.common.scan_cache import CACHE_DIRECTORY, file_facts
 
 __all__ = [
     "package_id",
@@ -110,13 +107,10 @@ class _ModuleFacts:
     """everything every shape reads of one module, extracted from ONE parse and kept without the tree.
 
     a whole workspace's trees run to gigabytes, so no cache can hold them; these facts are a few
-    kilobytes a module, so one cache holds the workspace's and each shape reads them instead of
-    parsing the module again. a module that did not parse keeps only why, and every shape that
-    reaches it says so through :func:`note_unscanned`, as each shape did when it parsed for itself.
+    kilobytes a module, so they are kept on disk per module (:func:`file_facts`, keyed by the
+    module's bytes) and each shape reads them instead of parsing the module again, in this process
+    or the next.
 
-    :ivar path: the module
-    :ivar digest: the hash of the module's bytes these facts were read from
-    :ivar unscanned: why the module could not be parsed, or ``""`` when it was
     :ivar private_imports: shape A's absolute ``from <module> import`` statements naming a private
         alias: ``(module, line, private aliases)`` in :func:`ast.walk` order
     :ivar has_all: shape C: the module body assigns ``__all__``
@@ -126,100 +120,29 @@ class _ModuleFacts:
     :ivar reflective: shape F's violations in the module
     """
 
-    path: Path
-    digest: bytes
-    unscanned: str
-    private_imports: tuple[tuple[str, int, tuple[str, ...]], ...] = ()
-    has_all: bool = False
-    public_names: tuple[tuple[str, int], ...] = ()
-    all_privates: tuple[tuple[str, int], ...] = ()
-    classes: tuple[_ClassFacts, ...] = ()
-    reflective: tuple[Violation, ...] = ()
+    private_imports: tuple[tuple[str, int, tuple[str, ...]], ...]
+    has_all: bool
+    public_names: tuple[tuple[str, int], ...]
+    all_privates: tuple[tuple[str, int], ...]
+    classes: tuple[_ClassFacts, ...]
+    reflective: tuple[Violation, ...]
 
 
-def _content_digest(data: bytes) -> bytes:
-    """the hash a module's facts are current against.
+def _extract_module_facts(path: Path, tree: ast.Module) -> _ModuleFacts:
+    """what every shape reads of one parsed module: the per-file step :func:`file_facts` keeps.
 
-    :param data: the module's bytes
-    :ptype data: bytes
-    :return: the digest
-    :rtype: bytes
-    """
-    return hashlib.blake2b(data, digest_size=16).digest()
-
-
-def _same_content(facts: _ModuleFacts) -> bool:
-    """whether the module still holds the bytes *facts* were read from.
-
-    the content, not a modification stamp: a file rewritten inside one tick of a coarse timestamp
-    clock, at the same size, keeps its stamp, and a stamp-keyed cache would answer from the old
-    source. reading the bytes back costs a small fraction of parsing them.
-
-    :param facts: cached facts
-    :ptype facts: _ModuleFacts
-    :return: ``True`` while the file's bytes hash to the digest the facts were read at
-    :rtype: bool
-    :raises OSError: when the file can no longer be read
-    """
-    return _content_digest(facts.path.read_bytes()) == facts.digest
-
-
-def _one_module(_facts: _ModuleFacts) -> int:
-    """what keeping one module's facts costs: one entry of :data:`_FACTS_MAX_MODULES`.
-
-    :param _facts: the facts
-    :ptype _facts: _ModuleFacts
-    :return: 1
-    :rtype: int
-    """
-    return 1
-
-
-#: how many modules' facts :data:`_FACTS` keeps. a module's facts weigh a few kilobytes, so this is
-#: tens of megabytes at most, and several times this repo's ~3,600 scanned modules; past it a module
-#: is read and parsed again on every ask rather than evicting another.
-_FACTS_MAX_MODULES = 20_000
-
-#: every module's facts, by path, current while its bytes are unchanged. a ``BuildOnce`` because a
-#: hand-filled module-level cache races between threads
-#: (``tests/enforcement/test_build_once_is_the_only_lazy_fill.py``).
-_FACTS: BuildOnce[Path, _ModuleFacts] = BuildOnce(
-    is_current=_same_content, cost=_one_module, max_cost=_FACTS_MAX_MODULES
-)
-# a caller that clears the parse cache to read the source afresh gets fresh facts too
-clear_with_parse_cache(_FACTS.clear)
-
-
-def _read_module_facts(path: Path) -> _ModuleFacts:
-    """read and parse *path* once, and extract what every shape reads of it.
-
-    the source is decoded exactly as :func:`~threetears.enforcement.common.parse_python_path`
-    decodes it (``Path.read_text(encoding="utf-8")``: strict utf-8, universal newlines), so the
-    tree, its line numbers and its string constants are the ones that parse would produce.
-
-    :param path: the module
+    :param path: the module, for the violation records
     :ptype path: Path
-    :return: its facts, or the reason it could not be parsed
+    :param tree: its parsed source
+    :ptype tree: ast.Module
+    :return: its facts
     :rtype: _ModuleFacts
-    :raises OSError: when the file cannot be read
     """
-    data = path.read_bytes()
-    digest = _content_digest(data)
-    try:
-        source = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8").read()
-        tree = ast.parse(source, filename=str(path))
-    except UnicodeDecodeError:
-        return _ModuleFacts(path=path, digest=digest, unscanned="not valid utf-8")
-    except SyntaxError as exc:
-        return _ModuleFacts(path=path, digest=digest, unscanned=f"syntax error at line {exc.lineno}")
     by_type: dict[type[ast.AST], list[ast.AST]] = {}
     for node in ast.walk(tree):
         by_type.setdefault(type(node), []).append(node)
     has_all, public_names = _module_surface(tree)
     return _ModuleFacts(
-        path=path,
-        digest=digest,
-        unscanned="",
         private_imports=_private_imports(by_type.get(ast.ImportFrom, [])),
         has_all=has_all,
         public_names=public_names,
@@ -236,23 +159,74 @@ def _read_module_facts(path: Path) -> _ModuleFacts:
     )
 
 
-def _module_facts(path: Path) -> _ModuleFacts | None:
-    """*path*'s facts, or ``None`` -- said through :func:`note_unscanned` -- when it does not parse.
+def _walk(
+    roots: Iterable[Path], repo_root: Path, skip_basenames: frozenset[str] = frozenset()
+) -> list[tuple[Path, _ModuleFacts]]:
+    """every module under *roots*, in walk order, with its facts; one that does not parse is noted and left out.
 
-    every shape asks here for every module it walks, so a module is parsed once however many
-    shapes read it, and a module no shape could check is reported by each shape that skipped it.
+    a module that does not parse is said through :func:`note_unscanned`, as each shape said what
+    it skipped when it parsed for itself.
 
-    :param path: the module
-    :ptype path: Path
-    :return: its facts, or ``None`` for a module that is not valid utf-8 python
-    :rtype: _ModuleFacts | None
-    :raises OSError: when the file cannot be read
+    the facts come from :func:`file_facts`, in one call per anchor so the store is read once a
+    walk: the modules under *repo_root* are named relative to it, and a root outside it (a
+    path-dependency's src tree) is its own anchor. the store lives under *repo_root* either way.
+
+    a walk that meets a module that does not parse is walked again uncached, module by module, so
+    each one is reported once per walk with its reason, as each shape reported what it skipped.
+
+    :param roots: the roots to walk, in order
+    :ptype roots: Iterable[Path]
+    :param repo_root: the repo's root: the anchor of what it holds, and where the store lives
+    :ptype repo_root: Path
+    :param skip_basenames: file names left out of the walk, never read
+    :ptype skip_basenames: frozenset[str]
+    :return: ``(module, facts)`` in walk order, a module repeated once per root that holds it
+    :rtype: list[tuple[Path, _ModuleFacts]]
+    :raises OSError: when a module cannot be read
     """
-    facts = _FACTS.get(path, lambda: _read_module_facts(path))
-    if facts.unscanned:
-        note_unscanned(path, facts.unscanned)
-        return None
-    return facts
+    walked: list[Path] = []
+    anchored: dict[Path, list[Path]] = {}
+    for root in roots:
+        for path in iter_python_files(root):
+            if path.name in skip_basenames:
+                continue
+            walked.append(path)
+            anchored.setdefault(repo_root if path.is_relative_to(repo_root) else root, []).append(path)
+    facts: dict[Path, _ModuleFacts] = {}
+    try:
+        for anchor, paths in anchored.items():
+            facts.update(file_facts(_extract_module_facts, paths, root=anchor, directory=repo_root / CACHE_DIRECTORY))
+    except SyntaxError, UnicodeDecodeError:
+        # NOSILENT: not swallowed -- the walk is taken again module by module, which reports each
+        # module that does not parse through note_unscanned and leaves it out
+        return _walk_uncached(walked)
+    return [(path, facts[path]) for path in walked]
+
+
+def _walk_uncached(walked: list[Path]) -> list[tuple[Path, _ModuleFacts]]:
+    """:func:`_walk` without the store, for a walk holding a module that does not parse.
+
+    the source is decoded as :func:`~threetears.enforcement.common.parse_python_path` decodes it
+    (strict utf-8, universal newlines).
+
+    :param walked: the modules, in walk order
+    :ptype walked: list[Path]
+    :return: ``(module, facts)`` for each module that parses, in walk order
+    :rtype: list[tuple[Path, _ModuleFacts]]
+    :raises OSError: when a module cannot be read
+    """
+    found: list[tuple[Path, _ModuleFacts]] = []
+    for path in walked:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except UnicodeDecodeError:
+            note_unscanned(path, "not valid utf-8")
+            continue
+        except SyntaxError as exc:
+            note_unscanned(path, f"syntax error at line {exc.lineno}")
+            continue
+        found.append((path, _extract_module_facts(path, tree)))
+    return found
 
 
 def _private_imports(import_froms: list[ast.AST]) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
@@ -461,7 +435,7 @@ def shape_a_violations(
 
     :param scan_roots: where to look for importers / violations
     :ptype scan_roots: tuple[Path, ...]
-    :param repo_root: repo root (retained for parity with sibling walkers)
+    :param repo_root: repo root, where the module facts are kept
     :ptype repo_root: Path
     :param inheritance_roots: union of src roots used to resolve
         ``from <mod> import ...`` to a defining file and to compute
@@ -470,33 +444,28 @@ def shape_a_violations(
     :return: shape-A violations
     :rtype: list[Violation]
     """
-    _ = repo_root
     violations: list[Violation] = []
-    for root in scan_roots:
-        for importer in iter_python_files(root):
-            facts = _module_facts(importer)
-            if facts is None:
+    for importer, facts in _walk(scan_roots, repo_root):
+        for module, line, private_aliases in facts.private_imports:
+            defining_file = _resolve_module_to_file(
+                module,
+                inheritance_roots,
+            )
+            if defining_file is None:
                 continue
-            for module, line, private_aliases in facts.private_imports:
-                defining_file = _resolve_module_to_file(
-                    module,
-                    inheritance_roots,
-                )
-                if defining_file is None:
-                    continue
-                if same_package(importer, defining_file, inheritance_roots):
-                    continue
-                for alias in private_aliases:
-                    reason = f"imports private name '{alias}' from '{module}' across package boundary"
-                    violations.append(
-                        Violation(
-                            category="underscore_access.A",
-                            file=importer,
-                            line=line,
-                            symbol=alias,
-                            reason=reason,
-                        )
+            if same_package(importer, defining_file, inheritance_roots):
+                continue
+            for alias in private_aliases:
+                reason = f"imports private name '{alias}' from '{module}' across package boundary"
+                violations.append(
+                    Violation(
+                        category="underscore_access.A",
+                        file=importer,
+                        line=line,
+                        symbol=alias,
+                        reason=reason,
                     )
+                )
     return violations
 
 
@@ -619,42 +588,36 @@ def shape_c_violations(
     :param scan_roots: where to look for violations; only iterates
         these roots
     :ptype scan_roots: tuple[Path, ...]
-    :param repo_root: repo root (retained for parity with sibling walkers)
+    :param repo_root: repo root, where the module facts are kept
     :ptype repo_root: Path
     :param skip_basenames: file basenames excluded from the check
     :ptype skip_basenames: frozenset[str]
     :return: shape-C violations
     :rtype: list[Violation]
     """
-    _ = repo_root
     violations: list[Violation] = []
-    for root in scan_roots:
-        for module_path in iter_python_files(root):
-            if module_path.name in skip_basenames:
-                continue
-            facts = _module_facts(module_path)
-            if facts is None:
-                continue
-            if facts.has_all:
-                continue
-            if not facts.public_names:
-                continue
-            first_name, first_line = facts.public_names[0]
-            reason = f"module defines {len(facts.public_names)} public name(s) but no __all__; first is '{first_name}'"
-            violations.append(
-                Violation(
-                    category="underscore_access.C",
-                    file=module_path,
-                    line=first_line,
-                    symbol="__all__",
-                    reason=reason,
-                )
+    for module_path, facts in _walk(scan_roots, repo_root, skip_basenames):
+        if facts.has_all:
+            continue
+        if not facts.public_names:
+            continue
+        first_name, first_line = facts.public_names[0]
+        reason = f"module defines {len(facts.public_names)} public name(s) but no __all__; first is '{first_name}'"
+        violations.append(
+            Violation(
+                category="underscore_access.C",
+                file=module_path,
+                line=first_line,
+                symbol="__all__",
+                reason=reason,
             )
+        )
     return violations
 
 
 def _collect_class_private_attrs(
     src_roots: tuple[Path, ...],
+    repo_root: Path,
 ) -> dict[str, dict[str, tuple[Path, int]]]:
     """build a map of ``class_name`` -> ``{_private_name -> (file, line)}``.
 
@@ -672,19 +635,17 @@ def _collect_class_private_attrs(
 
     :param src_roots: every src root the scanner should consider
     :ptype src_roots: tuple[Path, ...]
+    :param repo_root: the repo's root, where the module facts are kept
+    :ptype repo_root: Path
     :return: nested map class -> private name -> defining (file, line)
     :rtype: dict[str, dict[str, tuple[Path, int]]]
     """
     result: dict[str, dict[str, tuple[Path, int]]] = {}
-    for root in src_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is None:
-                continue
-            for cls in facts.classes:
-                entries = result.setdefault(cls.name, {})
-                for name, line in cls.private_members:
-                    entries[name] = (file, line)
+    for file, facts in _walk(src_roots, repo_root):
+        for cls in facts.classes:
+            entries = result.setdefault(cls.name, {})
+            for name, line in cls.private_members:
+                entries[name] = (file, line)
     return result
 
 
@@ -725,48 +686,44 @@ def shape_d_violations(
     :return: shape-D violations
     :rtype: list[Violation]
     """
-    class_privates = _collect_class_private_attrs(inheritance_roots)
+    class_privates = _collect_class_private_attrs(inheritance_roots, repo_root)
     violations: list[Violation] = []
-    for root in scan_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is None:
+    for file, facts in _walk(scan_roots, repo_root):
+        for node in facts.classes:
+            base_names = node.textual_bases
+            if not base_names:
                 continue
-            for node in facts.classes:
-                base_names = node.textual_bases
-                if not base_names:
+            sub_privates = node.private_members
+            for base_name in base_names:
+                if base_name == node.name:
                     continue
-                sub_privates = node.private_members
-                for base_name in base_names:
-                    if base_name == node.name:
+                base_entries = class_privates.get(base_name, {})
+                for name, line in sub_privates:
+                    if name not in base_entries:
                         continue
-                    base_entries = class_privates.get(base_name, {})
-                    for name, line in sub_privates:
-                        if name not in base_entries:
-                            continue
-                        defining_file, defining_line = base_entries[name]
-                        if defining_file == file and defining_line == line:
-                            continue
-                        try:
-                            rel_def: Path | str = defining_file.relative_to(repo_root)
-                        except ValueError:
-                            rel_def = defining_file
-                        reason = (
-                            f"class '{node.name}' shadows private '{name}' "
-                            f"declared on base class '{base_name}' at "
-                            f"{rel_def}:{defining_line}; underscore names are "
-                            f"implementation detail of the defining class "
-                            f"and must not be overridden"
+                    defining_file, defining_line = base_entries[name]
+                    if defining_file == file and defining_line == line:
+                        continue
+                    try:
+                        rel_def: Path | str = defining_file.relative_to(repo_root)
+                    except ValueError:
+                        rel_def = defining_file
+                    reason = (
+                        f"class '{node.name}' shadows private '{name}' "
+                        f"declared on base class '{base_name}' at "
+                        f"{rel_def}:{defining_line}; underscore names are "
+                        f"implementation detail of the defining class "
+                        f"and must not be overridden"
+                    )
+                    violations.append(
+                        Violation(
+                            category="underscore_access.D",
+                            file=file,
+                            line=line,
+                            symbol=name,
+                            reason=reason,
                         )
-                        violations.append(
-                            Violation(
-                                category="underscore_access.D",
-                                file=file,
-                                line=line,
-                                symbol=name,
-                                reason=reason,
-                            )
-                        )
+                    )
     return violations
 
 
@@ -838,35 +795,30 @@ def shape_e_violations(
     :param scan_roots: where to look for violations; only iterates
         these roots
     :ptype scan_roots: tuple[Path, ...]
-    :param repo_root: repo root (retained for parity with sibling walkers)
+    :param repo_root: repo root, where the module facts are kept
     :ptype repo_root: Path
     :return: shape-E violations
     :rtype: list[Violation]
     """
-    _ = repo_root
     violations: list[Violation] = []
-    for root in scan_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is None:
-                continue
-            for name, line in facts.all_privates:
-                reason = (
-                    f"__all__ lists private name '{name}'; underscore "
-                    f"prefix declares implementation detail, __all__ "
-                    f"declares public api -- the two declarations "
-                    f"contradict. either drop the underscore (name is "
-                    f"public) or remove from __all__ (name is private)"
+    for file, facts in _walk(scan_roots, repo_root):
+        for name, line in facts.all_privates:
+            reason = (
+                f"__all__ lists private name '{name}'; underscore "
+                f"prefix declares implementation detail, __all__ "
+                f"declares public api -- the two declarations "
+                f"contradict. either drop the underscore (name is "
+                f"public) or remove from __all__ (name is private)"
+            )
+            violations.append(
+                Violation(
+                    category="underscore_access.E",
+                    file=file,
+                    line=line,
+                    symbol=name,
+                    reason=reason,
                 )
-                violations.append(
-                    Violation(
-                        category="underscore_access.E",
-                        file=file,
-                        line=line,
-                        symbol=name,
-                        reason=reason,
-                    )
-                )
+            )
     return violations
 
 
@@ -912,19 +864,14 @@ def shape_f_violations(
     :param scan_roots: where to look for violations; unlike shapes A, C, D and E this is meant to
         include ``tests/`` trees, where every instance that surfaced the gap lived
     :ptype scan_roots: tuple[Path, ...]
-    :param repo_root: repo root (retained for parity with sibling walkers)
+    :param repo_root: repo root, where the module facts are kept
     :ptype repo_root: Path
     :return: shape-F violations
     :rtype: list[Violation]
     """
-    _ = repo_root
     violations: list[Violation] = []
-    for root in scan_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is None:
-                continue
-            violations.extend(facts.reflective)
+    for _file, facts in _walk(scan_roots, repo_root):
+        violations.extend(facts.reflective)
     return violations
 
 
@@ -1306,6 +1253,7 @@ def _extract_all_value(node: ast.stmt) -> tuple[ast.expr | None, int]:
 
 def _collect_class_private_state(
     src_roots: tuple[Path, ...],
+    repo_root: Path,
 ) -> dict[str, dict[str, tuple[Path, int]]]:
     """build a map of ``class_name`` -> ``{_private state name -> (file, line)}``.
 
@@ -1316,19 +1264,17 @@ def _collect_class_private_state(
 
     :param src_roots: every src root the scanner should consider
     :ptype src_roots: tuple[Path, ...]
+    :param repo_root: the repo's root, where the module facts are kept
+    :ptype repo_root: Path
     :return: nested map class -> private state name -> defining (file, line)
     :rtype: dict[str, dict[str, tuple[Path, int]]]
     """
     result: dict[str, dict[str, tuple[Path, int]]] = {}
-    for root in src_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is None:
-                continue
-            for cls in facts.classes:
-                entries = result.setdefault(cls.name, {})
-                for name, line in cls.state:
-                    entries.setdefault(name, (file, line))
+    for file, facts in _walk(src_roots, repo_root):
+        for cls in facts.classes:
+            entries = result.setdefault(cls.name, {})
+            for name, line in cls.state:
+                entries.setdefault(name, (file, line))
     return result
 
 
@@ -1426,14 +1372,11 @@ def shape_i_violations(
     :return: shape-I violations
     :rtype: list[Violation]
     """
-    base_state = _collect_class_private_state(inheritance_roots)
-    production_bases = _collect_class_bases(inheritance_roots)
+    base_state = _collect_class_private_state(inheritance_roots, repo_root)
+    production_bases = _collect_class_bases(inheritance_roots, repo_root)
     scanned: list[tuple[_ClassFacts, Path]] = []
-    for root in scan_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is not None:
-                scanned.extend((cls, file) for cls in facts.classes)
+    for file, facts in _walk(scan_roots, repo_root):
+        scanned.extend((cls, file) for cls in facts.classes)
     # a test class's ancestors run through test-defined classes too (a harness over a harness)
     test_bases = {cls.name: list(cls.generic_bases) for cls, _ in scanned}
     test_declares = {cls.name: cls.defines for cls, _ in scanned}
@@ -1444,22 +1387,20 @@ def shape_i_violations(
     return violations
 
 
-def _collect_class_bases(src_roots: tuple[Path, ...]) -> dict[str, list[str]]:
+def _collect_class_bases(src_roots: tuple[Path, ...], repo_root: Path) -> dict[str, list[str]]:
     """``class_name`` -> its bases' last-segment names, over every class the roots define.
 
     :param src_roots: every src root the scanner should consider
     :ptype src_roots: tuple[Path, ...]
+    :param repo_root: the repo's root, where the module facts are kept
+    :ptype repo_root: Path
     :return: class -> base names (merged across same-named classes, as the other maps are)
     :rtype: dict[str, list[str]]
     """
     result: dict[str, list[str]] = {}
-    for root in src_roots:
-        for file in iter_python_files(root):
-            facts = _module_facts(file)
-            if facts is None:
-                continue
-            for cls in facts.classes:
-                result.setdefault(cls.name, []).extend(cls.generic_bases)
+    for _file, facts in _walk(src_roots, repo_root):
+        for cls in facts.classes:
+            result.setdefault(cls.name, []).extend(cls.generic_bases)
     return result
 
 

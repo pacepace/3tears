@@ -750,14 +750,22 @@ class TestEveryShapeReadsOneParse:
         assert len(set(notes)) == 1
         assert notes[0] == "syntax error at line 1"
 
-    def test_every_shape_reads_one_parse_until_the_parse_cache_is_cleared(
+    def test_every_shape_reads_one_parse_and_a_later_walk_parses_only_what_changed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """one parse serves every shape; a later walk, even in a process holding nothing (the parse cache cleared),
+        takes the module's facts from the scan cache by its bytes, and an edit is parsed again."""
         parses: list[str] = []
         real_parse = ast.parse
-        monkeypatch.setattr(ast, "parse", lambda source, *a, **k: parses.append("p") or real_parse(source, *a, **k))
+
+        def counting(source: str | bytes, filename: str = "<unknown>", *args: object, **kwargs: object) -> ast.AST:
+            if str(filename).startswith(str(tmp_path)):  # the planted module, not the code key's own reads
+                parses.append(str(filename))
+            return real_parse(source, filename, *args, **kwargs)  # type: ignore[call-overload]
+
+        monkeypatch.setattr(ast, "parse", counting)
         src = tmp_path / "src"
-        _write(src / "pkg" / "mod.py", '__all__ = ["_x"]\n\nclass A:\n    _y = 1\n')
+        module = _write(src / "pkg" / "mod.py", '__all__ = ["_x"]\n\nclass A:\n    _y = 1\n')
         roots = (src,)
 
         shape_a_violations(roots, tmp_path, roots)
@@ -769,7 +777,11 @@ class TestEveryShapeReadsOneParse:
         assert len(parses) == 1
 
         clear_parse_cache()
-        shape_e_violations(roots, tmp_path)
+        assert [v.symbol for v in shape_e_violations(roots, tmp_path)] == ["_x"]
+        assert len(parses) == 1, "a walk over bytes already seen parsed them again"
+
+        module.write_text('__all__ = ["_z"]\n\nclass A:\n    _y = 1\n')
+        assert [v.symbol for v in shape_e_violations(roots, tmp_path)] == ["_z"]
         assert len(parses) == 2
 
     def test_a_module_that_is_not_utf8_is_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
