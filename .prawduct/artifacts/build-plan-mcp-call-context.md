@@ -2,7 +2,7 @@
 artifact: build-plan
 version: 1
 scope: mcp-call-context
-branch: feat/mcp-call-context
+branch: feat/mcp-progress-logging
 depends_on: [mcp-drop-sdk1]
 partition: "serial -- two stacked chunks in one package; chunk 02 tests what chunk 01 builds"
 last_validated: 2026-11-25
@@ -94,8 +94,14 @@ Done when: lint, `typecheck.sh mcp`, `test.sh mcp`, the enforcement suite pass; 
   and stateful modes, on 2025-11-25 and 2026-07-28 (with and without the log opt-in), through
   `build_http_app` and an embedded `McpHttpTransport`.
 - A transport built with `json_response=True` cannot carry them: the server logs one warning per
-  server naming the fix the first time a handler's progress or log entry is dropped that way.
-- README: which transport options deliver progress, logging and cancellation; CHANGELOG.
+  server naming the fix the first time a handler's progress or log entry is dropped that way, in
+  stateless and in stateful mode (the stateful case proves the request's transport reaches the
+  session task the handler runs in).
+- README: which transport options deliver progress, logging and cancellation, each row pinned by a
+  test (including that a plain-JSON stateless call is not cancelled when its client stops waiting);
+  CHANGELOG.
+- Files: `packages/mcp/src/threetears/mcp/http_server.py`, `packages/mcp/src/threetears/mcp/server.py`,
+  `packages/mcp/tests/unit/test_progress_and_logging.py`, `packages/mcp/tests/unit/conftest.py`.
 
 Done when: lint, `typecheck.sh mcp`, `test.sh mcp`, the enforcement suite and the unit suite pass;
 Critic run.

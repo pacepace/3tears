@@ -10,14 +10,17 @@ packages (bumped in lock-step).
 
 A handler's `CallContext.report_progress` and `CallContext.log` reach the client on the call's own SSE
 stream, before the result, through a transport built with `json_response=False`: in stateless and
-stateful mode, on protocols 2025-11-25 and 2026-07-28. A client that cancels the call or closes the
-connection cancels the handler and sets `ctx.cancelled`. The mcp tests now prove each of these with the
+stateful mode, on protocols 2025-11-25 and 2026-07-28. A client that gives up on the call cancels the
+handler and sets `ctx.cancelled`; the SDK client both sends the cancellation and drops the call's
+stream, and the tests do not tell those two apart. The mcp tests now prove each of these with the
 SDK's clients over real connections, the handler waiting after every entry until the client holds it.
-The README says which transport options carry what.
+The README says which transport options carry what, and a test pins that over a plain-JSON stateless
+transport a client that stops waiting does not cancel the handler.
 
 **Changed:** `json_response=True` stays the default, and its response is the result alone, so a
 handler's progress or log entry has nowhere to go. The server now logs one warning per server, the
-first time that happens, naming `json_response=False`; before, it was dropped without a word.
+first time that happens, naming `json_response=False`, in stateless and in stateful mode; before, it
+was dropped without a word.
 
 **Added:** `current_request_streams()` (`threetears.mcp.http_server`) says whether the request being
 served can carry notifications ahead of its result.

@@ -270,11 +270,15 @@ class TestAPlainJsonTransport:
     """``json_response=True`` answers with the result alone; the server says what it could not send."""
 
     @pytest.mark.asyncio
+    @_MODES
     async def test_nothing_reaches_the_client_and_the_server_warns_once(
         self,
         loopback_mcp: LoopbackMcp,
         caplog: pytest.LogCaptureFixture,
+        stateless: bool,
     ) -> None:
+        """in stateful mode too: the handler runs in the session's task, which must still see the request's transport."""
+
         async def build(*, ctx: CallContext) -> str:
             await ctx.report_progress(1)
             await ctx.log("info", "phase")
@@ -282,7 +286,7 @@ class TestAPlainJsonTransport:
 
         client = _Client()
         with caplog.at_level(logging.WARNING, logger="threetears.mcp.server"):
-            async with loopback_mcp(_server(build), json_response=True) as url:
+            async with loopback_mcp(_server(build), stateless=stateless, json_response=True) as url:
                 async with _session(url, client, modern=False) as session:
                     first = await session.call_tool("build", {}, progress_callback=client.on_progress)
                     second = await session.call_tool("build", {}, progress_callback=client.on_progress)
@@ -296,10 +300,12 @@ class TestAPlainJsonTransport:
         assert len(warnings) == 1
 
     @pytest.mark.asyncio
+    @_MODES
     async def test_a_handler_that_sends_nothing_raises_no_warning(
         self,
         loopback_mcp: LoopbackMcp,
         caplog: pytest.LogCaptureFixture,
+        stateless: bool,
     ) -> None:
         """the warning is about what was dropped, not about the transport's choice."""
 
@@ -310,8 +316,35 @@ class TestAPlainJsonTransport:
 
         client = _Client()
         with caplog.at_level(logging.WARNING, logger="threetears.mcp.server"):
-            async with loopback_mcp(_server(build), json_response=True) as url:
+            async with loopback_mcp(_server(build), stateless=stateless, json_response=True) as url:
                 async with _session(url, client, modern=False) as session:
                     result = await session.call_tool("build", {})
         assert result.is_error is False
         assert [record for record in caplog.records if "json_response=False" in record.getMessage()] == []
+
+    @pytest.mark.asyncio
+    async def test_in_stateless_mode_a_client_that_gives_up_does_not_cancel_the_handler(
+        self,
+        loopback_mcp: LoopbackMcp,
+    ) -> None:
+        """the README's table: a plain-JSON stateless call runs to its end after the client stops waiting."""
+        started = anyio.Event()
+        finished = anyio.Event()
+        contexts: list[CallContext] = []
+
+        async def build(*, ctx: CallContext) -> str:
+            contexts.append(ctx)
+            started.set()
+            await anyio.sleep(1)
+            finished.set()
+            return "built"
+
+        client = _Client()
+        async with loopback_mcp(_server(build), stateless=True, json_response=True) as url:
+            async with _session(url, client, modern=False) as session:
+                with anyio.move_on_after(0.3):
+                    await session.call_tool("build", {})
+                with anyio.fail_after(_DELIVERY_DEADLINE_S):
+                    await started.wait()
+                    await finished.wait()
+        assert contexts[0].cancelled is False

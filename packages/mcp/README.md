@@ -131,7 +131,7 @@ app = server.build_http_app(json_response=False)            # or build_http_tran
 | | `json_response=False` (SSE) | `json_response=True` (the default, plain JSON) |
 |---|---|---|
 | progress and log entries | sent on the call's stream, before the result | not sent: the response is the result alone. The server logs one warning, the first time a handler's entry is dropped, naming `json_response=False` |
-| the client cancels the call or closes the connection | the handler is cancelled, and `ctx.cancelled` is set | in stateless mode the handler is not cancelled |
+| the client gives up on the call (cancels it, dropping its stream) | the handler is cancelled, and `ctx.cancelled` is set | in stateless mode the handler is not cancelled; it runs to its end |
 
 `json_response=True` stays the default, so a client that reads a plain JSON body is unaffected. A
 server whose tools report progress builds its transport with `json_response=False`; every MCP client
