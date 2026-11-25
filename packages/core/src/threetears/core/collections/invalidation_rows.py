@@ -134,13 +134,17 @@ def _pack_arrow(column: Any) -> _PackedTexts:
     return _PackedTexts(data=bytes(memoryview(data)[:used]) if data is not None else b"", offsets=bytes(ends))
 
 
-def _texts(packed: _PackedTexts, count: int) -> list[str]:
-    """a packed column's values, read with the standard library.
+def _texts(packed: _PackedTexts, count: int, start: int = 0, stop: int | None = None) -> list[str]:
+    """a packed column's values from ``start`` to ``stop``, read with the standard library.
 
     :param packed: the column
     :ptype packed: _PackedTexts
     :param count: how many values
     :ptype count: int
+    :param start: the first value read
+    :ptype start: int
+    :param stop: the value after the last read; ``None`` reads to the end
+    :ptype stop: int | None
     :return: the values
     :rtype: list[str]
     """
@@ -149,7 +153,8 @@ def _texts(packed: _PackedTexts, count: int) -> list[str]:
     if not _LITTLE:
         offsets.byteswap()
     data = packed.data
-    return [data[offsets[at] : offsets[at + 1]].decode() for at in range(count)]
+    end = count if stop is None else min(stop, count)
+    return [data[offsets[at] : offsets[at + 1]].decode() for at in range(start, end)]
 
 
 def key_batch(rows: InvalidatedRows) -> Any:
@@ -179,17 +184,25 @@ def key_batch(rows: InvalidatedRows) -> Any:
     return pa.table(columns)
 
 
-def row_ids(rows: InvalidatedRows) -> list[list[str]]:
-    """each row's key values as text, in key order: what a row message a row names as ``ids``. Built only for a
-    receiver that applies the rows one at a time (a collection's L1 and L2, a cache that takes rows).
+def row_ids(rows: InvalidatedRows, start: int = 0, stop: int | None = None) -> list[list[str]]:
+    """each row's key values as text, in key order, from row ``start`` to ``stop``: what a row message a row names as
+    ``ids``. Built only for a receiver that applies the rows one at a time (a collection's L1 and L2, a cache that takes
+    rows), a run at a time: a Python object a key for the run alone.
 
     :param rows: the rows
     :ptype rows: InvalidatedRows
+    :param start: the first row
+    :ptype start: int
+    :param stop: the row after the last; ``None`` is every row to the end
+    :ptype stop: int | None
     :return: one list a row
     :rtype: list[list[str]]
     """
-    columns = [_texts(packed, rows.count) for packed in rows.keys]
-    return [list(values) for values in zip(*columns, strict=True)] if columns else [[] for _ in range(rows.count)]
+    end = rows.count if stop is None else min(stop, rows.count)
+    columns = [_texts(packed, rows.count, start, end) for packed in rows.keys]
+    if not columns:
+        return [[] for _ in range(start, end)]
+    return [list(values) for values in zip(*columns, strict=True)]
 
 
 def invalidation_batches(

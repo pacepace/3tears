@@ -335,17 +335,22 @@ class CacheInvalidationMessage(BaseModel):
         """
         return 1 if self.rows is None else self.rows.count
 
-    def each_row(self) -> list[CacheInvalidationMessage]:
-        """this message as one message a row, in order: itself when it names one row. A Python object a row: built
-        only where a row is applied one at a time (a collection's L1 and L2, a cache that takes rows), never for a
-        cache that takes key batches (:func:`~threetears.core.collections.invalidation_rows.key_batch`).
+    def each_row(self, start: int = 0, stop: int | None = None) -> list[CacheInvalidationMessage]:
+        """this message as one message a row, in order, from row ``start`` to ``stop``: itself when it names one row.
+        A Python object a row: built only where a row is applied one at a time (a collection's L1 and L2, a cache that
+        takes rows), a run at a time there (``CollectionRegistry._hear_broadcast``), never for a cache that takes key
+        batches (:func:`~threetears.core.collections.invalidation_rows.key_batch`).
 
+        :param start: the first row
+        :ptype start: int
+        :param stop: the row after the last; ``None`` is every row to the end
+        :ptype stop: int | None
         :return: the messages, in order
         :rtype: list[CacheInvalidationMessage]
         """
         rows = self.rows
         if rows is None:
-            return [self]
+            return [self] if start == 0 and (stop is None or stop > 0) else []
         columns = rows.columns
         return [
             CacheInvalidationMessage(
@@ -357,7 +362,7 @@ class CacheInvalidationMessage(BaseModel):
                 bump_rows=self.bump_rows,
                 columns=None if columns is None else columns[at],
             )
-            for at, ids in enumerate(row_ids(rows))
+            for at, ids in enumerate(row_ids(rows, start, stop), start=start)
         ]
 
     @classmethod
@@ -2342,14 +2347,24 @@ class CollectionRegistry:
             if generation is not None and bump_rows is not None:
                 self._generation_marks.hear(table, generation, bump_rows, rows=rows.count)
             return
-        for index, row in enumerate(message.each_row()):
-            if index and not index % _NOTED_ROWS_PER_YIELD:
-                # a message of many rows yields between runs of them, so the loop answers everything else between
-                await asyncio.sleep(0)
-            await self._apply_row_message(row, batched=bool(batched) or told)
-            # counted a row at a time, each once applied, as a one-row message is
-            if generation is not None and bump_rows is not None:
-                self._generation_marks.hear(table, generation, bump_rows)
+        # A run of rows a turn, each run's row messages built as it comes (``each_row(start, stop)``), and the rows
+        # applied to the end counted toward their advance once for the message, as the path above counts them; a row
+        # whose eviction raised part-way, and every row after it, stays uncounted, as a row message a row left it.
+        # Why: every row message built up front was one turn of the loop a row (0.10 s for a message of 25,000 keys),
+        # and a count a row rebuilt the table's mark a row, copying every advance it holds heard and waiting: 194 us a
+        # row with 4,000 waiting, 9.7 s of the loop over a message of 50,000 keys (3.5 us with none; 2026-11-25)
+        applied = 0
+        try:
+            for start in range(0, rows.count, _NOTED_ROWS_PER_YIELD):
+                if start:
+                    # a message of many rows yields between runs of them, so the loop answers everything else between
+                    await asyncio.sleep(0)
+                for row in message.each_row(start, start + _NOTED_ROWS_PER_YIELD):
+                    await self._apply_row_message(row, batched=bool(batched) or told)
+                    applied += 1
+        finally:
+            if applied and generation is not None and bump_rows is not None:
+                self._generation_marks.hear(table, generation, bump_rows, rows=applied)
 
     async def _apply_row_message(self, message: CacheInvalidationMessage, *, batched: bool = False) -> None:
         """evict one changed row from everything this process holds of it: scans, derived caches, L2, L1.
