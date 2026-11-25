@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -28,7 +29,7 @@ async def store(db_container: str) -> AsyncIterator[SqlL3Backend]:
     schema_name = f"l3c_{uuid.uuid4().hex[:12]}"
     metadata = MetaData()
     ddl = [
-        str(CreateTable(schema.to_sqlalchemy_table(metadata)).compile(dialect=postgresql.dialect()))
+        str(CreateTable(schema.to_sqlalchemy_table(metadata)).compile(dialect=cast(Any, postgresql).dialect()))
         for schema in CONTRACT_SCHEMAS
     ]
 

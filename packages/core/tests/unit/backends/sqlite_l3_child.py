@@ -13,6 +13,7 @@ import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from threetears.core.backends import SqliteL3Backend
 from threetears.core.cache import SQLiteBackend
@@ -44,7 +45,7 @@ LEDGER = TableSchema(
 LedgerCollection = collection_for_schema(LEDGER)
 
 
-def deployment(path: Path) -> tuple[SqliteL3Backend, object]:
+def deployment(path: Path) -> tuple[SqliteL3Backend, Any]:
     """the store, opened, and the collection over it with no L2."""
     store = SqliteL3Backend(path)
     store.open()
