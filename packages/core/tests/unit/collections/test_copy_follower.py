@@ -42,7 +42,7 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChan
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
-from threetears.core.collections.registry import BEHIND_REASONS  # noqa: E402
+from threetears.core.collections.registry import BEHIND_REASONS, CacheInvalidationMessage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
@@ -2395,3 +2395,58 @@ async def test_a_relabel_never_hides_a_failed_apply_the_next_pass_tries_the_appl
     with follower.reading() as (_cursor, stamp):
         assert stamp == lock.version
     assert follower.status().relabelled == 0
+
+
+async def test_a_run_of_row_messages_is_heard_as_one_arrow_batch_a_table_in_order() -> None:
+    """Flips if the owner's drain of row messages loses one, keeps one of a table it does not follow, or stops past a
+    message that is not a row message (each table's run is built by Arrow off the messages, never a Python list a key:
+    the 2026-11-24 ruling). A message naming the wrong number of key values fails the pass; every message before it
+    is heard and every one after it is applied by the next pass."""
+    (l3, _log, _lock, backend, follower), registry = _world()
+    await _warmed((l3, _log, _lock, backend, follower), 2)
+    l3.put([("VA", 1, 11), ("IL", 4, 44)])
+    for message in (
+        CacheInvalidationMessage(table=_TABLE, ids=["VA", "1"]),
+        CacheInvalidationMessage(table="not_followed", ids=["x"]),
+        CacheInvalidationMessage(table=_TABLE, ids=["IL", "4"]),
+    ):
+        registry.tell_derived_caches(message)
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    l3.put([("OH", 2, 22), ("TX", 7, 77)])
+    for message in (
+        CacheInvalidationMessage(table=_TABLE, ids=["OH", "2"]),
+        CacheInvalidationMessage(table=_TABLE, ids=["VA"]),
+        CacheInvalidationMessage(table=_TABLE, ids=["TX", "7"]),
+    ):
+        registry.tell_derived_caches(message)
+    with pytest.raises(ValueError, match="names 1 key values"):
+        await follower.catch_up()
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held(), "a row message before or after the wrong one was lost"
+
+
+async def test_a_key_heard_again_at_the_epoch_its_kept_stage_holds_is_not_read_from_l3_again() -> None:
+    """Flips if a key heard a second time at the epoch an earlier pass already staged it at (its row broadcast and
+    its epoch's record, one landing after a pass the stamp moved under, which keeps its stages) is read from L3 again:
+    each record's keys are read once (the live refresh test read one changed row twice, 2 runs in 6, 2026-11-24). A
+    key heard at a newer epoch is still read again, and the copy ends equal to L3."""
+    (l3, log, lock, backend, follower), registry = _world()
+    await _warmed((l3, log, lock, backend, follower), 2)
+    l3.put([("VA", 0, 500)])
+    token = log.commit([("VA", 0)])
+    heard = CacheInvalidationMessage(table=_TABLE, ids=["VA", "0"], generation=token)
+    registry.tell_derived_caches(heard)
+    lock.move_on_read = lock.reads + 2  # a write commits between this pass's two reads of the stamp
+    assert not await follower.catch_up(), "the stamp moved: the pass keeps its stage for the next"
+    read = l3.rows_read
+    registry.tell_derived_caches(heard)  # the same change heard again, at the same epoch
+    assert await follower.catch_up()
+    assert l3.rows_read == read, "the key staged at this epoch was read from L3 again"
+    assert _copy(backend) == l3.held()
+    l3.put([("VA", 0, 600)])
+    newer = log.commit([("VA", 0)])
+    registry.tell_derived_caches(CacheInvalidationMessage(table=_TABLE, ids=["VA", "0"], generation=newer))
+    assert await follower.catch_up()
+    assert l3.rows_read > read, "a key heard at a newer epoch was not read again"
+    assert _copy(backend) == l3.held()

@@ -60,7 +60,9 @@ The keys pending are the change's. A first warm reads each table a page at a tim
 (:attr:`FollowedTable.order`).
 
 **One owner** (decision 37). The copy's working state has one owner: the holder of the pass lock (a pass, a reload
-from the volume, a waited-for file's arrival, a drift check; one at a time). What the registry tells (keys heard, a
+from the volume's swap, a waited-for file's arrival, a drift check; one at a time). A reload reads and stages its
+table's full beside the copy with no lock held, and takes it only to judge and swap the table in (decision 52), so a
+reload never holds another table's change back. What the registry tells (keys heard, a
 partition, a cleared prefix, a reset, a file wanted), a schema change and the watchers' findings are messages on the
 owner's inbox, applied in order at the points the owner judges them (:meth:`CopyFollower._drain`), never while it
 awaits: a reset heard while a pass reads is judged before the apply, so a stage of the table it replaced is forgotten,
@@ -101,6 +103,7 @@ import os
 import secrets
 import time
 from itertools import chain
+from operator import attrgetter
 from datetime import UTC, datetime
 from decimal import Decimal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
@@ -194,6 +197,9 @@ __all__ = [
     "FileRecreate",
     "FollowerStatus",
     "PartialStamp",
+    "PreparesStaged",
+    "is_reload_stage",
+    "reload_stage",
     "require_generation_by_trigger",
     "typed_text",
 ]
@@ -500,6 +506,12 @@ _NO_SCOPE: Final = "\x00no scope"
 _MESSAGES_PER_TURN: Final = 2000
 
 
+#: a row message's table, key values and epoch, read by Arrow off a run of them (:meth:`CopyFollower._flush_rows`)
+_TABLE_OF: Final = attrgetter("table")
+_IDS_OF: Final = attrgetter("ids")
+_GENERATION_OF: Final = attrgetter("generation")
+
+
 def _heard_schema(key: Sequence[str]) -> Any:
     """the schema of a batch of keys heard: each key column as text, named as the key, and the epoch.
 
@@ -699,7 +711,7 @@ def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], 
     :ptype table: FollowedTable
     :param batches: the batches heard, the owner's snapshot
     :ptype batches: Sequence[pyarrow.Table]
-    :param staged: the keys at their epochs earlier passes staged (a table that opts in to delta files; else empty)
+    :param staged: the keys at their epochs earlier passes staged and no apply has taken yet
     :ptype staged: Sequence[pyarrow.Table]
     :param held: the scopes a write in progress holds
     :ptype held: frozenset[str]
@@ -720,9 +732,19 @@ def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], 
         left = left if left.num_rows else None
     if staged and rows.num_rows:
         before = _joined(staged, schema)
-        bring = before.filter(pa.array(_in(joined_key_texts(before, key), joined_key_texts(rows, key))))
-        if bring.num_rows:
-            rows = _distinct(pa.concat_tables([rows, bring]), [*key, _EPOCH])
+        # a key heard again at an epoch an earlier pass staged it at (its row broadcast and its epoch's record, one
+        # before the pass and one after) is staged already: read again, it was read twice for one change (the live
+        # refresh test, 2 runs in 6, 2026-11-24). Each record's keys are read once; a key heard with no epoch has none
+        # to match and is read as before
+        again = pc.and_(
+            pc.is_valid(rows.column(_EPOCH)),
+            pa.array(_in(joined_key_texts(rows, [*key, _EPOCH]), joined_key_texts(before, [*key, _EPOCH]))),
+        )
+        rows = rows.filter(pc.invert(pc.fill_null(again, False)))
+        if table.delta_files and rows.num_rows:
+            bring = before.filter(pa.array(_in(joined_key_texts(before, key), joined_key_texts(rows, key))))
+            if bring.num_rows:
+                rows = _distinct(pa.concat_tables([rows, bring]), [*key, _EPOCH])
     keys = _distinct(rows, key).sort_by([(column, "ascending") for column in key])
     positions = pc.index_in(joined_key_texts(rows, key), value_set=joined_key_texts(keys, key)).cast(pa.int64())
     pairs = rows.append_column(_AT, positions).sort_by([(_AT, "ascending")])
@@ -1747,6 +1769,54 @@ class _StagesLostError(LookupError):
     """a pass's stages were lost with the worker holding them: forgotten, and the change is read again."""
 
 
+#: the end of the stage a running copy's reload stages its table's full in (:func:`reload_stage`)
+_RELOAD_STAGE_SUFFIX: Final = "__full"
+
+
+def reload_stage(table: str) -> str:
+    """the stage a running copy's reload of ``table`` from the volume's full stages it in: a stage of its own, never
+    the table's rows stage a pass stages in, because the reload stages beside the passes, outside the pass lock
+    (:meth:`CopyFollower._reload_from_volume`), and no pass's sweep of stages left behind ever drops it
+    (:meth:`CopyFollower._stage`). A backend that applies a reload on a lane of its own tells it by this name
+    (:func:`is_reload_stage`).
+
+    :param table: the table
+    :ptype table: str
+    :return: the stage's name
+    :rtype: str
+    """
+    return f"{STAGE_PREFIX}{table}{_RELOAD_STAGE_SUFFIX}"
+
+
+def is_reload_stage(stage: str) -> bool:
+    """whether ``stage`` is a reload's (:func:`reload_stage`): a pass's stages end ``__rows`` or ``__keys``.
+
+    :param stage: the stage's name
+    :ptype stage: str
+    :return: whether it is
+    :rtype: bool
+    """
+    return stage.startswith(STAGE_PREFIX) and stage.endswith(_RELOAD_STAGE_SUFFIX)
+
+
+@runtime_checkable
+class PreparesStaged(Protocol):
+    """a :class:`FollowerBackend` that does a staged change's heavy work before its apply: a reload's, outside the pass
+    lock, so that only the short swap of :meth:`FollowerBackend.apply_staged` holds every other table's pass back.
+
+    Why: a reload held the pass lock through the whole of its apply, and a pod's backend that rewrites the table's
+    parts in a worker process took seconds for it (a local burst replay, 2026-11-24: writer commit to copy publish
+    a median 0.5 s with no reload between, 9.4 s and up to 45 s with one). A backend without this method does the
+    whole apply under the lock, as before (the in-process DuckDB's apply is its swap).
+    """
+
+    def prepare_staged(self, changes: Sequence[StagedChange]) -> None:
+        """do the heavy work of applying ``changes`` (staged under :func:`reload_stage` names) beside the copy, so
+        their :meth:`FollowerBackend.apply_staged` is a short swap; dropping their stages lets go what it prepared.
+        Raises ``LookupError`` when the stages are gone, as the apply does."""
+        ...
+
+
 class FollowerBackend(Protocol):
     """what a :class:`CopyFollower` keeps its copy in: a backend that stages a change beside the copy and applies
     everything staged in one transaction (:class:`~threetears.core.cache.duckdb.DuckDBBackend` is one; a pod's own
@@ -2159,48 +2229,79 @@ class CopyFollower:
         :ptype stop: int
         :return: nothing
         :rtype: None
+        :raises ValueError: when a row message names another number of key values than its table's key holds
         """
-        # function-local: each table's run of row messages, as columns, flushed as one batch before any other message
-        runs: dict[str, tuple[list[list[str]], list[str | None]]] = {}
         spent = start
         try:
-            for index in range(start, stop):
-                spent = index + 1
-                message = messages[index]
-                if isinstance(message, CacheInvalidationMessage):
-                    if message.table not in self._tables:
-                        continue
-                    width = len(self._tables[message.table].key)
-                    columns, epochs = runs.setdefault(message.table, ([[] for _ in range(width)], []))
-                    for column, value in zip(columns, message.ids, strict=True):
-                        column.append(value)
-                    epochs.append(message.generation)
+            index = start
+            while index < stop:
+                # a run of row messages, each table's heard as one batch before any other message
+                end = index
+                while end < stop and isinstance(messages[end], CacheInvalidationMessage):
+                    end += 1
+                if end > index:
+                    bad = self._flush_rows(messages, index, end)
+                    if bad is not None:
+                        spent = bad + 1
+                        raise ValueError(
+                            f"a row message of {messages[bad].table} names {len(messages[bad].ids)} key values, "
+                            f"not the {len(self._tables[messages[bad].table].key)} its key holds"
+                        )
+                    spent = index = end
                     continue
-                self._flush_rows(runs)
-                runs = {}
-                self._apply_message(message)
-            self._flush_rows(runs)
+                spent = index + 1
+                self._apply_message(messages[index])
+                index += 1
             spent = len(messages)
         finally:
             # raised: as the queue it was, what follows the message that raised stays the owner's to apply, first
             if spent < len(messages):
                 self._inbox = (messages[spent:], *self._inbox)
 
-    def _flush_rows(self, runs: Mapping[str, tuple[list[list[str]], list[str | None]]]) -> None:
-        """each table's run of row messages heard, as one batch.
+    def _flush_rows(self, messages: tuple[Any, ...], start: int, stop: int) -> int | None:
+        """each followed table's row messages of ``messages[start:stop]`` (every one a row message) heard as one batch,
+        built by Arrow from the messages as they are: never a list a key (decision 35, and the 2026-11-24 ruling that
+        rows and keys are Arrow end to end). A message of a table not followed is skipped. Why: the per-key lists this
+        built on the event loop were part of ~10 s of loop stalls over a 40-minute local burst replay.
 
-        :param runs: each table's keys' columns and epochs
-        :ptype runs: Mapping[str, tuple[list[list[str]], list[str | None]]]
-        :return: nothing
-        :rtype: None
+        :param messages: the messages taken
+        :ptype messages: tuple[Any, ...]
+        :param start: the first row message
+        :ptype start: int
+        :param stop: one past the last
+        :ptype stop: int
+        :return: the index of the first message naming another number of key values than its table's key, after
+            every one before it was heard; None when there is none
+        :rtype: int | None
         """
-        for name, (columns, epochs) in runs.items():
+        run = messages[start:stop]
+        names = pa.array(map(_TABLE_OF, run), pa.string())
+        ids = pa.array(map(_IDS_OF, run), pa.list_(pa.string()))
+        epochs = pa.array(map(_GENERATION_OF, run), pa.string())
+        followed = [name for name in pc.unique(names).to_pylist() if name in self._tables]
+        if not followed:
+            return None
+        widths = pc.take(
+            pa.array([len(self._tables[name].key) for name in followed], pa.int32()),
+            pc.index_in(names, value_set=pa.array(followed, pa.string())),
+        )
+        wrong = pc.fill_null(pc.not_equal(pc.list_value_length(ids), widths), False)
+        bad: int | None = None
+        if pc.any(wrong).as_py():
+            bad = int(pc.index(wrong, True).as_py())
+            names, ids, epochs = names.slice(0, bad), ids.slice(0, bad), epochs.slice(0, bad)
+        for name in followed:
+            mine = pc.equal(names, name)
+            if not pc.any(mine).as_py():
+                continue
             key = self._tables[name].key
+            keys = ids.filter(mine)
             batch = pa.Table.from_arrays(
-                [*(pa.array(column, pa.string()) for column in columns), pa.array(epochs, pa.string())],
+                [*(pc.list_element(keys, at) for at in range(len(key))), epochs.filter(mine)],
                 schema=_heard_schema(key),
             )
             self._hear(name, batch, held=True)
+        return None if bad is None else start + bad
 
     def _apply_message(self, message: Any) -> None:
         """apply one message that is not a row message (:meth:`_drain`).
@@ -2644,14 +2745,24 @@ class CopyFollower:
         await retry_until_done(looked, first_delay=fulls.poll_seconds, max_delay=fulls.poll_seconds)
 
     async def _reload_from_volume(self, table: str, fulls: VolumeFulls, manifest: FullManifest | None) -> bool:
-        """as the owner (under the pass lock), reload ``table`` alone from ``manifest`` in its own change: its parts
-        staged and applied in place of the table the reset replaced, its mark taken as the full's oldest version (the
-        next pass walks the log from there, applying each later epoch from its file), and what was heard of it while it
-        waited judged against the full: only the changes the full does not hold are kept, to be applied over it.
+        """reload ``table`` alone from ``manifest`` in its own change: its parts staged beside the copy and applied in
+        place of the table the reset replaced, its mark taken as the full's oldest version (the next pass walks the log
+        from there, applying each later epoch from its file), and what was heard of it while it waited judged against
+        the full: only the changes the full does not hold are kept, to be applied over it.
 
-        Every message that arrived while the full staged is judged before the apply: a second reset raises the bar,
+        **Staged outside the pass lock; only the swap holds it** (decision 52 of ``design-pod-delta-files.md``). The
+        parts are read off the volume and staged (:func:`reload_stage`), and a backend that prepares a change
+        (:class:`PreparesStaged`) rewrites the table's parts, with no lock held: every other table's pass keeps
+        applying and publishing meanwhile. Why: the reload held the lock through its stage and apply, so every table's
+        ready change queued behind it (a local burst replay, 2026-11-24: writer commit to copy publish a median 0.5 s
+        with no reload between, a median 9.4 s and up to 45 s with one; big reloads held it a median 12.6 s, up to
+        25 s). The table is safe to stage beside the passes: while it waits for its full (``_full_after``) no pass
+        takes anything of it (:meth:`_take`), so what is heard of it meanwhile stays held in order, and no pass's
+        sweep drops the reload's stage (:meth:`_stage`). The lock is taken again only to judge and swap.
+
+        Every message that arrived while the full staged is judged before the swap: a second reset raises the bar,
         so this full is no longer the one awaited and its stages are dropped, never applied (decision 37: a stale
-        result is discarded). One arriving during the apply is judged right after, and a reset then sends the table
+        result is discarded). One arriving during the swap is judged right after, and a reset then sends the table
         waiting again.
 
         :param table: the table
@@ -2673,89 +2784,134 @@ class CopyFollower:
                 self._say_waiting_for_full(table, short)
                 return False
             await self._forget_tables([])  # the stage the reset forgot, among any others
-            try:
-                found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
-                    self._backend, manifest=manifest
-                )
-            except FileNotFoundError as exc:
-                # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
+        # outside the lock: the parts read off the volume and staged, and the backend's heavy work done
+        try:
+            found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
+                self._backend, manifest=manifest, stage_name=reload_stage
+            )
+        except FileNotFoundError as exc:
+            # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
+            async with self._lock:
                 self._say_waiting_for_full(
                     table, f"a part of the current full is not on the volume ({exc.filename}); looking again"
                 )
-                return False
-            if isinstance(found, FullAbsent):
+            return False
+        if isinstance(found, FullAbsent):
+            async with self._lock:
                 self._say_waiting_for_full(table, found.reason)
-                return False
-            floor = found.marks[table]
-            snapshot = self._heard[table]
-            kept = await asyncio.to_thread(_past_floor, self._tables[table], snapshot, floor, after)
-            # judged with no await before the apply: what arrived while the full staged (a second reset, a newer bar)
-            self._drain()
-            if self._full_after.get(table) is not after:
+            return False
+        swapped = False
+        try:
+            if isinstance(self._backend, PreparesStaged):
+                await asyncio.to_thread(self._backend.prepare_staged, found.changes)
+            async with self._lock:
+                swapped, done = await self._swap_in_full(table, found, after)
+        finally:
+            if not swapped:
+                # a stale full (reset again meanwhile), or a failed prepare or swap: its stage is never applied
                 await asyncio.to_thread(
                     self._backend.drop_stage, *(change.rows for change in found.changes if change.rows)
                 )
-                log.info(
-                    "a full staged for a reset table was dropped, never applied: the table was reset again meanwhile",
-                    extra={"extra_data": {"table": table, "manifest": found.manifest}},
-                )
-                if table not in self._status.waiting_for_full:
-                    self._say_waiting_for_full(table, "the table was reset again while its full loaded")
-                return table not in self._full_after
-            self._mark += 1
-            mark = self._mark
-            rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
-            # the reload's own bookkeeping, before anything that arrived during the apply is judged
-            self._applied_mark = mark
-            self._registry.generation_marks.adopt_generation(table, floor)
-            self._current_marks = with_entry(self._current_marks, table, floor)
-            self._state_versions = with_entry(self._state_versions, table, frozen(found.versions[table]))
-            label = self._status.stamp
-            self._stamp(mark, label, self._current_marks)
-            # what was heard while it waited, past the full; what was heard since the snapshot follows it
-            since = self._heard[table][len(snapshot) :]
-            heard = (kept, *since) if kept.num_rows else since
-            self._heard = with_entry(self._heard, table, heard)
-            self._heard_counts = with_entry(self._heard_counts, table, sum(batch.num_rows for batch in heard))
-            held = split_generation_token(floor)
-            for name, wait in tuple(self._file_waits.get(table, frozen()).items()):
-                if _held_by_full(wait.epoch, held, after):
-                    self._file_read(table, name, why=f"the full at {floor} holds epoch {wait.epoch}")
-            self._full_after = without_entry(self._full_after, table)
-            self._say_waiting_for_full(table, None)
-            if table in self._cleared:
-                self._cleared = with_entry(
-                    self._cleared,
-                    table,
-                    tuple(
-                        (epoch, prefixes)
-                        for epoch, prefixes in self._cleared[table]
-                        if not _held_by_full(epoch, held, after)
-                    ),
-                )
-            self._rows_since_mark += rows
-            self._status.applied += 1
-            log.info(
-                "a reset table was reloaded from the writer's full on the volume",
-                extra={
-                    "extra_data": {
-                        "table": table,
-                        "why": after.why,
-                        "manifest": found.manifest,
-                        "rows": found.rows,
-                        "mark": floor,
-                        "heard_while_waiting": kept.num_rows,
-                    }
-                },
-            )
-            if label is not None:
-                for listener in tuple(self._listeners):
-                    listener(label)
-            # what arrived during the apply: a reset now sends the table waiting again, for a newer full
-            self._drain()
-            done = table not in self._full_after
         self._poked.set()
         return done
+
+    async def _swap_in_full(self, table: str, found: StagedFull, after: _FullAfter) -> tuple[bool, bool]:
+        """as the owner (under the pass lock), make the full staged for ``table`` current, unless a reset heard since
+        it was looked for replaced the bar it was judged against (:meth:`_reload_from_volume`).
+
+        :param table: the table
+        :ptype table: str
+        :param found: the full staged
+        :ptype found: StagedFull
+        :param after: the wait the full was judged against
+        :ptype after: _FullAfter
+        :return: whether the full was applied, and whether the table no longer waits for a full
+        :rtype: tuple[bool, bool]
+        """
+        # judged before the snapshot: what arrived while the full staged (a second reset, a newer bar)
+        self._drain()
+        if self._full_after.get(table) is not after:
+            return self._stale_full(table, found)
+        floor = found.marks[table]
+        # what was heard of the table while it waited, the changes heard while the full staged among them: the owner's
+        # alone while the lock is held (nothing drains but the owner), so the snapshot is still the table's head below
+        snapshot = self._heard[table]
+        kept = await asyncio.to_thread(_past_floor, self._tables[table], snapshot, floor, after)
+        # judged with no await before the apply: what arrived while the change heard was judged
+        self._drain()
+        if self._full_after.get(table) is not after:
+            return self._stale_full(table, found)
+        self._mark += 1
+        mark = self._mark
+        rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
+        # the reload's own bookkeeping, before anything that arrived during the apply is judged
+        self._applied_mark = mark
+        self._registry.generation_marks.adopt_generation(table, floor)
+        self._current_marks = with_entry(self._current_marks, table, floor)
+        self._state_versions = with_entry(self._state_versions, table, frozen(found.versions[table]))
+        label = self._status.stamp
+        self._stamp(mark, label, self._current_marks)
+        # what was heard while it waited, past the full; what was heard since the snapshot follows it, in order
+        since = self._heard[table][len(snapshot) :]
+        heard = (kept, *since) if kept.num_rows else since
+        self._heard = with_entry(self._heard, table, heard)
+        self._heard_counts = with_entry(self._heard_counts, table, sum(batch.num_rows for batch in heard))
+        held = split_generation_token(floor)
+        for name, wait in tuple(self._file_waits.get(table, frozen()).items()):
+            if _held_by_full(wait.epoch, held, after):
+                self._file_read(table, name, why=f"the full at {floor} holds epoch {wait.epoch}")
+        self._full_after = without_entry(self._full_after, table)
+        self._say_waiting_for_full(table, None)
+        if table in self._cleared:
+            self._cleared = with_entry(
+                self._cleared,
+                table,
+                tuple(
+                    (epoch, prefixes)
+                    for epoch, prefixes in self._cleared[table]
+                    if not _held_by_full(epoch, held, after)
+                ),
+            )
+        self._rows_since_mark += rows
+        self._status.applied += 1
+        log.info(
+            "a reset table was reloaded from the writer's full on the volume",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "why": after.why,
+                    "manifest": found.manifest,
+                    "rows": found.rows,
+                    "mark": floor,
+                    "heard_while_waiting": kept.num_rows,
+                }
+            },
+        )
+        if label is not None:
+            for listener in tuple(self._listeners):
+                listener(label)
+        # what arrived during the apply: a reset now sends the table waiting again, for a newer full
+        self._drain()
+        return True, table not in self._full_after
+
+    def _stale_full(self, table: str, found: StagedFull) -> tuple[bool, bool]:
+        """a full staged for ``table`` that a reset heard since replaced: never applied (its stage is dropped by
+        :meth:`_reload_from_volume`), and the table waits for a newer one.
+
+        :param table: the table
+        :ptype table: str
+        :param found: the full staged
+        :ptype found: StagedFull
+        :return: as :meth:`_swap_in_full`: not applied, and whether the table no longer waits
+        :rtype: tuple[bool, bool]
+        """
+        log.info(
+            "a full staged for a reset table was dropped, never applied: the table was reset again meanwhile",
+            extra={"extra_data": {"table": table, "manifest": found.manifest}},
+        )
+        if table not in self._status.waiting_for_full:
+            self._say_waiting_for_full(table, "the table was reset again while its full loaded")
+        return False, table not in self._full_after
 
     def _wait_for_file(self, table: str, file: str, epoch: str, why: str, *, reach: str, watch: bool = True) -> None:
         """hold ``table`` until ``file`` reads (the owner's): nothing of it is staged or applied meanwhile, and nothing
@@ -4235,7 +4391,10 @@ class CopyFollower:
         """
         if not self._staged:
             # a stage no change holds is one an earlier process or a failed pass left: never applied
-            left = await asyncio.to_thread(self._backend.staged_stages)
+            # a reload's stage is never one: it stages beside the passes, outside the lock, and drops its own on every
+            # path (_reload_from_volume); swept here, a reload of a big table would lose its stage mid-way
+            found = await asyncio.to_thread(self._backend.staged_stages)
+            left = [stage for stage in found if not is_reload_stage(stage)]
             if left:
                 await asyncio.to_thread(self._backend.drop_stage, *left)
             self._dropping = frozenset()
@@ -4300,7 +4459,9 @@ class CopyFollower:
                 continue
             self._reading = name
             try:
-                staged_before = self._staged_heard.get(name, ()) if table.delta_files else ()
+                # every table's: a key heard again at an epoch staged already is not read again (_taken); a table
+                # that opts in to delta files also merges each such key again from every epoch staged
+                staged_before = self._staged_heard.get(name, ())
                 take = await asyncio.to_thread(_taken, table, batches, staged_before, held)
                 staged = await self._stage_keyed(table, take, keys_stage, rows_stage, held)
             except _FileWaitError as wait:

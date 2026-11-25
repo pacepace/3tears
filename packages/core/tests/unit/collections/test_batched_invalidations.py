@@ -127,3 +127,41 @@ async def test_a_batch_reaches_a_cache_taking_key_batches_as_one_arrow_batch_a_m
         (f"r{n % 7}", f"g{n}") for n in range(_ROWS)
     ]
     assert len(rows) == _ROWS, "a cache taking rows hears each"
+
+
+@pytest.mark.parametrize("batched", [False, True])
+async def test_a_broadcast_of_an_advance_already_applied_from_its_record_is_not_told_to_a_copy_again(
+    batched: bool,
+) -> None:
+    """Flips if a row broadcast that lands after the catch-up applied its epoch's record (the record told the copy
+    its keys then) is told to a cache that takes key batches again: the copy read the key from L3 twice for one
+    change (the live refresh test, 2 runs in 6, 2026-11-24). A cache taking only rows still hears it, and a
+    broadcast of an advance not yet applied still reaches the copy."""
+    bus = FakeNatsClient()
+    sender, receiver = CollectionRegistry(), CollectionRegistry()
+    sender.batch_invalidations = batched
+    receiver.follow_generation("results")
+    receiver.generation_marks.adopt_generation("results", "inc:8")
+    copy: list[Any] = []
+    rows: list[Any] = []
+    receiver.register_derived_cache(
+        "results",
+        on_row=copy.append,
+        on_table_dropped=lambda: None,
+        on_partition=lambda _prefix: None,
+        on_keys=lambda keys, epoch: copy.append((keys.num_rows, epoch)),
+    )
+    receiver.register_derived_cache(
+        "results", on_row=rows.append, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+    )
+    await receiver.start_invalidation_listener(bus)
+    # the catch-up applied epoch inc:9 from its record before its broadcast landed
+    receiver.generation_marks.applied("results", "inc:9")
+    told = [sender.row_message("results", ("r", f"g{n}"), generation="inc:9", bump_rows=2) for n in range(2)]
+    await sender.publish_invalidations(bus, "results", told)
+    assert copy == [], "a broadcast of an advance applied from its record was told to the copy again"
+    assert len(rows) == 2
+    fresh = [sender.row_message("results", ("r", f"h{n}"), generation="inc:10", bump_rows=2) for n in range(2)]
+    await sender.publish_invalidations(bus, "results", fresh)
+    await receiver.stop_invalidation_listener()
+    assert copy, "a broadcast of an advance not yet applied did not reach the copy"
