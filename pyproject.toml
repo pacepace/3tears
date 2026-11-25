@@ -649,6 +649,8 @@ module = [
     "threetears.core.collections.copy_follower",
     # and its key work in its worker process (Arrow IPC across)
     "threetears.core.collections.copy_key_work",
+    # and a copied table's parts, split by its scope column in Arrow, and its locator (an Arrow table)
+    "threetears.core.collections.copy_parts",
     "threetears.core.collections.copy_checkpoint",
     # and a full's parts on the delta-files volume (Arrow IPC)
     "threetears.core.collections.volume_fulls",
