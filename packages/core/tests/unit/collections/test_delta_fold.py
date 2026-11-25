@@ -45,6 +45,7 @@ from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.delta_keep import DeltaKeepRule  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
+    EVERY_STATE_NAMED,
     RESET_REASON,
     ChangedRow,
     EpochChange,
@@ -1874,6 +1875,11 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
     for index, file in enumerate(writer.files):
         log.append("votes", f"inc:{index + 1}", file)
     epoch = f"inc:{writer.files.index(lost) + 1}"
+    # the lost commit's record as a commit too big to list writes it: keys unknown, its states read off its delta's
+    # rows and marked complete (decision 54 (c)); unmarked, every state would be recovered
+    log.records[("votes", epoch)] = EpochChange(
+        table="votes", token=epoch, keys_unknown=True, delta_file=lost, scopes=[EVERY_STATE_NAMED, "state:TX"]
+    )
     token = f"inc:{len(writer.files)}"  # a commit since the lost one: the generation read is past its epoch
     folds = DeltaFolds(
         tmp_path, [FoldedTable.of(schema, scope=_SCOPE)], retention="delete", copies=NO_COPIES, workers=workers
@@ -1905,10 +1911,14 @@ async def test_a_lost_file_handed_over_by_decision_29_is_recovered_once_with_eve
     assert gaps[0].file == ga.file, "GA's rows are kept as they were, only its version moves"
     assert ga.fingerprint is not None
     assert gaps[0].fingerprint == ga.fingerprint, "GA's rows unchanged: its fingerprint moves with it (decision 32)"
-    (statement,) = reader.statements
+    (statement, *by_state) = [statement for statement in reader.statements if '"votes"' in statement[0]]
     assert sorted(_bound_keys(statement)) == [("NC", "5000"), ("NC", "5001")], (
         "the leftover file's keys alone, never the damaged file's"
     )
+    assert by_state and all(
+        ["TX"] in [list(p) for p in params if isinstance(p, list | tuple)] for _, params, _ in by_state
+    ), "then the lost commit's one marked state, by state"
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds"
     # deleted once the current and the previous full both cover them (decision 54): one later write's full
     await _a_full_later(writer, folds, version=6, token=f"inc:{len(writer.files) + 1}")
     assert not (tmp_path / lost).exists(), "the damaged file is deleted once the recovery is published"
@@ -2116,12 +2126,16 @@ def _lost_file_recoveries(why: str) -> float:
 
 
 async def _big_commit_lost(
-    root: Path, workers: ProcessWorkers
+    root: Path, workers: ProcessWorkers, *, marked: bool = True, also_ga: bool = False
 ) -> tuple[_Writer, str, str, dict[tuple[str, int], dict[str, Any]], _Log]:
     """a writer's history whose one commit too big to list (keys unknown: its record names its notes bracket, its
     states and its file) lost its file: TX, GA and NC folded; the big commit updated four TX rows, inserted one and
     deleted one, then NC took two rows in a commit of its own, unfolded. Returns the writer, the lost file and its
-    epoch, what L3 holds, and the epoch log."""
+    epoch, what L3 holds, and the epoch log.
+
+    ``marked``: the record marks its states complete (``EVERY_STATE_NAMED``, decision 54 (c)), as a writer reading
+    them off its delta's rows names them. ``also_ga``: the big commit also updated two GA rows its record does not name
+    (a strict subset, as a record named before the mark)."""
     schema = _votes_schema()
     writer = _writer(root, schema, workers)
     tx = [{"state": "TX", "geo_id": g, "votes": g % 97, "note": "n"} for g in range(5000)]
@@ -2130,6 +2144,8 @@ async def _big_commit_lost(
     await writer.commit(_votes("GA", range(1, 400), 7))
     await writer.commit(nc)
     big = [*_votes("TX", range(1000, 1004), 2, "big"), *_votes("TX", range(9000, 9001), 5, "new")]
+    if also_ga:
+        big += _votes("GA", range(1, 3), 9, "big")
     lost = await writer.commit(big, deletes=[("TX", 7)])
     other = await writer.commit(_votes("NC", range(5000, 5002), 3))
     assert writer.folds.unfolded == {lost, other}
@@ -2150,7 +2166,7 @@ async def _big_commit_lost(
         keys_unknown=True,
         noted_between=_BRACKET,
         delta_file=lost,
-        scopes=["state:TX"],
+        scopes=[EVERY_STATE_NAMED, "state:TX"] if marked else ["state:TX"],
     )
     return writer, lost, epoch, held, log
 
@@ -2241,6 +2257,41 @@ async def test_a_lost_big_file_past_the_notes_window_is_recovered_by_reading_onl
     # deleted once the current and the previous full both cover them (decision 54): one later write's full
     await _a_full_later(writer, folds, version=6, token=f"inc:{len(writer.files) + 1}")
     assert not (tmp_path / lost).exists()
+    await folds.close()
+
+
+async def test_a_lost_big_files_states_not_marked_complete_are_never_trusted_every_state_is_recovered(
+    tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the writer trusts the states of a lost big file's record that does not mark them complete (decision 54
+    (c)): the commit wrote TX and GA rows, its record names TX alone with no mark (a writer's touched states, a strict
+    subset). Recovering only TX would keep GA's old rows; the recovery replaces every state the table holds (TX, GA
+    and NC, by state from L3), counted ``every_state``, and the full is what L3 holds. On the code before, the
+    recovery read TX alone and GA's part kept the two rows the commit changed."""
+    _no_whole_read(monkeypatch)
+    writer, lost, epoch, held, log = await _big_commit_lost(tmp_path, workers, marked=False, also_ga=True)
+    reader = _NotedL3(list(held.values()), _NOTED, covered=False)
+    token = f"inc:{len(writer.files)}"
+    folds = DeltaFolds(
+        tmp_path, [FoldedTable.of(_votes_schema(), scope=_SCOPE)], retention="delete", copies=NO_COPIES, workers=workers
+    )
+    assert await folds.start(reader, _Generations({"votes": token}), changes=log, version=6) == ()
+    before = (_lost_file_recoveries("states"), _lost_file_recoveries("every_state"))
+
+    await folds.recover_table("votes", epoch=epoch, file=lost)
+    await folds.wait()
+
+    assert _held(tmp_path, "votes") == reader.held(), "the recovered full is what L3 holds, GA's changed rows too"
+    read = {
+        str(value)
+        for sql, params, _ in reader.statements
+        if '"votes"' in sql and 'ORDER BY "state"' in sql
+        for param in params
+        if isinstance(param, list | tuple)
+        for value in param
+    }
+    assert {"TX", "GA", "NC"} <= read, f"every state read by state, not the named TX alone: {sorted(read)}"
+    assert (_lost_file_recoveries("states"), _lost_file_recoveries("every_state")) == (before[0], before[1] + 1)
     await folds.close()
 
 
