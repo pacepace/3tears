@@ -211,6 +211,11 @@ _NO_RUNS: Final[tuple[_Run, ...]] = ()
 #: keys held (an ack's lookup 8 us), and one L1 transaction a slice
 _ACKED_PER_TURN: Final = 512
 
+#: the durable rows one turn of :meth:`WriteBuffer.drain` decodes: decoded all in one turn, a drain of 33,786 rows held
+#: the loop 0.30 s (the loop-stall guard, markpace-mbp in a whole collections run, 2026-11-25), 5 of 9 samples in the
+#: rows' JSON decode
+_DRAINED_PER_TURN: Final = 512
+
 
 def _merged(older: _Run, newer: _Run, *, oldest: bool) -> _Run:
     """``older`` and ``newer`` as one run: a merge of two sorted runs, ``newer``'s entry kept where both hold a key.
@@ -491,7 +496,11 @@ class WriteBuffer:
                     ruling="Pace 2026-11-12: a drain of a process-local buffer reads it whole (declared kind drain)",
                     proof="packages/core/tests/unit/collections/test_write_buffer_typed_recovery.py::test_drain_reads_only_the_process_local_write_buffer",
                 )
-                for row in rows:
+                for index, row in enumerate(rows):
+                    if index and not index % _DRAINED_PER_TURN:
+                        # the loop answers everything else between slices; every change to the buffer waits on the
+                        # lock held here, so the runs and states read above stay this drain's
+                        await asyncio.sleep(0)
                     text = _buffer_text(self._key(row["table_name"], row["entity_id"]))
                     at = run.find(text)
                     if at >= 0 and states[at] in (_CLAIMED, _RECOVERED):
