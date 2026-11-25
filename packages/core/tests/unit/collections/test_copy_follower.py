@@ -2722,6 +2722,10 @@ async def test_the_keys_an_apply_replaced_are_made_distinct_for_the_checkpoint_i
     assert "touched_job" in jobs, f"the keys replaced were made distinct in the serving process: {jobs}"
     assert not [rows for rows in touched if rows >= INLINE_KEYS], f"made distinct here: {touched}"
     assert patched == [count], "the checkpoint was not told each key the apply replaced, once"
+    # the checkpoint the apply made due is written beside the follower, its read of the copy on a thread: the test's
+    # end closes the copy's DuckDB, so it waits for the write first (left running, its thread's unregister met a
+    # closed connection: SIGSEGV in DuckDB's ClientContext::LockContext, brooks-14th-mbp, 2026-11-25)
+    await follower.checkpointed()
     assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
 
 
