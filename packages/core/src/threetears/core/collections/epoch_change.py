@@ -53,6 +53,17 @@ commit's transaction touched, and the writer recovers by re-reading just those s
 :data:`_SCOPE_MAX_CHARS`): a commit touching more names none, and its recovery then has only the notes. Rolled out as
 :attr:`delta_file` was: optional, an older reader ignores it, a record from an older writer names none.
 
+**A record's scopes are known complete only when it says so** (:data:`EVERY_STATE_NAMED`; decision 54 (c)). A commit's
+scopes were what its transaction touched (``ScopeEpochs.touch``), which nothing ties to the rows it wrote: a write
+that touched fewer states than it wrote would name a strict subset, and a copy reloading just those states from the
+full would keep the old rows of the others. So a commit names the mark among its scopes only when its delta files'
+own rows say which state each row and delete marker is of
+(:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_state_scope`), and then names every one of those
+states: complete by construction, from the data. A record without the mark (an older writer, a table that declares no
+state scope, a load) is read as naming its states incompletely (:func:`complete_scopes` answers None), so a reader
+that must have every state goes by the whole table. The mark is one more scope, so the broker carries it as it carries
+the rest (whole, or none past the bound) and an older reader that filters scopes by a table's prefix never sees it.
+
 **A load request that failed after committing some rows names its file unconfirmed** (stored as
 ``unconfirmed_delta_file``; read as :attr:`EpochChange.delta_file` with :attr:`EpochChange.delta_file_unconfirmed`
 set; ruling C of 2026-11-23). A load commits a transaction per 50k rows, so a request that fails part way leaves a
@@ -117,6 +128,8 @@ __all__ = [
     "read_epoch_change_body",
     "read_logged_epoch_change",
     "recordable_scopes",
+    "EVERY_STATE_NAMED",
+    "complete_scopes",
     "walk_by_count",
     "advance_recording",
     "records_changes",
@@ -406,6 +419,28 @@ def _check_scopes(scopes: Sequence[str] | None, *, keys_unknown: bool) -> None:
             f"a record names 1 to {_EPOCH_SCOPES_MAX} distinct scopes of 1 to {_SCOPE_MAX_CHARS} characters, "
             f"got {len(scopes)}"
         )
+
+
+#: the scope a commit's record names beside its states when they are every state its delta files' rows are of
+#: (module docstring, decision 54 (c)): no scope of a product's (``state:``, ``race:``) begins ``3tears:``
+EVERY_STATE_NAMED: Final = "3tears:every-state-named"
+
+
+def complete_scopes(scopes: Sequence[str] | None) -> tuple[str, ...] | None:
+    """a record's scopes when they are known to name every state its commit wrote (:data:`EVERY_STATE_NAMED` among
+    them), the mark left out; None when they are not known complete (no mark: an older writer, a table declaring no
+    state scope) or there are none. Why: a reader reloading only these states must have every state the commit wrote,
+    or it keeps the old rows of one it missed (module docstring).
+
+    :param scopes: the record's scopes (:attr:`EpochChange.scopes`)
+    :ptype scopes: Sequence[str] | None
+    :return: the states, the mark left out, or None
+    :rtype: tuple[str, ...] | None
+    """
+    if not scopes or EVERY_STATE_NAMED not in scopes:
+        return None
+    named = tuple(scope for scope in scopes if scope != EVERY_STATE_NAMED)
+    return named or None
 
 
 def recordable_scopes(scopes: Iterable[str]) -> list[str] | None:

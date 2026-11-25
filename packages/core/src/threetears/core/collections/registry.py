@@ -31,6 +31,7 @@ from threetears.core.collections.epoch_change import (
     EpochChangeReader,
     EpochLogExtent,
     EpochWalk,
+    complete_scopes,
     key_text,
     walk_by_count,
 )
@@ -481,6 +482,12 @@ class WantedFile:
     :ivar keys_unknown: the record lists no rows (a commit too big to list, decision 21): its keys are only in the file,
         so the writer cannot recreate it by key and recovers the table instead (decision 28); otherwise the record
         names its key prefixes (a load's or a clear's) and the file is recreated under its name
+    :ivar scopes: for a commit too big to list, the scopes (states, ``state:CA``) its record names it wrote, when the
+        record marks them complete (:func:`~threetears.core.collections.epoch_change.complete_scopes`, read off its
+        delta file's rows), sorted and each once: a copy whose file the current full covers loads only these states'
+        parts of it (decision 54 (c)). ``None`` when the record names none or does not mark them complete (too many
+        scopes, an older writer, a table declaring no state scope) or names its rows or prefixes instead (a keyed
+        record's keys are heard at the epoch; a load's or a clear's prefixes are told beside this)
     """
 
     table: str
@@ -488,6 +495,7 @@ class WantedFile:
     file: str
     why: str
     keys_unknown: bool
+    scopes: tuple[str, ...] | None = None
 
 
 def _write_generation_kind(collection: Any) -> str:
@@ -1550,7 +1558,16 @@ class CollectionRegistry:
             return False
         assert change.delta_file is not None  # noqa: S101 -- the callers' condition
         wanted = WantedFile(
-            table=change.table, epoch=change.token, file=change.delta_file, why=why, keys_unknown=keys_unknown
+            table=change.table,
+            epoch=change.token,
+            file=change.delta_file,
+            why=why,
+            keys_unknown=keys_unknown,
+            # the states a commit too big to list wrote, only when its record says they are every one
+            # (complete_scopes): what a copy loads from the full covering the file, never the whole table (decision 54
+            # (c)); a record not marked complete may name a strict subset, so it names none here and the copy reloads
+            # the table whole. A tuple, so every copy told it holds it as is
+            scopes=complete_scopes(change.scopes),
         )
         log.warning(
             "an epoch's delta file cannot be had: each copy of the table waits for the writer to recreate it, reading "

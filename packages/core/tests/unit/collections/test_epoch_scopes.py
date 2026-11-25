@@ -35,12 +35,15 @@ from threetears.core.backends.broker_generation import (
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.delta_files import TableDelta
 from threetears.core.collections.epoch_change import (
+    EVERY_STATE_NAMED,
     ChangedRow,
     EpochChange,
     advance_recording,
     epoch_change_body,
     read_epoch_change_body,
+    complete_scopes,
     recordable_scopes,
 )
 from threetears.core.collections.generation import advance_for_write
@@ -316,6 +319,103 @@ async def test_the_states_the_seqlock_touched_in_a_transaction_are_named_by_its_
     async with CallerTransaction(quiet):
         await epochs.touch(8, ["state:TX"], conn=quiet)
     assert quiet.named == [((), {})], "no delta file, no states"
+
+
+async def test_a_commit_names_every_state_its_files_rows_are_of_marked_complete_whatever_it_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a commit's scopes can name a strict subset of the states it wrote and still be read as complete: a
+    write that touched TX alone (``ScopeEpochs.touch``) but wrote rows of TX and IL and deleted one of GA names all
+    three, marked complete, because a table declaring its state scope has them read off its delta file's rows
+    (decision 54 (c)). A table declaring none names what was touched, unmarked, so no reader takes it as every state."""
+    monkeypatch.setenv("THREETEARS_DELTA_FILES_DIR", str(tmp_path))
+    registry = CollectionRegistry()
+    registry.set_generation_source(_Source())
+    stamps = MagicMock(
+        table_name="scope_epochs", invalidation_columns=(), invalidate_cache_many=AsyncMock(), writes_delta_files=False
+    )
+    epochs = ScopeEpochs(stamps)
+    named: dict[bool, list[tuple[tuple[str, ...], dict[str, str]]]] = {}
+    for declared in (True, False):
+        schema = TableSchema(
+            name="results",
+            primary_key=("state", "geo_id"),
+            columns=[Column("state", STRING_TYPE), Column("geo_id", STRING_TYPE), Column("note", STRING_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
+            delta_files=True,
+            delta_state_scope=("state", "state:") if declared else None,
+        )
+        base = collection_for_schema(schema, entity_class=_Row)
+        results = type("_Results", (base,), {"write_generation": WRITE_GENERATION})(registry, DefaultCoreConfig(), None)
+        results.l3_pool = ConnOnlyPool()
+        conn = _Conn()
+        async with CallerTransaction(conn):
+            await epochs.touch(7, ["state:TX"], conn=conn)
+            await results.save_rows(
+                [{"state": "TX", "geo_id": "1", "note": "n"}, {"state": "IL", "geo_id": "2", "note": "n"}], conn=conn
+            )
+            await results.delete_rows([("GA", "3")], conn=conn)
+        named[declared] = conn.named
+    scopes = named[True][0][0]
+    assert scopes == (EVERY_STATE_NAMED, "state:GA", "state:IL", "state:TX")
+    assert complete_scopes(scopes) == ("state:GA", "state:IL", "state:TX")
+    assert named[False][0][0] == ("state:TX",)
+    assert complete_scopes(named[False][0][0]) is None, "a touched subset is never read as every state"
+
+
+def test_a_deltas_states_are_read_off_its_rows_and_unknown_when_any_cannot_be_told() -> None:
+    """Flips if a delta's states (what a record names complete) miss a row's or a delete marker's state, or are
+    answered when one cannot be told: a row with no state, a load's rows, prefixes cleared, no state scope declared."""
+    pa = pytest.importorskip("pyarrow")
+    types = {"state": pa.string(), "geo_id": pa.string(), "office": pa.string()}
+
+    def delta(**kwargs: Any) -> TableDelta:
+        return TableDelta(
+            name="results", types=types, key=("state", "geo_id"), state_scope=("state", "state:"), **kwargs
+        )
+
+    mixed = delta()
+    mixed.rows([{"state": "TX", "geo_id": "1"}], ["state", "geo_id"])
+    mixed.arrow(pa.table({"state": ["IL", "IL"], "geo_id": ["1", "2"], "office": ["p", "p"]}), ["state", "geo_id"])
+    mixed.deletes([("GA", "9")])
+    mixed.deletes(pa.table({"state": ["NV"], "geo_id": ["4"]}))
+    assert mixed.named_states() == frozenset({"state:TX", "state:IL", "state:GA", "state:NV"})
+
+    by_race = TableDelta(name="ap", types=types, key=("office",), scope_column="state", state_scope=("state", "state:"))
+    by_race.deletes([("p",)], scope="AZ")
+    assert by_race.named_states() == frozenset({"state:AZ"}), "a marker carries the state its delete named"
+
+    stateless = delta()
+    stateless.rows([{"state": None, "geo_id": "1"}], ["geo_id"])
+    assert stateless.named_states() is None
+    loaded = delta()
+    loaded.load([pa.table({"state": ["TX"], "geo_id": ["1"]})], [1], {})
+    assert loaded.named_states() is None
+    cleared = delta()
+    cleared.clears([{"state": "TX"}])
+    assert cleared.named_states() is None
+    undeclared = TableDelta(name="results", types=types, key=("state", "geo_id"))
+    undeclared.rows([{"state": "TX", "geo_id": "1"}], ["state", "geo_id"])
+    assert undeclared.named_states() is None
+
+
+def test_a_state_scope_whose_markers_would_not_carry_the_state_is_refused() -> None:
+    """Flips if a table may declare a state scope a delete marker does not carry (its column neither a key column nor
+    ``delta_scope``): its records would be marked complete without the states of the rows it deletes."""
+    columns = [Column("state", STRING_TYPE), Column("geo_id", STRING_TYPE), Column("note", STRING_TYPE)]
+    with pytest.raises(ValueError, match="delete marker"):
+        TableSchema(
+            name="results",
+            primary_key=("geo_id",),
+            columns=columns,
+            l1_eviction=TEST_L1_TABLE,
+            delta_files=True,
+            delta_state_scope=("note", "state:"),
+        )
+    with pytest.raises(ValueError, match="delta_files=True"):
+        TableSchema(
+            name="results", primary_key=("state", "geo_id"), columns=columns, delta_state_scope=("state", "state:")
+        )
 
 
 def test_a_record_validated_directly_refuses_scopes_beside_rows() -> None:

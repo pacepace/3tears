@@ -61,7 +61,13 @@ from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, read_delta_file_keys, write_delta_file  # noqa: E402
 from threetears.core.collections.delta_recreate import DeltaRecreator  # noqa: E402
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
+from threetears.core.collections.epoch_change import (  # noqa: E402
+    EVERY_STATE_NAMED,
+    ChangedRow,
+    EpochChange,
+    EpochWalk,
+    walk_by_count,
+)
 from threetears.core.backends.broker_generation import (  # noqa: E402
     GENERATIONS_REPLY_FIELD,
     named_delta_files,
@@ -85,7 +91,13 @@ from threetears.core.collections.schema_backed import (  # noqa: E402
 )
 from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
-from threetears.core.collections.volume_fulls import FullTable, current_full_manifest, publish_full_manifest  # noqa: E402
+from threetears.core.collections.volume_fulls import (  # noqa: E402
+    FullTable,
+    VolumeFulls,
+    current_full_manifest,
+    publish_full_manifest,
+)
+from threetears.core.collections.registry import WantedFile  # noqa: E402
 from threetears.core.config import DefaultCoreConfig  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.entities.base import BaseEntity  # noqa: E402
@@ -317,6 +329,7 @@ def _world(
     recreate: Any = None,
     key: tuple[str, ...] = _KEY,
     registry: CollectionRegistry | None = None,
+    fulls: Any = None,
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
@@ -336,6 +349,7 @@ def _world(
         page_size=50,
         stamp_table="scope_epochs",
         recreate=recreate,
+        fulls=fulls,
     )
     follower.register()
     return l3, log, lock, backend, follower
@@ -679,6 +693,146 @@ async def test_a_lost_file_of_a_commit_too_big_to_list_naming_its_states_reads_n
     assert (l3.statements, notes.asked) == (0, 0), "a copy reads neither L3 nor the notes for a lost file"
     assert _copy(backend) == held
     assert lost in follower.status().waiting_for_file[_TABLE]
+
+
+def _told_wanted() -> tuple[CollectionRegistry, list[WantedFile]]:
+    """a registry, and every delta file it tells the copies of the table it could not apply, in order: told to a cache
+    of its own that waits for files beside the copy's."""
+    registry = CollectionRegistry()
+    told: list[WantedFile] = []
+    registry.register_derived_cache(
+        _TABLE,
+        on_row=lambda _message: None,
+        on_table_dropped=lambda: None,
+        on_partition=lambda _prefix: None,
+        on_file_wanted=told.append,
+    )
+    return registry, told
+
+
+async def test_a_lost_file_of_a_commit_too_big_to_list_reaches_the_copy_with_the_states_its_record_names(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the states a keys-unknown record names its commit touched (decision 31) are dropped on the way to the
+    copy's wait for its lost file: a copy whose file the current full covers could then load only the whole table, not
+    the touched states' parts (decision 54 (c)). The registry tells them with the file, and the wait holds them."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    registry, told = _told_wanted()
+    world = _world(notes=_Notes(), registry=registry)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    lost = f"{_TABLE}/lost-big.arrow"
+    log.too_large(lost, scopes=["state:IL", "state:VA", EVERY_STATE_NAMED])
+    lock.commit("state:VA", "state:IL")
+
+    await follower.catch_up()
+
+    assert [(file.file, file.keys_unknown, file.scopes) for file in told] == [(lost, True, ("state:IL", "state:VA"))]
+    assert "its commit touched state:IL, state:VA" in follower.status().waiting_for_file[_TABLE]
+    assert l3.statements == 0
+    follower.stop()
+
+
+async def test_a_lost_files_states_not_marked_complete_reach_the_copy_as_none(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a record naming its states without the mark that they are every state its commit wrote
+    (EVERY_STATE_NAMED, read off its file's rows) is told to the copy with them: such a record (an older writer's, a
+    table declaring no state scope) may name a strict subset, and a copy reloading only those states from the full
+    would keep the old rows of the rest (decision 54 (c)). It is told with none, so the copy reloads the whole table."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    registry, told = _told_wanted()
+    world = _world(notes=_Notes(), registry=registry)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    lost = f"{_TABLE}/lost-unmarked.arrow"
+    log.too_large(lost, scopes=["state:VA"])
+    lock.commit("state:VA", "state:IL")
+
+    await follower.catch_up()
+
+    assert [(file.file, file.keys_unknown, file.scopes) for file in told] == [(lost, True, None)]
+    assert "touched" not in follower.status().waiting_for_file[_TABLE]
+    follower.stop()
+
+
+async def test_a_keyed_records_lost_file_holds_its_keys_and_a_loads_names_no_states(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a keyed record's lost file stops holding the keys heard at its epoch (what the file brings once it
+    reads), or a record that lists its rows or prefixes is told with states: only a commit too big to list names them
+    (decision 31). A load's lost file is told with its prefixes' reach and no states."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    registry, told = _told_wanted()
+    world = _world(registry=registry)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    keyed = f"{_TABLE}/lost.arrow"
+    log.commit([("VA", 1)], delta_file=keyed)
+    lock.commit("state:VA")
+    await follower.catch_up()
+    status = follower.status()
+    assert keyed in status.waiting_for_file[_TABLE] and "touched" not in status.waiting_for_file[_TABLE]
+    assert status.pending[_TABLE] == 1, "the key heard at the epoch is held for the file"
+    assert told == [], "a keyed record's file is found missing by the copy's pass, not told by the registry"
+    follower.stop()
+
+    registry, told = _told_wanted()
+    world = _world(registry=registry)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    loaded = f"{_TABLE}/lost-load.arrow"
+    await log.advance_with_change(_TABLE, None, prefixes=[{"state": "VA"}], delta_file=loaded)
+    lock.commit("state:VA")
+    await follower.catch_up()
+    assert [(file.file, file.keys_unknown, file.scopes) for file in told] == [(loaded, False, None)]
+    assert "touched" not in follower.status().waiting_for_file[_TABLE]
+    assert l3.statements == 0
+    follower.stop()
+
+
+async def test_lost_files_of_commits_too_big_to_list_carry_their_states_to_the_full_the_table_waits_for(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a lost file's states are dropped once the table waits for a full holding its change (decision 28's
+    recovery, or ``covered``: a fold that deletes took the file, decision 54): that full must know which states' parts
+    it reaches (decision 54 (c)). A second lost file's states join the first's; one whose record names none makes the
+    full the whole table's."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    asked: list[str] = []
+
+    async def covered(table: str, file: str, epoch: str) -> str:
+        asked.append(file)
+        return "covered"
+
+    followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=True)]
+    world = _world(notes=_Notes(), recreate=covered, fulls=VolumeFulls(_volume, followed, poll_seconds=0.01))
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    try:
+        log.too_large(f"{_TABLE}/a.arrow", scopes=["state:VA", EVERY_STATE_NAMED])
+        lock.commit("state:VA")
+        await follower.catch_up()
+        assert follower.status().full_reach == {_TABLE: ("state:VA",)}
+        await asyncio.wait_for(_until(lambda: f"{_TABLE}/a.arrow" in asked), timeout=5)
+        await asyncio.wait_for(
+            _until(lambda: "file_covered" in follower.status().waiting_for_full.get(_TABLE, "")), timeout=5
+        )
+        assert follower.status().full_reach == {_TABLE: ("state:VA",)}, "the writer's covered answer keeps them"
+
+        log.too_large(f"{_TABLE}/b.arrow", scopes=["state:IL", EVERY_STATE_NAMED])
+        lock.commit("state:IL")
+        await follower.catch_up()
+        assert follower.status().full_reach == {_TABLE: ("state:IL", "state:VA")}
+
+        log.too_large(f"{_TABLE}/c.arrow")
+        lock.commit("state:IL")
+        await follower.catch_up()
+        assert _TABLE in follower.status().waiting_for_full
+        assert follower.status().full_reach == {}, "a change of unknown states needs the whole table's full"
+        assert l3.statements == 0
+    finally:
+        follower.stop()
 
 
 async def test_a_commit_of_several_records_naming_one_file_is_applied_once(

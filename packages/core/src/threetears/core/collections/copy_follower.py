@@ -141,7 +141,9 @@ from threetears.core.collections.volume_fulls import (
     FullManifest,
     FullPart,
     StagedFull,
+    StatesNotSplitError,
     VolumeFulls,
+    copy_rows_of_state,
     current_full_manifest,
     FINGERPRINT_CHECK_SECONDS,
     FINGERPRINT_FORMAT,
@@ -165,7 +167,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.declared import whole_read
-from threetears.core.keyed import InlineDuckDB, KeyBatch, WholeReads, read_keyed_arrow, read_state_arrow, run_inline
+from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.process_workers import ProcessWorkers
 from threetears.core.sql_fragments import quote_identifier
@@ -1208,6 +1210,10 @@ class _FileWait:
     :ivar watch: whether the file is looked for; False for a commit too big to list whose table waits for the writer's
         recovery full instead (its file cannot be recreated by key)
     :ivar answer: the writer's last answer; None before it is asked
+    :ivar scopes: the scopes (states) a commit too big to list touched, as its record names them
+        (:attr:`~threetears.core.collections.registry.WantedFile.scopes`); None when the record names none, and for a
+        keyed or a load's wait (their keys or prefixes say what they reach). Carried to the full the table then waits
+        for (:attr:`_FullAfter.scopes`)
     """
 
     epoch: str
@@ -1216,6 +1222,7 @@ class _FileWait:
     reach: str
     watch: bool = True
     answer: str | None = None
+    scopes: frozenset[str] | None = None
 
     def say(self) -> str:
         """the wait, for the status.
@@ -1224,7 +1231,8 @@ class _FileWait:
         :rtype: str
         """
         asked = "not yet asked the writer" if self.answer is None else f"the writer answered {self.answer}"
-        return f"{self.file} of epoch {self.epoch}: {self.why}; {asked}"
+        touched = f"; its commit touched {', '.join(sorted(self.scopes))}" if self.scopes else ""
+        return f"{self.file} of epoch {self.epoch}: {self.why}; {asked}{touched}"
 
 
 #: every scope the stamp names: a waiting table whose held changes' scopes are not known holds them all
@@ -1555,6 +1563,9 @@ class FollowerStatus:
         table keeps being followed meanwhile
     :ivar waiting_for_file: each opted-in table waiting for a missing or unreadable delta file the writer recreates
         (decision 29), onto which file and why; its changes are held meanwhile, every other table followed
+    :ivar full_reach: each table in :attr:`waiting_for_full` whose wait is for lost or deleted delta files of commits
+        too big to list that each named the states it touched, onto those states (decision 54 (c)); a table waiting for
+        the whole table's full (a reset, a lost log, a record naming no states) is not in it
     :ivar detail: a line for an operator
     """
 
@@ -1570,6 +1581,7 @@ class FollowerStatus:
     behind_since: datetime | None = None
     waiting_for_full: Mapping[str, str] = field(default_factory=frozen)
     waiting_for_file: Mapping[str, str] = field(default_factory=frozen)
+    full_reach: Mapping[str, tuple[str, ...]] = field(default_factory=frozen)
     detail: str = ""
 
 
@@ -1588,12 +1600,17 @@ class _FullAfter:
     :ivar incarnation: for a lost epoch log (decision 28), the incarnation of the log the copy reads now: a full is
         taken only once it holds the table under it, which only the writer's recovery (or a later full) does; a full
         of it is past a ``token`` of the lost log's incarnation. None for a reset or a schema change
+    :ivar scopes: for a wait for a full that covers lost or deleted delta files (``file_lost``, ``file_covered``), the
+        scopes (states) those files' commits touched, as their records name them: the parts of the full the change
+        reaches (decision 54 (c)). None when any one of them is not known (a record naming none, a reset, a schema
+        change, a lost log): the full is then the whole table's
     """
 
     why: str
     token: str | None
     inclusive: bool
     incarnation: str | None = None
+    scopes: frozenset[str] | None = None
 
     def short_of(self, table: str, manifest: FullManifest | None) -> str | None:
         """why ``manifest`` cannot be reloaded from; None when it can.
@@ -1678,6 +1695,113 @@ def _past_floor(table: FollowedTable, batches: Sequence[Any], floor: str, after:
     if not held:
         return rows
     return rows.filter(pc.invert(pa.array(_in(rows.column(_EPOCH), pa.array(held, pa.string())))))
+
+
+def _reload_states(table: FollowedTable, scopes: frozenset[str] | None) -> frozenset[str] | None:
+    """the states of ``table`` a reload from the full loads alone (decision 54 (c)): the scopes the lost or covered
+    files' records named complete, those of the table's own prefix; None reloads the table whole.
+
+    None when the scopes are not known complete (``scopes`` None: a record not marked complete may name a strict
+    subset), the table has no scope, none of the scopes is the table's, or its key does not name its state column:
+    what the copy heard of it while it waited is keys at epochs, and a key's state must be read off the key to tell
+    which held changes the reloaded states' parts already hold (:func:`_past_states`).
+
+    :param table: the table
+    :ptype table: FollowedTable
+    :param scopes: the scopes the wait's records named complete (:attr:`_FullAfter.scopes`)
+    :ptype scopes: frozenset[str] | None
+    :return: the states, as scopes, or None
+    :rtype: frozenset[str] | None
+    """
+    if scopes is None or table.scope is None or table.scope[0] not in table.key:
+        return None
+    prefix = table.scope[1]
+    states = frozenset(scope for scope in scopes if scope.startswith(prefix))
+    return states or None
+
+
+def _past_states(
+    table: FollowedTable, batches: Sequence[Any], versions: Mapping[str | None, str], after: _FullAfter
+) -> Any:
+    """the keys heard of a table while it waited, less those of a reloaded state at an epoch its part holds
+    (:func:`_past_floor`, by state): applied again over the part, an older change would undo a newer one the part
+    holds. Keys of every other state are kept, as is a key heard with no epoch. The table's key names its state
+    column (:func:`_reload_states`). Blocking: run it on a thread.
+
+    :param table: the table, scoped, its key naming its state column
+    :ptype table: FollowedTable
+    :param batches: the keys heard at their epochs
+    :ptype batches: Sequence[pyarrow.Table]
+    :param versions: each reloaded state's version (scope -> its part's, :attr:`StagedFull.versions`)
+    :ptype versions: Mapping[str | None, str]
+    :param after: what the table waited for
+    :ptype after: _FullAfter
+    :return: the keys kept, one batch
+    :rtype: pyarrow.Table
+    """
+    assert table.scope is not None  # noqa: S101 -- _reload_states names states only of a scoped table
+    column, prefix = table.scope
+    rows = _distinct(_joined(batches, _heard_schema(table.key)), [*table.key, _EPOCH])
+    if not rows.num_rows:
+        return rows
+    drop = np.zeros(rows.num_rows, dtype=bool)
+    for scope, version in versions.items():
+        if scope is None:
+            continue
+        of_state = np.asarray(
+            pc.fill_null(pc.equal(rows.column(column), scope[len(prefix) :]), False).to_numpy(zero_copy_only=False),
+            dtype=bool,
+        )
+        if not of_state.any():
+            continue
+        split = split_generation_token(version)
+        epochs = pc.unique(pc.drop_null(rows.filter(pa.array(of_state)).column(_EPOCH)))
+        # one judgment a distinct epoch of the state (a commit), never one a key
+        held = [epoch for epoch in epochs.to_pylist() if _held_by_full(epoch, split, after)]
+        if held:
+            drop |= of_state & _in(rows.column(_EPOCH), pa.array(held, pa.string()))
+    return rows.filter(pa.array(~drop)) if drop.any() else rows
+
+
+def _cleared_past_states(
+    table: FollowedTable,
+    cleared: Sequence[tuple[str, tuple[Mapping[str, str], ...]]],
+    versions: Mapping[str | None, str],
+    after: _FullAfter,
+) -> tuple[tuple[str, tuple[Mapping[str, str], ...]], ...] | None:
+    """the key prefixes a waiting table heard cleared, less those of a reloaded state at an epoch its part holds;
+    None when a prefix names no state and is at an epoch some reloaded part holds: whose rows it clears cannot be told
+    by state, so the reload goes whole. A handful of loads' prefixes: read here, never a key each.
+
+    :param table: the table, scoped
+    :ptype table: FollowedTable
+    :param cleared: each epoch's prefixes heard cleared
+    :ptype cleared: Sequence[tuple[str, tuple[Mapping[str, str], ...]]]
+    :param versions: each reloaded state's version
+    :ptype versions: Mapping[str | None, str]
+    :param after: what the table waited for
+    :ptype after: _FullAfter
+    :return: the prefixes kept, by epoch; or None
+    :rtype: tuple[tuple[str, tuple[Mapping[str, str], ...]], ...] | None
+    """
+    assert table.scope is not None  # noqa: S101 -- _reload_states names states only of a scoped table
+    column, prefix = table.scope
+    splits = {scope: split_generation_token(version) for scope, version in versions.items() if scope is not None}
+    kept: list[tuple[str, tuple[Mapping[str, str], ...]]] = []
+    for epoch, prefixes in cleared:
+        left: list[Mapping[str, str]] = []
+        for each in prefixes:
+            if column not in each:
+                if any(_held_by_full(epoch, split, after) for split in splits.values()):
+                    return None
+                left.append(each)
+                continue
+            split = splits.get(f"{prefix}{each[column]}")
+            if split is None or not _held_by_full(epoch, split, after):
+                left.append(each)
+        if left:
+            kept.append((epoch, tuple(left)))
+    return tuple(kept)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2570,18 +2694,34 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
+        # the states the record names its commit touched (a commit too big to list): read-only, carried to the wait
+        scopes = frozenset(file.scopes) if file.scopes is not None else None
         if file.keys_unknown and self._fulls is not None and table in self._fulls.tables:
             # its keys were only in the file, so the writer recovers the table (decision 28) and publishes a full
             # holding it; the copy waits for that full, keeping what it heard, and asks the writer once
-            self._wait_for_reload(table, "file_lost", file.epoch, keep=True)
-            self._wait_for_file(table, file.file, file.epoch, file.why, reach="keys_unknown", watch=False)
+            self._wait_for_reload(table, "file_lost", file.epoch, keep=True, scopes=scopes)
+            self._wait_for_file(
+                table, file.file, file.epoch, file.why, reach="keys_unknown", watch=False, scopes=scopes
+            )
             return
         self._wait_for_file(
-            table, file.file, file.epoch, file.why, reach="keys_unknown" if file.keys_unknown else "prefixes"
+            table,
+            file.file,
+            file.epoch,
+            file.why,
+            reach="keys_unknown" if file.keys_unknown else "prefixes",
+            scopes=scopes,
         )
 
     def _wait_for_reload(
-        self, table: str, why: str, token: str | None, *, keep: bool = False, bar: str | None = None
+        self,
+        table: str,
+        why: str,
+        token: str | None,
+        *,
+        keep: bool = False,
+        bar: str | None = None,
+        scopes: frozenset[str] | None = None,
     ) -> None:
         """an opted-in table was reset or recreated: never read it from L3 (decisions 12 and 14 of the delta-files
         design: the writer rebuilds it from L3 once and publishes its full). Forget everything the copy heard or staged
@@ -2602,29 +2742,39 @@ class CopyFollower:
         :ptype keep: bool
         :param bar: the newest generation heard of the table when the reset was heard (its message's); None reads it now
         :ptype bar: str | None
+        :param scopes: the scopes (states) the change the full must cover touched (:attr:`_FullAfter.scopes`); None
+            when not known, or for a wait that replaces the table
+        :ptype scopes: frozenset[str] | None
         :return: nothing
         :rtype: None
         """
         after = (
-            _FullAfter(why=why, token=token, inclusive=True)
+            _FullAfter(why=why, token=token, inclusive=True, scopes=scopes)
             if token is not None
             else _FullAfter(
                 why=why,
                 token=bar if bar is not None else self._registry.generation_marks.highest_heard(table),
                 inclusive=False,
+                scopes=scopes,
             )
         )
         waiting = self._full_after.get(table)
-        if keep and waiting is not None and waiting.token is not None and after.token is not None:
-            have, new = split_generation_token(waiting.token), split_generation_token(after.token)
-            if have is not None and new is not None and have[0] == new[0] and have[1] >= new[1]:
-                after = waiting  # the full it waits for already holds the newer epoch: the bar is never lowered
+        if keep and waiting is not None:
+            # the full waited for must cover every change it waits for: the scopes of each, or the whole table once
+            # any one's are not known
+            reach = None if waiting.scopes is None or scopes is None else waiting.scopes | scopes
+            after = replace(after, scopes=reach)
+            if waiting.token is not None and after.token is not None:
+                have, new = split_generation_token(waiting.token), split_generation_token(after.token)
+                if have is not None and new is not None and have[0] == new[0] and have[1] >= new[1]:
+                    # the full it waits for already holds the newer epoch: the bar is never lowered
+                    after = replace(waiting, scopes=reach)
         log.warning(
             "a followed table that opts in to delta files was reset or recreated: it is reloaded from the writer's "
             "full on the volume once published, never read from L3; the copy serves it as it held it meanwhile",
             extra={"extra_data": {"table": table, "why": why, "token": token, "full_after": after.token}},
         )
-        self._full_after = with_entry(self._full_after, table, after)
+        self._set_full_after(table, after)
         # a stage of the table from before the reset holds the table it replaced: never applied (its keys are put
         # back heard, then kept or forgotten below)
         self._forget_tables_now([table])
@@ -2676,11 +2826,33 @@ class CopyFollower:
             "serves it as it held it meanwhile",
             extra={"extra_data": {"table": table, "reason": reason, "read": token, "full_after": after.token}},
         )
-        self._full_after = with_entry(self._full_after, table, after)
+        self._set_full_after(table, after)
         # a stage is put back as the keys it held, which are held with the rest of what was heard
         self._forget_tables_now([table])
         self._whole = without_entry(self._whole, table)
         self._look_for_full(table, after.why)
+
+    def _set_full_after(self, table: str, after: _FullAfter | None) -> None:
+        """record the full ``table`` waits for (None: it waits no more), and say in the status which states it reaches.
+
+        :param table: the table
+        :ptype table: str
+        :param after: the full it waits for, or None
+        :ptype after: _FullAfter | None
+        :return: nothing
+        :rtype: None
+        """
+        reach = self._status.full_reach
+        if after is None:
+            self._full_after = without_entry(self._full_after, table)
+            self._status.full_reach = without_entry(reach, table)
+            return
+        self._full_after = with_entry(self._full_after, table, after)
+        self._status.full_reach = (
+            without_entry(reach, table)
+            if after.scopes is None
+            else with_entry(reach, table, tuple(sorted(after.scopes)))
+        )
 
     def _look_for_full(self, table: str, why: str) -> None:
         """say in the status that ``table`` waits for a full, and look for one (:meth:`_reload_when_published`).
@@ -2801,11 +2973,29 @@ class CopyFollower:
                 self._say_waiting_for_full(table, short)
                 return False
             await self._forget_tables([])  # the stage the reset forgot, among any others
+        # the states a covered or lost file's commit wrote, named complete: only their parts are loaded (decision 54
+        # (c)); None loads the table whole
+        states = _reload_states(self._tables[table], after.scopes)
+        one = VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds)
         # outside the lock: the parts read off the volume and staged, and the backend's heavy work done
         try:
-            found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
-                self._backend, manifest=manifest, stage_name=_reload_stage
-            )
+            try:
+                found = await one.stage(self._backend, manifest=manifest, stage_name=_reload_stage, states=states)
+            except StatesNotSplitError as exc:
+                # NOSILENT: a full whose parts are not split by state is loaded whole, as before, said in the log
+                log.warning(
+                    "a copy's table waiting for a covered or lost delta file is reloaded whole: its full is not split "
+                    "by state",
+                    extra={"extra_data": {"table": table, "states": len(states or ()), "why": str(exc)}},
+                )
+                async with self._lock:
+                    self._drain()
+                    if self._full_after.get(table) is not after:
+                        return table not in self._full_after
+                    after = replace(after, scopes=None)
+                    self._set_full_after(table, after)
+                states = None
+                found = await one.stage(self._backend, manifest=manifest, stage_name=_reload_stage)
         except FileNotFoundError as exc:
             # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
             async with self._lock:
@@ -2822,12 +3012,17 @@ class CopyFollower:
             if isinstance(self._backend, PreparesStaged):
                 await asyncio.to_thread(self._backend.prepare_staged, found.changes)
             async with self._lock:
-                swapped, done = await self._swap_in_full(table, found, after)
+                if states is None:
+                    swapped, done = await self._swap_in_full(table, found, after)
+                else:
+                    swapped, done = await self._swap_in_states(table, found, after, states)
         finally:
             if not swapped:
-                # a stale full (reset again meanwhile), or a failed prepare or swap: its stage is never applied
+                # a stale full (reset again meanwhile), or a failed prepare or swap: its stages are never applied,
+                # the keys a reload of some states staged as well as its rows
                 await asyncio.to_thread(
-                    self._backend.drop_stage, *(change.rows for change in found.changes if change.rows)
+                    self._backend.drop_stage,
+                    *(stage for change in found.changes for stage in (change.rows, change.keys) if stage),
                 )
         self._poked.set()
         return done
@@ -2877,7 +3072,7 @@ class CopyFollower:
         for name, wait in tuple(self._file_waits.get(table, frozen()).items()):
             if _held_by_full(wait.epoch, held, after):
                 self._file_read(table, name, why=f"the full at {floor} holds epoch {wait.epoch}")
-        self._full_after = without_entry(self._full_after, table)
+        self._set_full_after(table, None)
         self._say_waiting_for_full(table, None)
         if table in self._cleared:
             self._cleared = with_entry(
@@ -2911,6 +3106,96 @@ class CopyFollower:
         self._drain()
         return True, table not in self._full_after
 
+    async def _swap_in_states(
+        self, table: str, found: StagedFull, after: _FullAfter, states: frozenset[str]
+    ) -> tuple[bool, bool]:
+        """as the owner (under the pass lock), make the full's parts of ``states`` staged for ``table`` current, and
+        leave every other state as the copy holds it (decision 54 (c)): the wait was for covered or lost delta files
+        whose records named complete every state their commits wrote, so these parts hold all of their changes.
+
+        The table's mark is not moved: its other states are as the copy held them, and what it heard of them while it
+        waited applies from their files as before. Of what it heard, the keys of a reloaded state at an epoch its part
+        holds are dropped (:func:`_past_states`), as are the prefixes heard cleared in them; the file waits the parts
+        cover end (:meth:`_file_read`), so the next pass applies the rest. A prefix heard cleared whose state cannot be
+        told sends the table waiting for the whole table's full instead (nothing applied).
+
+        :param table: the table
+        :ptype table: str
+        :param found: the states staged (:meth:`VolumeFulls.stage` with ``states``)
+        :ptype found: StagedFull
+        :param after: the wait the full was judged against
+        :ptype after: _FullAfter
+        :param states: the states staged
+        :ptype states: frozenset[str]
+        :return: whether the parts were applied, and whether the table no longer waits for a full
+        :rtype: tuple[bool, bool]
+        """
+        self._drain()
+        if self._full_after.get(table) is not after:
+            return self._stale_full(table, found)
+        followed = self._tables[table]
+        versions = found.versions[table]
+        snapshot = self._heard[table]
+        kept = await asyncio.to_thread(_past_states, followed, snapshot, versions, after)
+        self._drain()
+        if self._full_after.get(table) is not after:
+            return self._stale_full(table, found)
+        cleared = _cleared_past_states(followed, self._cleared.get(table, ()), versions, after)
+        if cleared is None:
+            log.warning(
+                "a copy's reload of some states was dropped, never applied: a load it heard cleared a prefix that names "
+                "no state, so the table is reloaded whole",
+                extra={"extra_data": {"table": table, "manifest": found.manifest, "states": len(states)}},
+            )
+            self._set_full_after(table, replace(after, scopes=None))
+            self._say_waiting_for_full(table, "a prefix heard cleared names no state: the whole table's full is loaded")
+            return False, False
+        self._mark += 1
+        mark = self._mark
+        rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
+        self._applied_mark = mark
+        held = self._state_versions.get(table)
+        if held is not None:
+            # each reloaded state is at its part's version; every other state at the version it was
+            self._state_versions = with_entry(self._state_versions, table, with_entries(held, versions))
+        label = self._status.stamp
+        self._stamp(mark, label, self._current_marks)
+        since = self._heard[table][len(snapshot) :]
+        heard = (kept, *since) if kept.num_rows else since
+        self._heard = with_entry(self._heard, table, heard)
+        self._heard_counts = with_entry(self._heard_counts, table, sum(batch.num_rows for batch in heard))
+        if table in self._cleared:
+            self._cleared = with_entry(self._cleared, table, cleared)
+        floor = split_generation_token(found.marks[table])
+        for name, wait in tuple(self._file_waits.get(table, frozen()).items()):
+            # a wait ends only when the parts hold its epoch and it named every state its commit wrote among them
+            reach = _reload_states(followed, wait.scopes)
+            if reach is not None and reach <= states and _held_by_full(wait.epoch, floor, after):
+                self._file_read(table, name, why=f"the full's parts of its states hold epoch {wait.epoch}")
+        self._set_full_after(table, None)
+        self._say_waiting_for_full(table, None)
+        self._rows_since_mark += rows
+        self._status.applied += 1
+        log.info(
+            "a table waiting for a covered or lost delta file had only its commit's states reloaded from the full",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "why": after.why,
+                    "manifest": found.manifest,
+                    "states": len(states),
+                    "rows": found.rows,
+                    "mark": found.marks[table],
+                    "heard_while_waiting": kept.num_rows,
+                }
+            },
+        )
+        if label is not None:
+            for listener in tuple(self._listeners):
+                listener(label)
+        self._drain()
+        return True, table not in self._full_after
+
     def _stale_full(self, table: str, found: StagedFull) -> tuple[bool, bool]:
         """a full staged for ``table`` that a reset heard since replaced: never applied (its stage is dropped by
         :meth:`_reload_from_volume`), and the table waits for a newer one.
@@ -2930,7 +3215,17 @@ class CopyFollower:
             self._say_waiting_for_full(table, "the table was reset again while its full loaded")
         return False, table not in self._full_after
 
-    def _wait_for_file(self, table: str, file: str, epoch: str, why: str, *, reach: str, watch: bool = True) -> None:
+    def _wait_for_file(
+        self,
+        table: str,
+        file: str,
+        epoch: str,
+        why: str,
+        *,
+        reach: str,
+        watch: bool = True,
+        scopes: frozenset[str] | None = None,
+    ) -> None:
         """hold ``table`` until ``file`` reads (the owner's): nothing of it is staged or applied meanwhile, and nothing
         read from L3 (decision 29). The writer is asked once to recreate it, and it is looked for again when the writer
         answers and every ``file_poll_seconds`` (:meth:`_await_files`); every other table is followed as before.
@@ -2947,6 +3242,8 @@ class CopyFollower:
         :ptype reach: str
         :param watch: whether the file is looked for (False: the table waits for the writer's recovery full)
         :ptype watch: bool
+        :param scopes: the scopes the record names its commit touched (:attr:`_FileWait.scopes`); None when it names none
+        :ptype scopes: frozenset[str] | None
         :return: nothing
         :rtype: None
         """
@@ -2959,7 +3256,9 @@ class CopyFollower:
         self._file_waits = with_entry(
             self._file_waits,
             table,
-            with_entry(waits, file, _FileWait(epoch=epoch, file=file, why=why, reach=reach, watch=watch)),
+            with_entry(
+                waits, file, _FileWait(epoch=epoch, file=file, why=why, reach=reach, watch=watch, scopes=scopes)
+            ),
         )
         _FILE_WAITS.labels(table=table, why=why).inc()
         log.warning(
@@ -3119,7 +3418,9 @@ class CopyFollower:
             # deletes took it): the file never comes, a full at or past its epoch holds its change. Never L3
             new = replace(new, watch=False)
             self._file_waits = with_entry(self._file_waits, table, with_entry(waits, wait.file, new))
-            self._wait_for_reload(table, "file_covered" if covered else "file_lost", wait.epoch, keep=True)
+            self._wait_for_reload(
+                table, "file_covered" if covered else "file_lost", wait.epoch, keep=True, scopes=wait.scopes
+            )
         else:
             self._file_waits = with_entry(self._file_waits, table, with_entry(waits, wait.file, new))
         self._say_file_waits(table)
@@ -5587,18 +5888,7 @@ class CopyFollower:
         :return: the rows, every column the copy holds
         :rtype: pyarrow.Table
         """
-        assert table.scope is not None  # noqa: S101 -- asked only of a scoped table
-        with self._backend.read_snapshot() as cursor:
-            # a blocking caller on its own thread: the read runs inline on the snapshot cursor (InlineDuckDB)
-            return run_inline(
-                read_state_arrow(
-                    InlineDuckDB(cursor),
-                    table.name,
-                    scope_column=table.scope[0],
-                    state=value,
-                    columns=[column.name for column in table.columns],
-                )
-            )
+        return copy_rows_of_state(self._backend, table, value, [column.name for column in table.columns])
 
     def _drift_checks(self) -> PeriodicTask | None:
         """the periodic drift check :meth:`run` keeps, started; None when the copy starts from no full or the check

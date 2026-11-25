@@ -73,7 +73,7 @@ from threetears.core.collections.delta_files import (
     versioned_write_id,
 )
 from threetears.core.collections.delta_save import save_in_worker
-from threetears.core.collections.epoch_change import ChangedRow, recordable_scopes
+from threetears.core.collections.epoch_change import EVERY_STATE_NAMED, ChangedRow, recordable_scopes
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.frozen_state import with_chunk
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
@@ -349,6 +349,7 @@ class CallerTransaction:
         "_restated",
         "_saved_delta_files",
         "_scopes",
+        "_states",
         "_token",
         "_transaction",
         "_write_version",
@@ -394,6 +395,9 @@ class CallerTransaction:
         # the scopes (states) the writer's seqlock touched in this transaction (ScopeEpochs.touch), each once: its
         # commit names them beside its delta files (decision 31)
         self._scopes: frozenset[str] = frozenset()
+        # every state the delta files' rows are of, read off them when saved (TableDelta.named_states); None when any
+        # one table's cannot be told: the commit's scopes are then not marked complete (decision 54 (c))
+        self._states: frozenset[str] | None = None
         # the write's version its data writes took their turn at (ScopeEpochs.touch): its delta files are named by it
         # (decision 53); None for a transaction no fenced write joined, whose files keep the older, unversioned name
         self._write_version: int | None = None
@@ -824,8 +828,9 @@ class CallerTransaction:
         # and an advance this process records itself names them. Only a commit that landed: a record naming the file
         # of a commit that failed would hand every copy rows L3 never took
         files: Mapping[str, str] = self._saved_delta_files if exc_type is None else MappingProxyType({})
-        # the states only a commit with a delta file names, bounded: one too wide names none (decision 31)
-        scopes = (recordable_scopes(self._scopes) or []) if files else []
+        # the states only a commit with a delta file names, bounded: one too wide names none (decision 31); marked
+        # complete only when read off its files' rows (decision 54 (c))
+        scopes = _commit_scopes(self._scopes, self._states) if files else []
         landed = False
         # the broker's reply to the commit replaces this task's record of its generations; a direct pool's commit
         # leaves it, so a record that did not change since names nothing of this commit's
@@ -868,8 +873,9 @@ class CallerTransaction:
         elif not deltas and not enrolled:
             owed = {}
         else:
-            # a key a row of a commit of 33,786 rows: counted off the loop, as settling groups them
-            owed = await asyncio.to_thread(_owed_deltas, enrolled, reaches, deltas)
+            # a key a row of a commit of 33,786 rows: counted off the loop, as settling groups them, and the states its
+            # rows are of read there too
+            owed, self._states = await asyncio.to_thread(_owed_and_states, enrolled, reaches, deltas)
         return await save_delta_files(owed, version=self._write_version)
 
     async def _settle_collecting(
@@ -963,6 +969,57 @@ class CallerTransaction:
                 if failure is None:
                     failure = exc
         return failure
+
+
+def _commit_scopes(touched: frozenset[str], states: frozenset[str] | None) -> list[str]:
+    """the scopes a commit with delta files names (``COMMIT_SCOPES_FIELD``): those its writes touched, and, when its
+    files' rows said every state they are of (:meth:`~threetears.core.collections.delta_files.TableDelta.named_states`),
+    those states and the mark that they are complete
+    (:data:`~threetears.core.collections.epoch_change.EVERY_STATE_NAMED`). Bounded whole (``recordable_scopes``): too
+    many names none, never a subset.
+
+    Why the mark only from the rows: the touched scopes are the writer's word, which nothing ties to the rows it wrote;
+    a record naming fewer states than its commit wrote would leave a copy that reloads just those states with the old
+    rows of the rest (decision 54 (c)).
+
+    :param touched: the scopes the transaction's writes touched (``ScopeEpochs.touch``)
+    :ptype touched: frozenset[str]
+    :param states: every state its delta files' rows are of; None when any table's cannot be told
+    :ptype states: frozenset[str] | None
+    :return: the scopes to name; empty for none
+    :rtype: list[str]
+    """
+    if states is None:
+        return recordable_scopes(touched) or []
+    return recordable_scopes(touched | states | {EVERY_STATE_NAMED}) or []
+
+
+def _owed_and_states(
+    enrolled: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
+    reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]],
+    deltas: Mapping[str, TableDelta],
+) -> tuple[dict[str, TableDelta], frozenset[str] | None]:
+    """:func:`_owed_deltas`, and every state the owed deltas' rows are of (None when any one's cannot be told). Pure,
+    for a thread.
+
+    :param enrolled: the transaction's enrollments
+    :ptype enrolled: Sequence[tuple[BaseCollection, Any, dict[str, Any] | None]]
+    :param reaches: the key prefixes it deleted, by collection
+    :ptype reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]]
+    :param deltas: what its writes recorded, by table
+    :ptype deltas: Mapping[str, TableDelta]
+    :return: the owed deltas, and their states
+    :rtype: tuple[dict[str, TableDelta], frozenset[str] | None]
+    :raises DeltaFileRefusedError: as :func:`_owed_deltas`
+    """
+    owed = _owed_deltas(enrolled, reaches, deltas)
+    states: frozenset[str] = frozenset()
+    for delta in owed.values():
+        named = delta.named_states()
+        if named is None:
+            return owed, None
+        states |= named
+    return owed, states if owed else None
 
 
 def _owed_deltas(
