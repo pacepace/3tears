@@ -64,9 +64,11 @@ __all__ = ["MARKER", "SAMPLE_EVERY_SECONDS", "STALL_LIMIT_SECONDS", "WHY_MIN_CHA
 #: Why 250 ms. The serving pods' own watchdog (the SDK's ``aibots_agents.runtime.loop_watchdog``) logs a held loop at
 #: 50 ms, and a call that waits 0.3 s on a held loop is already slow; a test runs on a host up to ~3x slower a core
 #: than the laptop it was written on (GitHub's 4-vCPU runner, a pool runner), so 5x the serving bound leaves room for
-#: the host without letting any work that grows with rows through. Measured over 3tears' core unit suite (2026-11-25,
-#: the rollout): the turns that pass it are the copy follower's keyed staging and the like, work that grows with the
-#: rows; the turns of a test at its own size stay well under (see the rollout's count in the commit).
+#: the host without letting any work that grows with rows through. Measured on the rollout (3tears' core unit and
+#: loop_timing suites on the testament pool, 2026-11-25): 161 of 7,077 tests held a turn past it, 169 turns from
+#: 0.26 s to 62.6 s (median 0.53 s); every one is synchronous work that grows with rows -- test setup building rows on
+#: the loop (most), sqlite/DuckDB ``executemany`` on it, the registry applying a large change record, the copy
+#: follower's keyed staging -- so the limit separates per-row work from a turn's bookkeeping.
 STALL_LIMIT_SECONDS: Final[float] = 0.25
 
 #: how often the watcher looks at each loop thread, and how long a turn runs before its stack is sampled
@@ -87,7 +89,7 @@ _SAMPLES_KEPT: Final[int] = 200
 #: where the standard library and installed packages live: a frame there is never the culprit
 _NOT_OURS: Final[tuple[str, ...]] = tuple(
     {sysconfig.get_paths()["stdlib"], sysconfig.get_paths()["platstdlib"], sysconfig.get_paths()["purelib"]}
-) + ("/site-packages/", "<frozen ", __file__, "_asyncio_internals.py")
+) + ("/site-packages/", "<frozen ")
 
 
 @dataclass(frozen=True)
@@ -99,12 +101,15 @@ class _Frame:
     filename: str
     lineno: int
 
-    def ours(self) -> bool:
-        """whether the frame is the project's own code or 3tears' (installed, in a consumer repo), not the standard
-        library's or another installed package's."""
-        if self.module.startswith("threetears.") and not self.module.startswith("threetears.core.testing._"):
-            return self.filename != __file__
-        return not any(part in self.filename for part in _NOT_OURS)
+    def ours(self, root: str) -> bool:
+        """whether the frame is the project's own code (under the session's ``root``) or 3tears' (installed, in a
+        consumer repo): never the standard library's, another package's, a test runner's harness (testament's
+        report plugin, outside the root, runs in a collection's callbacks) or this guard's own."""
+        if self.filename == __file__ or self.module.startswith("threetears.core.testing._"):
+            return False
+        if self.module.startswith("threetears."):
+            return True
+        return self.filename.startswith(root) and not any(part in self.filename for part in _NOT_OURS)
 
     def named(self) -> str:
         """the frame as a failure names it: ``module.qualname (file:line)``."""
@@ -178,10 +183,10 @@ def _stack_of(frame: FrameType | None) -> tuple[_Frame, ...]:
     return tuple(frames)
 
 
-def _culprit(stack: tuple[_Frame, ...]) -> _Frame | None:
-    """the innermost frame of the project's own code in ``stack``."""
+def _culprit(stack: tuple[_Frame, ...], root: str) -> _Frame | None:
+    """the innermost frame of the project's own code (under ``root``) in ``stack``."""
     for frame in reversed(stack):
-        if frame.ours():
+        if frame.ours(root):
             return frame
     return None
 
@@ -189,7 +194,9 @@ def _culprit(stack: tuple[_Frame, ...]) -> _Frame | None:
 class _Guard:
     """the session's guard: asyncio's run wrapped, the loop threads' turns, the watcher, and the stalls seen."""
 
-    def __init__(self) -> None:
+    def __init__(self, root: str) -> None:
+        #: the session's root directory: the project's own code is under it
+        self._root = root
         self._local = threading.local()
         #: every thread that has run a loop turn this session (appended to, never removed: a handful a session)
         self._turns: list[_Turn] = []
@@ -237,7 +244,7 @@ class _Guard:
         if seconds <= STALL_LIMIT_SECONDS:
             return
         mine = [stack for at, stack in samples if at == seq]
-        named = [(culprit, stack) for stack in mine if (culprit := _culprit(stack)) is not None]
+        named = [(culprit, stack) for stack in mine if (culprit := _culprit(stack, self._root)) is not None]
         if named:
             counts = Counter(culprit.module + "." + culprit.qualname for culprit, _ in named)
             top, held = counts.most_common(1)[0]
@@ -324,7 +331,7 @@ def pytest_configure(config: pytest.Config) -> None:
         f"{MARKER}(seconds, why): raise this test's event-loop stall limit above {STALL_LIMIT_SECONDS} s, saying why "
         "(threetears.core.testing.loop_stall)",
     )
-    guard = _Guard()
+    guard = _Guard(str(config.rootpath))
     guard.start()
     config.stash[_GUARD_KEY] = guard
 
