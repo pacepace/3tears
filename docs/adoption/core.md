@@ -32,8 +32,9 @@ the first few times.
   `ForeignKeyDef`) and the canonical `MigrationRunner` -- package-composing,
   topologically ordered, idempotent, version-tracked.
 - **L3 backends** in `threetears.core.backends`: PostgreSQL (`sql`), the NATS
-  proxy (`nats_proxy`), and a git working tree (`git`, with the `nats` extra;
-  see [the git backend](core-git.md)).
+  proxy (`nats_proxy`), a git working tree (`git`, with the `nats` extra;
+  see [the git backend](core-git.md)), and one SQLite file for one process on
+  one machine (`sqlite_file`; see [the SQLite L3](core-sqlite.md)).
 - **Coordination primitives** (`KVLease`) for cross-pod mutual exclusion;
   `KVLease.hold_sync` holds one across synchronous work.
 - **`threetears.core.sync`** -- `run(work, *, timeout=None)` runs one async call

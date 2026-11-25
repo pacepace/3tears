@@ -50,7 +50,9 @@ def _sqlite_path(url: str) -> Path:
 
 
 @contextlib.asynccontextmanager
-async def l3_store(url: str, *, pool_name: str = "l3", **pool_kwargs: Any) -> AsyncIterator[Any]:
+async def l3_store(
+    url: str, *, pool_name: str = "l3", **pool_kwargs: Any
+) -> AsyncIterator[SqlL3Backend | SqliteL3Backend]:
     """the L3 ``url`` names, open for the block and closed after it.
 
     :param url: ``sqlite:///<path>``, or a ``postgresql://`` DSN
@@ -61,7 +63,7 @@ async def l3_store(url: str, *, pool_name: str = "l3", **pool_kwargs: Any) -> As
         ...); refused for SQLite, which has no pool
     :ptype pool_kwargs: Any
     :return: a :class:`SqliteL3Backend` or a :class:`SqlL3Backend`
-    :rtype: AsyncIterator[Any]
+    :rtype: AsyncIterator[SqlL3Backend | SqliteL3Backend]
     :raises ValueError: when the scheme is neither, or pool options are given for SQLite
     """
     scheme = urlsplit(url).scheme

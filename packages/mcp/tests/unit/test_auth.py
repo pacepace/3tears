@@ -795,3 +795,50 @@ class TestLocalGrantAuthorizerAdminLogging:
                 )
             finally:
                 await authz.stop()
+
+
+class TestAGrantCacheOfManyGrants:
+    """thousands of grants: each change applies to its own grant and leaves every other one as it was."""
+
+    @pytest.mark.asyncio
+    async def test_changes_over_a_large_cache_grant_and_revoke_exactly_what_they_name(self) -> None:
+        principals = [uuid4() for _ in range(3000)]
+        grants = [uuid4() for _ in principals]
+        # two grants give one pair: revoking one of them keeps the permission
+        shared_principal, shared_grant = principals[0], uuid4()
+        loader = AsyncMock(
+            return_value=[_row(p, "p.read", g) for p, g in zip(principals, grants, strict=True)]
+            + [_row(shared_principal, "p.read", shared_grant)],
+        )
+        changed: dict[UUID, dict[str, Any] | None] = {}
+        newcomer, newcomer_grant = uuid4(), uuid4()
+        changed[newcomer_grant] = _row(newcomer, "p.write", newcomer_grant)
+        changed[grants[1]] = None
+        changed[grants[2]] = _row(principals[2], "p.write", grants[2])
+        changed[grants[0]] = None
+
+        async def _read(grant_id: UUID) -> dict[str, Any] | None:
+            if grant_id in changed:
+                return changed[grant_id]
+            return _row(principals[grants.index(grant_id)], "p.read", grant_id)
+
+        reader = AsyncMock(side_effect=_read)
+        authz, registry = await _build_started_authorizer(loader=loader, reader=reader)
+        try:
+            for grant_id in (newcomer_grant, grants[1], grants[2], grants[0], grants[3]):
+                _changed(registry, grant_id)
+            await _eventually(_awaited(reader, 5), "the five reads")
+
+            def who(principal: UUID) -> Identity:
+                return Identity(principal_type="user", principal_id=principal)
+
+            await _eventually(lambda: authz.allows(who(newcomer), "p.write"), "the new grant")
+            assert await authz.allows(who(principals[1]), "p.read") is False, "the revoked grant"
+            assert await authz.allows(who(principals[2]), "p.read") is False, "the changed grant's old permission"
+            assert await authz.allows(who(principals[2]), "p.write") is True, "the changed grant's new permission"
+            assert await authz.allows(who(shared_principal), "p.read") is True, "the pair another grant still gives"
+            assert await authz.allows(who(principals[3]), "p.read") is True, "a grant read again unchanged"
+            for principal in principals[4:]:
+                assert await authz.allows(who(principal), "p.read") is True
+        finally:
+            await authz.stop()

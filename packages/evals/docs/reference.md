@@ -668,7 +668,7 @@ Storage adapters the engine ships: implementations of the one port a host stores
 
 - **`CoreReset`** · dataclass · What `RoutedDocumentStore.reset_core` did: the core and regenerable documents deleted, and what moved.
 - **`DocTypeRoute`** · *host contract* · dataclass · Which store each document type is kept in, decided by one of its facts.
-- **`InMemoryDocumentStore`** · *host contract* · class · A `DocumentStore` over one dict.
+- **`InMemoryDocumentStore`** · *host contract* · class · A `DocumentStore` over frozen layers of writes.
 - **`MisplacedDocument`** · exception · One id is held by two stores, or by a store its type is not placed in; the router never picks one.
 - **`RouteChanged`** · exception · The router was started under placements its stores were not written under; `relocate` first.
 - **`RoutedDocumentStore`** · *host contract* · class · One `DocumentStore` over several, each `doc_type` kept where its facts say.
