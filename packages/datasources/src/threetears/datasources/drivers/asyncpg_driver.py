@@ -170,6 +170,7 @@ from threetears.datasources.config import (
     YugabyteConnectionConfig,
 )
 from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, RowBudget, start_budget
+from threetears.datasources.reply_arrow import ArrowBudget, BoundedArrow, records_table, start_arrow_budget
 from threetears.datasources.drivers.statement_rows import rows_from_command_tag
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
@@ -1272,6 +1273,99 @@ class AsyncpgDriver(Driver):
 
     @traced
     @observed(driver_type="asyncpg")
+    async def fetch_arrow_at_most(
+        self, sql: str, *params: Any, schema: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> Any:
+        """:meth:`fetch_at_most`, its records made one Arrow table on a thread, a column at a time
+        (:func:`~threetears.datasources.reply_arrow.records_table`): never a dict a row, never on the event loop.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param schema: each column asked for and its Arrow type, in order
+        :ptype schema: pyarrow.Schema
+        :param max_rows: the most rows to fetch, at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` rows
+        :rtype: pyarrow.Table
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        :raises ReplyNotArrowError: when a column's values are not of its type
+        """
+        check_max_rows(max_rows)
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "asyncpg")
+
+        async def _bounded(conn: Any) -> Any:
+            async with conn.transaction():
+                cursor = await bind_as_declared(conn, translated, params, lambda bound: conn.cursor(translated, *bound))
+                return await cursor.fetch(max_rows)
+
+        records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
+        return await asyncio.to_thread(records_table, records, schema)
+
+    @traced
+    @observed(driver_type="asyncpg")
+    async def fetch_arrow_within(
+        self,
+        sql: str,
+        *params: Any,
+        schema: Any,
+        max_bytes: int,
+        max_rows: int | None = None,
+        page_rows: int = DEFAULT_PAGE_ROWS,
+        timeout_seconds: int | None = None,
+    ) -> BoundedArrow:
+        """:meth:`fetch_within` as Arrow: the same cursor and pages, each page's records made Arrow on a thread and kept
+        while the kept rows' buffers fit ``max_bytes`` (:class:`~threetears.datasources.reply_arrow.ArrowBudget`).
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param schema: each column asked for and its Arrow type, in order
+        :ptype schema: pyarrow.Schema
+        :param max_bytes: the most bytes the kept rows may take, at least 1
+        :ptype max_bytes: int
+        :param max_rows: the most rows kept, at least 1; None for no row bound
+        :ptype max_rows: int | None
+        :param page_rows: the rows a page reads, at least 1
+        :ptype page_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows kept, whether the result had more, and their bytes
+        :rtype: BoundedArrow
+        :raises ValueError: if a bound is out of range, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        :raises ReplyNotArrowError: when a column's values are not of its type
+        """
+        budget = start_arrow_budget(schema=schema, max_bytes=max_bytes, max_rows=max_rows, page_rows=page_rows)
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "asyncpg")
+
+        async def _paged(conn: Any) -> None:
+            async with conn.transaction():
+                cursor = await bind_as_declared(conn, translated, params, lambda bound: conn.cursor(translated, *bound))
+                going = True
+                while going:
+                    wanted = budget.wanted(page_rows)
+                    page = await cursor.fetch(wanted)
+                    going = await asyncio.to_thread(_take_arrow_records, budget, page) and len(page) == wanted
+
+        await self._acquire_and_run(_paged, timeout_seconds=timeout_seconds)
+        return budget.result()
+
+    @traced
+    @observed(driver_type="asyncpg")
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> int | None:
         """run a DML / DDL statement; discard any returned rows.
 
@@ -1815,6 +1909,19 @@ class AsyncpgDriver(Driver):
 # alone which driver module is loaded. DEBUG so production logging
 # configurations stay quiet by default.
 log.debug("threetears.datasources.drivers.asyncpg_driver module loaded")
+
+
+def _take_arrow_records(budget: ArrowBudget, records: Sequence[Any]) -> bool:
+    """one page of asyncpg records, made Arrow a column at a time, into the budget (run in a worker thread).
+
+    :param budget: the read's budget
+    :ptype budget: ArrowBudget
+    :param records: the page's records
+    :ptype records: Sequence[Any]
+    :return: whether the read may go on
+    :rtype: bool
+    """
+    return budget.take(records_table(records, budget.schema))
 
 
 def _take_records(budget: RowBudget, records: Sequence[Any]) -> bool:

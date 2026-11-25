@@ -172,6 +172,7 @@ from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, RowBudget, start_budget
+from threetears.datasources.reply_arrow import ArrowBudget, BoundedArrow, rows_table, start_arrow_budget
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.statement_rows import LAST_QUERY_INSERTED_SQL
 from threetears.datasources.drivers.statement_rows import writes_rows
@@ -1997,6 +1998,47 @@ class RedshiftDriver(Driver):
             cursor.close()
         return result
 
+    def _fetch_arrow_sync(
+        self,
+        conn: RedshiftConnection,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+        max_rows: int,
+        schema: Any,
+    ) -> Any:
+        """:meth:`_fetch_sync` as Arrow (sync): at most ``max_rows`` rows off the cursor, made a table typed by
+        ``schema`` here, on the bridge's thread, a column at a time (:func:`~threetears.datasources.reply_arrow.rows_table`),
+        never a dict a row.
+
+        :param conn: connection to run on
+        :ptype conn: RedshiftConnection
+        :param sql: already-translated SQL text
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :param max_rows: the most rows to take off the cursor
+        :ptype max_rows: int
+        :param schema: each column asked for and its Arrow type
+        :ptype schema: pyarrow.Schema
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        cursor = conn.cursor()
+        try:
+            self._apply_statement_timeout_sync(cursor, timeout_seconds)
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            rows = cursor.fetchmany(max_rows)
+            names = [c[0] for c in cursor.description]
+        finally:
+            cursor.close()
+        return rows_table(names, rows, schema)
+
     def _declare_within_sync(
         self,
         conn: RedshiftConnection,
@@ -2251,6 +2293,119 @@ class RedshiftDriver(Driver):
                 except asyncio.CancelledError:
                     # a page is bounded: let it finish, so the session is between statements and is cached,
                     # not terminated, by the cancel path (_cancel_checkout) the cancellation goes on to
+                    await page
+                    cursor.close()
+                    with self._held_lock:
+                        self._idle_at_cancel = self._idle_at_cancel.with_item(conn)
+                    raise
+            cursor.close()
+
+        await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+        return budget.result()
+
+    @traced
+    @observed(driver_type="redshift")
+    async def fetch_arrow_at_most(
+        self, sql: str, *params: Any, schema: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> Any:
+        """:meth:`fetch_at_most`, its rows made one Arrow table on the bridge's thread they were read on
+        (:meth:`_fetch_arrow_sync`): never a dict a row, never on the event loop.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param schema: each column asked for and its Arrow type, in order
+        :ptype schema: pyarrow.Schema
+        :param max_rows: the most rows to keep, at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` rows
+        :rtype: pyarrow.Table
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        :raises ReplyNotArrowError: when a column's values are not of its type
+        """
+        check_max_rows(max_rows)
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "pyformat")
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(
+                functools.partial(self._fetch_arrow_sync, conn, translated, params, timeout_seconds, max_rows, schema),
+                cancel_cb=_closer(conn),
+            )
+
+        return await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+
+    @traced
+    @observed(driver_type="redshift")
+    async def fetch_arrow_within(
+        self,
+        sql: str,
+        *params: Any,
+        schema: Any,
+        max_bytes: int,
+        max_rows: int | None = None,
+        page_rows: int = DEFAULT_PAGE_ROWS,
+        timeout_seconds: int | None = None,
+    ) -> BoundedArrow:
+        """:meth:`fetch_within` as Arrow: the same server-side cursor and pages, each page made Arrow on the bridge's
+        thread it was read on and kept while the kept rows' buffers fit ``max_bytes``
+        (:class:`~threetears.datasources.reply_arrow.ArrowBudget`). Cancelled as :meth:`fetch_within` is.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param schema: each column asked for and its Arrow type, in order
+        :ptype schema: pyarrow.Schema
+        :param max_bytes: the most bytes the kept rows may take, at least 1
+        :ptype max_bytes: int
+        :param max_rows: the most rows kept, at least 1; None for no row bound
+        :ptype max_rows: int | None
+        :param page_rows: the rows a page reads, at least 1
+        :ptype page_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows kept, whether the result had more, and their bytes
+        :rtype: BoundedArrow
+        :raises asyncio.CancelledError: as :meth:`fetch_within` raises it
+        :raises ValueError: if a bound is out of range, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        :raises ReplyNotArrowError: when a column's values are not of its type
+        """
+        budget = start_arrow_budget(schema=schema, max_bytes=max_bytes, max_rows=max_rows, page_rows=page_rows)
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql.rstrip().rstrip(";"), "pyformat")
+
+        async def _op(conn: RedshiftConnection) -> None:
+            cursor = await self._bridge.to_thread_with_cancel(
+                functools.partial(self._declare_within_sync, conn, translated, params, timeout_seconds),
+                cancel_cb=_closer(conn),
+            )
+            going = True
+            while going:
+                wanted = budget.wanted(page_rows)
+                if self._on_page is not None:
+                    self._on_page(wanted)
+                page = asyncio.ensure_future(
+                    self._bridge.to_thread_with_cancel(
+                        functools.partial(_page_arrow_sync, cursor, budget, wanted),
+                        cancel_cb=_leave_running,
+                    )
+                )
+                try:
+                    going = await asyncio.shield(page)
+                except asyncio.CancelledError:
+                    # as fetch_within: the bounded page finishes, so the session is cached, not terminated
                     await page
                     cursor.close()
                     with self._held_lock:
@@ -3076,3 +3231,22 @@ def _page_within_sync(cursor: "RedshiftCursor", budget: RowBudget, wanted: int) 
     rows = cursor.fetchall()
     cols = [c[0] for c in cursor.description]
     return budget.take(dict(zip(cols, row)) for row in rows) and len(rows) == wanted
+
+
+def _page_arrow_sync(cursor: "RedshiftCursor", budget: ArrowBudget, wanted: int) -> bool:
+    """fetch one page of :meth:`RedshiftDriver.fetch_arrow_within`'s cursor, made Arrow, into its budget (sync, in
+    the bridge): the rows become columns in C, never a dict a row.
+
+    :param cursor: the cursor the statement was declared on
+    :ptype cursor: RedshiftCursor
+    :param budget: the read's budget
+    :ptype budget: ArrowBudget
+    :param wanted: the rows to fetch
+    :ptype wanted: int
+    :return: whether a further page may be read (every row kept, and the page was full)
+    :rtype: bool
+    """
+    cursor.execute(f"FETCH FORWARD {wanted} FROM {_WITHIN_CURSOR}")
+    rows = cursor.fetchall()
+    names = [c[0] for c in cursor.description]
+    return budget.take(rows_table(names, rows, budget.schema)) and len(rows) == wanted

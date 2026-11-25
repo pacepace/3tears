@@ -1,5 +1,9 @@
 """every keyset pager returns the whole relation when the hub cuts its replies by their bytes.
 
+The stand-in does its work off the event loop, as the hub does: its table is loaded in one statement, and each
+statement's run, the cut and the Arrow parse of a reply run on a thread (the session's loop-stall guard,
+``threetears.core.testing.loop_stall``, holds every test's loop to a quarter second a turn).
+
 A hub with a byte cap (``max_reply_bytes``) answers a page with the rows whose JSON fits, ``truncated`` set: the page
 comes back short of its sentinel, so the row count alone reads like the relation's end. The stand-in here runs each
 statement on DuckDB and cuts the answer as the hub's broker does (the first row always, then each row while the
@@ -9,6 +13,7 @@ from a few rows to one row a reply, the rows returned are the rows an uncut hub 
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -52,7 +57,18 @@ class _ByteCappedHub:
         self._db = duckdb.connect()
         self._db.execute("CREATE SCHEMA s")
         self._db.execute("CREATE TABLE s.results (state VARCHAR, race INTEGER, note VARCHAR)")
-        self._db.executemany("INSERT INTO s.results VALUES (?, ?, ?)", _rows())
+        # one statement over the rows as one Arrow table, never a statement a row
+        rows = _rows()
+        loaded = pa.table(
+            {
+                "state": [row[0] for row in rows],
+                "race": pa.array([row[1] for row in rows], pa.int32()),
+                "note": [row[2] for row in rows],
+            }
+        )
+        self._db.register("loaded", loaded)
+        self._db.execute("INSERT INTO s.results SELECT * FROM loaded")
+        self._db.unregister("loaded")
 
     def forwarded_identity_token(self) -> str:
         return "fake-identity-token"
@@ -60,10 +76,9 @@ class _ByteCappedHub:
     async def query(
         self, datasource_name: str, query: str, params: list[Any] | None = None, **_: Any
     ) -> DatasourceQueryResult:
-        cursor = self._db.execute(query, list(params or []))
-        names = [column[0] for column in cursor.description]
-        rows = [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
-        kept, truncated = self._cut(rows)
+        kept, truncated = await asyncio.to_thread(self._answer, query, list(params or []), self.max_bytes)
+        if truncated:
+            self.cut += 1
         return DatasourceQueryResult(
             rows=kept,
             row_count=len(kept),
@@ -72,20 +87,30 @@ class _ByteCappedHub:
             max_reply_bytes=self.max_bytes,
         )
 
-    def _cut(self, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
-        """the rows whose JSON array fits the cap, the first always, as the hub's RowBudget keeps them."""
-        if self.max_bytes is None:
-            return rows, False
-        kept: list[dict[str, Any]] = []
-        size = 2
-        for row in rows:
-            grown = size + len(pydantic_core.to_json(row)) + (1 if kept else 0)
-            if kept and grown > self.max_bytes:
-                self.cut += 1
-                return kept, True
-            kept.append(row)
-            size = grown
-        return kept, False
+    def _answer(self, query: str, params: list[Any], max_bytes: int | None) -> tuple[list[dict[str, Any]], bool]:
+        """run one statement on its own cursor (a thread's handle on the database) and cut its rows (on a thread).
+
+        :return: the rows kept and whether the reply was cut
+        """
+        cursor = self._db.cursor().execute(query, params)
+        names = [column[0] for column in cursor.description]
+        rows = [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+        return _cut(rows, max_bytes)
+
+
+def _cut(rows: list[dict[str, Any]], max_bytes: int | None) -> tuple[list[dict[str, Any]], bool]:
+    """the rows whose JSON array fits the cap, the first always, as the hub's RowBudget keeps them."""
+    if max_bytes is None:
+        return rows, False
+    kept: list[dict[str, Any]] = []
+    size = 2
+    for row in rows:
+        grown = size + len(pydantic_core.to_json(row)) + (1 if kept else 0)
+        if kept and grown > max_bytes:
+            return kept, True
+        kept.append(row)
+        size = grown
+    return kept, False
 
 
 def _sorted(rows: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
@@ -174,9 +199,9 @@ class _WideByteCappedHub(_ByteCappedHub):
         self.statements = 0
         self.asked: list[int] = []
         self._db.execute("DELETE FROM s.results")
-        self._db.executemany(
-            "INSERT INTO s.results VALUES (?, ?, ?)",
-            [(_STATES[index % 3], index, "x" * 40) for index in range(10_000)],
+        # the 10,000 rows made by the database in one statement
+        self._db.execute(
+            "INSERT INTO s.results SELECT ['AK', 'AL', 'AZ'][i % 3 + 1], i, repeat('x', 40) FROM range(10000) AS t(i)"
         )
 
     async def query(
@@ -188,11 +213,20 @@ class _WideByteCappedHub(_ByteCappedHub):
         return await super().query(datasource_name, query, params, **kwargs)
 
 
+def _wide_json_bytes() -> int:
+    """the bytes of the wide relation's rows as one compact JSON array, as the hub measures them."""
+    rows = [{"state": _STATES[index % 3], "race": index, "note": "x" * 40} for index in range(10_000)]
+    return len(pydantic_core.to_json(rows))
+
+
+#: measured once, at import, off any event loop
+_WIDE_JSON_BYTES = _wide_json_bytes()
+
+
 def _a_reply_carries(hub: _WideByteCappedHub) -> int:
     """the rows of the relation one reply of ``hub`` carries, at the width the hub measures them."""
-    rows = [{"state": _STATES[index % 3], "race": index, "note": "x" * 40} for index in range(10_000)]
     assert hub.max_bytes is not None
-    return hub.max_bytes * len(rows) // len(pydantic_core.to_json(rows))
+    return hub.max_bytes * 10_000 // _WIDE_JSON_BYTES
 
 
 async def test_pages_after_the_first_fill_the_reply_at_the_width_the_hub_measures() -> None:
@@ -319,8 +353,7 @@ class _ArrowByteCappedHub(_ByteCappedHub):
             max_reply_bytes=page.max_reply_bytes,
             correlation_id=page.correlation_id,
         )
-        sent = reply.model_dump_json().encode()
-        parsed = reply_rows(sent, types, bytes_mark=False)
+        sent, parsed = await asyncio.to_thread(_sent_and_parsed, reply, types)
         return DatasourceArrowResult(
             rows=parsed.rows,
             truncated=parsed.truncated,
@@ -328,6 +361,12 @@ class _ArrowByteCappedHub(_ByteCappedHub):
             rows_bytes=len(sent),
             correlation_id=page.correlation_id,
         )
+
+
+def _sent_and_parsed(reply: DatasourceQueryResponse, types: Any) -> tuple[bytes, Any]:
+    """the JSON reply's bytes and the client's Arrow parse of them (on a thread, as the client parses)."""
+    sent = reply.model_dump_json().encode()
+    return sent, reply_rows(sent, types, bytes_mark=False)
 
 
 _TYPES = {"state": pa.string(), "race": pa.int64(), "note": pa.string()}

@@ -78,6 +78,7 @@ from threetears.core.sql_fragments import FilterValue, quote_identifier
 
 from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, start_budget
 from threetears.datasources.export import DriverExportUnsupportedError, ExportConfig, ExportResult
+from threetears.datasources.reply_arrow import BoundedArrow, records_table, start_arrow_budget
 
 __all__ = [
     "DriverFingerprintGroupsUnsupportedError",
@@ -1006,6 +1007,81 @@ class Driver(ABC):
         else:
             rows = await self.fetch_at_most(sql, *params, max_rows=max_rows + 1, timeout_seconds=timeout_seconds)
         budget.take(rows)
+        return budget.result()
+
+    async def fetch_arrow_at_most(
+        self, sql: str, *params: Any, schema: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> Any:
+        """:meth:`fetch_at_most`, its rows one Arrow table typed by ``schema``, as the datasource rail's JSON reply of
+        them read (:mod:`threetears.datasources.reply_arrow`).
+
+        A driver that reads rows as sequences (a DB-API cursor, asyncpg's records) overrides this, so its rows become
+        columns in C and never a dict a row; this default makes the dicts :meth:`fetch_at_most` answers a table on a
+        thread.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param schema: each column asked for and its Arrow type, in order
+        :ptype schema: pyarrow.Schema
+        :param max_rows: the most rows to read; at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` rows
+        :rtype: pyarrow.Table
+        :raises ValueError: if ``max_rows`` is below 1
+        :raises ReplyNotArrowError: when a column's values are not of its type
+        """
+        rows = await self.fetch_at_most(sql, *params, max_rows=max_rows, timeout_seconds=timeout_seconds)
+        return await asyncio.to_thread(records_table, rows, schema)
+
+    async def fetch_arrow_within(
+        self,
+        sql: str,
+        *params: Any,
+        schema: Any,
+        max_bytes: int,
+        max_rows: int | None = None,
+        page_rows: int = DEFAULT_PAGE_ROWS,
+        timeout_seconds: int | None = None,
+    ) -> BoundedArrow:
+        """:meth:`fetch_within` as Arrow: the rows whose Arrow buffers fit ``max_bytes``, one table typed by ``schema``
+        (:class:`~threetears.datasources.reply_arrow.ArrowBudget`).
+
+        A paging driver overrides this, so the rows past the cut are never read and each page becomes Arrow on the
+        thread it was read on; this default reads through :meth:`fetch_arrow_at_most` (``max_rows`` + 1) or, with no
+        row bound, :meth:`fetch`, and cuts what it keeps.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param schema: each column asked for and its Arrow type, in order
+        :ptype schema: pyarrow.Schema
+        :param max_bytes: the most bytes the kept rows may take, at least 1; the first row is kept whatever its size
+        :ptype max_bytes: int
+        :param max_rows: the most rows kept, at least 1; None for no row bound
+        :ptype max_rows: int | None
+        :param page_rows: the rows a paging driver reads at a time, at least 1
+        :ptype page_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows kept, whether the result had more, and their bytes
+        :rtype: BoundedArrow
+        :raises ValueError: if a bound is out of range
+        :raises ReplyNotArrowError: when a column's values are not of its type
+        """
+        budget = start_arrow_budget(schema=schema, max_bytes=max_bytes, max_rows=max_rows, page_rows=page_rows)
+        if max_rows is None:
+            rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
+            table = await asyncio.to_thread(records_table, rows, schema)
+        else:
+            table = await self.fetch_arrow_at_most(
+                sql, *params, schema=schema, max_rows=max_rows + 1, timeout_seconds=timeout_seconds
+            )
+        budget.take(table)
         return budget.result()
 
     @abstractmethod

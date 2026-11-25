@@ -75,7 +75,7 @@ from threetears.core.security.door_request import (
     datasource_query_op,
     omit_absent_proof,
 )
-from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
+from threetears.core.backends.arrow_reply import ReplyNotArrowError, arrow_schema_text, read_reply, reply_rows
 from threetears.core.declared import whole_read
 from threetears.core.frozen_state import EMPTY, with_entry, without_entry
 from threetears.core.keyed import Fragment, Selected, renumbered, selected_column
@@ -99,6 +99,7 @@ __all__ = [
     "DATASOURCE_BUSY",
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
+    "REPLY_NOT_ARROW",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
     "EXPORT_LIST_MAX_PAGES",
     "EXPORT_LIST_UNSUPPORTED",
@@ -641,8 +642,10 @@ class DatasourceQueryRequest(ProvenDoorRequest, TolerantWireModel):
     export_list: DatasourceExportListRequest | None = None
     #: ``"arrow"`` asks a query's rows as one Arrow IPC stream behind the reply's envelope (``L3ARROW1``,
     #: the ``l3.query`` rail's framing), typed by :attr:`arrow_schema`; a hub that answers so does it for a read
-    #: alone, and answers JSON for anything else. Off the wire when absent, so a JSON ask is byte for byte what it was;
-    #: an older hub ignores both fields (a tolerant reader) and answers JSON, which the client reads as Arrow itself
+    #: alone, building the table from the warehouse's values (:mod:`threetears.datasources.reply_arrow`) and refusing
+    #: values not of those types (:data:`REPLY_NOT_ARROW`). Off the wire when absent, so a JSON ask is byte for byte
+    #: what it was; an older hub ignores both fields (a tolerant reader) and answers JSON, which the client reads as
+    #: Arrow itself
     reply_format: Literal["json", "arrow"] | None = None
     #: the rows' Arrow schema, its IPC serialization base64 (:func:`~threetears.core.backends.arrow_reply.arrow_schema_text`)
     arrow_schema: str | None = None
@@ -1194,6 +1197,11 @@ class DatasourceQueryClient:
                     }
                 },
             )
+            if error_code == REPLY_NOT_ARROW:
+                # the hub's own build of the rows refused a value's type, as this client's parse of the JSON did
+                raise ReplyNotArrowError(
+                    refusal.error_message or f"datasource query on {datasource_name!r}: {error_code}"
+                )
             raise DatasourceQueryError(
                 error_code, refusal.error_message or f"datasource query on {datasource_name!r} refused"
             )
@@ -1791,6 +1799,12 @@ RESULT_TOO_LARGE: Final = "RESULT_TOO_LARGE"
 #: running and waiting as it bears, or this one waited too long for its turn. nothing ran; ask again
 #: later (a refresh that meets it fails, and the next one runs)
 DATASOURCE_BUSY: Final = "DATASOURCE_BUSY"
+
+#: the hub's refusal of a read asked as Arrow whose values are not of the types asked for (the hub builds the rows'
+#: table from the warehouse's values, :mod:`threetears.datasources.reply_arrow`, and refuses rather than answer them
+#: otherwise). :meth:`DatasourceQueryClient.query_arrow` raises it as
+#: :class:`~threetears.core.backends.arrow_reply.ReplyNotArrowError`, as it raised the JSON reply's parse of such rows
+REPLY_NOT_ARROW: Final = "REPLY_NOT_ARROW"
 
 #: the hub's refusal of an export from a caller no operator granted one to (``aibots datasource
 #: export-grant``); its reads are unaffected
