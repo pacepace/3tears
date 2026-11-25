@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### observe: the loop watchdog, from the SDK
+
+**Added:** `threetears.observe.loop_watchdog.LoopWatchdog`, moved unchanged from the 14th AI bots SDK
+(`aibots_agents.runtime.loop_watchdog`, which now re-exports it) so the hub runs the same one every pod runs: a
+heartbeat on the loop, a watchdog thread that logs each stall past 50 ms with the loop thread's stack and every other
+thread's, the collections that overlapped it and, on Linux, the loop's stack dumped while it was held. Imported by
+module name, not from `threetears.observe` (importing it registers an exit hook that turns the wall-clock alarm off).
+New beside the move, for tests through the front door: `looked=` (called after each look), `last_beat`, `running`, and
+`format_held_stacks` (was `_held_stacks`). `sys._current_frames` is read through the new confinement module
+`threetears.observe._cpython_internals`. Its tests time out on a thread (`pytest.mark.timeout(method="thread")`): a
+SIGALRM timeout would leave the watchdog no alarm for its dump.
+
 ### core: every process knows every declared collection table
 
 **Added:** an entry-point group, `threetears.collections`: each package lists the modules defining its collection
