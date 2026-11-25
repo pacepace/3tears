@@ -94,7 +94,7 @@ dev = [
     { name = "discord-py", specifier = ">=2.7" },
     { name = "duckdb", specifier = ">=1.1" },
     { name = "fastapi", specifier = ">=0.110" },
-    { name = "fastmcp", specifier = ">=3.4.2,<5" },
+    { name = "fastmcp", specifier = ">=4.0,<5" },
     { name = "freezegun", specifier = ">=1.5" },
     { name = "google-cloud-bigquery", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.27" },
@@ -793,8 +793,8 @@ fastmcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<5" },
-    { name = "fastmcp-slim", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<5" },
+    { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=4.0,<5" },
+    { name = "fastmcp-slim", marker = "extra == 'fastmcp'", specifier = ">=4.0,<5" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
@@ -1015,7 +1015,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.1" },
     { name = "langchain-openrouter", specifier = ">=0.2.9" },
     { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.3" },
-    { name = "mcp", marker = "extra == 'claude-cli'", specifier = ">=1.27,<3" },
+    { name = "mcp", marker = "extra == 'claude-cli'", specifier = ">=2.0,<3" },
     { name = "openrouter", specifier = ">=0.9.2,<1.0" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },

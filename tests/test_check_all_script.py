@@ -2,8 +2,8 @@
 
 The manifest is ``fallback = "pool-only"``, so when the pool can't take the unit suite ``test.sh``
 exits 2 instead of running it here, and the integration suite (``test-integration.sh``, also on the
-pool) does the same. check-all then still runs the suites that never use the pool (mcp 1.x, the
-OpenTelemetry floor, the sidecar) and fails at the end, saying which suite did not run. A failing test
+pool) does the same. check-all then still runs the suites that never use the pool (the MCP SDK
+floors, the OpenTelemetry floor, the sidecar) and fails at the end, saying which suite did not run. A failing test
 still stops it at once.
 
 Self-contained: check-all is staged in a miniature repo under ``tmp_path`` beside stand-in scripts
@@ -29,7 +29,7 @@ _STEPS = (
     "typecheck.sh",
     "test.sh",
     "test-integration.sh",
-    "test-mcp-v1.sh",
+    "test-mcp-floor.sh",
     "test-otel-floor.sh",
     "test-sidecar.sh",
 )

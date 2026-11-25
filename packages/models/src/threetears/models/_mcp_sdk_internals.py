@@ -6,8 +6,7 @@ of a server a table of its own, and the CLI pool needs exactly that: a shallow c
 table, so rebinding ``tools/call`` on a borrower's copy would rebind it on the original that every
 borrower shares (:func:`threetears.models.claude_cli_pool._context_bound_server`).
 
-mcp 1.x keeps the table public (``Server.request_handlers``) and never reaches this module. When
-3tears-models drops mcp 1.x (the owner decides when), this stays until the SDK grows a public way to copy the table.
+this stays until the SDK grows a public way to copy the table.
 """
 
 from __future__ import annotations

@@ -195,15 +195,10 @@ async def _list_tools(server: Any) -> list[Any]:
     :return: the listed tools
     :rtype: list[Any]
     """
-    if hasattr(server, "get_request_handler"):  # mcp 2.x: (ctx, params) -> the result itself
-        entry = server.get_request_handler("tools/list")
-        listed_v2: list[Any] = (await entry.handler(None, None)).tools
-        return listed_v2
-    from mcp.types import ListToolsRequest  # noqa: PLC0415
-
-    result = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-    tools: list[Any] = result.root.tools
-    return tools
+    # handlers are keyed by method and called with (ctx, params); each answers the result itself
+    entry = server.get_request_handler("tools/list")
+    listed: list[Any] = (await entry.handler(None, None)).tools
+    return listed
 
 
 def _tool_server(options: Any) -> Any:
@@ -229,8 +224,7 @@ def advertised_tools(build: Callable[[], Runnable[Any, Any]]) -> dict[str, dict[
 
     call = sent_to_cli([HumanMessage(content="hi")], build=build)
     listed = asyncio.run(_list_tools(_tool_server(call.options)))
-    # by the wire name: 1.x calls the field inputSchema, 2.x input_schema with that as its alias
-    return {tool.name: tool.model_dump(by_alias=True)["inputSchema"] for tool in listed}
+    return {tool.name: tool.input_schema for tool in listed}
 
 
 def call_tool(build: Callable[[], Runnable[Any, Any]], name: str, arguments: dict[str, Any]) -> Any:
@@ -259,9 +253,8 @@ def tool_call_on(server: Any, name: str, arguments: dict[str, Any]) -> Awaitable
     """a ``tools/call`` on an in-process MCP server's own handler, as the SDK's reader task runs it.
 
     an awaitable rather than a result, so a test can run it in a context of its choosing
-    (``asyncio.create_task(..., context=...)``). mcp 1.x keys handlers by request type and wraps
-    the answer in a ``ServerResult``; 2.x keys them by method, calls them with ``(ctx, params)``
-    and returns the result itself. both answer the ``CallToolResult``.
+    (``asyncio.create_task(..., context=...)``). handlers are keyed by method, called with
+    ``(ctx, params)``, and answer the ``CallToolResult`` itself.
 
     :param server: the server instance
     :ptype server: Any
@@ -272,18 +265,11 @@ def tool_call_on(server: Any, name: str, arguments: dict[str, Any]) -> Awaitable
     :return: an awaitable answering the ``CallToolResult``
     :rtype: Awaitable[Any]
     """
-    from mcp.types import CallToolRequest, CallToolRequestParams  # noqa: PLC0415
+    from mcp.types import CallToolRequestParams  # noqa: PLC0415
 
     params = CallToolRequestParams(name=name, arguments=arguments)
-    if hasattr(server, "get_request_handler"):
-        result: Awaitable[Any] = server.get_request_handler("tools/call").handler(None, params)
-        return result
-    handler = server.request_handlers[CallToolRequest]
-
-    async def unwrapped() -> Any:
-        return (await handler(CallToolRequest(method="tools/call", params=params))).root
-
-    return unwrapped()
+    result: Awaitable[Any] = server.get_request_handler("tools/call").handler(None, params)
+    return result
 
 
 @dataclass

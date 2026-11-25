@@ -28,22 +28,34 @@ def test_it_parses_as_python_3_11() -> None:
 
 
 def test_it_runs_under_every_older_python_on_this_machine(tmp_path: Path) -> None:
-    """each one found lists the marked file, and none crashes (none found: the parse above is the check)."""
+    """each one found from 3.11 lists the marked file, and none crashes; an older one is refused by name.
+
+    (none found: the parse above is the check.)
+    """
     (tmp_path / "test_live.py").write_text("import pytest\n\npytestmark = pytest.mark.integration\n")
     (tmp_path / "test_unit.py").write_text("def test_y():\n    pass\n")
     found = sorted({path for name in _OLDER if (path := shutil.which(name)) is not None})
     for interpreter in found:
         version = subprocess.run(
-            [interpreter, "-c", "import sys; print(sys.version_info >= (3, 14))"],
+            [interpreter, "-c", "import sys; print(*sys.version_info[:2])"],
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         )
-        if version.stdout.strip() == "True":
+        if version.returncode != 0:
+            # a version manager's shim for a version it does not have installed (pyenv exits 127):
+            # on PATH, but no interpreter behind it, so there is nothing to run the script under
+            continue
+        major, minor = (int(part) for part in version.stdout.split())
+        if (major, minor) >= (3, 14):
             continue
         ran = subprocess.run(
             [interpreter, "-I", str(_SCRIPT), str(tmp_path)], capture_output=True, text=True, check=False
         )
+        if (major, minor) < (3, 11):
+            # below the script's own floor (a host's system python): it must refuse, saying why
+            assert ran.returncode != 0 and "needs Python 3.11 or later" in ran.stderr, f"{interpreter}: {ran.stderr}"
+            continue
         assert ran.returncode == 0, f"{interpreter}: {ran.stderr}"
         assert ran.stdout.splitlines() == [str(tmp_path / "test_live.py")], interpreter
 

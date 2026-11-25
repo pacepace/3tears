@@ -13,7 +13,19 @@ from typing import TYPE_CHECKING, Annotated, Literal, Optional
 if TYPE_CHECKING:
     from threetears.core.tool_wire import CallContext
     from threetears.core.tool_wire import CallRequest as Row
+    import threetears.mcp.context as mcp_context
+    from threetears import mcp as mcp_package
     from threetears.mcp import CallContext as McpCallContext
+
+
+async def through_the_package_alias(*, ctx: mcp_package.CallContext | None = None) -> str:
+    """the MCP CallContext through ``from threetears import mcp as mcp_package``."""
+    return "ok"
+
+
+async def through_the_module_alias(*, ctx: mcp_context.CallContext | None = None) -> str:
+    """the MCP CallContext through ``import threetears.mcp.context as mcp_context``."""
+    return "ok"
 
 
 async def core_context(*, call: CallContext | None = None) -> str:

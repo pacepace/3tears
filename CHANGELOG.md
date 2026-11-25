@@ -51,32 +51,40 @@ named as an input property, or one that names `CallContext` in any other form is
 `ValueError` when the `McpTool` is built. An annotation that cannot be evaluated (a type imported only
 for type checking) is read by its module's import statements, so an alias of the call context is
 found and `threetears.core`'s own `CallContext` is not taken for it; one that names nothing the module
-imports is logged as a warning, once per tool and parameter. The server does not declare the `logging` capability; whether it
-should is open (see the README's call-context section). A call that passes an argument named
-as the context (a schema allowing extra properties lets it through) is refused as an input validation
-error before the handler runs. The context holds no MCP SDK type.
+imports is logged as a warning, once per tool and parameter. The server does not declare the
+`logging` capability; whether it should is open (see the README's call-context section). A call that
+passes an argument named as the context (a schema allowing extra properties lets it through) is refused
+as an input validation error before the handler runs. The context holds no MCP SDK type.
 
-### mcp: 3tears-mcp requires mcp 2.x; mcp 1.x support is dropped
+### mcp, models, evals: 3tears requires MCP SDK 2.x; mcp 1.x support is dropped
 
-**Changed (breaking):** `3tears-mcp` declares `mcp>=2.0,<3` (was `>=1.27,<3`). A consumer still on mcp
-1.x stays on the release before this one until it moves to 2.x; the move is mcp's own (see "For a
-consumer moving to mcp 2.x" under the entry that added 2.x support). The mcp unit tests pass on the
-locked 2.3, and the new `scripts/test-mcp-floor.sh` runs them on exactly the declared floor (2.0.0) in
-CI's `check` job and in `check-all.sh`, so the floor cannot fall behind the code unnoticed.
+**Changed (breaking):** `3tears-mcp` and the `3tears-models` `claude-cli` extra declare `mcp>=2.0,<3`
+(were `>=1.27,<3`), and the `3tears-evals` `fastmcp` extra declares `fastmcp>=4.0,<5` and
+`fastmcp-slim>=4.0,<5` (were `>=3.4.2,<5`; fastmcp 3 needs mcp 1, fastmcp 4 is the first major on mcp
+2). A consumer still on mcp 1.x or fastmcp 3 stays on the release before this one until it moves to
+2.x; the move is mcp's own (see "For a consumer moving to mcp 2.x" under the entry that added 2.x
+support). The new `scripts/test-mcp-floor.sh` runs the MCP tests of all three packages on exactly the
+declared floors (mcp 2.0.0, fastmcp and fastmcp-slim 4.0.0) in CI's `check` job and in
+`check-all.sh`, so a floor cannot fall behind the code unnoticed; the suite also runs on the locked mcp
+2.3 and fastmcp 4.0.
 
 Consumers were checked before the change (2026-11-25). Of the known applications that install
-3tears-mcp, two resolve mcp 2.2 or 2.3, which this range covers. Three still resolve mcp 1.x: two
-are pinned to old 3tears-mcp releases (0.49 and 0.76), and one is on 3tears-mcp 0.93 with mcp 1.28.
-Each moves to mcp 2.x before it takes this release or any later one. None combines 3tears-mcp with
-fastmcp 3, the combination that can no longer be resolved.
+3tears-mcp, 3tears-models or the evals `fastmcp` extra, three resolve mcp 2.2 or 2.3 (the one on the
+`fastmcp` extra resolves fastmcp 4.1), which this range covers. Four still resolve mcp 1.x: two are
+pinned to old 3tears releases (0.49 and 0.76), and two are on 3tears 0.93 with mcp 1.28. Each moves
+to mcp 2.x before it takes this release or any later one. None resolves fastmcp 3.
 
 - `McpServer` registers its handlers only through 2.x's `Server(on_list_tools=, on_call_tool=)`. The
   runtime switch on the installed SDK and the 1.x decorator path are gone. What it does on top of the
   SDK is unchanged: it checks arguments against the tool's `inputSchema`, passes a call with no
   arguments as `{}`, returns every success as a `CallToolResult`, and a bug that escapes dispatch
   reaches the client as a JSON-RPC error.
-- `3tears-models` (`mcp>=1.27,<3`) and the `3tears-evals` `fastmcp` extra (`fastmcp>=3.4.2,<5`) still
-  support mcp 1.x. `scripts/test-mcp-v1.sh` and its CI step now run only their tests on mcp 1.x.
+- The CLI pool (`threetears.models.claude_cli_pool`) gives each borrower's copy of an in-process tool
+  server its own handler table only the 2.x way; the 1.x branch, which rebound the public
+  `request_handlers` dict, is gone. Behaviour on 2.x is unchanged.
+- `scripts/test-mcp-v1.sh` and its CI step are removed: nothing in 3tears runs on mcp 1.x any more.
+  The tests' 1.x shims (reading SDK models by wire name, the fastmcp 3 `initialize_result` fallback,
+  the 1.x handler lookups) are gone, with every assertion kept.
 
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
