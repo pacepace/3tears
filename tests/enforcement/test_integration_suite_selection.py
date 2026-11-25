@@ -16,17 +16,19 @@ so: the pool and the laptop both go green without it. So:
 
 A test counts as marked when ``pytest.mark.<name>`` appears in a decorator or a ``pytestmark`` assignment, at module
 or class level, as ``scripts/integration_marks.py`` reads it; the script reads marks through the same module.
-AST-based and side-effect-free.
+AST-based; each file's marks are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import tomllib
 from pathlib import Path
 from types import ModuleType
 
 from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _SCRIPT = _REPO_ROOT / "scripts" / "test-integration.sh"
@@ -65,11 +67,20 @@ def _mark_reader() -> ModuleType:
 _MARK_READER = _mark_reader()
 
 
-def _integration_files() -> dict[str, set[str]]:
+def _module_marks(path: Path, tree: ast.Module) -> frozenset[str]:
+    """Every mark one test module applies, as the mark reader reads it."""
+    return frozenset(_MARK_READER.marks(tree))
+
+
+def _marks_by_file() -> dict[Path, frozenset[str]]:
+    """Each test file's marks, kept on disk by the file's bytes, so a sibling test or a later batch parses none again."""
+    return file_facts(_module_marks, _test_files(), root=_REPO_ROOT)
+
+
+def _integration_files() -> dict[str, frozenset[str]]:
     """Each test file marking a test ``integration``, repo-relative, with every mark it applies."""
     found: dict[str, set[str]] = {}
-    for path in _test_files():
-        marks = _MARK_READER.marks(parse_python_path(path))
+    for path, marks in _marks_by_file().items():
         if "integration" in marks:
             found[str(path.relative_to(_REPO_ROOT))] = marks
     return found
@@ -101,9 +112,7 @@ def test_every_integration_test_runs_on_the_pool_or_here() -> None:
 
 def test_here_is_exactly_the_docker_and_secrets_files() -> None:
     marked = sorted(
-        str(path.relative_to(_REPO_ROOT))
-        for path in _test_files()
-        if _MARK_READER.marks(parse_python_path(path)) & {"docker", "secrets"}
+        str(path.relative_to(_REPO_ROOT)) for path, marks in _marks_by_file().items() if marks & {"docker", "secrets"}
     )
     assert sorted(_here_files()) == marked, (
         "scripts/test-integration.sh's HERE_FILES must list exactly the test files marking a test `docker` or "
@@ -134,13 +143,14 @@ def test_every_listed_path_exists_and_every_suite_path_holds_an_integration_test
 def test_process_only_marks_only_integration_tests() -> None:
     """``process_only`` is deselected outside process mode and only the integration suite runs in it, so a
     ``process_only`` module that is not also ``integration`` would run nowhere."""
+    marked = _marks_by_file()
     nowhere = sorted(
         str(path.relative_to(_REPO_ROOT))
-        for path in _test_files()
-        if {"process_only"} <= (marks := _MARK_READER.marks(parse_python_path(path))) and "integration" not in marks
+        for path, marks in marked.items()
+        if "process_only" in marks and "integration" not in marks
     )
     assert not nowhere, f"modules marking `process_only` without `integration`, which run nowhere: {nowhere}"
-    assert any("process_only" in _MARK_READER.marks(parse_python_path(path)) for path in _test_files()), (
+    assert any("process_only" in marks for marks in marked.values()), (
         "the walk found no `process_only` module at all; the check above proves nothing"
     )
 
