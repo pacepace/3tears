@@ -8,11 +8,9 @@ Critic mode: one review per chunk (each branch is reviewed and merged on its own
 ## Goals
 
 A 3tears-mcp tool handler is called as `handler(**arguments)` and sees nothing of the request, so it
-can neither report progress nor notice that the client gave up. aidc 2.0 serves its tools through
-3tears-mcp (aidc design-13, items 1 and 2; aidc requirements TRS-03, TRS-04, TRS-09), and its long
-tools (`session_create`, `session_invoke`) must send real `notifications/progress` for each phase,
-each phase also as a log message, before the result, and must stop their work when the call is
-cancelled.
+can neither report progress nor notice that the client gave up. A consumer serving long-running tools
+through 3tears-mcp must send real `notifications/progress` for each phase of a call, each phase also
+as a log message, before the result, and must stop its work when the call is cancelled.
 
 Success:
 
@@ -24,18 +22,17 @@ Success:
   handshake-era protocol and on 2026-07-28; a transport that cannot carry them (plain-JSON
   responses) says so to the operator instead of dropping them silently.
 
-Out of scope: `TearsTool`'s own progress (aidc U13, gated on an owner question), the stateful-mode
-work of aidc U06 (re-resolving the bearer identity per message, `tools/list_changed`), and the error
-model (U04).
+Out of scope: `TearsTool`'s own progress (an open owner question), stateful mode (re-resolving the
+bearer identity per message, `tools/list_changed`), and the error model.
 
 ## Decisions taken (inferred; flag at the boundary)
 
 - [DECISION: the context is found by the parameter's annotation, `CallContext`, not by a parameter
-  name | design-13 says "detected by signature"; a fixed name would collide with tool arguments. An
+  name | the request was "detected by signature"; a fixed name would collide with tool arguments. An
   annotation that cannot be evaluated (a type imported only for type checking) is matched as written,
   `CallContext` or a dotted name ending in it]
 - [DECISION: the context is a 3tears class with no SDK type in its surface; its senders are plain
-  callables | TRS-03 forbids consumer code importing an SDK type to get these, and a handler's own
+  callables | consumer code must not need to import an SDK type to get these, and a handler's own
   test builds a context with recording senders]
 - [DECISION: the cancellation signal is an `asyncio.Event` the dispatch sets when the handler's call is
   cancelled; the handler itself sees `CancelledError` as before | the SDK cancels the handler's scope

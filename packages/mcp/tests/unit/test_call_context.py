@@ -160,8 +160,8 @@ class TestCallContextOnItsOwn:
         recorder = _Recorder()
         ctx = _context(recorder=recorder)
         await ctx.log("info", {"phase": "clone"})
-        await ctx.log("error", "failed", logger="aidc.create")
-        assert recorder.logs == [("info", {"phase": "clone"}, None), ("error", "failed", "aidc.create")]
+        await ctx.log("error", "failed", logger="builder.create")
+        assert recorder.logs == [("info", {"phase": "clone"}, None), ("error", "failed", "builder.create")]
 
     @pytest.mark.asyncio
     async def test_a_context_without_senders_sends_nothing_and_does_not_fail(self) -> None:
