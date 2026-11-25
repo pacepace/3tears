@@ -61,6 +61,9 @@ _ARROW_MODULES: dict[str, str] = {
     "threetears.core.collections.copy_parts": (
         "a copied table's parts: its rows split by its scope column in Arrow, its locator an Arrow table"
     ),
+    "threetears.core.collections.shared_copy": (
+        "the copy's apply in its worker process: a change's parts rewritten in Arrow and published as shared Arrow"
+    ),
 }
 
 #: a requirement line of ``uv export``: ``name==version`` (with a marker), or ``-e ./packages/<dir>``

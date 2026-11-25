@@ -23,6 +23,7 @@ one a row or a key.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -44,6 +45,8 @@ __all__ = [
     "part_rules",
     "parts_of_keys",
     "split_parts",
+    "tier_of",
+    "tier_part",
 ]
 
 #: the one part a table below the floor, or with no scope column, is held as
@@ -84,6 +87,13 @@ WHOLE_PART: Final = "all"
 #: tables were split (``aibots_reports.pod.shared_backend.PER_STATE_TABLES``).
 SPLIT_FLOOR_BYTES: Final = 16 << 20
 
+#: between a scope value and its runs in a per-run part's name: ``VA-r000000005001-000000005010-1`` (scope value, first
+#: run, last run, level), so a scope's parts sort by their runs and a merged part sorts into its group's place (the
+#: store's ``merge_parts`` requires both). Moved from reports (``aibots_reports.pod.follower_parts``)
+_TIER_MARK: Final = "-r"
+
+_TIER: Final = re.compile(r"^(?P<scope>.+)-r(?P<first>\d{12})-(?P<last>\d{12})-(?P<level>\d+)$")
+
 #: a table already split stays split until it holds under the floor divided by this: a table near the floor (a
 #: retention letting runs go, the next run adding them) would otherwise flip shape, and each flip rewrites it whole
 _STAY_SPLIT_DIVISOR: Final = 2
@@ -104,14 +114,25 @@ class PartRule:
     :ivar key: its key's columns
     :ivar scope_column: the column a part per value is cut by; None for a table held as one part (:data:`WHOLE_PART`)
     :ivar locator: a key column naming one scope value, for a split table whose key holds no ``scope_column``
+    :ivar run_column: with ``scope_column``, a key column of runs (an integer): a split table's rows are cut by scope
+        value and run, in tiers (:func:`tier_part`): a new run is a level-0 part of its own, merged later with its
+        neighbours into parts of higher levels (``shared_copy.merge_due``), so a change to the newest run rewrites
+        that run's rows alone, and a scope of N runs holds about ``FAN_OUT * log(N)`` parts
     """
 
     table: str
     key: tuple[str, ...]
     scope_column: str | None = None
     locator: str | None = None
+    run_column: str | None = None
 
     def __post_init__(self) -> None:
+        if self.run_column is not None and self.scope_column is None:
+            raise ValueError(
+                f"{self.table}: a per-run table is cut by its scope too, and a table held as one part has none"
+            )
+        if self.run_column is not None and self.run_column not in self.key:
+            raise ValueError(f"{self.table}: the run column {self.run_column!r} is not a key column {list(self.key)}")
         if self.locator is not None and self.scope_column is None:
             raise ValueError(f"{self.table}: a locator names a scope, and a table held as one part has none")
         if self.locator is not None and self.locator not in self.key:
@@ -149,6 +170,7 @@ def part_rules(
     sizes: Mapping[str, int],
     *,
     locators: Mapping[str, str] = EMPTY,
+    runs: Mapping[str, str] = EMPTY,
     held: Mapping[str, PartRule] = EMPTY,
     floor: int = SPLIT_FLOOR_BYTES,
 ) -> Mapping[str, PartRule]:
@@ -164,6 +186,9 @@ def part_rules(
     :ptype sizes: Mapping[str, int]
     :param locators: each table keyed without its scope column, and the key column naming its scope value
     :ptype locators: Mapping[str, str]
+    :param runs: each per-run table and its run column: split, it is cut by scope value and run, in tiers
+        (:attr:`PartRule.run_column`); held as one part, by nothing
+    :ptype runs: Mapping[str, str]
     :param held: the rules the copy holds its tables by now: a table split stays split down to half the floor
     :ptype held: Mapping[str, PartRule]
     :param floor: the bytes a table is split at (:data:`SPLIT_FLOOR_BYTES`)
@@ -174,9 +199,9 @@ def part_rules(
         for a table not given or not scoped
     """
     named = frozenset(table.name for table in tables)
-    stray = sorted(set(locators) - named)
+    stray = sorted((set(locators) | set(runs)) - named)
     if stray:
-        raise ValueError(f"locators for tables not copied: {stray}")
+        raise ValueError(f"locators or run columns for tables not copied: {stray}")
     unsized = sorted(named - set(sizes))
     if unsized:
         raise ValueError(f"no size for {unsized}: a table's parts follow its size")
@@ -185,17 +210,48 @@ def part_rules(
         key = tuple(table.key)
         locator = locators.get(table.name)
         if table.scope is None:
-            if locator is not None:
-                raise ValueError(f"{table.name}: a locator names a scope, and the table declares none")
+            if locator is not None or table.name in runs:
+                raise ValueError(
+                    f"{table.name}: a locator or a run column cuts by a scope, and the table declares none"
+                )
             rules.append((table.name, PartRule(table.name, key)))
             continue
         column = table.scope[0]
         # the declaration is checked at every size: a locator missing is refused now, not when the table grows
-        declared = PartRule(table.name, key, scope_column=column, locator=locator)
+        declared = PartRule(table.name, key, scope_column=column, locator=locator, run_column=runs.get(table.name))
         was_split = table.name in held and held[table.name].split
         big = sizes[table.name] >= (floor // _STAY_SPLIT_DIVISOR if was_split else floor)
         rules.append((table.name, declared if big else PartRule(table.name, key)))
     return frozen(rules)
+
+
+def tier_part(scope: str, level: int, first: int, last: int) -> str:
+    """a per-run part's name (:attr:`PartRule.run_column`).
+
+    :param scope: the scope value, as text
+    :ptype scope: str
+    :param level: its tier: 0 for one run
+    :ptype level: int
+    :param first: its first run
+    :ptype first: int
+    :param last: its last run
+    :ptype last: int
+    :return: the name
+    :rtype: str
+    """
+    return f"{scope}{_TIER_MARK}{first:012d}-{last:012d}-{level}"
+
+
+def tier_of(part: str) -> tuple[str, int, int, int] | None:
+    """a per-run part's scope value, level, first and last run; None for any other part.
+
+    :param part: the part's name
+    :ptype part: str
+    :return: ``(scope, level, first, last)``, or None
+    :rtype: tuple[str, int, int, int] | None
+    """
+    found = _TIER.match(part)
+    return None if found is None else (found["scope"], int(found["level"]), int(found["first"]), int(found["last"]))
 
 
 def _scope_text(rule: PartRule, column: pa.ChunkedArray | pa.Array) -> pa.Array:
@@ -218,8 +274,11 @@ def split_parts(rule: PartRule, rows: pa.Table) -> tuple[Part, ...]:
     :ptype rows: pa.Table
     :return: the parts, by name ascending; none for no rows
     :rtype: tuple[Part, ...]
-    :raises ValueError: for a row whose scope column is null
+    :raises ValueError: for a row whose scope column is null, or a per-run table (its rows' parts are the tiers the
+        copy holds: ``shared_copy`` cuts it)
     """
+    if rule.run_column is not None:
+        raise ValueError(f"{rule.table}: a per-run table's parts are the tiers the copy holds, not its scope's alone")
     if not rows.num_rows:
         return ()
     if rule.scope_column is None:

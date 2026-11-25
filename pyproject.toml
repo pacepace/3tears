@@ -651,6 +651,8 @@ module = [
     "threetears.core.collections.copy_key_work",
     # and a copied table's parts, split by its scope column in Arrow, and its locator (an Arrow table)
     "threetears.core.collections.copy_parts",
+    # and the copy's apply in its worker process: a change's parts rewritten in Arrow, published as shared Arrow
+    "threetears.core.collections.shared_copy",
     "threetears.core.collections.copy_checkpoint",
     # and a full's parts on the delta-files volume (Arrow IPC)
     "threetears.core.collections.volume_fulls",
@@ -710,6 +712,9 @@ module = [
     "packages.core.tests.unit.backends.test_arrow_copy",
     "packages.core.tests.unit.backends.test_load_files",
     "packages.core.tests.unit.collections.test_bulk_write_off_loop",
+    "packages.core.tests.unit.collections.copy_hooks",
+    "packages.core.tests.unit.collections.test_copy_parts",
+    "packages.core.tests.unit.collections.test_shared_copy",
     "packages.core.tests.unit.collections.test_delta_files",
     "packages.core.tests.unit.collections.test_delta_fold",
     "packages.core.tests.unit.collections.test_save_arrow",

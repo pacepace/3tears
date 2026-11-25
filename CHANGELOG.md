@@ -27,6 +27,22 @@ and `InvalidatedRow` (replaced by `rows` / `InvalidatedRows`), and `BaseCollecti
 `CollectionRegistry.publish_invalidations` now takes the batches (`invalidation_batches`) and is the bus half alone;
 `GenerationMarks.hear` takes `rows=` to count a batch's rows at once.
 
+### core: the copy's apply runs in a worker process and rewrites only the parts a change lands in
+
+**Added:** `threetears.core.collections.shared_copy`, step 3T-2 of `design-copy-worker-backend.md`, moved from reports'
+`follower_parts` and `shared_backend`. `SharedCopyBackend(store, schemas, rules)` applies a change (`ChangePage`s of
+rows to upsert and keys to delete, in the order staged, a key's last page winning) in one worker process of a
+`SharedArrowPool`: the pages cross through the store's hand-off, never pickled; the worker maps the current version,
+rewrites each part the change lands in (its held rows less the keys named, plus the change's rows, in key order, in
+place when the change replaces rows one for one) into a result slot in pieces; the serving process publishes it on
+that version, each rewritten part's file linked and every other part kept as the base's own file, with the change's
+mark (`MARK_TABLE`). A table whose held parts are not its rule's shape (it crossed the size floor) is rewritten whole
+in its new shape; a split table keyed without its scope column keeps its locator in the version
+(`LOCATED_PREFIX`). Per-run tables (`PartRule.run_column`, `part_rules(runs=)`) are cut in tiers (`tier_part`,
+`tier_of`) and merged by `SharedCopyBackend.merge` as a publish of their own (`ByCount`, ten neighbours of a level).
+Product behaviour plugs in through `ApplyHooks.derive` (derived tables' changes, applied into the same publish) and
+`MergePolicy`, both run in the worker. Not wired into `CopyFollower` yet, and reports does not use it yet.
+
 ### core: a copied table's parts follow its declared scope, above a measured size floor
 
 **Added:** `threetears.core.collections.copy_parts`, the part rule of the copy's worker backend

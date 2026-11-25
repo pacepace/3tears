@@ -22,6 +22,8 @@ from threetears.core.collections.copy_parts import (
     part_rules,
     parts_of_keys,
     split_parts,
+    tier_of,
+    tier_part,
 )
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column
 
@@ -178,6 +180,39 @@ class TestLocator:
         keys = _rows(5).select(list(_RACE_KEY))
         with pytest.raises(ValueError, match="through its locator"):
             parts_of_keys(self._RULE, keys)
+
+
+class TestRuns:
+    """A per-run table is cut by its scope and its run, in tiers named so a scope's parts sort by their runs."""
+
+    _RUN_KEY = ("state", "run_id", "candidate_id")
+
+    def test_a_per_run_table_over_the_floor_carries_its_run_column(self) -> None:
+        # the test table's integer key column stands in for a run
+        table = [_followed("runs", _SCOPED_KEY)]
+        rules = part_rules(table, {"runs": SPLIT_FLOOR_BYTES}, runs={"runs": "candidate_id"})
+        assert rules["runs"] == PartRule("runs", _SCOPED_KEY, scope_column="state", run_column="candidate_id")
+        # under the floor it is one part, its runs with it
+        assert part_rules(table, {"runs": 1}, runs={"runs": "candidate_id"})["runs"] == PartRule("runs", _SCOPED_KEY)
+
+    def test_a_run_column_needs_a_scope_and_a_key_column(self) -> None:
+        with pytest.raises(ValueError, match="cut by its scope"):
+            PartRule("runs", self._RUN_KEY, run_column="run_id")
+        with pytest.raises(ValueError, match="not a key column"):
+            PartRule("runs", ("state", "candidate_id"), scope_column="state", run_column="run_id")
+        with pytest.raises(ValueError, match="declares none"):
+            part_rules([_followed("runs", _SCOPED_KEY, scope=None)], {"runs": 1}, runs={"runs": "candidate_id"})
+
+    def test_a_tier_names_its_scope_level_and_runs_and_sorts_by_them(self) -> None:
+        assert tier_of(tier_part("VA", 1, 5001, 5010)) == ("VA", 1, 5001, 5010)
+        assert tier_of("VA") is None
+        named = [tier_part("VA", 0, 11, 11), tier_part("VA", 1, 1, 10), tier_part("VA", 0, 12, 12)]
+        assert sorted(named) == [tier_part("VA", 1, 1, 10), tier_part("VA", 0, 11, 11), tier_part("VA", 0, 12, 12)]
+
+    def test_split_parts_leaves_a_per_run_table_to_the_copy(self) -> None:
+        rule = PartRule("runs", self._RUN_KEY, scope_column="state", run_column="run_id")
+        with pytest.raises(ValueError, match="tiers the copy holds"):
+            split_parts(rule, _rows(10))
 
 
 class TestArrowEndToEnd:
