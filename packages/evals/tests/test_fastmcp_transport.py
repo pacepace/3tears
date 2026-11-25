@@ -33,7 +33,6 @@ from threetears.evals.ops import report_read
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
-from packages.evals.tests.mcp_wire import wire
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -184,17 +183,17 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
         help_text, _, _ = await _text(client, "evals", {"action": "help"})
     evals, admin = tools["evals"], tools["evals_admin"]
     assert evals.annotations is not None and admin.annotations is not None
-    hints = wire(evals.annotations)
-    assert (hints["readOnlyHint"], hints["destructiveHint"], hints["idempotentHint"], hints["openWorldHint"]) == (
+    hints = evals.annotations
+    assert (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint) == (
         False,
         False,
         False,
         True,
     )
-    admin_hints = wire(admin.annotations)
-    assert admin_hints["destructiveHint"] is True and admin_hints["idempotentHint"] is False
-    assert wire(evals)["inputSchema"]["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
-    assert set(wire(admin)["inputSchema"]["properties"]) == {
+    admin_hints = admin.annotations
+    assert admin_hints.destructive_hint is True and admin_hints.idempotent_hint is False
+    assert evals.input_schema["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
+    assert set(admin.input_schema["properties"]) == {
         "action",
         "topic",
         "run_id",
@@ -210,8 +209,8 @@ async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
     async with Client(_served(off_loop(ops_fixture), tools=read_only_tools("lab"))) as client:
         (tool,) = await client.list_tools()
         text, _, is_error = await _text(client, "lab", {"action": "run_launch", "template_id": "t", "subject_id": "s"})
-    assert tool.name == "lab" and tool.annotations is not None and wire(tool.annotations)["readOnlyHint"] is True
-    assert wire(tool.annotations)["idempotentHint"] is True, "every read may be repeated to no further effect"
+    assert tool.name == "lab" and tool.annotations is not None and tool.annotations.read_only_hint is True
+    assert tool.annotations.idempotent_hint is True, "every read may be repeated to no further effect"
     assert is_error and "run_launch is a spend action, and tool lab carries read actions only" in text
 
 
@@ -315,7 +314,7 @@ async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> No
         )
     assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
     assert server.instructions == catalogue_primer(eval_catalogue().mount_all(read_only_tools()))
-    assert wire(tool.annotations)["readOnlyHint"] is True
+    assert tool.annotations is not None and tool.annotations.read_only_hint is True
     assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
     assert is_error and "carries read actions only" in refused
 
@@ -340,23 +339,12 @@ async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
 
 
-def _served_instructions(client: Client) -> str | None:
-    """The instructions a connected server sent, on either fastmcp major the 1.x CI step installs.
-
-    fastmcp 4 negotiates through `server/discover` and reads them as `Client.instructions` (its
-    `initialize_result` is None there); fastmcp 3, the one mcp 1.x allows, has only the `InitializeResult`.
-    """
-    if hasattr(client, "instructions"):
-        return client.instructions
-    result = client.initialize_result
-    return None if result is None else result.instructions
-
-
 async def test_a_server_built_here_hands_a_client_the_primer_of_the_tools_it_mounts() -> None:
     tools = (*standard_tools(), *analyst_tools())
     server = mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id, tools=tools)
     async with Client(server) as client:
-        instructions = _served_instructions(client)
+        # fastmcp 4 negotiates through `server/discover` and reads them as `Client.instructions`
+        instructions = client.instructions
     assert instructions == catalogue_primer(eval_catalogue().mount_all(tools))
     assert (
         instructions is not None and "evals_analyst" in instructions and "figure_keys" in instructions.splitlines()[1]
