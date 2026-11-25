@@ -52,7 +52,8 @@ holds a complete answer for the keys its writer looked up.
 
 **Nothing here is required.** A missing directory is created; one that cannot be created, read or
 written (a read-only checkout) leaves every lookup a miss, the scan is computed as it would be
-without the cache, and the first failed write warns. The default directory is
+without the cache, and the first failed write is logged, never warned: a cache miss must not fail
+a run that treats warnings as errors. The default directory is
 ``.cache/enforcement-scans`` under the repo root, and it carries its own ``.gitignore`` (as
 ``.pytest_cache`` does), so a consumer repo's checkout stays clean without naming it.
 """
@@ -77,7 +78,9 @@ from types import FrameType, FunctionType, ModuleType
 from typing import Any, Literal
 
 from threetears.enforcement.common.ast_helpers import note_unscanned
-from threetears.observe import BuildOnce
+from threetears.observe import BuildOnce, get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "CACHE_DIRECTORY",
@@ -478,11 +481,13 @@ class ScanCache:
     :ivar code: a key for the code that computes every value; a store written under another is
         never read
     :ivar unstored: why each value this cache computed and did not store was not stored
+    :ivar defects: those of them that read outside their key, a defect in the scan (each also in ``unstored``)
     """
 
     directory: Path
     code: str
     unstored: list[str] = field(default_factory=list, compare=False)
+    defects: list[str] = field(default_factory=list, compare=False)
 
     def memoised[K, V](
         self, name: str, items: Iterable[K], inputs: Callable[[K], ScanInputs], compute: Callable[[K], V]
@@ -523,9 +528,11 @@ class ScanCache:
                     values[item] = compute(item)
                 undeclared = declared.outside(events)
                 if undeclared:
-                    self._refuse(f"{name} {item!r} read outside its key: " + "; ".join(sorted(set(undeclared))[:5]))
+                    self._refuse(
+                        f"{name} {item!r} read outside its key: " + "; ".join(sorted(set(undeclared))[:5]), defect=True
+                    )
                 elif inputs(item).key() != before:
-                    self._refuse(f"{name} {item!r}: its inputs changed while it was computed")
+                    self._refuse(f"{name} {item!r}: its inputs changed while it was computed", defect=False)
                 else:
                     kept[before] = values[item]
         if computed or kept.keys() != stored.keys():
@@ -588,7 +595,10 @@ class ScanCache:
                 computed = True
                 outcome, undeclared = _extract_recorded(extract, path, source, root)
                 if undeclared:
-                    self._refuse(f"{name} {relative} read outside its key: " + "; ".join(sorted(set(undeclared))[:5]))
+                    self._refuse(
+                        f"{name} {relative} read outside its key: " + "; ".join(sorted(set(undeclared))[:5]),
+                        defect=True,
+                    )
                 else:
                     kept[key] = (relative, outcome)
             else:
@@ -601,11 +611,22 @@ class ScanCache:
             self.store(name, others | kept)
         return _facts(outcomes, unparsable)
 
-    def _refuse(self, reason: str) -> None:
-        """record why a value was not stored, and warn on the first."""
+    def _refuse(self, reason: str, *, defect: bool) -> None:
+        """record why a value was not stored, and say so on the first of its kind.
+
+        a computation that read outside its key is a defect in the scan, and warns. anything the
+        environment did (a directory that cannot be written, a file edited mid-scan) goes to the log
+        instead: a cache miss must never fail a run that treats warnings as errors.
+        """
         self.unstored.append(reason)
-        if len(self.unstored) == 1:
-            warnings.warn(f"enforcement scan cache: {reason}", _ScanCacheWarning, stacklevel=3)
+        if defect:
+            self.defects.append(reason)
+            if len(self.defects) == 1:
+                warnings.warn(f"enforcement scan cache: {reason}", _ScanCacheWarning, stacklevel=3)
+        elif len(self.unstored) - len(self.defects) == 1:
+            log.warning(
+                "enforcement scan cache: a value was computed and not stored", extra={"extra_data": {"reason": reason}}
+            )
 
     def _path(self, name: str) -> Path:
         return self.directory / f"{name}-{self.code[:24]}.pickle"
@@ -665,7 +686,7 @@ class ScanCache:
             _ignore_itself(self.directory)
             handle, temporary = tempfile.mkstemp(dir=self.directory, prefix=f".{name}-", suffix=".tmp")
         except OSError as exc:
-            self._refuse(f"{name}: {self.directory} cannot be written ({exc.strerror or exc})")
+            self._refuse(f"{name}: {self.directory} cannot be written ({exc.strerror or exc})", defect=False)
             return
         try:
             with os.fdopen(handle, "wb") as out:
@@ -673,7 +694,7 @@ class ScanCache:
             os.replace(temporary, target)
         except OSError as exc:
             Path(temporary).unlink(missing_ok=True)
-            self._refuse(f"{name}: {target} cannot be written ({exc.strerror or exc})")
+            self._refuse(f"{name}: {target} cannot be written ({exc.strerror or exc})", defect=False)
             return
         self._prune(name, target)
 

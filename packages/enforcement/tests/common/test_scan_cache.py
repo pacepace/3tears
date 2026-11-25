@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import threading
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -152,8 +153,10 @@ def test_a_value_whose_input_moved_while_it_was_computed_is_not_stored(tmp_path:
         (inputs / item).write_text("edited mid-scan")
         return value
 
-    with pytest.warns(UserWarning, match="enforcement scan cache: .*changed while it was computed"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # a file edited mid-scan is the environment's doing: never a warning
         assert cache.memoised("s", ["a"], counted.declared, edits_while_reading) == {"a": "ALPHA"}
+    assert [reason for reason in cache.unstored if "changed while it was computed" in reason]
     (inputs / "a").write_text("alpha")
     later = _Counted(inputs)
     cache.memoised("s", ["a"], later.declared, later.compute)
@@ -178,21 +181,24 @@ def test_a_truncated_or_corrupt_store_reads_as_a_miss(tmp_path: Path) -> None:
         assert store.read_bytes() == whole
 
 
-def test_a_directory_that_cannot_be_written_recomputes_and_warns_once(tmp_path: Path) -> None:
+def test_a_directory_that_cannot_be_written_recomputes_and_never_warns(tmp_path: Path) -> None:
+    """a read-only checkout runs its gates uncached, and a run that treats warnings as errors still passes."""
     inputs = _inputs(tmp_path, a="alpha")
     blocker = tmp_path / "a file"
     blocker.write_text("")
     # a cache directory below a regular file can be neither created nor read
     cache = ScanCache(blocker / "cache", "code")
 
-    with pytest.warns(UserWarning, match="enforcement scan cache: .*cannot be written") as warned:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         for _ in range(2):
             counted = _Counted(inputs)
             assert cache.memoised("s", ["a"], counted.declared, counted.compute) == {"a": "ALPHA"}
             assert counted.calls == ["a"]
 
-    assert len(warned) == 1
     assert len(cache.unstored) == 2
+    assert all("cannot be written" in reason for reason in cache.unstored)
+    assert not cache.defects
 
 
 def test_concurrent_writers_leave_a_whole_store_and_readers_see_only_whole_ones(tmp_path: Path) -> None:
