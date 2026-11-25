@@ -259,7 +259,8 @@ async def _read_both(
 class TestArrowModeReadsWhatPlainModeReads:
     async def test_real_size_reads_and_writes_name_the_same_rows(self, real: duckdb.DuckDBPyConnection) -> None:
         """Flips if Arrow mode reads, or writes, other rows than the plain lists name for 50,000 keys (a repeat among
-        them, composite and UUID-keyed), on DuckDB in process."""
+        them, composite and UUID-keyed), on DuckDB in process. The keys are picked, and the InlineDuckDB writes run
+        (synchronous, for a worker process's own connection), on a thread: the loop only awaits."""
         composite, ids = await asyncio.to_thread(_picks, real)
         arrow_read = await _read_both(real, composite, ids, arrow=True)
         # plain lists bind as plain lists whether or not pyarrow imports (binder_for)

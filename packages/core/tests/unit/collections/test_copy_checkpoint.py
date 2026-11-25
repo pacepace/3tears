@@ -35,6 +35,7 @@ ipc = pytest.importorskip("pyarrow.ipc")
 from prometheus_client import REGISTRY  # noqa: E402
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
+from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import copy_checkpoint  # noqa: E402
 from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     COLD_START,
@@ -927,18 +928,23 @@ async def test_a_table_read_whole_names_why_and_is_written_by_that_situations_re
 
 def _reference_patch(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Sequence[str]]) -> Any:
     """a table with no scope's part patched as it was written before keyed.anti (15b4ee732's parent): the copy's rows
-    of the touched keys, and the old part's rows by an ANTI JOIN to the keys unnested from parameters."""
+    of the touched keys, and the old part's rows by an ANTI JOIN to the keys unnested from parameters. The key lists
+    are bound through run_bound (one Arrow variable, the same rows as binding them), never a Python value at a time."""
     pk_unnest, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
-    fresh = cursor.execute(
+    fresh = run_bound(
+        cursor,
         f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
         list(keys),
-    ).fetch_arrow_table()
+        lambda result: result.fetch_arrow_table(),
+    )
     cursor.register("reference_part__", old)
     try:
-        kept = cursor.execute(
+        kept = run_bound(
+            cursor,
             f"SELECT t.* FROM reference_part__ AS t ANTI JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
             list(keys),
-        ).fetch_arrow_table()
+            lambda result: result.fetch_arrow_table(),
+        )
     finally:
         cursor.unregister("reference_part__")
     return pa.concat_tables([kept, fresh.cast(kept.schema)])
@@ -947,9 +953,11 @@ def _reference_patch(cursor: Any, table: FollowedTable, old: Any, keys: Sequence
 def _patched_and_reference(
     copy: _Copy, store: _Store, table: FollowedTable, old_name: str, new_name: str, keys: Sequence[Sequence[str]]
 ) -> tuple[Any, Any]:
-    """the part the checkpoint wrote and the hand-written ANTI JOIN's over the same old part and keys. Run on a thread:
-    DuckDB binds the keys' lists value by value (a failed ``import pandas`` each, testament's import recorder statting
-    every path), which on the loop held it past the loop-stall guard's limit (threetears.core.testing.loop_stall)."""
+    """the part the checkpoint wrote and the hand-written ANTI JOIN's over the same old part and keys. Run on a thread,
+    the loop only awaits it: the parts' reads, the copy's snapshot (a shared-Arrow copy's read maps its version's files
+    as it opens) and the reference's DuckDB work, its keys bound as one Arrow variable (run_bound in _reference_patch).
+    On the loop, binding the keys' lists value by value held it past the loop-stall guard's limit
+    (threetears.core.testing.loop_stall)."""
     old = ipc.open_stream(store.objects[old_name]).read_all()
     got = ipc.open_stream(store.objects[new_name]).read_all()
     with copy.backend.read_snapshot() as cursor:

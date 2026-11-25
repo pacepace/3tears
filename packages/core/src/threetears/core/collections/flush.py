@@ -207,6 +207,10 @@ def _run_of(texts: Sequence[str], states: bytes, firsts: array[int], writes: tup
 #: the buffer's runs when it holds nothing
 _NO_RUNS: Final[tuple[_Run, ...]] = ()
 
+#: the writes one turn of :meth:`WriteBuffer.ack_many` acknowledges: a few milliseconds of bisection a slice at 100,000
+#: keys held (an ack's lookup 8 us), and one L1 transaction a slice
+_ACKED_PER_TURN: Final = 512
+
 
 def _merged(older: _Run, newer: _Run, *, oldest: bool) -> _Run:
     """``older`` and ``newer`` as one run: a merge of two sorted runs, ``newer``'s entry kept where both hold a key.
@@ -554,6 +558,67 @@ class WriteBuffer:
             if self._l1 is not None:
                 l1_key = f"{table_name}:{entity_id}"
                 self._l1.delete_by_id("write_buffer", l1_key, primary_key="key")
+
+    async def ack_many(self, writes: Sequence[PendingWrite]) -> None:
+        """:meth:`ack` each of ``writes``, version-guarded alike: a flush's batch, committed in one transaction.
+
+        A slice of :data:`_ACKED_PER_TURN` writes a turn, the loop answering everything else between: each run's state
+        bytes copied once a slice, not once a write, and their durable rows deleted in one L1 transaction a slice, on a
+        thread. Why: acked a write at a time, a batch copied its run's states a write (quadratic) and deleted its L1 rows
+        a transaction a write, all in one turn of the loop: a drain of every write the buffer held, acked at once.
+
+        :param writes: the writes the durable tier took
+        :ptype writes: Sequence[PendingWrite]
+        :return: nothing
+        :rtype: None
+        """
+        for start in range(0, len(writes), _ACKED_PER_TURN):
+            if start:
+                await asyncio.sleep(0)
+            async with self._lock:
+                durable = self._ack_locked(writes[start : start + _ACKED_PER_TURN])
+                if durable and self._l1 is not None:
+                    # under the lock, as ack's: a newer write's durable row written after this would be deleted with it
+                    await asyncio.to_thread(self._l1.delete_many_by_id, "write_buffer", durable, "key")
+
+    def _ack_locked(self, writes: Sequence[PendingWrite]) -> list[str]:
+        """mark each of ``writes`` gone that is still the claim a drain made; caller MUST hold ``self._lock``.
+
+        :param writes: the writes
+        :ptype writes: Sequence[PendingWrite]
+        :return: the durable row keys of those marked gone
+        :rtype: list[str]
+        """
+        runs = self._runs
+        # function-local: each run touched, its state bytes as marked so far
+        marked: dict[int, bytearray] = {}
+        seen: set[str] = set()
+        durable: list[str] = []
+        for write in writes:
+            text = _buffer_text(self._key(write.table_name, write.entity_id))
+            if text in seen:
+                continue  # acked already in this slice: gone, as a second ack would find it
+            seen.add(text)
+            newest = self._newest(text)
+            if newest is None or newest.state not in (_CLAIMED, _RECOVERED):
+                continue
+            if newest.state == _CLAIMED:
+                self._held -= 1
+            states = marked.get(newest.run)
+            if states is None:
+                states = marked[newest.run] = bytearray(runs[newest.run].states)
+            states[newest.row] = _GONE
+            durable.append(f"{write.table_name}:{write.entity_id}")
+        if marked:
+            self._runs = tuple(
+                run
+                if at not in marked
+                else _Run(
+                    keys=run.keys, offsets=run.offsets, states=bytes(marked[at]), firsts=run.firsts, writes=run.writes
+                )
+                for at, run in enumerate(runs)
+            )
+        return durable
 
     async def re_enqueue(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int) -> bool:
         """Return a failed write to the buffer for a later retry, version-guarded.
@@ -1150,8 +1215,7 @@ async def flush_pending(
                 # transaction committed -> now safe to evict the whole batch.
                 # ack is version-guarded, so any write that coalesced in during
                 # the commit window is preserved for the next cycle.
-                for pw in fresh:
-                    await write_buffer.ack(pw.table_name, pw.entity_id)
+                await write_buffer.ack_many(fresh)
             except Exception as exc:
                 # Graceful degrade: the whole transaction rolled back, so NOTHING
                 # in the fresh set was committed -- replay it through the per-entity

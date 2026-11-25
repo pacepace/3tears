@@ -149,29 +149,18 @@ class _Db:
             )
 
     def insert(self, table: str, rows: Sequence[dict[str, Any]]) -> None:
-        # one statement over the rows as an Arrow table, the last of a key winning as row-by-row upserts left it: a
-        # statement a row binds each value from Python (a failed ``import pandas`` a value, under testament a stat of
-        # every path), which held the loop past the loop-stall guard's limit (threetears.core.testing.loop_stall)
-        if not rows:
-            return
-        put = pa.table(
-            {
-                "state": pa.array([row["state"] for row in rows], pa.string()),
-                "geo_id": pa.array([row["geo_id"] for row in rows], pa.int64()),
-                "votes": pa.array([row["votes"] for row in rows], pa.int64()),
-                "note": pa.array([row["note"] for row in rows], pa.string()),
-                "date_created": pa.array([row["date_created"] for row in rows], pa.timestamp("us", tz="UTC")),
-                "at__": pa.array(range(len(rows)), pa.int64()),
-            }
-        )
-        self.db.register("_put", put)
+        """the rows written in one statement over them as one Arrow table of the file's declared types (a key named
+        twice: its last row, as row-by-row upserts left it), where a statement a row bound each value through DuckDB's
+        Python layer (a failed ``import pandas`` a value, under testament a stat of every path): seconds of the loop
+        for a large file's, past the loop-stall guard's limit (threetears.core.testing.loop_stall)."""
+        last = list({(row["state"], row["geo_id"]): row for row in rows}.values())
+        self.db.register("_inserted_rows", pa.Table.from_pylist(last, schema=pa.schema(list(_TYPES.items()))))
         try:
             self.db.execute(
-                f"INSERT OR REPLACE INTO {table} ({', '.join(_NAMES)}) SELECT {', '.join(_NAMES)} FROM _put "  # noqa: S608
-                "QUALIFY row_number() OVER (PARTITION BY state, geo_id ORDER BY at__ DESC) = 1"
+                f"INSERT OR REPLACE INTO {table} ({', '.join(_NAMES)}) SELECT {', '.join(_NAMES)} FROM _inserted_rows"  # noqa: S608
             )
         finally:
-            self.db.unregister("_put")
+            self.db.unregister("_inserted_rows")
 
     def delete(self, table: str, key: tuple[str, int]) -> None:
         self.db.execute(f"DELETE FROM {table} WHERE state = ? AND geo_id = ?", list(key))  # noqa: S608

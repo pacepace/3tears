@@ -207,11 +207,34 @@ class TestTheWriteBuffer:
         assert buffer.pending_count() == count
         claimed = await buffer.drain()
         assert buffer.run_sizes() == (count,) and len(claimed) == count
-        for write in claimed:
-            await buffer.ack(write.table_name, write.entity_id)
+        # a flush's batch is acked at once: acked a write at a time in one turn, each copied the run's states
+        await buffer.ack_many(claimed)
         assert buffer.pending_count() == 0
         await buffer.drain()
         assert buffer.run_sizes() == ()
+
+    async def test_a_batch_of_33786_acks_is_version_guarded_and_deletes_every_durable_row_between_turns(self) -> None:
+        """Flips if acking a flush's batch at once marks a newer write gone, misses a durable row, or holds the loop
+        in one turn (the loop-stall guard: acked a write at a time, each copied its run's states and deleted its L1 row
+        in a transaction of its own, the whole batch in one turn)."""
+        l1 = SQLiteBackend(":memory:")
+        buffer = WriteBuffer(l1)
+        count = 33_786
+
+        async def fill() -> None:
+            for i in range(count):
+                await buffer.add("t", i, _write(i))
+                if not i % 512:
+                    await asyncio.sleep(0)
+
+        await fill()
+        claimed = await buffer.drain()
+        await buffer.add("t", 7, {"id": 7, "newer": True})
+        await buffer.ack_many([*claimed, claimed[0]])
+        assert buffer.pending_count() == 1
+        held = l1.execute_query("SELECT key FROM write_buffer")
+        assert [row["key"] for row in held] == ["t:7"]
+        assert [w.data for w in await buffer.drain()] == [{"id": 7, "newer": True}]
 
     async def test_a_flush_and_saves_racing_on_the_loop_lose_no_newer_write(self) -> None:
         """Two coroutines: a flush drains and acks write by write, yielding between, while saves rewrite the same keys.

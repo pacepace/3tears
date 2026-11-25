@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import random
 import subprocess
 import sys
+from collections.abc import Mapping
 
 import pytest
 
 from threetears.core.frozen_state import (
     EMPTY,
     frozen,
+    logged,
     with_chunk,
     with_entries,
     with_entry,
@@ -80,3 +83,42 @@ def test_it_imports_without_pyarrow_asyncpg_or_the_collections() -> None:
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 
     assert done.returncode == 0, done.stderr
+
+
+def test_a_logged_map_reads_as_a_dict_changed_the_same_way_order_included() -> None:
+    """Flips if a logged map (:func:`logged`) set and unset a key at a time reads otherwise than a dict changed alike: its
+    keys, their order (a key set again keeps its place, one re-added after its removal takes the last), values, size."""
+    for seed in range(100):
+        draw = random.Random(seed)
+        expected: dict[int, float] = {}
+        held: Mapping[int, float] = logged()
+        for _ in range(draw.randint(1, 300)):
+            key = draw.randint(0, 30)
+            if draw.random() < 0.3:
+                expected.pop(key, None)
+                held = without_entry(held, key)
+            else:
+                value = draw.random()
+                expected[key] = value
+                held = with_entry(held, key, value)
+            assert isinstance(held, type(logged()))
+            assert list(held) == list(expected) and len(held) == len(expected) and held == expected
+            assert all((key in held) == (key in expected) for key in range(32))
+
+
+def test_a_logged_map_copies_a_key_about_log2_n_times_and_leaves_its_snapshots_as_they_were() -> None:
+    """Flips if setting a key at a time copies the whole map a change (n copies a key, quadratic), or changes a snapshot
+    already handed out."""
+    held: Mapping[int, int] = logged()
+    snapshots: list[Mapping[int, int]] = []
+    for key in range(4096):
+        held = with_entry(held, key, key)
+        assert isinstance(held, type(logged()))
+        # a chunk a set bit of the size, each at most half the one before: a key is merged once each time its chunk
+        # doubles, about log2(n) times
+        assert len(held.chunks) <= (key + 1).bit_length()
+        if key % 1024 == 0:
+            snapshots.append(held)
+    assert len(held) == 4096
+    assert [len(snapshot) for snapshot in snapshots] == [1, 1025, 2049, 3073]
+    assert dict(snapshots[1]) == {key: key for key in range(1025)}
