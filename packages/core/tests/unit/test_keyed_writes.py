@@ -727,6 +727,60 @@ class TestCountsSinceMarks:
             assert got == expected, packed_rows
             assert len(reader.statements) == 1
 
+    async def test_a_value_ahead_names_only_its_rows_past_its_own_marks(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a value given its own marks (``ahead=``: a state a load took past the table's low-water mark)
+        names rows between the relation's marks and its own, if every other value stops being judged by the
+        relation's marks, if its fresh flag is judged by the relation's mark rather than its own, or if it takes
+        more than one statement, packed, paged or neither. Before ``ahead=`` existed the count took no such marks."""
+        _changes(db)
+        own = {"up": "2026-11-03 00:55:00", "called": "2026-11-04 00:58:00"}
+        ahead = {"ra": {"S1": own}}
+        floor = "0001-01-01 00:00:00"
+        rows = db.execute(
+            "SELECT state, CAST(geo AS VARCHAR), count(*), CAST(max(src) AS VARCHAR), max(CASE WHEN CAST(up AS "
+            "TIMESTAMP) > CAST(CASE WHEN state = 'S1' THEN $3 ELSE $1 END AS TIMESTAMP) THEN 1 ELSE 0 END) FROM ra "
+            "WHERE CASE WHEN state = 'S1' THEN CAST(up AS TIMESTAMP) > CAST($3 AS TIMESTAMP) OR CAST(called AS "
+            "TIMESTAMP) > CAST($4 AS TIMESTAMP) ELSE CAST(up AS TIMESTAMP) > CAST($1 AS TIMESTAMP) OR CAST(called "
+            "AS TIMESTAMP) > CAST($2 AS TIMESTAMP) END GROUP BY state, geo",
+            [_MARKS["ra"]["up"], floor, own["up"], own["called"]],
+        ).fetchall()
+        expected = {("ra", state, grp, n, src, bool(fresh)) for state, grp, n, src, fresh in rows}
+        expected |= {row for row in _hand_written(db) if row[0] == "rb"}
+        ahead_of_relation = {row for row in _hand_written(db) if row[0] == "ra" and row[1] == "S1"}
+        assert expected and ahead_of_relation and {r for r in expected if r[1] == "S1"} != ahead_of_relation
+        for packed_rows, page in ((None, None), (3, None), (None, 2)):
+            reader = _Recording(db)
+            answer = await counts_by_relations(
+                reader,
+                {"ra": "ra", "rb": "rb"},
+                column="state",
+                since=_MARKS,
+                group={"ra": "geo", "rb": "geo"},
+                max_of=["src"],
+                fresh="up",
+                packed_rows=packed_rows,
+                groups=40 if packed_rows else None,
+                packed_as="run_rows",
+                page=page,
+                ahead=ahead,
+            )
+            got = {
+                (label, found.value, found.group, found.rows, found.newest["src"], found.fresh)
+                for label, groups in answer.items()
+                for found in groups
+            }
+            assert got == expected, (packed_rows, page)
+            if page is None:
+                assert len(reader.statements) == 1
+        with pytest.raises(ValueError, match="stamps"):
+            await counts_by_relations(
+                _Recording(db),
+                {"ra": "ra"},
+                column="state",
+                since={"ra": _MARKS["ra"]},
+                ahead={"ra": {"S1": {"up": None}}},
+            )
+
     async def test_paged_groups_past_marks_come_whole_each_page_under_its_size(
         self, db: duckdb.DuckDBPyConnection
     ) -> None:
