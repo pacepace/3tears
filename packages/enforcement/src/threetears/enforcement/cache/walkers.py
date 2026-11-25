@@ -32,12 +32,20 @@ a workaround for the missing transitive walk. this lift drops that
 workaround entirely — the only configurable terminal name is
 ``BaseCollection`` (by default) and the transitive walk handles every
 intermediate base automatically.
+
+each walker keeps what it reads of a file in the gitignored scan cache by
+the file's bytes (:func:`~threetears.enforcement.common.scan_cache.file_facts`),
+under the checkout holding the scan root, so a process that walked the same
+bytes before parses none of them again; the configured allowlists are applied
+to those facts afterwards.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from threetears.enforcement.common import (
@@ -46,10 +54,10 @@ from threetears.enforcement.common import (
     collect_class_base_graph,
     iter_python_files,
     note_unscanned,
-    parse_python_file,
     relative_posix_path,
     transitively_subclasses_any,
 )
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 __all__ = [
     "find_direct_pool_access",
@@ -107,37 +115,61 @@ def find_sqlite_constructions(
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            rel = relative_posix_path(source, repo_root)
-            if _is_under_tests(source) or _is_under_tests_rel(rel):
-                continue
-            if rel in allowed_sites:
-                continue
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = _call_target_name(node.func)
-                if name != "SQLiteBackend":
-                    continue
-                violations.append(
-                    Violation(
-                        category=_SQLITE_CONSTRUCTION_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol="SQLiteBackend",
-                        reason=(
-                            "SQLiteBackend constructed outside the "
-                            f"sanctioned factories; add {rel} to the "
-                            "allowlist (with rationale) or route through "
-                            "a Collection instead"
-                        ),
-                    )
+    for source, lines in _facts_under(
+        _sqlite_construction_lines,
+        scan_roots,
+        lambda source: _is_sqlite_construction_candidate(source, repo_root, allowed_sites),
+    ):
+        rel = relative_posix_path(source, repo_root)
+        for line in lines:
+            violations.append(
+                Violation(
+                    category=_SQLITE_CONSTRUCTION_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol="SQLiteBackend",
+                    reason=(
+                        "SQLiteBackend constructed outside the "
+                        f"sanctioned factories; add {rel} to the "
+                        "allowlist (with rationale) or route through "
+                        "a Collection instead"
+                    ),
                 )
+            )
     return violations
+
+
+def _is_sqlite_construction_candidate(source: Path, repo_root: Path, allowed_sites: frozenset[str]) -> bool:
+    """true iff ``source`` is neither under a ``tests`` tree nor a sanctioned site.
+
+    :param source: python file under a scan root
+    :ptype source: Path
+    :param repo_root: repo root for relative-path comparison
+    :ptype repo_root: Path
+    :param allowed_sites: forward-slash relative paths permitted to construct
+    :ptype allowed_sites: frozenset[str]
+    :return: whether the file's constructions are checked
+    :rtype: bool
+    """
+    rel = relative_posix_path(source, repo_root)
+    return not (_is_under_tests(source) or _is_under_tests_rel(rel)) and rel not in allowed_sites
+
+
+def _sqlite_construction_lines(path: Path, tree: ast.Module) -> tuple[int, ...]:
+    """the line of every ``SQLiteBackend(...)`` call in one module, in walk order.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: call lines
+    :rtype: tuple[int, ...]
+    """
+    return tuple(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _call_target_name(node.func) == "SQLiteBackend"
+    )
 
 
 def _is_under_tests(path: Path) -> bool:
@@ -242,55 +274,91 @@ def find_wrapper_classes(
     _ = repo_root
     base_graph = collect_class_base_graph(inheritance_roots)
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
+    for source, backed_classes in _facts_under(_sqlite_backed_classes, scan_roots):
+        for backed in backed_classes:
+            if transitively_subclasses_any(
+                backed.name,
+                base_collection_names,
+                base_graph,
+            ):
                 continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                if transitively_subclasses_any(
-                    node.name,
-                    base_collection_names,
-                    base_graph,
-                ):
-                    continue
-                sqlite_attrs = _class_sqlite_attr_names(node)
-                if not sqlite_attrs:
-                    continue
-                methods = _class_cache_methods(node, cache_method_names)
-                data_api_calls = _class_calls_sqlite_data_api(
-                    node,
-                    sqlite_attrs,
+            methods = [name for name in backed.public_methods if name in cache_method_names]
+            data_api_calls = list(backed.data_api_calls)
+            if not methods and not data_api_calls:
+                continue
+            if methods:
+                reason = (
+                    f"class '{backed.name}' wraps SQLiteBackend and "
+                    f"exposes cache api {sorted(methods)!r} without "
+                    "extending BaseCollection; convert to a Collection "
+                    "subclass"
                 )
-                if not methods and not data_api_calls:
-                    continue
-                if methods:
-                    reason = (
-                        f"class '{node.name}' wraps SQLiteBackend and "
-                        f"exposes cache api {sorted(methods)!r} without "
-                        "extending BaseCollection; convert to a Collection "
-                        "subclass"
-                    )
-                else:
-                    reason = (
-                        f"class '{node.name}' wraps SQLiteBackend and "
-                        f"calls its data api {data_api_calls!r} from "
-                        "method bodies without extending BaseCollection "
-                        "(domain-verb wrapper); convert to a Collection "
-                        "subclass"
-                    )
-                violations.append(
-                    Violation(
-                        category=_WRAPPER_CLASS_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=node.name,
-                        reason=reason,
-                    )
+            else:
+                reason = (
+                    f"class '{backed.name}' wraps SQLiteBackend and "
+                    f"calls its data api {data_api_calls!r} from "
+                    "method bodies without extending BaseCollection "
+                    "(domain-verb wrapper); convert to a Collection "
+                    "subclass"
                 )
+            violations.append(
+                Violation(
+                    category=_WRAPPER_CLASS_CATEGORY,
+                    file=source,
+                    line=backed.line,
+                    symbol=backed.name,
+                    reason=reason,
+                )
+            )
     return violations
+
+
+@dataclass(frozen=True)
+class _SqliteBackedClass:
+    """what the wrapper walker reads of one class that stores a :class:`SQLiteBackend`.
+
+    :ivar name: the class name
+    :ivar line: the class definition's line
+    :ivar public_methods: every public method defined in the class body, in source order
+    :ivar data_api_calls: sorted distinct data-api methods called on a stored backend
+    """
+
+    name: str
+    line: int
+    public_methods: tuple[str, ...]
+    data_api_calls: tuple[str, ...]
+
+
+def _sqlite_backed_classes(path: Path, tree: ast.Module) -> tuple[_SqliteBackedClass, ...]:
+    """every class in one module that stores a :class:`SQLiteBackend`, in walk order.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the backend-holding classes
+    :rtype: tuple[_SqliteBackedClass, ...]
+    """
+    found: list[_SqliteBackedClass] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        sqlite_attrs = _class_sqlite_attr_names(node)
+        if not sqlite_attrs:
+            continue
+        found.append(
+            _SqliteBackedClass(
+                name=node.name,
+                line=node.lineno,
+                public_methods=tuple(
+                    item.name
+                    for item in node.body
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and not item.name.startswith("_")
+                ),
+                data_api_calls=tuple(_class_calls_sqlite_data_api(node, sqlite_attrs)),
+            )
+        )
+    return tuple(found)
 
 
 _SQLITE_DATA_API_METHODS: frozenset[str] = frozenset(
@@ -399,34 +467,6 @@ def _class_sqlite_attr_names(cls: ast.ClassDef) -> frozenset[str]:
                     if isinstance(tgt, ast.Attribute) and isinstance(tgt.value, ast.Name) and tgt.value.id == "self":
                         names.add(tgt.attr)
     return frozenset(names)
-
-
-def _class_cache_methods(
-    cls: ast.ClassDef,
-    cache_method_names: frozenset[str],
-) -> list[str]:
-    """return public methods on ``cls`` whose name is in ``cache_method_names``.
-
-    underscore-prefixed methods are intentionally skipped; they are
-    private and do not constitute a public cache api.
-
-    :param cls: class definition
-    :ptype cls: ast.ClassDef
-    :param cache_method_names: cache-api vocabulary
-    :ptype cache_method_names: frozenset[str]
-    :return: list of matching public method names in source order
-    :rtype: list[str]
-    """
-    result: list[str] = []
-    for item in cls.body:
-        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        name = item.name
-        if name.startswith("_"):
-            continue
-        if name in cache_method_names:
-            result.append(name)
-    return result
 
 
 def _class_calls_sqlite_data_api(
@@ -563,53 +603,92 @@ def find_direct_pool_access(
     violations: list[Violation] = []
     allowed_tables = set(collection_table_allowlist.keys())
     collection_names = set(collection_table_allowlist.values())
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
+    for source, calls in _facts_under(_pool_sql_calls, scan_roots):
+        hit_calls = [(call, call.tables & allowed_tables) for call in calls]
+        hit_calls = [(call, hits) for call, hits in hit_calls if hits]
+        if not hit_calls:
+            continue
+        # the bypass comment is not in the tree; the source is read only for a file with a hit
+        try:
+            raw_lines = source.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            note_unscanned(source, "not valid utf-8")
+            continue
+        for call, hits in hit_calls:
+            if _has_bypass_comment(raw_lines, call.line):
                 continue
-            try:
-                raw_lines = source.read_text(encoding="utf-8").splitlines()
-            except UnicodeDecodeError:
-                note_unscanned(source, "not valid utf-8")
+            if call.enclosing_class is not None and call.enclosing_class in collection_names:
                 continue
-            parents = _build_parent_map(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                if not isinstance(func, ast.Attribute):
-                    continue
-                if func.attr not in _POOL_METHOD_NAMES:
-                    continue
-                if not _receiver_is_pool_like(func.value):
-                    continue
-                tables = _extract_sql_tables(node)
-                hits = tables & allowed_tables
-                if not hits:
-                    continue
-                if _has_bypass_comment(raw_lines, node.lineno):
-                    continue
-                enclosing = _enclosing_class(node, parents)
-                if enclosing is not None and enclosing.name in collection_names:
-                    continue
-                for table in sorted(hits):
-                    violations.append(
-                        Violation(
-                            category=_POOL_ACCESS_CATEGORY,
-                            file=source,
-                            line=node.lineno,
-                            symbol=table,
-                            reason=(
-                                f"direct pool.{func.attr}() on table "
-                                f"'{table}' which has a Collection "
-                                f"({collection_table_allowlist[table]}); "
-                                "go through the Collection or add a "
-                                "'# cache-bypass: <reason>' comment"
-                            ),
-                        )
+            for table in sorted(hits):
+                violations.append(
+                    Violation(
+                        category=_POOL_ACCESS_CATEGORY,
+                        file=source,
+                        line=call.line,
+                        symbol=table,
+                        reason=(
+                            f"direct pool.{call.method}() on table "
+                            f"'{table}' which has a Collection "
+                            f"({collection_table_allowlist[table]}); "
+                            "go through the Collection or add a "
+                            "'# cache-bypass: <reason>' comment"
+                        ),
                     )
+                )
     return violations
+
+
+@dataclass(frozen=True)
+class _PoolSqlCall:
+    """one ``<pool>.<method>(<sql>)`` call whose literal SQL names at least one table.
+
+    :ivar line: the call's line
+    :ivar method: the pool method called
+    :ivar tables: lowercase table names the SQL mentions
+    :ivar enclosing_class: the innermost class the call sits in, or ``None``
+    """
+
+    line: int
+    method: str
+    tables: frozenset[str]
+    enclosing_class: str | None
+
+
+def _pool_sql_calls(path: Path, tree: ast.Module) -> tuple[_PoolSqlCall, ...]:
+    """every pool-like SQL call in one module that names a table, in walk order.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the calls
+    :rtype: tuple[_PoolSqlCall, ...]
+    """
+    found: list[_PoolSqlCall] = []
+    parents = _build_parent_map(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        if func.attr not in _POOL_METHOD_NAMES:
+            continue
+        if not _receiver_is_pool_like(func.value):
+            continue
+        tables = _extract_sql_tables(node)
+        if not tables:
+            continue
+        enclosing = _enclosing_class(node, parents)
+        found.append(
+            _PoolSqlCall(
+                line=node.lineno,
+                method=func.attr,
+                tables=frozenset(tables),
+                enclosing_class=enclosing.name if enclosing is not None else None,
+            )
+        )
+    return tuple(found)
 
 
 def _receiver_is_pool_like(receiver: ast.expr) -> bool:
@@ -803,66 +882,85 @@ def find_missing_collections(
     base_graph = collect_class_base_graph(inheritance_roots)
     violations: list[Violation] = []
     seen: set[str] = set()
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            if "migrations" not in source.parts:
+    for source, created in _facts_under(_created_tables, scan_roots, _is_migration):
+        for lineno, table_raw in created:
+            if table_raw in seen:
                 continue
-            if not _MIGRATION_FILENAME_RE.match(source.name):
+            seen.add(table_raw)
+            if table_raw in migration_table_allowlist:
                 continue
-            tree = parse_python_file(source)
-            if tree is None:
+            expected = collection_table_allowlist.get(table_raw)
+            if expected is None:
+                violations.append(
+                    Violation(
+                        category=_MISSING_COLLECTION_CATEGORY,
+                        file=source,
+                        line=lineno,
+                        symbol=table_raw,
+                        reason=(
+                            f"migration creates table '{table_raw}' "
+                            "with no mapping in "
+                            "collection_table_allowlist; either "
+                            "add a Collection + allowlist entry "
+                            "or add to migration_table_allowlist "
+                            "with rationale"
+                        ),
+                    )
+                )
                 continue
-            for lineno, text in _extract_sql_strings(tree):
-                for match in _CREATE_TABLE_RE.finditer(text):
-                    table_raw = match.group(1).lower()
-                    if "." in table_raw:
-                        table_raw = table_raw.rsplit(".", 1)[1]
-                    if table_raw in seen:
-                        continue
-                    seen.add(table_raw)
-                    if table_raw in migration_table_allowlist:
-                        continue
-                    expected = collection_table_allowlist.get(table_raw)
-                    if expected is None:
-                        violations.append(
-                            Violation(
-                                category=_MISSING_COLLECTION_CATEGORY,
-                                file=source,
-                                line=lineno,
-                                symbol=table_raw,
-                                reason=(
-                                    f"migration creates table '{table_raw}' "
-                                    "with no mapping in "
-                                    "collection_table_allowlist; either "
-                                    "add a Collection + allowlist entry "
-                                    "or add to migration_table_allowlist "
-                                    "with rationale"
-                                ),
-                            )
-                        )
-                        continue
-                    if not _class_is_collection(
-                        expected,
-                        base_collection_names,
-                        base_graph,
-                    ):
-                        violations.append(
-                            Violation(
-                                category=_MISSING_COLLECTION_CATEGORY,
-                                file=source,
-                                line=lineno,
-                                symbol=table_raw,
-                                reason=(
-                                    f"table '{table_raw}' expects "
-                                    f"{expected} but no class by that "
-                                    "name transitively subclasses any of "
-                                    f"{sorted(base_collection_names)!r}; "
-                                    "either declare the Collection or "
-                                    "extend the inheritance chain"
-                                ),
-                            )
-                        )
+            if not _class_is_collection(
+                expected,
+                base_collection_names,
+                base_graph,
+            ):
+                violations.append(
+                    Violation(
+                        category=_MISSING_COLLECTION_CATEGORY,
+                        file=source,
+                        line=lineno,
+                        symbol=table_raw,
+                        reason=(
+                            f"table '{table_raw}' expects "
+                            f"{expected} but no class by that "
+                            "name transitively subclasses any of "
+                            f"{sorted(base_collection_names)!r}; "
+                            "either declare the Collection or "
+                            "extend the inheritance chain"
+                        ),
+                    )
+                )
     return violations
+
+
+def _is_migration(source: Path) -> bool:
+    """true iff ``source`` is a ``v<N>_*.py`` file under a ``migrations`` directory.
+
+    :param source: python file under a scan root
+    :ptype source: Path
+    :return: whether the file is a numbered migration
+    :rtype: bool
+    """
+    return "migrations" in source.parts and _MIGRATION_FILENAME_RE.match(source.name) is not None
+
+
+def _created_tables(path: Path, tree: ast.Module) -> tuple[tuple[int, str], ...]:
+    """every ``CREATE TABLE`` in one migration's SQL literals: its line and schema-stripped lowercase name.
+
+    :param path: the migration's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: ``(line, table)`` pairs in source order, repeats kept
+    :rtype: tuple[tuple[int, str], ...]
+    """
+    created: list[tuple[int, str]] = []
+    for lineno, text in _extract_sql_strings(tree):
+        for match in _CREATE_TABLE_RE.finditer(text):
+            table_raw = match.group(1).lower()
+            if "." in table_raw:
+                table_raw = table_raw.rsplit(".", 1)[1]
+            created.append((lineno, table_raw))
+    return tuple(created)
 
 
 def _class_is_collection(
@@ -939,3 +1037,40 @@ def _extract_sql_strings(tree: ast.Module) -> list[tuple[int, str]]:
             if parts:
                 result.append((node.lineno, "".join(parts)))
     return result
+
+
+# ----------------------------------------------------------------------
+# the per-file walk every walker shares
+# ----------------------------------------------------------------------
+
+
+def _facts_under[V](
+    extract: Callable[[Path, ast.Module], V],
+    scan_roots: tuple[Path, ...],
+    include: Callable[[Path], bool] = lambda _source: True,
+) -> list[tuple[Path, V]]:
+    """``extract`` of every python file under ``scan_roots`` that ``include`` admits, from the scan cache.
+
+    files are walked as :func:`iter_python_files` yields them, root by root, and a file that
+    does not parse is noted and left out, as
+    :func:`~threetears.enforcement.common.ast_helpers.parse_python_file` skipped it. each fact
+    is kept under the checkout holding its scan root, or under the root itself outside one.
+
+    :param extract: makes one file's fact from its path and tree
+    :ptype extract: Callable[[Path, ast.Module], V]
+    :param scan_roots: src roots to walk
+    :ptype scan_roots: tuple[Path, ...]
+    :param include: which files to read at all
+    :ptype include: Callable[[Path], bool]
+    :return: ``(file, fact)`` in walk order
+    :rtype: list[tuple[Path, V]]
+    """
+    walked: list[tuple[Path, Path]] = []
+    for root in scan_roots:
+        cache_root = facts_root(root)
+        walked.extend((source, cache_root) for source in iter_python_files(root) if include(source))
+    facts: dict[Path, V] = {}
+    for cache_root in dict.fromkeys(root for _, root in walked):
+        files = [source for source, root in walked if root == cache_root]
+        facts.update(file_facts(extract, files, root=cache_root, unparsable="note"))
+    return [(source, facts[source]) for source, _ in walked if source in facts]

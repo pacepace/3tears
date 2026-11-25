@@ -14,6 +14,11 @@ graph entry whose bases are the union of all instances. callers must
 ensure ``src_roots`` includes every relevant inheritance chain (use
 :func:`threetears.enforcement.common.pyproject_discovery.discover_src_roots`
 to walk path deps).
+
+each file's classes are kept in the gitignored scan cache by the file's bytes
+(:func:`~threetears.enforcement.common.scan_cache.file_facts`), under the checkout
+that holds the src root, so a process that walked the same bytes before parses none
+of them again.
 """
 
 from __future__ import annotations
@@ -21,10 +26,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from threetears.enforcement.common.ast_helpers import (
-    iter_python_files,
-    parse_python_file,
-)
+from threetears.enforcement.common.ast_helpers import iter_python_files
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 __all__ = [
     "ClassBaseGraph",
@@ -120,19 +123,35 @@ def collect_class_base_graph(src_roots: tuple[Path, ...]) -> ClassBaseGraph:
     :return: class-name → direct-base-names graph
     :rtype: ClassBaseGraph
     """
-    graph: ClassBaseGraph = {}
+    walked: list[tuple[Path, Path]] = []
     for root in src_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                bases = extract_base_names(node)
-                bucket = graph.setdefault(node.name, set())
-                bucket.update(bases)
+        cache_root = facts_root(root)
+        walked.extend((source, cache_root) for source in iter_python_files(root))
+    classes: dict[Path, tuple[tuple[str, tuple[str, ...]], ...]] = {}
+    for cache_root in dict.fromkeys(root for _, root in walked):
+        files = [source for source, root in walked if root == cache_root]
+        classes.update(file_facts(_class_bases, files, root=cache_root, unparsable="note"))
+    graph: ClassBaseGraph = {}
+    for source, _ in walked:
+        for name, bases in classes.get(source, ()):
+            bucket = graph.setdefault(name, set())
+            bucket.update(bases)
     return graph
+
+
+def _class_bases(path: Path, tree: ast.Module) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """one module's classes and their direct base names, in walk order, as the scan cache keeps them.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: ``(class name, base names)`` per class definition
+    :rtype: tuple[tuple[str, tuple[str, ...]], ...]
+    """
+    return tuple(
+        (node.name, tuple(extract_base_names(node))) for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+    )
 
 
 def transitively_subclasses_any(

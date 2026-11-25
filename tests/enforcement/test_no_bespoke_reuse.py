@@ -37,12 +37,16 @@ mode via ``REUSE_ENFORCEMENT_MODE`` (default ``strict``), mirroring
 ``CACHE_ENFORCEMENT_MODE``. exemptions live in ``_no_bespoke_reuse_exemptions.txt`` and
 require a specific ``# rationale:`` line. the sanctioned reuse targets are allowlisted in
 the walkers themselves — they are the components bespoke code should reuse.
+
+checks (a) and (b) keep each file's findings in the gitignored scan cache by its bytes
+(``file_facts``), as check (c)'s walker does.
 """
 
 from __future__ import annotations
 
 import ast
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -58,10 +62,10 @@ from threetears.enforcement.common import (
     find_local_src_roots,
     iter_python_files,
     parse_exemptions_with_rationale,
-    parse_python_file,
     relative_posix_path,
     resolve_mode,
 )
+from threetears.enforcement.common.scan_cache import file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXEMPTIONS_PATH = _REPO_ROOT / "tests" / "enforcement" / "_no_bespoke_reuse_exemptions.txt"
@@ -245,35 +249,45 @@ def find_bespoke_flush_loops(
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            if relative_posix_path(source, repo_root) in allowed_sites:
-                continue
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                buffer_name = _class_accumulation_buffer(node)
-                if buffer_name is None:
-                    continue
-                if not _class_has_periodic_loop(node):
-                    continue
-                violations.append(
-                    Violation(
-                        category=_FLUSH_LOOP_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=node.name,
-                        reason=(
-                            f"class '{node.name}' hand-rolls a buffer ('self.{buffer_name}') "
-                            "plus a periodic sleep loop; reuse "
-                            "threetears.conversations.buffer.ConversationWriteBuffer instead"
-                        ),
-                    )
+    for source, classes in _facts_under(_flush_loop_classes, scan_roots, repo_root, allowed_sites):
+        for name, line, buffer_name in classes:
+            violations.append(
+                Violation(
+                    category=_FLUSH_LOOP_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=name,
+                    reason=(
+                        f"class '{name}' hand-rolls a buffer ('self.{buffer_name}') "
+                        "plus a periodic sleep loop; reuse "
+                        "threetears.conversations.buffer.ConversationWriteBuffer instead"
+                    ),
                 )
+            )
     return violations
+
+
+def _flush_loop_classes(path: Path, tree: ast.Module) -> tuple[tuple[str, int, str], ...]:
+    """every class in one module that accumulates into a buffer and drives a sleep loop, in walk order.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: ``(class name, line, buffer attribute)`` per offending class
+    :rtype: tuple[tuple[str, int, str], ...]
+    """
+    found: list[tuple[str, int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        buffer_name = _class_accumulation_buffer(node)
+        if buffer_name is None:
+            continue
+        if not _class_has_periodic_loop(node):
+            continue
+        found.append((node.name, node.lineno, buffer_name))
+    return tuple(found)
 
 
 # ---------------------------------------------------------------------------
@@ -406,31 +420,69 @@ def find_bespoke_httpx_clients(
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            if relative_posix_path(source, repo_root) in allowed_sites:
-                continue
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                if not _class_stores_httpx_client(node):
-                    continue
-                violations.append(
-                    Violation(
-                        category=_HTTPX_CLIENT_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=node.name,
-                        reason=(
-                            f"class '{node.name}' holds a raw httpx client field; route through "
-                            "the traced wrapper (threetears.core.http_client) instead"
-                        ),
-                    )
+    for source, classes in _facts_under(_httpx_client_classes, scan_roots, repo_root, allowed_sites):
+        for name, line in classes:
+            violations.append(
+                Violation(
+                    category=_HTTPX_CLIENT_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=name,
+                    reason=(
+                        f"class '{name}' holds a raw httpx client field; route through "
+                        "the traced wrapper (threetears.core.http_client) instead"
+                    ),
                 )
+            )
     return violations
+
+
+def _httpx_client_classes(path: Path, tree: ast.Module) -> tuple[tuple[str, int], ...]:
+    """every class in one module that stores an httpx client field, in walk order.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: ``(class name, line)`` per offending class
+    :rtype: tuple[tuple[str, int], ...]
+    """
+    return tuple(
+        (node.name, node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and _class_stores_httpx_client(node)
+    )
+
+
+def _facts_under[V](
+    extract: Callable[[Path, ast.Module], V],
+    scan_roots: tuple[Path, ...],
+    repo_root: Path,
+    allowed_sites: frozenset[str],
+) -> list[tuple[Path, V]]:
+    """``extract`` of every python file under ``scan_roots`` outside ``allowed_sites``, from the scan cache.
+
+    a file that does not parse is noted and left out, as ``parse_python_file`` skipped it.
+
+    :param extract: makes one file's fact from its path and tree
+    :ptype extract: Callable[[Path, ast.Module], V]
+    :param scan_roots: src roots to scan
+    :ptype scan_roots: tuple[Path, ...]
+    :param repo_root: repo root, which every scan root lies beneath
+    :ptype repo_root: Path
+    :param allowed_sites: repo-relative posix paths to skip
+    :ptype allowed_sites: frozenset[str]
+    :return: ``(file, fact)`` in walk order
+    :rtype: list[tuple[Path, V]]
+    """
+    walked = [
+        source
+        for root in scan_roots
+        for source in iter_python_files(root)
+        if relative_posix_path(source, repo_root) not in allowed_sites
+    ]
+    facts = file_facts(extract, walked, root=repo_root, unparsable="note")
+    return [(source, facts[source]) for source in walked if source in facts]
 
 
 # ---------------------------------------------------------------------------

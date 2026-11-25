@@ -78,6 +78,7 @@ from types import FrameType, FunctionType, ModuleType
 from typing import Any, Literal
 
 from threetears.enforcement.common.ast_helpers import note_unscanned
+from threetears.enforcement.common.git_layout import find_worktree_root
 from threetears.observe import BuildOnce, get_logger
 
 log = get_logger(__name__)
@@ -88,6 +89,7 @@ __all__ = [
     "ScanCache",
     "ScanInputs",
     "code_key",
+    "facts_root",
     "file_facts",
     "installed_module_file",
     "module_closure",
@@ -898,6 +900,22 @@ def _qualified(extract: Callable[..., object]) -> str:
 
 #: each extractor's :func:`_extractor_code`, once per process: the code a process runs does not change under it
 _EXTRACTOR_CODES: BuildOnce[str, str] = BuildOnce()
+
+
+def facts_root(path: Path) -> Path:
+    """the root a walker that is handed source roots, not the repo's root, passes to :func:`file_facts`.
+
+    The git checkout holding *path*, so every walker's facts in a repo share one cache under its
+    root; *path* itself outside a checkout (a planted repo in a temp directory, an unpacked sdist),
+    so the cache lands beside what was walked and never in some enclosing directory.
+
+    :param path: a source root being walked
+    :ptype path: Path
+    :return: a directory every file under *path* lies beneath
+    :rtype: Path
+    """
+    checkout = find_worktree_root(path)
+    return checkout if checkout is not None and path.is_relative_to(checkout) else path
 
 
 def file_facts[V](

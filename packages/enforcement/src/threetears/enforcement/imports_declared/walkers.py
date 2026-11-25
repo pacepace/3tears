@@ -1,7 +1,10 @@
 """the two inputs of the declared-imports gate, and the comparison between them.
 
 Pure functions over a repo tree and the installed environment; :mod:`.runner` turns their
-answers into a pytest verdict.
+answers into a pytest verdict. The imports each source file names are kept in the gitignored
+scan cache by the file's bytes (:func:`~threetears.enforcement.common.scan_cache.file_facts`),
+under the checkout holding the repo, so a process that walked the same bytes before parses none
+of them again.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from typing import Final
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 from threetears.enforcement.imports_declared.config import ImportsDeclaredConfig
 
 __all__ = [
@@ -205,18 +208,32 @@ def imported_modules(config: ImportsDeclaredConfig) -> dict[str, set[Path]]:
     """
     found: dict[str, set[Path]] = {}
     for source_root in config.source_roots:
-        for path in sorted((config.repo_root / source_root).rglob("*.py")):
-            tree = parse_python_path(path)
-            for node in ast.walk(tree):
-                names: list[str] = []
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                    names = [node.module]
-                for name in names:
-                    if is_governed(name, config.first_party):
-                        found.setdefault(name, set()).add(path.relative_to(config.repo_root))
+        directory = config.repo_root / source_root
+        paths = sorted(directory.rglob("*.py"))
+        for path, names in file_facts(_absolute_imports, paths, root=facts_root(directory)).items():
+            for name in names:
+                if is_governed(name, config.first_party):
+                    found.setdefault(name, set()).add(path.relative_to(config.repo_root))
     return found
+
+
+def _absolute_imports(path: Path, tree: ast.Module) -> tuple[str, ...]:
+    """every absolute module one file imports, in walk order, as the scan cache keeps them.
+
+    :param path: the file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: dotted module paths, repeats kept
+    :rtype: tuple[str, ...]
+    """
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.append(node.module)
+    return tuple(names)
 
 
 def unresolved_imports(imports: dict[str, set[Path]], owners: dict[str, set[str]]) -> list[str]:
