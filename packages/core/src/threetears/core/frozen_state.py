@@ -22,7 +22,6 @@ from typing import Any, Final
 
 __all__ = [
     "EMPTY",
-    "LoggedMap",
     "frozen",
     "logged",
     "with_chunk",
@@ -49,7 +48,7 @@ def frozen[K, V](entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> Mapping
 
 
 def with_entry[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
-    """``mapping`` with ``key`` set to ``value``, as a new read-only snapshot (a :class:`LoggedMap` stays one).
+    """``mapping`` with ``key`` set to ``value``, as a new read-only snapshot (a :class:`_LoggedMap` stays one).
 
     :param mapping: the snapshot
     :ptype mapping: Mapping
@@ -60,7 +59,7 @@ def with_entry[K, V](mapping: Mapping[K, V], key: K, value: V) -> Mapping[K, V]:
     :return: the new snapshot
     :rtype: Mapping
     """
-    if isinstance(mapping, LoggedMap):
+    if isinstance(mapping, _LoggedMap):
         return mapping.set(key, value)
     return MappingProxyType({**mapping, key: value})
 
@@ -101,7 +100,7 @@ def with_entries[K, V](mapping: Mapping[K, V], entries: Mapping[K, V]) -> Mappin
 
 def without_entry[K, V](mapping: Mapping[K, V], key: K) -> Mapping[K, V]:
     """``mapping`` without ``key``, as a new read-only snapshot (the same one when it holds no ``key``; a
-    :class:`LoggedMap` stays one).
+    :class:`_LoggedMap` stays one).
 
     :param mapping: the snapshot
     :ptype mapping: Mapping
@@ -112,7 +111,7 @@ def without_entry[K, V](mapping: Mapping[K, V], key: K) -> Mapping[K, V]:
     """
     if key not in mapping:
         return mapping
-    if isinstance(mapping, LoggedMap):
+    if isinstance(mapping, _LoggedMap):
         return mapping.unset(key)
     return MappingProxyType({held: value for held, value in mapping.items() if held != key})
 
@@ -154,19 +153,19 @@ def with_chunk[T](chunks: tuple[tuple[T, ...], ...], chunk: tuple[T, ...]) -> tu
     return (*chunks, chunk)
 
 
-#: the largest chunk of a :class:`LoggedMap` merged into another: one this large stays as it is, so no change copies
+#: the largest chunk of a :class:`_LoggedMap` merged into another: one this large stays as it is, so no change copies
 #: more than about twice this many keys in one step. Merged without a bound, the change that made a map of 32,768 keys
 #: one chunk copied every key (4.6 ms, two maps a fake bucket's write: the event loop held 9 ms by one write); with it a
 #: lookup reads a chunk a 4,096 keys past the first, a dict lookup each
 _MERGED_MAX: Final = 4096
 
-#: the value of a key a newer chunk of a :class:`LoggedMap` removed
+#: the value of a key a newer chunk of a :class:`_LoggedMap` removed
 _REMOVED: Final = object()
 
 
 @dataclass(frozen=True, slots=True)
 class _Slot:
-    """a key in one chunk of a :class:`LoggedMap`: its value (:data:`_REMOVED` once removed), whether it was set while
+    """a key in one chunk of a :class:`_LoggedMap`: its value (:data:`_REMOVED` once removed), whether it was set while
     the map held no such key (it then takes the last place, as a dict re-adding a removed key does), and whether a
     chunk older than the one it was written to may hold the key (a removal is kept only while one may)."""
 
@@ -176,7 +175,7 @@ class _Slot:
 
 
 def _merged(older: Mapping[Any, _Slot], newer: Mapping[Any, _Slot], *, bottom: bool) -> Mapping[Any, _Slot]:
-    """two adjacent chunks of a :class:`LoggedMap` as one, in a dict's order: a key set again keeps its place, a key
+    """two adjacent chunks of a :class:`_LoggedMap` as one, in a dict's order: a key set again keeps its place, a key
     re-added after a removal takes the last. A removal is dropped once no older chunk may hold the key.
 
     Both chunks are merged by the dict's own operations (C, no Python step a key); only the keys both hold are walked
@@ -203,11 +202,11 @@ def _merged(older: Mapping[Any, _Slot], newer: Mapping[Any, _Slot], *, bottom: b
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class LoggedMap[K, V](Mapping[K, V]):
+class _LoggedMap[K, V](Mapping[K, V]):
     """a read-only snapshot of a map that grows with rows or keys, set and unset a key at a time: the next snapshot
     shares the last one's chunks, so a change copies a key about log2(n) times over its life, never n.
 
-    :func:`with_entry` and :func:`without_entry` keep one a ``LoggedMap``. Its chunks are merged while the one before
+    :func:`with_entry` and :func:`without_entry` keep one a ``_LoggedMap``. Its chunks are merged while the one before
     is no larger (log-structured, as :func:`with_chunk`), so a lookup reads about log2(n) chunks, and its order is a
     dict's: a key set again keeps its place, one added (or re-added after its removal) takes the last.
 
@@ -249,15 +248,15 @@ class LoggedMap[K, V](Mapping[K, V]):
     def __len__(self) -> int:
         return self._size
 
-    def _with(self, key: K, slot: _Slot, size: int) -> LoggedMap[K, V]:
+    def _with(self, key: K, slot: _Slot, size: int) -> _LoggedMap[K, V]:
         chunks = self.chunks
         chunk: Mapping[K, _Slot] = MappingProxyType({key: slot})
         while chunks and len(chunks[-1]) <= len(chunk) and len(chunk) < _MERGED_MAX:
             chunk = _merged(chunks[-1], chunk, bottom=len(chunks) == 1)
             chunks = chunks[:-1]
-        return LoggedMap((*chunks, chunk), size)
+        return _LoggedMap((*chunks, chunk), size)
 
-    def set(self, key: K, value: V) -> LoggedMap[K, V]:
+    def set(self, key: K, value: V) -> _LoggedMap[K, V]:
         """this map with ``key`` set to ``value``.
 
         :param key: the key
@@ -265,34 +264,36 @@ class LoggedMap[K, V](Mapping[K, V]):
         :param value: its value
         :ptype value: Any
         :return: the new snapshot
-        :rtype: LoggedMap
+        :rtype: _LoggedMap
         """
         found = self._slot(key)
         held = found is not None and found.value is not _REMOVED
         return self._with(key, _Slot(value, not held, found is not None), self._size if held else self._size + 1)
 
-    def unset(self, key: K) -> LoggedMap[K, V]:
+    def unset(self, key: K) -> _LoggedMap[K, V]:
         """this map without ``key`` (the same one when it holds no ``key``).
 
         :param key: the key
         :ptype key: Any
         :return: the new snapshot
-        :rtype: LoggedMap
+        :rtype: _LoggedMap
         """
         if key not in self:
             return self
         return self._with(key, _Slot(_REMOVED, False, True), self._size - 1)
 
 
-def logged[K, V](entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> LoggedMap[K, V]:
-    """a :class:`LoggedMap` of ``entries``.
+def logged[K, V](entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> _LoggedMap[K, V]:
+    """a :class:`_LoggedMap` of ``entries``.
 
     :param entries: a mapping, or its (key, value) pairs
     :ptype entries: Mapping | Iterable[tuple]
     :return: the snapshot
-    :rtype: LoggedMap
+    :rtype: _LoggedMap
     """
     whole = dict(entries)
     if not whole:
-        return LoggedMap()
-    return LoggedMap((MappingProxyType({key: _Slot(value, False, False) for key, value in whole.items()}),), len(whole))
+        return _LoggedMap()
+    return _LoggedMap(
+        (MappingProxyType({key: _Slot(value, False, False) for key, value in whole.items()}),), len(whole)
+    )

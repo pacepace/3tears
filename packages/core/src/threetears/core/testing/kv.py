@@ -231,7 +231,7 @@ class FakeKvBucket:
         self._max_bytes = max_bytes
         # every map below is a read-only snapshot replaced whole: a fake that changed one in place could hide the very
         # races (a reader holding it across an await) it exists to catch. The ones that grow with keys are logged
-        # (LoggedMap): a write copies a key about log2(n) times, never the whole map (a 33,786-row refill held the loop
+        # (frozen_state.logged): a write copies a key about log2(n) times, never the whole map (a 33,786-row refill held the loop
         # 15 ms a write when each copied every key)
         self._entries: Mapping[str, _Entry] = logged()
         # the stored size of each key's latest message (its value or its deletion marker), and their
