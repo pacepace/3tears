@@ -825,6 +825,24 @@ class _FromFiles:
 
 
 @dataclass(frozen=True, slots=True)
+class _PageScopes:
+    """one page of a keyed stage of a table whose scope is in its rows, as staged (built on a thread).
+
+    :ivar chunk: the page's keys staged now
+    :ivar positions: each one's position in the pass's keys
+    :ivar rows: their rows
+    :ivar scopes: the keys staged with the scope of each row of them (key columns, ``__scope``)
+    :ivar left: the positions of the keys left pending: a row of them is of a scope a write holds
+    """
+
+    chunk: Any
+    positions: Any
+    rows: Any
+    scopes: Any
+    left: Any
+
+
+@dataclass(frozen=True, slots=True)
 class _Staged:
     """what one table's keyed stage this pass holds: Arrow, built a page at a time.
 
@@ -1695,6 +1713,31 @@ class _KeysHeard:
     keys: Any
     epoch: str | None
     held: bool = True
+    #: the keys as the batch heard (:func:`_heard_batch`), built ahead off the loop (:meth:`CopyFollower._drained`);
+    #: None until then
+    batch: Any = None
+
+
+def _with_heard_batches(messages: tuple[Any, ...], tables: Mapping[str, FollowedTable]) -> tuple[Any, ...]:
+    """``messages`` with each keys message of a table in ``tables`` carrying its heard batch, built here; every other
+    message as it was, in order. Pure Arrow over the messages' own keys. Blocking: run it on a thread.
+
+    Why: on the loop, a drain building these batches held it 24.3 s in one stretch (``key_text_table`` under
+    ``_heard_batch``, the local burst replay of 2026-11-25).
+
+    :param messages: the messages taken from the inbox
+    :ptype messages: tuple[Any, ...]
+    :param tables: the tables their keys messages name (a read-only snapshot)
+    :ptype tables: Mapping[str, FollowedTable]
+    :return: the messages
+    :rtype: tuple[Any, ...]
+    """
+    return tuple(
+        replace(message, batch=_heard_batch(tables[message.table], message.keys, message.epoch))
+        if isinstance(message, _KeysHeard) and message.batch is None and message.table in tables
+        else message
+        for message in messages
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2224,6 +2267,13 @@ class CopyFollower:
         # message posted while the loop runs between joins the last run, drained with no await)
         taken, self._inbox = self._inbox, ()
         messages = tuple(chain.from_iterable(taken))
+        # function-local, read-only: the tables the keys messages name, for their batches built on a thread
+        tables = {
+            m.table: self._tables[m.table] for m in messages if isinstance(m, _KeysHeard) and m.table in self._tables
+        }
+        if tables:
+            # what is posted meanwhile waits in the inbox behind these, as it would behind a run below
+            messages = await asyncio.to_thread(_with_heard_batches, messages, tables)
         runs = max(0, (len(messages) - 1) // _MESSAGES_PER_TURN)
         for run in range(runs):
             self._apply_messages(messages, run * _MESSAGES_PER_TURN, (run + 1) * _MESSAGES_PER_TURN)
@@ -2331,7 +2381,11 @@ class CopyFollower:
         if isinstance(message, _KeysHeard):
             self._hear(
                 message.table,
-                _heard_batch(self._tables[message.table], message.keys, message.epoch),
+                (
+                    _heard_batch(self._tables[message.table], message.keys, message.epoch)
+                    if message.batch is None
+                    else message.batch
+                ),
                 held=message.held,
             )
         elif isinstance(message, _PartitionHeard):
@@ -4750,7 +4804,6 @@ class CopyFollower:
         :rtype: _Staged
         :raises _FileWaitError: when a key's epoch file is missing or unreadable (the caller holds the table)
         """
-        key = list(table.key)
         at = table.scope_in_key
         held_scopes = _scope_array(held) if held else None
         #: for a table that opts in to delta files: every key's row merged from its epochs' files, once this pass
@@ -4771,11 +4824,7 @@ class CopyFollower:
             if table.scope is not None and at is None:
                 # the scope is in the row only: first the copy's own rows (a local read), so a key whose row is of a
                 # scope a write holds waits for it without an L3 read, and is read once, after the write commits
-                mine = await asyncio.to_thread(self._copy_scope_rows, table, page)
-                if held_scopes is not None and mine.num_rows:
-                    late_keys = mine.filter(pa.array(_in(mine.column(_SCOPE), held_scopes)))
-                    if late_keys.num_rows:
-                        keep = ~_in(joined_key_texts(page, key), joined_key_texts(late_keys, key))
+                mine, keep = await asyncio.to_thread(self._page_held_scopes, table, page, held_scopes)
             chunk = page if keep is None else page.filter(pa.array(keep))
             chunk_positions = positions if keep is None else positions[keep]
             if keep is not None:
@@ -4788,28 +4837,14 @@ class CopyFollower:
                 rows = await self._rows_from_l3(table, chunk)
             if table.scope is not None and at is None:
                 # the row L3 holds now beside the one the copy holds (a delete's, a move's): a key whose new row is of
-                # a held scope (a row new to the copy, or moved into it) waits too
-                found = key_text_table(rows, key, table.instant_keys).append_column(
-                    _SCOPE, self._scopes_of_rows(table, rows)
+                # a held scope (a row new to the copy, or moved into it) waits too. On a thread: on the loop this held
+                # it 12.2 s in one page (distinct_keys, the local burst replay of 2026-11-25)
+                paged = await asyncio.to_thread(
+                    self._page_row_scopes, table, chunk, chunk_positions, rows, mine, held_scopes
                 )
-                scopes = _distinct(pa.concat_tables([mine, found]), [*key, _SCOPE])
-                chunk_texts = joined_key_texts(chunk, key)
-                scopes = scopes.filter(pa.array(_in(joined_key_texts(scopes, key), chunk_texts)))
-                if held_scopes is not None:
-                    left = scopes.filter(pa.array(_in(scopes.column(_SCOPE), held_scopes)))
-                    if left.num_rows:
-                        left_texts = joined_key_texts(left, key)
-                        stays = ~_in(chunk_texts, left_texts)
-                        left_out[chunk_positions[~stays]] = True
-                        chunk_positions = chunk_positions[stays]
-                        chunk = chunk.filter(pa.array(stays))
-                        rows = rows.filter(
-                            pa.array(
-                                ~_in(joined_key_texts(key_text_table(rows, key, table.instant_keys), key), left_texts)
-                            )
-                        )
-                        scopes = scopes.filter(pa.array(~_in(joined_key_texts(scopes, key), left_texts)))
-                row_scopes.append(scopes)
+                left_out[paged.left] = True
+                chunk, chunk_positions, rows = paged.chunk, paged.positions, paged.rows
+                row_scopes.append(paged.scopes)
             if not chunk.num_rows:
                 continue
             await asyncio.to_thread(
@@ -4820,6 +4855,76 @@ class CopyFollower:
         if fallbacks:
             self._fell_back(table, fallbacks)
         return await asyncio.to_thread(_staged_of, table, take, staged, left_out, row_scopes)
+
+    def _page_held_scopes(self, table: FollowedTable, page: Any, held_scopes: Any) -> tuple[Any, Any]:
+        """a page's keys' rows as the copy holds them, with each one's scope, and which keys of the page are staged now
+        (a key whose held row is of a scope a write holds is left out). Blocking: run it on a thread (the copy's read,
+        and every Arrow kernel after it, off the loop).
+
+        :param table: a table whose scope is in its rows only
+        :ptype table: FollowedTable
+        :param page: the page's keys, key columns as text
+        :ptype page: pyarrow.Table
+        :param held_scopes: the scopes a write in progress holds; None for none
+        :ptype held_scopes: pyarrow.Array | None
+        :return: the held rows' keys and scopes (key columns as text, ``__scope``), and per key of the page whether it
+            is staged now; None when every one is
+        :rtype: tuple[pyarrow.Table, numpy.ndarray | None]
+        """
+        mine = self._copy_scope_rows(table, page)
+        if held_scopes is None or not mine.num_rows:
+            return mine, None
+        late_keys = mine.filter(pa.array(_in(mine.column(_SCOPE), held_scopes)))
+        if not late_keys.num_rows:
+            return mine, None
+        key = list(table.key)
+        return mine, ~_in(joined_key_texts(page, key), joined_key_texts(late_keys, key))
+
+    def _page_row_scopes(
+        self, table: FollowedTable, chunk: Any, positions: Any, rows: Any, mine: Any, held_scopes: Any
+    ) -> _PageScopes:
+        """a page's keys' scopes, the row the copy holds and the row read now (a delete's, a move's) each, and the keys
+        whose new row is of a scope a write holds taken out of the page. Pure Arrow and numpy over the page's own
+        tables. Blocking: run it on a thread.
+
+        :param table: a table whose scope is in its rows only
+        :ptype table: FollowedTable
+        :param chunk: the page's keys staged now, key columns as text
+        :ptype chunk: pyarrow.Table
+        :param positions: each one's position in the pass's keys
+        :ptype positions: numpy.ndarray
+        :param rows: their rows read now
+        :ptype rows: pyarrow.Table
+        :param mine: the rows the copy holds of the page (:meth:`_page_held_scopes`)
+        :ptype mine: pyarrow.Table
+        :param held_scopes: the scopes a write in progress holds; None for none
+        :ptype held_scopes: pyarrow.Array | None
+        :return: the page as staged
+        :rtype: _PageScopes
+        """
+        key = list(table.key)
+        found = key_text_table(rows, key, table.instant_keys).append_column(_SCOPE, self._scopes_of_rows(table, rows))
+        scopes = _distinct(pa.concat_tables([mine, found]), [*key, _SCOPE])
+        chunk_texts = joined_key_texts(chunk, key)
+        scopes = scopes.filter(pa.array(_in(joined_key_texts(scopes, key), chunk_texts)))
+        none_left = np.zeros(0, dtype=np.int64)
+        if held_scopes is None:
+            return _PageScopes(chunk=chunk, positions=positions, rows=rows, scopes=scopes, left=none_left)
+        left = scopes.filter(pa.array(_in(scopes.column(_SCOPE), held_scopes)))
+        if not left.num_rows:
+            return _PageScopes(chunk=chunk, positions=positions, rows=rows, scopes=scopes, left=none_left)
+        left_texts = joined_key_texts(left, key)
+        stays = ~_in(chunk_texts, left_texts)
+        kept_rows = rows.filter(
+            pa.array(~_in(joined_key_texts(key_text_table(rows, key, table.instant_keys), key), left_texts))
+        )
+        return _PageScopes(
+            chunk=chunk.filter(pa.array(stays)),
+            positions=positions[stays],
+            rows=kept_rows,
+            scopes=scopes.filter(pa.array(~_in(joined_key_texts(scopes, key), left_texts))),
+            left=positions[~stays],
+        )
 
     async def _rows_from_l3(self, table: FollowedTable, keys: Any) -> Any:
         """some keys' rows as L3 holds them now, read by key in one statement.

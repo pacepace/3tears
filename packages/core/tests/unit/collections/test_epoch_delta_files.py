@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from threetears.nats import Subject
 
-from threetears.core.backends.broker_generation import DELTA_FILES_FIELD, naming_delta_files
+from threetears.core.backends.broker_generation import DELTA_FILES_FIELD, naming_delta_files, record_reply_generations
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.protocol import LoadFile
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
@@ -641,3 +641,64 @@ async def test_an_intents_writer_reaches_a_source_that_takes_it_and_an_older_one
         older, "results", None, prefixes=_PREFIXES, unconfirmed_delta_file=_FILE, unconfirmed_writer=_WRITER
     )
     assert older.unconfirmed == [_FILE]
+
+
+# --- a table the broker advances by its trigger: a local write tells the copy its commit's epoch ------------------------
+
+
+class _RepliedConn(_Conn):
+    """a caller's connection to the broker: its commit's reply names the token the broker's advance wrote for each table
+    (``record_reply_generations``, as ``NatsProxyL3Backend`` hands it every ``l3.tx.commit`` reply)."""
+
+    def __init__(self, tokens: Mapping[str, str]) -> None:
+        super().__init__()
+        self.tokens = dict(tokens)
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[None]:
+        yield
+        record_reply_generations({"success": True, "generations": self.tokens}, ends_write=True)
+
+
+def _trigger_advanced(registry: CollectionRegistry, name: str) -> Any:
+    """a collection that advances no generation itself (as a tool pod's own tables declare: the broker advances them by
+    their change-note trigger alone, ``GENERATION_BY_TRIGGER``), its table opted in to delta files."""
+    base = collection_for_schema(_schema(name, opted_in=True), entity_class=_Row)
+    collection = base(registry, DefaultCoreConfig(), None)
+    collection.l3_pool = ConnOnlyPool()
+    return collection
+
+
+async def test_a_trigger_advanced_tables_write_tells_the_copy_its_keys_at_the_commits_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a write to a table the broker advances by its trigger alone tells the copy (a cache taking key
+    batches) its keys at no epoch: the copy then read every key from L3 by key (``why="no_epoch"``) instead of merging
+    it from the commit's delta file, 62,800-98,200 keys a pass after a reset rewrote every state (the local burst
+    replay, 2026-11-25). The epoch must be the one the broker's reply named for the commit, whose record names the
+    file; outside such a commit (a direct pool's, one that did not land) the keys stay at none, as before."""
+    monkeypatch.setenv("THREETEARS_DELTA_FILES_DIR", str(tmp_path))
+    registry = CollectionRegistry()
+    results = _trigger_advanced(registry, "results")
+    assert not results.advances_write_generation
+    told: list[tuple[int, str | None]] = []
+    rows: list[Any] = []
+    registry.register_derived_cache(
+        "results",
+        on_row=rows.append,
+        on_table_dropped=lambda: None,
+        on_partition=lambda partition: None,
+        on_keys=lambda keys, epoch: told.append((keys.num_rows, epoch)),
+    )
+    conn = _RepliedConn({"results": "inc:41"})
+    async with CallerTransaction(conn) as transaction:
+        await results.save_rows(_ROWS, conn=conn)
+    assert told == [(1, "inc:41")], "the copy was told the write's keys at no epoch, or another commit's"
+    assert transaction.committed_generations == {"results": "inc:41"}
+    assert rows == [], "the copy was handed a row message a key besides its batch"
+
+    told.clear()
+    direct = _Conn()
+    async with CallerTransaction(direct):
+        await results.save_rows(_ROWS, conn=direct)
+    assert told == [(1, None)], "a commit no broker reply named was told an epoch"
