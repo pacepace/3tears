@@ -22,9 +22,10 @@ import pytest
 
 from packages.core.tests.unit.collections import copy_hooks
 from threetears.core import arrow_keys
-from threetears.core.collections.copy_parts import WHOLE_PART, PartRule, tier_part
+from threetears.core.collections.copy_parts import WHOLE_PART, PartRule, part_name, scope_of_part, tier_part
 from threetears.core.collections.shared_copy import (
     KEYS,
+    ByCount,
     LOCATED_PREFIX,
     MARK_TABLE,
     ROWS,
@@ -404,3 +405,192 @@ def _python_bytes(run: Callable[[], Any]) -> int:
     finally:
         tracemalloc.stop()
     return peak
+
+
+SNAP_SCHEMA = pa.schema(
+    [
+        pa.field("state", pa.string()),
+        pa.field("source_timestamp", pa.string()),
+        pa.field("candidate_id", pa.int64()),
+        pa.field("votes", pa.int64()),
+    ]
+)
+_SNAP_KEY = ("state", "source_timestamp", "candidate_id")
+
+
+class TestAnInstantInAKey:
+    async def test_a_key_named_in_another_spelling_finds_its_row(self, store: SharedArrowStore) -> None:
+        backend = await _backend(
+            store,
+            ("snaps", SNAP_SCHEMA, PartRule("snaps", _SNAP_KEY, scope_column="state")),
+            instants={"snaps": {"source_timestamp"}},
+        )
+        try:
+            # the rail's spelling of the instants, then a change record's (key_text) and an offset's
+            rows = pa.table(
+                {
+                    "state": ["VA", "VA", "NC"],
+                    "source_timestamp": ["2026-11-03T23:59:00Z", "2026-11-04T00:01:00Z", "2026-11-03T22:00:00Z"],
+                    "candidate_id": pa.array([1, 1, 2], pa.int64()),
+                    "votes": pa.array([10, 11, 12], pa.int64()),
+                },
+                schema=SNAP_SCHEMA,
+            )
+            await backend.apply([ChangePage(ROWS, "snaps", rows)])
+            held = _version_rows(store, "snaps", SNAP_SCHEMA)
+            assert sorted(held["source_timestamp"].to_pylist()) == [
+                "2026-11-03T22:00:00.000000+00:00",
+                "2026-11-03T23:59:00.000000+00:00",
+                "2026-11-04T00:01:00.000000+00:00",
+            ]
+            keys = pa.table(
+                {
+                    "state": ["VA", "NC"],
+                    "source_timestamp": ["2026-11-03T23:59:00.000000+00:00", "2026-11-03T17:00:00-05:00"],
+                    "candidate_id": ["1", "2"],
+                }
+            )
+            applied = await backend.apply([ChangePage(KEYS, "snaps", keys)])
+            assert applied.parts == {"snaps": {"VA": True, "NC": False}}
+            assert _version_rows(store, "snaps", SNAP_SCHEMA)["votes"].to_pylist() == [11]
+        finally:
+            await backend.close()
+
+    async def test_an_instant_column_is_a_text_key_column(self, store: SharedArrowStore) -> None:
+        with pytest.raises(ValueError, match="text key column"):
+            await _backend(store, ("results", SCHEMA, BY_STATE), instants={"results": {"votes"}})
+
+
+class TestAWholeChangeLandsInItsFinalTiers:
+    async def test_a_per_run_tables_whole_change_is_never_a_part_a_run(self, store: SharedArrowStore) -> None:
+        backend = await _backend(store, ("runs", RUN_SCHEMA, BY_RUN), merges=ByCount(fan_out=10))
+        try:
+            rows = pa.table(
+                {
+                    "state": pa.array(["VA"] * 250 + ["NC"] * 30, pa.string()),
+                    "run_id": pa.array([*np.repeat(np.arange(1, 26), 10), *np.repeat(np.arange(1, 4), 10)], pa.int64()),
+                    "candidate_id": pa.array(np.tile(np.arange(10), 28), pa.int64()),
+                    "votes": pa.array(np.arange(280), pa.int64()),
+                }
+            )
+            await backend.apply([ChangePage(ROWS, "runs", rows)], whole={"runs"})
+            # VA's 25 runs as the merges leave them: 1-10 and 11-20 a tier each, 21-24 and the newest each its own;
+            # NC's three runs, too few to merge, each its own
+            assert sorted(_files(store, "runs")) == sorted(
+                [
+                    tier_part("VA", 1, 1, 10),
+                    tier_part("VA", 1, 11, 20),
+                    *(tier_part("VA", 0, run, run) for run in range(21, 26)),
+                    *(tier_part("NC", 0, run, run) for run in range(1, 4)),
+                ]
+            )
+            assert await backend.merge() is None
+            assert _sorted(_version_rows(store, "runs", RUN_SCHEMA), _RUN_KEY).equals(_sorted(rows, _RUN_KEY))
+            # a change after it lands in the tier holding its run
+            fix = rows.slice(30, 1).set_column(3, "votes", pa.array([-1], pa.int64()))
+            applied = await backend.apply([ChangePage(ROWS, "runs", fix)])
+            assert applied.parts == {"runs": {tier_part("VA", 1, 1, 10): True}}
+        finally:
+            await backend.close()
+
+
+_ODD_SCOPES = (
+    "O'Brien County",
+    "S\u00e3o Paulo",
+    "all",
+    "VA-r000000000001-000000000001-0",
+    "",
+    "x" * 200,
+    "a.b",
+    "NY-1",
+)
+
+
+class TestAnyScopeValueNamesAPart:
+    @pytest.mark.parametrize("rule", [BY_STATE, LOCATED], ids=["by-state", "located"])
+    async def test_scope_values_of_any_text_publish_and_name_their_parts(
+        self, store: SharedArrowStore, rule: PartRule
+    ) -> None:
+        backend = await _backend(store, ("results", SCHEMA, rule))
+        try:
+            count = len(_ODD_SCOPES)
+            rows = pa.table(
+                {
+                    "state": pa.array(list(_ODD_SCOPES), pa.string()),
+                    "office_key": pa.array([f"race{n}" for n in range(count)], pa.string()),
+                    "candidate_id": pa.array(np.arange(count), pa.int64()),
+                    "votes": pa.array(np.arange(count), pa.int64()),
+                }
+            )
+            await backend.apply([ChangePage(ROWS, "results", rows)])
+            parts = sorted(_files(store, "results"))
+            assert parts == sorted(part_name(scope) for scope in _ODD_SCOPES)
+            assert sorted(scope for scope in (scope_of_part(part) for part in parts) if scope is not None) == sorted(
+                scope for scope in _ODD_SCOPES if len(scope) < 90
+            )
+            # a key of one (without its scope column, for the located table) finds its part
+            gone = rows.slice(0, 1).select(list(rule.key))
+            applied = await backend.apply([ChangePage(KEYS, "results", _as_text(gone))])
+            assert applied.parts == {"results": {part_name(_ODD_SCOPES[0]): False}}
+            assert _sorted(_version_rows(store, "results", SCHEMA), _KEY).equals(_sorted(rows.slice(1), _KEY))
+        finally:
+            await backend.close()
+
+
+class TestAWholeChangeInArrow:
+    """a whole change of a per-run table (a cold start, a reload), its runs routed to their final tiers, its instant
+    key column respelled and a scope value escaped: every row's work in Arrow and NumPy. The NumPy the settle of a
+    change's own rows makes (key codes, their sort, row numbers) is about 50 bytes a row (``TestArrowEndToEnd``), so
+    the bound is that and a margin; one Python object a row (a 28-byte int and its list's slot, or a 60-byte string a
+    respelled instant) would pass it by 7-12 MB."""
+
+    _ROWS = 200_000
+
+    def test_a_whole_change_makes_no_python_object_a_row(self, store: SharedArrowStore) -> None:
+        schema = pa.schema(
+            [
+                pa.field("state", pa.string()),
+                pa.field("run_id", pa.int64()),
+                pa.field("at", pa.string()),
+                pa.field("candidate_id", pa.int64()),
+                pa.field("votes", pa.int64()),
+            ]
+        )
+        rule = PartRule("runs", ("state", "run_id", "at", "candidate_id"), scope_column="state", run_column="run_id")
+        rng = np.random.default_rng(4)
+        count = self._ROWS
+        seconds = pa.array(rng.integers(1_793_750_000, 1_793_760_000, count) * 1_000_000, pa.int64())
+        rows = pa.table(
+            {
+                "state": pa.array(["O'Brien County", "VA", "NC", "GA", "PA"], pa.string()).take(
+                    pa.array(rng.integers(0, 5, count))
+                ),
+                "run_id": pa.array(rng.integers(1, 41, count), pa.int64()),
+                "at": pc.strftime(pc.cast(seconds, pa.timestamp("us", tz="UTC")), format="%Y-%m-%dT%H:%M:%SZ"),
+                "candidate_id": pa.array(np.arange(count), pa.int64()),
+                "votes": pa.array(rng.integers(0, 1_000, count), pa.int64()),
+            }
+        )
+        pages = [ChangePage(ROWS, "runs", rows)]
+        plan = ApplyPlan(
+            root=str(store.root),
+            schemas=(("runs", schema),),
+            rules=(("runs", rule),),
+            pages=(("rows", "runs"),),
+            whole=frozenset({"runs"}),
+            hooks=None,
+            merges=ByCount(),
+            instants=(("runs", frozenset({"at"})),),
+        )
+        slot = store.reserve(512 << 20)
+        with store.handing({"p0": rows}) as handed, handed.mapped() as tables:
+            context = JobContext(version=None, result=slot, tables=tables)
+            outcome: list[Any] = []
+            peak = _python_bytes(lambda: outcome.append(apply_job(context, plan)))
+        segment = store.claim(slot)
+        assert segment is not None
+        segment.close()
+        # five scopes of 40 runs: 1-10, 11-20 and 21-30 a tier each, 31-39 and the newest their own
+        assert len(outcome[0].parts) == 5 * 13
+        assert peak < 14 << 20, f"{peak} bytes of Python objects for a whole change of {count} rows"
+        assert pages[0].rows.num_rows == count

@@ -20,6 +20,10 @@ found through its locator (:class:`~threetears.core.collections.copy_parts.Locat
 it as ``__located__<table>`` (:data:`LOCATED_PREFIX`), so the worker reads it with the parts and the serving process
 holds no copy of it.
 
+A whole change of a per-run table (a cold start, a reload) lands in the tiers its :class:`MergePolicy`'s merges would
+leave, never a part a run (:func:`_merged_tiers`). A part's name is its scope value's (``copy_parts.part_name``):
+escaped, or hashed, for a value the store would refuse as a name.
+
 **A change** is pages in the order they were staged (:class:`ChangePage`): a rows page upserts its rows, a keys page
 deletes its keys, and a key's last page wins (a key named in a keys page after its rows page is gone, a rows page after
 it is back; a page naming a key twice keeps its last row): the semantics of the staging tables this was moved from
@@ -31,6 +35,14 @@ key order, so a row keeps its place and a column the change leaves alone keeps i
 stamped``); a change replacing held rows one for one writes each in its row's place, the part never sorted. All of it
 in Arrow's kernels and NumPy over the row numbers, never a Python object a row or a key: Python objects here are one a
 table, a part or a page.
+
+**An instant in a key.** A table's key columns named in ``instants`` hold an instant as text in one spelling
+(``arrow_keys.stored_instants``, in Arrow), of the rows and the keys alike: a key a change record names
+(``2026-11-03T23:59:00.000000+00:00``) finds the row the rail wrote (``2026-11-03T23:59:00Z``).
+
+**One change at a time, in order.** :class:`SharedCopyBackend` applies the change it is given; its callers give
+changes through :class:`~threetears.core.collections.copy_lane.ApplyLane`, which orders them, bounds them, schedules
+the merges and replaces a dead worker.
 
 **Product behaviour stays behind a seam.** :class:`ApplyHooks` (``derive``) runs in the worker after the change is
 applied, sees the applied tables (:class:`AppliedTables`), and returns changes to tables of its own (a product's
@@ -59,7 +71,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 
-from threetears.core.arrow_keys import distinct_keys, key_codes, last_rows, rows_named
+from threetears.core.arrow_keys import distinct_keys, key_codes, last_rows, rows_named, stored_instants
 from threetears.core.collections.copy_parts import (
     WHOLE_PART,
     Locator,
@@ -304,6 +316,9 @@ class ApplyPlan:
     :ivar pages: each handed page's kind and table, in order: page ``n`` is handed as ``p<n>``
     :ivar whole: the tables the change replaces whole
     :ivar hooks: the product's hooks; None for none
+    :ivar merges: the tier merges a per-run table's whole change lands in (:class:`MergePolicy`)
+    :ivar instants: each table and its key columns holding an instant as text, kept in one spelling
+        (``arrow_keys.stored_instants``)
     """
 
     root: str
@@ -312,6 +327,8 @@ class ApplyPlan:
     pages: tuple[tuple[str, str], ...]
     whole: frozenset[str]
     hooks: ApplyHooks | None
+    merges: MergePolicy = ByCount()
+    instants: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +355,8 @@ class _Tables:
     schemas: Mapping[str, pa.Schema]
     rules: Mapping[str, PartRule]
     whole: frozenset[str]
+    merges: MergePolicy = ByCount()
+    instants: Mapping[str, frozenset[str]] = EMPTY
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,8 +420,25 @@ def _map(path: Path, schema: pa.Schema | None = None) -> pa.Table:
 # -- the change, settled -------------------------------------------------------------------------------------------
 
 
-def _settled(schema: pa.Schema, key: Sequence[str], pages: Sequence[tuple[str, pa.Table]]) -> _Settled:
+def _respelled(page: pa.Table, instants: Collection[str]) -> pa.Table:
+    """a page with each of its instant key columns in its stored spelling (``arrow_keys.stored_instants``)."""
+    for column in sorted(instants):
+        if column in page.column_names:
+            page = page.set_column(page.column_names.index(column), column, stored_instants(page[column]))
+    return page
+
+
+def _settled(
+    schema: pa.Schema,
+    key: Sequence[str],
+    pages: Sequence[tuple[str, pa.Table]],
+    instants: Collection[str] = frozenset(),
+) -> _Settled:
     """a table's pages, in order, as the rows they leave upserted and the keys deleted: each key's last page wins.
+
+    An instant in the key (``instants``) is kept in one spelling, of the rows and of the keys alike, so a key a change
+    record names (``key_text``: ``2026-11-03T23:59:00.000000+00:00``) finds the row the rail wrote
+    (``2026-11-03T23:59:00Z``).
 
     :param schema: the table's columns
     :ptype schema: pa.Schema
@@ -410,6 +446,8 @@ def _settled(schema: pa.Schema, key: Sequence[str], pages: Sequence[tuple[str, p
     :ptype key: Sequence[str]
     :param pages: each page's kind and rows, in order
     :ptype pages: Sequence[tuple[str, pa.Table]]
+    :param instants: its key columns holding an instant as text
+    :ptype instants: Collection[str]
     :return: the change settled
     :rtype: _Settled
     """
@@ -420,6 +458,7 @@ def _settled(schema: pa.Schema, key: Sequence[str], pages: Sequence[tuple[str, p
     for kind, page in pages:
         if not page.num_rows:
             continue
+        page = _respelled(page, instants)
         keys = page.select(list(key)).cast(key_schema)
         if kind == ROWS:
             rows.append(page.select(schema.names).cast(schema))
@@ -455,7 +494,50 @@ def _tiers(held: Collection[str]) -> Mapping[str, tuple[tuple[int, int, str], ..
     return frozen((scope, tuple(sorted(parts))) for scope, parts in by_scope.items())
 
 
-def _run_parts(scopes: pa.Array, runs: pa.Array, held: Collection[str]) -> pa.Array:
+def _merged_tiers(rule: PartRule, policy: MergePolicy, scope: str, runs: Sequence[int]) -> Mapping[str, str]:
+    """each level-0 part of a scope's runs and the part the tier merges leave it in: ``policy``'s merges, in turn,
+    until none is due, as :meth:`SharedCopyBackend.merge` would make them one publish at a time.
+
+    **Why** (reports' ``follower_parts._whole_tiers``). A whole change of a per-run table (a cold start, a reload) cut
+    a part a run wrote the full start's 68 runs as 10,880 parts, each a file written, linked and mapped, and 365 merges
+    after, one publish each, each holding the copy's next change (reports' full start measured 2026-11-17). Routed here, the change
+    lands in the parts the merges would leave, and none is due after it.
+
+    :param rule: the table's rule
+    :ptype rule: PartRule
+    :param policy: the merges
+    :ptype policy: MergePolicy
+    :param scope: the scope value's part name
+    :ptype scope: str
+    :param runs: its runs, ascending, each once
+    :ptype runs: Sequence[int]
+    :return: level-0 part -> the part it lands in (absent: its own)
+    :rtype: Mapping[str, str]
+    :raises ValueError: for a policy naming a group of fewer than two parts (it would never be done)
+    """
+    parts = [(run, run, 0, tier_part(scope, 0, run, run)) for run in runs]
+    into: dict[str, str] = {}
+    while (due := policy.due(rule, parts)) is not None:
+        level, group = due
+        if len(group) < 2:
+            raise ValueError(f"{rule.table}: a merge takes two parts at least, not {list(group)}")
+        tiers = [tier for tier in (tier_of(name) for name in group) if tier is not None]
+        if len(tiers) != len(group):
+            raise ValueError(f"{rule.table}: a merge takes tiers alone, not {list(group)}")
+        merged = tier_part(scope, level + 1, tiers[0][2], tiers[-1][3])
+        gone = set(group)
+        for part in [part for part, to in into.items() if to in gone]:
+            into[part] = merged
+        into.update((part, merged) for part, tier in zip(group, tiers, strict=True) if tier[1] == 0)
+        parts = sorted(
+            [*(held for held in parts if held[3] not in gone), (tiers[0][2], tiers[-1][3], level + 1, merged)]
+        )
+    return frozen(into)
+
+
+def _run_parts(
+    scopes: pa.Array, runs: pa.Array, held: Collection[str], merged: tuple[PartRule, MergePolicy] | None = None
+) -> pa.Array:
     """each (scope value, run)'s part: the held tier covering the run, else the run's own level-0 part; null for a
     null scope (a key the copy never held). Named once a distinct pair, never a row.
 
@@ -465,29 +547,47 @@ def _run_parts(scopes: pa.Array, runs: pa.Array, held: Collection[str]) -> pa.Ar
     :ptype runs: pa.Array
     :param held: the table's held parts
     :ptype held: Collection[str]
+    :param merged: for a whole change (nothing held), the rule and the merges whose parts its runs land in
+        (:func:`_merged_tiers`); None for level 0
+    :ptype merged: tuple[PartRule, MergePolicy] | None
     :return: each row's part
     :rtype: pa.Array
     """
     pairs = pa.table({"scope": pc.fill_null(scopes, _NO_SCOPE), "run": pc.cast(runs, pa.int64())})
     distinct = distinct_keys(pairs, ["scope", "run"])
     tiers = _tiers(held)
+    scope_runs = list(zip(distinct["scope"].to_pylist(), distinct["run"].to_pylist(), strict=True))
+    routed: Mapping[str, str] = EMPTY
+    if merged is not None:
+        by_scope: dict[str, list[int]] = {}
+        for scope, run in scope_runs:
+            if scope != _NO_SCOPE:
+                by_scope.setdefault(scope, []).append(run)
+        routed = frozen(
+            (part, into)
+            for scope, scope_of in sorted(by_scope.items())
+            for part, into in _merged_tiers(merged[0], merged[1], scope, sorted(set(scope_of))).items()
+        )
     names: list[str | None] = []
-    for scope, run in zip(distinct["scope"].to_pylist(), distinct["run"].to_pylist(), strict=True):
+    for scope, run in scope_runs:
         covering = [name for first, last, name in tiers.get(scope, ()) if first <= run <= last]
-        names.append(None if scope == _NO_SCOPE else covering[0] if covering else tier_part(scope, 0, run, run))
+        own = tier_part(scope, 0, run, run)
+        names.append(None if scope == _NO_SCOPE else covering[0] if covering else routed.get(own, own))
     distinct_codes, row_codes = key_codes([distinct, pairs], ["scope", "run"])
     at = pc.index_in(pa.array(row_codes), value_set=pa.array(distinct_codes))
     named: pa.Array = pa.array(names, pa.string()).take(at)
     return named
 
 
-def _row_parts(rule: PartRule, rows: pa.Table, held: Collection[str]) -> pa.Array:
-    """each row's part, by its own columns (a split table's rows hold its scope column)."""
+def _row_parts(rule: PartRule, rows: pa.Table, held: Collection[str], merges: MergePolicy | None = None) -> pa.Array:
+    """each row's part, by its own columns (a split table's rows hold its scope column); with ``merges``, a whole
+    change's runs in the tiers those merges leave (:func:`_merged_tiers`)."""
     if not rule.split:
         return pa.repeat(pa.scalar(WHOLE_PART, pa.string()), rows.num_rows)
     scopes = parts_of_keys(rule, rows)
     if rule.run_column is not None:
-        scopes = _run_parts(scopes, rows[rule.run_column].combine_chunks(), held)
+        merged = None if merges is None else (rule, merges)
+        scopes = _run_parts(scopes, rows[rule.run_column].combine_chunks(), held, merged)
     return scopes
 
 
@@ -501,14 +601,17 @@ def _key_parts(rule: PartRule, keys: pa.Table, held: Collection[str], locator: L
     return scopes
 
 
-def _cut(rule: PartRule, rows: pa.Table, held: Collection[str]) -> Mapping[str, pa.Table]:
+def _cut(
+    rule: PartRule, rows: pa.Table, held: Collection[str], merges: MergePolicy | None = None
+) -> Mapping[str, pa.Table]:
     """rows by part, each part's rows a slice in their order in ``rows``: ``copy_parts.split_parts``' cut, and for a
-    per-run table the same cut (one stable sort of the parts' names, one run-end encoding) by each row's tier."""
+    per-run table the same cut (one stable sort of the parts' names, one run-end encoding) by each row's tier; with
+    ``merges`` (a whole change), the tiers those merges leave."""
     if not rows.num_rows:
         return EMPTY
     if rule.run_column is None:
         return frozen((part.name, part.rows) for part in split_parts(rule, rows))
-    names = _row_parts(rule, rows, held)
+    names = _row_parts(rule, rows, held, merges)
     order = pc.sort_indices(names)
     ordered = rows.take(order)
     runs = pc.run_end_encode(names.take(order))
@@ -692,7 +795,8 @@ def _apply_table(
         if held and table not in tables.whole:
             before = pa.concat_tables([_map(path, schema) for _, path in sorted(held.items())])
         rows = change.rows if before is None else (_part_rows(schema, before, written, key, named) or before)
-        cut = _cut(rule, rows, ())
+        # a per-run table's runs land in the tiers the merges would leave them in, never a part a run
+        cut = _cut(rule, rows, (), tables.merges)
         for part, part_rows in cut.items():
             after[part] = _in_key_order(part_rows, key)
             result.write(table, part, after[part])
@@ -741,7 +845,12 @@ def _apply_pages(
     for table in tables.whole:
         by_table.setdefault(table, [])
     settled = frozen(
-        (table, _settled(tables.schemas[table], tables.rules[table].key, table_pages))
+        (
+            table,
+            _settled(
+                tables.schemas[table], tables.rules[table].key, table_pages, tables.instants.get(table, frozenset())
+            ),
+        )
         for table, table_pages in sorted(by_table.items())
     )
     after = frozen((table, _apply_table(tables, table, change, files, result)) for table, change in settled.items())
@@ -764,7 +873,13 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     files = EMPTY if version is None else version_files(plan.root, version)
     mapped = EMPTY if context.tables is None else context.tables.tables
     pages = [(kind, table, mapped[f"p{at}"]) for at, (kind, table) in enumerate(plan.pages)]
-    tables = _Tables(schemas=frozen(plan.schemas), rules=frozen(plan.rules), whole=plan.whole)
+    tables = _Tables(
+        schemas=frozen(plan.schemas),
+        rules=frozen(plan.rules),
+        whole=plan.whole,
+        merges=plan.merges,
+        instants=frozen(plan.instants),
+    )
     slot = context.result
     if not isinstance(slot, (PiecedSlot, SegmentSlot)):
         raise ValueError("a change's apply writes into a result slot")
@@ -864,7 +979,12 @@ class SharedCopyBackend:
     :ptype private_bytes: int
     :param preload: modules the worker holds from its start (the hooks' among them)
     :ptype preload: Sequence[str]
-    :raises ValueError: for a rule of a table with no schema, or a schema missing a rule's column
+    :param instants: each table's key columns holding an instant as text (a ``timestamptz`` the copy keeps as its
+        text): kept in one spelling, of rows and keys alike (``arrow_keys.stored_instants``), so a key named in any
+        ISO spelling finds its row
+    :ptype instants: Mapping[str, Collection[str]]
+    :raises ValueError: for a rule of a table with no schema, a schema missing a rule's column, or an instant column
+        that is not a text key column of its table
     """
 
     def __init__(
@@ -877,9 +997,11 @@ class SharedCopyBackend:
         merges: MergePolicy | None = None,
         private_bytes: int = _APPLY_PRIVATE_BYTES,
         preload: Sequence[str] = (),
+        instants: Mapping[str, Collection[str]] = EMPTY,
     ) -> None:
         self._schemas = frozen(schemas)
         self._rules = _checked(self._schemas, rules)
+        self._instants = _instant_keys(self._schemas, self._rules, instants)
         self._store = store
         self._hooks = hooks
         self._merges = ByCount() if merges is None else merges
@@ -949,6 +1071,8 @@ class SharedCopyBackend:
                 pages=tuple((page.kind, page.table) for page in sent),
                 whole=frozenset(whole),
                 hooks=self._hooks,
+                merges=self._merges,
+                instants=self._instants,
             )
             done = await self._pool.run(
                 apply_job,
@@ -1047,6 +1171,30 @@ class SharedCopyBackend:
         :rtype: None
         """
         await self._pool.close()
+
+
+def _instant_keys(
+    schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule], instants: Mapping[str, Collection[str]]
+) -> tuple[tuple[str, frozenset[str]], ...]:
+    """each table's instant key columns, as the plan carries them, each a text key column of a table the copy holds."""
+    found: list[tuple[str, frozenset[str]]] = []
+    for table, columns in sorted(instants.items()):
+        if table not in rules:
+            raise ValueError(f"instant columns for {table!r}, a table the copy does not hold")
+        wrong = sorted(
+            column
+            for column in columns
+            if column not in rules[table].key
+            or not (
+                pa.types.is_string(schemas[table].field(column).type)
+                or pa.types.is_large_string(schemas[table].field(column).type)
+            )
+        )
+        if wrong:
+            raise ValueError(f"{table}: an instant kept in one spelling is a text key column, not {wrong}")
+        if columns:
+            found.append((table, frozenset(columns)))
+    return tuple(found)
 
 
 def _checked(schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule]) -> Mapping[str, PartRule]:

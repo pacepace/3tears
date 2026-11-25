@@ -15,6 +15,11 @@ for a deleted key, no row that says its part. Such a table declares a locator: a
 (the race names one state). :class:`Locator` holds each locator value's part, from the rows the copy held, and
 :func:`parts_of_keys` finds each key's part through it, never by a scan of the parts.
 
+**A part's name** is its scope value's text when that is a plain store name (:func:`part_name`), else the value
+escaped (``e.`` and each other byte as ``.XX``), or for a value too long even so a hash of it (``h.``): any scope
+value names a part the store takes, and a part's name gives its value back (:func:`scope_of_part`; a hashed one's
+value is its rows' scope column).
+
 **Arrow end to end.** Rows are split by one sort and one run-end encoding of the scope column, each part a slice of
 the sorted rows; a locator is a two-column Arrow table, matched by Arrow's hash kernels (``index_in``, ``is_in``),
 never Acero (``tests/enforcement/test_no_acero_tables.py``). Python objects here are one a table or one a part, never
@@ -23,6 +28,7 @@ one a row or a key.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -43,7 +49,9 @@ __all__ = [
     "Part",
     "PartRule",
     "part_rules",
+    "part_name",
     "parts_of_keys",
+    "scope_of_part",
     "split_parts",
     "tier_of",
     "tier_part",
@@ -97,6 +105,21 @@ _TIER: Final = re.compile(r"^(?P<scope>.+)-r(?P<first>\d{12})-(?P<last>\d{12})-(
 #: a table already split stays split until it holds under the floor divided by this: a table near the floor (a
 #: retention letting runs go, the next run adding them) would otherwise flip shape, and each flip rewrites it whole
 _STAY_SPLIT_DIVISOR: Final = 2
+
+#: the longest a scope value's part name may be: the store takes a part name of 128 at most
+#: (``shared_arrow.plain_name``), and a per-run part adds its runs and level to it (:func:`tier_part`, 30 more for
+#: levels under 100)
+_PART_NAME_MAX: Final = 96
+
+#: a scope value named as it is: the store's name characters but ``.``, which marks an escaped or hashed name, so the
+#: three never collide
+_PLAIN_PART: Final = re.compile(r"[A-Za-z0-9_-]{1,96}")
+#: the same, for Arrow's regex kernels (RE2)
+_PLAIN_PART_RE2: Final = r"^[A-Za-z0-9_-]{1,96}$"
+#: the characters an escaped name keeps as they are; ``-`` is escaped there, so no escaped name reads as a tier
+_ESCAPE_KEEPS: Final = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+_ESCAPED: Final = "e."
+_HASHED: Final = "h."
 
 #: a :class:`Locator`'s columns: a locator value and its part, both as text
 _VALUE: Final = "value"
@@ -157,7 +180,7 @@ class PartRule:
 class Part:
     """one part's rows.
 
-    :ivar name: the part: the scope value as text, or :data:`WHOLE_PART`
+    :ivar name: the part: its scope value's name (:func:`part_name`), or :data:`WHOLE_PART`
     :ivar rows: its rows: a slice of the one sorted copy :func:`split_parts` makes, or the rows themselves when whole
     """
 
@@ -254,13 +277,78 @@ def tier_of(part: str) -> tuple[str, int, int, int] | None:
     return None if found is None else (found["scope"], int(found["level"]), int(found["first"]), int(found["last"]))
 
 
+def part_name(value: str) -> str:
+    """the part a scope value's text names: the text itself when it is a plain store name (``[A-Za-z0-9_-]``, 96 at
+    most, neither :data:`WHOLE_PART` nor a tier's name), else ``e.`` and the text with every byte but ``[A-Za-z0-9_]``
+    as ``.XX`` (its UTF-8 in hex), else (still over 96) ``h.`` and 32 hex digits of its SHA-256.
+
+    **Why.** A scope value is any text (a race's name, a county with a space or an apostrophe), and the store refuses a
+    part name of other characters at publish: such a value's change failed there, after its whole apply. Escaped, the
+    name is the value's, read back by :func:`scope_of_part`; the three forms never collide (a plain name holds no
+    ``.``; an escaped one no ``-``, so never reads as a tier's).
+
+    :param value: the scope value's text
+    :ptype value: str
+    :return: its part's name, a name the store takes
+    :rtype: str
+    """
+    if _PLAIN_PART.fullmatch(value) and value != WHOLE_PART and _TIER.match(value) is None:
+        return value
+    escaped = _ESCAPED + "".join(
+        char if char in _ESCAPE_KEEPS else "".join(f".{byte:02X}" for byte in char.encode()) for char in value
+    )
+    if len(escaped) <= _PART_NAME_MAX:
+        return escaped
+    return _HASHED + hashlib.sha256(value.encode()).hexdigest()[:32]
+
+
+def scope_of_part(name: str) -> str | None:
+    """the scope value's text a part's name (:func:`part_name`, or a tier's scope, :func:`tier_of`) names; None for a
+    hashed name (its value is its rows' scope column).
+
+    :param name: the part's name
+    :ptype name: str
+    :return: the value's text, or None
+    :rtype: str | None
+    """
+    if name.startswith(_HASHED):
+        return None
+    if not name.startswith(_ESCAPED):
+        return name
+    text = name[len(_ESCAPED) :]
+    raw = bytearray()
+    at = 0
+    while at < len(text):
+        if text[at] == ".":
+            raw += bytes.fromhex(text[at + 1 : at + 3])
+            at += 3
+        else:
+            raw += text[at].encode()
+            at += 1
+    return raw.decode()
+
+
+def _part_names(texts: pa.Array) -> pa.Array:
+    """each scope value's part name (:func:`part_name`), in Arrow: a column of plain names is itself; else each
+    distinct other value is named once (one Python object a part, never a row) and every row takes its value's."""
+    plain = pc.and_(
+        pc.match_substring_regex(texts, _PLAIN_PART_RE2),
+        pc.and_(pc.not_equal(texts, WHOLE_PART), pc.invert(pc.match_substring_regex(texts, _TIER.pattern))),
+    )
+    if pc.all(plain).as_py() is not False:
+        return texts
+    others: pa.Array = pc.unique(texts.filter(pc.invert(plain)))
+    named = pa.array([part_name(value) for value in others.to_pylist()], pa.string())
+    found: pa.Array = pc.if_else(plain, texts, named.take(pc.index_in(texts, value_set=others)))
+    return found
+
+
 def _scope_text(rule: PartRule, column: pa.ChunkedArray | pa.Array) -> pa.Array:
-    """a scope column's values as part names (text), refusing a null: a row of no scope has no part."""
+    """a scope column's values as part names (:func:`part_name`), refusing a null: a row of no scope has no part."""
     values = column.combine_chunks() if isinstance(column, pa.ChunkedArray) else column
     if values.null_count:
         raise ValueError(f"{rule.table}: {values.null_count} rows hold no {rule.scope_column}, so no part")
-    texts: pa.Array = pc.cast(values, pa.string())
-    return texts
+    return _part_names(pc.cast(values, pa.string()))
 
 
 def split_parts(rule: PartRule, rows: pa.Table) -> tuple[Part, ...]:

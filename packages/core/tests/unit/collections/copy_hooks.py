@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -32,3 +34,52 @@ class StateTotals:
         votes = [pc.sum(parts[state]["votes"]).as_py() or 0 for state in states]
         rows = pa.table({"state": pa.array(states, pa.string()), "votes": pa.array(votes, pa.int64())})
         return [ChangePage(ROWS, TOTALS, rows)] if states else []
+
+
+@dataclass(frozen=True, slots=True)
+class WaitFor:
+    """holds each change in the apply worker until a file exists: a lane's change applying as long as a test wants.
+
+    :ivar path: the file
+    """
+
+    path: str
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """wait for the file (60 s at most), then derive nothing.
+
+        :param applied: what the change did (not read)
+        :ptype applied: AppliedTables
+        :return: no pages
+        :rtype: Sequence[ChangePage]
+        """
+        deadline = time.monotonic() + 60
+        while not os.path.exists(self.path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return []
+
+
+@dataclass(frozen=True, slots=True)
+class DiesWhile:
+    """kills the apply worker applying a change while a file exists; with ``once``, the dying worker removes it first.
+
+    :ivar path: the file
+    :ivar once: whether the first death removes the file
+    """
+
+    path: str
+    once: bool
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """die while the file exists, else derive nothing.
+
+        :param applied: what the change did (not read)
+        :ptype applied: AppliedTables
+        :return: no pages
+        :rtype: Sequence[ChangePage]
+        """
+        if os.path.exists(self.path):
+            if self.once:
+                os.remove(self.path)
+            os._exit(9)
+        return []

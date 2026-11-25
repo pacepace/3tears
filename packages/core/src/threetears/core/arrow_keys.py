@@ -35,7 +35,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-__all__ = ["distinct_keys", "key_codes", "last_rows", "rows_named", "rows_not_named"]
+__all__ = ["distinct_keys", "key_codes", "last_rows", "rows_named", "rows_not_named", "stored_instants"]
 
 #: the most distinct keys a combined code may count before the next column is folded in: past it the codes so far are
 #: coded again (their own dictionary), so the mixed-radix number never passes an int64
@@ -213,3 +213,116 @@ def last_rows(rows: pa.Table, key: Sequence[str]) -> np.ndarray:
     _, first_reversed = np.unique(codes[::-1], return_index=True)
     kept: np.ndarray = np.sort(rows.num_rows - 1 - first_reversed).astype(np.int64, copy=False)
     return kept
+
+
+# -- an instant in a key, in one spelling --------------------------------------------------------------------------
+
+#: ISO 8601's basic forms and Python's separators, rewritten in its extended form before an instant is read: each a
+#: (pattern, replacement) for Arrow's ``replace_substring_regex`` (RE2), in order
+_ISO_EXTENDED: Final = (
+    # a basic date, 20261103, then nothing or no digit
+    (r"^(\d{4})(\d{2})(\d{2})(\D.*|)$", r"\1-\2-\3\4"),
+    # any one character between the date and the hour (``datetime.fromisoformat`` takes any)
+    (r"^(\d{4}-\d{2}-\d{2})[^\d](\d)", r"\1T\2"),
+    # a basic time, T235900 or T2359
+    (r"^(\d{4}-\d{2}-\d{2}T)(\d{2})(\d{2})(\d{2})(.*)$", r"\1\2:\3:\4\5"),
+    (r"^(\d{4}-\d{2}-\d{2}T)(\d{2})(\d{2})(\D.*|)$", r"\1\2:\3\4"),
+    # a comma before the fraction, and a fraction past the microsecond (cut, as ``fromisoformat`` cuts it)
+    (r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}),(\d)", r"\1.\2"),
+    (r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6})\d+", r"\1"),
+)
+
+#: an instant's text in the extended form: its date, then its hour, minute, second and fraction, then its offset
+_ISO_INSTANT: Final = (
+    r"^(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:T(?P<hour>\d{2})(?::(?P<minute>\d{2})(?::(?P<second>\d{2})(?:\.(?P<fraction>\d{1,6}))?)?)?"
+    r"(?P<zone>Z|[+-]\d{2}(?::?\d{2})?)?)?$"
+)
+_OFFSET: Final = r"^(?P<sign>[+-])(?P<hours>\d{2}):?(?P<minutes>\d{2})?$"
+
+#: an instant's stored text (``threetears.core.cache.base.stored_instant``): a zoned one in UTC with its offset, a
+#: naive one its wall clock; ``%S`` carries the microseconds of a ``us`` timestamp
+_STORED_ZONED: Final = "%Y-%m-%dT%H:%M:%S+00:00"
+_STORED_NAIVE: Final = "%Y-%m-%dT%H:%M:%S"
+_SECOND: Final = 1_000_000
+#: a zoned instant's stored text, as RE2 reads it
+_STORED_RE2: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$"
+
+
+def _group(found: pa.Array, at: int) -> pa.Array:
+    """a regex's group ``at`` of each value (``extract_regex``): its text, empty where it took no part, null where
+    the value did not match."""
+    group: pa.Array = pc.struct_field(found, [at])
+    taken: pa.Array = pc.if_else(pc.is_valid(found), pc.fill_null(group, ""), pa.nulls(len(found), pa.string()))
+    return taken
+
+
+def _or(values: pa.Array, default: str) -> pa.Array:
+    """a regex group's text, ``default`` where the group took no part."""
+    found: pa.Array = pc.if_else(pc.equal(values, ""), default, values)
+    return found
+
+
+def stored_instants(values: pa.ChunkedArray | pa.Array) -> pa.Array:
+    """a column of instants as text in any ISO 8601 spelling, each as
+    :func:`~threetears.core.cache.base.stored_instant_text` keeps it: a zoned instant in UTC to the microsecond
+    (``2026-11-03T23:59:00.000000+00:00``), a naive one its wall clock to the microsecond, and text that is no instant
+    as it is. In Arrow's kernels alone, never a Python object a value.
+
+    **Why** (moved from reports' ``follower_parts.stored_instants``). The rail answers a ``timestamptz`` as the hub's
+    JSON writes it (``2026-11-03T23:59:00Z``) and a change record names a key's instant as ``key_text`` does: matched
+    as text, a deleted row keyed by its instant was never found and stayed in the copy. Reports read a column holding
+    any value without an offset value by value in Python (``stored_instant_text``); here every spelling it meets is
+    read in Arrow: the extended and basic forms, any separator between date and time, a comma or a fraction past the
+    microsecond (cut), an offset of ``Z``, ``+HH``, ``+HHMM`` or ``+HH:MM``. A text the form does not take (a week
+    or ordinal date, an offset in seconds, ``24:00``, a date that is not one: Feb 30) is kept as it is: those are
+    never an instant L3 or the rail writes.
+
+    :param values: the column, as text (or any type cast to text)
+    :ptype values: pa.ChunkedArray | pa.Array
+    :return: the column, each instant in its stored spelling; a null stays null
+    :rtype: pa.Array
+    """
+    column = values.combine_chunks() if isinstance(values, pa.ChunkedArray) else values
+    text: pa.Array = pc.cast(column, pa.string())
+    if not len(text) or pc.all(pc.match_substring_regex(text, _STORED_RE2)).as_py() is not False:
+        # each value spelled as stored already (a change record's key_text), or null: one pass, nothing rewritten
+        return text
+    try:
+        # every value an instant with its offset (the rail's ``Z``): Arrow's own ISO parse, the cast the column takes
+        # whole or not at all; 5x faster than the general reading below (200k values: 155 ms against 735 ms, Apple M4)
+        zoned_only: pa.Array = pc.strftime(pc.cast(text, pa.timestamp("us", tz="UTC")), format=_STORED_ZONED)
+    except pa.ArrowInvalid, pa.ArrowNotImplementedError:
+        pass  # NOSILENT: a value with no offset, or no instant: the general reading below takes each
+    else:
+        return zoned_only
+    extended = text
+    for pattern, replacement in _ISO_EXTENDED:
+        extended = pc.replace_substring_regex(extended, pattern=pattern, replacement=replacement)
+    found = pc.extract_regex(extended, pattern=_ISO_INSTANT)
+    date, hour, minute, second, fraction, zone = (_group(found, at) for at in range(6))
+    hours = _or(hour, "00")
+    base = pc.binary_join_element_wise(date, "T", hours, ":", _or(minute, "00"), ":", _or(second, "00"), "")
+    wall = pc.strptime(base, format=_STORED_NAIVE, unit="us", error_is_null=True)
+    # strptime carries an hour or a day past its range into the next (Feb 30 is Mar 2): such a text is no instant
+    real = pc.equal(pc.utf8_slice_codeunits(pc.strftime(wall, format=_STORED_NAIVE), 0, 19), base)
+    micros = pc.cast(pc.utf8_slice_codeunits(pc.utf8_rpad(fraction, 6, "0"), 0, 6), pa.int64())
+    offset = pc.extract_regex(pc.if_else(pc.equal(zone, "Z"), "+00:00", zone), pattern=_OFFSET)
+    sign, off_hours, off_minutes = (_group(offset, at) for at in range(3))
+    off_h = pc.cast(_or(off_hours, "00"), pa.int64())
+    off_m = pc.cast(_or(off_minutes, "00"), pa.int64())
+    shift = pc.multiply(pc.add(pc.multiply(off_h, 3600), pc.multiply(off_m, 60)), _SECOND)
+    shift = pc.if_else(pc.equal(sign, "-"), pc.negate(shift), shift)
+    at = pc.add(pc.cast(wall, pa.int64()), micros)
+    zoned = pc.not_equal(zone, "")
+    real = pc.and_kleene(real, pc.or_kleene(pc.invert(zoned), pc.and_kleene(pc.less(off_h, 24), pc.less(off_m, 60))))
+    # a date alone takes no offset (``fromisoformat`` refuses "2026-11-03+00:00")
+    real = pc.and_kleene(real, pc.or_kleene(pc.invert(zoned), pc.not_equal(hour, "")))
+    utc = pc.cast(pc.subtract(at, pc.fill_null(shift, 0)), pa.timestamp("us", tz="UTC"))
+    spelled = pc.if_else(
+        zoned,
+        pc.strftime(utc, format=_STORED_ZONED),
+        pc.strftime(pc.cast(at, pa.timestamp("us")), format=_STORED_NAIVE),
+    )
+    stored: pa.Array = pc.if_else(pc.fill_null(real, False), spelled, text)
+    return stored

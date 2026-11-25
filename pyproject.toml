@@ -711,6 +711,7 @@ module = [
     "packages.core.tests.unit.collections.copy_hooks",
     "packages.core.tests.unit.collections.test_copy_parts",
     "packages.core.tests.unit.collections.test_shared_copy",
+    "packages.core.tests.unit.collections.test_copy_lane",
     "packages.core.tests.unit.collections.test_delta_files",
     "packages.core.tests.unit.collections.test_delta_fold",
     "packages.core.tests.unit.collections.test_save_arrow",

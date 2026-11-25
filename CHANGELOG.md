@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the copy's apply lane, and a copied table's instants, whole per-run changes and part names
+
+**Added:** `threetears.core.collections.copy_lane.ApplyLane`, step 3T-3 of `design-copy-worker-backend.md`, moved from
+reports' `shared_backend` (its `_applying` lock, `_merge_soon`, `_replace_broken`). Every change reaches a
+`SharedCopyBackend` through it, one change or tier merge at a time, in the order given: `submit` waits for room when
+the lane holds `max_changes` changes or `max_bytes` of pages (back-pressure; never unbounded, nothing dropped),
+`submit_nowait` refuses with `ApplyLaneFull`; a change's failure reaches its caller and fails the changes queued
+behind it (`EarlierChangeFailed`); a change making a per-run table's merge due gets one merge before the next change,
+and merges run on while nothing is queued; a dead apply worker is replaced and its change given once more, a second
+death failing it with `ApplyWorkerDied`. `ApplyLane.status()` counts applies, failures, merges, restarts and waits.
+
+**Added:** `arrow_keys.stored_instants`: a text column of instants in any ISO 8601 spelling as `stored_instant_text`
+keeps each, in Arrow's kernels (moved from reports' `follower_parts.stored_instants`, whose values without an offset
+were read one by one in Python). `SharedCopyBackend(instants=)` keeps a table's instant key columns in that spelling.
+
+**Changed:** a whole change of a per-run table lands in the tiers its `MergePolicy` would merge it into, not a part a
+run (reports' `_whole_tiers`); `ApplyPlan` carries `merges` and `instants`. A scope value that is no plain store name
+(a space, an apostrophe, non-ASCII, `all`, a tier-like name, over 96 characters) names its part escaped (`e.` and
+`.XX` bytes) or hashed (`h.`), never failing at publish: `copy_parts.part_name` and `scope_of_part`.
+
 ### core: the copy's apply runs in a worker process and rewrites only the parts a change lands in
 
 **Added:** `threetears.core.collections.shared_copy`, step 3T-2 of `design-copy-worker-backend.md`, moved from reports'

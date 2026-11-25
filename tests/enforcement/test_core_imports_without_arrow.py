@@ -64,6 +64,9 @@ _ARROW_MODULES: dict[str, str] = {
     "threetears.core.collections.shared_copy": (
         "the copy's apply in its worker process: a change's parts rewritten in Arrow and published as shared Arrow"
     ),
+    "threetears.core.collections.copy_lane": (
+        "the copy's apply lane: a change's Arrow pages queued in order for shared_copy's apply worker"
+    ),
 }
 
 #: a requirement line of ``uv export``: ``name==version`` (with a marker), or ``-e ./packages/<dir>``

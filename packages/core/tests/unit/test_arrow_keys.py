@@ -3,13 +3,23 @@ Acero plan: the same rows a semi join, an anti join and a ``group_by`` gave, hel
 
 from __future__ import annotations
 
+import tracemalloc
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
-from threetears.core.arrow_keys import distinct_keys, key_codes, last_rows, rows_named, rows_not_named
+from threetears.core.arrow_keys import (
+    distinct_keys,
+    key_codes,
+    last_rows,
+    rows_named,
+    rows_not_named,
+    stored_instants,
+)
+from threetears.core.cache.base import stored_instant_text
 
 KEY = ("state", "run_id", "geo", "at")
 START = datetime(2026, 11, 3, 23, tzinfo=UTC)
@@ -109,3 +119,85 @@ def test_last_rows_are_the_last_row_of_each_key_in_row_order(seed: int) -> None:
 def test_last_rows_of_unique_keys_are_every_row() -> None:
     held = pa.table({"a": ["x", "y", None], "b": [1, 1, 1]})
     assert last_rows(held, ("a", "b")).tolist() == [0, 1, 2]
+
+
+#: instants as the rail, change records, files and hand-typed keys spell them, and text that is no instant: each held
+#: to stored_instant_text, the one spelling a key is matched by
+_SPELLINGS = (
+    "2026-11-03T23:59:00Z",
+    "2026-11-03T23:59:00.000000+00:00",
+    "2026-11-03T23:59:00+05:30",
+    "2026-11-03 23:59:00-0400",
+    "2026-11-03T23:59:00+05",
+    "2026-11-03T23:59:00.000+0000",
+    "2026-11-03T23:59:00,5Z",
+    "2026-11-03T23:59:00.123456789+00:00",
+    "2026-11-03T23:59:00-23:59",
+    "2026-01-01T00:30:00+01:00",
+    "20261103T235900Z",
+    "2026-11-03T235900Z",
+    "2026-11-03T23:59",
+    "2026-11-03T23",
+    "2026-11-03",
+    "20261103",
+    "20261103T2359",
+    "2026-11-03T2359",
+    "2026-11-03x23:59:00",
+    "2026-11-03+00:00",
+    "2026-11-03T23:59:00.123",
+    "2026-11-03T23:59:00.1234567",
+    "0001-01-01T00:00:00",
+    "2026-02-30T00:00:00",
+    "2026-11-03T23:59:60",
+    "2026-11-03T23:59:00z",
+    "2026-11-03T23:59:00+25:00",
+    "2026-11-03T23:59:00 ",
+    "not a time",
+    "12345",
+    "",
+)
+
+
+def test_stored_instants_spell_each_instant_as_stored_instant_text() -> None:
+    assert stored_instants(pa.array([*_SPELLINGS, None])).to_pylist() == [
+        *(stored_instant_text(text) for text in _SPELLINGS),
+        None,
+    ]
+
+
+def test_a_column_of_zoned_instants_alone_is_spelled_as_stored_instant_text() -> None:
+    """every value carrying its offset: the column is read by Arrow's own cast, held to the same reference"""
+    zoned = [
+        "2026-11-03T23:59:00Z",
+        "2026-11-03T23:59:00.000000+00:00",
+        "2026-11-03T23:59:00+05:30",
+        "2026-11-03 23:59:00-0400",
+        "2026-11-03T23:59:00+05",
+        "2026-11-03T23:59:00.000+0000",
+        "2026-11-03T23:59:00-23:59",
+        "2026-01-01T00:30:00+01:00",
+    ]
+    pc.cast(pa.array(zoned), pa.timestamp("us", tz="UTC"))  # the column Arrow's cast takes whole
+    assert stored_instants(pa.array(zoned)).to_pylist() == [stored_instant_text(text) for text in zoned]
+    stored = [stored_instant_text(text) for text in zoned]
+    assert stored_instants(pa.array(stored)).to_pylist() == stored
+
+
+def test_the_spellings_the_form_does_not_take_are_kept_as_written() -> None:
+    """a week date, an offset in seconds and 24:00 are instants to fromisoformat; kept as written here (the docstring)"""
+    odd = ["2026-W45-2", "2026-11-03T23:59:00.5+00:00:30", "2026-11-03T24:00:00"]
+    assert stored_instants(pa.chunked_array([odd[:1], odd[1:]])).to_pylist() == odd
+
+
+def test_stored_instants_make_no_python_object_a_value() -> None:
+    """50k instants of mixed spellings, offsets and naive ones among them (reports read such a column value by value):
+    Arrow's buffers are not traced, every Python object is; one a value would be 50k strings of 32 bytes and more."""
+    rng = np.random.default_rng(1)
+    picks = pa.array(np.asarray(_SPELLINGS, dtype=object)[rng.integers(0, len(_SPELLINGS), 50_000)].tolist())
+    tracemalloc.start()
+    try:
+        stored_instants(picks)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 256 << 10, f"{peak} bytes of Python objects for 50k instants"
