@@ -896,6 +896,12 @@ async def test_lost_files_of_commits_too_big_to_list_carry_their_states_to_the_f
         await asyncio.wait_for(
             _until(lambda: "file_covered" in follower.status().waiting_for_full.get(_TABLE, "")), timeout=5
         )
+        # once a look found no full, the status still says what the table waits for: a status read a poll late lost
+        # it (8 of 54 runs on the pool, 2026-11-25)
+        await asyncio.wait_for(
+            _until(lambda: "no full on the volume" in follower.status().waiting_for_full.get(_TABLE, "")), timeout=5
+        )
+        assert "file_covered" in follower.status().waiting_for_full[_TABLE]
         assert follower.status().full_reach == {_TABLE: ("state:VA",)}, "the writer's covered answer keeps them"
 
         log.too_large(f"{_TABLE}/b.arrow", scopes=["state:IL", EVERY_STATE_NAMED])
