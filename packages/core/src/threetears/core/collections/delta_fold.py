@@ -127,9 +127,13 @@ and 29). Such a commit's record lists no rows, so its keys were only in the file
 name in the record's bracket (``noted_between``), read a page at a time while the ring still covers it (the notes
 reader, keyed), and then only those keys' rows from L3 by key; else (b) every row of the states the record names
 (``EpochChange.scopes``), read from L3 a keyset page at a time led by the state, which replace those states' parts
-whole (a key L3 no longer holds simply is not there). Counted (``delta_fold_lost_file_recoveries_total``, why
-``notes``, ``states``, or ``unnamed`` when the record names neither) and logged at WARNING. Never the table whole, and
-never a copy: only the writer reads L3.
+whole (a key L3 no longer holds simply is not there). The record's states are trusted only when it marks them complete
+(:func:`~threetears.core.collections.epoch_change.complete_scopes`, decision 54 (c)): before the mark a record named
+the states its writer touched, which nothing tied to the rows written, so one naming a strict subset left the full
+with the old rows of a state it missed. A record of a scoped table without the mark is recovered by every state
+instead: those the full holds and those L3 holds, read and replaced the same way (``every_state``). Counted
+(``delta_fold_lost_file_recoveries_total``, why ``notes``, ``states``, ``every_state``, or ``unnamed`` when the record
+names neither) and logged at WARNING. Never a copy: only the writer reads L3.
 """
 
 from __future__ import annotations
@@ -180,7 +184,7 @@ from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.delta_copy_beats import CopyPositionsReader
 from threetears.core.collections.copy_follower import typed_text
 from threetears.core.collections.delta_keep import DeltaKeepRule
-from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, EpochChangeReader
+from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, EpochChangeReader, complete_scopes
 from threetears.core.frozen_state import with_entry, without_entry
 from threetears.core.collections.noted_keys import NotedKeysPage, NotedKeysReader, noted_key_pages
 from threetears.core.collections.generation import GenerationSource, split_generation_token
@@ -290,17 +294,19 @@ _RECOVERIES = counter(
 
 #: lost files of commits too big to list recovered (decision 31), by table and why: ``notes`` (the record's notes
 #: bracket still covered: its keys read from the notes, their rows from L3 by key), ``states`` (past the notes: the
-#: states the record names read from L3 by state), ``unnamed`` (the record names neither, or is gone: only what the
-#: leftover files name is recovered)
+#: states the record names read from L3 by state), ``every_state`` (past the notes, its record not marking its states
+#: complete: every state the table holds read from L3 by state, decision 54 (c)), ``unnamed`` (the record names
+#: neither, or is gone: only what the leftover files name is recovered)
 _LOST_FILE_RECOVERIES = counter(
     "delta_fold_lost_file_recoveries_total",
     description="writer recoveries of a lost delta file of a commit too big to list its rows, by table and why: "
-    "notes (keys from the change notes), states (the record's states read from L3), unnamed (neither)",
+    "notes (keys from the change notes), states (the record's states read from L3), every_state (its states not "
+    "marked complete: every state read from L3), unnamed (neither)",
     label_names=("table", "why"),
 )
 
 #: how a lost file's commit was recovered (decision 31)
-_LostWhy = Literal["notes", "states", "unnamed"]
+_LostWhy = Literal["notes", "states", "every_state", "unnamed"]
 
 #: rounds cut short (:meth:`DeltaFolds.close` past its bound, or :meth:`DeltaFolds.start` of a newer term finding
 #: this process's round of an older one): ``stop`` or ``new_term``. A cut round's files go back to the queue (the next
@@ -2237,6 +2243,8 @@ class DeltaFolds:
                 + {
                     "notes": "from the keys its change notes name, read from L3 by key",
                     "states": "by its states, read from L3 by state: the notes no longer cover it",
+                    "every_state": "by every state of the table, read from L3 by state: the notes no longer cover it "
+                    "and its record does not mark its states complete",
                     "unnamed": "only as far as the leftover files name: its record names no notes bracket the ring "
                     "covers and no states",
                 }[lost_reach.why],
@@ -2360,11 +2368,11 @@ class DeltaFolds:
             unstated = await self._workers.run(
                 recovery_unstated_job, str(self.root), table.key, table.kinds, reach_file, pages_file
             )
-            if unstated and all(lost_reach.fallback for lost_reach in noting):
+            if unstated and all(lost_reach.fallback or lost_reach.fallback_every for lost_reach in noting):
                 named = [
                     replace(
                         lost_reach,
-                        why="states",
+                        why="every_state" if lost_reach.fallback_every else "states",
                         scopes=lost_reach.fallback,
                         detail="a key its notes name is gone from L3 and no file names its state",
                     )
@@ -2376,6 +2384,9 @@ class DeltaFolds:
                 # none gone of an unknown state; or one commit names no states, and its marker is refused (retried)
                 unstated = False
         replaced = tuple(sorted({scope for lost_reach in named for scope in lost_reach.scopes}))
+        if any(lost_reach.why == "every_state" for lost_reach in named):
+            # a record not marking its states complete (decision 54 (c)): every state the table holds, replaced whole
+            replaced = tuple(sorted({*replaced, *await self._every_state(reader, table)}))
         state_files: tuple[str, ...] = ()
         if replaced:
             states_file = f"{work}.states.arrow"
@@ -2431,10 +2442,43 @@ class DeltaFolds:
             await asyncio.to_thread(_unlink_all, self.root, [noted_file])
         scopes = _table_scopes(table, record)
         if isinstance(noted, int):
-            return _LostReach(epoch=epoch, why="notes", noted=noted, fallback=scopes)
+            return _LostReach(
+                epoch=epoch, why="notes", noted=noted, fallback=scopes or (), fallback_every=scopes is None
+            )
+        if scopes is None:
+            # the record does not mark its states complete: they may be a strict subset of what the commit wrote
+            return _LostReach(
+                epoch=epoch, why="every_state", detail=f"{noted}; its record does not mark its states complete"
+            )
         if scopes:
             return _LostReach(epoch=epoch, why="states", scopes=scopes, detail=noted)
         return _LostReach(epoch=epoch, why="unnamed", detail=f"{noted}; the record names none of the table's states")
+
+    async def _every_state(self, reader: _Reader, table: FoldedTable) -> tuple[str, ...]:
+        """every state ``table`` holds, as its scopes name them, for a lost file whose record does not mark its states
+        complete (decision 54 (c)): the states the current full has parts of (one L3 no longer holds then has no part),
+        and the distinct states L3 holds (one the full lacks: a state new since it), read a page of states at a time.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :param table: the table, which has a scope
+        :ptype table: FoldedTable
+        :return: the states
+        :rtype: tuple[str, ...]
+        """
+        assert table.scope is not None  # noqa: S101 -- _table_scopes answers None only for a scoped table
+        column, prefix = table.scope
+        current = await asyncio.to_thread(current_full_manifest, self.root)
+        entry = current.tables.get(table.name) if current is not None else None
+        held = {part.scope for part in entry.parts if part.scope is not None} if entry is not None else set()
+        values = await keyset_scope_values(
+            reader.l3,
+            table.name,
+            scope_column=column,
+            scope_type=_table_types(table)[column],
+            page_size=reader.page_size,
+        )
+        return tuple(sorted(held | {f"{prefix}{value}" for value in values if value is not None}))
 
     async def _noted_keys(self, table: FoldedTable, record: EpochChange, sink: _RowsFile) -> int | str:
         """write every key the change notes name in ``record``'s bracket to ``sink``, a page at a time as Arrow; how
@@ -2605,6 +2649,7 @@ class _LostReach:
     :ivar detail: why the notes could not name the keys, for the log line
     :ivar fallback: for ``notes``, the states the record names: read instead when a key the notes name is gone from L3
         and no file names its state (a table keyed without its state), so no marker of it could be filed
+    :ivar fallback_every: for ``notes``, the record does not mark its states complete: every state is read instead
     """
 
     epoch: str
@@ -2613,6 +2658,7 @@ class _LostReach:
     scopes: tuple[str, ...] = ()
     detail: str = ""
     fallback: tuple[str, ...] = ()
+    fallback_every: bool = False
 
 
 def _lacking(current: FullManifest | None, tables: Mapping[str, FoldedTable]) -> tuple[str, ...]:
@@ -2637,20 +2683,28 @@ def _lacking(current: FullManifest | None, tables: Mapping[str, FoldedTable]) ->
     )
 
 
-def _table_scopes(table: FoldedTable, record: EpochChange) -> tuple[str, ...]:
-    """the states of ``table`` a record names: its scopes under the table's scope prefix (a scope of another prefix is
-    another table's, since each row's scope is its prefix and its scope column's value).
+def _table_scopes(table: FoldedTable, record: EpochChange) -> tuple[str, ...] | None:
+    """the states of ``table`` a record names, when it marks them complete
+    (:func:`~threetears.core.collections.epoch_change.complete_scopes`): its scopes under the table's scope prefix (a
+    scope of another prefix is another table's, since each row's scope is its prefix and its scope column's value).
+
+    Why only marked (decision 54 (c)): a record without the mark names the states its writer touched, which nothing
+    ties to the rows its commit wrote; recovering only those would keep the old rows of a state it missed.
 
     :param table: the table
     :ptype table: FoldedTable
     :param record: the record
     :ptype record: EpochChange
-    :return: the states, as the table's scopes name them; empty for a table with no scope, or a record naming none
-    :rtype: tuple[str, ...]
+    :return: the states, as the table's scopes name them; None for a scoped table whose record does not mark its states
+        complete (every state is recovered); empty for a table with no scope
+    :rtype: tuple[str, ...] | None
     """
-    if table.scope is None or not record.scopes:
+    if table.scope is None:
         return ()
-    return tuple(scope for scope in record.scopes if scope.startswith(table.scope[1]))
+    complete = complete_scopes(record.scopes)
+    if complete is None:
+        return None
+    return tuple(scope for scope in complete if scope.startswith(table.scope[1]))
 
 
 async def _state_rows(
