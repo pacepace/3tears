@@ -13,8 +13,9 @@ passes the call's context in it. a handler without one is called exactly as befo
 the context carries no MCP SDK type, so a handler reaches progress, logging and cancellation
 without importing the SDK. what it sends rides the call's own response stream, so it reaches the
 client before the result; a Streamable-HTTP transport answering in plain JSON
-(``json_response=True``) has no stream to carry it (see :class:`~threetears.mcp.http_server.
-McpHttpTransport`).
+(``json_response=True``, the default of :class:`~threetears.mcp.http_server.McpHttpTransport`,
+``McpServer.build_http_app`` and ``McpServer.serve_http``) has no stream to carry it, so a server
+that sends progress or log entries builds its transport with ``json_response=False``.
 """
 
 from __future__ import annotations

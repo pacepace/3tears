@@ -105,14 +105,30 @@ async def build(*, target: str, ctx: CallContext) -> dict:
 | `tool_name`, `request_id` | The tool being called and the call's protocol request id. |
 
 The context holds no MCP SDK type, so a handler needs no SDK import to use it. Its parameter is
-passed by keyword. A tool whose handler declares two, a positional-only one, or one named as an input
-property is refused when the `McpTool` is built. An argument with the context's name, admitted by a
+passed by keyword, and may be annotated `CallContext | None` (or `Optional[CallContext]`) with a
+default of `None` to keep the handler callable without one; the server passes a context either way. A
+tool whose handler declares two, a positional-only one, one named as an input property, or one that
+names `CallContext` in any other form (`list[CallContext]`, `CallContext | int`) is refused when the
+`McpTool` is built. An annotation that cannot be evaluated (a type imported only for type checking) is
+read as written, so `CallContext` and dotted names ending in it are still found; under an alias
+(`CallContext as Ctx`) it cannot be, and the server logs a warning naming the parameter instead of
+passing it nothing in silence. An argument with the context's name, admitted by a
 schema that allows extra properties, is refused as an input validation error before the handler runs.
 A test of a handler builds its own `CallContext(tool_name=..., progress_token=..., progress_sender=...,
 log_sender=...)` with senders that record what they are given.
 
 Progress and log entries ride the call's own response stream. Over Streamable HTTP that is an SSE
-stream, which a transport built with `json_response=False` answers with.
+stream, which only a transport built with `json_response=False` answers with. The default,
+`json_response=True` (of `McpHttpTransport`, `build_http_app` and `serve_http`), answers each call with
+one JSON body, the result, so a server whose handlers send progress or log entries builds its
+transport with `json_response=False`; on the default they reach no one.
+
+The server does not declare the `logging` capability and does not serve `logging/setLevel`. That is
+the current state, not a settled choice: it is open for the owner. The SDK declares the capability
+only when a set-level handler is passed, which it deprecates; its own client accepts
+`notifications/message` without the capability. On the handshake-era protocols (up to 2025-11-25) the
+specification has a server that sends log entries declare it, so a stricter client may drop or refuse
+them.
 
 ## A live tool set
 

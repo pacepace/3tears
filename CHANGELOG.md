@@ -21,8 +21,18 @@ the `McpTool` is built. A handler that declares none is called with its argument
   its own task. The handler itself still sees the cancellation as `CancelledError`.
 - `tool_name` and `request_id`. `McpTool.context_parameter` names the parameter, or is `None`.
 
-A tool whose handler declares two context parameters, a positional-only one, or one named as an input
-property is refused with `ValueError` when the `McpTool` is built. A call that passes an argument named
+**Progress and log entries need `json_response=False`.** They ride the call's SSE stream, and the
+Streamable-HTTP transport's default, `json_response=True` (`McpHttpTransport`, `build_http_app`,
+`serve_http`), answers with one JSON body, so on the default they reach no one. A server whose
+handlers send them builds its transport with `json_response=False`.
+
+The parameter may be annotated `CallContext | None` (or `Optional[CallContext]`); the server passes a
+context either way. A tool whose handler declares two context parameters, a positional-only one, one
+named as an input property, or one that names `CallContext` in any other form is refused with
+`ValueError` when the `McpTool` is built. An annotation that cannot be evaluated is read as written;
+one that cannot be recognised that way (an alias imported only for type checking) is logged as a
+warning when the tool is built. The server does not declare the `logging` capability; whether it
+should is open (see the README's call-context section). A call that passes an argument named
 as the context (a schema allowing extra properties lets it through) is refused as an input validation
 error before the handler runs. The context holds no MCP SDK type.
 

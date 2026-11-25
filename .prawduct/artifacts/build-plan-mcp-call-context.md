@@ -1,3 +1,13 @@
+---
+artifact: build-plan
+version: 1
+scope: mcp-call-context
+branch: feat/mcp-call-context
+depends_on: [mcp-drop-sdk1]
+partition: "serial -- two stacked chunks in one package; chunk 02 tests what chunk 01 builds"
+last_validated: 2026-11-25
+---
+
 # Build plan: 3tears-mcp call context, progress and client logging
 
 Branches, stacked: `feat/mcp-call-context` (chunk 01, off `feat/mcp-drop-sdk1`) and
@@ -25,12 +35,20 @@ Success:
 Out of scope: `TearsTool`'s own progress (an open owner question), stateful mode (re-resolving the
 bearer identity per message, `tools/list_changed`), and the error model.
 
-## Decisions taken (inferred; flag at the boundary)
+## Decisions taken (inferred; put to the owner in the PR body, not ruled)
+
+None of these is an owner ruling. Each describes the branch as it stands, and the PR body asks the
+owner to rule on each; the last (the logging capability) is the one the README calls open.
 
 - [DECISION: the context is found by the parameter's annotation, `CallContext`, not by a parameter
   name | the request was "detected by signature"; a fixed name would collide with tool arguments. An
   annotation that cannot be evaluated (a type imported only for type checking) is matched as written,
-  `CallContext` or a dotted name ending in it]
+  `CallContext` or a dotted name ending in it. `CallContext | None` (or `Optional[CallContext]`) is the
+  context too, and is passed one. Any other form that names `CallContext` (`list[CallContext]`,
+  `CallContext | int`) is refused at construction, since the handler would otherwise run without a
+  context in silence. Each parameter's annotation is evaluated on its own, so one that fails does not
+  hide another; one that cannot be evaluated and is not an input property (an alias imported only for
+  type checking) is logged as a warning when the tool is built]
 - [DECISION: the context is a 3tears class with no SDK type in its surface; its senders are plain
   callables | consumer code must not need to import an SDK type to get these, and a handler's own
   test builds a context with recording senders]
@@ -47,7 +65,10 @@ bearer identity per message, `tools/list_changed`), and the error model.
   the 2026-07-28 per-request opt-in]
 - [DECISION: the server does not declare the `logging` capability nor serve `logging/setLevel` | the
   SDK declares it only when an `on_set_logging_level` handler is passed, which it deprecates with a
-  warning; the SDK client accepts `notifications/message` without it. Owner to confirm]
+  warning; the SDK client accepts `notifications/message` without it. OPEN for the owner: on the
+  handshake-era protocols the specification has a server that sends log entries declare the
+  capability, so a stricter client may drop them. The README states the current behaviour and says
+  the point is open]
 
 ## Chunk 01: the call context (`feat/mcp-call-context`)
 
@@ -56,8 +77,14 @@ bearer identity per message, `tools/list_changed`), and the error model.
   an input property's name.
 - `server.py`: the dispatch builds the context from the SDK's request context, refuses an argument
   named as the context, and sets the cancellation event when the call is cancelled.
-- `tests/unit/test_call_context.py`, `tests/unit/conftest.py` (`loopback_mcp`, a real socket for the
+- `packages/mcp/tests/unit/test_call_context.py`, `packages/mcp/tests/unit/conftest.py` (`loopback_mcp`, a real socket for the
   cancellation test); README section; CHANGELOG.
+- The 2026-07-28 per-request log opt-in, which this chunk documents, is tested here with
+  `mcp.Client`; chunk 02 adds the stream-ordering and transport-mode tests.
+- The transport requirement is stated where a consumer adopting the context reads: progress and log
+  entries need `json_response=False`, and the default delivers neither. The operator warning for the
+  default is chunk 02's, and chunk 02 merges before any release is cut from develop; until then the
+  CHANGELOG entry and the README state the requirement.
 
 Done when: lint, `typecheck.sh mcp`, `test.sh mcp`, the enforcement suite pass; Critic run.
 

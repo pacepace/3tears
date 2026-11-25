@@ -195,7 +195,8 @@ class McpHttpTransport:
     :param stateless: run the transport statelessly (fresh transport + server task per request);
         required for correct per-request bearer identity
     :ptype stateless: bool
-    :param json_response: return plain JSON responses instead of SSE streams
+    :param json_response: return plain JSON responses instead of SSE streams; a call's progress
+        and log notifications then cannot reach the client (they need an SSE stream)
     :ptype json_response: bool
     """
 
@@ -215,7 +216,8 @@ class McpHttpTransport:
         :ptype path: str
         :param stateless: run the transport statelessly
         :ptype stateless: bool
-        :param json_response: return plain JSON responses instead of SSE streams
+        :param json_response: return plain JSON responses instead of SSE streams; a call's
+            progress and log notifications then cannot reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: nothing
         :rtype: None
@@ -298,7 +300,8 @@ def build_mcp_http_app(
         bearer identity
     :ptype stateless: bool
     :param json_response: return plain JSON responses instead of SSE
-        streams
+        streams; a call's progress and log notifications then cannot
+        reach the client (they need an SSE stream)
     :ptype json_response: bool
     :return: Starlette ASGI app serving the MCP Streamable-HTTP transport
     :rtype: starlette.applications.Starlette

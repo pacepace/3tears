@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any, Optional  # noqa: F401 -- Annotated and Optional are evaluated from annotation text
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import anyio
 import httpx
+import mcp
 import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
@@ -185,6 +187,16 @@ class TestCallContextOnItsOwn:
             await ctx.wait_cancelled()
 
 
+def _handler_annotated(written: str) -> Any:
+    """a handler whose ``ctx`` parameter is annotated with the text ``written``, defaulting to ``None``."""
+
+    async def handler(*, ctx: Any = None) -> str:
+        return "ok"
+
+    handler.__annotations__ = {"ctx": written, "return": "str"}
+    return handler
+
+
 async def _plain(**kwargs: Any) -> str:
     return json.dumps(kwargs)
 
@@ -215,6 +227,70 @@ class TestTheHandlerDeclaresTheContext:
             return "ok"
 
         assert _tool(handler).context_parameter == "ctx"
+
+    @pytest.mark.parametrize("written", ["CallContext | None", "None | CallContext", "Optional[CallContext]"])
+    def test_a_context_that_may_be_none_is_found(self, written: str) -> None:
+        """``CallContext | None`` keeps the handler callable without one; the server still passes it."""
+        handler = _handler_annotated(written)
+        assert _tool(handler).context_parameter == "ctx"
+
+    def test_an_optional_context_that_cannot_be_evaluated_is_read_as_written(self) -> None:
+        async def handler(*, ctx: threetears.mcp.CallContext | None = None) -> str:  # type: ignore[name-defined]  # noqa: F821
+            return "ok"
+
+        assert _tool(handler).context_parameter == "ctx"
+
+    @pytest.mark.parametrize("written", ["list[CallContext]", "CallContext | int", "dict[str, CallContext | None]"])
+    def test_a_context_in_any_other_form_is_refused(self, written: str) -> None:
+        """the server cannot pass a context there, and the handler would otherwise run without one."""
+        with pytest.raises(ValueError, match="names CallContext in a form the server cannot pass"):
+            _tool(_handler_annotated(written))
+
+    @pytest.mark.parametrize("written", ["Annotated[CallContext, 'meta']", "Annotated[CallContext | None, 'meta']"])
+    def test_an_annotated_context_is_found(self, written: str) -> None:
+        """``Annotated`` metadata does not hide the type it wraps."""
+        assert _tool(_handler_annotated(written)).context_parameter == "ctx"
+
+    def test_an_annotated_list_of_contexts_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="names CallContext in a form the server cannot pass"):
+            _tool(_handler_annotated("Annotated[list[CallContext], 'meta']"))
+
+    def test_a_failing_annotation_elsewhere_does_not_hide_the_context(self) -> None:
+        """another parameter whose annotation raises when evaluated leaves this one evaluated."""
+
+        async def handler(*, count: int, ctx: CallContext) -> str:
+            return "ok"
+
+        # `int | 'oops'` raises TypeError when evaluated
+        handler.__annotations__ = {"count": "int | 'oops'", "ctx": "CallContext", "return": "str"}
+
+        schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+        assert _tool(handler, input_schema=schema).context_parameter == "ctx"
+
+    def test_an_unevaluable_annotation_that_is_not_an_input_is_warned_about(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """an alias imported only for type checking cannot be recognised; the operator is told so."""
+
+        async def handler(*, ctx: Ctx | None = None) -> str:  # type: ignore[name-defined]  # noqa: F821
+            return "ok"
+
+        with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
+            tool = _tool(handler)
+        assert tool.context_parameter is None
+        warnings = [r.getMessage() for r in caplog.records if r.name == "threetears.mcp.tool"]
+        assert len(warnings) == 1
+        assert "'Ctx | None'" in warnings[0]
+        assert "'ctx'" in warnings[0]
+
+    def test_an_unevaluable_input_property_is_not_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
+        async def handler(*, row: Row) -> str:  # type: ignore[name-defined]  # noqa: F821
+            return "ok"
+
+        schema = {"type": "object", "properties": {"row": {"type": "object"}}}
+        with caplog.at_level(logging.WARNING, logger="threetears.mcp.tool"):
+            assert _tool(handler, input_schema=schema).context_parameter is None
+        assert [r for r in caplog.records if r.name == "threetears.mcp.tool"] == []
 
     def test_two_context_parameters_are_refused(self) -> None:
         async def handler(*, a: CallContext, b: CallContext) -> str:
@@ -271,6 +347,21 @@ class TestOverTheWire:
         assert asked.cancelled is False
 
     @pytest.mark.asyncio
+    async def test_a_handler_whose_context_may_be_none_is_passed_one(self) -> None:
+        seen: list[CallContext | None] = []
+
+        async def handler(*, ctx: CallContext | None = None) -> str:
+            seen.append(ctx)
+            return "ok"
+
+        async with _client(_server(_tool(handler))) as session:
+            result = await session.call_tool("probe", {})
+        assert result.is_error is False
+        assert len(seen) == 1
+        assert isinstance(seen[0], CallContext)
+        assert seen[0].tool_name == "probe"
+
+    @pytest.mark.asyncio
     async def test_an_argument_named_as_the_context_is_refused_before_the_handler_runs(self) -> None:
         """a schema admitting extra properties must not let a caller supply the context."""
         ran: list[bool] = []
@@ -315,6 +406,48 @@ class TestOverTheWire:
             await server.stop()
         assert result.is_error is False
         assert received == [("progress", 1.0, 2.0, "half"), ("log", "info", {"phase": "half"}, "probe")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("opt_in", "expected"),
+        [(None, []), ("warning", [("error", "bad")]), ("debug", [("info", "routine"), ("error", "bad")])],
+        ids=["no-opt-in", "warning", "debug"],
+    )
+    async def test_on_2026_07_28_a_log_entry_is_sent_only_at_a_level_the_request_opted_in_to(
+        self,
+        opt_in: str | None,
+        expected: list[tuple[str, str]],
+    ) -> None:
+        """the protocol's per-request opt-in (the ``io.modelcontextprotocol/logLevel`` key of ``_meta``).
+
+        ``mcp.Client`` settles on 2026-07-28; without the key the server must send no log entry.
+        """
+        received: list[tuple[str, Any]] = []
+
+        async def handler(*, ctx: CallContext) -> str:
+            await ctx.log("info", "routine")
+            await ctx.log("error", "bad")
+            return "ok"
+
+        async def on_log(params: mcp_types.LoggingMessageNotificationParams) -> None:
+            received.append((params.level, params.data))
+
+        server = _server(_tool(handler))
+        await server.start()
+        app = server.build_http_app(json_response=False)
+        http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+        try:
+            async with app.router.lifespan_context(app), http:
+                async with mcp.Client(
+                    streamable_http_client("http://mcp.test/mcp", http_client=http), logging_callback=on_log
+                ) as client:
+                    assert client.protocol_version == "2026-07-28"
+                    meta = {mcp_types.LOG_LEVEL_META_KEY: opt_in} if opt_in is not None else None
+                    result = await client.call_tool("probe", {}, meta=meta)
+        finally:
+            await server.stop()
+        assert result.is_error is False
+        assert received == expected
 
     @pytest.mark.asyncio
     async def test_a_cancelled_call_sets_the_signal_work_outside_the_handler_waits_on(

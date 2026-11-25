@@ -16,12 +16,18 @@ enforcement test forbids ``required_permission=None`` in production
 
 from __future__ import annotations
 
+import annotationlib
 import inspect
+import re
+import types
+import typing
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 import jsonschema
+
+from threetears.observe import get_logger
 
 from threetears.mcp.context import CallContext
 
@@ -34,6 +40,11 @@ __all__ = [
     "register_tool",
 ]
 
+
+_log = get_logger(__name__)
+
+#: parameter kinds that collect what is left over; they are never passed the context
+_VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
 
 ToolHandler = Callable[..., Awaitable[Any]]
 """signature for a tool's handler.
@@ -169,22 +180,80 @@ class McpTool:
         object.__setattr__(self, "context_parameter", _context_parameter(self.name, self.handler, self.input_schema))
 
 
-def _is_call_context(annotation: Any) -> bool:
-    """whether ``annotation`` names :class:`CallContext`.
+#: a call context named as written: ``CallContext`` or a dotted name ending in it
+_CONTEXT_NAME = r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*CallContext"
 
-    an annotation that could not be evaluated stays a string (a module that imports the type only
-    under ``TYPE_CHECKING``); that string names it when it is the class's bare or qualified name.
+#: the written forms that ARE the call context: the class, or the class or ``None``
+_CONTEXT_TEXT = re.compile(
+    rf"^(?:{_CONTEXT_NAME}"
+    rf"|{_CONTEXT_NAME}\s*\|\s*None|None\s*\|\s*{_CONTEXT_NAME}"
+    rf"|(?:typing\.)?Optional\[\s*{_CONTEXT_NAME}\s*\]"
+    rf"|(?:typing\.)?Union\[\s*{_CONTEXT_NAME}\s*,\s*None\s*\]"
+    rf"|(?:typing\.)?Union\[\s*None\s*,\s*{_CONTEXT_NAME}\s*\])$",
+)
 
-    :param annotation: a parameter's annotation
+#: any written mention of the call context, as a whole name
+_CONTEXT_MENTION = re.compile(rf"(?<![A-Za-z0-9_.]){_CONTEXT_NAME}(?![A-Za-z0-9_])")
+
+
+def _context_annotation(annotation: Any) -> bool | None:
+    """whether ``annotation`` is the call context, mentions it in another form, or does neither.
+
+    the call context is :class:`CallContext` itself or ``CallContext | None`` (``Optional``), as an
+    evaluated type or, when it could not be evaluated (a module that imports the type only under
+    ``TYPE_CHECKING``), as written, by the class's bare or dotted name.
+
+    :param annotation: a parameter's annotation, evaluated where it could be, else its text
     :ptype annotation: Any
-    :return: ``True`` when it is the call context
-    :rtype: bool
+    :return: ``True`` when it is the call context, ``None`` when it mentions :class:`CallContext`
+        in any other form (a list of them, a union with another type), ``False`` otherwise
+    :rtype: bool | None
     """
+    if isinstance(annotation, str):
+        text = annotation.strip()
+        if _CONTEXT_TEXT.match(text):
+            return True
+        return None if _CONTEXT_MENTION.search(text) else False
+    if typing.get_origin(annotation) is typing.Annotated:
+        return _context_annotation(typing.get_args(annotation)[0])
     if annotation is CallContext:
         return True
-    if isinstance(annotation, str):
-        return annotation == "CallContext" or annotation.endswith(".CallContext")
+    arguments = typing.get_args(annotation)
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        if set(arguments) == {CallContext, type(None)}:
+            return True
+    if any(_context_annotation(argument) is not False for argument in arguments):
+        return None
     return False
+
+
+def _evaluated(handler: ToolHandler, annotation: Any) -> tuple[Any, bool]:
+    """``annotation`` evaluated in the handler's module, or as written when it cannot be.
+
+    each parameter is evaluated on its own, so an annotation that fails (a name imported only under
+    ``TYPE_CHECKING``, or one whose evaluation raises) leaves every other parameter's evaluated.
+
+    :param handler: the tool's handler, whose module the annotation is evaluated in
+    :ptype handler: ToolHandler
+    :param annotation: the annotation as the signature holds it: a type, its text (a module with
+        ``from __future__ import annotations``) or a forward reference to a name it could not find
+    :ptype annotation: Any
+    :return: the evaluated annotation and ``True``, or its text and ``False`` when it could not be
+    :rtype: tuple[Any, bool]
+    """
+    if isinstance(annotation, annotationlib.ForwardRef):
+        text = annotation.__forward_arg__
+    elif isinstance(annotation, str):
+        text = annotation
+    else:
+        return annotation, True
+    module_globals = getattr(inspect.unwrap(handler), "__globals__", {})
+    try:
+        return eval(text, module_globals), True  # noqa: S307 -- the handler's own annotation, in its own module
+    except NameError, AttributeError, TypeError, SyntaxError:
+        # NOSILENT: an annotation that cannot be evaluated here is read as written; the caller
+        # warns when such a parameter could be an unrecognised context
+        return text, False
 
 
 def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[str, Any]) -> str | None:
@@ -199,18 +268,40 @@ def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[
     :return: the parameter's name, or ``None`` when the handler declares none
     :rtype: str | None
     :raises ValueError: the handler declares more than one, declares it positional-only (it is
-        passed by keyword), or names it as one of the tool's input properties (an argument would
-        then collide with the context)
+        passed by keyword), names it as one of the tool's input properties (an argument would
+        then collide with the context), or annotates a parameter with :class:`CallContext` in a
+        form other than the class or the class or ``None`` (it would otherwise run without one)
     """
     try:
-        signature = inspect.signature(handler, eval_str=True)
-    except NameError, AttributeError:
-        # an annotation names a type only imported for type checking: read the annotations as written
-        signature = inspect.signature(handler)
+        signature = inspect.signature(handler, annotation_format=annotationlib.Format.FORWARDREF)
     except TypeError, ValueError:
         # NOSILENT: a callable with no inspectable signature (some builtins) declares no context
         return None
-    found = [parameter for parameter in signature.parameters.values() if _is_call_context(parameter.annotation)]
+    properties = input_schema.get("properties")
+    input_names = set(properties) if isinstance(properties, dict) else set()
+    found: list[inspect.Parameter] = []
+    for parameter in signature.parameters.values():
+        if parameter.annotation is inspect.Parameter.empty:
+            continue
+        annotation, evaluated = _evaluated(handler, parameter.annotation)
+        verdict = _context_annotation(annotation)
+        if verdict is None:
+            raise ValueError(
+                f"McpTool {tool_name!r}: the handler's parameter {parameter.name!r} is annotated "
+                f"{annotation!r}, which names CallContext in a form the server cannot pass; annotate it "
+                "CallContext (or CallContext | None)",
+            )
+        if verdict:
+            found.append(parameter)
+        elif not evaluated and parameter.name not in input_names and parameter.kind not in _VARIADIC:
+            _log.warning(
+                "McpTool %r: the annotation %r of the handler's parameter %r cannot be evaluated, so it is "
+                "not passed the call context; if it names CallContext under another name, import "
+                "CallContext under its own name",
+                tool_name,
+                annotation,
+                parameter.name,
+            )
     if not found:
         return None
     if len(found) > 1:
@@ -224,8 +315,7 @@ def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[
             f"McpTool {tool_name!r}: the handler's CallContext parameter {parameter.name!r} must be passable "
             "by keyword",
         )
-    properties = input_schema.get("properties")
-    if isinstance(properties, dict) and parameter.name in properties:
+    if parameter.name in input_names:
         raise ValueError(
             f"McpTool {tool_name!r}: the handler's CallContext parameter {parameter.name!r} is also an input "
             "property; rename one",
