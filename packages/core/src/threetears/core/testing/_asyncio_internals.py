@@ -23,12 +23,13 @@ __all__ = ["timed_handles"]
 
 @contextmanager
 def timed_handles(
-    record: Callable[[float, str], None], *, starting: Callable[[], None] | None = None
+    record: Callable[[float, asyncio.events.Handle], None], *, starting: Callable[[], None] | None = None
 ) -> Iterator[None]:
     """every callback asyncio's loop runs inside the block, handed to ``record`` with its thread CPU seconds.
 
-    :param record: takes each callback's CPU seconds and its repr, as it ends
-    :ptype record: Callable[[float, str], None]
+    :param record: takes each callback's CPU seconds and its handle, as it ends (the handle, never its repr: a repr a
+        turn cost a test of many short turns a third of its time under the loop-stall guard, which names only a stall)
+    :ptype record: Callable[[float, asyncio.events.Handle], None]
     :param starting: called on the loop's thread as each callback starts, before it runs (the loop-stall guard's
         watcher marks the turn so it can sample the thread's stack while the turn runs long)
     :ptype starting: Callable[[], None] | None
@@ -44,7 +45,7 @@ def timed_handles(
         try:
             original(handle)
         finally:
-            record(time.thread_time() - began, repr(handle)[:120])
+            record(time.thread_time() - began, handle)
 
     asyncio.events.Handle._run = timed  # type: ignore[method-assign,assignment]
     try:

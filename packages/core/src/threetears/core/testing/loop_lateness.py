@@ -651,5 +651,5 @@ def turn_holds() -> Iterator[list[tuple[float, str]]]:
     :rtype: Iterator[list[tuple[float, str]]]
     """
     held: list[tuple[float, str]] = []
-    with timed_handles(lambda seconds, what: held.append((seconds, what))):
+    with timed_handles(lambda seconds, handle: held.append((seconds, repr(handle)[:120]))):
         yield held

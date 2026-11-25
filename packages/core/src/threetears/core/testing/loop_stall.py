@@ -42,6 +42,7 @@ under xdist (each worker loads it and fails its own tests) and testament (a pyte
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sysconfig
 import threading
@@ -234,8 +235,9 @@ class _Guard:
         turn.seq += 1
         turn.started = time.perf_counter()
 
-    def _ended(self, seconds: float, handle: str) -> None:
-        """a turn ended on this thread, ``seconds`` of its CPU: a stall when past the limit."""
+    def _ended(self, seconds: float, ended: asyncio.events.Handle) -> None:
+        """a turn ended on this thread, ``seconds`` of its CPU: a stall when past the limit (only then is ``ended``, its
+        handle, made text)."""
         turn = self._turn()
         seq = turn.seq
         turn.started = 0.0
@@ -244,6 +246,7 @@ class _Guard:
             turn.samples = []
         if seconds <= _STALL_LIMIT_SECONDS:
             return
+        handle = repr(ended)[:120]
         mine = [stack for at, stack in samples if at == seq]
         named = [(culprit, stack) for stack in mine if (culprit := _culprit(stack, self._root)) is not None]
         if named:
