@@ -2605,8 +2605,12 @@ async def _hear_a_peers_page(
                 bus, _TABLE, invalidation_batches(keys), generation=token, bump_rows=len(keys)
             )
         else:
+            # the fake bus delivers a message inside its publish and never yields, so 5,000 of them back to back were
+            # one turn of the loop (0.26 s on the pool, 2026-11-25, past the stall guard's 0.25 s); a real bus hands
+            # each message to its own callback turn, so the peer's messages here let the loop go between them too
             for key in keys:
                 await writer.publish_invalidation(bus, _TABLE, key, generation=token, bump_rows=len(keys))
+                await asyncio.sleep(0)
         inbox = list(posted)
         l3.rows_read = 0
         assert await follower.catch_up()
