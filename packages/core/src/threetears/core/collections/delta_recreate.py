@@ -305,7 +305,7 @@ class _RebuildProgress(Protocol):
 
     @property
     def rebuilding(self) -> str | None:
-        """``rebuilding <table> (n of m)`` or ``publishing ...`` while a rebuild runs; None while none does.
+        """``rebuilding from L3: n of m tables read`` or ``publishing ...`` while a rebuild runs; None while none does.
 
         :return: the step, or None
         :rtype: str | None
@@ -929,7 +929,7 @@ class DeltaRecreateRequester:
         :param table: the table
         :ptype table: str
         :return: ``present``, ``recovering`` (``recovering: <the rebuild's step>`` when the writer says it, as
-            ``rebuilding <table> (n of m)``), ``no_writer`` when none answered, ``failed`` when the writer refused or
+            ``rebuilding from L3: n of m tables read``), ``no_writer`` when none answered, ``failed`` when the writer refused or
             the request did not cross
         :rtype: str
         """

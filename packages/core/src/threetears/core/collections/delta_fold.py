@@ -74,7 +74,10 @@ whole, the one whole read a writer makes, declared a cold start; :meth:`DeltaFol
 recreated by a migration (its files no longer valid) for the same, read declared as its situation. The table's
 generation is read first, then its rows: a commit landing during the read is in the rows and its delta is applied
 again over them by every copy, which ends where L3 does (decision 19's merge, applied in order, leaves a row as its
-last write left it). The rows are written beside the full as they are read (I/O, the serving process's), then a
+last write left it). Every table's generation is read before any table's rows, and the tables are read several at
+once (:class:`RebuildConcurrency`: up to 4 tables, 6 reads in all), a table past one page split by its key's lead (its
+states) into ranges of it (an ordered lead) or sets of its values (YugabyteDB's hashed lead), each read writing its own
+file. The rows are written beside the full as they are read (I/O, the serving process's), then a
 worker process splits them by state, applies the keep rule, writes the parts and publishes the manifest at the
 writer's term, before any fold of the table: :meth:`DeltaFolds.committed`'s rounds run a rebuild owed first, and a
 table owed one is not folded meanwhile. Then its old parts go once the previous manifest no longer names them, and,
@@ -137,7 +140,7 @@ import os
 import time
 import uuid
 from collections import Counter
-from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Collection, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -185,7 +188,9 @@ from threetears.core.collections.schema_backed import DATETIMETZ_TYPE, TableSche
 from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
-from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages
+from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages, keyset_scope_values
+from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.backends.protocol import ArrowL3Reader
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.core.collections.volume_fulls import (
@@ -214,7 +219,7 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; a fold refuses without it, saying so
     _PYARROW = False
 
-__all__ = ["DeltaFolds", "FoldedTable"]
+__all__ = ["DeltaFolds", "FoldedTable", "RebuildConcurrency"]
 
 log = get_logger(__name__)
 
@@ -376,9 +381,49 @@ _FAILED_ROUNDS_CAP: Final = 3
 #: ``<table>/v<term>-recovery-<hex>.arrow`` (decision 53)
 _RECOVERY_WRITE: Final = "recovery"
 
-#: where a rebuild's rows are written as they are read, under the fulls' directory: one file a table, removed once its
-#: parts are published (or the rebuild fails)
+#: where a rebuild's rows are written as they are read, under the fulls' directory: one file a stream of a table's read,
+#: removed once its parts are published (or the rebuild fails)
 _REBUILD_DIR: Final = ".fulls/rebuild"
+
+
+@dataclass(frozen=True, slots=True)
+class RebuildConcurrency:
+    """how much of L3 the writer's rebuild of missing fulls reads at once (:meth:`DeltaFolds._fresh_fulls`).
+
+    Why: read one table after another, one statement at a time, a cold rebuild waited out every page's round trip
+    through the L3 broker: 17 tables, ~20.1M rows at ~37k rows/s, 532 s before a pod restarted on an empty volume
+    served (local stack, 2026-11-24; three LSF tables ~86% of the rows). Now up to ``tables`` tables are read at once,
+    and a table of more than one page is split by its key's lead (a state) into reads of a set of lead values each;
+    at most ``streams`` reads are in flight in all, each writing its pages to a file of its own as they come, so the
+    rows held in memory are about ``streams`` pages, never a table.
+
+    The rebuild's pages are bulk reads: each statement is one page under the broker's reply cap, sent with the
+    backend's own deadline (``timeout_ms``) like any read, and the hub runs each in one of its read workers' connections
+    (aibots hub ``read_worker.ReadWorkers``: 2 workers x 4 connections a hub by default, FIFO). The hub has no
+    priority lane, so the rebuild is held under that room instead: ``streams`` 6 leaves at least 2 of a single hub's 8
+    to serving reads at every moment (a quarter of the 24 of dev's and prod's 3 hubs), and a serving read waits at
+    most one page behind a rebuild's.
+
+    :param tables: the most tables read at once; at least one
+    :ptype tables: int
+    :param streams: the most reads (statements in flight, files written) at once across every table; at least one
+    :ptype streams: int
+    :raises ValueError: when either is under one
+    """
+
+    tables: int = 4
+    streams: int = 6
+
+    def __post_init__(self) -> None:
+        if self.tables < 1 or self.streams < 1:
+            raise ValueError(f"a rebuild reads at least one table and one stream at once, not {self}")
+
+
+#: the rebuild's concurrency a fold is made with when its writer names none
+_REBUILD_CONCURRENCY: Final = RebuildConcurrency()
+
+#: one table and one statement at a time: a rebuild over an L3 that answers dict rows (:meth:`DeltaFolds._read_tables`)
+_ONE_AT_A_TIME: Final = RebuildConcurrency(tables=1, streams=1)
 
 #: a state folds once the bytes of its deltas since its last fold reach this share of its part's size (decision 10:
 #: half), as a numerator over :data:`_DUE_OF`, so the test is whole numbers: ``bytes * _DUE_OF >= part * _DUE_AT``
@@ -584,6 +629,8 @@ class DeltaFolds:
     :param copies: the copies' positions (:class:`~threetears.core.collections.delta_copy_beats.CopyBeats`), required
         with ``retention="delete"``: a covered delta file is deleted only once every live copy is past it (decision 54)
     :ptype copies: CopyPositionsReader | None
+    :param rebuild: how much of L3 a rebuild of missing fulls reads at once (:class:`RebuildConcurrency`)
+    :ptype rebuild: RebuildConcurrency
     :raises ValueError: when ``retention`` is neither, or ``"delete"`` comes with no ``copies``
     """
 
@@ -595,6 +642,7 @@ class DeltaFolds:
         retention: DeltaRetention,
         workers: ProcessWorkers | None = None,
         copies: CopyPositionsReader | None = None,
+        rebuild: RebuildConcurrency = _REBUILD_CONCURRENCY,
     ) -> None:
         if not _PYARROW:
             raise ImportError("a fold needs pyarrow: install 3tears[snapshot]")
@@ -610,6 +658,8 @@ class DeltaFolds:
         #: where every copy of the tables is (decision 54): read immediately before each delete; None when keeping
         self._copies = copies
         self.root = root
+        #: how much of L3 a rebuild reads at once
+        self.rebuild: Final = rebuild
         #: what becomes of a delta file once a full covers it: every round, rebuild and recovery is handed it
         self.retention: Final[DeltaRetention] = retention
         self.tables: Final = MappingProxyType({table.name: table for table in tables})
@@ -667,7 +717,7 @@ class DeltaFolds:
         self.published = 0
         #: the tables a rebuild or a recovery published during the :meth:`start` running, in order; None outside one
         self._starting: tuple[str, ...] | None = None
-        #: what a rebuild from L3 is reading now, ``rebuilding <table> (n of m)`` or ``publishing ...``, for a copy's
+        #: what a rebuild from L3 is reading now, ``rebuilding from L3: n of m tables read`` or ``publishing ...``, for a copy's
         #: ask (:attr:`rebuilding`); None while none runs. A str replaced whole by the round, its one writer
         self._rebuilding: str | None = None
         #: the commands callers posted that the round has not applied yet, in order: the one thing a caller adds to
@@ -1177,9 +1227,9 @@ class DeltaFolds:
 
     @property
     def rebuilding(self) -> str | None:
-        """what a rebuild of a missing full is doing now, for a copy waiting for it: ``rebuilding <table> (n of m)``
-        while it reads a table from L3, ``publishing the rebuilt full (m tables)`` while its worker writes the parts;
-        None while no rebuild runs.
+        """what a rebuild of a missing full is doing now, for a copy waiting for it: ``rebuilding from L3: n of m
+        tables read`` while it reads the tables from L3, ``publishing the rebuilt full (m tables)`` while its worker
+        writes the parts; None while no rebuild runs.
 
         Why: a cold rebuild of ~20M rows read for 532 s with no line between its start and its publish (local stack,
         2026-11-24), and a copy waiting on it could not tell slow from stalled.
@@ -1670,7 +1720,7 @@ class DeltaFolds:
                 extra={"extra_data": {"term": term, "manifest": current.name, "tables": sorted(owed)}},
             )
             return
-        staged: list[tuple[str, str, str, int]] = []
+        staged: tuple[tuple[str, tuple[str, ...], str, int], ...] = ()
         #: each table's files told before its generation was read: covered by its rebuild whatever their incarnation
         known: dict[str, frozenset[str]] = {}
         #: each table's asks (a reset, a lost file) applied before its generation was read: one after is owed again
@@ -1678,12 +1728,21 @@ class DeltaFolds:
         # a rebuild's rows left by a writer that died mid-read: only the writer holding the lease writes there
         await asyncio.to_thread(_cleared, self.root / _REBUILD_DIR)
         log.info(
-            "rebuilding fulls from L3: each table read whole once, one after another, then one full published",
-            extra={"extra_data": {"tables": sorted(owed), "count": len(owed), "term": term}},
+            "rebuilding fulls from L3: each table read whole once, several at once, then one full published",
+            extra={
+                "extra_data": {
+                    "tables": sorted(owed),
+                    "count": len(owed),
+                    "term": term,
+                    "tables_at_once": self.rebuild.tables,
+                    "streams": self.rebuild.streams,
+                }
+            },
         )
         try:
-            for index, (name, why) in enumerate(sorted(owed.items()), start=1):
-                self._rebuilding = f"rebuilding {name} ({index} of {len(owed)})"
+            #: each table read, with its generation: every generation read before any table's rows
+            reads: list[tuple[str, str, FoldedTable, str]] = []
+            for name, why in sorted(owed.items()):
                 # what was posted before the generation is read is judged covered by it; what comes after, not
                 self._drain()
                 known[name] = frozenset(file for table_name, file, _ in self._queued if table_name == name) | {
@@ -1692,7 +1751,7 @@ class DeltaFolds:
                 asked[name] = self._asked.get(name, 0)
                 try:
                     # the generation before the rows: a commit during the read is in the rows and applied again over
-                    # them (module docstring), never missed
+                    # them (module docstring), never missed. All read first, so the tables' rows can be read at once
                     token = await reader.generations.current(name)
                 except GenerationUnavailableError as error:
                     # never written: its first commit makes one, and the round that commit starts looks again
@@ -1703,49 +1762,9 @@ class DeltaFolds:
                         extra={"extra_data": {"table": name, "why": why, "error": str(error)}},
                     )
                     continue
-                table = self.tables[name]
-                # the one whole read a writer makes, declared as its situation (each function holds its own)
-                if why == "schema_change":
-                    pages = whole_read(
-                        _schema_change_pages(reader, table),
-                        kind="schema_change",
-                        reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "
-                        "full",
-                        ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
-                        "one read of it from L3 (design-pod-delta-files decision 12)",
-                        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
-                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
-                    )
-                else:
-                    pages = whole_read(
-                        _cold_start_pages(reader, table),
-                        kind="cold_start",
-                        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
-                        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
-                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
-                        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
-                        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
-                        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
-                    )
-                read_began = time.monotonic()
-                file, rows = await self._written_beside(table, pages)
-                seconds = time.monotonic() - read_began
-                # each table's read said as it ends: a rebuild of millions of rows runs minutes, and a stall is told
-                # from slow only by these lines (2026-11-24: 532 s, silent between its start and its publish)
-                log.info(
-                    "a table read from L3 for its full's rebuild",
-                    extra={
-                        "extra_data": {
-                            "table": name,
-                            "why": why,
-                            "rows": rows,
-                            "seconds": round(seconds, 3),
-                            "rows_per_second": round(rows / seconds) if seconds > 0 else None,
-                            "of": f"{index} of {len(owed)}",
-                        }
-                    },
-                )
-                staged.append((name, file, token, rows))
+                reads.append((name, why, self.tables[name], token))
+            if reads:
+                staged = await self._read_tables(reader, tuple(reads))
             if not staged:
                 self._rebuilding = None
                 return
@@ -1767,7 +1786,8 @@ class DeltaFolds:
         except BaseException as error:  # prawduct:allow prawduct/broad-except -- a rebuild never fails a write: logged, counted, retried before the next round
             self._rebuilding = None
             self._recheck = True
-            await asyncio.to_thread(_unlink_all, self.root, [file for _, file, _, _ in staged])
+            # every stream's file, of the tables read and those cut mid-read: the rebuild's directory is this writer's
+            await asyncio.to_thread(_cleared, self.root / _REBUILD_DIR)
             if isinstance(error, asyncio.CancelledError):
                 raise
             for name, why in owed.items():
@@ -1815,6 +1835,206 @@ class DeltaFolds:
                 "a later writer's full is current: this writer's rebuild publishes nothing",
                 extra={"extra_data": {"term": term, "manifest": manifest}},
             )
+
+    async def _read_tables(
+        self, reader: _Reader, reads: tuple[tuple[str, str, FoldedTable, str], ...]
+    ) -> tuple[tuple[str, tuple[str, ...], str, int], ...]:
+        """read each table's rows from L3 beside the full, up to :attr:`rebuild` ``.tables`` tables and ``.streams``
+        reads at once (:class:`RebuildConcurrency`), saying each table's read as it ends.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :param reads: each table's ``(table, why, its FoldedTable, generation)``, the generation read before its rows
+        :ptype reads: tuple
+        :return: each table's ``(table, files of its rows, generation, rows)``, in the tables' order
+        :rtype: tuple
+        """
+        # an L3 that answers dict rows (a plain pool: each row decoded and made Arrow under the interpreter lock) is
+        # read one statement at a time, as before: read at once its reads only contend for the lock (Postgres 16, 1M
+        # rows: 1.8 s one at a time, 4.8 s six at once, 2026-11-25); the rail's proxy parses its replies off it
+        concurrency = self.rebuild if isinstance(reader.l3, ArrowL3Reader) else _ONE_AT_A_TIME
+        streams = asyncio.Semaphore(concurrency.streams)
+        tables = asyncio.Semaphore(concurrency.tables)
+        began = time.monotonic()
+        read: list[tuple[str, tuple[str, ...], str, int]] = []
+        self._rebuilding = f"rebuilding from L3: 0 of {len(reads)} tables read"
+        async with asyncio.TaskGroup() as group:
+            tasks = [
+                group.create_task(self._read_table(reader, table, why, concurrency.streams, streams, tables))
+                for _, why, table, _ in reads
+            ]
+            tokens = {name: token for name, _, _, token in reads}
+            for index, done in enumerate(asyncio.as_completed(tasks), start=1):
+                name, why, files, rows, seconds = await done
+                # the round's own status, its one writer: each table said as its read ends, so a stall is told from
+                # slow (2026-11-24: 532 s, silent between its start and its publish)
+                self._rebuilding = f"rebuilding from L3: {index} of {len(reads)} tables read"
+                log.info(
+                    "a table read from L3 for its full's rebuild",
+                    extra={
+                        "extra_data": {
+                            "table": name,
+                            "why": why,
+                            "rows": rows,
+                            "seconds": round(seconds, 3),
+                            "rows_per_second": round(rows / seconds) if seconds > 0 else None,
+                            "streams": len(files),
+                            "of": f"{index} of {len(reads)}",
+                        }
+                    },
+                )
+                read.append((name, files, tokens[name], rows))
+        seconds = time.monotonic() - began
+        rows = sum(count for _, _, _, count in read)
+        log.info(
+            "every table of the rebuild read from L3",
+            extra={
+                "extra_data": {
+                    "tables": len(read),
+                    "tables_at_once": concurrency.tables,
+                    "streams": concurrency.streams,
+                    "rows": rows,
+                    "seconds": round(seconds, 3),
+                    "rows_per_second": round(rows / seconds) if seconds > 0 else None,
+                }
+            },
+        )
+        return tuple(sorted(read))
+
+    async def _read_table(
+        self,
+        reader: _Reader,
+        table: FoldedTable,
+        why: str,
+        split: int,
+        streams: asyncio.Semaphore,
+        tables: asyncio.Semaphore,
+    ) -> tuple[str, str, tuple[str, ...], int, float]:
+        """one table's rows from L3, beside the full: its first page by its plain keyset read, and when more follow,
+        the rest split by its states (the lead of its key) into up to ``streams`` reads of a part of them each, all at
+        once. A table its state does not lead is read whole by one stream.
+
+        Why split by the lead: the rebuild's rows are ~86% three LSF tables (a cold rebuild of 2026-11-24), so reading
+        tables at once alone leaves the biggest table's one stream the whole rebuild's time; its states (the lead) split
+        it into reads that each seek their own states.
+
+        :param reader: how L3 is read
+        :ptype reader: _Reader
+        :param table: the table
+        :ptype table: FoldedTable
+        :param why: why it is rebuilt (``cold_start``, ``reset``, ``schema_change``)
+        :ptype why: str
+        :param split: the most parts its states are read in (one: read whole by its plain read)
+        :ptype split: int
+        :param streams: the reads at once, across every table
+        :ptype streams: asyncio.Semaphore
+        :param tables: the tables at once
+        :ptype tables: asyncio.Semaphore
+        :return: ``(table, why, files of its rows, rows, seconds)``
+        :rtype: tuple
+        """
+        async with tables:
+            began = time.monotonic()
+            async with streams:
+                if split > 1 and table.scope is not None and table.key[0] == table.scope[0]:
+                    first, rows, after = await self._probed_beside(
+                        table, _declared_pages(reader, table, why), reader.page_size
+                    )
+                else:
+                    # one stream, or a table its state does not lead (or with no state): read whole by its one stream
+                    first, rows = await self._written_beside(table, _declared_pages(reader, table, why))
+                    after = None
+            files = [first]
+            if after is not None:
+                async with streams:
+                    assert table.scope is not None  # noqa: S101 -- probed only when its state leads its key
+                    states = await keyset_scope_values(
+                        reader.l3,
+                        table.name,
+                        scope_column=table.scope[0],
+                        scope_type=_table_types(table)[table.scope[0]],
+                        page_size=reader.page_size,
+                        after=after[0],
+                    )
+                # an ordered lead (Postgres) is split into runs of its states, each one index range read in key order;
+                # a hashed one (YugabyteDB) into sets of them dealt in turn, each walked state by state (keyset's "A
+                # hashed lead a set filter pins"). Measured on Postgres 16, a 766k-row table in six: runs 0.16 s, sets
+                # 0.32 s (2026-11-25)
+                ranged = not await known_on_yugabyte(reader.l3)
+                # a failed or cut stream's file goes with it; the others' with the rebuild's directory (_fresh_fulls)
+                async with asyncio.TaskGroup() as group:
+                    # the first part holds the state the first page ended in: read past its last key
+                    parts = [
+                        group.create_task(
+                            self._stream_beside(
+                                table,
+                                _state_part_pages(reader, table, part, after if index == 0 else None, ranged=ranged),
+                                streams,
+                            )
+                        )
+                        for index, part in enumerate(_spread(states, split, contiguous=ranged))
+                    ]
+                files.extend(task.result()[0] for task in parts)
+                rows += sum(task.result()[1] for task in parts)
+            return table.name, why, tuple(files), rows, time.monotonic() - began
+
+    async def _stream_beside(
+        self, table: FoldedTable, pages: AsyncIterator[Any], streams: asyncio.Semaphore
+    ) -> tuple[str, int]:
+        """:meth:`_written_beside` holding one of the rebuild's ``streams`` while it reads.
+
+        :param table: the table
+        :ptype table: FoldedTable
+        :param pages: its pages
+        :ptype pages: AsyncIterator[pyarrow.Table]
+        :param streams: the reads at once
+        :ptype streams: asyncio.Semaphore
+        :return: the file and its rows
+        :rtype: tuple[str, int]
+        """
+        async with streams:
+            return await self._written_beside(table, pages)
+
+    async def _probed_beside(
+        self, table: FoldedTable, pages: AsyncGenerator[Any, None], page_size: int
+    ) -> tuple[str, int, tuple[Any, ...] | None]:
+        """a table's first page written beside the full, as :meth:`_written_beside` writes them, which ends its plain
+        read there when it is full: more may follow, read split by the lead. After a short one the plain read is asked
+        once more: a table it ended is read whole in one statement; a second page (the broker cut the first by its
+        bytes, or a walk of YugabyteDB's hashed lead read one lead's rows) ends it there instead.
+
+        Why the first page alone: the second is sized to the broker's reply cap (keyset's "How many rows a page asks
+        for"), a fifth of a 766k-row table read by one stream before the split (2026-11-25: six streams' read 2.0x one
+        stream's with it).
+
+        :param table: the table
+        :ptype table: FoldedTable
+        :param pages: its plain keyset read
+        :ptype pages: AsyncGenerator[pyarrow.Table, None]
+        :param page_size: the rows its first page asks for
+        :ptype page_size: int
+        :return: the file, its rows, and the last key written when more may follow (None: the table is read whole)
+        :rtype: tuple[str, int, tuple | None]
+        """
+        types = _table_types(table)
+        file = f"{_REBUILD_DIR}/{table.name}/{uuid.uuid7().hex}.arrow"
+        sink = await asyncio.to_thread(_RowsFile, self.root / file, pa.schema(list(types.items())))
+        after: tuple[Any, ...] | None = None
+        taken = 0
+        try:
+            async with aclosing(pages) as held:
+                async for page in held:
+                    await asyncio.to_thread(sink.write, page)
+                    taken += 1
+                    if page.num_rows and (page.num_rows >= page_size or taken == 2):
+                        # more may follow: the rest is read split by the lead, from past this page's last key
+                        after = _last_key(page, table.key)
+                        break
+        except BaseException:
+            await asyncio.to_thread(_closed_and_unlinked, sink)
+            raise
+        await asyncio.to_thread(sink.close)
+        return file, sink.rows, after
 
     async def _written_beside(self, table: FoldedTable, pages: AsyncIterator[Any]) -> tuple[str, int]:
         """write a table's rows beside the full as its read from L3 hands them, a page at a time on a thread (Arrow
@@ -2522,16 +2742,130 @@ def _lead_array(table: FoldedTable) -> str:
     return f"{sql_cast(dict(table.kinds)[table.key[0]])}[]"
 
 
-def _cold_start_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]:
-    """a table's whole read for its rebuild: no full on the volume holds it (a lost volume, a new environment, a table
-    newly opted in), or an operator reset it.
+def _declared_pages(
+    reader: _Reader,
+    table: FoldedTable,
+    why: str,
+) -> AsyncGenerator[Any, None]:
+    """a table's whole read for its rebuild, declared as its situation (each read function holds its own declaration,
+    and its call says it again): its first page, the rest read by its states when it has more
+    (:meth:`DeltaFolds._read_table`).
 
     :param reader: how L3 is read
     :ptype reader: _Reader
     :param table: the table
     :ptype table: FoldedTable
-    :return: its keyset pages, read whole
-    :rtype: AsyncIterator[pyarrow.Table]
+    :param why: why it is rebuilt: ``schema_change``, else a cold start (``cold_start``, ``reset``)
+    :ptype why: str
+    :return: its keyset pages
+    :rtype: AsyncGenerator[pyarrow.Table, None]
+    """
+    if why == "schema_change":
+        return whole_read(
+            _schema_change_pages(reader, table),
+            kind="schema_change",
+            reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "
+            "full",
+            ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
+            "one read of it from L3 (design-pod-delta-files decision 12)",
+            proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
+            speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
+        )
+    return whole_read(
+        _cold_start_pages(reader, table),
+        kind="cold_start",
+        reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
+        "reads it once and publishes its full; copies wait for that, never reading L3 whole",
+        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
+        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14); Pace 2026-11-25: several tables and states read at once",
+        proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
+        speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
+    )
+
+
+def _spread(values: Sequence[Any], streams: int, *, contiguous: bool) -> tuple[tuple[Any, ...], ...]:
+    """``values`` split into at most ``streams`` parts, the first holding the first value: runs of them in order
+    (``contiguous``, each read as a range), or dealt one to each part in turn, so the big states (their sizes unknown
+    before the read) fall in different parts.
+
+    :param values: the lead values, in the database's order
+    :ptype values: Sequence[Any]
+    :param streams: the most parts
+    :ptype streams: int
+    :param contiguous: runs in order, not dealt
+    :ptype contiguous: bool
+    :return: the parts, none empty
+    :rtype: tuple[tuple[Any, ...], ...]
+    """
+    count = min(len(values), streams)
+    if contiguous:
+        return tuple(
+            tuple(values[index * len(values) // count : (index + 1) * len(values) // count]) for index in range(count)
+        )
+    return tuple(tuple(values[index::count]) for index in range(count))
+
+
+def _last_key(page: Any, key: Sequence[str]) -> tuple[Any, ...]:
+    """the key of a page's last row, read off the table (one row).
+
+    :param page: a non-empty page
+    :ptype page: pyarrow.Table
+    :param key: the key columns
+    :ptype key: Sequence[str]
+    :return: its key
+    :rtype: tuple[Any, ...]
+    """
+    last = page.slice(page.num_rows - 1, 1).select(list(key)).to_pylist()[0]
+    return tuple(last[column] for column in key)
+
+
+def _state_part_pages(
+    reader: _Reader, table: FoldedTable, states: Sequence[Any], after: Sequence[Any] | None, *, ranged: bool
+) -> AsyncGenerator[Any, None]:
+    """one part of a table's read for its rebuild: the rows of a part of its states (its key's lead), past ``after``;
+    the table's first page was its declared whole read (:func:`_declared_pages`).
+
+    :param reader: how L3 is read
+    :ptype reader: _Reader
+    :param table: the table, scoped, its key led by its state column
+    :ptype table: FoldedTable
+    :param states: the states, in the database's order
+    :ptype states: Sequence[Any]
+    :param after: the key the read starts past; the first row when None
+    :ptype after: Sequence[Any] | None
+    :param ranged: read the states as the range from the first to the last (an ordered lead), not as a set
+    :ptype ranged: bool
+    :return: the pages
+    :rtype: AsyncGenerator[pyarrow.Table, None]
+    """
+    assert table.scope is not None  # noqa: S101 -- only a table led by its state is read by its states
+    return keyset_scope_pages(
+        reader.l3,
+        table.name,
+        table.key,
+        types=_table_types(table),
+        scope_column=table.scope[0],
+        scope_values=states,
+        scope_array=_lead_array(table),
+        page_size=reader.page_size,
+        after=after,
+        ranged=ranged,
+    )
+
+
+def _cold_start_pages(
+    reader: _Reader,
+    table: FoldedTable,
+) -> AsyncGenerator[Any, None]:
+    """a table's whole read for its rebuild: no full on the volume holds it (a
+    lost volume, a new environment, a table newly opted in), or an operator reset it.
+
+    :param reader: how L3 is read
+    :ptype reader: _Reader
+    :param table: the table
+    :ptype table: FoldedTable
+    :return: its keyset pages
+    :rtype: AsyncGenerator[pyarrow.Table, None]
     """
     types = _table_types(table)
     selected = ", ".join(quote_identifier(column) for column in types)
@@ -2548,21 +2882,24 @@ def _cold_start_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]
         reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
         "reads it once and publishes its full; copies wait for that, never reading L3 whole",
         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
-        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14)",
+        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14); Pace 2026-11-25: several tables and states read at once",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
-        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
+        speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
     )
 
 
-def _schema_change_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[Any]:
+def _schema_change_pages(
+    reader: _Reader,
+    table: FoldedTable,
+) -> AsyncGenerator[Any, None]:
     """a table's whole read for its rebuild: a migration dropped or recreated it.
 
     :param reader: how L3 is read
     :ptype reader: _Reader
     :param table: the table
     :ptype table: FoldedTable
-    :return: its keyset pages, read whole
-    :rtype: AsyncIterator[pyarrow.Table]
+    :return: its keyset pages
+    :rtype: AsyncGenerator[pyarrow.Table, None]
     """
     types = _table_types(table)
     selected = ", ".join(quote_identifier(column) for column in types)
@@ -2581,7 +2918,7 @@ def _schema_change_pages(reader: _Reader, table: FoldedTable) -> AsyncIterator[A
         ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
         "one read of it from L3 (design-pod-delta-files decision 12)",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
-        speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
+        speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
     )
 
 
@@ -2719,7 +3056,7 @@ def rebuild_round(
     root: str,
     term: int,
     tables: tuple[tuple[Any, ...], ...],
-    staged: tuple[tuple[str, str, str, int], ...],
+    staged: tuple[tuple[str, tuple[str, ...], str, int], ...],
     below: int | None,
     opens: tuple[tuple[str, tuple[str, ...]], ...],
     told: tuple[tuple[str, tuple[str, ...]], ...],
@@ -2738,7 +3075,8 @@ def rebuild_round(
     :ptype term: int
     :param tables: each rebuilt table, :meth:`FoldedTable.plain`
     :ptype tables: tuple
-    :param staged: each table's ``(table, file of its rows, generation, rows)``, the generation read before its rows
+    :param staged: each table's ``(table, files of its rows, generation, rows)``: a file a stream of its read, the
+        generation read before its rows
     :ptype staged: tuple
     :param below: the version below which each rebuilt table's full claims every delta file folded but its open ones
         (:meth:`DeltaFolds._folded_below`, decision 53); None claims nothing
@@ -2774,8 +3112,10 @@ def rebuild_round(
         if current is not None and current.term > term:
             return ("stale", current.name, rebuilt, 0, (), ())
         tables_now = dict(current.tables) if current is not None else {}
-        for name, file, token, _ in staged:
-            parts = _parts_of_rows(base, config[name], _read_rows_file(base / file), token)
+        for name, files, token, _ in staged:
+            # its streams' files as one table, mapped, never copied
+            rows = pa.concat_tables([_read_rows_file(base / file) for file in files])
+            parts = _parts_of_rows(base, config[name], rows, token)
             written.extend(part.file for part in parts)
             tables_now[name] = FullTable(version=token, parts=parts).covered_as(
                 folded_below=below, open_files=open_of.get(name, ())
@@ -2791,7 +3131,7 @@ def rebuild_round(
         _unlink_all(base, written)
         raise
     finally:
-        _unlink_all(base, [file for _, file, _, _ in staged])
+        _unlink_all(base, [file for _, files, _, _ in staged for file in files])
     named = published.files() | set(kept)
     if published.previous is not None and (base / ".fulls" / "manifests" / published.previous).is_file():
         named |= FullManifest.decode((base / ".fulls" / "manifests" / published.previous).read_bytes()).files()

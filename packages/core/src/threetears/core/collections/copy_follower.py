@@ -1186,7 +1186,7 @@ class _FullRecreate(Protocol):
         :param table: the table
         :ptype table: str
         :return: ``present``, ``recovering`` (the writer's fold publishes it; ``recovering: <its step>`` when the
-            writer says which table its rebuild reads, ``rebuilding <table> (n of m)``, said in the copy's waiting
+            writer says how far its rebuild reads, ``rebuilding from L3: n of m tables read``, said in the copy's waiting
             status), ``no_writer`` or ``failed`` (asked again at the next look)
         :rtype: str
         """

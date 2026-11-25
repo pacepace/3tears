@@ -76,7 +76,14 @@ from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.observe import get_logger
 
-__all__ = ["KeysetRead", "keyset_arrow_pages", "keyset_pages", "keyset_scope_pages", "read_keyset_pages"]
+__all__ = [
+    "KeysetRead",
+    "keyset_arrow_pages",
+    "keyset_pages",
+    "keyset_scope_pages",
+    "keyset_scope_values",
+    "read_keyset_pages",
+]
 
 #: the share of a byte-capped reply a page is sized to fill: rows vary in width, so a page sized to the whole
 #: cap from the rows before would be cut about half the time
@@ -366,6 +373,8 @@ async def keyset_scope_pages(
     scope_values: Sequence[Any],
     scope_array: str,
     page_size: int,
+    after: Sequence[Any] | None = None,
+    ranged: bool = False,
 ) -> AsyncGenerator[Any, None]:
     """every row of ``table`` whose declared state column holds one of ``scope_values``, as
     :func:`keyset_arrow_pages` pages: one keyset read led by the state column, the states a set filter on it, so each
@@ -375,6 +384,12 @@ async def keyset_scope_pages(
     Bounded only by a state column the table declares: the enforcement rule judges a call bounded when
     ``scope_column`` flows from a :class:`~threetears.interfaces.keyed.DeclaredScope` source, as it judges
     :func:`~threetears.core.keyed.read_state_arrow`.
+
+    ``ranged`` reads every state from the first of ``scope_values`` to the last (both held), one range of an ordered
+    state column (Postgres; a column declared ``ASC``) in place of the set: each page one index range read in key
+    order. For a reader that splits a read by runs of the states it holds (:func:`keyset_scope_values`, in the
+    database's order): on Postgres 16 a 766k-row table read as six runs took 0.16 s, as six sets of the same states
+    0.32 s (2026-11-25). A hashed state column (YugabyteDB's default for a key's first column) reads its sets.
 
     :param l3: the rail's proxy (``fetch_arrow``), or anything with an asyncpg-shaped ``fetch``
     :ptype l3: Any
@@ -387,12 +402,17 @@ async def keyset_scope_pages(
     :ptype types: Mapping[str, pyarrow.DataType]
     :param scope_column: the table's declared state column, a TRUSTED identifier
     :ptype scope_column: str
-    :param scope_values: the states read, each typed as the column holds it
+    :param scope_values: the states read, each typed as the column holds it; in the database's order when ``ranged``
     :ptype scope_values: Sequence[Any]
     :param scope_array: the SQL array type the states are sent as (``text[]``)
     :ptype scope_array: str
     :param page_size: rows a page keeps
     :ptype page_size: int
+    :param after: the key the read starts past, in its order (the state column, then the rest of ``key``); the first
+        row when None
+    :ptype after: Sequence[Any] | None
+    :param ranged: read the states from the first of ``scope_values`` to the last, not their set
+    :ptype ranged: bool
     :return: the pages, as they are read, each a ``pyarrow.Table``; none when ``scope_values`` is empty
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when ``page_size`` is under one
@@ -400,16 +420,82 @@ async def keyset_scope_pages(
     if not scope_values:
         return
     selected = ", ".join(quote_identifier(name) for name in types)
+    where_any: dict[str, tuple[str, Sequence[Any]]] | None = {scope_column: (scope_array, scope_values)}
+    conditions: tuple[Fragment, ...] = ()
+    if ranged:
+        quoted, cast = quote_identifier(scope_column), scope_array.removesuffix("[]")
+        where_any = None
+        conditions = (
+            Fragment(
+                sql=f"{quoted} >= $1::{cast} AND {quoted} <= $2::{cast}", params=(scope_values[0], scope_values[-1])
+            ),
+        )
     async for page in keyset_arrow_pages(
         l3,
         f"SELECT {selected} FROM {quote_identifier(table)}",  # noqa: S608 - trusted identifiers
         (scope_column, *(name for name in key if name != scope_column)),
         types=types,
-        where_any={scope_column: (scope_array, scope_values)},
+        where_any=where_any,
         page_size=page_size,
+        after=after,
+        conditions=conditions,
         lead_array=scope_array,
     ):
         yield page
+
+
+async def keyset_scope_values(
+    l3: Any,
+    table: str,
+    *,
+    scope_column: Annotated[str, DeclaredScope],
+    scope_type: Any,
+    page_size: int,
+    after: Any = None,
+) -> list[Any]:
+    """the distinct states ``table`` holds in its declared state column, from ``after`` on (``after`` itself
+    included), in the database's order: ``SELECT DISTINCT`` a page of them a statement, as the walk of a hashed lead
+    reads them (the module's "A hashed lead": on YugabyteDB answered from the bucket heads of a key led by the state, a
+    row a state; on Postgres from that key's index). The statement is written here from the table's name and column.
+    For a reader that splits one read of a table into reads of a part of its states each
+    (:func:`keyset_scope_pages`), as the writer's rebuild of a full from L3 does.
+
+    :param l3: the rail's proxy (``fetch_arrow``), or anything with an asyncpg-shaped ``fetch``
+    :ptype l3: Any
+    :param table: the table, a TRUSTED identifier
+    :ptype table: str
+    :param scope_column: the table's declared state column, a TRUSTED identifier, the first of its key
+    :ptype scope_column: str
+    :param scope_type: the column's Arrow type
+    :ptype scope_type: pyarrow.DataType
+    :param page_size: the states a statement asks for
+    :ptype page_size: int
+    :param after: the state the values start at (that one included); every state when None
+    :ptype after: Any
+    :return: the states: few, never one a row
+    :rtype: list[Any]
+    :raises ValueError: when ``page_size`` is under one
+    """
+    if page_size < 1:
+        raise ValueError("page_size must be at least one")
+    quoted = quote_identifier(scope_column)
+    shape = _ReadShape(
+        f"SELECT {quoted} FROM {quote_identifier(table)}",  # noqa: S608 - trusted identifiers
+        (scope_column,),
+        None,
+        None,
+        page_size,
+        quote_identifier,
+        None,
+        (),
+    )
+    leads = _LeadValues(
+        _ArrowReads(l3, page_size, {scope_column: scope_type}), shape, None if after is None else (after,)
+    )
+    values: list[Any] = []
+    while taken := await leads.take(page_size):
+        values.extend(taken)
+    return values
 
 
 @dataclass(frozen=True)
