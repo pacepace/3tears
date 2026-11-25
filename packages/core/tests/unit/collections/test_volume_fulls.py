@@ -14,6 +14,7 @@ The contract this pins (:mod:`threetears.core.collections.volume_fulls`, ``desig
 from __future__ import annotations
 
 import asyncio
+import json
 import dataclasses
 import os
 import shutil
@@ -34,6 +35,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
 from threetears.core.collections.delta_files import read_volume_file, write_volume_file  # noqa: E402
+from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.epoch_change import EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
@@ -150,6 +152,32 @@ async def test_a_manifest_being_written_is_never_read_and_one_renamed_into_place
     manifests = tmp_path / ".fulls" / "manifests"
     (manifests / ".full-00000000000000000009-00000000000000000001.json.dead.partial").write_bytes(b"{")
     assert current_full_manifest(tmp_path).seq == 2  # type: ignore[union-attr]
+
+
+def test_a_full_s_coverage_round_trips_and_a_manifest_of_an_older_writer_claims_nothing(tmp_path: Path) -> None:
+    """Flips if a full's coverage (decision 53: every delta file below a version folded, but those listed open) is lost
+    on its way through the manifest, claims a file at or above its version, one listed open, or one of the older,
+    unversioned name; or if a manifest an older writer published (no coverage) stops being read, or claims any file."""
+    covered = FullTable(version="inc:3").covered_as(
+        folded_below=9, open_files=["votes/v4-a.arrow", "votes/v9-b.arrow", "votes/old.arrow"]
+    )
+    assert covered.open == ("votes/v4-a.arrow",), "only versioned files below the claim are listed open"
+    published = publish_full_manifest(tmp_path, term=2, tables={_TABLE: covered})
+    read = current_full_manifest(tmp_path)
+    assert read is not None and read.tables[_TABLE] == published.tables[_TABLE] == covered
+    entry = read.tables[_TABLE]
+    assert entry.covers("votes/v8-x.arrow") and entry.covers("votes/v0-recovery-y.arrow")
+    assert not entry.covers("votes/v9-x.arrow"), "the claim's own version is never covered"
+    assert not entry.covers("votes/v4-a.arrow"), "a file listed open is not folded"
+    assert not entry.covers("votes/0190a1b2.arrow"), "an unversioned name is read as before"
+    older = json.loads((tmp_path / ".fulls" / "manifests" / read.name).read_bytes())
+    for body in older["tables"].values():
+        body.pop("folded_below")
+        body.pop("open")
+    (tmp_path / ".fulls" / "manifests" / read.name).write_bytes(json.dumps(older).encode())
+    again = current_full_manifest(tmp_path)
+    assert again is not None and again.tables[_TABLE].folded_below is None
+    assert not again.tables[_TABLE].covers("votes/v1-x.arrow"), "an older writer's manifest claims nothing"
 
 
 async def test_the_highest_term_wins_over_an_older_terms_newer_sequence(tmp_path: Path) -> None:
@@ -397,7 +425,9 @@ async def test_a_waiting_copy_loads_the_writer_s_rebuild_and_never_reads_l3(tmp_
         name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
     )
     writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(schema, scope=("state", "state:"))], retention="delete")
+    folds = DeltaFolds(
+        tmp_path, [FoldedTable.of(schema, scope=("state", "state:"))], retention="delete", copies=NO_COPIES
+    )
     try:
         # a writer with no full yet has no delta to re-learn: the epoch log is read, and holds nothing for it
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=3) == (_TABLE,)
@@ -466,7 +496,9 @@ async def test_a_column_added_in_place_makes_the_writer_start_fresh_once_and_the
         name=_TABLE, primary_key=_KEY, columns=list(_COLUMNS), l1_eviction=TEST_L1_TABLE, delta_files=True
     )
     writer_l3 = _WriterL3([{"state": "VA", "geo_id": g, "votes": 1} for g in range(3)])
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(old_schema, scope=("state", "state:"))], retention="delete")
+    folds = DeltaFolds(
+        tmp_path, [FoldedTable.of(old_schema, scope=("state", "state:"))], retention="delete", copies=NO_COPIES
+    )
     try:
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=3) == (_TABLE,)
     finally:
@@ -497,7 +529,9 @@ async def test_a_column_added_in_place_makes_the_writer_start_fresh_once_and_the
     assert _other_columns() > looks and copy_l3.statements == 0
     # the writer restarts on the new table list: the table starts fresh, read from L3 once
     writer_l3.rows = [{"state": "VA", "geo_id": g, "votes": 1, "source": f"s{g}"} for g in range(3)]
-    folds = DeltaFolds(tmp_path, [FoldedTable.of(_ADDED, scope=("state", "state:"))], retention="delete")
+    folds = DeltaFolds(
+        tmp_path, [FoldedTable.of(_ADDED, scope=("state", "state:"))], retention="delete", copies=NO_COPIES
+    )
     try:
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=4) == (_TABLE,)
         assert await folds.start(writer_l3, _Generations(), changes=_EmptyLog(), version=5) == ()

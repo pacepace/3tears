@@ -107,6 +107,7 @@ __all__ = [
     "TableDelta",
     "build_file_table",
     "check_delta_scope",
+    "delta_file_version",
     "delta_files_root",
     "entity_key_batch",
     "fold_delta_tables",
@@ -118,6 +119,7 @@ __all__ = [
     "text_key_batch",
     "sweep_orphan_delta_files",
     "under_prefix",
+    "versioned_write_id",
     "write_delta_file",
     "write_table_file",
     "write_volume_file",
@@ -189,6 +191,12 @@ _PARTIAL_SUFFIX: Final = ".partial"
 _TABLE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: a write id as it may become a file name
 _WRITE_ID: Final = re.compile(r"^[A-Za-z0-9_-]+$")
+#: a write id that names its write's version (:func:`versioned_write_id`): ``v<version>-<unique>``. Why the version in
+#: the name (``design-pod-delta-files.md`` decision 53): a full's manifest then says exactly which files it covers
+#: (every file below a version, but those it lists open), so a recovery after a lost epoch log reads only the files no
+#: full covers, never the whole kept history, and a fold that deletes knows a file is covered from its name alone. An
+#: older file's name (a bare unique id, or ``recovery-<unique>``) has no version: read as before (expand/contract)
+_VERSIONED_WRITE_ID: Final = re.compile(r"^v(\d+)-[A-Za-z0-9_-]+$")
 
 
 class DeltaFileRefusedError(RuntimeError):
@@ -297,6 +305,42 @@ def _delta_file_name(table: str, write_id: str) -> str:
     if not _WRITE_ID.match(write_id):
         raise ValueError(f"a delta file's write id must be letters, digits, '-' or '_', got {write_id!r}")
     return f"{table}/{write_id}{_SUFFIX}"
+
+
+def versioned_write_id(version: int, unique: str) -> str:
+    """a write id naming the write's version: ``v<version>-<unique>`` (decision 53). The version is the one
+    :meth:`~threetears.core.collections.scope_epochs.ScopeEpochs.begin` gave the write, taken under the write lease, which
+    every data write of it already holds (``ScopeEpochs.touch``) before it saves its file.
+
+    :param version: the write's version
+    :ptype version: int
+    :param unique: the write's own unique part (a uuid7's hex)
+    :ptype unique: str
+    :return: the write id
+    :rtype: str
+    :raises ValueError: when the version is negative or the unique part has a character a file name may not
+    """
+    if version < 0:
+        raise ValueError(f"a write's version is not negative, got {version}")
+    write_id = f"v{version}-{unique}"
+    if not _WRITE_ID.match(write_id):
+        raise ValueError(f"a delta file's write id must be letters, digits, '-' or '_', got {write_id!r}")
+    return write_id
+
+
+def delta_file_version(file: str) -> int | None:
+    """the write version a delta file's name carries (:func:`versioned_write_id`), or None for a name of the older form
+    (no version: a bare unique id, a recovery's ``recovery-<unique>``), which every reader still accepts for one release
+    (decision 53's expand step).
+
+    :param file: the file, under the root (``<table>/<write id>.arrow``), or its bare name
+    :ptype file: str
+    :return: the version, or None
+    :rtype: int | None
+    """
+    stem = file.rsplit("/", 1)[-1].removesuffix(_SUFFIX)
+    matched = _VERSIONED_WRITE_ID.match(stem)
+    return int(matched.group(1)) if matched is not None else None
 
 
 #: the columns a write set: one set for every row of a write (a bulk statement's), or one a row (single-row upserts,

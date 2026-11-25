@@ -538,6 +538,53 @@ async def test_a_copy_finding_a_changes_file_missing_or_unreadable_reads_no_l3_a
     assert world.writer_l3.statements == 1, "the writer read the change's two keys in one keyed statement"
 
 
+async def test_a_version_named_file_is_applied_by_a_copy_and_recreated_under_its_own_name(_volume: Path) -> None:
+    """Flips if a delta file named by its write's version (decision 53, ``v<version>-<unique>``) is refused anywhere a
+    copy or the writer's recreate takes a name: the copy applies a whole one, and a missing one is recreated under its
+    own versioned name (never renamed, so the version a full's coverage reads stays the file's), then applied."""
+    world = _world()
+    await _warmed(world)
+    tallied = _row("VA", 2, 72, "tallied")
+    world.db.insert(_TALLIES, [tallied])
+    whole = _save(_volume, _TALLIES, delta_files.versioned_write_id(7, "fine"), [tallied])
+    assert delta_files.delta_file_version(whole) == 7
+    world.log.commit(_TALLIES, [("VA", 2)], whole)
+    updated = _row("VA", 1, 61, "second")
+    world.db.insert(_RESULTS, [updated])
+    name = f"{_RESULTS}/{delta_files.versioned_write_id(7, 'lost')}.arrow"
+    world.log.commit(_RESULTS, [("VA", 1)], name)
+    world.lock.commit("state:VA")
+    async with serving_recreates(world.bus, _KEY_OF, world.recreator):
+        await world.follower.catch_up()
+        await asyncio.wait_for(_until(lambda: not world.follower.status().waiting_for_file), timeout=5)
+        assert await world.follower.catch_up()
+    assert (_volume / name).is_file(), "recreated under its own versioned name"
+    assert delta_files.delta_file_version(name) == 7
+    assert _same(world, _RESULTS) and _same(world, _TALLIES)
+    assert world.copy_l3.statements == 0
+
+
+async def test_recreating_a_gone_file_the_current_full_covers_answers_covered_and_reads_no_l3(_volume: Path) -> None:
+    """Flips if the writer, asked for a delta file a fold that deletes took once its full covered it (decision 54), reads
+    L3 to write it again (or answers lost) instead of answering ``covered``: the full holds that change. A gone file
+    the full does not cover is still recreated from L3."""
+    world = _world()
+    await _warmed(world)
+    covered = f"{_RESULTS}/{delta_files.versioned_write_id(3, 'gone')}.arrow"
+    later = f"{_RESULTS}/{delta_files.versioned_write_id(9, 'gone')}.arrow"
+    volume_fulls.publish_full_manifest(
+        _volume, term=9, tables={_RESULTS: volume_fulls.FullTable(version="inc:1", folded_below=9)}
+    )
+    world.db.insert(_RESULTS, [_row("VA", 1, 61, "second")])
+    epoch = world.log.commit(_RESULTS, [("VA", 1)], covered)
+    assert await world.recreator.recreate(_RESULTS, covered, epoch) == "covered"
+    assert world.writer_l3.statements == 0 and not (_volume / covered).exists(), "no L3 read, nothing written"
+    world.db.insert(_RESULTS, [_row("VA", 2, 62, "third")])
+    epoch = world.log.commit(_RESULTS, [("VA", 2)], later)
+    assert await world.recreator.recreate(_RESULTS, later, epoch) == "recreated", "not covered: written again from L3"
+    assert world.writer_l3.statements == 1 and (_volume / later).is_file()
+
+
 async def test_a_table_waiting_for_a_file_keeps_the_scopes_of_its_held_keys_at_the_epoch_the_copy_holds(
     _volume: Path,
 ) -> None:

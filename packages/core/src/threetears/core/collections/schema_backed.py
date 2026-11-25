@@ -3439,6 +3439,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         reload: bool = False,
         delta: LoadDelta | None = None,
         on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None = None,
+        write_version: int | None = None,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -3516,6 +3517,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             committed raises, and the fold must still hear the ones that did. It must not raise
             (``DeltaFolds.committed`` never does)
         :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
+        :param write_version: with a ``delta``, the write's version (``ScopeEpochs.begin``) the load is part of: its delta
+            files are named by it (:func:`~threetears.core.collections.delta_files.versioned_write_id`, decision 53), so a
+            full's manifest covers them exactly. None names them in the older, unversioned form, which a recovery always
+            reads (decision 53's expand step; its contract makes it required)
+        :ptype write_version: int | None
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
@@ -3555,7 +3561,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"would land among the loaded ones"
             )
         if delta is not None and delta.replaces:
-            await self._delete_replaced(store, delta.replaces, on_commit)
+            await self._delete_replaced(store, delta.replaces, on_commit, write_version=write_version)
         if not files:
             return 0
         reach = WholeReach(prefixes=tuple(self._load_reach(constants or {}, prefixes)))
@@ -3576,7 +3582,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             async with slots:
                 named: dict[str, str] = {}
                 if delta is not None:
-                    named = await self._save_load_delta(request, given, constants or {})
+                    named = await self._save_load_delta(request, given, constants or {}, write_version)
                 # the generations the request's commit wrote, learned as a CallerTransaction learns its own: from the
                 # broker's reply on a pod, from this process's advance on a direct pool
                 before = committed_generations_record()
@@ -3785,6 +3791,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         store: Any,
         replaces: Sequence[Mapping[str, Any]],
         on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None = None,
+        *,
+        write_version: int | None,
     ) -> None:
         """delete every row of the key prefixes a load replaces, in a transaction of its own committed before the
         load: a load is insert-only, so the rows it replaces leave L3 first. Its delta file names the prefixes
@@ -3797,6 +3805,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype replaces: Sequence[Mapping[str, Any]]
         :param on_commit: told the delete's delta file and generation once it committed (:meth:`load_files`)
         :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
+        :param write_version: the load's write version, naming the delete's delta file (:meth:`load_files`)
+        :ptype write_version: int | None
         :return: nothing
         :rtype: None
         :raises ValueError: when the store opens no connection of its own, or as :meth:`delete_prefixes`
@@ -3808,12 +3818,18 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"prefixes the load replaces on"
             )
         async with acquire() as conn, CallerTransaction(conn) as transaction:
+            if write_version is not None:
+                transaction.note_write_version(write_version)
             await self.delete_prefixes(replaces, conn=conn)
         if on_commit is not None and transaction.delta_files:
             _hand_commit(on_commit, transaction.delta_files, transaction.committed_generations)
 
     async def _save_load_delta(
-        self, request: Sequence[LoadFile], given: Mapping[int, Any], constants: Mapping[str, Any]
+        self,
+        request: Sequence[LoadFile],
+        given: Mapping[int, Any],
+        constants: Mapping[str, Any],
+        write_version: int | None,
     ) -> dict[str, str]:
         """save one request's delta file before the request is sent: its files' rows the caller gave, with the load's
         constants, written as a copy writes them (inserted, never merged onto a row held).
@@ -3824,6 +3840,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype given: Mapping[int, Any]
         :param constants: the load's constants
         :ptype constants: Mapping[str, Any]
+        :param write_version: the load's write version, naming the file (:meth:`load_files`)
+        :ptype write_version: int | None
         :return: the table -> its file's name
         :rtype: dict[str, str]
         :raises ValueError: when a file's rows given are not as many as it holds
@@ -3832,7 +3850,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         table_delta = self.table_delta()
         # joined, typed, checked against the files' counts and saved in the worker process the save runs in
         table_delta.load([given[id(file)] for file in request], [file.rows for file in request], constants)
-        return await save_delta_files({self.table_name: table_delta})
+        return await save_delta_files({self.table_name: table_delta}, version=write_version)
 
     def _key_columns(self) -> tuple[str, ...]:
         key = self.schema.primary_key

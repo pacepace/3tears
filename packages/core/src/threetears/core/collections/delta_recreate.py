@@ -100,6 +100,7 @@ from threetears.core.collections.delta_files import (
 )
 from threetears.core.collections.delta_fold import _typed_texts
 from threetears.core.collections.schema_backed import rail_arrow_types, sql_cast
+from threetears.core.collections.volume_fulls import current_full_manifest
 from threetears.core.keyed import KeyBatch, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.sql_fragments import quote_identifier
@@ -153,6 +154,9 @@ class _Outcome(StrEnum):
     PENDING = "pending"
     #: a load's intent record a later record of the table names the same file in: that record alone applies it
     SUPERSEDED = "superseded"
+    #: the file is gone and the current full covers it by its name (decisions 53 and 54: a fold that deletes took it
+    #: once every copy known was past it): never written again from L3; the copy takes that change from the full
+    COVERED = "covered"
 
 
 #: recreations by the writer, by table and outcome (``recreated``, ``present``, ``recovering``, ``refused``, ``failed``)
@@ -508,6 +512,14 @@ class DeltaRecreator:
         try:
             lacking = await asyncio.to_thread(_keys_lacking, path, table, record)
         except FileNotFoundError:
+            if await asyncio.to_thread(_covered_by_full, root, table.name, request.file):
+                # deleted by a fold that deletes once its full covered it (decision 54): the full holds the change, so
+                # nothing is read from L3 and nothing written; the copy takes it from the full
+                log.warning(
+                    "a copy asked for a delta file the current full covers: answered covered, nothing read from L3",
+                    extra={"extra_data": {"table": table.name, "epoch": request.epoch, "file": request.file}},
+                )
+                return _Outcome.COVERED
             why = "file_missing"  # NOSILENT: recreated below, logged at WARNING
         except DeltaFileUnreadableError as exc:
             why = f"file_unreadable: {exc}"
@@ -744,6 +756,23 @@ class DeltaRecreator:
                 )
             )
         return int(keys.num_rows)
+
+
+def _covered_by_full(root: Path, table: str, file: str) -> bool:
+    """whether the current full on the volume covers ``file`` of ``table`` by its name (decision 53); blocking.
+
+    :param root: the delta files' root
+    :ptype root: Path
+    :param table: the table
+    :ptype table: str
+    :param file: the delta file, under the root
+    :ptype file: str
+    :return: whether it is covered
+    :rtype: bool
+    """
+    current = current_full_manifest(root)
+    entry = current.tables.get(table) if current is not None else None
+    return entry is not None and entry.covers(file)
 
 
 def _flight_ended(flight: asyncio.Task[_Outcome]) -> None:
