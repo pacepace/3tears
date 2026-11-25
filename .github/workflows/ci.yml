@@ -150,7 +150,10 @@ jobs:
     name: unit (${{ matrix.shard }})
     needs: [route, unit-pool]
     if: "!cancelled() && needs.route.result == 'success' && (needs.route.outputs.pool == 'false' || needs.unit-pool.outputs.outcome == 'unreachable')"
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not -latest: the locked playwright (<1.61, packages/scrape/pyproject.toml says why)
+    # cannot install chromium-headless-shell on ubuntu-26.04, which -latest became on 2026-11-25, and the
+    # evals shards' browser tests need it. Move back to -latest when the pin lifts.
+    runs-on: ubuntu-24.04
     strategy:
       # every shard reports, so one failure does not hide another's
       fail-fast: false
