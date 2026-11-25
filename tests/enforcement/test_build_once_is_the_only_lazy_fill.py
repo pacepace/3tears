@@ -38,7 +38,8 @@ nothing to duplicate; and an update through ``X.get(key, default)``, which canno
 missing value from a present one and so is never a check for something to build.
 
 Static parsing only -- no import, no network -- consistent with the rest of
-``tests/enforcement``.
+``tests/enforcement``; each file's fills are kept in the gitignored scan cache by its bytes
+(``file_facts``).
 """
 
 from __future__ import annotations
@@ -49,6 +50,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+from threetears.enforcement.common.scan_cache import file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -424,7 +427,17 @@ def lazy_fills(source: str) -> list[_Fill]:
     :return: the fills, in source order
     :rtype: list[_Fill]
     """
-    tree = ast.parse(source)
+    return _fills_in(ast.parse(source))
+
+
+def _fills_in(tree: ast.Module) -> list[_Fill]:
+    """every hand-rolled lazy fill of a module-level name in a parsed module.
+
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :return: the fills, in source order
+    :rtype: list[_Fill]
+    """
     module_names = _module_level_names(tree)
     fills: list[_Fill] = []
     for node in ast.walk(tree):
@@ -484,6 +497,28 @@ def _source_files() -> list[Path]:
     return found
 
 
+def _file_fills(path: Path, tree: ast.Module) -> tuple[_Fill, ...]:
+    """one source file's hand-rolled fills, as the scan cache keeps them.
+
+    :param path: the file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the fills, in source order
+    :rtype: tuple[_Fill, ...]
+    """
+    return tuple(_fills_in(tree))
+
+
+def _fills_by_file() -> dict[Path, tuple[_Fill, ...]]:
+    """each source file's fills, kept on disk by the file's bytes, so a sibling test or a later batch parses none again.
+
+    :return: path -> its fills, in :func:`_source_files` order
+    :rtype: dict[Path, tuple[_Fill, ...]]
+    """
+    return file_facts(_file_fills, _source_files(), root=_REPO_ROOT)
+
+
 def test_the_source_trees_were_discovered() -> None:
     """the globs must actually match -- a silent zero would pass the guard below.
 
@@ -505,11 +540,11 @@ def test_no_module_level_object_is_filled_by_hand() -> None:
     :raises AssertionError: if a function fills a module-level name after checking it
     """
     violations: list[str] = []
-    for path in _source_files():
+    for path, fills in _fills_by_file().items():
         relative = path.relative_to(_REPO_ROOT).as_posix()
         violations.extend(
             f"{relative}:{fill.line}: {fill.function}() fills module-level {fill.name} by hand"
-            for fill in lazy_fills(path.read_text(encoding="utf-8"))
+            for fill in fills
             if _key(relative, fill) not in _NOT_BUILDS
         )
     assert not violations, (
@@ -530,8 +565,8 @@ def test_every_listed_exception_still_names_a_real_site() -> None:
     """
     found = {
         _key(path.relative_to(_REPO_ROOT).as_posix(), fill)
-        for path in _source_files()
-        for fill in lazy_fills(path.read_text(encoding="utf-8"))
+        for path, fills in _fills_by_file().items()
+        for fill in fills
     }
     assert found, "the walker reported nothing at all across the source trees, so it is checking nothing"
     stale = sorted(set(_NOT_BUILDS) - found)

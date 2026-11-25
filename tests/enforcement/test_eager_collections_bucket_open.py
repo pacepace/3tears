@@ -31,7 +31,8 @@ gate is per-module and the property is per-process; the sibling
 shape, and it exists because a narrower reader hid four processes from an early sweep of this work.
 
 Mode via ``EAGER_BUCKET_OPEN_ENFORCEMENT_MODE`` (default ``strict``). Exemptions live in
-``_eager_bucket_open_exemptions.txt`` and require a specific ``# rationale:`` line.
+``_eager_bucket_open_exemptions.txt`` and require a specific ``# rationale:`` line. Each file's
+wiring is kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -52,9 +53,9 @@ from threetears.enforcement.common import (
     find_local_src_roots,
     iter_python_files,
     parse_exemptions_with_rationale,
-    parse_python_file,
     resolve_mode,
 )
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _EXEMPTIONS_PATH: Final[Path] = _REPO_ROOT / "tests" / "enforcement" / "_eager_bucket_open_exemptions.txt"
@@ -132,6 +133,40 @@ def _names_an_eager_opener(tree: ast.Module) -> bool:
     return False
 
 
+def _wiring(path: Path, tree: ast.Module) -> tuple[int | None, bool]:
+    """one module's L2 wiring, as the scan cache keeps it.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the line of its first ``configure(..., l2_client=...)`` call (``None`` when it has
+        none), and whether it names an eager opener
+    :rtype: tuple[int | None, bool]
+    """
+    calls = _l2_configure_calls(tree)
+    return (calls[0].lineno if calls else None), _names_an_eager_opener(tree)
+
+
+def _wiring_under(scan_roots: tuple[Path, ...]) -> list[tuple[Path, tuple[int | None, bool]]]:
+    """each module's L2 wiring under *scan_roots*, root by root in walk order.
+
+    a file's wiring is kept on disk by its bytes (``file_facts``), so a sibling test or a later
+    batch parses none again; a root outside the repo (a planted tree) keeps its own store under
+    itself. a file that does not parse is noted and skipped, as :func:`parse_python_file` does.
+
+    :param scan_roots: src roots to scan
+    :ptype scan_roots: tuple[Path, ...]
+    :return: ``(file, wiring)`` pairs
+    :rtype: list[tuple[Path, tuple[int | None, bool]]]
+    """
+    found: list[tuple[Path, tuple[int | None, bool]]] = []
+    for root in scan_roots:
+        base = facts_root(root)
+        found.extend(file_facts(_wiring, iter_python_files(root), root=base, unparsable="note").items())
+    return found
+
+
 def find_l2_wiring_without_an_eager_bind(scan_roots: tuple[Path, ...]) -> list[Violation]:
     """flag every module that binds the registry-default L2 client and never opens the bucket.
 
@@ -141,31 +176,26 @@ def find_l2_wiring_without_an_eager_bind(scan_roots: tuple[Path, ...]) -> list[V
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            calls = _l2_configure_calls(tree)
-            if not calls or _names_an_eager_opener(tree):
-                continue
-            violations.append(
-                Violation(
-                    category=_CATEGORY,
-                    file=source,
-                    line=calls[0].lineno,
-                    symbol=source.stem,
-                    reason=(
-                        "this module wires an L2 client onto a CollectionRegistry and never opens "
-                        "the shared collections bucket. the bucket then resolves lazily, on the "
-                        "first cache read, so a configuration this process refuses raises inside a "
-                        "request path under load instead of at startup -- and whichever call site "
-                        "opens first silently decides the config for the whole process, because "
-                        "NatsClient.kv_bucket caches by name. call bind_collections_bucket(nc) "
-                        "immediately after connect and before configure()"
-                    ),
-                )
+    for source, (first_wiring, opens) in _wiring_under(scan_roots):
+        if first_wiring is None or opens:
+            continue
+        violations.append(
+            Violation(
+                category=_CATEGORY,
+                file=source,
+                line=first_wiring,
+                symbol=source.stem,
+                reason=(
+                    "this module wires an L2 client onto a CollectionRegistry and never opens "
+                    "the shared collections bucket. the bucket then resolves lazily, on the "
+                    "first cache read, so a configuration this process refuses raises inside a "
+                    "request path under load instead of at startup -- and whichever call site "
+                    "opens first silently decides the config for the whole process, because "
+                    "NatsClient.kv_bucket caches by name. call bind_collections_bucket(nc) "
+                    "immediately after connect and before configure()"
+                ),
             )
+        )
     return violations
 
 
@@ -207,9 +237,8 @@ class TestEagerCollectionsBucketOpen:
         """
         matched = [
             source.relative_to(_REPO_ROOT).as_posix()
-            for root in find_local_src_roots(_REPO_ROOT)
-            for source in iter_python_files(root)
-            if (tree := parse_python_file(source)) is not None and _l2_configure_calls(tree)
+            for source, (first_wiring, _) in _wiring_under(find_local_src_roots(_REPO_ROOT))
+            if first_wiring is not None
         ]
         assert "packages/registry/src/threetears/registry/server.py" in matched, matched
         assert "packages/agent/tools/src/threetears/agent/tools/bootstrap.py" in matched, matched

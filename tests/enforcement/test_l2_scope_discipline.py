@@ -21,12 +21,14 @@ else, which is why they are enforced statically.
 
 Mode via ``L2_SCOPE_ENFORCEMENT_MODE`` (default ``strict``), mirroring the sibling guards.
 Exemptions live in ``_l2_scope_exemptions.txt`` and require a specific ``# rationale:`` line.
+Each file's findings are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
 
 import ast
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -40,9 +42,9 @@ from threetears.enforcement.common import (
     find_local_src_roots,
     iter_python_files,
     parse_exemptions_with_rationale,
-    parse_python_file,
     resolve_mode,
 )
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXEMPTIONS_PATH = _REPO_ROOT / "tests" / "enforcement" / "_l2_scope_exemptions.txt"
@@ -163,50 +165,33 @@ def find_hand_derived_scopes(scan_roots: tuple[Path, ...]) -> list[Violation]:
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    for keyword in node.keywords:
-                        if keyword.arg != _SCOPE_KEYWORD:
-                            continue
-                        if _is_sanctioned_scope_expression(keyword.value):
-                            continue
-                        violations.append(
-                            Violation(
-                                category=_SCOPE_PROVENANCE_CATEGORY,
-                                file=source,
-                                line=node.lineno,
-                                symbol=_SCOPE_KEYWORD,
-                                reason=(
-                                    f"{_SCOPE_KEYWORD}= is built inline; a scope must come from "
-                                    f"{_SCOPE_PRODUCER}(), never from a sanitized display name "
-                                    "(the dots-to-dash sanitizer is non-injective, so two "
-                                    "principals can collapse onto one scope)"
-                                ),
-                            )
-                        )
-                if isinstance(node, ast.Assign | ast.AnnAssign):
-                    if node.value is None:
-                        continue
-                    named = [n for n in _assignment_targets(node) if _SCOPE_NAME_FRAGMENT in n]
-                    if not named or not _is_hand_built(node.value):
-                        continue
-                    violations.append(
-                        Violation(
-                            category=_SCOPE_PROVENANCE_CATEGORY,
-                            file=source,
-                            line=node.lineno,
-                            symbol=named[0],
-                            reason=(
-                                f"'{named[0]}' is assigned a hand-built value; a scope must come "
-                                f"from {_SCOPE_PRODUCER}()"
-                            ),
-                        )
+    for source, facts in _scope_facts_under(scan_roots):
+        for line, symbol, inline in facts.hand_derived:
+            if inline:
+                violations.append(
+                    Violation(
+                        category=_SCOPE_PROVENANCE_CATEGORY,
+                        file=source,
+                        line=line,
+                        symbol=symbol,
+                        reason=(
+                            f"{_SCOPE_KEYWORD}= is built inline; a scope must come from "
+                            f"{_SCOPE_PRODUCER}(), never from a sanitized display name "
+                            "(the dots-to-dash sanitizer is non-injective, so two "
+                            "principals can collapse onto one scope)"
+                        ),
                     )
+                )
+                continue
+            violations.append(
+                Violation(
+                    category=_SCOPE_PROVENANCE_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=symbol,
+                    reason=f"'{symbol}' is assigned a hand-built value; a scope must come from {_SCOPE_PRODUCER}()",
+                )
+            )
     return violations
 
 
@@ -243,32 +228,97 @@ def find_backstop_caught_with_kv_error(scan_roots: tuple[Path, ...]) -> list[Vio
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ExceptHandler):
-                    continue
-                caught = _handler_names(node)
-                shared = caught & _BACKSTOP_NAMES
-                if not shared or _DEGRADING_ERROR not in caught:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_BACKSTOP_SWALLOW_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=sorted(shared)[0],
-                        reason=(
-                            f"'{sorted(shared)[0]}' is caught alongside {_DEGRADING_ERROR}; those "
-                            "handlers degrade to a warning, so the missing scope would be "
-                            "swallowed and the fleet would run with L2 silently off"
-                        ),
-                    )
+    for source, facts in _scope_facts_under(scan_roots):
+        for line, symbol in facts.backstop_catches:
+            violations.append(
+                Violation(
+                    category=_BACKSTOP_SWALLOW_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=symbol,
+                    reason=(
+                        f"'{symbol}' is caught alongside {_DEGRADING_ERROR}; those "
+                        "handlers degrade to a warning, so the missing scope would be "
+                        "swallowed and the fleet would run with L2 silently off"
+                    ),
                 )
+            )
     return violations
+
+
+# ---------------------------------------------------------------------------
+# the per-file walk
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ScopeFacts:
+    """what both rules read of one module.
+
+    :ivar hand_derived: ``(line, symbol, inline)`` per scope value not produced by the helper, in
+        walk order: ``inline`` for a ``kv_key_scope=`` keyword built in place, otherwise an
+        assignment to a scope-named variable, whose name is the symbol
+    :ivar backstop_catches: ``(line, backstop name)`` per ``except`` clause catching the backstop
+        beside ``KvError``, in walk order
+    """
+
+    hand_derived: tuple[tuple[int, str, bool], ...]
+    backstop_catches: tuple[tuple[int, str], ...]
+
+
+def _scope_facts(path: Path, tree: ast.Module) -> _ScopeFacts:
+    """one module's findings for both rules, as the scan cache keeps them.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the module's findings
+    :rtype: _ScopeFacts
+    """
+    hand_derived: list[tuple[int, str, bool]] = []
+    backstop_catches: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg != _SCOPE_KEYWORD:
+                    continue
+                if _is_sanctioned_scope_expression(keyword.value):
+                    continue
+                hand_derived.append((node.lineno, _SCOPE_KEYWORD, True))
+        if isinstance(node, ast.Assign | ast.AnnAssign):
+            if node.value is None:
+                continue
+            named = [n for n in _assignment_targets(node) if _SCOPE_NAME_FRAGMENT in n]
+            if not named or not _is_hand_built(node.value):
+                continue
+            hand_derived.append((node.lineno, named[0], False))
+        if isinstance(node, ast.ExceptHandler):
+            caught = _handler_names(node)
+            shared = caught & _BACKSTOP_NAMES
+            if not shared or _DEGRADING_ERROR not in caught:
+                continue
+            backstop_catches.append((node.lineno, sorted(shared)[0]))
+    return _ScopeFacts(hand_derived=tuple(hand_derived), backstop_catches=tuple(backstop_catches))
+
+
+def _scope_facts_under(scan_roots: tuple[Path, ...]) -> list[tuple[Path, _ScopeFacts]]:
+    """each module's findings under *scan_roots*, root by root in walk order.
+
+    a file's findings are kept on disk by its bytes (``file_facts``), so the sibling rule or a later
+    batch parses none again; a root outside the repo (a planted tree) keeps its own store under
+    itself. a file that does not parse is noted and skipped, as :func:`parse_python_file` does.
+
+    :param scan_roots: src roots to scan
+    :ptype scan_roots: tuple[Path, ...]
+    :return: ``(file, findings)`` pairs
+    :rtype: list[tuple[Path, _ScopeFacts]]
+    """
+    found: list[tuple[Path, _ScopeFacts]] = []
+    for root in scan_roots:
+        base = facts_root(root)
+        found.extend(file_facts(_scope_facts, iter_python_files(root), root=base, unparsable="note").items())
+    return found
 
 
 # ---------------------------------------------------------------------------

@@ -42,7 +42,8 @@ unchanged: an entry declares a second payload on a shared key, whichever key.
 Scanned as an AST rather than as text, because the thing being detected is a
 dict literal keyed by a particular name, and a regex over source cannot tell
 ``{SEARCH_RESULTS_METADATA_KEY: ...}`` from a docstring mentioning it -- both
-builtins' docstrings mention it, correctly, and must keep being able to.
+builtins' docstrings mention it, correctly, and must keep being able to. What each file
+holds of the border keys is kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ from pathlib import Path
 import pytest
 
 from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -183,21 +185,55 @@ def _relative(path: Path) -> Path:
     return path.relative_to(_REPO_ROOT)
 
 
+@dataclass(frozen=True)
+class _BorderMentions:
+    """What one module holds of the border keys, each ``(line, name or value)`` in walk order."""
+
+    #: dict-literal keys that are a bare name of a border key's constant.
+    symbol_keys: tuple[tuple[int, str], ...]
+    #: dict-literal keys that are a border key's literal value.
+    literal_keys: tuple[tuple[int, str], ...]
+    #: every constant anywhere in the module that is a border key's literal value.
+    literals: tuple[tuple[int, str], ...]
+
+
+def _border_mentions(path: Path, tree: ast.Module) -> _BorderMentions:
+    """One module's mentions of every border key, as the scan cache keeps them."""
+    symbols = {border.symbol for border in _BORDER_KEYS}
+    values = {border.value for border in _BORDER_KEYS}
+    keys = _dict_keys_written(tree)
+    return _BorderMentions(
+        symbol_keys=tuple((key.lineno, key.id) for key in keys if isinstance(key, ast.Name) and key.id in symbols),
+        literal_keys=tuple(
+            (key.lineno, key.value)
+            for key in keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value in values
+        ),
+        literals=tuple(
+            (node.lineno, node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in values
+        ),
+    )
+
+
+def _mentions(paths: list[Path]) -> dict[Path, _BorderMentions]:
+    """Each module's border-key mentions, kept on disk by its bytes, so a sibling case or a later batch parses none again."""
+    return file_facts(_border_mentions, paths, root=_REPO_ROOT)
+
+
 @pytest.mark.parametrize("border", _BORDER_KEYS, ids=lambda border: border.symbol)
 def test_only_the_sanctioned_site_constructs_the_border_key(border: _BorderKey) -> None:
     """No module but the key's own bind module builds a dict keyed by its constant."""
     exempt = _exempted()
     offenders: list[str] = []
 
-    for path in _source_files():
-        relative = _relative(path)
-        if relative == border.sanctioned_site or relative in exempt:
-            continue
-        tree = parse_python_path(path)
+    scanned = [
+        path for path in _source_files() if _relative(path) != border.sanctioned_site and _relative(path) not in exempt
+    ]
+    for path, mentions in _mentions(scanned).items():
         offenders.extend(
-            f"{relative}:{key.lineno}"
-            for key in _dict_keys_written(tree)
-            if isinstance(key, ast.Name) and key.id == border.symbol
+            f"{_relative(path)}:{line}" for line, symbol in mentions.symbol_keys if symbol == border.symbol
         )
 
     assert not offenders, (
@@ -223,17 +259,10 @@ def test_no_module_spells_the_border_key_as_a_literal(border: _BorderKey) -> Non
     allowed = {border.sanctioned_site, _DEFINING_MODULE}
     offenders: list[str] = []
 
-    for path in _source_files(border.literal_roots):
-        relative = _relative(path)
-        if relative in allowed:
-            continue
-        tree = parse_python_path(path)
-        spelled = _dict_keys_written(tree) if border.literal_in_dict_keys_only else list(ast.walk(tree))
-        offenders.extend(
-            f"{relative}:{node.lineno}"
-            for node in spelled
-            if isinstance(node, ast.Constant) and node.value == border.value
-        )
+    scanned = [path for path in _source_files(border.literal_roots) if _relative(path) not in allowed]
+    for path, mentions in _mentions(scanned).items():
+        spelled = mentions.literal_keys if border.literal_in_dict_keys_only else mentions.literals
+        offenders.extend(f"{_relative(path)}:{line}" for line, value in spelled if value == border.value)
 
     assert not offenders, (
         f"these sites hard-code {border.value!r}: {offenders}. Import "
