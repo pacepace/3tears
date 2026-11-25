@@ -39,11 +39,12 @@ Run everything at the gates: before you open a PR (`./scripts/check-all.sh`, whi
 `./scripts/test.sh` and the suites below that it does not), and on the integration branch before it
 merges into `develop`. CI runs everything on every PR as well.
 
-`check-all.sh` also runs the two suites CI's `check` job runs beside the unit suite:
+`check-all.sh` also runs the three suites CI's `check` job runs beside the unit suite:
 `./scripts/test-mcp-v1.sh` (models and evals, which still support mcp 1.x, on it, overlaid on the
-locked 2.x; 3tears-mcp requires 2.x) and
+locked 2.x; 3tears-mcp requires 2.x), `./scripts/test-mcp-floor.sh` (3tears-mcp's unit tests on
+exactly the mcp floor it declares, overlaid on the locked environment) and
 `./scripts/test-otel-floor.sh` (observe's OpenTelemetry tests at its declared floors, in an isolated
-environment). Both set their own dependency versions, so they run locally, never on the pool, and
+environment). All three set their own dependency versions, so they run locally, never on the pool, and
 `test.sh` alone does not cover them: PR #1087 went red in CI on `test-mcp-v1.sh` after every local
 gate was green, because none of them ran it.
 

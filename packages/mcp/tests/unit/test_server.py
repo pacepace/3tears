@@ -351,7 +351,7 @@ class TestDispatchErrorPaths:
         """only the Protocol's RuntimeError means "no identity"; any other raise is a bug and propagates.
 
         the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which answers the
-        request with a JSON-RPC error the client raises, on either SDK major, rather than this server's
+        request with a JSON-RPC error the client raises, rather than this server's
         ``IDENTITY_UNAVAILABLE`` result.
         """
         provider = MagicMock()
