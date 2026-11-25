@@ -20,7 +20,7 @@ from threetears.core.declared import whole_read
 from threetears.core import packed_keys
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
-from threetears.core.backends.protocol import RowcountUnreadableError
+from threetears.core.backends.protocol import RowcountUnreadableError, TransactionTooLargeError
 from threetears.core.exceptions import CorruptCacheEntry, GenerationUnavailableError
 from threetears.observe import contain, get_logger
 from threetears.core.eviction import Declared, Policy
@@ -1152,6 +1152,14 @@ async def flush_pending(
                 # the commit window is preserved for the next cycle.
                 for pw in fresh:
                     await write_buffer.ack(pw.table_name, pw.entity_id)
+            except TransactionTooLargeError as exc:
+                # the store cannot carry this batch as one unit (a git change set over the broker's request size,
+                # refused before it was sent): nothing was written, and one write per entity is the expected answer
+                log.info(
+                    "Batch too large for one transaction; flushing per entity",
+                    extra={"extra_data": {"total": len(fresh), "reason": str(exc)}},
+                )
+                flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
             except Exception as exc:
                 # Graceful degrade: the whole transaction rolled back, so NOTHING
                 # in the fresh set was committed -- replay it through the per-entity

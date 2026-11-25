@@ -863,7 +863,7 @@ class TestFlushAtomicBatch:
 
     @pytest.mark.asyncio
     async def test_backend_without_transaction_uses_per_entity_loop(self) -> None:
-        """a backend lacking ``transaction()`` (e.g. a git DurableStore) skips the batch path."""
+        """a backend lacking ``transaction()`` skips the batch path."""
         buf = WriteBuffer()
         await buf.add("users", "u1", {"id": "u1"})
 
@@ -887,7 +887,7 @@ class TestFlushAtomicBatch:
 
 
 class _NoTransactionStore(DurableStore):
-    """a durable store with the structured ops and no ``transaction()``, as a git-backed one is."""
+    """a durable store with the structured ops and no ``transaction()``."""
 
     async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
         return None

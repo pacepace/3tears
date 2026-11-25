@@ -153,22 +153,33 @@ class GitDurableStore:
 
     # ------------------------------------------------------------------ writes
 
-    def transaction(self, namespace: str | None = None) -> contextlib.AbstractAsyncContextManager[ChangeSet]:
+    def transaction(
+        self, namespace: str | None = None, *, message: str = "store: one change set"
+    ) -> contextlib.AbstractAsyncContextManager[ChangeSet]:
         """a change set over the repository, as a database store's transaction: every write handed it (``conn=``)
         lands in its ONE commit when the block ends cleanly, and none does when it raises or a row it writes changed
         since it was read (:class:`ChangeConflictError`, the whole set refused).
 
         What a write-buffered flush opens (``flush_pending``'s batch), so the rows a flush writes are one commit, not
-        one commit each. A commit has no row or byte bound, so a flush's ``max_rows`` / ``max_bytes`` never split it:
-        the batch is the buffer's, whatever its size. A change set forwarded to a writer in another process is one
-        request, so its size is the forward's to carry.
+        one commit each. On the writer a commit has no row or byte bound. On a process that is not the writer the
+        change set is forwarded to it as ONE request, which the broker's ``max_payload`` caps (1 MB untuned): a set
+        over it is refused before it is sent (:class:`ForwardTooLargeError`, a
+        :class:`~threetears.core.backends.protocol.TransactionTooLargeError`), nothing is written, and a flush then
+        writes its rows one by one.
+
+        A forwarded set whose reply does not arrive in time may still have been committed by the writer; the sender
+        is told :class:`NotTheWriterError`, and a flush writes the rows again one by one. On an ``update`` table that
+        rewrite is the same content (no new commit); on a ``raise`` table each landed row is refused as already
+        present, retried and finally dropped from the buffer with an error logged, the row itself already stored.
 
         :param namespace: unused; a database store's schema routing, taken for the same shape
         :ptype namespace: str | None
+        :param message: the commit's message
+        :ptype message: str
         :return: an async context manager yielding the change set
         :rtype: contextlib.AbstractAsyncContextManager[ChangeSet]
         """
-        return self.repo.change("flush: buffered writes")
+        return self.repo.change(message)
 
     async def _precheck(self, change: Change) -> ConflictedRow | None:
         """the early answer to a write: would it apply to the current row?

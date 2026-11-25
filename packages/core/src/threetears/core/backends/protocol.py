@@ -62,6 +62,7 @@ __all__ = [
     "PrefixDeletingStore",
     "RawL3Pool",
     "RowcountUnreadableError",
+    "TransactionTooLargeError",
     "SchemaRegisteringStore",
     "TruncatingStore",
     "load_requests",
@@ -1032,6 +1033,15 @@ class RowcountUnreadableError(ValueError):
     "no rows": a fenced update that "lost", a delete that "found nothing" are decisions a caller
     makes on 0, and this is not 0. A :class:`ValueError` so a caller already treating a bad tag as
     a value error keeps doing so.
+    """
+
+
+class TransactionTooLargeError(RuntimeError):
+    """a transaction the store cannot carry as one unit; nothing in it was written.
+
+    Raised before anything is sent: the store's own bound (a git change set forwarded to its writer as one NATS
+    request, which the broker's ``max_payload`` caps) refuses the whole. A caller that batched for speed, as a
+    write-buffered flush does, writes the rows one by one instead; that is the expected answer, not a failure.
     """
 
 

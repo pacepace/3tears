@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+from threetears.core.backends.protocol import TransactionTooLargeError
 from threetears.core.exceptions import ConcurrentModificationError
 
 __all__ = [
@@ -146,6 +147,33 @@ class DivergedError(GitStoreError):
         super().__init__(
             f"{branch} ({head[:12]}) and origin/{branch} ({origin[:12]}) have both moved on; nothing was pulled. "
             f"A person must reconcile them (this store never merges or forces)"
+        )
+
+
+class ForwardTooLargeError(GitStoreError, TransactionTooLargeError):
+    """a change this process would forward to the writer is larger than the broker carries in one request.
+
+    Refused before it is sent, so nothing was committed. A change set this large is split by its caller: a
+    write-buffered flush writes its rows one by one.
+    """
+
+    def __init__(self, size: int, limit: int, lease_key: str) -> None:
+        """name the sizes.
+
+        :param size: the sealed request's bytes
+        :ptype size: int
+        :param limit: the broker's ``max_payload``
+        :ptype limit: int
+        :param lease_key: the repository's writer lease, naming it
+        :ptype lease_key: str
+        :return: None
+        :rtype: None
+        """
+        self.size = size
+        self.limit = limit
+        super().__init__(
+            f"a change forwarded to the writer of {lease_key} is {size} bytes, over the broker's max_payload of "
+            f"{limit}; nothing was sent or committed"
         )
 
 

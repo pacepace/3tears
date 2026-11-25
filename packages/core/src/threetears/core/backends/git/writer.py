@@ -23,6 +23,7 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
+from threetears.core.backends.git.errors import ForwardTooLargeError
 from threetears.core.coordination import HeldLease, KVLease, LeaseLossReason, LeaseUnavailable
 from threetears.nats.forward import ForwardHandler, forward, serve_owner
 from threetears.observe import get_logger, spawn_background
@@ -190,11 +191,17 @@ class WriterRole:
         :rtype: bytes
         :raises NoOwnerError: when no process serves it now
         :raises ForwardedHandlerError: when the handler raised
+        :raises ForwardTooLargeError: when the sealed request is over the broker's ``max_payload``; nothing was sent
         """
+        sealed = self._envelope.seal(name, payload)
+        limit = self._nats.max_payload
+        if limit is not None and len(sealed) > limit:
+            # refused here rather than by the client, whose refusal would read as the writer being unreachable
+            raise ForwardTooLargeError(len(sealed), limit, self.lease_key)
         return await forward(
             self._nats,
             self.subject_key(name),
-            self._envelope.seal(name, payload),
+            sealed,
             timeout=self._forward_timeout,
             family=FORWARD_FAMILY,
         )

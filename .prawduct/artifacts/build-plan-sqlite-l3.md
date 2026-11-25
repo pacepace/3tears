@@ -96,3 +96,14 @@ added to a stored table, a table change inside an open transaction).
 
 Done when: lint, `typecheck.sh core`, `test.sh core`, the enforcement suite, the contract on Postgres
 (`test-integration.sh core`) and the unit suite pass; Critic run.
+
+## Follow-up: the git L3's batched flush (branch `feat/git-l3-transaction`)
+
+Owner ruling 2026-11-25, "Finish the git L3 follow-ups with the SQLite L3": a write-buffered flush over the git
+store is one commit. `GitDurableStore.transaction(message=...)` opens a change set as a database store opens a
+transaction; a refused set falls back to the flush's per-entity path. A set a non-writer would forward over the
+broker's `max_payload` is refused unsent (`ForwardTooLargeError`, a `TransactionTooLargeError`), and the flush writes
+it per entity without logging a failed batch.
+
+Done when: the forwarded path (one commit, and the too-large refusal) is tested live, a hand edit on one row's file
+refuses the set while the other rows land, `test.sh` and `test-integration.sh -rs` pass, and the Critic clears it.
