@@ -2716,9 +2716,20 @@ async def test_the_keys_an_apply_replaced_are_made_distinct_for_the_checkpoint_i
     assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
 
 
-async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_turn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+class _ReadMessage(CacheInvalidationMessage):
+    """a row message that says when its table is read: the owner reads each message's once as it drains it."""
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "table" and _READS:
+            _READS[-1] += 1
+        return super().__getattribute__(name)
+
+
+#: while a test watches: the table reads of row messages in each turn of the loop, the newest last; empty otherwise
+_READS: list[int] = []
+
+
+async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_turn() -> None:
     """Flips if the messages heard while a pass read are drained in one turn of the loop, however many: a run of row
     messages read into Arrow took the loop 1.24 ms for 2,000, 78 ms for 200,000 (2026-11-25). Every drain of a pass
     takes them :data:`~threetears.core.collections.copy_follower.MESSAGES_PER_TURN` at a time, and the next pass reads
@@ -2732,30 +2743,33 @@ async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_tur
     assert await follower.catch_up()
     count = copy_follower.MESSAGES_PER_TURN * 4
     await asyncio.to_thread(l3.put, _rows("IL", count, votes=6))
-    heard = await asyncio.to_thread(
-        lambda: [CacheInvalidationMessage(table=_TABLE, ids=["IL", str(i)]) for i in range(count)]
-    )
-    runs: list[int] = []
-    apply = getattr(CopyFollower, "_apply_messages")  # the owner's drain of a run of messages, watched
-
-    def counted(self: CopyFollower, messages: tuple[Any, ...], start: int, stop: int) -> None:
-        runs.append(stop - start)
-        apply(self, messages, start, stop)
-
-    monkeypatch.setattr(CopyFollower, "_apply_messages", counted)
+    heard = await asyncio.to_thread(lambda: [_ReadMessage(table=_TABLE, ids=["IL", str(i)]) for i in range(count)])
     l3.put([("VA", 1, 70)])
     log.commit([("VA", 1)])
     lock.commit("state:VA")
+    loop = asyncio.get_running_loop()
 
-    # heard while the pass reads: told as the pass reads the stamp after its stage, before its last drains
+    def turned() -> None:
+        # once a turn of the loop: the reads after it are the next turn's
+        if _READS:
+            _READS.append(0)
+            loop.call_soon(turned)
+
     def tell_all() -> None:
+        # heard while the pass reads the stamp after its stage, before its last drains; its own reads not counted
         for message in heard:
             registry.tell_derived_caches(message)
+        _READS.append(0)
+        loop.call_soon(turned)
 
     lock.on_read = (lock.reads + 2, tell_all)
-    assert await follower.catch_up()
-    assert max(runs) <= copy_follower.MESSAGES_PER_TURN, f"a turn drained {max(runs)} messages"
-    assert sum(runs) >= count
+    try:
+        assert await follower.catch_up()
+        turns = list(_READS)
+    finally:
+        _READS.clear()
+    assert max(turns) <= copy_follower.MESSAGES_PER_TURN, f"a turn drained {max(turns)} messages"
+    assert sum(turns) >= count, f"the messages were not all drained: {sum(turns)} of {count}"
     lock.commit("state:IL")
     assert await follower.catch_up()
     assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
