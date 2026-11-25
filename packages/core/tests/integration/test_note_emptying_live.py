@@ -20,6 +20,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from asyncpg.exceptions import QueryCanceledError
 
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.ddl.change_notes import note_table
@@ -40,6 +41,7 @@ _IDLE = 1
 class _Ring:
     pool: asyncpg.Pool
     schema: str
+    dsn: str
 
 
 class _NoLog:
@@ -99,7 +101,7 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
             f"INSERT INTO {schema}.{note_table(_IDLE)} (table_name, keys, key_text) "
             f"SELECT 'table_' || (g % 2000), ARRAY[g::text], g::text FROM generate_series(1, {_NOTES}) g"
         )
-        yield _Ring(pool=pool, schema=schema)
+        yield _Ring(pool=pool, schema=schema, dsn=db_container)
     finally:
         await pool.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await pool.close()
@@ -208,4 +210,97 @@ async def test_an_emptied_full_slot_s_vacuum_costs_within_twice_a_bare_vacuum(db
         assert problem is None, problem
     finally:
         await pool.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await pool.close()
+
+
+class _CancelsOne(_Logged):
+    """the keeper's pool, every DELETE recorded with its arguments, notes and seconds; the first DELETE from the
+    ``cancel``-th on that covers more than one hash code or note is answered as the database answers a statement past
+    its timeout (rolled back whole: nothing deleted, never sent)."""
+
+    def __init__(self, pool: asyncpg.Pool, cancel: int) -> None:
+        super().__init__(pool)
+        self._cancel = cancel
+        #: where in ``deletes`` the cancelled one is
+        self.cancelled: int | None = None
+        #: each DELETE: its arguments, the notes it deleted (None when cancelled), its seconds
+        self.deletes: list[tuple[tuple[Any, ...], int | None, float]] = []
+
+    def _cancelled(self, query: str, args: tuple[Any, ...]) -> bool:
+        if not query.startswith("DELETE") or len(self.deletes) + 1 < self._cancel or self.cancelled is not None:
+            return False
+        # a statement that can be smaller: a band over more than one hash code (YugabyteDB: start, end), or a batch
+        # of more than one note (Postgres: LIMIT, the id it starts past)
+        size = args[1] - args[0] if "yb_hash_code" in query else args[0]
+        if size <= 1:
+            return False
+        self.cancelled = len(self.deletes)
+        self.deletes.append((args, None, 0.0))
+        return True
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        if self._cancelled(query, args):
+            raise QueryCanceledError("canceling statement due to statement timeout")
+        rows = await super().fetch(query, *args)
+        if query.startswith("DELETE"):
+            self.deletes.append((args, len(rows), self.took[-1]))
+        return rows
+
+    async def execute(self, query: str, *args: Any) -> str:
+        if self._cancelled(query, args):
+            raise QueryCanceledError("canceling statement due to statement timeout")
+        status = await super().execute(query, *args)
+        if query.startswith("DELETE"):
+            self.deletes.append((args, int(status.rpartition(" ")[2]), self.took[-1]))
+        return status
+
+
+async def test_an_emptying_bigger_than_a_batch_runs_bounded_statements_and_resumes_after_a_timeout(ring: _Ring) -> None:
+    """Flips if an emptying of a slot past a walk's sizing count (replay 7, 2026-11-25) sends a statement deleting more
+    than a few batches, or answers a cancelled statement by sending it again unchanged (replay 7's loop: the same band
+    every pass, 80+ statement timeouts) or by walking back over what it finished: the statement after the cancelled
+    one starts where it did and is smaller, and every note is deleted once. Under the hub's 5 s statement timeout.
+    Prints the statements' notes a second, the measurement ``_DELETE_SECONDS`` is checked against."""
+    pool = await asyncpg.create_pool(
+        ring.dsn,
+        min_size=1,
+        max_size=2,
+        server_settings={"statement_timeout": "5000"},
+    )
+    assert pool is not None
+    try:
+        logged = _CancelsOne(pool, cancel=3)
+        keeper = ChangeNoteKeeper(
+            logged, notes_schema=ring.schema, log=_NoLog(), empty_pause=timedelta(0), empty_budget=timedelta(hours=1)
+        )
+        empty, deleted = False, 0
+        for _ in range(3):  # passes: the cancelled statement ends none, it only shrinks the next
+            empty, count = await keeper.empty_slot(_IDLE)
+            deleted += count
+            if empty:
+                break
+        assert (empty, deleted) == (True, _NOTES)
+        assert await pool.fetchval(f"SELECT count(*) FROM {ring.schema}.{note_table(_IDLE)}") == 0
+        assert logged.cancelled is not None, logged.deletes[:20]
+        (cancelled_args, _, _), (after_args, _, _) = logged.deletes[logged.cancelled : logged.cancelled + 2]
+        async with pool.acquire() as conn:
+            yugabyte = await on_yugabyte(conn)
+        if yugabyte:
+            # (start, end) of the hash band: the same start, a narrower band
+            assert (
+                after_args[0] == cancelled_args[0]
+                and after_args[1] - after_args[0] < cancelled_args[1] - cancelled_args[0]
+            )
+        else:
+            # (LIMIT, the id it starts past): the same place, a smaller batch
+            assert after_args[1] == cancelled_args[1] and after_args[0] < cancelled_args[0]
+        ran = [(notes, seconds) for _, notes, seconds in logged.deletes if notes is not None]
+        assert max(notes for notes, _ in ran) <= 4 * 1000, ran
+        slowest = max(seconds for _, seconds in ran)
+        rate = sum(notes for notes, _ in ran) / sum(seconds for _, seconds in ran)
+        print(
+            f"emptying {_NOTES:,} notes ({'YugabyteDB' if yugabyte else 'Postgres'}): {len(ran)} statements, "
+            f"{rate:,.0f} notes/s, slowest statement {slowest * 1000:.1f} ms"
+        )
+    finally:
         await pool.close()
