@@ -266,13 +266,15 @@ class _PandasTries:
             self.tries += 1
 
 
-def test_a_keyed_read_binds_no_python_value(conn: duckdb.DuckDBPyConnection) -> None:
+def test_a_keyed_read_binds_no_python_value(conn: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch) -> None:
     """Flips if a keyed read binds any of its values through DuckDB's Python layer, which tries ``import pandas``
     twice a value and, pandas absent, searches the whole import path each time: a scope bound beside a page of keys,
     or keys Arrow types as DuckDB does but the Arrow round once refused (UUIDs: 100,000 of them took 46 s of loop CPU
-    and 200,002 failed imports on a laptop, 0.2 s and none through Arrow)."""
-    if "pandas" in sys.modules:
+    and 200,002 failed imports on a laptop, 0.2 s and none through Arrow). The absent-pandas entry in sys.modules is
+    taken out while it runs, so each try a bound value makes reaches the finders and is counted."""
+    if sys.modules.get("pandas") is not None:
         pytest.skip("pandas is imported here: DuckDB's probe finds it and never searches the path")
+    monkeypatch.delitem(sys.modules, "pandas", raising=False)
     conn.execute("CREATE TABLE ids AS SELECT uuid() AS u, i AS k FROM range(2000) r(i)")
     uuids = [row[0] for row in conn.execute("SELECT u FROM ids ORDER BY k").fetchall()]
     reads: list[tuple[str, list[Any]]] = [
@@ -289,4 +291,20 @@ def test_a_keyed_read_binds_no_python_value(conn: duckdb.DuckDBPyConnection) -> 
     finally:
         sys.meta_path.remove(finder)
     assert answered == [999, 2000, 7, 500]
+    assert finder.tries == 0
+
+
+def test_an_absent_pandas_is_never_searched_for_on_a_scalar_bind(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if, pandas not installed, binding a scalar (what the Arrow round leaves bound) makes DuckDB's
+    ``import pandas`` search the import path: duckdb_binds marks pandas absent in sys.modules once, so the import
+    fails at once (a single-scalar bind 0.79 -> 0.26 ms on a laptop, a 100-value list 55.6 -> 6.4 ms)."""
+    if sys.modules.get("pandas") is not None:
+        pytest.skip("pandas is installed here: DuckDB finds it and never searches the path")
+    finder = _PandasTries()
+    sys.meta_path.insert(0, finder)
+    try:
+        answered = run_bound(conn, "SELECT s FROM t WHERE k = $1", [5], _fetch)
+    finally:
+        sys.meta_path.remove(finder)
+    assert answered == [("s5",)]
     assert finder.tries == 0

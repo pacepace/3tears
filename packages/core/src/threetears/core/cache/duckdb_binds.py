@@ -28,7 +28,9 @@ held between statements.
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
 from collections.abc import Callable, Sequence
 from typing import Any, Final, TypeVar
 
@@ -48,6 +50,21 @@ try:
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; without it every parameter is bound as before
     _PYARROW = False
+
+# pandas absent: say so in sys.modules, once, so ``import pandas`` fails at once (a None entry stops the import before
+# any finder runs) instead of searching the whole import path. DuckDB tries that import twice for every value bound
+# value by value (what the Arrow round below leaves bound: a statement of a few scalars, None, values Arrow cannot type)
+# and never remembers that it failed. Measured on a laptop's workspace venv (37 path entries): a single-scalar bind
+# 0.79 -> 0.26 ms of the calling thread's CPU, a 100-value list 55.6 -> 6.4 ms. Only where pandas is not installed:
+# where it is, the import finds it and DuckDB uses it. Nothing in 3tears imports pandas; ``import pandas`` still
+# raises ImportError and ``importlib.util.find_spec("pandas")`` still answers None. pyarrow's pandas shim reads
+# sys.modules itself and takes a None entry for pandas, so it is made to look first (any array it builds does) and
+# keeps its own answer, absent; only ``Table.to_pandas`` looks again, and fails (AttributeError, not ImportError) as
+# it would have without pandas
+if "pandas" not in sys.modules and importlib.util.find_spec("pandas") is None:
+    if _PYARROW:
+        pa.array([0])
+    sys.modules["pandas"] = None  # type: ignore[assignment]
 
 __all__ = ["KEYS", "run_bound", "run_joined"]
 
