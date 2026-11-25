@@ -96,3 +96,17 @@ added to a stored table, a table change inside an open transaction).
 
 Done when: lint, `typecheck.sh core`, `test.sh core`, the enforcement suite, the contract on Postgres
 (`test-integration.sh core`) and the unit suite pass; Critic run.
+
+## Follow-up chunk: an adopted hand edit gets a new version (branch `feat/git-l3-hand-edit-version`)
+
+Owner ruling 2026-11-25 ("Finish the git L3 follow-ups with the SQLite L3"): hand edits re-versioned so a
+compare-and-swap cannot overwrite them. Built on this plan's branch, merged after it.
+
+- `GitRepo.commit_paths` / `commit_files` stamp every adopted row file of a versioned table with a new version
+  (now, or just past HEAD's); a moved file keeps its version and bytes.
+- [DECISION: the version is stamped by decoding and re-encoding the row through the layout's codec, and the
+  re-encode is documented, not avoided | a version-only rewrite would need a codec-level hook every product codec
+  implements; the content is kept, only formatting changes]
+- [DECISION: a row file the codec cannot read refuses the whole call with a `GitStoreError` naming it | adopting it
+  unversioned would reopen the overwrite this chunk closes; a refusal names what to fix]
+- Tests: `packages/core/tests/backends_git/test_hand_edit_version.py`. Docs: `docs/adoption/core-git.md`, CHANGELOG.
