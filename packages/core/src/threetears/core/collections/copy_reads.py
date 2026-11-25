@@ -9,7 +9,7 @@ loop, and on a pod's shared Arrow copy each such read held an engine slot. Here 
 connection or a cursor in the serving process:
 
 - **a keyed lookup** is :meth:`~threetears.core.collections.copy_queries.CopyQueries.lookup` (Arrow's hash kernels,
-  in a query worker at and above its measured cut-off): keyed, never a scan by SQL;
+  in a query worker, however few the keys): keyed, never a scan by SQL;
 - **the current version** is :meth:`~threetears.core.collections.copy_queries.CopyQueries.current`: a lease and the
   mark of the change it holds, read off its mark file on a thread, no cursor (:class:`PinnedCopy`);
 - **a job** (a checkpoint's parts, a state's rows, a drift check's fingerprint) is

@@ -6,7 +6,7 @@ A table of ``rows`` rows in 51 state parts is published in a shared Arrow store.
 key, of three columns):
 
 ``inline``
-    the lookup in this process (``copy_queries._inline_lookup``, as the pool runs it on a thread): the version leased,
+    the lookup in this process (:func:`_inline_lookup`, the inline path the pool ran on a thread before it was deleted): the version leased,
     the table's part files found in its manifest and mapped, each part probed (``arrow_keys.rows_named``), the rows
     found copied out. Its CPU is this thread's (``time.thread_time``), all of it the serving process's.
 ``worker``
@@ -37,8 +37,11 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from threetears.core.collections.copy_queries import CopyQueries, _inline_lookup
-from threetears.core.shared_arrow import Parts, SharedArrowStore
+import pyarrow.ipc as ipc
+
+from threetears.core.arrow_keys import rows_named
+from threetears.core.collections.copy_queries import CopyQueries
+from threetears.core.shared_arrow import Parts, SharedArrowStore, version_files
 
 _STATES: Final = pa.array([f"S{i:02d}" for i in range(51)], pa.string())
 _KEY: Final = ("state", "office_key", "candidate_id")
@@ -69,6 +72,25 @@ def _published(store: SharedArrowStore, rows: pa.Table) -> None:
         mask = pc.equal(ordered["state"], state)
         parts[state] = ordered.filter(mask)
     store.publish("c-0", {"results": Parts(rows.schema, parts)})
+
+
+def _inline_lookup(
+    store: SharedArrowStore, version: str | None, table: str, keys: pa.Table, key: tuple[str, ...]
+) -> tuple[pa.Table, str]:
+    """the inline lookup measured here, as copy_queries ran it before its deletion (2026-11-25): the version leased,
+    its table's part files mapped and probed together, the rows found copied out."""
+    with store.lease(version) as leased:
+        paths = sorted(
+            held.path
+            for name, held in version_files(store.root, leased.name).items()
+            if name == f"{table}.arrow" or (name.startswith(f"{table}@") and name.endswith(".arrow"))
+        )
+        mapped: list[pa.Table] = []
+        for path in paths:
+            with pa.memory_map(str(path), "r") as source:
+                mapped.append(ipc.open_file(source).read_all())
+        rows = pa.concat_tables(mapped)
+        return rows.take(pa.array(rows_named(rows, keys, key))).combine_chunks(), leased.name
 
 
 def _inline(store: SharedArrowStore, keys: pa.Table) -> tuple[float, float]:
@@ -116,12 +138,14 @@ async def main(count: int) -> None:
     with tempfile.TemporaryDirectory() as root:
         store = SharedArrowStore(Path(root) / "shm", max_bytes=8 << 30)
         await asyncio.to_thread(_published, store, rows)
-        queries = CopyQueries(store, workers=1, inline_keys=0)
+        queries = CopyQueries(store, workers=1)
         try:
             warm = rows.slice(0, 10).select(list(_KEY))
             await (await queries.lookup("results", warm, _KEY)).aclose()
             print(f"{count:,} rows in 51 parts, {rows.nbytes / 2**20:.0f} MiB; medians of {_RUNS} runs (ms)")
-            print(f"{'keys':>8} {'inline cpu':>11} {'inline wall':>12} {'worker cpu':>11} {'worker wall':>12} {'loop late':>10}")
+            print(
+                f"{'keys':>8} {'inline cpu':>11} {'inline wall':>12} {'worker cpu':>11} {'worker wall':>12} {'loop late':>10}"
+            )
             cut = 0
             for keys_count in _COUNTS:
                 if keys_count > count:

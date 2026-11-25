@@ -40,9 +40,8 @@ alone is replaced for its next query; the queries its siblings run answer as if 
 given again: its caller decides, since a query that killed one worker would kill the next.
 
 **Keyed lookups** (:meth:`CopyQueries.lookup`) find a table's rows by key in Arrow's hash kernels
-(``arrow_keys.rows_named``), never DuckDB, never a Python object a key: below :data:`INLINE_LOOKUP_KEYS` keys in the
-serving process (on a thread: the version's part files are mapped there, and the probe costs less than a worker's
-round trip), at and above it in a query worker like any query.
+(``arrow_keys.rows_named``), never DuckDB, never a Python object a key, in a query worker like any query, whatever
+the count of keys (why there is no inline path: :meth:`CopyQueries.lookup`).
 
 **A job** (:meth:`CopyQueries.run_job`) is a module-level function given at the call, run in a worker over the version
 as a declared query is (the connection and its arguments), answering a table: what the copy follower runs over the
@@ -93,7 +92,6 @@ from threetears.core.utils.cpu_quota import bound_native_threads, effective_cpu_
 from threetears.observe import contain, get_logger
 
 __all__ = [
-    "INLINE_LOOKUP_KEYS",
     "CopyQueries",
     "CopyVersion",
     "QueryAnswer",
@@ -155,19 +153,6 @@ _ANSWER: Final = "answer-"
 #: the most scalar binds a query takes: a query's own values (a state, a race, an instant). Keys by the hundred are
 #: rows, handed as a table (``tables=``) so they cross as Arrow, never pickled
 _MAX_BINDS: Final = 64
-
-#: a keyed lookup of fewer keys than this is answered in the serving process, else in a query worker. 1: only a lookup
-#: naming no key is answered here. Measured 2026-11-25 (``scripts/measure-copy-lookup-cutoff.py``, the method of
-#: ``copy_key_work.INLINE_KEYS``, inventory section 4) on macOS arm64, 10 cores, Python 3.14, under a load average of
-#: 270-460 (other builders' suites and a VM), so every figure is inflated about 10x, the ratios not: a table in 51
-#: state parts, 1 to 100k keys, medians of 9 runs of CPU ms. Inline: 18.5 / 24.9 / 55.4 at 1 key for 20k / 200k / 2M
-#: rows, growing with the keys (171 / 217 / 262 at 10k). The worker's round trip cost the serving process 8.6 / 9.2 /
-#: 11.3 at 1 key and 9.9 / 11.2 / 13.4 at 10k: flat in the keys, as ``INLINE_KEYS``' 0.6-0.8 ms is. Inline lost at every
-#: count and size. Why (one key, CPU ms): mapping the 51 part files is 6.3 (20k rows) to 13.2 (2M rows) and a probe of
-#: every part 8.8 to 32.8 (one probe over the parts side by side: 1.0 to 30.9, which this takes); a probe reads every
-#: row of the table whatever the keys, so the cost is the table's, not the lookup's. A lookup could win here only over
-#: a small table whose files the serving process keeps mapped between lookups: not built (a design question, decision 4)
-INLINE_LOOKUP_KEYS: Final = 1
 
 #: the name a lookup's keys are handed to its worker under
 _KEYS: Final = "__lookup_keys"
@@ -500,46 +485,6 @@ def query_job(context: JobContext, ticket: int, query: _Query) -> tuple[int, int
     return rows, os.getpid()
 
 
-def _inline_lookup(
-    store: SharedArrowStore, version: str | None, table: str, keys: pa.Table, key: Sequence[str]
-) -> tuple[pa.Table, str]:
-    """a keyed lookup in the serving process, on a thread: the version leased, its table's files mapped (its pages
-    the store's) and probed together, the rows found copied out, the files and the lease let go.
-
-    :param store: the store
-    :ptype store: SharedArrowStore
-    :param version: the version; None for the current one
-    :ptype version: str | None
-    :param table: the table
-    :ptype table: str
-    :param keys: the keys
-    :ptype keys: pa.Table
-    :param key: the key's columns
-    :ptype key: Sequence[str]
-    :return: the rows found, and the version read
-    :rtype: tuple[pa.Table, str]
-    :raises LookupError: when nothing is published, the version named is gone, or it holds no such table
-    """
-    with store.lease(version) as leased:
-        whole = f"{table}.arrow"
-        prefix = f"{table}@"
-        paths = sorted(
-            held.path
-            for name, held in version_files(store.root, leased.name).items()
-            if name == whole or (name.startswith(prefix) and name.endswith(".arrow"))
-        )
-        if not paths:
-            raise LookupError(f"the copy's version {leased.name} holds no table {table!r}")
-        mapped: list[pa.Table] = []
-        for path in paths:
-            with pa.memory_map(str(path), "r") as source:
-                mapped.append(ipc.open_file(source).read_all())
-        # one probe over the parts side by side (no buffer copied): 1.0 ms against 8.8 ms for a probe a part, 51 parts
-        # of 20k rows (INLINE_LOOKUP_KEYS' measure). take copies the rows found out of the mapped pages, so nothing
-        # here outlives the lease
-        return _found(pa.concat_tables(mapped), keys, key).combine_chunks(), leased.name
-
-
 class QueryAnswer:
     """a query's answer: its rows mapped from the shared result the worker wrote, zero-copy, until :meth:`close`.
 
@@ -798,8 +743,6 @@ class CopyQueries:
     :ptype threads: int
     :param preload: modules the workers hold from their start (the prepare hook's and the declared queries')
     :ptype preload: Sequence[str]
-    :param inline_keys: a lookup of fewer keys runs in the serving process (:data:`INLINE_LOOKUP_KEYS`)
-    :ptype inline_keys: int
     :raises ValueError: for a prepare hook or a declared query that is not a module-level function, or a bound past the
         cancel board's slots
     """
@@ -816,7 +759,6 @@ class CopyQueries:
         private_bytes: int = _QUERY_PRIVATE_BYTES,
         threads: int = _QUERY_THREADS,
         preload: Sequence[str] = (),
-        inline_keys: int = INLINE_LOOKUP_KEYS,
     ) -> None:
         count = query_workers() if workers is None else workers
         if count < 1 or max_waiting < 0 or count + max_waiting >= _BOARD_SLOTS:
@@ -848,7 +790,6 @@ class CopyQueries:
             for index in range(count)
         )
         self._free = _FreeWorkers(count)
-        self._inline_keys = inline_keys
         #: the queries admitted at once; its waiters are served in the order they came
         self._room = asyncio.Semaphore(count + max_waiting)
         #: the last caller's baton: the next caller asks for a worker once it is passed (:meth:`_answer`)
@@ -1198,8 +1139,15 @@ class CopyQueries:
         timeout: float | None = None,
         reader: bool = True,
     ) -> QueryAnswer:
-        """the rows of ``table`` whose key ``keys`` names, by Arrow's hash kernels: in the serving process below
-        :data:`INLINE_LOOKUP_KEYS` keys (on a thread), in a query worker at and above it.
+        """the rows of ``table`` whose key ``keys`` names, by Arrow's hash kernels, in a query worker, however few the
+        keys.
+
+        Why no inline path (Pace, 2026-11-25): a lookup in the serving process lost to the worker's round trip at every
+        key count and table size measured (``scripts/measure-copy-lookup-cutoff.py``, 2026-11-25, macOS arm64, CPU ms
+        of the serving process, a table in 51 state parts): inline 18.5 / 24.9 / 55.4 at one key for 20k / 200k / 2M
+        rows, against a round trip of 8.6 / 9.2 / 11.3, flat in the keys (9.9 to 13.4 at 10k keys). Mapping the part
+        files and probing every row is the table's cost, not the lookup's; inline could win only over a small table
+        kept mapped between lookups, which is not built.
 
         :param table: the table
         :ptype table: str
@@ -1222,9 +1170,6 @@ class CopyQueries:
         if missing:
             raise KeyError(f"a lookup's keys lack its key columns: {missing}")
         named = keys.select(list(key))
-        if named.num_rows < self._inline_keys:
-            found, read = await asyncio.to_thread(_inline_lookup, self._store, version, table, named, tuple(key))
-            return QueryAnswer(found, read, os.getpid(), None)
         query = _Query(sql=None, declared=None, binds=(), prepare=None, lookup=(table, tuple(key)))
         return await self._answer(query, {_KEYS: named}, version, timeout, reader, True)
 

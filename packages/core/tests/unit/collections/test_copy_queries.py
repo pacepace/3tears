@@ -25,7 +25,6 @@ import pytest
 
 from packages.core.tests.unit.collections import copy_query_jobs
 from threetears.core.collections.copy_queries import (
-    INLINE_LOOKUP_KEYS,
     CopyQueries,
     QueryAnswer,
     QueryPoolFull,
@@ -411,23 +410,14 @@ def _held_rows_of(store: SharedArrowStore, keys: pa.Table) -> pa.Table:
 
 
 class TestKeyedLookups:
-    async def test_a_lookup_below_the_bound_runs_in_the_serving_process(
-        self, queries: CopyQueries, store: SharedArrowStore
+    @pytest.mark.parametrize("count", [1, 2, 1_000])
+    async def test_a_lookup_runs_in_a_worker_however_few_its_keys(
+        self, queries: CopyQueries, store: SharedArrowStore, count: int
     ) -> None:
-        keys = _keys(INLINE_LOOKUP_KEYS - 1)
-        with _RowsNamed() as calls:
-            answer = await queries.lookup("results", keys, _KEY)
-        assert answer.worker == os.getpid()
-        assert calls.probes > 0 and calls.connects == 0
-        found = (await _answer(answer)).sort_by("candidate_id")
-        assert found.equals(_held_rows_of(store, keys))
-
-    @pytest.mark.parametrize("over", [0, 1, INLINE_LOOKUP_KEYS])
-    async def test_a_lookup_at_and_above_the_bound_runs_in_a_worker(
-        self, queries: CopyQueries, store: SharedArrowStore, over: int
-    ) -> None:
+        """Flips if a lookup, even of one key, probes the copy in the serving process: inline lost to the worker's round
+        trip at every size measured, so there is no inline path."""
         await _worker_pid(queries)
-        keys = _keys(INLINE_LOOKUP_KEYS + over)
+        keys = _keys(count)
         with _RowsNamed() as calls:
             answer = await queries.lookup("results", keys, _KEY)
         assert answer.worker != os.getpid()
@@ -446,7 +436,7 @@ class TestKeyedLookups:
         finally:
             await asyncio.to_thread(lease.release)
 
-    @pytest.mark.parametrize("count", [1, INLINE_LOOKUP_KEYS])
+    @pytest.mark.parametrize("count", [1, 2])
     async def test_a_lookup_of_a_table_the_copy_lacks_is_refused(self, queries: CopyQueries, count: int) -> None:
         with pytest.raises(LookupError, match="no table"):
             await queries.lookup("absent", _keys(count), _KEY)
@@ -455,7 +445,7 @@ class TestKeyedLookups:
 
     async def test_a_lookup_in_a_worker_crosses_as_arrow(self, queries: CopyQueries) -> None:
         await _worker_pid(queries)
-        keys = _keys(max(INLINE_LOOKUP_KEYS, 20_001))
+        keys = _keys(20_001)
         tracemalloc.start()
         try:
             answer = await queries.lookup("results", keys, _KEY)
