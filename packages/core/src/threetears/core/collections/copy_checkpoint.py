@@ -22,7 +22,9 @@ scope's rows are read from the copy by its scope column, and a table with no sco
 rows) is patched by key, its part read back from the Object Store, the touched keys dropped and the copy's rows of them
 added. A table is read whole from the copy only when no checkpoint holds it (its cold start), its schema digest
 changed, or the follower read it whole from L3 (a cold start, reset or schema change), each counted in
-``copy_checkpoint_whole_writes_total{table, why}``. A replica whose last checkpoint's parts are no longer named by the
+``copy_checkpoint_whole_writes_total{table, why}``. Every read of the copy and its parts' encoding is a job over the state the
+write pins (``copy_reads.PinnedCopy``): over a copy published as shared Arrow, in a query worker, so a write opens no
+DuckDB connection or cursor in the serving process. A replica whose last checkpoint's parts are no longer named by the
 newest or the previous checkpoint (another replica wrote twice since) writes no checkpoint: it never rewrites whole
 what the newest already holds. A write reads and encodes all its new parts before it puts the first, and asks the
 Object Store for their room together: refused up front (``ObjectStoreFullError``, nothing written) when it has none,
@@ -59,12 +61,13 @@ import json
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.interfaces.keyed.rows import KeyColumn
-from threetears.observe import contain, get_logger
+from threetears.observe import cancel_and_wait, contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.declared import whole_read
@@ -79,6 +82,7 @@ from threetears.core.sql_fragments import quote_identifier, unnest_key_join
 
 if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable
+    from threetears.core.collections.copy_reads import PinnedCopy
 
 try:
     import pyarrow as pa
@@ -157,6 +161,16 @@ _PART_STAGE: Final = f"{STAGE_PREFIX}ckpt_part__"
 
 #: the touched keys a patched part drops from its old rows, staged beside it (:func:`_patched_part`)
 _PART_KEYS_STAGE: Final = f"{STAGE_PREFIX}ckpt_part_keys__"
+
+#: what a patch's job is handed (:func:`_patched_parts`): the touched keys, and the part's old bytes as the Object Store
+#: holds them (one row), decoded where the job runs, never in the serving process
+_PATCH_KEYS: Final = f"{STAGE_PREFIX}ckpt_touched__"
+_PATCH_OLD: Final = f"{STAGE_PREFIX}ckpt_old__"
+
+#: a parts job's answer (:func:`_encoded`): one row a part, its scope, its rows and its bytes (zstd Arrow IPC)
+_PARTS_SCHEMA: Final = (
+    pa.schema([("scope", pa.string()), ("rows", pa.int64()), ("data", pa.large_binary())]) if pa is not None else None
+)
 
 
 def _writes() -> Any:
@@ -933,12 +947,15 @@ class CopyCheckpoints:
     def _incremental(self) -> bool:
         return bool(self._priors)
 
-    async def write(self, read: Callable[[], Any]) -> Checkpoint | None:
+    async def write(
+        self, read: Callable[[], AbstractAsyncContextManager[tuple[PinnedCopy, Any, Mapping[str, str | None]]]]
+    ) -> Checkpoint | None:
         """write a checkpoint of the copy as one read holds it, and move the pointer to it.
 
-        :param read: opens the read: a context manager giving ``(cursor, stamp, marks)``
-            (:meth:`~threetears.core.collections.copy_follower.CopyFollower.reading_marked`)
-        :ptype read: Callable[[], Any]
+        :param read: pins the state the checkpoint writes: an async context manager giving ``(state, stamp, marks)``,
+            the state a :class:`~threetears.core.collections.copy_reads.PinnedCopy` its parts are read through in jobs
+            (:meth:`~threetears.core.collections.copy_follower.CopyFollower.current`)
+        :ptype read: Callable[[], AbstractAsyncContextManager[tuple[PinnedCopy, Any, Mapping[str, str | None]]]]
         :return: the checkpoint written; None when another replica holds the lock, the copy has no stamp yet, a later
             checkpoint got there first, or this replica could only rewrite whole what the newest holds
         :rtype: Checkpoint | None
@@ -1034,7 +1051,11 @@ class CopyCheckpoints:
             return _Plan(table, None, why=_WHOLE_TOUCH, kind=kind)
         return _Plan(table, prior, scopes=frozenset(s for scopes in followed.values() for s in scopes or ()))
 
-    async def _write_locked(self, read: Callable[[], Any], lock: str) -> Checkpoint | None:
+    async def _write_locked(
+        self,
+        read: Callable[[], AbstractAsyncContextManager[tuple[PinnedCopy, Any, Mapping[str, str | None]]]],
+        lock: str,
+    ) -> Checkpoint | None:
         found = await self.newest()
         newest, revision = (found[0], found[1]) if found is not None else (None, None)
         seq = (newest.seq + 1) if newest is not None else 1
@@ -1044,7 +1065,7 @@ class CopyCheckpoints:
         taken: _Taken | None = None
         kind = "incremental" if self._incremental() else "full"
         try:
-            with read() as (cursor, stamp, marks):
+            async with read() as (state, stamp, marks):
                 if stamp is None:
                     _writes().labels(kind=kind, outcome="skipped").inc()
                     return None
@@ -1084,7 +1105,7 @@ class CopyCheckpoints:
                 # pod's 16 GiB limit beside its copy: no bound per batch of parts is needed at that size
                 pending: list[tuple[str, bytes]] = []
                 for plan in plans:
-                    parts = await self._write_table(cursor, plan, seq, pending, (lock, claim))
+                    parts = await self._write_table(state, plan, seq, pending, (lock, claim))
                     derived = self._derived(plan.table.name)
                     tables[plan.table.name] = CheckpointTable(
                         mark=None if derived else marks[plan.table.name],
@@ -1167,11 +1188,12 @@ class CopyCheckpoints:
         return None
 
     async def _write_table(
-        self, cursor: Any, plan: _Plan, seq: int, pending: list[tuple[str, bytes]], keys: tuple[str, str]
+        self, state: PinnedCopy, plan: _Plan, seq: int, pending: list[tuple[str, bytes]], keys: tuple[str, str]
     ) -> tuple[tuple[str, str | None, int], ...]:
-        """one table's parts: read whole from the read (its cold start, a schema change, or a whole read of it), or
+        """one table's parts: read whole from the state (its cold start, a schema change, or a whole read of it), or
         its touched scopes read again by scope, or its one part patched by the touched keys; every other part named
-        again as the plan's prior holds it.
+        again as the plan's prior holds it. Each read and its parts' encoding is a job over the state
+        (:meth:`~threetears.core.collections.copy_reads.PinnedCopy.run_job`: a query worker over a shared copy).
 
         :return: the parts, in order
         :rtype: tuple[tuple[str, str | None, int], ...]
@@ -1179,16 +1201,15 @@ class CopyCheckpoints:
         """
         table, prior = plan.table, plan.prior
         if prior is None:
-            read = WHOLE_WRITE_READS[plan.kind]
-            reader = await asyncio.to_thread(read, cursor, table.name, self._part_rows)
-            parts = await self._put_parts(_split_by_scope(reader, table), table.name, seq, pending, keys)
+            encoded = await self._read_parts(state, _whole_parts, (plan.kind, table, self._part_rows), None, keys)
+            parts = self._named(encoded, table.name, seq, pending)
             self._refuse_unscoped(table, parts)
             return tuple(parts)
         if table.scope is None:
             if plan.keys is None:
                 return prior.parts
-            patched = await self._patch(cursor, table, prior, plan.keys)
-            parts = await self._put_parts(iter([(None, patched)]), table.name, seq, pending, keys)
+            encoded = await self._patch(state, table, prior, plan.keys, keys)
+            parts = self._named(encoded, table.name, seq, pending)
             self._refuse_unscoped(table, parts)
             return tuple(parts)
         kept = [part for part in prior.parts if part[1] not in plan.scopes]
@@ -1196,12 +1217,13 @@ class CopyCheckpoints:
             return prior.parts
         column, prefix = table.scope
         cast = table.key_cast(column)
+        scopes = tuple((scope, scope[len(prefix) :]) for scope in sorted(plan.scopes) if scope.startswith(prefix))
         fresh: list[tuple[str, str | None, int]] = []
-        for scope in sorted(plan.scopes):
-            if not scope.startswith(prefix):
-                continue
-            batches = _scope_rows(cursor, table.name, column, cast, scope, scope[len(prefix) :], self._part_rows)
-            fresh.extend(await self._put_parts(batches, table.name, seq, pending, keys))
+        if scopes:
+            encoded = await self._read_parts(
+                state, _scope_parts, (table, column, cast, self._part_rows, scopes), None, keys
+            )
+            fresh = self._named(encoded, table.name, seq, pending)
         order = sorted({part[1] or "" for part in [*kept, *fresh]})
         return tuple(part for scope in order for part in [*kept, *fresh] if (part[1] or "") == scope)
 
@@ -1216,55 +1238,78 @@ class CopyCheckpoints:
                 "declares no scope: give it the scope its rows belong to (FollowedTable.scope)"
             )
 
-    async def _patch(self, cursor: Any, table: FollowedTable, prior: CheckpointTable, keys: Any) -> Any:
-        """a table with no scope's one part, patched by key: read back from the Object Store, the touched keys'
-        rows dropped and the copy's rows of them (a keyed read) added.
+    async def _patch(
+        self, state: PinnedCopy, table: FollowedTable, prior: CheckpointTable, keys: Any, held: tuple[str, str]
+    ) -> list[tuple[str | None, int, bytes]]:
+        """a table with no scope's one part, patched by key: its bytes read back from the Object Store and handed to
+        the patch's job (:func:`_patched_parts`), which drops the touched keys' rows and adds the copy's rows of them
+        (a keyed read), and encodes the part again.
 
-        :return: the rows
-        :rtype: pyarrow.Table
+        :return: the part, encoded (none when it holds no rows)
+        :rtype: list[tuple[str | None, int, bytes]]
         """
-        old = None
+        tables: dict[str, Any] = {_PATCH_KEYS: keys}
+        expected, object_name = -1, ""
         if prior.parts:
             (object_name, _, rows), *more = prior.parts
             if more:
                 raise ValueError(f"{table.name} has {len(prior.parts)} parts and no scope: it cannot be patched by key")
-            old = await asyncio.to_thread(_decode_part, await self._store.get(object_name))
-            if old.num_rows != rows:
-                raise ValueError(f"part {object_name} holds {old.num_rows} rows, its manifest says {rows}")
-        return await asyncio.to_thread(_patched_part, cursor, table, old, keys)
+            data = await self._store.get(object_name)
+            tables[_PATCH_OLD] = await asyncio.to_thread(_old_part, data)
+            expected = rows
+        return await self._read_parts(state, _patched_parts, (table, expected, object_name), tables, held)
 
-    async def _put_parts(
+    async def _read_parts(
         self,
-        batches: Iterator[tuple[str | None, Any]],
-        table: str,
-        seq: int,
-        pending: list[tuple[str, bytes]],
-        keys: tuple[str, str],
+        state: PinnedCopy,
+        job: Callable[[Any, Sequence[Any]], Any],
+        args: tuple[Any, ...],
+        tables: Mapping[str, Any] | None,
+        held: tuple[str, str],
+    ) -> list[tuple[str | None, int, bytes]]:
+        """a parts job's answer (:func:`_encoded`): each part's scope, rows and bytes, the lock and claim renewed every
+        :data:`_RENEW_EVERY_SECONDS` while the job runs.
+
+        :return: the parts, in order
+        :rtype: list[tuple[str | None, int, bytes]]
+        """
+        renewing = asyncio.ensure_future(self._renew_every(held))
+        try:
+            answer = await state.run_job(job, args, tables=tables)
+        finally:
+            await cancel_and_wait(renewing)
+        return await asyncio.to_thread(_parts_of, answer)
+
+    async def _renew_every(self, held: tuple[str, str]) -> None:
+        """renew the lock and claim every :data:`_RENEW_EVERY_SECONDS`, until cancelled.
+
+        :param held: the lock and claim
+        :ptype held: tuple[str, str]
+        :return: nothing
+        :rtype: None
+        """
+        while True:
+            await asyncio.sleep(_RENEW_EVERY_SECONDS)
+            for key in held:
+                await self._renew(key)
+
+    def _named(
+        self, encoded: Sequence[tuple[str | None, int, bytes]], table: str, seq: int, pending: list[tuple[str, bytes]]
     ) -> list[tuple[str, str | None, int]]:
-        """encode each (scope, batch) as one part of that scope, held in ``pending`` until the write puts them all
-        (:meth:`_put_pending`), renewing the lock and claim every :data:`_RENEW_EVERY_SECONDS`.
+        """name each encoded part of its scope, held in ``pending`` until the write puts them all
+        (:meth:`_put_pending`).
 
         :return: the parts
         :rtype: list[tuple[str, str | None, int]]
         """
         parts: list[tuple[str, str | None, int]] = []
         counts: dict[str | None, int] = {}
-        renewed = time.monotonic()
-        while True:
-            # the next part read and encoded in one hop off the loop
-            item = await asyncio.to_thread(_next_part, batches)
-            if item is None:
-                break
-            scope, rows, data = item
+        for scope, rows, data in encoded:
             n = counts.get(scope, 0)
             counts[scope] = n + 1
             name = f"{self.base}/{seq}/{self._owner}/{table}/{_scope_segment(scope)}/{n}"
             pending.append((name, data))
             parts.append((name, scope, rows))
-            if time.monotonic() - renewed >= _RENEW_EVERY_SECONDS:
-                for key in keys:
-                    await self._renew(key)
-                renewed = time.monotonic()
         return parts
 
     async def _put_pending(self, pending: list[tuple[str, bytes]], written: list[str], keys: tuple[str, str]) -> None:
@@ -1631,3 +1676,111 @@ def _next_batch(reader: Any) -> Any:
         return reader.read_next_batch()
     except StopIteration:  # NOSILENT: the reader's end is its answer: no more batches
         return None
+
+
+# --- the jobs a write reads its parts in (copy_reads: a query worker over a shared copy) ---------------------------
+
+
+def _encoded(batches: Iterator[tuple[str | None, Any]]) -> Any:
+    """each (scope, batch) with rows encoded as one part (:func:`_next_part`), as a reader of one row a part
+    (:data:`_PARTS_SCHEMA`): read as it is written, so the job holds one answer file's parts at a time, never every
+    part of a table.
+
+    :param batches: each scope and its rows
+    :ptype batches: Iterator[tuple[str | None, pyarrow.RecordBatch | pyarrow.Table]]
+    :return: the parts
+    :rtype: pyarrow.RecordBatchReader
+    """
+
+    def parts() -> Iterator[Any]:
+        while (item := _next_part(batches)) is not None:
+            scope, rows, data = item
+            yield pa.record_batch(
+                [pa.array([scope], pa.string()), pa.array([rows], pa.int64()), pa.array([data], pa.large_binary())],
+                schema=_PARTS_SCHEMA,
+            )
+
+    return pa.RecordBatchReader.from_batches(_PARTS_SCHEMA, parts())
+
+
+def _whole_parts(connection: Any, args: Sequence[Any]) -> Any:
+    """a job: a table's parts, read whole from the state by the situation's own declared read
+    (:data:`WHOLE_WRITE_READS`), cut by scope and encoded.
+
+    :param connection: the state's connection or cursor
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param args: the situation (``cold_start``, ``schema_change``, ``rolling_upgrade``), the table, its part's rows
+    :ptype args: Sequence[Any]
+    :return: the parts (:func:`_encoded`)
+    :rtype: pyarrow.RecordBatchReader
+    """
+    kind, table, rows = args
+    return _encoded(_split_by_scope(WHOLE_WRITE_READS[kind](connection, table.name, rows), table))
+
+
+def _scope_parts(connection: Any, args: Sequence[Any]) -> Any:
+    """a job: a table's parts of some scopes, each read by its scope column (:func:`_scope_rows`) and encoded.
+
+    :param connection: the state's connection or cursor
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param args: the table, its scope column, that column's SQL type, its part's rows, and each scope with its value
+    :ptype args: Sequence[Any]
+    :return: the parts, scope by scope in the order given (:func:`_encoded`)
+    :rtype: pyarrow.RecordBatchReader
+    """
+    table, column, cast, rows, scopes = args
+    return _encoded(
+        item
+        for scope, value in scopes
+        for item in _scope_rows(connection, table.name, column, cast, scope, value, rows)
+    )
+
+
+def _patched_parts(connection: Any, args: Sequence[Any]) -> Any:
+    """a job: a table with no scope's one part patched by the touched keys (:func:`_patched_part`), its old bytes
+    (handed as :data:`_PATCH_OLD`, when it held a part) decoded here and the result encoded.
+
+    :param connection: the state's connection or cursor, the touched keys registered as :data:`_PATCH_KEYS`
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param args: the table, the rows its old part's manifest entry says (-1 for no old part), and that part's name
+    :ptype args: Sequence[Any]
+    :return: the part (:func:`_encoded`; none when it holds no rows)
+    :rtype: pyarrow.RecordBatchReader
+    :raises ValueError: when the old part holds other than the rows its manifest says
+    """
+    table, expected, object_name = args
+    keys = connection.table(_PATCH_KEYS).to_arrow_table()
+    old = None
+    if expected >= 0:
+        old = _decode_part(connection.table(_PATCH_OLD).to_arrow_table().column("data")[0].as_py())
+        if old.num_rows != expected:
+            raise ValueError(f"part {object_name} holds {old.num_rows} rows, its manifest says {expected}")
+    return _encoded(iter([(None, _patched_part(connection, table, old, keys))]))
+
+
+def _old_part(data: bytes) -> Any:
+    """a part's bytes as the one-row table a patch's job is handed (:data:`_PATCH_OLD`).
+
+    :param data: the bytes
+    :ptype data: bytes
+    :return: the table
+    :rtype: pyarrow.Table
+    """
+    return pa.table({"data": pa.array([data], pa.large_binary())})
+
+
+def _parts_of(answer: Any) -> list[tuple[str | None, int, bytes]]:
+    """a parts job's answer as each part's scope, rows and bytes (a Python object a part, never a row). Blocking:
+    run it on a thread.
+
+    :param answer: the answer (:data:`_PARTS_SCHEMA`)
+    :ptype answer: pyarrow.Table
+    :return: the parts, in order
+    :rtype: list[tuple[str | None, int, bytes]]
+    """
+    found: list[tuple[str | None, int, bytes]] = []
+    for batch in answer.to_batches():
+        scopes, rows, datas = batch.column(0), batch.column(1), batch.column(2)
+        for at in range(batch.num_rows):
+            found.append((scopes[at].as_py(), int(rows[at].as_py()), datas[at].as_py()))
+    return found

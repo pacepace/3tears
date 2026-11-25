@@ -34,11 +34,13 @@ pa_ipc = pytest.importorskip("pyarrow.ipc")
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, FollowerPhase  # noqa: E402
+from threetears.core.collections.copy_reads import CursorReads  # noqa: E402
 from threetears.core.collections.delta_files import read_volume_file, write_volume_file  # noqa: E402
 from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.collections.epoch_change import EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
+from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.collections.volume_fulls import (  # noqa: E402
     FullAbsent,
     FullPart,
@@ -220,6 +222,11 @@ async def test_a_start_loads_every_part_and_reports_each_parts_version(tmp_path:
     assert part.num_rows == 3
 
 
+def _reads(backend: DuckDBBackend) -> CursorReads:
+    """the in-process copy's own reads, as a follower over it makes them: a state's keys read on its snapshot."""
+    return CursorReads(backend, ProcessWorkers(workers=1, name="test volume fulls"))
+
+
 async def test_staging_some_states_replaces_only_their_rows_and_reports_only_their_versions(tmp_path: Path) -> None:
     """Flips if staging states {VA, IL} of a full empties the table (a whole change), leaves a row the copy held of
     VA that the full no longer does, touches another state's rows, or reports versions of states it did not stage
@@ -233,7 +240,10 @@ async def test_staging_some_states_replaces_only_their_rows_and_reports_only_the
     oh = write_full_part(tmp_path, _TABLE, "state:OH", _rows("OH", 4), "inc:8")
     publish_full_manifest(tmp_path, term=3, tables={_TABLE: FullTable(version="inc:6", parts=(va, il, oh))})
     staged = await VolumeFulls(tmp_path, [_FOLLOWED]).stage(
-        backend, stage_name=lambda name: f"{STAGE_PREFIX}{name}__full", states=["state:VA", "state:IL"]
+        backend,
+        stage_name=lambda name: f"{STAGE_PREFIX}{name}__full",
+        states=["state:VA", "state:IL"],
+        reads=_reads(backend),
     )
     assert isinstance(staged, StagedFull), staged
     assert [change.whole for change in staged.changes] == [False]
@@ -254,7 +264,7 @@ async def test_a_staged_state_with_no_part_only_loses_its_rows_at_the_table_s_ve
     backend.stage_rows(f"{STAGE_PREFIX}seed__rows", _TABLE, pa.concat_tables([_rows("VA", 2), _rows("OH", 2)]), _KEY)
     backend.apply_staged([StagedChange(table=_TABLE, key=_KEY, rows=f"{STAGE_PREFIX}seed__rows")], mark=1)
     _full(tmp_path, 3, version="inc:6", OH=1)
-    staged = await VolumeFulls(tmp_path, [_FOLLOWED]).stage(backend, states={"state:VA"})
+    staged = await VolumeFulls(tmp_path, [_FOLLOWED]).stage(backend, states={"state:VA"}, reads=_reads(backend))
     assert isinstance(staged, StagedFull), staged
     backend.apply_staged(staged.changes, mark=2)
     assert _held(backend) == [("OH", 0, 1), ("OH", 1, 1)]
@@ -269,10 +279,10 @@ async def test_a_table_not_split_by_state_refuses_state_staging_and_stages_nothi
     publish_full_manifest(tmp_path, term=3, tables={_TABLE: FullTable(version="inc:5", parts=parts)})
     backend = _backend()
     with pytest.raises(StatesNotSplitError, match="reload the table whole"):
-        await VolumeFulls(tmp_path, [stateless]).stage(backend, states={"state:VA"})
+        await VolumeFulls(tmp_path, [stateless]).stage(backend, states={"state:VA"}, reads=_reads(backend))
     # the scoped table whose full holds a part of no state refuses too
     with pytest.raises(StatesNotSplitError):
-        await VolumeFulls(tmp_path, [_FOLLOWED]).stage(backend, states={"state:VA"})
+        await VolumeFulls(tmp_path, [_FOLLOWED]).stage(backend, states={"state:VA"}, reads=_reads(backend))
     assert backend.staged_stages() == []
     assert isinstance(await VolumeFulls(tmp_path, [stateless]).stage(backend), StagedFull), "whole still loads"
 

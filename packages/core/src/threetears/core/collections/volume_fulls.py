@@ -76,6 +76,7 @@ from threetears.core.keyed import InlineDuckDB, read_state_arrow, run_inline
 
 if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable, FollowerBackend
+    from threetears.core.collections.copy_reads import CopyReads
 
 try:
     import pyarrow as pa
@@ -108,7 +109,6 @@ __all__ = [
     "StaleTermError",
     "StatesNotSplitError",
     "VolumeFulls",
-    "copy_rows_of_state",
     "current_full_manifest",
     "deletable_full_files",
     "fingerprint_columns",
@@ -121,6 +121,7 @@ __all__ = [
     "read_full_part",
     "row_digests",
     "rows_fingerprint",
+    "state_rows",
     "write_full_part",
 ]
 
@@ -949,30 +950,27 @@ class StatesNotSplitError(ValueError):
     """
 
 
-def copy_rows_of_state(backend: FollowerBackend, table: FollowedTable, value: str, columns: Sequence[str]) -> Any:
-    """the copy's rows of one state, pinned by the table's scope column (``read_state_arrow``, pinned by its
-    DeclaredScope column): a local read of the pod's own copy, every row it holds of the state, never L3. Blocking: run
-    it on a thread.
+def state_rows(connection: Any, args: Sequence[Any]) -> Any:
+    """a job over one state of the copy (``copy_reads``): its rows of one state, pinned by the table's scope column
+    (``read_state_arrow``, pinned by its DeclaredScope column), every row it holds of the state, never L3. Run in a
+    query worker over a shared copy's version, or on the in-process copy's snapshot cursor.
 
-    :param backend: the copy
-    :ptype backend: FollowerBackend
-    :param table: a scoped table
-    :ptype table: FollowedTable
-    :param value: the state's scope column value, as text (the column's type binds it)
-    :ptype value: str
-    :param columns: the columns read
-    :ptype columns: Sequence[str]
+    :param connection: the state's connection or cursor
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param args: the table (scoped), the state's scope column value as text (the column's type binds it), and the
+        columns read
+    :ptype args: Sequence[Any]
     :return: the rows
     :rtype: pyarrow.Table
     """
+    table, value, columns = args
     assert table.scope is not None  # noqa: S101 -- asked only of a scoped table
-    with backend.read_snapshot() as cursor:
-        # a blocking caller on its own thread: the read runs inline on the snapshot cursor (InlineDuckDB)
-        return run_inline(
-            read_state_arrow(
-                InlineDuckDB(cursor), table.name, scope_column=table.scope[0], state=value, columns=list(columns)
-            )
+    # the job's caller's thread or worker: the read runs inline on the state's connection (InlineDuckDB)
+    return run_inline(
+        read_state_arrow(
+            InlineDuckDB(connection), table.name, scope_column=table.scope[0], state=value, columns=list(columns)
         )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1024,6 +1022,7 @@ class VolumeFulls:
         manifest: FullManifest | None = None,
         stage_name: Callable[[str], str] | None = None,
         states: Collection[str] | None = None,
+        reads: CopyReads | None = None,
     ) -> StagedFull | FullAbsent:
         """stage each table's parts of the current full beside the copy, a part at a time; :class:`FullAbsent` when no
         full is published, or the current one does not hold every table.
@@ -1042,6 +1041,10 @@ class VolumeFulls:
             as it holds them then: the caller holds those states' changes back until the stage is applied, as a reload
             does its table's
         :ptype states: Collection[str] | None
+        :param reads: the copy's reads (``copy_reads``): staged by state, the keys the copy holds of each state are read
+            through them (a job over the state, never a cursor of the serving process over a shared copy). Required with
+            ``states``
+        :ptype reads: CopyReads | None
         :return: what was staged, or why nothing was
         :rtype: StagedFull | FullAbsent
         :raises FileNotFoundError: when a part the manifest names is not on the volume
@@ -1071,7 +1074,9 @@ class VolumeFulls:
                     lacking=(name,),
                 )
         if states is not None:
-            return await self._stage_states(backend, manifest, stage_name, frozenset(states))
+            if reads is None:
+                raise ValueError("a full staged by state reads the copy's keys of each state: give the copy's reads")
+            return await self._stage_states(backend, reads, manifest, stage_name, frozenset(states))
         versions: dict[str, dict[str | None, str]] = {}
         marks: dict[str, str] = {}
         changes: list[StagedChange] = []
@@ -1102,6 +1107,7 @@ class VolumeFulls:
     async def _stage_states(
         self,
         backend: FollowerBackend,
+        reads: CopyReads,
         manifest: FullManifest,
         stage_name: Callable[[str], str] | None,
         states: frozenset[str],
@@ -1144,9 +1150,7 @@ class VolumeFulls:
                 await asyncio.to_thread(backend.stage_keys, keys_stage, name, table.key, pa.table({}))
                 for state in sorted(states):
                     # the copy's keys of the state, an Arrow table straight into the keys stage, never rows in Python
-                    held_keys = await asyncio.to_thread(
-                        copy_rows_of_state, backend, table, state[len(table.scope[1]) :], table.key
-                    )
+                    held_keys = await reads.run_job(state_rows, (table, state[len(table.scope[1]) :], tuple(table.key)))
                     await asyncio.to_thread(backend.stage_keys, keys_stage, name, table.key, held_keys)
                 for part in parts:
                     rows += await asyncio.to_thread(self._stage_part, backend, stage, table, part)

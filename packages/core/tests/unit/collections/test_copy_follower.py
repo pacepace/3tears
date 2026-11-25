@@ -611,7 +611,7 @@ async def test_a_checkpoint_written_part_way_moves_no_pointer_and_leaves_nothing
     # in full
     checkpoints.applied(1, {_TABLE: None}, whys={_TABLE: "reset"})
     with pytest.raises(ConnectionError):
-        await checkpoints.write(writer.reading_marked)
+        await checkpoints.write(writer.current)
     # the pointer still names the old checkpoint, every part of it is there, and no claim or lock is left
     assert pointers.entries == before
     assert set(store.objects) == kept
@@ -639,7 +639,7 @@ async def test_a_checkpoint_beaten_to_the_pointer_retires_its_own_parts() -> Non
         return await real_update(key=key, value=value, revision=revision, ttl=ttl)
 
     pointers.update = beaten  # type: ignore[method-assign]
-    assert await checkpoints.write(writer.reading_marked) is None
+    assert await checkpoints.write(writer.current) is None
     assert set(store.objects) == named
 
 
@@ -652,7 +652,7 @@ async def test_a_lock_another_replica_holds_skips_the_write() -> None:
     assert await writer.catch_up()
     await writer.checkpointed()
     await pointers.create(key=f"{checkpoints.base}-lock", value=b"b")
-    assert await checkpoints.write(writer.reading_marked) is None
+    assert await checkpoints.write(writer.current) is None
 
 
 async def test_a_checkpoint_is_due_by_the_rows_applied_since_never_by_time() -> None:
@@ -1212,7 +1212,7 @@ async def test_how_long_an_epoch_from_the_notes_waits_for_a_checkpoint_is_a_gaug
 
     age = _notes_age()
     assert age is not None and 60 <= age < 120, "a minute old, not yet due"
-    assert await checkpoints.write(writer.reading_marked) is not None
+    assert await checkpoints.write(writer.current) is not None
     assert _notes_age() == 0.0
     writer.stop()
 
@@ -2431,7 +2431,7 @@ async def test_a_pass_that_only_relabels_the_copy_asks_the_backend_for_no_apply(
     assert await follower.catch_up()
     assert applies == []
     assert follower.stamp == lock.version
-    with follower.reading_marked() as (_cursor, stamp, marks):
+    async with follower.current() as (_state, stamp, marks):
         # a reader of the copy as it is reads it at the new label, with the marks it holds now
         assert stamp == lock.version
         assert marks == follower.marks()
@@ -2984,13 +2984,14 @@ async def test_a_checkpoint_cancelled_while_its_read_opens_leaves_no_slot_held(
     reader.close()
 
 
-async def test_a_checkpoints_fresh_read_takes_no_slot_on_the_loop(
+async def test_a_checkpoint_pinned_behind_the_last_change_pins_again_off_the_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Flips if a checkpoint whose read ahead missed the last change (an apply landed while it claimed its lock) waits
-    on the event loop for an engine slot for the fresh read it opens there: the loop held up to the reader's
-    ``admit_wait`` (30 s in a pod), and with one slot, the read ahead holding it, every time, the checkpoint then lost.
-    The fresh read rides the read ahead's slot: the loop is never late, and the checkpoint is written."""
+    """Flips if a checkpoint whose pinned state missed the last change (an apply landed while it pinned) is written
+    from it, claiming a change it does not hold, or pins again on the event loop: there it would wait for an engine
+    slot (with one slot, the stale pin holding it, every time), the loop held up to the reader's ``admit_wait`` (30 s
+    in a pod). The stale pin is let go and the state pinned again, each on a thread: the loop is never late, the
+    checkpoint is written from the fresh state, and no slot is left held."""
     l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
     l3.put(_rows("VA", 200))
     log.commit([("VA", i) for i in range(200)])
@@ -3001,14 +3002,12 @@ async def test_a_checkpoints_fresh_read_takes_no_slot_on_the_loop(
     await writer.checkpointed()
     loop_thread = threading.get_ident()
     marked = backend.staged_mark
-    fresh: list[str] = []
+    pins: list[bool] = []
 
     def behind(cursor: Any) -> int | None:
-        # the read ahead (on a thread) holds a change before the last applied: the checkpoint opens a fresh read
-        if threading.get_ident() != loop_thread:
-            return None
-        fresh.append("fresh read on the loop")
-        return marked(cursor)
+        # the first pin holds a change before the last applied: the checkpoint pins again
+        pins.append(threading.get_ident() == loop_thread)
+        return None if len(pins) == 1 else marked(cursor)
 
     monkeypatch.setattr(backend, "staged_mark", behind)
     late = 0.0
@@ -3029,9 +3028,10 @@ async def test_a_checkpoints_fresh_read_takes_no_slot_on_the_loop(
     ticker.cancel()
     await asyncio.gather(ticker, return_exceptions=True)
 
-    assert late < 0.5, f"the event loop was {late:.2f} s late: the fresh read waited for a slot on it"
+    assert late < 0.5, f"the event loop was {late:.2f} s late: a pin waited for a slot on it"
     assert _pointer_seq(pointers) == 2, "the checkpoint was not written"
-    assert fresh, "the checkpoint never opened a fresh read"
+    assert len(pins) == 2, f"the checkpoint pinned {len(pins)} times, not once again after the stale pin"
+    assert pins == [False, False], "a pin was taken on the event loop"
     assert _slots_held(reader) == (0, 0)
     writer.stop()
     reader.close()

@@ -27,8 +27,8 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,12 +49,14 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, rail_arrow_types  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
+from threetears.core.collections.copy_reads import CursorReads, PinnedCopy  # noqa: E402
 from threetears.core.collections.delta_fold import DeltaFolds, FoldedTable  # noqa: E402
 from threetears.core.testing.delta_copies import NO_COPIES  # noqa: E402
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections.volume_fulls import write_full_part  # noqa: E402
 from threetears.core.keyset import keyset_arrow_pages  # noqa: E402
+from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.sql_fragments import unnest_key_join  # noqa: E402
 from threetears.core.testing.calibrate import best_seconds, budget_problem  # noqa: E402
 
@@ -226,11 +228,20 @@ def _checkpoints(backend: DuckDBBackend, store: _Store, pointers: _Pointers) -> 
     )
 
 
+#: the worker processes a cursor read's fingerprint would be taken in: a checkpoint takes none, and none starts until
+#: a job is given
+_WORKERS = ProcessWorkers(workers=1, name="test copy follower whole reads")
+
+
 def _reader(backend: DuckDBBackend) -> Any:
-    @contextmanager
-    def read() -> Iterator[Any]:
-        with backend.read_snapshot() as cursor:
-            yield cursor, 1, {_TABLE: "inc:0"}
+    @asynccontextmanager
+    async def read() -> AsyncIterator[tuple[PinnedCopy, Any, Any]]:
+        # the in-process copy's own state, pinned as its follower pins it (its snapshot, on a thread)
+        state = await CursorReads(backend, _WORKERS).current()
+        try:
+            yield state, 1, {_TABLE: "inc:0"}
+        finally:
+            await state.close()
 
     return read
 
@@ -474,10 +485,13 @@ async def test_checkpoint_patch_speed_at_real_size() -> None:
             [StagedChange(table=_TABLE, key=_KEY, rows=stage, whole=True, whole_kind="cold_start")], mark=stamp[0]
         )
 
-    @contextmanager
-    def read() -> Iterator[Any]:
-        with backend.read_snapshot() as cursor:
-            yield cursor, stamp[0], {_TABLE: f"inc:{stamp[0]}"}
+    @asynccontextmanager
+    async def read() -> AsyncIterator[tuple[PinnedCopy, Any, Any]]:
+        state = await CursorReads(backend, _WORKERS).current()
+        try:
+            yield state, stamp[0], {_TABLE: f"inc:{stamp[0]}"}
+        finally:
+            await state.close()
 
     put(before)
     store, pointers = _Store(), _Pointers()

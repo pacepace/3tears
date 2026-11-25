@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
 import pytest
@@ -44,8 +44,10 @@ from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     StagedCheckpoint,
 )
 from threetears.core.collections.copy_follower import FollowedTable  # noqa: E402
+from threetears.core.collections.copy_reads import CursorReads, PinnedCopy  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.sql_fragments import quote_identifier, unnest_key_join  # noqa: E402
+from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.nats import ObjectStoreFullError  # noqa: E402
 
 _VOTES = "votes"
@@ -253,12 +255,17 @@ class _Copy:
         self.marks.update(staged.marks)
         self.stamps[self.mark] = (staged.stamp, dict(staged.marks))
 
-    @contextmanager
-    def read(self) -> Iterator[tuple[Any, Any, Mapping[str, str | None]]]:
-        with self.backend.read_snapshot() as cursor:
-            mark = self.backend.staged_mark(cursor)
+    @asynccontextmanager
+    async def read(self) -> AsyncIterator[tuple[PinnedCopy, Any, Mapping[str, str | None]]]:
+        """the state the copy holds, pinned as a follower pins it (its snapshot, read on a thread), every statement a
+        write runs on it recorded."""
+        state = await CursorReads(_Recorded(self.backend, self.statements), _WORKERS).current()
+        try:
+            mark = state.mark
             stamp, marks = self.stamps.get(mark, (None, {})) if mark is not None else (None, {})
-            yield _Recording(cursor, self.statements), stamp, marks
+            yield state, stamp, marks
+        finally:
+            await state.close()
 
     def held(self, table: str) -> list[tuple[Any, ...]]:
         columns = "state, geo_id, votes" if _KEYS[table] == _VOTES_KEY else "race_id, name"
@@ -266,19 +273,41 @@ class _Copy:
             return sorted(cursor.execute(f"SELECT {columns} FROM {table}").fetchall())  # noqa: S608
 
 
+#: the worker processes a cursor read's fingerprint would be taken in: none is (a checkpoint takes none), and none
+#: starts until a job is given
+_WORKERS = ProcessWorkers(workers=1, name="test copy checkpoint")
+
+
+class _Recorded:
+    """the copy's snapshot reads, each cursor recording the statements run on it; its mark read on the cursor itself,
+    unrecorded."""
+
+    def __init__(self, backend: DuckDBBackend, statements: list[tuple[str, Any]]) -> None:
+        self._backend = backend
+        self._statements = statements
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[Any]:
+        with self._backend.read_snapshot() as cursor:
+            yield _Recording(cursor, self._statements)
+
+    def staged_mark(self, cursor: Any) -> int | None:
+        return self._backend.staged_mark(cursor.cursor)
+
+
 class _Recording:
     """a read's cursor that records each statement run on it."""
 
     def __init__(self, cursor: Any, statements: list[tuple[str, Any]]) -> None:
-        self._cursor = cursor
+        self.cursor = cursor
         self._statements = statements
 
     def execute(self, sql: str, params: Any = None) -> Any:
         self._statements.append((sql, params))
-        return self._cursor.execute(sql) if params is None else self._cursor.execute(sql, params)
+        return self.cursor.execute(sql) if params is None else self.cursor.execute(sql, params)
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._cursor, name)
+        return getattr(self.cursor, name)
 
 
 def _whole_reads(copy: _Copy, table: str) -> list[str]:

@@ -108,7 +108,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from contextlib import AbstractContextManager, ExitStack, contextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING, runtime_checkable
@@ -118,7 +118,6 @@ from threetears.observe import PeriodicTask, contain, get_logger, retry_until_do
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
-from threetears.core.cache.duckdb_binds import KEYS, run_joined
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.copy_key_work import (
     HEARD_INLINE_TEXT_KEYS,
@@ -172,6 +171,7 @@ from threetears.core.collections.copy_key_work import (
     without_keys_job,
     without_keys_of,
 )
+from threetears.core.collections.copy_reads import CopyReads, CursorReads, PinnedCopy, QueriedReads, keyed_job
 from threetears.core.collections.delta_copy_beats import CopyBeats
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
@@ -191,16 +191,15 @@ from threetears.core.collections.volume_fulls import (
     StagedFull,
     StatesNotSplitError,
     VolumeFulls,
-    copy_rows_of_state,
     current_full_manifest,
     FINGERPRINT_CHECK_SECONDS,
     FINGERPRINT_FORMAT,
     fingerprint_columns,
     fingerprint_comparable,
-    fingerprint_ipc,
     fingerprint_kinds,
     full_table_floor,
     read_full_part,
+    state_rows,
 )
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
@@ -218,11 +217,11 @@ from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.process_workers import ProcessWorkers
-from threetears.core.shared_arrow import ReadSlot, held_slot, riding
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
     from threetears.core.cache.duckdb import DuckDBBackend
+    from threetears.core.collections.copy_queries import CopyQueries
     from threetears.core.collections.copy_checkpoint import CopyCheckpoints
     from threetears.core.collections.epoch_change import EpochChangeReader
     from threetears.core.collections.registry import CollectionRegistry
@@ -437,34 +436,6 @@ _DRIFT_CHECKS = counter(
 _VERSION_UNKNOWN: Final = ""
 
 
-def _close_contained(stack: ExitStack) -> None:
-    """close a checkpoint's read opened ahead (:meth:`CopyFollower._open_marked`). Blocking (IO): run on a thread.
-
-    :param stack: the stack holding the read open
-    :ptype stack: ExitStack
-    :return: nothing
-    :rtype: None
-    """
-    try:
-        stack.close()
-    except Exception as exc:  # noqa: BLE001 - a checkpoint is a start's shortcut; the copy is unaffected
-        contain(exc, log=log, what="a copy checkpoint's read could not be closed")
-
-
-def _close_landed(opening: asyncio.Future[tuple[ExitStack, Any, int | None, ReadSlot | None]]) -> None:
-    """close, on a thread, the read a cancelled checkpoint was opening, once its open lands: never left open, holding
-    its engine slot (:meth:`CopyFollower._write_checkpoint`).
-
-    :param opening: the open, done
-    :ptype opening: asyncio.Future[tuple[ExitStack, Any, int | None, ReadSlot | None]]
-    :return: nothing
-    :rtype: None
-    """
-    if opening.cancelled() or opening.exception() is not None:
-        return  # nothing opened: a failed open closes what it opened itself
-    asyncio.get_running_loop().run_in_executor(None, _close_contained, opening.result()[0])
-
-
 def _drift_check_seconds(given: float | None) -> float:
     """the drift check's period: ``given``, else :data:`_DRIFT_CHECK_ENV`, else :data:`DRIFT_CHECK_SECONDS`.
 
@@ -525,6 +496,11 @@ def _warms() -> Any:
         label_names=("why",),
     )
 
+
+#: how many times a checkpoint pins the copy's current state looking for one that holds every change applied
+#: (:meth:`CopyFollower.current`): an apply landing while it pins is rare, two back to back rarer; a state still behind
+#: after these is not checkpointed (its stamp says none), never one that claims a change it does not hold
+_PIN_TRIES: Final = 3
 
 #: how many applied changes' stamps are kept for readers whose snapshot is older than the newest
 _STAMPS_KEPT: Final = 256
@@ -1032,6 +1008,43 @@ def _rail_python(value: Any, kind: Any) -> Any:
     if isinstance(value, Decimal):
         return format(value, "f")
     return key_text(value)
+
+
+def _rail_typed(rows: Any, types: Mapping[str, Any], schema: Any) -> Any:
+    """the copy's rows, every column typed as the L3 rail answers it (:func:`_rail_column`). Blocking: run it on a
+    thread.
+
+    :param rows: the copy's rows
+    :ptype rows: pyarrow.Table
+    :param types: each column's Arrow type as the rail answers it
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :param schema: those types, as a schema
+    :ptype schema: pyarrow.Schema
+    :return: the rows, typed
+    :rtype: pyarrow.Table
+    """
+    return pa.table([_rail_column(rows.column(name), kind) for name, kind in types.items()], schema=schema)
+
+
+def _prefix_keys(columns: Sequence[str], lead: Sequence[str], last: Sequence[str]) -> Any:
+    """one prefix shape's keys as a table of its columns as text (:func:`_prefix_batches`): the leading values on every
+    row, a row a distinct value of the last column. Blocking: run it on a thread.
+
+    :param columns: the prefix's key columns, in key order
+    :ptype columns: Sequence[str]
+    :param lead: the values of all but the last
+    :ptype lead: Sequence[str]
+    :param last: the last column's values
+    :ptype last: Sequence[str]
+    :return: the keys
+    :rtype: pyarrow.Table
+    """
+    distinct = pc.unique(pa.array(last, pa.string()))
+    held = {
+        column: pa.repeat(pa.scalar(value, pa.string()), len(distinct))
+        for column, value in zip(columns[:-1], lead, strict=True)
+    }
+    return pa.table({**held, columns[-1]: distinct})
 
 
 def _key_prefix(table: FollowedTable, partition: Mapping[str, str]) -> bool:
@@ -1926,6 +1939,13 @@ class CopyFollower:
     :param drift_workers: the worker processes a state's fingerprint is taken in, and a pass's key work
         (:mod:`~threetears.core.collections.copy_key_work`); None shares the process's one (:data:`_COPY_WORKERS`)
     :ptype drift_workers: ProcessWorkers | None
+    :param queries: the copy's query pool (:class:`~threetears.core.collections.copy_queries.CopyQueries`) over the
+        store a pod's backend publishes the copy in as shared Arrow: the follower's own reads of its copy (a pass's
+        keyed lookups, a checkpoint's parts, a drift check's and a reload's rows of a state) run there, in query
+        workers, and none opens a DuckDB connection or a cursor in this process (``copy_reads``). None: the copy is
+        the in-process DuckDB, read on its snapshot cursor on a thread (``copy_reads.CursorReads``; that backend's own
+        reads, which go with it as a follower's backend)
+    :ptype queries: CopyQueries | None
     :param beats: this copy's beat for a writer whose fold deletes its delta files (``retention="delete"``, decision
         54): the copy registers ``starting`` before it loads or follows anything and renews it until the start is
         done, then beats the marks it holds every key of each beat interval and after each change applied (off the
@@ -1955,6 +1975,7 @@ class CopyFollower:
         file_poll_seconds: float | None = None,
         drift_check_seconds: float | None = None,
         drift_workers: ProcessWorkers | None = None,
+        queries: CopyQueries | None = None,
         beats: CopyBeats | None = None,
     ) -> None:
         if pa is None:
@@ -2099,6 +2120,9 @@ class CopyFollower:
         self._drift_seconds = _drift_check_seconds(drift_check_seconds)
         #: the copy's one worker process: its drift checks' fingerprints and a pass's key work (copy_key_work)
         self._workers = drift_workers if drift_workers is not None else _COPY_WORKERS
+        #: the follower's reads of its copy: in query workers over a shared copy, on a snapshot cursor of the
+        #: in-process one
+        self._copy: CopyReads = QueriedReads(queries) if queries is not None else CursorReads(backend, self._workers)
         #: for each opted-in table, the version the copy holds each state at (decision 32): the full's part's at the
         #: load, then the newest epoch applied of the state; :data:`_VERSION_UNKNOWN` once a change of it applied with
         #: no epoch. A table read whole or by partition since its load holds none (:meth:`_hold_state_versions`)
@@ -2892,7 +2916,9 @@ class CopyFollower:
         # outside the lock: the parts read off the volume and staged, and the backend's heavy work done
         try:
             try:
-                found = await one.stage(self._backend, manifest=manifest, stage_name=_reload_stage, states=states)
+                found = await one.stage(
+                    self._backend, manifest=manifest, stage_name=_reload_stage, states=states, reads=self._copy
+                )
             except StatesNotSplitError as exc:
                 # NOSILENT: a full whose parts are not split by state is loaded whole, as before, said in the log
                 log.warning(
@@ -4248,7 +4274,7 @@ class CopyFollower:
         in place. Its rows are those of the new stamp already, so the backend is asked for nothing: no apply, so on a
         pod's backend no worker round trip, no settle of an empty change, no publish of unchanged rows.
 
-        Why in place: a reader learns its stamp from the mark its snapshot holds (:meth:`reading_marked`), so the new
+        Why in place: a reader learns its stamp from the mark its state holds (:meth:`current`), so the new
         label goes on the mark the copy holds now, with each table's mark now (every table is current: nothing is left
         pending). A reader that opened before still reads the same rows; it reads them under the label it read first.
         Everything a labelling pass did besides the apply is kept: the stamp read again and the pass taken only when it
@@ -4369,34 +4395,19 @@ class CopyFollower:
             self._checkpoint_wake = asyncio.get_running_loop().call_later(wait, self._checkpoint_if_due)
 
     async def _write_checkpoint(self) -> None:
-        """write a checkpoint beside the follower, its read opened on a thread (:meth:`_open_marked`).
+        """write a checkpoint beside the follower, of the state :meth:`current` pins.
 
-        Why on a thread: a read's opening is IO (a copy published as shared Arrow maps every file of its version and
-        reads each file's schema; DuckDB begins a transaction and reads its catalog), and opened inside the checkpoint's
-        write, on the loop, it held one turn 0.27 s (reports' ``SharedArrowBackend.read_snapshot`` mapping a version,
-        ``MappedTables.__init__``, the loop-stall guard in reports' tests/pod/test_retention.py, 2026-11-25). It is
-        opened ahead and closed after, each on a thread; the checkpoint's own read only hands it over
-        (:meth:`_marked_read`), so the read still begins where the write counts what it holds, with no await between.
-
-        Why shielded: the read holds an engine slot until it is closed (a shared Arrow read's
-        :class:`~threetears.core.shared_arrow.ReadSlot`). A cancel while it opens lets the open finish and closes what
-        it opened as it lands; a cancel while it closes lets the close finish. Unshielded, either left the read open and
-        its slot held for good (three such reads fill a pod's slots, and every read there then times out).
+        Why pinned, not a cursor: a checkpoint's parts are read in jobs over the pinned state (``copy_reads``), which
+        over a shared copy run in query workers, so the write opens no DuckDB connection or cursor in this process and
+        holds no engine slot; the pin is a lease taken on a thread. Over the in-process copy the state is a snapshot
+        cursor, opened and closed on a thread.
 
         :return: nothing
         :rtype: None
         """
         assert self._checkpoints is not None  # noqa: S101 -- narrowed by the caller
-        opened: tuple[ExitStack, Any, int | None, ReadSlot | None] | None = None
         try:
-            opening = asyncio.ensure_future(asyncio.to_thread(self._open_marked))
-            try:
-                opened = await asyncio.shield(opening)
-            except asyncio.CancelledError:
-                opening.add_done_callback(_close_landed)
-                raise
-            stack, cursor, mark, slot = opened
-            written = await self._checkpoints.write(lambda: self._marked_read(cursor, mark, slot))
+            written = await self._checkpoints.write(self.current)
         except asyncio.CancelledError, KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - a checkpoint is a start's shortcut; the copy is unaffected
@@ -4406,9 +4417,6 @@ class CopyFollower:
                 what="a copy checkpoint could not be written; the next change that makes one due tries again",
             )
             return
-        finally:
-            if opened is not None:
-                await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(_close_contained, opened[0])))
         if written is not None:
             # a change applied while it was written stays counted: asked again once this write is done, so an epoch
             # applied from the notes meanwhile is not left waiting for a change that may not come
@@ -5161,55 +5169,37 @@ class CopyFollower:
             self._reading = None
 
     @staticmethod
-    def _copy_columns(table: FollowedTable) -> str:
-        """the copy's own key and scope columns of a table, selected over ``t``.
+    def _copy_columns(table: FollowedTable) -> tuple[str, ...]:
+        """the copy's own key and scope columns of a table.
 
         :param table: the table
         :ptype table: FollowedTable
-        :return: the select list
-        :rtype: str
+        :return: the columns
+        :rtype: tuple[str, ...]
         """
-        columns = list(table.key) + (
-            [table.scope[0]] if table.scope is not None and table.scope[0] not in table.key else []
+        return tuple(table.key) + (
+            (table.scope[0],) if table.scope is not None and table.scope[0] not in table.key else ()
         )
-        return ", ".join(f"t.{quote_identifier(c)}" for c in columns)
 
-    def _copy_rows_of_keys(
-        self,
-        table: FollowedTable,
-        columns: Annotated[Sequence[str], DeclaredKey],
-        values: Sequence[Any],
-        *,
-        selected: str | None = None,
+    async def _copy_rows_of_keys(
+        self, table: FollowedTable, columns: Annotated[Sequence[str], DeclaredKey], keys: Any
     ) -> Any:
-        """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a local read
-        semi-joined on a leading part of the key (the whole key, or a load's prefix), never L3; each row once.
+        """the copy's own key and scope columns of the rows some keys, or key prefixes, name: a keyed lookup of the
+        copy on a leading part of the key (the whole key, or a load's prefix), never L3; each row once. Over a shared
+        copy a query worker's (``copy_reads.QueriedReads``), never a cursor here.
 
         :param table: the table
         :ptype table: FollowedTable
         :param columns: the key columns named, a leading part of the key in key order
         :ptype columns: Sequence[str]
-        :param values: each named column's values, as text: one Arrow array (or list) a column, one entry a key
-        :ptype values: Sequence[Any]
-        :param selected: the select list over ``t``; None selects the key and scope columns
-        :ptype selected: str | None
+        :param keys: the keys, ``columns`` as text, a row a key
+        :ptype keys: pyarrow.Table
         :return: the rows
         :rtype: pyarrow.Table
         """
-        selected = self._copy_columns(table) if selected is None else selected
-        named = ", ".join(table.held_key(column, "t") for column in columns)
-        cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(columns))
-        statement = (
-            f"SELECT {selected} FROM {quote_identifier(table.name)} AS t "  # noqa: S608 - trusted identifiers
-            f"WHERE ({named}) IN (SELECT {cast} FROM ({KEYS}))"
-        )
-        with self._backend.read_snapshot() as cursor:
-            # the keys one Arrow table the statement semi-joins (run_joined), as the held rows' read does: bound as
-            # Python lists, DuckDB 1.5 looks for pandas once a value, 21.8 s for 50,000 keys of a 200,000-row copy
-            # (2026-11-23); 5 ms so
-            return run_joined(cursor, statement, list(values), lambda r: r.fetch_arrow_table())
+        return await self._copy.rows_of_keys(table, columns, keys, self._copy_columns(table))
 
-    def _copy_rows_of_prefixes(
+    async def _copy_rows_of_prefixes(
         self, table: FollowedTable, columns: Sequence[str], lead: Sequence[str], last: Sequence[str]
     ) -> Any:
         """the copy's own key and scope columns of some key prefixes' rows (one prefix shape: its leading columns'
@@ -5226,8 +5216,8 @@ class CopyFollower:
         :return: the rows
         :rtype: pyarrow.Table
         """
-        distinct = sorted(set(last))
-        return self._copy_rows_of_keys(table, columns, [*([value] * len(distinct) for value in lead), distinct])
+        keys = await asyncio.to_thread(_prefix_keys, columns, lead, last)
+        return await self._copy_rows_of_keys(table, columns, keys)
 
     async def _keys_of_cleared_prefixes(self) -> None:
         """name, at its epoch, every key a cleared prefix reaches (:meth:`_clear_heard`): each key of it the copy
@@ -5253,8 +5243,8 @@ class CopyFollower:
             for epoch, prefixes in queued:
                 reached: list[Any] = []
                 for columns, lead, batch in _prefix_batches(table.key, prefixes):
-                    # the copy's read on a thread (IO); its keys spelled in the worker process below
-                    reached.append(await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch))
+                    # the copy's keyed lookup (a query worker over a shared copy); its keys spelled in the worker below
+                    reached.append(await self._copy_rows_of_prefixes(table, columns, lead, batch))
                 known = (*self._heard[name], *self._staged_heard.get(name, ()))
                 # a cleared prefix reaches a whole state's keys: matched, made distinct and spelled in the worker process
                 self._hear(name, await self._cleared_reach(table, reached, known, prefixes, epoch), held=False)
@@ -5549,9 +5539,7 @@ class CopyFollower:
         :rtype: tuple[pyarrow.Table, numpy.ndarray | None]
         """
         assert table.scope is not None  # noqa: S101 -- the caller's condition
-        held = await asyncio.to_thread(
-            self._copy_rows_of_keys, table, table.key, [page.column(column) for column in table.key]
-        )
+        held = await self._copy_rows_of_keys(table, table.key, page)
         if page.num_rows + held.num_rows < INLINE_KEYS:
             return held_scopes_of(table.key, table.instant_keys, table.scope, page, held, held_scopes)
         page_ipc, held_ipc = await asyncio.to_thread(_ipcs, [page, held])
@@ -5667,7 +5655,7 @@ class CopyFollower:
             else:
                 named[epoch] = record.delta_file
         # the copy's rows of every key (a local read, IO): a key read from L3 instead is held and left out at the end
-        held = await asyncio.to_thread(self._held_arrow, table, take.keys)
+        held = await self._held_arrow(table, take.keys)
         keys_ipc, held_ipc, plan_bytes = await asyncio.to_thread(_merge_ipc, take.keys, held, plan)
         root = delta_files_root()
         wait, rows, at, from_l3, fell_back, applied = merged_answer(
@@ -5728,8 +5716,9 @@ class CopyFollower:
             order, positions, bounds, no_epoch = epoch_plan_answer(await self._workers.run(epoch_plan_job, blob, count))
         return _EpochPlan(order=order, positions=positions, bounds=bounds, no_epoch=no_epoch)
 
-    def _held_arrow(self, table: FollowedTable, keys: Any) -> Any:
-        """the rows the copy holds of some keys, typed as the L3 rail answers them: a local read, never L3. Blocking.
+    async def _held_arrow(self, table: FollowedTable, keys: Any) -> Any:
+        """the rows the copy holds of some keys, typed as the L3 rail answers them: a keyed lookup of the copy, never
+        L3 (over a shared copy a query worker's, never a cursor here).
 
         Why the copy's: an upsert keeps every column its write left out, and the row's ``date_created``, from the row
         L3 held, which is the row the copy holds before the change (``design-pod-delta-files.md``, decision 19).
@@ -5745,23 +5734,8 @@ class CopyFollower:
         schema = pa.schema(list(types.items()))
         if not keys.num_rows:
             return schema.empty_table()
-        selected = ", ".join(quote_identifier(column.name) for column in table.columns)
-        named = ", ".join(table.held_key(column) for column in table.key)
-        cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(table.key))
-        statement = (
-            f"SELECT {selected} FROM {quote_identifier(table.name)} "  # noqa: S608 - trusted identifiers
-            f"WHERE ({named}) IN (SELECT {cast} FROM ({KEYS}))"
-        )
-        with self._backend.read_snapshot() as cursor:
-            # the keys one Arrow table the statement semi-joins (run_joined): bound as Python lists, DuckDB 1.5 looks
-            # for pandas once a value, 49 s of the 50 s staging 50,000 keys took (2026-11-23); 40 ms so
-            mine = run_joined(
-                cursor,
-                statement,
-                [keys.column(column) for column in table.key],
-                lambda result: result.fetch_arrow_table(),
-            )
-        return pa.table([_rail_column(mine.column(name), kind) for name, kind in types.items()], schema=schema)
+        mine = await self._copy.rows_of_keys(table, table.key, keys, [column.name for column in table.columns])
+        return await asyncio.to_thread(_rail_typed, mine, types, schema)
 
     async def _rows_of_page(
         self,
@@ -5900,7 +5874,7 @@ class CopyFollower:
             waiting: list[Mapping[str, str]] = []
             for columns, lead, batch in _prefix_batches(table.key, parts):
                 last = columns[-1]
-                mine = await asyncio.to_thread(self._copy_rows_of_prefixes, table, columns, lead, batch)
+                mine = await self._copy_rows_of_prefixes(table, columns, lead, batch)
                 late, mine_keys, found, mine_replaced = await self._partition_mine(table, last, mine, held_scopes)
                 if late:
                     # the prefix values a held scope's rows sit under: one a prefix of the batch, never one a row
@@ -6342,8 +6316,14 @@ class CopyFollower:
                 return "version_unknown"
             if held != part.version:
                 return "skipped"
-            ipc = await asyncio.to_thread(self._state_ipc, table, part, keys)
-        mine = await self._workers.run(fingerprint_ipc, ipc, kinds)
+            # the state pinned as the lock holds it (no apply moves it), and read and fingerprinted after, the lock let
+            # go: a job over the pinned state (a query worker over a shared copy, its rows never crossing)
+            pinned = await self._copy.current()
+        try:
+            job, args, tables = self._state_read(table, part, keys)
+            mine = await pinned.fingerprint(job, args, kinds, tables=tables)
+        finally:
+            await pinned.close()
         state = part.scope if part.scope is not None else ""
         if mine == part.fingerprint:
             _DRIFT_PARTS.labels(table=table.name, state=state).set(0)
@@ -6384,12 +6364,14 @@ class CopyFollower:
             read_full_part(self._fulls.root, part).select(list(table.key)), table.key, table.instant_keys
         )
 
-    def _state_ipc(self, table: FollowedTable, part: FullPart, keys: Any) -> bytes:
-        """the copy's rows of one state, as an Arrow IPC stream for the worker that fingerprints them: a local read
-        of the copy, never L3. A state whose scope column leads the key is read by that prefix, and one of a table keyed
-        without its state (AP results, its state in a row column) by that column: either way every row the copy holds
-        of the state, so a row the copy holds and the part does not is seen. Any other (a table with no scope, or one
-        whose scope column sits deeper in the key) is read by the keys its part holds. Blocking: run it on a thread.
+    def _state_read(
+        self, table: FollowedTable, part: FullPart, keys: Any
+    ) -> tuple[Callable[[Any, Sequence[Any]], Any], tuple[Any, ...], Mapping[str, Any] | None]:
+        """the job that reads the copy's rows of one state, for the drift check to fingerprint: a read of the copy,
+        never L3. A state whose scope column leads the key is read by that prefix, and one of a table keyed without its
+        state (AP results, its state in a row column) by that column (``volume_fulls.state_rows``): either way every
+        row the copy holds of the state, so a row the copy holds and the part does not is seen. Any other (a table with
+        no scope, or one whose scope column sits deeper in the key) is read by the keys its part holds.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -6397,39 +6379,18 @@ class CopyFollower:
         :ptype part: FullPart
         :param keys: :meth:`_part_keys`
         :ptype keys: pyarrow.Table | None
-        :return: the rows
-        :rtype: bytes
+        :return: the job, its arguments, the tables it is handed
+        :rtype: tuple[Callable, tuple[Any, ...], Mapping[str, pyarrow.Table] | None]
         """
-        selected = ", ".join(f"t.{quote_identifier(column.name)}" for column in table.columns)
+        columns = tuple(column.name for column in table.columns)
         if keys is None:
             assert part.scope is not None and table.scope is not None  # noqa: S101 -- _part_keys said so
             value = part.scope[len(table.scope[1]) :]
-            if table.scope_in_key == 0:
-                rows = self._copy_rows_of_keys(table, table.key[:1], [[value]], selected=selected)
-            else:
-                rows = self._copy_rows_of_state(table, value)
-        else:
-            rows = self._copy_rows_of_keys(
-                table, table.key, [keys.column(column) for column in table.key], selected=selected
-            )
-        sink = pa.BufferOutputStream()
-        with pa.ipc.new_stream(sink, rows.schema) as writer:
-            writer.write_table(rows)
-        return bytes(sink.getvalue().to_pybytes())
-
-    def _copy_rows_of_state(self, table: FollowedTable, value: str) -> Any:
-        """the copy's rows of one state of a table keyed without its state, pinned by its scope column
-        (``read_state_arrow``, pinned by the table's DeclaredScope column): a local read of the pod's own copy (one
-        state's rows, every one it holds), never L3. Blocking: run it on a thread.
-
-        :param table: a table whose scope column is not in its key
-        :ptype table: FollowedTable
-        :param value: the state's scope column value, as text (the column's type binds it)
-        :ptype value: str
-        :return: the rows, every column the copy holds
-        :rtype: pyarrow.Table
-        """
-        return copy_rows_of_state(self._backend, table, value, [column.name for column in table.columns])
+            if table.scope_in_key != 0:
+                return state_rows, (table, value, columns), None
+            keys = pa.table({table.key[0]: pa.array([value], pa.string())})
+            return keyed_job(table, table.key[:1], columns, keys)
+        return keyed_job(table, table.key, columns, keys)
 
     def _drift_checks(self) -> PeriodicTask | None:
         """the periodic drift check :meth:`run` keeps, started; None when the copy starts from no full or the check
@@ -6580,74 +6541,56 @@ class CopyFollower:
         """a cursor reading one state of every table, and the stamp it holds them at.
 
         The stamp is read from the snapshot itself (the change's mark, committed with it), so it is exactly the
-        change the cursor reads, whatever is applied meanwhile.
+        change the cursor reads, whatever is applied meanwhile. A product's cursor read of its copy: the follower's
+        own reads take none (:meth:`current`).
 
         :return: ``(cursor, stamp)``; the stamp is None before the first change
         :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any]]
         """
-        with self.reading_marked() as (cursor, stamp, _marks):
-            yield cursor, stamp
-
-    @contextmanager
-    def reading_marked(self) -> Iterator[tuple[Any, Any, Mapping[str, str | None]]]:
-        """:meth:`reading`, with each table's epoch mark the read's change holds: what a checkpoint of it records.
-
-        :return: ``(cursor, stamp, marks)``; the stamp None and the marks empty before the first change
-        :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any, Mapping[str, str | None]]]
-        """
         with self._backend.read_snapshot() as cursor:
             mark = self._backend.staged_mark(cursor)
-            stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})
-            yield cursor, stamp, marks
+            stamp = self._stamps.get(mark, (None, {}))[0] if mark is not None else None
+            yield cursor, stamp
 
-    def _open_marked(self) -> tuple[ExitStack, Any, int | None, ReadSlot | None]:
-        """open a read of the copy and read the mark of the change it holds. Blocking (IO): run it on a thread; close
-        the stack the same way.
+    @asynccontextmanager
+    async def current(self) -> AsyncIterator[tuple[PinnedCopy, Any, Mapping[str, str | None]]]:
+        """the state of the copy applied now, pinned for the block (``copy_reads.PinnedCopy``: a version leased with
+        its mark over a shared copy, no cursor and no DuckDB here; a snapshot cursor over the in-process one), with
+        the stamp and each table's epoch mark of the change it holds: what a checkpoint of it records.
 
-        :return: the stack holding the read open, its cursor, its change's mark (None before the first change), and the
-            engine slot it holds (None when the copy's reads take none: only a shared Arrow read does)
-        :rtype: tuple[ExitStack, duckdb.DuckDBPyConnection, int | None, ReadSlot | None]
+        A state pinned while a change was being applied may hold the change before it, which a checkpoint counts as
+        held: pinned again, up to :data:`_PIN_TRIES` times; one still behind says no stamp (a checkpoint of it writes
+        nothing). Nothing awaits between the last pin's check and the block: a checkpoint takes what it counts at its
+        start, with no change applied between.
+
+        :return: ``(state, stamp, marks)``; the stamp None and the marks empty before the first change
+        :rtype: AsyncIterator[tuple[PinnedCopy, Any, Mapping[str, str | None]]]
         """
-        before = held_slot()
-        stack = ExitStack()
+        state = await self._copy.current()
         try:
-            cursor = stack.enter_context(self._backend.read_snapshot())
-            slot = held_slot()
-            # only a slot this read took: one its caller's context held is not this read's to hand on
-            return stack, cursor, self._backend.staged_mark(cursor), None if slot is before else slot
-        except BaseException:
-            stack.close()
-            raise
+            for _ in range(_PIN_TRIES - 1):
+                if self._holds_applied(state.mark):
+                    break
+                await state.close()
+                state = await self._copy.current()
+            mark = state.mark
+            if mark is None or not self._holds_applied(mark):
+                yield state, None, {}
+            else:
+                stamp, marks = self._stamps.get(mark, (None, {}))
+                yield state, stamp, marks
+        finally:
+            await state.close()
 
-    @contextmanager
-    def _marked_read(
-        self, cursor: Any, mark: int | None, slot: ReadSlot | None
-    ) -> Iterator[tuple[Any, Any, Mapping[str, str | None]]]:
-        """:meth:`reading_marked` over a read opened ahead (:meth:`_open_marked`), as a checkpoint opens it: the stamp
-        and marks of its change. A read opened before the last change applied (an apply landed while the checkpoint
-        claimed its lock) misses a change the checkpoint counts as held, so a fresh read is opened here instead, on the
-        loop as before: rare, and never wrong. A change is counted toward a checkpoint only once its mark is applied.
+    def _holds_applied(self, mark: int | None) -> bool:
+        """whether a state of this mark holds every change applied.
 
-        Why the fresh read rides the read ahead's slot (:func:`~threetears.core.shared_arrow.riding`): it is opened on
-        the loop, and taking a slot of its own it would wait for one there, the loop held up to the reader's
-        ``admit_wait`` (30 s); with one slot, the read ahead holding it, every time. The read ahead stays open, idle,
-        until the checkpoint is written, so the slot is held for the fresh read throughout.
-
-        :param cursor: the read opened ahead
-        :ptype cursor: duckdb.DuckDBPyConnection
-        :param mark: its change's mark
+        :param mark: the state's mark; None before any
         :ptype mark: int | None
-        :param slot: the engine slot the read ahead holds; None when it holds none
-        :ptype slot: ReadSlot | None
-        :return: ``(cursor, stamp, marks)``
-        :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any, Mapping[str, str | None]]]
+        :return: whether it does
+        :rtype: bool
         """
-        if self._applied_mark is not None and (mark is None or mark < self._applied_mark):
-            with riding(slot), self.reading_marked() as fresh:
-                yield fresh
-            return
-        stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})
-        yield cursor, stamp, marks
+        return self._applied_mark is None or (mark is not None and mark >= self._applied_mark)
 
     def take_rows_since_mark(self) -> int:
         """the rows applied since the last call, and start counting again: what a checkpoint's trigger weighs.

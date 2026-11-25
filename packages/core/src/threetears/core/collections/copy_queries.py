@@ -44,8 +44,18 @@ given again: its caller decides, since a query that killed one worker would kill
 serving process (on a thread: the version's part files are mapped there, and the probe costs less than a worker's
 round trip), at and above it in a query worker like any query.
 
-**Not yet here** (later chunks of the design): the follower's reads (3T-7) and reports' tool reads (R-3) moving onto
-this; the engine slots' removal (3T-8).
+**A job** (:meth:`CopyQueries.run_job`) is a module-level function given at the call, run in a worker over the version
+as a declared query is (the connection and its arguments), answering a table: what the copy follower runs over the
+copy (``copy_reads``: a checkpoint's parts, a drift check's fingerprint, a state's keys). Its arguments are its own
+values (scalars, tuples of them, a table's declared shape, a module-level function), never rows: rows go as a handed
+table.
+
+**The current version, cursorless** (:meth:`CopyQueries.current`): the version current now, leased, with the mark of
+the change it holds (:data:`~threetears.core.collections.shared_copy.MARK_TABLE`, a one-row file read on a thread). No
+DuckDB and no cursor in the serving process: what a reader pins to read one state of the copy in its jobs.
+
+**Not yet here** (later chunks of the design): reports' tool reads (R-3) moving onto this; the engine slots' removal
+(3T-8).
 """
 
 from __future__ import annotations
@@ -53,6 +63,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
+import dataclasses
 import datetime
 import decimal
 import multiprocessing
@@ -68,7 +79,7 @@ import pyarrow as pa
 import pyarrow.ipc as ipc
 
 from threetears.core.arrow_keys import rows_named
-from threetears.core.collections.shared_copy import LOCATED_PREFIX
+from threetears.core.collections.shared_copy import LOCATED_PREFIX, MARK_TABLE
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
     JobContext,
@@ -84,6 +95,7 @@ from threetears.observe import contain, get_logger
 __all__ = [
     "INLINE_LOOKUP_KEYS",
     "CopyQueries",
+    "CopyVersion",
     "QueryAnswer",
     "QueryPoolFull",
     "QueryStatus",
@@ -159,6 +171,19 @@ INLINE_LOOKUP_KEYS: Final = 1
 
 #: the name a lookup's keys are handed to its worker under
 _KEYS: Final = "__lookup_keys"
+
+#: the most values a job's arguments hold, counted through their tuples: a job's own values (a table's name, its
+#: columns, a checkpoint's scopes, a fingerprint's kinds), never keys by the thousand, which are rows and go as a
+#: handed table (``tables=``) so they cross as Arrow, never pickled
+_MAX_JOB_VALUES: Final = 4096
+
+#: the modules the copy follower's jobs are defined in (``copy_reads``), held by every query worker from its start so a
+#: job's function is never imported on its first call: a checkpoint's parts (``copy_checkpoint``), a state's rows and a
+#: drift check's fingerprint (``volume_fulls``, through ``copy_reads``)
+_FOLLOWER_JOBS: Final = (
+    "threetears.core.collections.copy_reads",
+    "threetears.core.collections.copy_checkpoint",
+)
 
 #: the bind values a query takes: scalars DuckDB binds as they are
 _SCALARS: Final = (
@@ -616,6 +641,88 @@ def _checked_binds(binds: Sequence[Any]) -> tuple[Any, ...]:
     return tuple(binds)
 
 
+def _checked_args(args: Sequence[Any]) -> tuple[Any, ...]:
+    """a job's arguments: scalars, tuples of them, a declared shape (a frozen dataclass: a table's columns) or a
+    module-level function, at most :data:`_MAX_JOB_VALUES` values counted through the tuples.
+
+    :param args: the arguments
+    :ptype args: Sequence[Any]
+    :return: them, as a tuple
+    :rtype: tuple[Any, ...]
+    :raises ValueError: for too many values, or one that is rows (a list, a table, an array) or does not pickle
+    """
+    count = 0
+    pending: list[Any] = list(args)
+    while pending:
+        value = pending.pop()
+        count += 1
+        if count > _MAX_JOB_VALUES:
+            raise ValueError(f"a job takes at most {_MAX_JOB_VALUES} values; hand rows as a table (tables=)")
+        if isinstance(value, _SCALARS):
+            continue
+        if isinstance(value, tuple):
+            pending.extend(value)
+            continue
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            continue
+        if callable(value) and not isinstance(value, type):
+            _picklable("a job's function argument", value)
+            continue
+        raise ValueError(
+            f"a job's argument is a scalar, a tuple, a declared shape or a function, not {type(value).__name__}; "
+            "hand rows as a table (tables=)"
+        )
+    return tuple(args)
+
+
+def _version_mark(store: SharedArrowStore, version: str) -> int | None:
+    """the mark of the change a version holds, read off its one-row mark file (:data:`MARK_TABLE`); None for a
+    version published with none. Blocking (IO): run it on a thread, the version held.
+
+    :param store: the store
+    :ptype store: SharedArrowStore
+    :param version: the version
+    :ptype version: str
+    :return: the mark
+    :rtype: int | None
+    """
+    held = version_files(store.root, version).get(f"{MARK_TABLE}.arrow")
+    if held is None:
+        return None
+    with pa.memory_map(str(held.path), "r") as source:
+        marks = ipc.open_file(source).read_all().column("mark")
+    return None if len(marks) == 0 or marks[0].as_py() is None else int(marks[0].as_py())
+
+
+class CopyVersion:
+    """a version of the copy held for a reader, with the mark of the change it holds: metadata alone, no cursor and no
+    DuckDB (:meth:`CopyQueries.current`). Its jobs and lookups name it (``version=name``); the version is not retired
+    until it is closed.
+
+    :ivar name: the version
+    :ivar mark: the mark of the change it holds; None for a version published with none
+    """
+
+    def __init__(self, lease: SharedLease, mark: int | None) -> None:
+        self.name: str = lease.version.name
+        self.mark = mark
+        self._lease = lease
+
+    async def aclose(self) -> None:
+        """let the version go, on a thread (its release sweeps the store); a cancel lets the release finish.
+
+        :return: nothing
+        :rtype: None
+        """
+        await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(self._lease.release)))
+
+    async def __aenter__(self) -> CopyVersion:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
+
+
 def _released(lease: SharedLease) -> None:
     """let a lease go on a thread, never the event loop (its release sweeps the store), logging a failure.
 
@@ -735,7 +842,7 @@ class CopyQueries:
                 name=f"copy query {index}",
                 initializer=_worker_start,
                 initargs=(self._board, threads),
-                preload=(__name__, *preload),
+                preload=(__name__, *_FOLLOWER_JOBS, *preload),
                 process_name=_QUERY_PROCESS_NAME,
             )
             for index in range(count)
@@ -1024,6 +1131,62 @@ class CopyQueries:
             if taking.done() and not taking.cancelled():
                 self._free.give(taking.result())
             raise
+
+    async def run_job(
+        self,
+        job: Callable[[Any, Sequence[Any]], Any],
+        args: Sequence[Any] = (),
+        *,
+        tables: Mapping[str, pa.Table] | None = None,
+        version: str | None = None,
+        timeout: float | None = None,
+        reader: bool = False,
+        wait: bool = True,
+    ) -> QueryAnswer:
+        """run a job over a version of the copy in a query worker: a module-level function given the version's
+        connection (its tables views, ``tables`` registered) and its arguments, answering a ``pyarrow.Table`` or
+        ``RecordBatchReader``, as a declared query does (:meth:`run_named`), named at the call.
+
+        :param job: the job, a module-level function (sent to the worker by name)
+        :ptype job: Callable[[duckdb.DuckDBPyConnection, Sequence[Any]], Any]
+        :param args: its arguments (:func:`_checked_args`): its own values, never rows
+        :ptype args: Sequence[Any]
+        :param tables: as :meth:`run`
+        :ptype tables: Mapping[str, pa.Table] | None
+        :param version: as :meth:`run`
+        :ptype version: str | None
+        :param timeout: as :meth:`run`
+        :ptype timeout: float | None
+        :param reader: as :meth:`run`; background work by default
+        :ptype reader: bool
+        :param wait: as :meth:`run`
+        :ptype wait: bool
+        :return: the answer; the caller closes it
+        :rtype: QueryAnswer
+        :raises ValueError: for a job that is not a module-level function, or arguments that are rows
+        :raises Exception: as :meth:`run`
+        """
+        _picklable("a copy job", job)
+        query = _Query(sql=None, declared=job, binds=_checked_args(args), prepare=None)
+        return await self._answer(query, tables, version, timeout, reader, wait)
+
+    async def current(self) -> CopyVersion:
+        """the version current now, leased, with the mark of the change it holds: no DuckDB and no cursor here, its
+        lease and its mark file read on a thread. The caller closes it (:meth:`CopyVersion.aclose`).
+
+        :return: the version
+        :rtype: CopyVersion
+        :raises LookupError: when nothing is published
+        """
+        lease = await self._leased(None)
+        try:
+            mark = await asyncio.shield(
+                asyncio.ensure_future(asyncio.to_thread(_version_mark, self._store, lease.version.name))
+            )
+        except BaseException:
+            _released(lease)
+            raise
+        return CopyVersion(lease, mark)
 
     async def lookup(
         self,
