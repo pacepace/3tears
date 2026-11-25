@@ -27,6 +27,7 @@ from typing import Any, Generic
 
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection, EntityT
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.serialization import serialize_to_json
@@ -121,14 +122,33 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
     async def delete_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> None:
         """Delete the entity from L3 inside the caller's transaction (``conn``), through ``DurableStore.delete``.
 
+        Joins the caller's :class:`~threetears.core.collections.caller_transaction.CallerTransaction` and enrolls the
+        key, with the row read on ``conn`` before it goes when the collection declares
+        :attr:`invalidation_columns`, so the eviction's broadcast carries them, then evicts it from this process's L1.
+
         :param entity_id: the key
         :ptype entity_id: Any
         :param conn: the caller's connection or change set, with its transaction open
         :ptype conn: Any
         :return: nothing
         :rtype: None
+        :raises ValueError: when a subclass deletes its own way (it overrides :meth:`delete_from_store`, which this
+            cannot know), or no ``CallerTransaction`` is open on ``conn``
         """
-        await self._durable_store.delete(self.table_name, self._pk_mapping(entity_id), conn=conn)
+        if type(self).delete_from_store is not DurableStoreCollection.delete_from_store:
+            raise ValueError(
+                f"{type(self).__name__} deletes its own way (it overrides delete_from_store), so a delete cannot "
+                f"join a caller's transaction (conn=)"
+            )
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete")
+        pk = self._pk_mapping(entity_id)
+        seen = (
+            await self._durable_store.fetch_one(self.table_name, pk, conn=conn) if self.invalidation_columns else None
+        )
+        # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+        transaction.enroll(self, entity_id, row=seen)
+        self._evict_l1(entity_id)
+        await self._durable_store.delete(self.table_name, pk, conn=conn)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Default L2 codec: canonical JSON bytes. Override for a domain codec."""

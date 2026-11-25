@@ -79,8 +79,8 @@ Find every override: `grep -rn "def save_to_store" --include='*.py'`.
   transport (`fetch`/`fetchrow`/`execute`/`execute_batch`/`acquire`/`transaction`).
   `NatsProxyL3Backend` and the new `SqlL3Backend` conform.
 - **`DurableStore` Protocol** (`threetears.core.backends.DurableStore`) — the **SQL-free**
-  structured ops (`fetch_one`/`upsert`/`delete`/`scan`). The seam a non-SQL backend (e.g. a
-  `GitL3Backend`) implements.
+  structured ops (`fetch_one`/`upsert`/`delete`/`scan`). The seam a non-SQL backend (the git store,
+  `threetears.core.backends.git.GitDurableStore`) implements.
 - **`SqlL3Backend`** — the default backend over an asyncpg pool; implements both protocols.
 - **`DurableStoreCollection`** (`threetears.core.collections.DurableStoreCollection`) — a base
   whose L3 tier is a `DurableStore`; subclass it to back a collection with a non-SQL durable
@@ -102,8 +102,8 @@ consumer contract above:
 
 - **L3B-02** — `l3_pool` is typed `L3Backend | None`; the registry wraps a raw transport
   (asyncpg pool / `NatsProxyL3Backend`) in `SqlL3Backend` so the resolved handle always
-  exposes the `DurableStore` ops (a backend already satisfying `DurableStore`, e.g. a
-  `GitL3Backend`, passes through unwrapped).
+  exposes the `DurableStore` ops (a backend already satisfying `DurableStore`, e.g. the git store's
+  `GitDurableStore`, passes through unwrapped).
 - **L3B-03** — `SchemaBackedCollection`'s CRUD now routes through the structured `DurableStore`
   seam; the schema-aware SQL generation + value codec live in `SqlL3Backend` (driven by a
   registered `TableSchema`), so the SQL-backed and non-SQL (git) collections share one seam.

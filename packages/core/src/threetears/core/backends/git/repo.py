@@ -64,10 +64,11 @@ from threetears.core.backends.git.errors import (
     DivergedError,
     GitStoreError,
     HandEditPendingError,
+    NewerLayoutFormatError,
     NotTheWriterError,
 )
 from threetears.core.backends.git.git import Author, CommitEntry, FileChange, Git, GitError
-from threetears.core.backends.git.layout import Layout, locate
+from threetears.core.backends.git.layout import FormatMigration, FormatVersioned, Layout, locate
 from threetears.core.backends.git.tail import PendingTail
 from threetears.core.backends.git.wire import (
     ForwardedRequest,
@@ -467,6 +468,8 @@ class GitRepo:
         self._last_push_error: str | None = None
         self._last_push_at: datetime | None = None
         self._opened = False
+        #: set while the repository records a newer layout format than this layout reads: every read refuses
+        self._newer_format: NewerLayoutFormatError | None = None
         self._log = {"key": config.key, "branch": config.branch}
         self._tails: Mapping[str | None, PendingTail] = frozen()
         #: each tail's files written and not yet committed; per tail folder, replaced whole on the loop
@@ -489,7 +492,7 @@ class GitRepo:
         if self._opened:
             return
         await asyncio.to_thread(self._ensure_checkout)
-        self._refuse_a_newer_format()
+        await asyncio.to_thread(self._format_gate)
         self._seen_head = await asyncio.to_thread(self._recorded_head)
         self._opened = True
         if self._nats is None:
@@ -742,64 +745,139 @@ class GitRepo:
                 ahead, _ = await asyncio.to_thread(self.git.ahead_behind, self.config.branch)
                 if ahead:
                     await self._push_locked(explicit=False)
+            # the lease is held but the process is not the writer yet (it is once takeover returns), so the
+            # migration commits as the rest of takeover writes: under this lock, with no writer check
+            await self._migrate_format()
         log.info("git_store.takeover: the working tree is current", extra={"extra_data": self._log})
-        await self._migrate_format()
 
-    def _stored_format(self) -> int:
-        """the layout format the working tree records (``.threetears/layout-format``); ``0`` when it records none.
+    def _format_of_layout(self) -> tuple[int, FormatMigration | None]:
+        """the format this repository's layout writes, and its migration: ``(0, None)`` for a layout naming none.
 
-        :return: the version
-        :rtype: int
+        :return: the declared version and the migration
+        :rtype: tuple[int, FormatMigration | None]
+        """
+        layout = self.layout
+        if isinstance(layout, FormatVersioned):
+            return int(layout.format_version), layout.migrate_format
+        return 0, None
+
+    def _stored_format(self) -> int | None:
+        """the layout format the working tree records (``.threetears/layout-format``); ``None`` when it records none.
+
+        :return: the version, or ``None``
+        :rtype: int | None
         :raises GitStoreError: when the file holds something that is not a version
         """
         path = self.config.work_tree / _FORMAT_FILE
         if not path.is_file():
-            return 0
+            return None
         text = path.read_text().strip()
-        if not text.isdigit():
+        if not (text.isascii() and text.isdigit()):
             raise GitStoreError(f"{_FORMAT_FILE} in {self.config.key!r} holds {text!r}, not a format version")
         return int(text)
 
-    def _refuse_a_newer_format(self) -> None:
-        """refuse a working tree written under a newer layout format than this layout's, which it would misread.
+    def _format_gate(self) -> None:
+        """refuse a working tree written under a newer layout format than this layout reads. BLOCKING.
+
+        Run wherever the working tree may have moved to commits this process did not write: when it opens, after
+        every HEAD move it notices (a follower's fast-forward, a takeover's catch-up, a hand commit), and before a
+        migration. While the tree records a newer format every read refuses; a later move back to a format this
+        layout reads lets reads through again.
 
         :return: None
         :rtype: None
-        :raises GitStoreError: when the tree records a newer format
+        :raises NewerLayoutFormatError: when the tree records a newer format
         """
-        declared = int(getattr(self.layout, "format_version", 0))
+        declared, _ = self._format_of_layout()
         stored = self._stored_format()
-        if stored > declared:
-            raise GitStoreError(
-                f"repository {self.config.key!r} is at layout format {stored}; this layout reads format {declared}. "
-                f"A newer release wrote it"
+        if stored is None or stored <= declared:
+            if self._newer_format is not None:
+                log.info(
+                    "git_store.format.readable: the repository is at a format this layout reads again",
+                    extra={"extra_data": {**self._log, "stored": stored, "declared": declared}},
+                )
+            self._newer_format = None
+            return
+        refusal = NewerLayoutFormatError(self.config.key, stored, declared)
+        if self._newer_format is None:
+            log.error(
+                "git_store.format.newer: the repository was migrated to a newer layout format; this process "
+                "refuses every read and write of it until a release that reads that format runs",
+                extra={"extra_data": {**self._log, "stored": stored, "declared": declared}},
             )
+        self._newer_format = refusal
+        raise refusal
+
+    def _refuse_reads_of_a_newer_format(self) -> None:
+        """refuse a read, or a change built under this layout, while the working tree records a newer layout format.
+
+        :return: None
+        :rtype: None
+        :raises NewerLayoutFormatError: when it does
+        """
+        if self._newer_format is not None:
+            raise self._newer_format
+
+    def _holds_rows(self, head: str | None) -> bool:
+        """whether the repository holds any row at ``head``. BLOCKING.
+
+        :param head: the commit
+        :ptype head: str | None
+        :return: whether a file there is a row of the layout
+        :rtype: bool
+        """
+        if head is None:
+            return False
+        layout = self.layout
+        for change in self.git.changed(None, head):
+            if change.path == _FORMAT_FILE:
+                continue
+            path = PurePosixPath(change.path)
+            data = self.git.show(head, change.path) if layout.reads_content else None
+            if layout.identify(path, data) is not None:
+                return True
+        return False
 
     async def _migrate_format(self) -> None:
         """on taking the writer's role, bring a repository recorded under an older layout format to this layout's,
-        with its ``migrate_format``, as ONE commit that also records the new version.
+        with its ``migrate_format``, as ONE commit that also records the new version. Called under the lock, from
+        takeover: the lease is held, and the commit is made as takeover's other writes are, with no writer check.
+
+        A repository that holds no row and records no format is new: it is stamped with this layout's format, with
+        no migration (there is nothing to migrate). A repository at a newer format is refused.
 
         :return: None
         :rtype: None
+        :raises NewerLayoutFormatError: when the repository records a newer format
         :raises GitStoreError: when the format is older and the layout has no ``migrate_format``
         """
-        declared = int(getattr(self.layout, "format_version", 0))
-        stored = await asyncio.to_thread(self._stored_format)
+        await asyncio.to_thread(self._format_gate)
+        declared, migrate = self._format_of_layout()
+        recorded = await asyncio.to_thread(self._stored_format)
+        stored = 0 if recorded is None else recorded
         if stored >= declared:
             return
-        migrate = getattr(self.layout, "migrate_format", None)
-        if migrate is None:
+        head = await asyncio.to_thread(self.git.head)
+        if recorded is None and not await asyncio.to_thread(self._holds_rows, head):
+            files: dict[str, bytes | None] = {}
+            why = f"layout format {declared} (a new repository)"
+        elif migrate is None:
+            log.error(
+                "git_store.format.unmigrated: the repository is at an older layout format and the layout has no "
+                "migrate_format",
+                extra={"extra_data": {**self._log, "stored": stored, "declared": declared}},
+            )
             raise GitStoreError(
                 f"repository {self.config.key!r} is at layout format {stored}; this layout writes format {declared} "
                 f"and has no migrate_format to bring it there"
             )
-        files = dict(await migrate(self, stored))
+        else:
+            files = dict(await migrate(self, stored))
+            why = f"layout format {stored} -> {declared}"
         files[_FORMAT_FILE] = f"{declared}\n".encode()
-        result = await self._commit_files_local(
-            files, f"layout format {stored} -> {declared}", self.config.committer, None
-        )
+        result = await self._commit_files_locked(files, why, self.config.committer, None, takeover=True)
         log.info(
-            "git_store.format: the repository was migrated to its layout's format",
+            "git_store.format: the repository was brought to its layout's format",
             extra={"extra_data": {**self._log, "from": stored, "to": declared, "sha": result.sha}},
         )
 
@@ -1391,7 +1469,12 @@ class GitRepo:
         :return: the result
         :rtype: CommitResult
         :raises NotTheWriterError: when no process is the writer and this one could not become it
+        :raises NewerLayoutFormatError: while this clone has met a newer layout format: its rows are built under the
+            older layout, so neither it nor the writer commits them (a pull is let through: following origin is how a
+            repository back at a format this layout reads is met again)
         """
+        if request.op != "pull":
+            self._refuse_reads_of_a_newer_format()
         if self.is_writer:
             return await local()
         assert self._role is not None  # is_writer is True without a role
@@ -1425,7 +1508,9 @@ class GitRepo:
         :ptype pk: Mapping[str, Any]
         :return: the row, or ``None``
         :rtype: dict[str, Any] | None
+        :raises NewerLayoutFormatError: while the repository records a newer layout format
         """
+        self._refuse_reads_of_a_newer_format()
         root = self.config.work_tree
         path = locate(self.layout, root, table, pk)
         if path is None:
@@ -1444,7 +1529,9 @@ class GitRepo:
         :ptype filters: Mapping[str, Any] | None
         :return: the rows, in path order
         :rtype: list[dict[str, Any]]
+        :raises NewerLayoutFormatError: while the repository records a newer layout format
         """
+        self._refuse_reads_of_a_newer_format()
         layout = self.layout
         root = self.config.work_tree
         wanted = dict(filters or {})
@@ -1519,6 +1606,7 @@ class GitRepo:
         :return: the row, or ``None``
         :rtype: dict[str, Any] | None
         """
+        self._refuse_reads_of_a_newer_format()
         if self._reads_from_writer():
             rows = await self._read_via_writer("fetch", table, pk)
             if rows is not None:
@@ -1535,6 +1623,7 @@ class GitRepo:
         :return: the rows
         :rtype: list[dict[str, Any]]
         """
+        self._refuse_reads_of_a_newer_format()
         if self._reads_from_writer():
             rows = await self._read_via_writer("scan", table, filters)
             if rows is not None:
@@ -1730,7 +1819,14 @@ class GitRepo:
         return _Plan(writes=frozen(writes), rows=tuple(rows), conflicts=tuple(conflicts))
 
     async def _write_and_commit(
-        self, plan: _Plan, message: str, author: Author, date: datetime | None, *, moving: set[str] | None = None
+        self,
+        plan: _Plan,
+        message: str,
+        author: Author,
+        date: datetime | None,
+        *,
+        moving: set[str] | None = None,
+        takeover: bool = False,
     ) -> tuple[str, list[str]]:
         """refuse a hand edit in the way, then journal, write, stage and commit the plan's files, with the saved
         edits of every pending tail whose folder they touch (and its trailers).
@@ -1745,6 +1841,9 @@ class GitRepo:
         :ptype date: datetime | None
         :param moving: files being moved away: their saved edits travel with the move, so they may be removed
         :ptype moving: set[str] | None
+        :param takeover: written by takeover, which holds the lease before this process counts as the writer: no
+            writer check before the commit
+        :ptype takeover: bool
         :return: the new commit, and the saved files of pending tails it took along
         :rtype: tuple[str, list[str]]
         :raises HandEditPendingError: when a file to write differs from HEAD
@@ -1772,7 +1871,8 @@ class GitRepo:
             removed = [path for path in removed if path in known]
             everything = sorted({*paths, *taken} - untracked)
             await self._retrying(lambda: self.git.stage(written, removed))
-            self._require_writer()
+            if not takeover:
+                self._require_writer()
             sha = await self._retrying(
                 lambda: self.git.commit(everything, message, author=author, committer=self.config.committer, date=date)
             )
@@ -2036,41 +2136,72 @@ class GitRepo:
         """
         async with self._lock:
             self._require_writer()
-            await self._notice_head()
-            head_before = await asyncio.to_thread(self.git.head)
-            if base is not None and base != head_before:
-                if await asyncio.to_thread(self.git.rev_parse, base) is None:
-                    raise GitStoreError(f"the writer of {self.config.lease_key} has no commit {base}")
-                moved = {change.path for change in await asyncio.to_thread(self.git.changed, base, head_before or base)}
-                stale = sorted(moved & {*files, *(moves or {})})
-                if stale:
-                    raise FileConflictError(stale)
-            if moves:
-                files = {**files, **await self._moved_bytes(moves)}
+            return await self._commit_files_locked(files, message, author, base, moves)
 
-            def differing() -> dict[str, bytes | None]:
-                current = {path: None if head_before is None else self.git.show(head_before, path) for path in files}
-                # a moved file's source is always removed, also one HEAD never had (saved in a tail, not yet committed:
-                # scriob's create-then-rename), whose removal "equals" HEAD and would otherwise be dropped as no change
-                return {path: data for path, data in files.items() if current[path] != data or path in (moves or {})}
+    async def _commit_files_locked(
+        self,
+        files: dict[str, bytes | None],
+        message: str,
+        author: Author | None,
+        base: str | None,
+        moves: dict[str, str] | None = None,
+        *,
+        takeover: bool = False,
+    ) -> CommitResult:
+        """:meth:`_commit_files_local`'s work, under the lock the caller holds.
 
-            writes = await asyncio.to_thread(differing)
-            if not writes:
-                return CommitResult(sha=None)
-            sha, taken = await self._uninterrupted(
-                self._write_and_commit(
-                    _Plan(writes=frozen(writes)),
-                    message,
-                    author or self.config.committer,
-                    None,
-                    moving=set(moves or {}),
-                )
+        :param files: each path with its new bytes, or ``None`` to remove it
+        :ptype files: dict[str, bytes | None]
+        :param message: the whole message
+        :ptype message: str
+        :param author: the author
+        :ptype author: Author | None
+        :param base: the commit the sender read them at; ``None`` for no check
+        :ptype base: str | None
+        :param moves: old path -> new path
+        :ptype moves: dict[str, str] | None
+        :param takeover: committed by takeover, which holds the lease before this process counts as the writer:
+            no writer check
+        :ptype takeover: bool
+        :return: the commit
+        :rtype: CommitResult
+        """
+        await self._notice_head()
+        head_before = await asyncio.to_thread(self.git.head)
+        if base is not None and base != head_before:
+            if await asyncio.to_thread(self.git.rev_parse, base) is None:
+                raise GitStoreError(f"the writer of {self.config.lease_key} has no commit {base}")
+            moved = {change.path for change in await asyncio.to_thread(self.git.changed, base, head_before or base)}
+            stale = sorted(moved & {*files, *(moves or {})})
+            if stale:
+                raise FileConflictError(stale)
+        if moves:
+            files = {**files, **await self._moved_bytes(moves)}
+
+        def differing() -> dict[str, bytes | None]:
+            current = {path: None if head_before is None else self.git.show(head_before, path) for path in files}
+            # a moved file's source is always removed, also one HEAD never had (saved in a tail, not yet committed:
+            # a product's create-then-rename), whose removal "equals" HEAD and would otherwise be dropped as no change
+            return {path: data for path, data in files.items() if current[path] != data or path in (moves or {})}
+
+        writes = await asyncio.to_thread(differing)
+        if not writes:
+            return CommitResult(sha=None)
+        sha, taken = await self._uninterrupted(
+            self._write_and_commit(
+                _Plan(writes=frozen(writes)),
+                message,
+                author or self.config.committer,
+                None,
+                moving=set(moves or {}),
+                takeover=takeover,
             )
-            changes = await asyncio.to_thread(self.git.changed, head_before, sha)
-            rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)
-            await self._reported(sha, rows)
-            pushed = await self._push_after_commit()
-            paths = tuple(sorted({*writes, *taken}))
+        )
+        changes = await asyncio.to_thread(self.git.changed, head_before, sha)
+        rows = await asyncio.to_thread(self._rows_of, changes, head_before, sha, True)
+        await self._reported(sha, rows)
+        pushed = await self._push_after_commit()
+        paths = tuple(sorted({*writes, *taken}))
         log.info(
             "git_store.commit_files: files were committed",
             extra={"extra_data": {**self._log, "sha": sha, "files": len(paths), "pushed": pushed}},
@@ -2204,6 +2335,9 @@ class GitRepo:
                 extra={"extra_data": {**self._log, "old": old, "head": head, "error": str(exc)}},
             )
             changes = []
+        # commits this process did not write may have migrated the files to a newer format: refused before any of
+        # their rows is decoded under this layout and reported
+        await asyncio.to_thread(self._format_gate)
         rows = await asyncio.to_thread(self._rows_of, changes, old, head, False)
         log.info(
             "git_store.head_moved: commits made elsewhere were noticed",

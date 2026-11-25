@@ -1157,8 +1157,11 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         Public extension point, paired with :meth:`delete_from_store`, as
         :meth:`fetch_from_store_in_transaction` is with :meth:`fetch_from_store`: what
-        ``delete(entity_id, conn=conn)`` sends. The default refuses: a collection that cannot write on the caller's
-        connection says so rather than deleting outside the transaction.
+        ``delete(entity_id, conn=conn)`` sends. An implementation joins the caller's
+        :class:`~threetears.core.collections.caller_transaction.CallerTransaction` and enrolls the key (with the row
+        before it went, when the collection declares :attr:`invalidation_columns`) before it deletes. The default
+        refuses: a collection that cannot write on the caller's connection says so rather than deleting outside the
+        transaction.
         :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` and
         :class:`~threetears.core.collections.durable_store.DurableStoreCollection` delete through their durable
         store on ``conn``.
@@ -5591,11 +5594,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         """delete entity from all tiers.
 
-        **Joining a caller's transaction evicts nothing until it ends**, as ``save_entity(conn=...)``: with
-        ``conn``, the row is deleted from L3 inside the caller's transaction
-        (:meth:`delete_from_store_in_transaction`), and the
-        :class:`~threetears.core.collections.caller_transaction.CallerTransaction` that opened it evicts the key
-        from L1 and L2 and broadcasts once the transaction has committed or rolled back.
+        **Joining a caller's transaction**, as ``save_entity(conn=...)``: with ``conn``, the row is deleted from L3
+        inside the caller's transaction (:meth:`delete_from_store_in_transaction`) and leaves this process's L1 now;
+        the :class:`~threetears.core.collections.caller_transaction.CallerTransaction` that opened it evicts the key
+        from L1 and L2 again and broadcasts once the transaction has committed or rolled back. A collection whose
+        direct delete does what a caller's transaction cannot keep -- it declares :attr:`delete_cascades`, caches
+        absences, commits L2-first or defers its L3 writes, or deletes its own way -- refuses ``conn``.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in
             declared column order (composite-pk)
@@ -5605,8 +5609,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype conn: Any
         :return: always ``True`` (delete is idempotent across tiers)
         :rtype: bool
-        :raises ValueError: with ``conn``, when its transaction was not opened by ``CallerTransaction``, the
-            collection commits L2-first or defers its L3 writes, or cannot delete on a caller's connection
+        :raises ValueError: with ``conn``, when its transaction was not opened by ``CallerTransaction``, or the
+            collection commits L2-first, defers its L3 writes, caches absences, declares delete cascades, deletes
+            its own way (an overridden ``delete_from_store``) or cannot delete on a caller's connection
+        :raises DeltaFileRefusedError: with ``conn``, on a schema-backed table whose delete markers carry a state
+            (``delta_scope``): delete it with ``delete_rows(..., delta_scope=)``
         :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
             the delete; the row is still there for every other replica
         :raises GenerationUnavailableError: when a switched-on collection
@@ -5652,16 +5659,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         :raises ValueError: when the transaction was not opened by ``CallerTransaction``, the collection commits
-            L2-first or defers its L3 writes, or cannot delete on a caller's connection
+            L2-first, defers its L3 writes, caches absences or declares delete cascades, or cannot delete on a
+            caller's connection
         """
+        # what the direct delete does that a caller's transaction cannot: each refused here, once, for every
+        # collection; the rest of a joined write's bookkeeping (the join, the enrollment with the row before it
+        # went, a delta file's delete marker) is the implementation's, shared with the bulk delete
         if self.writes_l2_first or self._defers_l3_writes:
             raise ValueError(
                 f"{type(self).__name__} commits L2-first or defers its L3 writes, so a delete cannot join a caller's "
                 f"transaction: the row would leave L3 outside it"
             )
-        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete")
-        # enrolled before the write, so a delete whose outcome is unknown is settled with the rest
-        transaction.enroll(self, entity_id)
+        if self._negative_cache_writes_advance:
+            raise ValueError(
+                f"{type(self).__name__} caches absences, which a write must advance as it commits: a delete cannot "
+                f"join a caller's transaction"
+            )
+        if self.delete_cascades:
+            raise ValueError(
+                f"{type(self).__name__} declares delete cascades, which a delete announces after its own commit: a "
+                f"delete in a caller's transaction would leave the cascaded rows cached"
+            )
+        if self._write_buffer is not None:
+            await self._write_buffer.remove(self.table_name, entity_id)
         await self.delete_from_store_in_transaction(entity_id, conn=conn)
 
     @traced()

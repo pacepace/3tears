@@ -27,10 +27,11 @@ from threetears.core.backends.git.errors import (
     FileConflictError,
     GitStoreError,
     HandEditPendingError,
+    NewerLayoutFormatError,
     NotTheWriterError,
 )
 from threetears.core.backends.git.git import Author, CommitEntry, GitError
-from threetears.core.backends.git.layout import Layout, TableLayout, TemplateLayout
+from threetears.core.backends.git.layout import FormatMigration, FormatVersioned, Layout, TableLayout, TemplateLayout
 from threetears.core.backends.git.repo import (
     Committed,
     DirtyFile,
@@ -57,6 +58,8 @@ __all__ = [
     "DirtyFile",
     "DivergedError",
     "FileConflictError",
+    "FormatMigration",
+    "FormatVersioned",
     "ForwardRefusedError",
     "GitDurableStore",
     "GitError",
@@ -67,6 +70,7 @@ __all__ = [
     "HandEditPendingError",
     "JsonCodec",
     "Layout",
+    "NewerLayoutFormatError",
     "NotTheWriterError",
     "OpLogLike",
     "OpLogTail",

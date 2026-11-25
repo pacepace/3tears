@@ -27,10 +27,17 @@ writing one working tree race each other and every cache goes stale.
   sets to it and get the commit or the same typed refusal back.
 - Pushes are plain, never forced. Clones that are not the writer follow origin on the writer's
   broadcast. A crash mid-change is put back by the next writer.
-- A layout names the format its files are written in (`TemplateLayout(format_version=, migrate_format=)`); the
-  repository records it in `.threetears/layout-format`. The writer, taking the repository over, migrates one
-  recorded under an older format in ONE commit; a repository under a newer format is refused when it opens.
-- `collection.delete(key, conn=change_set)` deletes inside a change set, as a save joins one.
+- A layout names the format its files are written in (`TemplateLayout(format_version=, migrate_format=)`, or any
+  layout that is a `FormatVersioned`); the repository records it in `.threetears/layout-format`. The writer, taking
+  the repository over, migrates one recorded under an older format in ONE commit, while it takes over and before it
+  serves a change; a new repository (no format recorded, no row) is stamped with the layout's format and not
+  migrated. A repository under a newer format than the layout reads -- a newer release migrated it -- is refused
+  (`NewerLayoutFormatError`) wherever this process meets it: on opening, on a takeover (the lease is let go), and
+  on a clone that follows origin onto it, which then refuses every read until a release that reads it runs.
+- `collection.delete(key, conn=change_set)` deletes inside a change set, as a save joins one. A collection whose
+  direct delete does what a caller's transaction cannot (announce delete cascades after its commit, cache
+  absences, commit L2 first or defer its L3 write, delete its own way through an overridden `delete_from_store`)
+  refuses `conn` with `ValueError`.
 - `bind_collections` drops every row any commit changed -- hand commits and pulled commits
   included -- from the collections' caches. `GitRepos` / `RoutedGitStore` keep many repositories.
 

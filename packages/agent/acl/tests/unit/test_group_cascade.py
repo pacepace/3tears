@@ -13,6 +13,8 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+
 from threetears.agent.acl import GroupCollection, GroupMemberCollection, RoleAssignmentCollection
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -174,3 +176,16 @@ async def test_a_failed_membership_advance_still_announces_the_assignments() -> 
 
     (assignment,) = _rows(bus, "role_assignments")
     assert (assignment.generation, assignment.columns) == ("inc:1", {"group_id": f"{group_id}"})
+
+
+async def test_a_group_delete_refuses_a_callers_transaction() -> None:
+    """a group's delete announces its cascade after its own commit, which a caller's transaction would defer."""
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=_Pool([], []), l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
+    registry.set_generation_source(_Source())
+    groups = GroupCollection(registry, _CONFIG, nats_client=bus)
+    groups.delete_from_store = AsyncMock()  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="cannot delete inside a caller's transaction"):
+        await groups.delete(("customer", uuid4()), conn=object())
+    groups.delete_from_store.assert_not_awaited()

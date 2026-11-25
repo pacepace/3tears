@@ -256,3 +256,11 @@ class TestTheLocalRecordIsDroppedWithThePod:
 
         assert _status(catalog, "pod-a") == "available", "no stale record judged it"
         assert "pod-a" in subscriber.known_pod_ids
+
+
+async def test_a_heartbeat_delete_refuses_a_callers_transaction() -> None:
+    """a heartbeat lives in L1 and L2 only: there is no L3 transaction for its delete to join."""
+    nats = FakeNatsClient()
+    collection = _collection(nats)
+    with pytest.raises(ValueError, match="cannot delete inside a caller's transaction"):
+        await collection.delete("pod-1", conn=object())

@@ -30,6 +30,8 @@ from threetears.core.backends.git.codec import RowCodec
 from threetears.core.frozen_state import frozen
 
 __all__ = [
+    "FormatMigration",
+    "FormatVersioned",
     "Layout",
     "TableLayout",
     "TemplateLayout",
@@ -264,10 +266,26 @@ class TableLayout:
         return found
 
 
-_FormatMigration = Callable[[Any, int], Awaitable[Mapping[str, bytes | None]]]
+type FormatMigration = Callable[[Any, int], Awaitable[Mapping[str, bytes | None]]]
 """``await migrate(repo, from_version)``: the files (path -> bytes, ``None`` to remove) that bring a repository from
 ``from_version`` to the layout's ``format_version``. ``repo`` is the :class:`~threetears.core.backends.git.GitRepo`,
 for reading what is there (``read_rows``, its working tree)."""
+
+
+@runtime_checkable
+class FormatVersioned(Protocol):
+    """a :class:`Layout` that names the format its files are written in, and how to bring an older repository to it.
+
+    A layout that is not one records no format and is never migrated. :class:`TemplateLayout` is one; a product's
+    own layout declares both attributes to be one.
+
+    :ivar format_version: the version of the files this layout and its codecs write, recorded in the repository
+        (``.threetears/layout-format``); ``0`` for a layout never migrated
+    :ivar migrate_format: brings a repository written under an older ``format_version`` to this one, or ``None``
+    """
+
+    format_version: int
+    migrate_format: FormatMigration | None
 
 
 class TemplateLayout:
@@ -290,7 +308,7 @@ class TemplateLayout:
         tables: Sequence[TableLayout],
         *,
         format_version: int = 0,
-        migrate_format: _FormatMigration | None = None,
+        migrate_format: FormatMigration | None = None,
     ) -> None:
         """index the tables.
 
@@ -302,7 +320,7 @@ class TemplateLayout:
         :param migrate_format: ``await migrate_format(repo, from_version)`` answers the files to write (bytes, or
             ``None`` to remove one) to bring the repository from ``from_version`` to ``format_version``; the writer
             commits them, with the new version, as ONE commit
-        :ptype migrate_format: _FormatMigration | None
+        :ptype migrate_format: FormatMigration | None
         :return: None
         :rtype: None
         :raises ValueError: when a table is named twice, or ``format_version`` is negative
