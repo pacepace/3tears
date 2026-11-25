@@ -1054,8 +1054,8 @@ async def test_no_full_reads_each_table_from_l3_once_and_publishes_its_parts_at_
 async def test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild(
     tmp_path: Path, workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Flips if the writer's whole read of a table (DeltaFolds._fresh_fulls's, through _cold_start_pages, declared
-    cold_start, and _schema_change_pages, declared schema_change, at each level) is reached other than for a table no
+    """Flips if the writer's whole read of a table (DeltaFolds._fresh_fulls's, through _declared_pages and
+    _cold_start_pages, declared cold_start, and _schema_change_pages, declared schema_change, at each level) is reached other than for a table no
     full holds, a reset, or a schema change: a full that holds every table is read nothing, a full lacking one table
     reads that table alone, and a table never written is rebuilt before the round its first commit starts, never
     folded from its deltas alone."""
@@ -1140,6 +1140,101 @@ async def test_a_stale_writer_s_rebuild_changes_nothing_readers_see(tmp_path: Pa
     assert sum(l3.statements.values()) == reads
     await folds.close()
     await stale.close()
+
+
+class _StreamsL3(ThreadedDuckDB):
+    """L3 as a DuckDB holding two tables of many states, each statement held a moment so reads at once overlap; keeps
+    the most statements it had in flight at once."""
+
+    def __init__(self, tables: Mapping[str, Sequence[Mapping[str, Any]]], *, yugabyte: bool) -> None:
+        conn = duckdb.connect()
+        schema = pa.schema(
+            [("state", pa.string()), ("geo_id", pa.int64()), ("votes", pa.int64()), ("note", pa.string())]
+        )
+        for name, rows in tables.items():
+            conn.execute(
+                f"CREATE TABLE {name} (state VARCHAR, geo_id BIGINT, votes BIGINT, note VARCHAR, "
+                "PRIMARY KEY (state, geo_id))"
+            )
+            conn.register("held", pa.Table.from_pylist([dict(row) for row in rows], schema=schema))
+            conn.execute(f"INSERT INTO {name} SELECT * FROM held")  # noqa: S608 - the test's own names
+            conn.unregister("held")
+        super().__init__(conn)
+        self.in_flight = 0
+        self.most = 0
+        self.statements: list[str] = []
+        self.version = "PostgreSQL 11.2-YB-2025.1.0.0" if yugabyte else "PostgreSQL 16.4"
+
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
+        if query.startswith("SELECT version()"):
+            return [{"v": self.version}]
+        return await super().fetch(query, *params)
+
+    async def fetch_arrow(
+        self, query: str, /, *params: Any, types: Mapping[str, Any] | None, size: int | None = None
+    ) -> Any:
+        self.in_flight += 1
+        self.most = max(self.most, self.in_flight)
+        self.statements.append(query)
+        try:
+            await asyncio.sleep(0.005)
+            return await super().fetch_arrow(query, *params, types=types, size=size)
+        finally:
+            self.in_flight -= 1
+
+
+def _tallies_schema() -> TableSchema:
+    return dataclasses.replace(_votes_schema(), name="tallies")
+
+
+@pytest.mark.parametrize(("tables", "streams", "yugabyte"), [(2, 3, False), (2, 3, True), (1, 1, False)])
+async def test_a_rebuild_reads_tables_and_states_at_once_within_its_streams_and_holds_every_row(
+    tmp_path: Path, workers: ProcessWorkers, tables: int, streams: int, yugabyte: bool
+) -> None:
+    """Flips if the rebuild of missing fulls (DeltaFolds._fresh_fulls, RebuildConcurrency) reads more statements at once
+    than its streams, reads one statement at a time when it may read several, loses or doubles a row splitting a table
+    by its states (the rest past its first pages: a range of states a stream on an ordered lead, a set of them on
+    YugabyteDB's hashed one), or leaves a stream's file behind."""
+    votes = [
+        {"state": f"S{state:02d}", "geo_id": geo, "votes": state * 100 + geo, "note": f"n{geo % 7}"}
+        for state in range(12)
+        for geo in range(50)
+    ]
+    tallies = [
+        {"state": f"T{state:02d}", "geo_id": geo, "votes": geo, "note": None} for state in range(8) for geo in range(30)
+    ]
+    l3 = _StreamsL3({"votes": votes, "tallies": tallies}, yugabyte=yugabyte)
+    folds = DeltaFolds(
+        tmp_path,
+        [FoldedTable.of(_votes_schema(), scope=_SCOPE), FoldedTable.of(_tallies_schema(), scope=_SCOPE)],
+        retention="delete",
+        copies=NO_COPIES,
+        workers=workers,
+        rebuild=delta_fold.RebuildConcurrency(tables=tables, streams=streams),
+    )
+    rebuilt = await folds.start(
+        l3, _Generations({"votes": "inc:4", "tallies": "inc:2"}), changes=_Log(), version=9, page_size=40
+    )
+    assert sorted(rebuilt) == ["tallies", "votes"]
+    assert _held(tmp_path, "votes") == _sorted(votes)
+    assert _held(tmp_path, "tallies") == _sorted(tallies)
+    manifest = current_full_manifest(tmp_path)
+    assert manifest is not None and len(manifest.tables["votes"].parts) == 12
+    split = [
+        statement
+        for statement in l3.statements
+        if "DISTINCT" not in statement and ("ANY" if yugabyte else "<=") in statement
+    ]
+    if streams > 1:
+        assert split, "a table past one page is read in parts by its states"
+    else:
+        assert not split, "one stream reads each table whole by its plain read, as before"
+    if streams == 1:
+        assert l3.most == 1
+    else:
+        assert 2 <= l3.most <= streams, l3.most
+    assert not any((tmp_path / ".fulls" / "rebuild").rglob("*.arrow")), "every stream's file is removed once published"
+    await folds.close()
 
 
 async def test_a_reset_drops_the_table_s_files_and_rebuilds_it_at_the_writer_s_term(

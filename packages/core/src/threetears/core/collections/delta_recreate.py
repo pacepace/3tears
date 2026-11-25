@@ -186,6 +186,9 @@ _FULL_ASKS = counter(
     label_names=("table", "outcome"),
 )
 
+#: between a reply's outcome word and the writer's progress after it (a rebuild's step: ``DeltaRecreator.full``)
+_PROGRESS_SEPARATOR: Final = "\n"
+
 #: the body's ``want`` naming a request for a table's full, not a file
 _WANT_FULL: Final = "full"
 
@@ -289,6 +292,23 @@ class _MissingFulls(Protocol):
         :ptype table: str
         :return: True when a full is owed (the copy waits for it), False when the current full holds the table
         :rtype: bool
+        """
+        ...
+
+
+@runtime_checkable
+class _RebuildProgress(Protocol):
+    """a writer's fold that says what its rebuild of a missing full is doing now
+    (:attr:`~threetears.core.collections.delta_fold.DeltaFolds.rebuilding`): sent to the copy with ``recovering``, so a
+    copy waiting minutes for a cold rebuild says which table is being read, never a silent wait.
+    """
+
+    @property
+    def rebuilding(self) -> str | None:
+        """``rebuilding from L3: n of m tables read`` or ``publishing ...`` while a rebuild runs; None while none does.
+
+        :return: the step, or None
+        :rtype: str | None
         """
         ...
 
@@ -428,13 +448,16 @@ class DeltaRecreator:
         owed = await self._fulls.full_owed(table)
         outcome = _Outcome.RECOVERING if owed else _Outcome.PRESENT
         _FULL_ASKS.labels(table=table, outcome=outcome.value).inc()
+        progress = self._fulls.rebuilding if owed and isinstance(self._fulls, _RebuildProgress) else None
         if owed:
             log.warning(
                 "a copy found no full of a table on the volume: the writer's fold rebuilds it from L3 and publishes it, "
                 "with no write begun",
-                extra={"extra_data": {"table": table}},
+                extra={"extra_data": {"table": table, "progress": progress}},
             )
-        return outcome.value
+        # the outcome word, then the rebuild's step on a line of its own (_PROGRESS_SEPARATOR): the copy says it in its
+        # waiting status (DeltaRecreateRequester._asked)
+        return outcome.value if progress is None else f"{outcome.value}{_PROGRESS_SEPARATOR}{progress}"
 
     async def recreate(self, table: str, file: str, epoch: str) -> str:
         """recreate one epoch's file once: a request for it while it is being recreated waits for that recreation.
@@ -905,7 +928,8 @@ class DeltaRecreateRequester:
 
         :param table: the table
         :ptype table: str
-        :return: ``present``, ``recovering``, ``no_writer`` when none answered, ``failed`` when the writer refused or
+        :return: ``present``, ``recovering`` (``recovering: <the rebuild's step>`` when the writer says it, as
+            ``rebuilding from L3: n of m tables read``), ``no_writer`` when none answered, ``failed`` when the writer refused or
             the request did not cross
         :rtype: str
         """
@@ -934,7 +958,9 @@ class DeltaRecreateRequester:
             )
             return _Outcome.FAILED.value
         try:
-            return _Outcome(reply.decode()).value
+            word, _, progress = reply.decode().partition(_PROGRESS_SEPARATOR)
+            outcome = _Outcome(word).value
+            return outcome if not progress else f"{outcome}: {progress}"
         except (UnicodeDecodeError, ValueError) as exc:
             log.warning(
                 "the writer answered a recreate request with no outcome this copy knows; it asks again",
