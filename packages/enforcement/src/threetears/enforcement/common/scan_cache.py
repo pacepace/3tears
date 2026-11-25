@@ -73,7 +73,7 @@ import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import FunctionType, ModuleType
+from types import FrameType, FunctionType, ModuleType
 from typing import Any, Literal
 
 from threetears.enforcement.common.ast_helpers import note_unscanned
@@ -133,9 +133,15 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
 
 
 def _importing() -> bool:
-    """whether the import system raised the event being audited, so it is the interpreter loading code."""
+    """whether the import system raised the event being audited, so it is the interpreter loading code.
+
+    only the frames between the event and the recording's own start count: a computation that runs
+    while some module is being imported (a gate's table built at its import) has the import system
+    below it on the stack, and its reads are still its own.
+    """
+    anchor = getattr(_RECORDING, "anchor", None)
     frame = inspect.currentframe()
-    while frame is not None:
+    while frame is not None and frame is not anchor:
         if frame.f_code.co_filename.startswith("<frozen importlib"):
             return True
         frame = frame.f_back
@@ -435,12 +441,16 @@ class _Recorded:
     def __enter__(self) -> list[tuple[str, tuple[Any, ...]]]:
         _AUDIT.get("audit", _install_audit)
         self.outer: list[tuple[str, tuple[Any, ...]]] | None = getattr(_RECORDING, "log", None)
+        self.outer_anchor: FrameType | None = getattr(_RECORDING, "anchor", None)
         self.log: list[tuple[str, tuple[Any, ...]]] = []
+        here = inspect.currentframe()
+        _RECORDING.anchor = here.f_back if here is not None else None
         _RECORDING.log = self.log
         return self.log
 
     def __exit__(self, *_: object) -> None:
         _RECORDING.log = self.outer
+        _RECORDING.anchor = self.outer_anchor
         if self.outer is not None:
             self.outer.extend(self.log)
 

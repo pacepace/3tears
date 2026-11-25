@@ -566,7 +566,9 @@ def test_a_per_file_walk_inside_a_scan_leaves_the_scan_storable_and_its_stray_re
         return walk.per_file("facts", _Names(), paths, root=root)
 
     for _ in range(2):
-        assert outer.memoised("scan", ["workspace"], declared, scan) == {"workspace": {paths[0]: ("f",), paths[1]: ("g",)}}
+        assert outer.memoised("scan", ["workspace"], declared, scan) == {
+            "workspace": {paths[0]: ("f",), paths[1]: ("g",)}
+        }
     assert not outer.unstored, f"the walk's own store or code refused the scan: {outer.unstored}"
     assert not walk.unstored
 
@@ -578,8 +580,40 @@ def test_a_per_file_walk_inside_a_scan_leaves_the_scan_storable_and_its_stray_re
 
     with pytest.warns(UserWarning, match="enforcement scan cache: .*read outside its key"):
         outer.memoised("stray scan", ["workspace"], declared, stray_scan)
-    assert any(reason.startswith("stray scan") for reason in outer.unstored), "the scan kept a value its walk read stray"
+    assert any(reason.startswith("stray scan") for reason in outer.unstored), (
+        "the scan kept a value its walk read stray"
+    )
     assert walk.unstored, "the walk kept a fact read stray"
+
+
+_EXTRACTS_AT_IMPORT = """
+from pathlib import Path
+from threetears.enforcement.common.scan_cache import ScanCache
+
+ROOT = Path(__file__).parent / "repo"
+
+
+def strays(path, tree):
+    return (ROOT / "ledger.txt").read_text()
+
+
+CACHE = ScanCache(Path(__file__).parent / "cache", "code")
+FACTS = CACHE.per_file("strays", strays, [ROOT / "a.py"], root=ROOT)
+"""
+
+
+def test_an_extraction_run_while_its_module_imports_is_still_audited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a gate that builds its table when pytest imports it has the import system below it on the stack; its own
+    stray read is still its own, not the interpreter loading code."""
+    _write(tmp_path, {"repo/a.py": "def f(): pass\n", "repo/ledger.txt": "unkeyed", "gate.py": _EXTRACTS_AT_IMPORT})
+
+    with pytest.warns(UserWarning, match="enforcement scan cache: .*read outside its key: open"):
+        module = _load("extracts_at_import", tmp_path / "gate.py", monkeypatch)
+
+    assert module.FACTS == {tmp_path / "repo" / "a.py": "unkeyed"}
+    assert module.CACHE.unstored, "a fact read stray during an import was stored"
 
 
 #: the files :func:`_top_level_functions` was asked about, so a test can see what it parsed
