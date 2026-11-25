@@ -65,7 +65,9 @@ from threetears.interfaces.keyed.keys import (
     register_partial_predicates,
     register_table_indexes,
     register_table_keys,
+    register_versioned_table,
     partial_predicate,
+    VersionedTable,
 )
 from threetears.interfaces.keyed.rows import DeclaredScope, KeyColumn, KeyColumns
 from threetears.core.backends.arrow_copy import (
@@ -106,6 +108,7 @@ from threetears.core.backends.schema_sql import (
     decode_vector as _decode_vector,
     encode_jsonb as encode_jsonb,
     insert_columns_for_data,
+    key_array_type,
     json_default as _json_default,
     upsert_set_columns,
 )
@@ -137,6 +140,7 @@ from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, 
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.declared import whole_read
+from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     GONE_COLUMN,
@@ -1603,8 +1607,12 @@ class TableSchema:
         self._validate_cas_null_safe(pk_cols, by_name)
         self._validate_l2_order(pk_cols, by_name)
         # the keys a keyset read of this table must hold (its order and pins), for the pagers' run-time refusal. A
-        # versioned table's key alone is not unique (each write keeps a version of it): the key it holds is the stored one
+        # versioned table's stored key holds a version a write; every keyed read of it sees only each key's newest
+        # live version (keys.newest_guard), so among the rows a read sees its key alone is unique too
         register_table_keys(self.name, self._declared_keys(stored_key, partition_column))
+        if stored_key != pk_cols:
+            register_table_keys(self.name, self._declared_keys(pk_cols, partition_column))
+            register_versioned_table(self._versioned_table(pk_cols))
         # the indexes a keyed read of it names to YugabyteDB, whose planner prefers the primary key (keys.serving_index)
         register_table_indexes(self.name, self._declared_indexes(stored_key))
         # the texts its partial indexes' predicates name, which a keyed read pinning them writes as literals, so a
@@ -1718,6 +1726,34 @@ class TableSchema:
             for constraint in self.unique_constraints
         )
         return indexes
+
+    def _versioned_table(self, pk_cols: tuple[str, ...]) -> VersionedTable:
+        """this versioned table as a read of it sees only each key's newest live version
+        (:func:`~threetears.interfaces.keyed.keys.newest_guard`): its key, the epoch and "gone" columns, and the run
+        markers a whole run deleted leaves, found by a prefix of the key holding the scope, each prefix value as text
+        cast from its column's type as the marker's write casts it (``SqlL3Backend._run_marker_statements``).
+
+        :param pk_cols: the key's columns
+        :ptype pk_cols: tuple[str, ...]
+        :return: the declaration
+        :rtype: VersionedTable
+        """
+        assert self.row_epoch is not None and self.row_epoch.scope is not None  # noqa: S101 -- a versioned table's
+        scope = self.row_epoch.scope
+        if scope not in pk_cols:
+            # no prefix of the key names the scope, so no run marker names the table (delete_prefixes refuses one)
+            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN)
+        texts: list[str] = []
+        for name in pk_cols:
+            kind = key_array_type(self, name)
+            if kind is None:
+                # a prefix reaching this column has no text a marker can hold: no marker names one so long
+                break
+            texts.append(kind.removesuffix("[]"))
+        at = pk_cols.index(scope)
+        if len(texts) <= at:
+            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN)
+        return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, RUN_MARKERS_TABLE, at, tuple(texts))
 
     def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:
         """the keys this declaration says the table holds: its primary key, each ``UNIQUE`` constraint, each unique
@@ -3257,6 +3293,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 list(schema.pk_columns),
                 page_size=page_size,
                 lead_array=schema.hashed_lead_array(schema.pk_columns),
+                table=schema.name,
             ),
             kind="cold_start",
             reason="L2 holds nothing for this table (its first fill, or NATS lost the memory bucket and the complete mark with it)",

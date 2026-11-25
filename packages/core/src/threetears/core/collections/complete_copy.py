@@ -137,6 +137,7 @@ async def read_l3_rows(
         where_any=where_any,
         page_size=page_size,
         lead_array=lead_array,
+        table=table,
     )
     return read.rows
 
@@ -176,7 +177,9 @@ def l3_row_pages(
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one (at the first page)
     """
-    return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size, lead_array=lead_array)
+    return keyset_pages(
+        l3, _select_from(table, columns), key, where=where, page_size=page_size, lead_array=lead_array, table=table
+    )
 
 
 async def read_l3_arrow(
@@ -274,6 +277,7 @@ def _l3_arrow_pages(
         where_any=where_any,
         page_size=page_size,
         lead_array=lead_array,
+        table=table,
     )
 
 

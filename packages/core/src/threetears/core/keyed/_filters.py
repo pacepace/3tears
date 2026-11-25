@@ -16,7 +16,7 @@ from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
-from threetears.interfaces.keyed.keys import index_hint, not_null_guards, serving_index
+from threetears.interfaces.keyed.keys import index_hint, newest_guard, not_null_guards, serving_index, versioned_table
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -63,6 +63,7 @@ __all__ = [
     "selected_column",
     "relation",
     "narrowing",
+    "newest_only",
     "one_use_each",
     "renumbered",
     "sent_by",
@@ -190,6 +191,31 @@ def reads_l3(conn: Any) -> bool:
     # answers any name it is asked, and is no datasource
     named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
     return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
+
+
+def newest_only(conn: Any, table: Any, where: Sequence[Fragment] = (), *, row: str = "t") -> tuple[Fragment, ...]:
+    """a keyed read's filters, with the newest-version guard of a versioned L3 table beside them: the read then sees
+    only each key's newest live version, never an older one, a key whose newest version is a "gone" marker, or a key
+    under a newer run marker (:func:`~threetears.interfaces.keyed.keys.newest_guard`). Unchanged for a read that does
+    not go to L3 (a local copy keeps one row a key), a derived relation, or a table no versioned declaration names.
+
+    The one place every keyed read asks it, so no read of a versioned table sees more than its newest versions.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: Any
+    :param where: the read's own filters
+    :ptype where: Sequence[Fragment]
+    :param row: how the statement names the row read: its alias, or the quoted relation where it has none
+    :ptype row: str
+    :return: the filters to read by
+    :rtype: tuple[Fragment, ...]
+    """
+    versioned = versioned_table(table, l3=reads_l3(conn))
+    if versioned is None:
+        return tuple(where)
+    return (*where, Fragment(newest_guard(versioned, row, read_as=table)))
 
 
 async def reads_yugabyte(conn: Any) -> bool:

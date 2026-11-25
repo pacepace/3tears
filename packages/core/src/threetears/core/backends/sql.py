@@ -851,6 +851,7 @@ class _LedRead:
             page_size=row_cap - 1,
             quote=as_written,
             mark=lambda column, index: schema_sql.render_param(self.schema.column(column), index),
+            table=self.schema.name,
         )
         self.statements += read.statements
         return read.rows
@@ -2428,6 +2429,7 @@ class SqlL3Backend:
             # a page asks one row past its size to see the next page (keyset.py), so it stays under the cap
             page_size=max((L3_RAIL_ROW_CAP if cap is None else cap) - 1, 1),
             lead_array=schema.hashed_lead_array(order),
+            table=table,
         )
         return read.rows
 

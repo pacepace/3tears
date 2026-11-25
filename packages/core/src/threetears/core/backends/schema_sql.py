@@ -27,6 +27,9 @@ from decimal import Decimal
 from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
+from threetears.core.ddl.row_epoch import GONE_COLUMN as _GONE_COLUMN
+from threetears.interfaces.keyed.filters import quoted_table
+from threetears.interfaces.keyed.keys import newest_guard, versioned_table
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
@@ -66,6 +69,7 @@ __all__ = [
     "build_where_pk",
     "build_whole_key_delete_sql",
     "build_whole_key_select_sql",
+    "newest_condition",
     "bulk_batches",
     "bulk_insert_batches",
     "bulk_insert_row_sql",
@@ -1064,7 +1068,30 @@ def build_whole_key_select_sql(schema: TableSchema) -> str:
     if len(arrays) > 1:
         key = ", ".join(as_written(name) for name in schema.pk_columns)
         pk_where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
-    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {pk_where}"
+    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {pk_where}{newest_condition(schema)}"
+
+
+def _versioned(schema: TableSchema) -> bool:
+    """whether ``schema`` declares a versioned table (``row_epoch=row_versions(...)``); a stand-in schema with no
+    declaration is not one."""
+    declared = getattr(schema, "row_epoch", None)
+    return declared is not None and declared.versions
+
+
+def newest_condition(schema: TableSchema) -> str:
+    """the condition (`` AND ...``) an L3 read of a versioned table's rows by its key adds, so it answers only each
+    key's newest live version (:func:`~threetears.interfaces.keyed.keys.newest_guard`): never an older version, a key
+    whose newest version is a "gone" marker, or a key under a newer run marker. Empty for any other table.
+
+    :param schema: table schema, read as ``FROM <schema.name>`` with no alias
+    :ptype schema: TableSchema
+    :return: the condition with its leading `` AND ``, or the empty string
+    :rtype: str
+    """
+    versioned = versioned_table(schema.name, l3=True) if _versioned(schema) else None
+    if versioned is None:
+        return ""
+    return f" AND {newest_guard(versioned, quoted_table(schema.name), read_as=schema.name)}"
 
 
 def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
@@ -1084,7 +1111,7 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     lead_key = schema.pk_columns[0]
     return (
         f"SELECT {build_select_column_list(schema, columns)} FROM {schema.name} "
-        f"WHERE {as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)})"
+        f"WHERE {as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)}){newest_condition(schema)}"
     )
 
 
@@ -1476,7 +1503,13 @@ def build_select_column_list(schema: TableSchema, columns: Sequence[str] | None 
     :rtype: str
     """
     text_cast_types = (_VECTOR_TYPE, _TSVECTOR_TYPE)
-    chosen = list(schema.columns) if columns is None else [schema.column(name) for name in columns]
+    # a versioned table's "gone" flag is no column of a row a read answers: a read sees only live newest versions
+    # (newest_condition), whose flag is always false
+    chosen = (
+        [col for col in schema.columns if not (_versioned(schema) and col.name == _GONE_COLUMN)]
+        if columns is None
+        else [schema.column(name) for name in columns]
+    )
     parts: list[str] = []
     for col in chosen:
         name = as_written(col.name)
@@ -1494,7 +1527,7 @@ def build_fetch_sql(schema: TableSchema) -> str:
     """
     pk_where, _ = build_where_pk(schema, start=1)
     columns = build_select_column_list(schema)
-    return f"SELECT {columns} FROM {schema.name} WHERE {pk_where}"
+    return f"SELECT {columns} FROM {schema.name} WHERE {pk_where}{newest_condition(schema)}"
 
 
 def build_delete_sql(schema: TableSchema) -> str:

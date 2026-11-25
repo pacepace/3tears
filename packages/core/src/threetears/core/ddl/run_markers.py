@@ -19,13 +19,16 @@ request carrying the epoch), on a direct connection 3tears' ``SqlL3Backend.delet
 :func:`run_marker_insert_sql`, so the text form of every value is the database's own. Its declaration, the table's DDL
 for Postgres and YugabyteDB, is :data:`threetears.core.collections.run_markers.RUN_MARKERS_SCHEMA`.
 
-A leaf module: the backends and the hub import it, and it imports nothing of 3tears.
+A leaf module: the backends and the hub import it, and it imports nothing of 3tears but the dependency-free
+interfaces' spelling of a prefix value's text.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Final
+
+from threetears.interfaces.keyed.keys import prefix_text
 
 __all__ = [
     "RUN_MARKERS_TABLE",
@@ -42,16 +45,11 @@ RUN_MARKER_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "prefix", "
 #: what a marker's ``prefix`` joins the prefix's values with: chr(31), as a change note's ``key_text`` joins a key's
 _PREFIX_SEPARATOR: Final[str] = "\x1f"
 
-#: a ``timestamptz`` value's text: its UTC instant to the microsecond, the form a change note keys one by
-#: (``change_notes._row_terms``), never the session's time zone
-_UTC_MICROS: Final[str] = '\'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"\''
-
-#: the declared types (``format_type``) whose text is :data:`_UTC_MICROS`
-_TIMESTAMPTZ: Final = frozenset({"timestamp with time zone", "timestamptz"})
-
 
 def _text_term(placeholder: str, declared: str) -> str:
-    """a bound prefix value as the marker's text holds it, cast by the database from its column's own type.
+    """a bound prefix value as the marker's text holds it, cast by the database from its column's own type: the
+    spelling a read's probe of the marker uses on the row's own column
+    (:func:`~threetears.interfaces.keyed.keys.prefix_text`), so the two texts are the same.
 
     :param placeholder: the parameter (``$3``)
     :ptype placeholder: str
@@ -61,10 +59,7 @@ def _text_term(placeholder: str, declared: str) -> str:
     :return: the SQL term
     :rtype: str
     """
-    typed = f"({placeholder}::{declared})"
-    if declared in _TIMESTAMPTZ:
-        return f"to_char({typed} AT TIME ZONE 'UTC', {_UTC_MICROS})"
-    return f"{typed}::text"
+    return prefix_text(placeholder, declared)
 
 
 def run_marker_insert_sql(declared: Sequence[str], scope_position: int, *, table: str = RUN_MARKERS_TABLE) -> str:

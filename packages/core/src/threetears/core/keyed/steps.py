@@ -411,10 +411,17 @@ def latest_per_key(
     columns: Sequence[str | Selected] | None = None,
     where: Sequence[Fragment] = (),
     ties: bool = False,
+    gone: str | None = None,
 ) -> Step:
     """the first row of each ``key`` in ``order`` (the newest, ordered descending): ``DISTINCT ON``. With ``ties``,
     every row of a key whose ``order[0]`` value is the key's first (``max`` descending, ``min`` ascending), its NULLs
     never first: a window filter (:func:`windowed`).
+
+    With ``gone``, the newest live version of each key of a relation of versions (a versioned table's rows a change
+    produced, ordered by the epoch descending): a key whose first row is a "gone" marker (``gone`` true) answers
+    nothing, never the version behind it. A keyed read of a versioned L3 table itself takes the same rule as a probe
+    beside the read (:func:`~threetears.interfaces.keyed.keys.newest_guard`): a ``DISTINCT ON`` subquery takes no
+    key a join names, so read through one a table would be read whole.
 
     :param rel: the relation
     :ptype rel: str | Derived | Step
@@ -428,12 +435,18 @@ def latest_per_key(
     :ptype where: Sequence[Fragment]
     :param ties: keep every row tied first by ``order[0]`` (one sort column only), not one row a key
     :ptype ties: bool
+    :param gone: the column a "gone" marker sets, a TRUSTED identifier: a key whose first row sets it answers nothing;
+        None keeps every key's first row
+    :ptype gone: str | None
     :return: the step
     :rtype: Step
-    :raises ValueError: when ``key`` or ``order`` is empty, or ``ties`` is given more than one sort column
+    :raises ValueError: when ``key`` or ``order`` is empty, ``ties`` is given more than one sort column, or ``gone``
+        beside ``ties``
     """
     if not key or not order:
         raise ValueError("the newest row of each key names the key and the order")
+    if gone is not None and ties:
+        raise ValueError("a key's newest live version is one row: gone= takes no ties")
     if any(sort.nulls is not None for sort in order):
         raise ValueError("the newest row of each key places NULLs as its order says it, never by a sort's nulls")
     if ties:
@@ -449,6 +462,12 @@ def latest_per_key(
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
     keyed = ", ".join(f"t.{quote_identifier(column)}" for column in key)
+    if gone is not None:
+        # the first row of each key, whole (its marker flag kept to judge it), then the live ones' columns
+        heads = latest_per_key(rel, key=key, order=order, where=where)
+        inner = _Statement()
+        newest = inner.source(heads, "n")
+        return inner.step(f"SELECT {_columns(columns, 'n')} FROM {newest} WHERE NOT n.{quote_identifier(gone)}")
     ordered = ", ".join(
         [f"t.{quote_identifier(column)}" for column in key]
         + [

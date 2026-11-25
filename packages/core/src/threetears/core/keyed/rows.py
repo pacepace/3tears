@@ -50,6 +50,7 @@ from threetears.core.keyed._filters import (
     binds_native_arrays,
     by_conditions,
     narrowing,
+    newest_only,
     reads_yugabyte,
     relation,
     sent_by,
@@ -237,7 +238,7 @@ async def read_keyed(
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
     binder = binder_for(conn, keys)
-    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
+    statement = keyed_read_statement(table, columns, keys, by or {}, lock, newest_only(conn, table, where), binder)
     natively = binds_native_arrays(conn)
     # asked only where it changes the statement: a batch of several key columns (its bounds, PostgreSQL's alone)
     yugabyte = len(keys.columns) > 1 and not keys.as_list and await reads_yugabyte(conn)
@@ -299,7 +300,13 @@ async def read_keyed_arrow(
     """
     binder = binder_for(conn, keys)
     statement = keyed_read_statement(
-        table, list(types) if columns is None else columns, keys, by or {}, None, where, binder
+        table,
+        list(types) if columns is None else columns,
+        keys,
+        by or {},
+        None,
+        newest_only(conn, table, where),
+        binder,
     )
     natively = binds_native_arrays(conn)
     # asked only where it changes the statement, as read_keyed asks it
@@ -424,7 +431,7 @@ async def any_rows(
     if not columns:
         raise ValueError(f"a bounded look of {table} reads at least one column")
     conditions, params = by_conditions(by or {}, alias="t")
-    for fragment in where:
+    for fragment in newest_only(conn, table, where):
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""

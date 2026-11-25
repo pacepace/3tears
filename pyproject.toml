@@ -702,6 +702,8 @@ module = [
     "packages.core.tests.integration.test_load_files_live",
     "packages.core.tests.integration.test_row_epoch_live",
     "packages.core.tests.unit.ddl.test_row_epoch",
+    "packages.core.tests.unit.ddl.test_append_only_writes",
+    "packages.core.tests.unit.test_keyed_newest_versions",
     "packages.core.tests.integration.test_reload_analyzed_live",
     "packages.core.tests.unit.backends.test_arrow_copy",
     "packages.core.tests.unit.backends.test_load_files",

@@ -58,12 +58,17 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-from threetears.interfaces.keyed.filters import AnyOf
+from threetears.interfaces.keyed.filters import AnyOf, quote_identifier, quoted_table
 from threetears.interfaces.keyed.page import Sort
 
 __all__ = [
     "DeclaredIndex",
     "TableKey",
+    "VersionedTable",
+    "newest_guard",
+    "prefix_text",
+    "register_versioned_table",
+    "versioned_table",
     "index_hint",
     "not_null_predicate",
     "null_predicate",
@@ -621,3 +626,182 @@ def index_hint(index: DeclaredIndex | None, alias: str = "t") -> str:
     if index is None or index.primary:
         return ""
     return f"/*+ IndexOnlyScan({alias} {index.name}) */ "
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# versioned tables: every read sees the newest live version of each key
+# ---------------------------------------------------------------------------------------------------------------------
+
+#: what a run marker's ``prefix`` joins a prefix's values with, chr(31) (``threetears.core.ddl.run_markers``)
+_PREFIX_SEPARATOR_CODE: Final = 31
+
+#: a ``timestamptz`` value's text: its UTC instant to the microsecond, never the session's time zone
+_UTC_MICROS: Final[str] = '\'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"\''
+
+#: the declared types (``format_type``) whose text is :data:`_UTC_MICROS`
+_TIMESTAMPTZ: Final = frozenset({"timestamp with time zone", "timestamptz"})
+
+
+def prefix_text(term: str, declared: str) -> str:
+    """a key value as a run marker's text holds it, cast by the database from its column's own type: the one spelling
+    the marker's write (``threetears.core.ddl.run_markers.run_marker_insert_sql``, ``term`` a bound value) and a
+    read's probe of it (:func:`newest_guard`, ``term`` the row's column) both use, so the two texts are the same.
+
+    :param term: the SQL term, a bound placeholder (``$3``) or a row's column (``t."state"``)
+    :ptype term: str
+    :param declared: its column's type as declared (``format_type``), a TRUSTED string read from the catalog or a
+        schema
+    :ptype declared: str
+    :return: the SQL text term
+    :rtype: str
+    """
+    typed = f"({term}::{declared})"
+    if declared in _TIMESTAMPTZ:
+        return f"to_char({typed} AT TIME ZONE 'UTC', {_UTC_MICROS})"
+    return f"{typed}::text"
+
+
+@dataclass(frozen=True)
+class VersionedTable:
+    """a versioned L3 table (``TableSchema(row_epoch=row_versions(...))``): what a read needs to see only the newest
+    live version of each of its keys.
+
+    The table keeps a version of a key a write, each with its epoch, the stored key the key and then the epoch newest
+    first; a delete appends a "gone" marker (the key at its epoch, :attr:`gone` true); a whole run deleted is one row
+    of the run-marker table, "this prefix of the key gone at epoch E" (``threetears.core.ddl.run_markers``).
+
+    :ivar name: the table's name as declared, the name a run marker's ``table_name`` holds
+    :ivar key: the logical key's columns, in order (the stored key without the epoch)
+    :ivar epoch: the epoch column
+    :ivar gone: the "gone" marker's column
+    :ivar markers: the run-marker table's bare name, in the table's own schema; None for a table no run marker can name
+        (its scope column is not in its key, so no prefix of the key holds it)
+    :ivar scope_at: the scope column's place in :attr:`key`: a marker's prefix names it, so it is at least that long
+    :ivar texts: the declared type of each leading key column a marker's prefix can name (:func:`prefix_text`), as the
+        marker's write casts it
+    """
+
+    name: str
+    key: tuple[str, ...]
+    epoch: str
+    gone: str
+    markers: str | None = None
+    scope_at: int = 0
+    texts: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """refuse a declaration naming anything but plain columns, or a marker prefix it cannot spell.
+
+        :raises ValueError: for such a declaration
+        """
+        if not self.key:
+            raise ValueError(f"versioned table {self.name!r} names its key")
+        for column in (*self.key, self.epoch, self.gone):
+            if _COLUMN.fullmatch(column) is None:
+                raise ValueError(f"a versioned table names plain columns only, not {column!r}")
+        if self.markers is not None:
+            if _COLUMN.fullmatch(self.markers) is None:
+                raise ValueError(f"the run-marker table is a plain name, not {self.markers!r}")
+            if not 0 <= self.scope_at < len(self.texts) <= len(self.key):
+                raise ValueError(
+                    f"versioned table {self.name!r}: a marker's prefix names the scope (key column {self.scope_at}) "
+                    f"and is spelled by the types of at most the key's {len(self.key)} columns, got {len(self.texts)}"
+                )
+
+
+#: every ``(relation, table)`` a versioned declaration registered, a tuple replaced whole (as the keys are)
+_VERSIONED: tuple[tuple[Relation, VersionedTable], ...] = ()
+
+
+def register_versioned_table(table: VersionedTable) -> None:
+    """record that the L3 table ``table.name`` names keeps a version of a key a write: every keyed read of it then sees
+    only each key's newest live version (:func:`versioned_table`, :func:`newest_guard`).
+
+    :param table: the declaration
+    :ptype table: VersionedTable
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when the name is no relation's name
+    """
+    global _VERSIONED
+    relation = _relation(table.name)
+    if relation is None:
+        raise ValueError(f"{table.name!r} names no table (schema.table, or a bare table)")
+    # one declaration a relation: a schema built again (``dataclasses.replace``) registers the same one, and a
+    # relation declared again otherwise (a test's own table of the same name) takes the later declaration
+    _VERSIONED = (*((named, known) for named, known in _VERSIONED if named != relation), (relation, table))
+
+
+def versioned_table(table: Any, *, l3: bool) -> VersionedTable | None:
+    """the versioned declaration of the L3 table a read names; None for a read that does not go to L3 (a local copy
+    holds one row a key), a derived relation, or a table no versioned declaration registers.
+
+    :param table: the relation read
+    :ptype table: Any
+    :param l3: whether the read goes to L3 (``threetears.core.keyed._filters.reads_l3``)
+    :ptype l3: bool
+    :return: the declaration, or None
+    :rtype: VersionedTable | None
+    """
+    if not l3 or not isinstance(table, str) or not _VERSIONED:
+        return None
+    relation = _relation(table)
+    if relation is None:
+        return None
+    return next((known for named, known in _VERSIONED if named == relation), None)
+
+
+def newest_guard(table: VersionedTable, row: str, *, read_as: str | None = None) -> str:
+    """the condition a row of a versioned table passes when it is its key's newest version and live: not a "gone"
+    marker, no newer version of its key held, and no run marker of a prefix of its key newer than it.
+
+    ``NOT <row>.gone AND NOT EXISTS (SELECT 1 FROM <table> AS newer WHERE newer.<key> = <row>.<key> ... AND
+    newer.epoch > <row>.epoch) AND NOT EXISTS (SELECT 1 FROM <markers> AS gone_run WHERE gone_run.table_name = '<name>'
+    AND gone_run.scope = <scope text> AND gone_run.prefix IN (<each prefix's text>) AND gone_run.epoch > <row>.epoch)``.
+
+    WHY a probe beside the read, not a ``DISTINCT ON`` relation read in its place: a read's conditions on columns past
+    the key (a status) hold only of the newest version, so they must be judged after it is chosen; and neither
+    PostgreSQL nor YugabyteDB pushes a join's keys (a keyed batch's ``IN (SELECT unnest ...)``) into a ``DISTINCT ON``
+    subquery, so a batch read through one would pick the newest version of every key of the table, a whole read. The
+    probe keeps the read's own shape (its keys, pins, order, cursor, ``LIMIT``, ``GROUP BY``) and adds, for each row it
+    reads, one seek of the stored key ``(key..., epoch DESC)`` that stops at its first entry: for the newest version no
+    entry newer, for an older one the first newer. The run markers are probed by their key ``(table_name, scope,
+    prefix, epoch)``.
+
+    :param table: the declaration
+    :ptype table: VersionedTable
+    :param row: how the statement names the row read: its alias (``t``), or the quoted relation where it is read with
+        none (``"results"``)
+    :ptype row: str
+    :param read_as: the table as the read names it (``schema.table`` or bare), so the probe reads the same relation;
+        the declared name when None
+    :ptype read_as: str | None
+    :return: the condition, one boolean expression binding no parameter
+    :rtype: str
+    """
+    named = table.name if read_as is None else read_as
+
+    def column(alias: str, name: str) -> str:
+        return f"{alias}.{quote_identifier(name)}"
+
+    same = " AND ".join(f"{column('newer', name)} = {column(row, name)}" for name in table.key)
+    epoch = column(row, table.epoch)
+    parts = [
+        f"NOT {column(row, table.gone)}",
+        f"NOT EXISTS (SELECT 1 FROM {quoted_table(named)} AS newer WHERE {same} "
+        f"AND {column('newer', table.epoch)} > {epoch})",
+    ]
+    if table.markers is not None:
+        schema = named.rsplit(".", 1)[0] + "." if "." in named else ""
+        texts = [prefix_text(column(row, name), kind) for name, kind in zip(table.key, table.texts, strict=False)]
+        prefixes = ", ".join(
+            f"array_to_string(ARRAY[{', '.join(texts[:length])}], chr({_PREFIX_SEPARATOR_CODE}))"
+            for length in range(table.scope_at + 1, len(texts) + 1)
+        )
+        literal = "'" + table.name.replace("'", "''") + "'"
+        parts.append(
+            f"NOT EXISTS (SELECT 1 FROM {quoted_table(schema + table.markers)} AS gone_run "
+            f"WHERE gone_run.table_name = {literal} AND gone_run.scope = {texts[table.scope_at]} "
+            f"AND gone_run.prefix IN ({prefixes}) AND gone_run.epoch > {epoch})"
+        )
+    return "(" + " AND ".join(parts) + ")"

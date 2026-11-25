@@ -71,7 +71,7 @@ from typing import Annotated, Any, Final
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import L3Page
-from threetears.core.keyed._filters import Fragment, narrowing
+from threetears.core.keyed._filters import Fragment, narrowing, newest_only, quoted_table
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.interfaces.keyed.rows import DeclaredScope
 from threetears.observe import get_logger
@@ -153,6 +153,7 @@ async def read_keyset_pages(
     after: Sequence[Any] | None = None,
     conditions: Sequence[Fragment] = (),
     lead_array: str | None = None,
+    table: str | None = None,
 ) -> KeysetRead:
     """every row ``select_from`` names (within ``where``), in ``key`` order, ``page_size`` rows a statement.
 
@@ -191,6 +192,10 @@ async def read_keyset_pages(
     :param lead_array: the SQL array type of the key's leading column, named when its declaration leaves it hashed
         on YugabyteDB (:func:`keyset_pages`)
     :ptype lead_array: str | None
+    :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
+        (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
+        cursor's key is unique among them (:func:`~threetears.core.keyed.newest_only`); None reads every row named
+    :ptype table: str | None
     :return: the rows and the statement count (a hashed lead's walk counts the pages it read, not its reads of the
         lead's values)
     :rtype: KeysetRead
@@ -210,6 +215,7 @@ async def read_keyset_pages(
         after=after,
         conditions=conditions,
         lead_array=lead_array,
+        table=table,
     ):
         statements += 1
         rows.extend(page)
@@ -229,6 +235,7 @@ async def keyset_pages(
     after: Sequence[Any] | None = None,
     conditions: Sequence[Fragment] = (),
     lead_array: str | None = None,
+    table: str | None = None,
 ) -> AsyncGenerator[list[dict[str, Any]], None]:
     """the rows ``select_from`` names (within ``where``), in ``key`` order, one page a statement as each is read.
 
@@ -265,11 +272,15 @@ async def keyset_pages(
         declaration leaves that column hashed on YugabyteDB (its default for a key's first column): on YugabyteDB
         the read then walks each lead value in turn (the module's "A hashed lead"); None pages by the cursor alone
     :ptype lead_array: str | None
+    :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
+        (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
+        cursor's key is unique among them (:func:`~threetears.core.keyed.newest_only`); None reads every row named
+    :ptype table: str | None
     :return: the pages, as they are read
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one
     """
-    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
+    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table))
     reads = _DictReads(l3, page_size)
     pinned = await _pinned_lead(l3, shape, lead_array)
     if pinned.walk is not None:
@@ -303,6 +314,7 @@ async def keyset_arrow_pages(
     after: Sequence[Any] | None = None,
     conditions: Sequence[Fragment] = (),
     lead_array: str | None = None,
+    table: str | None = None,
 ) -> AsyncGenerator[Any, None]:
     """:func:`keyset_pages`, each page one Arrow table: the same statements, in the same order, its rows never
     Python objects.
@@ -339,11 +351,15 @@ async def keyset_arrow_pages(
     :ptype conditions: Sequence[Fragment]
     :param lead_array: the SQL array type of the key's leading column, as :func:`keyset_pages` takes it
     :ptype lead_array: str | None
+    :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
+        (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
+        cursor's key is unique among them (:func:`~threetears.core.keyed.newest_only`); None reads every row named
+    :ptype table: str | None
     :return: the pages, as they are read, each a ``pyarrow.Table``
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when ``page_size`` is under one
     """
-    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions)
+    shape = _ReadShape(select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table))
     reads = _ArrowReads(l3, page_size, types)
     pinned = await _pinned_lead(l3, shape, lead_array)
     if pinned.walk is not None:
@@ -440,6 +456,7 @@ async def keyset_scope_pages(
         after=after,
         conditions=conditions,
         lead_array=scope_array,
+        table=table,
     ):
         yield page
 
@@ -495,7 +512,69 @@ async def keyset_scope_values(
     values: list[Any] = []
     while taken := await leads.take(page_size):
         values.extend(taken)
-    return values
+    newest = _newest(l3, table)
+    if not newest or not values:
+        return values
+    return await _live_scopes(l3, table, scope_column, scope_type, values, newest)
+
+
+async def _live_scopes(
+    l3: Any, table: str, scope_column: str, scope_type: Any, values: Sequence[Any], newest: Sequence[Fragment]
+) -> list[Any]:
+    """the states of ``values`` a versioned table holds a live newest version of, in their order: a state holding only
+    older versions, "gone" markers or rows under a newer run marker holds no row a read sees, so it is no state of the
+    table. One statement a page of states, each a keyed probe of the state's rows stopping at its first live one.
+
+    WHY apart from the walk: the walk's ``SELECT DISTINCT`` reads every version's state (YugabyteDB answers it from the
+    bucket heads, a row a state); guarded, it would read the table whole.
+
+    :param l3: the reader
+    :ptype l3: Any
+    :param table: the table
+    :ptype table: str
+    :param scope_column: its state column
+    :ptype scope_column: str
+    :param scope_type: the column's Arrow type
+    :ptype scope_type: pyarrow.DataType
+    :param values: the states the walk found, in the database's order
+    :ptype values: Sequence[Any]
+    :param newest: the table's newest-version guard, naming the row by the relation (:func:`_newest`)
+    :ptype newest: Sequence[Fragment]
+    :return: the states holding a live row, in that order
+    :rtype: list[Any]
+    """
+    quoted = quote_identifier(scope_column)
+    relation = quoted_table(table)
+    guards = " AND ".join(fragment.sql for fragment in newest)
+    reads = _ArrowReads(l3, len(values), {scope_column: scope_type})
+    live: set[Any] = set()
+    for start in range(0, len(values), _MOST_LEADS_A_STATEMENT):
+        page = list(values[start : start + _MOST_LEADS_A_STATEMENT])
+        # each state's probe one keyed read (state = the value, the guard, LIMIT 1) beside the others: a UNION ALL of
+        # them, each bound as its column is (a hashed lead seeks no set)
+        branches = [
+            f"(SELECT {relation}.{quoted} FROM {relation} WHERE {relation}.{quoted} = ${index + 1} AND {guards} LIMIT 1)"
+            for index in range(len(page))
+        ]
+        live.update(await reads.values(" UNION ALL ".join(branches), page, scope_column))
+    return [value for value in values if value in live]
+
+
+def _newest(l3: Any, table: str | None) -> tuple[Fragment, ...]:
+    """the newest-version guard a keyset read of ``table`` carries where it is a versioned L3 table
+    (:func:`~threetears.core.keyed.newest_only`), naming the row by the relation itself (the pager's ``select_from``
+    reads it with no alias); none when no table is named.
+
+    :param l3: the reader
+    :ptype l3: Any
+    :param table: the table ``select_from`` reads, as it names it
+    :ptype table: str | None
+    :return: the guard, or nothing
+    :rtype: tuple[Fragment, ...]
+    """
+    if table is None:
+        return ()
+    return newest_only(l3, table, row=quoted_table(table))
 
 
 @dataclass(frozen=True)
@@ -510,9 +589,17 @@ class _ReadShape:
     quote: Callable[[str], str]
     mark: Callable[[str, int], str] | None
     conditions: Sequence[Fragment]
+    #: a versioned table's newest-version guard (:func:`_newest`): every page statement carries it, so the cursor's key
+    #: is unique among the rows read; the walk's lead values do not (:class:`_LeadValues`)
+    newest: Sequence[Fragment] = ()
 
     def statement(
-        self, *, key: Sequence[str] | None = None, conditions: Sequence[Fragment] = (), row_seek: bool = False
+        self,
+        *,
+        key: Sequence[str] | None = None,
+        conditions: Sequence[Fragment] = (),
+        row_seek: bool = False,
+        newest: bool = True,
     ) -> _KeysetStatement:
         """the statement paging ``key`` (the read's own when None), ``conditions`` beside the read's own.
 
@@ -522,6 +609,8 @@ class _ReadShape:
         :ptype conditions: Sequence[Fragment]
         :param row_seek: name the cursor by the row comparison alone (:meth:`_KeysetStatement._past`)
         :ptype row_seek: bool
+        :param newest: carry the newest-version guard (every page statement); False for a walk's lead values
+        :ptype newest: bool
         :return: the statement
         :rtype: _KeysetStatement
         """
@@ -533,7 +622,7 @@ class _ReadShape:
             page_size=self.page_size,
             quote=self.quote,
             mark=self.mark,
-            conditions=[*self.conditions, *conditions],
+            conditions=[*self.conditions, *conditions, *(self.newest if newest else ())],
             row_seek=row_seek,
         )
 
@@ -1004,7 +1093,10 @@ class _LeadValues:
         shape = self._shape
         lead = shape.key[0]
         quoted = shape.quote(lead)
-        statement = shape.statement()
+        # every version's lead, newest or not: a guarded inner is no index's own read, so YugabyteDB could no longer
+        # answer the DISTINCT from the bucket heads and would read the table whole. A lead whose rows are all older
+        # versions or gone reads as an empty page of its own
+        statement = shape.statement(newest=False)
         inner, params = statement.filtered()
         clause = ""
         if self._past is not None:

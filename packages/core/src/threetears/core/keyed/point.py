@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, overload
 
-from threetears.core.keyed._filters import Fragment, Lock, Selected, reads_l3, sent_by
+from threetears.core.keyed._filters import Fragment, Lock, Selected, newest_only, reads_l3, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import yugabyte_index_hint
@@ -126,6 +126,7 @@ async def read_by(
     :rtype: list[dict[str, Any]] | list[Any]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
+    where = newest_only(conn, table, where)
     sql, params = read_by_statement(table, by=by, columns=columns, lock=lock, where=where, order=order)
     # on YugabyteDB, a read names the declared index that serves its pins and order (unordered: binds the most pins)
     sql = (await yugabyte_index_hint(conn, table, by, order, where=where)) + sql
@@ -197,7 +198,9 @@ async def read_row(
     :rtype: dict[str, Any] | Any | None
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = read_row_statement(table, by=by, columns=columns, lock=lock, where=where, beside=beside)
+    sql, params = read_row_statement(
+        table, by=by, columns=columns, lock=lock, where=newest_only(conn, table, where), beside=beside
+    )
     rows = list(await sent_by(conn).fetch(sql, *params))
     if not rows:
         return None
@@ -243,7 +246,14 @@ async def read_row_beside(
     :raises ValueError: when nothing is pinned, or for a limit under one row
     """
     sql, params = read_row_beside_statement(
-        table, by=by, columns=columns, beside=beside, limit=limit, present=present, first=first
+        table,
+        by=by,
+        columns=columns,
+        beside=beside,
+        limit=limit,
+        present=present,
+        first=first,
+        where=newest_only(conn, table),
     )
     return list(await sent_by(conn).fetch(sql, *params))
 
@@ -268,7 +278,7 @@ async def read_value(
     :rtype: Any
     :raises ValueError: when nothing is pinned
     """
-    sql, params = read_row_statement(table, by=by, columns=(column,), where=where)
+    sql, params = read_row_statement(table, by=by, columns=(column,), where=newest_only(conn, table, where))
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows[0][column] if rows else None
 
@@ -330,6 +340,7 @@ async def read_nearest(
     :raises ValueError: when nothing is pinned, ``columns`` is empty, ``limit`` is negative, or a join is an inner
         one or names nothing to join on
     """
+    where = newest_only(conn, table, where)
     if isinstance(nearest, PatternCount):
         sql, params = _pattern_count_statement(table, by, nearest, limit, columns, where, joins)
         rows = list(await sent_by(conn).fetch(sql, *params))
