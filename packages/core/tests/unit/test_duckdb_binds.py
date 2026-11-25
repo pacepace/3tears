@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import sys
 import uuid
 from collections.abc import Iterator
 from decimal import Decimal
@@ -78,6 +79,22 @@ _CASES: list[tuple[str, list[Any]]] = [
     ("SELECT typeof($1)", [[1, 2, 3, 2**70]]),
     ("SELECT typeof($1)", [[True, 2, 3, 4]]),
     ("SELECT typeof($1)", [[{"a": 1}, {"a": 2}, {"a": 3}, {"a": 4}]]),
+    ("SELECT typeof($1)", [[dt.time(1, 2), dt.time(3, 4, 5, 6), dt.time(7), dt.time(8)]]),
+    ("SELECT typeof($1)", [[dt.timedelta(seconds=i) for i in range(4)]]),
+    ("SELECT k FROM t WHERE s = $1 AND k = ANY($2) ORDER BY k", ["s2", [1, 2, 3, 4]]),
+    ("SELECT k FROM t WHERE k = ANY($2) AND s <> $1 AND k < $3 ORDER BY k", ["s2", [1, 2, 3, 4], 2**40]),
+    ("SELECT k FROM t WHERE k = ANY($1) AND ($2 IS NULL) ORDER BY k", [[1, 2, 3, 4], None]),
+    ("SELECT k FROM t WHERE k = ANY($1) AND k <> ALL($2) ORDER BY k", [[1, 2, 3, 4], [2]]),
+    ("SELECT k FROM t WHERE k = ANY($1) AND $2 = $2 ORDER BY k", [[1, 2, 3, 4], Decimal("1.5")]),
+    (
+        "SELECT typeof($1), typeof($2), typeof($3), typeof($4), typeof($5), typeof($6), typeof($7), typeof($8)",
+        [1, 2**40, 1.5, "a", True, b"b", _AT, dt.date(2026, 1, 1)],
+    ),
+    (
+        "SELECT typeof($1), typeof($2), typeof($3), typeof($4), typeof($5), $1, $2, $3, $4, $5",
+        [uuid.UUID(int=7), dt.time(1, 2), dt.timedelta(seconds=3), dt.datetime(2026, 1, 1), -(2**31)],
+    ),
+    ("SELECT k FROM t WHERE k >= $1 AND k <= $2 AND s <> $3 AND k <> $4 AND k <> $5 ORDER BY k", [3, 9, "s4", 5, 6]),
 ]
 
 
@@ -227,3 +244,49 @@ def test_a_short_list_is_bound_as_it_is(conn: duckdb.DuckDBPyConnection) -> None
     query = "SELECT getvariable('_threetears_bound') IS NULL FROM t WHERE k = ANY($1)"
     assert run_bound(conn, query, [list(range(3))], _fetch) == [(True,)] * (3)
     assert run_bound(conn, query, [list(range(4))], _fetch) == [(False,)] * 4
+
+
+def test_five_scalars_take_the_arrow_round_and_four_do_not(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a statement of scalars only takes the Arrow round when its probes cost less than it (four scalars),
+    or binds them value by value when they cost as much as a long list's (five)."""
+    held = "getvariable('_threetears_bound') IS NULL"
+    assert run_bound(conn, f"SELECT {held} FROM t WHERE k IN ($1, $2, $3, $4)", [1, 2, 3, 4], _fetch) == [(True,)] * 4
+    five = f"SELECT {held} FROM t WHERE k IN ($1, $2, $3, $4, $5)"
+    assert run_bound(conn, five, [1, 2, 3, 4, 5], _fetch) == [(False,)] * 5
+
+
+class _PandasTries:
+    """a finder on ``sys.meta_path`` that counts each ``import pandas`` reaching the path search, finding nothing."""
+
+    def __init__(self) -> None:
+        self.tries = 0
+
+    def find_spec(self, name: str, path: Any = None, target: Any = None) -> None:
+        if name == "pandas" or name.startswith("pandas."):
+            self.tries += 1
+
+
+def test_a_keyed_read_binds_no_python_value(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a keyed read binds any of its values through DuckDB's Python layer, which tries ``import pandas``
+    twice a value and, pandas absent, searches the whole import path each time: a scope bound beside a page of keys,
+    or keys Arrow types as DuckDB does but the Arrow round once refused (UUIDs: 100,000 of them took 46 s of loop CPU
+    and 200,002 failed imports on a laptop, 0.2 s and none through Arrow)."""
+    if "pandas" in sys.modules:
+        pytest.skip("pandas is imported here: DuckDB's probe finds it and never searches the path")
+    conn.execute("CREATE TABLE ids AS SELECT uuid() AS u, i AS k FROM range(2000) r(i)")
+    uuids = [row[0] for row in conn.execute("SELECT u FROM ids ORDER BY k").fetchall()]
+    reads: list[tuple[str, list[Any]]] = [
+        ("SELECT k FROM t WHERE s <> $1 AND k = ANY($2)", ["s2", list(range(1000))]),
+        ("SELECT k FROM ids WHERE u = ANY($1)", [uuids]),
+        ("SELECT k FROM ids WHERE u = ANY($1) AND k >= $2", [uuids[:10], 3]),
+        ("SELECT k FROM t WHERE k = ANY($1) AND ts >= $2 AND d <= $3", [list(range(500)), _AT, dt.date(2027, 1, 1)]),
+    ]
+    run_bound(conn, *reads[0], _fetch)  # pyarrow's own first look for pandas, once a process, is not the read's
+    finder = _PandasTries()
+    sys.meta_path.insert(0, finder)
+    try:
+        answered = [len(run_bound(conn, query, params, _fetch)) for query, params in reads]
+    finally:
+        sys.meta_path.remove(finder)
+    assert answered == [999, 2000, 7, 500]
+    assert finder.tries == 0

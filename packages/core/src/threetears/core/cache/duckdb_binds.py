@@ -1,18 +1,25 @@
-"""a DuckDB statement run with its list parameters bound through Arrow, never value by value.
+"""a DuckDB statement run with its parameters bound through Arrow, never value by value.
 
 DuckDB's Python layer converts each bound value on its own, and for every one it tries ``import pandas`` (twice) to
-recognise its type. Where pandas is not installed a failed import is never remembered, so each try is a search of
-the whole import path: 100 keys bound as one list cost ~40 ms on a laptop against ~1 ms through Arrow, 10,000 keys
-~2.7 s against ~5 ms, and far more on a starved host. :func:`run_bound` makes every list parameter of
-:data:`_ARROW_LIST_FROM` values or more one Arrow column of one row, sets it as a DuckDB variable in one statement,
-and runs the statement with that parameter read from the variable (``getvariable``, folded to a constant when the
-statement is bound: the plan is the one the bound list gets). Short lists and scalars are bound as before: two
-probes cost less than the Arrow round. A list Arrow cannot type as DuckDB would (nested values, UUIDs, decimals,
-mixed kinds, integers past 64 bits, only None) is bound as before, slow but exact; so is every parameter of a statement whose
-placeholders cannot be matched to its parameters.
+recognise its type, twice more for a list. Where pandas is not installed a failed import is never remembered, so each
+try is a search of the whole import path (~0.4 ms on a laptop's workspace venv): 100 keys bound as one list cost
+~40 ms against ~1 ms through Arrow, 10,000 keys ~2.7 s against ~5 ms, and far more on a starved host.
+:func:`run_bound` makes each parameter one Arrow field of one row, sets that row as a DuckDB variable in one
+statement, and runs the statement with each such parameter read from the variable (``getvariable``, folded to a
+constant when the statement is bound: the plan is the one the bound value gets). No Python value is bound then.
 
-Integer lists are typed as DuckDB types a bound Python list: ``INTEGER[]`` when every value fits 32 bits, else
-``BIGINT[]``.
+The Arrow round (register, set, reset) costs about what six probes do (measured: ~1.6 ms of the calling thread's CPU
+against ~0.27 ms a probe), so it is taken when the statement holds an Arrow array, a list of :data:`_ARROW_LIST_FROM`
+values or more, or values whose probes come to :data:`_ARROW_FROM_PROBES` or more (a long list's: five scalars, a
+margin for a pod, whose shorter import path makes a probe cheaper); once taken, every parameter Arrow can type rides
+in it, scalars and short lists too, at no further cost. A statement of a few scalars binds them as before: their
+probes cost less than the round. ``None`` is bound as it is (DuckDB probes nothing for
+it), and so is a value Arrow cannot type as DuckDB would (nested values, decimals, mixed kinds, integers past 64 bits,
+a list of only None): slow but exact. Every parameter of a statement whose placeholders cannot be matched to its
+parameters is bound as before.
+
+Integers are typed as DuckDB types a bound Python integer or list: ``INTEGER`` when every value fits 32 bits, else
+``BIGINT``.
 
 The variable and its one-row relation are the connection's (a cursor is a connection of its own): a statement on
 another cursor never sees them. The variable is reset once the statement's answer is read, so a page of keys is not
@@ -46,10 +53,15 @@ __all__ = ["KEYS", "run_bound", "run_joined"]
 
 _T = TypeVar("_T")
 
-#: the fewest values a list parameter must hold to be bound through Arrow; below it, binding value by value is as fast
+#: the fewest values a list parameter must hold to take the statement through Arrow; below it, binding value by value
+#: is as fast
 _ARROW_LIST_FROM: Final = 4
 
-#: the DuckDB variable a statement's Arrow-bound lists are read from (a struct, a field ``p<n>`` a parameter)
+#: the fewest pandas probes (two a value bound, two more a list) a statement's parameters must cost to take it through
+#: Arrow without a long list: those of a list of :data:`_ARROW_LIST_FROM` values, so five scalars take it, four do not
+_ARROW_FROM_PROBES: Final = 2 + 2 * _ARROW_LIST_FROM
+
+#: the DuckDB variable a statement's Arrow-bound parameters are read from (a struct, a field ``p<n>`` a parameter)
 _VARIABLE: Final = "_threetears_bound"
 
 #: the one-row relation the variable is set from, registered only while it is
@@ -100,6 +112,10 @@ def _typed(values: Sequence[Any]) -> Any:
         or pa.types.is_binary(kind)
         or pa.types.is_timestamp(kind)
         or pa.types.is_date32(kind)
+        or pa.types.is_time64(kind)
+        or pa.types.is_duration(kind)
+        # DuckDB reads Arrow's UUID extension as UUID, the type a bound uuid.UUID gets
+        or getattr(kind, "extension_name", None) == "arrow.uuid"
     ):
         return None
     return array
@@ -133,9 +149,40 @@ def _placeholders(query: str) -> list[re.Match[str]] | None:
     return found if len(numbered) <= 1 else None
 
 
+def _probes(param: Any) -> int:
+    """the pandas probes DuckDB makes binding ``param`` value by value: none for None, two a value, two more a list.
+
+    :param param: the parameter
+    :ptype param: Any
+    :return: the probes
+    :rtype: int
+    """
+    if param is None:
+        return 0
+    if isinstance(param, list | tuple):
+        return 2 + 2 * len(param)
+    return 2
+
+
+def _field(param: Any) -> Any:
+    """``param`` as one Arrow field of the variable's one row, typed as DuckDB types it bound; None when it stays bound
+    (None itself, or a value Arrow cannot type so).
+
+    :param param: the parameter: an Arrow array or a list (the row's one list), or a scalar
+    :ptype param: Any
+    :return: the one-row array, or None
+    :rtype: pyarrow.Array | None
+    """
+    if param is None:
+        return None
+    if isinstance(param, pa.Array | pa.ChunkedArray | list | tuple):
+        return _column(param)
+    return _typed((param,))
+
+
 def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], Any] | None:
-    """the statement rewritten to read its long lists from the variable, the parameters still bound, and the one-row
-    table to set the variable from; None when it is to be bound as it is.
+    """the statement rewritten to read its parameters from the variable, the parameters still bound (None, and values
+    Arrow cannot type), and the one-row table to set the variable from; None when it is to be bound as it is.
 
     :param query: the statement, ``$n`` or ``?`` placeholders
     :ptype query: str
@@ -144,16 +191,13 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
     :return: the statement, its remaining parameters and the table; or None
     :rtype: tuple[str, list[Any], pyarrow.Table] | None
     """
-    if not _PYARROW:
+    if not _PYARROW or not params:
         return None
     # an Arrow array (a key batch's column, bound in Arrow by threetears.core.keyed.binding) at any length: DuckDB
     # binds no Arrow array as a parameter, and it is never made Python values here
-    long = [
-        i
-        for i, p in enumerate(params)
-        if isinstance(p, pa.Array | pa.ChunkedArray) or (isinstance(p, list | tuple) and len(p) >= _ARROW_LIST_FROM)
-    ]
-    if not long:
+    arrays = [isinstance(p, pa.Array | pa.ChunkedArray) for p in params]
+    long = any(isinstance(p, list | tuple) and len(p) >= _ARROW_LIST_FROM for p in params)
+    if not (any(arrays) or long or sum(_probes(p) for p in params) >= _ARROW_FROM_PROBES):
         return None
     found = _placeholders(query)
     if not found:
@@ -164,9 +208,12 @@ def _through_arrow(query: str, params: Sequence[Any]) -> tuple[str, list[Any], A
         return None
     if not numbered and len(found) != len(params):
         return None
-    columns = {i: _column(params[i]) for i in long}
-    if any(column is None for column in columns.values()):
-        return None
+    fields = {i: _field(p) for i, p in enumerate(params)}
+    if any(fields[i] is None for i, array in enumerate(arrays) if array):
+        return None  # an Arrow array Arrow cannot type as DuckDB would: every parameter bound as before (_plain)
+    columns = {i: field for i, field in fields.items() if field is not None}
+    if not any(arrays) and sum(_probes(params[i]) for i in columns) < _ARROW_FROM_PROBES:
+        return None  # what Arrow can carry saves fewer probes than the round costs
     kept = [i for i in range(len(params)) if i not in columns]
     renumbered = {i: n + 1 for n, i in enumerate(kept)}
     pieces: list[str] = []
@@ -192,8 +239,8 @@ def _plain(params: Sequence[Any]) -> list[Any]:
 
 
 def run_bound(conn: Any, query: str, params: Sequence[Any], answer: Callable[[Any], _T]) -> _T:
-    """``answer(conn.execute(query, params))``, each list parameter of :data:`_ARROW_LIST_FROM` values or more bound
-    through Arrow (module docstring): the same rows, the same plan, none of DuckDB's per-value pandas probes.
+    """``answer(conn.execute(query, params))``, its parameters bound through Arrow when a long list or enough values
+    make the round pay (module docstring): the same rows, the same plan, none of DuckDB's per-value pandas probes.
 
     ``answer`` reads the result before anything else runs on the connection (a DuckDB connection holds one result).
 
