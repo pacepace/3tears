@@ -2631,6 +2631,25 @@ def serving_fallback_counted(what: str) -> None:
     _SERVING_FALLBACKS.labels(tier=_TIER, name=what).inc()
 
 
+def _weakly(method: Callable[[int], object]) -> Callable[[int], object]:
+    """a call of ``method`` through a weak reference to its object: what an object it owns calls back on, so the two
+    make no reference cycle (which reference counting never frees; only a full collection does). Once the object is
+    gone the call does nothing.
+
+    :param method: a bound method
+    :ptype method: Callable[[int], object]
+    :return: the call
+    :rtype: Callable[[int], object]
+    """
+    ref = weakref.WeakMethod(method)
+
+    def call(value: int) -> object:
+        bound = ref()
+        return None if bound is None else bound(value)
+
+    return call
+
+
 class _RevokeFiles:
     """a store's open revoke files, version -> descriptor, in a holder of their own: the store's finalizer is handed
     the holder (never the store), and reads whichever snapshot it holds as the store is collected.
@@ -2730,7 +2749,9 @@ class SharedArrowStore:
         self._refused = 0
         #: what the directories' files hold, kept by every write and removal so :meth:`status` never walks them
         self._held = HeldFiles(self._versions, self._handoffs)
-        self._held.on_view = self._held_changed
+        # weakly: the tally is the store's, so a bound method there made the two a reference cycle, which only a full
+        # collection frees once the store is let go
+        self._held.on_view = _weakly(self._held_changed)
         #: each version's revoke lock, held exclusive while it may stay cached (:data:`_REVOKE_FILE`): closed to evict
         #: it, and as it is retired
         self._revokers = _RevokeFiles()
