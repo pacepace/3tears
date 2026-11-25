@@ -278,6 +278,11 @@ class TestTheHandlerDeclaresTheContext:
     def test_an_alias_imported_for_type_checking_is_found(self) -> None:
         assert _tool(type_checking_handlers.aliased_mcp_context).context_parameter == "ctx"
 
+    def test_a_module_alias_imported_for_type_checking_is_found(self) -> None:
+        """``from threetears import mcp as m`` and ``import threetears.mcp.context as c``: ``m.CallContext``."""
+        assert _tool(type_checking_handlers.through_the_package_alias).context_parameter == "ctx"
+        assert _tool(type_checking_handlers.through_the_module_alias).context_parameter == "ctx"
+
     def test_an_annotated_context_that_cannot_be_evaluated_is_found(self) -> None:
         assert _tool(type_checking_handlers.annotated_aliased_context).context_parameter == "ctx"
 
