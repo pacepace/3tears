@@ -35,6 +35,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.backends.broker_generation import (
+    named_commit_s_min,
     named_commit_scopes,
     named_delta_files,
     named_unconfirmed_delta_files,
@@ -993,6 +994,7 @@ async def advance_for_write(
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
     repair: bool = True,
+    s_min: int | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -1048,6 +1050,10 @@ async def advance_for_write(
         for an advance whose failure the caller answers itself, so no retry lands after it (a load's intent record,
         whose failure stops the load before its first commit)
     :ptype repair: bool
+    :param s_min: the commit's lowest row epoch (``EpochChange.s_min``), named by every record of the advance: the
+        broker passes the one its commit request named (``COMMIT_S_MIN_FIELD``); ``None`` takes the one the commit
+        being settled in this context named (``naming_commit_s_min``), none when it named none
+    :ptype s_min: int | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -1088,6 +1094,7 @@ async def advance_for_write(
         unconfirmed_delta_file=unconfirmed,
         unconfirmed_writer=unconfirmed_writer if unconfirmed is not None else None,
         repair=repair,
+        s_min=s_min if s_min is not None else named_commit_s_min(),
     )
     if isinstance(token, str) and token:
         # a commit settling in this context collects it: a writer folds its delta files by the generation it wrote

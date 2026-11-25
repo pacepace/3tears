@@ -45,6 +45,7 @@ from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     ROW_STAMPED,
     UnstampedWriteError,
+    next_epoch,
     row_versions,
 )
 from threetears.core.entities.base import BaseEntity
@@ -207,6 +208,7 @@ async def test_every_write_path_stamps_each_row_with_an_epoch_of_its_writes_vers
     held: _Held, tmp_path: Path
 ) -> None:
     version = await _begin(held)
+    begun = next_epoch()
 
     async def write(conn: Any) -> None:
         await held.epochs.touch(version, ["state:NC"], conn=conn)
@@ -229,18 +231,19 @@ async def test_every_write_path_stamps_each_row_with_an_epoch_of_its_writes_vers
 
     stored = await _stored(held)
     assert [row["candidate"] for row in stored] == ["a", "b", "c", "d", "e", "f"]
-    assert all(_version(row[EPOCH_COLUMN]) == version for row in stored)
+    assert all(row[EPOCH_COLUMN] > begun for row in stored), "each row carries a stamp of this write's clock"
     epochs = [row[EPOCH_COLUMN] for row in stored]
     # each statement drew its own, in the order they ran; the load's rows share one
     assert epochs[:5] == sorted(epochs[:5]) and len(set(epochs[:5])) == 5
     assert epochs[4] == epochs[5]
     runs = await held.pool.fetch(f"SELECT run_id, {EPOCH_COLUMN} FROM {_RUNS.name} ORDER BY run_id")  # noqa: S608
     assert [row["run_id"] for row in runs] == ["r1", "r2"]
-    assert all(_version(row[EPOCH_COLUMN]) == version for row in runs)
+    assert all(row[EPOCH_COLUMN] > begun for row in runs)
 
 
 async def test_two_writes_of_one_key_in_one_version_land_two_versions_the_later_newer(held: _Held) -> None:
     version = await _begin(held)
+    begun = next_epoch()
 
     def write(votes: int) -> Callable[[Any], Awaitable[None]]:
         async def step(conn: Any) -> None:
@@ -265,7 +268,7 @@ async def test_two_writes_of_one_key_in_one_version_land_two_versions_the_later_
     for candidate in ("a", "b"):
         versions = [row for row in stored if row["candidate"] == candidate]
         assert [row["votes"] for row in versions] == [1, 2], "the later write did not sort newer"
-        assert all(_version(row[EPOCH_COLUMN]) == version for row in versions)
+        assert all(row[EPOCH_COLUMN] > begun for row in versions)
         newest = await held.pool.fetchval(
             f"SELECT votes FROM {_RESULTS.name} WHERE office_key = 'sn_NC1' AND candidate = $1 "  # noqa: S608
             f"ORDER BY {EPOCH_COLUMN} DESC LIMIT 1",
@@ -303,8 +306,3 @@ async def test_a_write_with_no_epoch_is_refused_and_writes_nothing(held: _Held, 
         await held.pool.execute(f"INSERT INTO {_RUNS.name} (run_id) VALUES ('x')")  # noqa: S608
     assert await held.pool.fetchval(f"SELECT count(*) FROM {_RESULTS.name}") == 0  # noqa: S608
     assert await held.pool.fetchval(f"SELECT count(*) FROM {_RUNS.name}") == 0  # noqa: S608
-
-
-def _version(epoch: int) -> int:
-    """the version an epoch was stamped at, by its documented encoding (``version << 31 | sequence``)."""
-    return epoch >> 31

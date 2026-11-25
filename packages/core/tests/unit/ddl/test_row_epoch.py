@@ -1,8 +1,8 @@
 """the row epoch (``design-append-only-l3.md``, chunk 1): its encoding, a table's declaration of it and the DDL that
 follows, and the refusal of a write that carries none.
 
-The epoch is ``version << 31 | sequence``: every later draw sorts newer, within one version and across versions. A
-versioned table's stored key is its key and then the epoch, newest first on YugabyteDB; a stamped table keeps its key and carries the column. Every write path the store owns refuses a row of such a
+The epoch is the process's hybrid logical clock, ``wall_ms << 15 | logical`` (``test_hlc_epoch``): every later draw
+sorts newer, from any thread. A versioned table's stored key is its key and then the epoch, newest first on YugabyteDB; a stamped table keeps its key and carries the column. Every write path the store owns refuses a row of such a
 table without an epoch, before anything is sent.
 """
 
@@ -75,32 +75,16 @@ def _stamped(name: str = "runs") -> TableSchema:
 # -- the encoding ----------------------------------------------------------------------------------------------------
 
 
-def _version(epoch: int) -> int:
-    """the version an epoch was stamped at, by its documented encoding (``version << 31 | sequence``)."""
-    return epoch >> 31
+def test_an_epoch_fits_a_positive_bigint() -> None:
+    epoch = next_epoch()
+    assert 0 < epoch < 1 << 63
 
 
-def test_an_epoch_carries_its_writes_version_in_its_high_bits_and_fits_a_bigint() -> None:
-    epoch = next_epoch(1234)
-    assert _version(epoch) == 1234
-    assert 0 < epoch & ((1 << 31) - 1), "the sequence is drawn from 1"
-    # every epoch of a version sorts below every epoch of the next, whatever the sequence
-    assert next_epoch(7) < (8 << 31) <= next_epoch(8)
-    # the largest version still fits a BIGINT
-    assert next_epoch((1 << 32) - 1) < 1 << 63
-
-
-@pytest.mark.parametrize("version", [-1, 1 << 32])
-def test_a_version_out_of_range_is_refused_never_wrapped(version: int) -> None:
-    with pytest.raises(ValueError, match="must be within"):
-        next_epoch(version)
-
-
-def test_each_draw_of_a_version_sorts_newer_than_every_draw_before_it_from_any_thread() -> None:
+def test_each_draw_sorts_newer_than_every_draw_before_it_from_any_thread() -> None:
     drawn: list[list[int]] = [[] for _ in range(4)]
 
     def draw(into: list[int]) -> None:
-        into.extend(next_epoch(9) for _ in range(2000))
+        into.extend(next_epoch() for _ in range(2000))
 
     threads = [threading.Thread(target=draw, args=(each,)) for each in drawn]
     for thread in threads:
@@ -110,8 +94,7 @@ def test_each_draw_of_a_version_sorts_newer_than_every_draw_before_it_from_any_t
     every = [epoch for each in drawn for epoch in each]
     assert len(set(every)) == len(every), "two write statements drew one epoch"
     assert all(each == sorted(each) for each in drawn), "a later draw on one thread sorted older"
-    assert {_version(epoch) for epoch in every} == {9}
-    assert next_epoch(9) > max(every)
+    assert next_epoch() > max(every)
 
 
 def test_a_versioned_declaration_names_its_scope_and_a_stamped_one_none() -> None:
@@ -263,7 +246,6 @@ async def test_a_transaction_that_took_no_writes_turn_has_no_epoch_to_give() -> 
         transaction.row_epoch("results")
     transaction.note_write_version(41)
     first, second = transaction.row_epoch("results"), transaction.row_epoch("results")
-    assert _version(first) == _version(second) == 41
     assert second > first
 
 

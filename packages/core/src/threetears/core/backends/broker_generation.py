@@ -78,6 +78,7 @@ from threetears.observe import BuildOnce, get_logger
 __all__ = [
     "CHANGED_ROWS_FIELD",
     "COMMIT_SCOPES_FIELD",
+    "COMMIT_S_MIN_FIELD",
     "DELTA_FILES_FIELD",
     "GENERATIONS_FAILED_REPLY_FIELD",
     "GENERATIONS_REPLY_FIELD",
@@ -92,11 +93,13 @@ __all__ = [
     "forget_reply_generations",
     "named_changed_rows",
     "named_commit_generation",
+    "named_commit_s_min",
     "named_commit_scopes",
     "named_delta_files",
     "named_unconfirmed_delta_files",
     "naming_changed_rows",
     "naming_commit_generations",
+    "naming_commit_s_min",
     "naming_commit_scopes",
     "naming_delta_files",
     "naming_unconfirmed_delta_files",
@@ -320,6 +323,45 @@ def named_commit_scopes() -> tuple[str, ...]:
     :rtype: tuple[str, ...]
     """
     return _COMMIT_SCOPES.get()
+
+
+#: the request field naming the lowest row epoch a commit's transaction stamped (``s_min``; the row epoch's hybrid
+#: logical clock, :mod:`~threetears.core.ddl.row_epoch`), sent on ``l3.tx.commit`` when the transaction stamped any:
+#: one BIGINT. The broker names it on every epoch record it writes for the commit (``EpochChange.s_min``), so a scrub of
+#: a restore proves its margin held: a record after the keeper's mark P whose ``s_min`` is below the restore's floor X
+#: is a violation (``design-append-only-l3.md``, decision 3). A broker built before it ignores it, and its records name
+#: none. The hub imports this name.
+COMMIT_S_MIN_FIELD: Final = "s_min"
+
+#: the lowest row epoch the commit being made in this context stamped (:func:`naming_commit_s_min`)
+_COMMIT_S_MIN: ContextVar[int | None] = ContextVar("threetears_commit_s_min", default=None)
+
+
+@contextmanager
+def naming_commit_s_min(s_min: int | None) -> Iterator[None]:
+    """name the lowest row epoch the commit made inside this block stamped: its ``l3.tx.commit`` carries it
+    (:data:`COMMIT_S_MIN_FIELD`), and an advance a process writes its own record for names it
+    (:func:`~threetears.core.collections.generation.advance_for_write`). Replaces what an enclosing block named.
+
+    :param s_min: the stamp; None names none (a commit that stamped no row, or one that did not land)
+    :ptype s_min: int | None
+    :return: a context in which the commit names it
+    :rtype: Iterator[None]
+    """
+    token = _COMMIT_S_MIN.set(s_min)
+    try:
+        yield
+    finally:
+        _COMMIT_S_MIN.reset(token)
+
+
+def named_commit_s_min() -> int | None:
+    """the lowest row epoch the commit being made in this context stamped, as :data:`COMMIT_S_MIN_FIELD` carries it.
+
+    :return: the stamp; None when the commit names none
+    :rtype: int | None
+    """
+    return _COMMIT_S_MIN.get()
 
 
 #: where the advances made while a commit settles in this context note the token each wrote, by table

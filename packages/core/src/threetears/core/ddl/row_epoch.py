@@ -2,32 +2,39 @@
 
 Append-only L3 (``design-append-only-l3.md``, agreed 2026-11-25) keeps every version of a key a write leaves, and the
 newest wins. "Newest" must be an order every write agrees on, known INSIDE the transaction that writes the row (the
-row carries it), and never a clock. The table's write generation cannot be it: the broker advances it only after the
-COMMIT (the hub's ``proxy.py`` ``_GenerationReplyFields.advance``), so no row can carry it. The write's version can:
-:meth:`~threetears.core.collections.scope_epochs.ScopeEpochs.begin` takes it, fenced, before the first data row, and
-every data transaction of the write takes its turn at it (``touch``) before it writes. But one version spans many page
-transactions, and two of them may write the same key (a page written again as upserts after a failed copy, an LSF
-state rewritten), so the version alone does not order them. The epoch is the version plus a sequence drawn for each
-write statement, later draws sorting newer.
+row carries it), with no counter every writer shares. The table's write generation cannot be it: the broker advances it
+only after the COMMIT (the hub's ``proxy.py`` ``_GenerationReplyFields.advance``), so no row can carry it. The epoch is a
+**hybrid logical clock (HLC) kept by the writing process** (Pace 2026-11-25; ``research-shared-clock.md``).
 
-**The encoding: one BIGINT, ``version << 31 | sequence``.**
+**The encoding: one BIGINT, ``wall_ms << 15 | logical``.**
 
-- One column, so the newest-first order is one ``epoch DESC`` term at the end of the primary key, one comparison
-  per row, and "every version newer than X" (a restore) is one range on one column: ``epoch > compose(X, max)``.
-  Two columns would double the key's tail and every comparison, and a range over them is a row-value comparison an
-  index serves less directly.
-- 32 bits of version: a version is one write (one upload, one LSF pull), a few thousand a night; 2**32 is far past
-  any table's life, and a version above it is refused (:func:`_compose_epoch`), never wrapped.
-- 31 bits of sequence, drawn from one counter for the whole process (:func:`next_epoch`): every write statement that
-  stamps takes the next number, so a later statement of the same version always sorts newer, whichever transaction it
-  is in. 2**31 draws a process lifetime is about a million write statements a night for five years; past it the draw
-  is refused, never wrapped.
-- WHY one counter for the process, not a database sequence: a version is one writer's (the write's lease, fenced in
-  ``ScopeEpochs``), and its writes all run in that writer's process, so a process counter orders every write of a
-  version. A database sequence would not: YugabyteDB caches sequence values per connection (``ysql_sequence_cache_minval``,
-  at least 100), so two connections' ``nextval`` are not in the order they were taken. Two page transactions of one
-  version writing the same key at the same time race either way; the one that drew later wins, which is the writer's
-  own order.
+- One column, so the newest-first order is one ``epoch DESC`` term at the end of the primary key, one comparison per
+  row, and "every version since X" (a restore) is one range on one column.
+- 48 bits of wall milliseconds (about 8,900 years from 1970) and 15 bits of logical counter: 32,768 stamps a
+  millisecond a process before the wall part moves on.
+- :func:`next_epoch` answers ``max(last + 1, wall_ms << 15)``: monotone inside the process whatever the wall clock
+  does. When the wall clock goes back (an NTP step), the logical part advances from the last stamp; when the logical
+  part overflows, ``last + 1`` carries into the wall part, one millisecond on. A stamp past a positive BIGINT is
+  refused, never wrapped.
+- WHY a process clock, not a shared counter or a database clock: a shared counter is one hot row every write of every
+  table takes a turn at; a database sequence is not ordered across connections on YugabyteDB (it caches values per
+  connection, ``ysql_sequence_cache_minval``); Postgres xids have no YugabyteDB counterpart, and YugabyteDB's hybrid
+  time no Postgres one (``research-shared-clock.md``). The process clock is the same on both engines and costs one
+  lock-guarded int.
+
+**Newest-wins across writers** (:class:`~threetears.core.collections.scope_epochs.ScopeEpochs`). One write is one
+writer's, in one process, so its own stamps are ordered by its own clock. Across writers, the scope epochs table keeps
+``last_epoch``, the highest stamp a transaction committed, on the rows that transaction touched; the next writer's
+``begin`` reads it and moves its own clock past it (:func:`observe_epoch`), so its versions always sort above the
+previous writer's, whatever the two processes' clocks say.
+
+**Stamped (in-place) tables** never let a key's stamp go back whichever process writes it: their upsert sets
+``epoch = GREATEST(epoch + 1, <the new stamp>)`` (:func:`rising_epoch_assignment`).
+
+**A commit older than W is refused** (:data:`MAX_TRANSACTION_AGE_MS`): the caller's transaction checks its lowest
+stamp against the clock before its COMMIT, so no committed row is older than W at its commit. That bound, with the
+commit-to-log gap A and the clock skew S, is the margin M a restore reads back by (:data:`_RESTORE_MARGIN_MS`): every
+log record carries its commit's lowest stamp (``s_min``, ``EpochChange.s_min``), so the scrub can prove M held.
 
 **Two kinds of table** (:class:`RowEpoch`):
 
@@ -59,6 +66,7 @@ A leaf module: the collections and backends both import it, and it imports neith
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Final
 
@@ -66,12 +74,18 @@ __all__ = [
     "AppendOnlyWriteError",
     "EPOCH_COLUMN",
     "GONE_COLUMN",
+    "MAX_TRANSACTION_AGE_MS",
     "ROW_STAMPED",
     "RowEpoch",
+    "TransactionTooOldError",
     "UnstampedWriteError",
+    "epoch_wall_ms",
     "next_epoch",
+    "observe_epoch",
+    "rising_epoch_assignment",
     "row_versions",
     "versioned_primary_key_sql",
+    "wall_clock_ms",
 ]
 
 #: the column every row of a table that declares a :class:`RowEpoch` carries its epoch in
@@ -81,14 +95,34 @@ EPOCH_COLUMN: Final[str] = "epoch"
 #: appended rather than run). ``BOOLEAN NOT NULL DEFAULT false``: a write that leaves it out writes a live version
 GONE_COLUMN: Final[str] = "gone"
 
-#: the low bits of an epoch, the write statement's sequence
-_SEQUENCE_BITS: Final[int] = 31
+#: the low bits of an epoch, the logical counter within one wall millisecond
+_LOGICAL_BITS: Final[int] = 15
 
-#: the largest sequence an epoch holds
-_MAX_SEQUENCE: Final[int] = (1 << _SEQUENCE_BITS) - 1
+#: the largest epoch: a positive BIGINT
+_MAX_EPOCH: Final[int] = (1 << 63) - 1
 
-#: the largest version an epoch holds: 32 bits, so the epoch stays a positive BIGINT
-_MAX_VERSION: Final[int] = (1 << 32) - 1
+#: W, the longest a transaction may run, from its first stamp to its COMMIT: a commit older is refused
+#: (:class:`TransactionTooOldError`). WHY 5 minutes: half the 10-minute fence the restore margin starts at (M = W + A +
+#: S, :data:`_RESTORE_MARGIN_MS`), far above any page transaction the broker lets idle (60 s,
+#: ``tx_idle_timeout_seconds``); a bulk COPY must fit inside it (``research-shared-clock.md``, risk 5). Size it from the
+#: burst replay's longest measured transaction before narrowing M
+MAX_TRANSACTION_AGE_MS: Final[int] = 5 * 60 * 1000
+
+#: S, the clock skew between two writing processes the margin covers. WHY 5 s: YugabyteDB stops a node past 500 ms
+#: (``max_clock_skew_usec``) and EKS nodes keep AWS time sync; the research asks at least 1 s
+_CLOCK_SKEW_MS: Final[int] = 5 * 1000
+
+#: A, the longest gap between a commit and the append of its epoch record that the margin covers: the rest of the
+#: 10-minute fence today's change-note ring rests on. A writer that stalls longer can be missed by a restore, as today;
+#: the scrub reports it exactly from the record's ``s_min``
+_COMMIT_TO_LOG_MS: Final[int] = 10 * 60 * 1000 - MAX_TRANSACTION_AGE_MS - _CLOCK_SKEW_MS
+
+#: M = W + A + S, the margin a restore reads back by: given the keeper's mark (log position P at keeper time T), a
+#: restore reads every version with ``epoch >= (T - M) << 15`` (append-only chunk 5). WHY it is complete: a record
+#: appended after P was appended at T or later, so its commit was at T - A or later (its writer's clock T - A - S), and
+#: its stamps at most W older than its commit, so every one is at T - M or later. WHY 10 minutes: the fence today's
+#: ring rests on; reading too much only re-evicts keys, which is harmless, and missing one is the only failure
+_RESTORE_MARGIN_MS: Final[int] = MAX_TRANSACTION_AGE_MS + _COMMIT_TO_LOG_MS + _CLOCK_SKEW_MS
 
 
 class AppendOnlyWriteError(ValueError):
@@ -99,6 +133,11 @@ class AppendOnlyWriteError(ValueError):
 
 class UnstampedWriteError(ValueError):
     """a write to a table that declares a row epoch, without one: refused before anything is sent."""
+
+
+class TransactionTooOldError(RuntimeError):
+    """a transaction whose first stamp is older than :data:`MAX_TRANSACTION_AGE_MS` at its COMMIT: refused, rolled
+    back, so no committed row is older than W at its commit and a restore's margin holds."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,68 +181,122 @@ def row_versions(scope: str) -> RowEpoch:
 ROW_STAMPED: Final = RowEpoch(versions=False)
 
 
-def _compose_epoch(version: int, sequence: int) -> int:
-    """the epoch of a write statement: its write's version and its sequence.
+def _wall_ms() -> int:
+    """the wall clock, in milliseconds since 1970.
 
-    :param version: the write's version (``ScopeEpochs.begin``), from 0 to :data:`_MAX_VERSION`
-    :ptype version: int
-    :param sequence: the statement's sequence, from 0 to :data:`_MAX_SEQUENCE`
-    :ptype sequence: int
-    :return: ``version << 31 | sequence``
+    :return: it
     :rtype: int
-    :raises ValueError: when either is out of its range: refused, never wrapped, since a wrapped epoch sorts older
     """
-    if not 0 <= version <= _MAX_VERSION:
-        raise ValueError(f"a write's version must be within 0..{_MAX_VERSION} to be an epoch, got {version}")
-    if not 0 <= sequence <= _MAX_SEQUENCE:
-        raise ValueError(f"an epoch's sequence must be within 0..{_MAX_SEQUENCE}, got {sequence}")
-    return (version << _SEQUENCE_BITS) | sequence
+    return time.time_ns() // 1_000_000
 
 
-class _Sequence:
-    """the process's one sequence of write statements: each draw the next number, from one thread or many.
+class _HybridClock:
+    """the process's one hybrid logical clock: each stamp above every one before it, from one thread or many.
 
-    The one piece of state here: an int behind a lock, drawn from and never read whole (see the module's "WHY one
-    counter for the process").
+    The one piece of state here: the last stamp, an int behind a lock, replaced whole (see the module's "The
+    encoding").
     """
 
     __slots__ = ("_last", "_lock")
 
     def __init__(self) -> None:
-        """start the sequence before its first draw."""
+        """start the clock before its first stamp."""
         self._lock = threading.Lock()
         self._last = 0
 
-    def draw(self) -> int:
-        """the next number.
+    def now(self) -> int:
+        """the next stamp: ``max(last + 1, wall_ms << 15)``.
 
-        :return: it, from 1
+        :return: it
         :rtype: int
-        :raises ValueError: when the sequence is spent (:data:`_MAX_SEQUENCE` draws this process)
+        :raises ValueError: when the stamp would pass a positive BIGINT (refused, never wrapped)
         """
+        floor = _wall_ms() << _LOGICAL_BITS
         with self._lock:
-            if self._last >= _MAX_SEQUENCE:
-                raise ValueError(
-                    f"this process has stamped {_MAX_SEQUENCE} write statements; a later one would sort older. "
-                    "Restart the process"
-                )
-            self._last += 1
-            return self._last
+            # last + 1 past the logical part's top carries into the wall part: the logical part's overflow moves the
+            # wall part on by one millisecond, never back to 0 of the same millisecond
+            stamp = max(self._last + 1, floor)
+            if stamp > _MAX_EPOCH:
+                raise ValueError(f"an epoch past {_MAX_EPOCH} would wrap and sort older; the clock reads {floor}")
+            self._last = stamp
+        return stamp
+
+    def observe(self, epoch: int) -> None:
+        """move the clock past ``epoch``: the next stamp sorts above it.
+
+        :param epoch: a stamp another writer committed
+        :ptype epoch: int
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``epoch`` is no epoch (negative, or past a positive BIGINT)
+        """
+        if not 0 <= epoch <= _MAX_EPOCH:
+            raise ValueError(f"an epoch is within 0..{_MAX_EPOCH}, got {epoch}")
+        with self._lock:
+            self._last = max(self._last, epoch)
 
 
-_SEQUENCE: Final = _Sequence()
+_CLOCK: Final = _HybridClock()
 
 
-def next_epoch(version: int) -> int:
-    """a fresh epoch for one write statement of ``version``: newer than every epoch this process drew before.
+def next_epoch() -> int:
+    """a fresh epoch for one write statement: newer than every epoch this process stamped or observed before.
 
-    :param version: the write's version
-    :ptype version: int
     :return: the epoch
     :rtype: int
-    :raises ValueError: when the version is out of range, or the process's sequence is spent
+    :raises ValueError: when the stamp would pass a positive BIGINT
     """
-    return _compose_epoch(version, _SEQUENCE.draw())
+    return _CLOCK.now()
+
+
+def observe_epoch(epoch: int) -> None:
+    """move this process's clock past ``epoch``, a stamp another writer committed (the previous writer's
+    ``last_epoch``, read by ``ScopeEpochs.begin``): every later :func:`next_epoch` sorts above it.
+
+    :param epoch: the stamp
+    :ptype epoch: int
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when ``epoch`` is no epoch
+    """
+    _CLOCK.observe(epoch)
+
+
+def epoch_wall_ms(epoch: int) -> int:
+    """the wall milliseconds an epoch was stamped at, by the encoding (``epoch >> 15``).
+
+    :param epoch: the epoch
+    :ptype epoch: int
+    :return: its wall part
+    :rtype: int
+    """
+    return epoch >> _LOGICAL_BITS
+
+
+def wall_clock_ms() -> int:
+    """the wall clock the process's stamps read, in milliseconds: what a transaction's age is measured against.
+
+    :return: it
+    :rtype: int
+    """
+    return _wall_ms()
+
+
+def rising_epoch_assignment(target: str, quoted_epoch: str = EPOCH_COLUMN) -> str:
+    """a stamped table's upsert ``SET`` term for the epoch: ``epoch = GREATEST(<target>.epoch + 1, EXCLUDED.epoch)``.
+
+    A stamped table keeps one row a key, updated in place by whichever process writes it; each process's clock is its
+    own, so the new stamp may be behind the row's. The row's stamp never goes back: it rises past the stored one by at
+    least one, and takes the new stamp when that is higher.
+
+    :param target: how the statement names the stored row (the table, or its alias)
+    :ptype target: str
+    :param quoted_epoch: the epoch column, quoted as the statement quotes it
+    :ptype quoted_epoch: str
+    :return: the term
+    :rtype: str
+    """
+    return f"{quoted_epoch} = GREATEST({target}.{quoted_epoch} + 1, EXCLUDED.{quoted_epoch})"
 
 
 def versioned_primary_key_sql(quoted_key: tuple[str, ...], quoted_epoch: str, *, yugabyte: bool) -> str:

@@ -154,7 +154,8 @@ def test_a_versioned_tables_insert_names_no_conflict_clause() -> None:
 def test_a_stamped_tables_write_stays_an_upsert_of_one_row_a_key_setting_its_epoch() -> None:
     sql = build_insert_sql(_RUNS, {"run_id": "r1", "state": "NC", EPOCH_COLUMN: 1})
     assert "ON CONFLICT (run_id) DO UPDATE SET" in sql
-    assert f"{EPOCH_COLUMN} = EXCLUDED.{EPOCH_COLUMN}" in sql
+    # never lower than the row's own: each writing process keeps its own clock (the HLC, test_hlc_epoch)
+    assert f"{EPOCH_COLUMN} = GREATEST(runs.{EPOCH_COLUMN} + 1, EXCLUDED.{EPOCH_COLUMN})" in sql
 
 
 def test_an_arrow_plan_of_a_versioned_table_appends_its_versions_and_its_gone_markers() -> None:

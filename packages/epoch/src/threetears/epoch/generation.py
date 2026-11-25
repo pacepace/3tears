@@ -997,6 +997,7 @@ class EpochGenerationSource(_ChangeLogReading):
         scopes: Sequence[str] | None = None,
         unconfirmed_delta_file: str | None = None,
         unconfirmed_writer: str | None = None,
+        s_min: int | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -1043,6 +1044,9 @@ class EpochGenerationSource(_ChangeLogReading):
             first commit), the loading writer's beat key
             (:attr:`~threetears.core.collections.epoch_change.EpochChange.unconfirmed_writer`)
         :ptype unconfirmed_writer: str | None
+        :param s_min: the commit's lowest row epoch, named by every record the write appends
+            (:attr:`~threetears.core.collections.epoch_change.EpochChange.s_min`)
+        :ptype s_min: int | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -1070,12 +1074,16 @@ class EpochGenerationSource(_ChangeLogReading):
                         scopes=scopes,
                         unconfirmed_delta_file=unconfirmed_delta_file,
                         unconfirmed_writer=unconfirmed_writer,
+                        s_min=s_min,
                     ),
                 )
             ]
         else:
             bodies = [
-                (tenant, epoch_change_body(table_name, run, database=self._database, delta_file=delta_file))
+                (
+                    tenant,
+                    epoch_change_body(table_name, run, database=self._database, delta_file=delta_file, s_min=s_min),
+                )
                 for tenant, group in _by_tenant(rows)
                 for run in changed_row_runs(table_name, group)
             ]

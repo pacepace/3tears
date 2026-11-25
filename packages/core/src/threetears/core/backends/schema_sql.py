@@ -28,6 +28,7 @@ from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, rising_epoch_assignment
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
@@ -618,12 +619,33 @@ def _update_set_clause(schema: TableSchema, mutable: Sequence[Column], named: Co
     :rtype: str
     """
     chosen = _named_set(mutable, named)
+    rising = _rises_epoch(schema)
     if chosen:
-        result = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in chosen)
+        # a stamped table's epoch never goes back, whichever process's clock stamped the write (row_epoch)
+        result = ", ".join(
+            rising_epoch_assignment(_conflict_target_ref(schema))
+            if rising and c.name == EPOCH_COLUMN
+            else f"{c.name} = EXCLUDED.{c.name}"
+            for c in chosen
+        )
     else:
         first = mutable[0].name
         result = f"{first} = {_conflict_target_ref(schema)}.{first}"
     return result
+
+
+def _rises_epoch(schema: TableSchema) -> bool:
+    """whether ``schema`` is a stamped table (``ROW_STAMPED``: one row a key, updated in place, carrying its last write's
+    epoch), whose update sets the epoch to ``GREATEST(epoch + 1, <new>)`` rather than the new stamp alone: each
+    writing process keeps its own clock (:mod:`~threetears.core.ddl.row_epoch`), so the new stamp may be behind the
+    row's.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :return: whether its epoch rises on update
+    :rtype: bool
+    """
+    return bool(getattr(schema, "stamps_epoch", False)) and not getattr(schema, "versioned", False)
 
 
 def _named_set(mutable: Sequence[Column], named: Collection[str] | None) -> list[Column]:
@@ -798,8 +820,15 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
     pk_where = " AND ".join(f"{col} = ${i + 1}" for i, col in enumerate(pk_cols))
     set_parts: list[str] = []
     next_idx = len(pk_cols) + 1
+    rising = _rises_epoch(schema)
     for col in mutable:
-        set_parts.append(f"{col.name} = {render_param(col, next_idx)}")
+        value = render_param(col, next_idx)
+        # a stamped table's epoch never goes back (row_epoch): GREATEST(epoch + 1, the new stamp)
+        set_parts.append(
+            f"{col.name} = GREATEST({col.name} + 1, {value})"
+            if rising and col.name == EPOCH_COLUMN
+            else f"{col.name} = {value}"
+        )
         next_idx += 1
     # final $ is the CAS fence value
     cas_idx = next_idx

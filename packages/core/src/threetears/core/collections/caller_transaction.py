@@ -51,7 +51,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from itertools import chain, repeat
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -62,6 +62,7 @@ from threetears.core.backends.broker_generation import (
     collecting_advanced_generations,
     committed_generations_record,
     naming_commit_generations,
+    naming_commit_s_min,
     naming_commit_scopes,
     naming_delta_files,
     reply_generations_since,
@@ -75,7 +76,14 @@ from threetears.core.collections.delta_files import (
 )
 from threetears.core.collections.delta_save import save_in_worker
 from threetears.core.collections.epoch_change import EVERY_STATE_NAMED, ChangedRow, recordable_scopes
-from threetears.core.ddl.row_epoch import UnstampedWriteError, next_epoch
+from threetears.core.ddl.row_epoch import (
+    MAX_TRANSACTION_AGE_MS,
+    TransactionTooOldError,
+    UnstampedWriteError,
+    epoch_wall_ms,
+    next_epoch,
+    wall_clock_ms,
+)
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.frozen_state import with_chunk
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
@@ -341,6 +349,7 @@ class CallerTransaction:
     """
 
     __slots__ = (
+        "_before_commit",
         "_committed_generations",
         "_deltas",
         "_enrolled",
@@ -349,6 +358,8 @@ class CallerTransaction:
         "_outermost",
         "_reaches",
         "_restated",
+        "_s_max",
+        "_s_min",
         "_saved_delta_files",
         "_scopes",
         "_states",
@@ -403,6 +414,13 @@ class CallerTransaction:
         # the write's version its data writes took their turn at (ScopeEpochs.touch): its delta files are named by it
         # (decision 53); None for a transaction no fenced write joined, whose files keep the older, unversioned name
         self._write_version: int | None = None
+        # the lowest and highest row epoch this transaction stamped (row_epoch): the lowest is its commit's s_min, and
+        # its age at the COMMIT (refused past W); the highest is what its writer's scope epochs record as last_epoch
+        self._s_min: int | None = None
+        self._s_max: int | None = None
+        # what runs on the transaction's connection just before its COMMIT, given the highest stamp, in order
+        # (before_commit): a tuple replaced whole, owned by the task that runs the transaction
+        self._before_commit: tuple[Callable[[Any, int], Awaitable[None]], ...] = ()
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -665,9 +683,10 @@ class CallerTransaction:
 
     def row_epoch(self, table: str) -> int:
         """a fresh epoch for one write statement of ``table`` on this transaction, for a table that declares a row epoch
-        (:mod:`~threetears.core.ddl.row_epoch`): the version its data writes took their turn at
-        (:meth:`note_write_version`) and the process's next sequence, so it sorts newer than every epoch drawn before
-        it, in this transaction or any other of the write.
+        (:mod:`~threetears.core.ddl.row_epoch`): the process's hybrid logical clock's next stamp, so it sorts newer than
+        every epoch drawn before it, in this transaction or any other of the write, and than the previous writer's
+        (``ScopeEpochs.begin`` moved the clock past its ``last_epoch``). Only once the transaction took a write's turn
+        (:meth:`note_write_version`): that turn is the fence that orders this writer after the previous one.
 
         :param table: the table written, for the refusal
         :ptype table: str
@@ -680,7 +699,47 @@ class CallerTransaction:
                 f"{table} declares a row epoch, so every write carries its write's epoch, and this transaction took no "
                 f"write's turn: call ScopeEpochs.touch(version, ...) on it before writing the table"
             )
-        return next_epoch(self._write_version)
+        epoch = next_epoch()
+        # the clock only rises in this process, so the first stamp is the lowest and the last the highest
+        if self._s_min is None:
+            self._s_min = epoch
+        self._s_max = epoch
+        return epoch
+
+    def before_commit(self, step: Callable[[Any, int], Awaitable[None]]) -> None:
+        """run ``step(conn, s_max)`` on this transaction's connection just before its COMMIT, once the body ended
+        cleanly and only when the transaction stamped a row epoch: ``s_max`` is the highest it stamped. In the order
+        given. A step that raises refuses the commit: the transaction is rolled back and settled, and the error is the
+        caller's. How ``ScopeEpochs`` records the stamp a write left on the scopes it touched (``last_epoch``).
+
+        :param step: the step
+        :ptype step: Callable[[Any, int], Awaitable[None]]
+        :return: nothing
+        :rtype: None
+        """
+        self._before_commit = (*self._before_commit, step)
+
+    async def _ready_to_commit(self) -> None:
+        """refuse a commit older than W, then run the steps owed before the COMMIT (:meth:`before_commit`).
+
+        :return: nothing
+        :rtype: None
+        :raises TransactionTooOldError: when the transaction's first stamp is older than
+            :data:`~threetears.core.ddl.row_epoch.MAX_TRANSACTION_AGE_MS`
+        """
+        if self._s_min is None or self._s_max is None:
+            return
+        age = wall_clock_ms() - epoch_wall_ms(self._s_min)
+        if age > MAX_TRANSACTION_AGE_MS:
+            # WHY: a restore reads back by M = W + A + S from the keeper's mark; a row committed older than W could sit
+            # below that floor and be missed (design-append-only-l3.md, decision 3)
+            raise TransactionTooOldError(
+                f"this transaction's first row epoch is {age} ms old, past the {MAX_TRANSACTION_AGE_MS} ms a "
+                "transaction may run: its commit is refused and it is rolled back. Write in smaller transactions"
+            )
+        steps, s_max = self._before_commit, self._s_max
+        for step in steps:
+            await step(self.conn, s_max)
 
     def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
         """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those
@@ -812,8 +871,10 @@ class CallerTransaction:
         """
         if self._outermost is None and exc_type is None:
             # saved before the commit, so every committed version has its file; a save that fails ends the
-            # transaction as a body that raised does, rolled back and settled, and its error is the caller's
+            # transaction as a body that raised does, rolled back and settled, and its error is the caller's. A
+            # commit older than W, or a step owed before it that fails, ends it the same way
             try:
+                await self._ready_to_commit()
                 self._saved_delta_files = MappingProxyType(await self._save_delta_files())
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- the commit is refused: rolled back and settled, then re-raised
                 await self._end(type(error), error, error.__traceback__)
@@ -852,12 +913,14 @@ class CallerTransaction:
         # the states only a commit with a delta file names, bounded: one too wide names none (decision 31); marked
         # complete only when read off its files' rows (decision 54 (c))
         scopes = _commit_scopes(self._scopes, self._states) if files else []
+        # the commit's lowest row epoch: its l3.tx.commit carries it, and every epoch record of it names it (s_min)
+        s_min = self._s_min if exc_type is None else None
         landed = False
         # the broker's reply to the commit replaces this task's record of its generations; a direct pool's commit
         # leaves it, so a record that did not change since names nothing of this commit's
         before = committed_generations_record()
         try:
-            with naming_delta_files(files), naming_commit_scopes(scopes):
+            with naming_delta_files(files), naming_commit_scopes(scopes), naming_commit_s_min(s_min):
                 suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
             landed = True
         finally:
@@ -875,6 +938,7 @@ class CallerTransaction:
                 with (
                     naming_delta_files(files if landed else {}),
                     naming_commit_scopes(scopes if landed else []),
+                    naming_commit_s_min(s_min if landed else None),
                     naming_commit_generations(replied),
                 ):
                     generation_failure, advanced = await asyncio.shield(

@@ -3871,7 +3871,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             (``DeltaFolds.committed`` never does)
         :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
         :param write_version: the write's version (``ScopeEpochs.begin``) the load is part of. For a table that declares a
-            row epoch (``TableSchema.row_epoch``) it is required, and every row loaded is stamped with an epoch of it.
+            row epoch (``TableSchema.row_epoch``) it is required, and every row loaded is stamped with one fresh epoch.
             With a ``delta``, its delta files are named by it (:func:`~threetears.core.collections.delta_files.versioned_write_id`, decision 53), so a
             full's manifest covers them exactly. None names them in the older, unversioned form, which a recovery always
             reads (decision 53's expand step; its contract makes it required)
@@ -3924,8 +3924,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                     f"{type(self).__name__}.load_files: {self.table_name} declares a row epoch, so every row loaded "
                     f"carries its write's epoch: name the write's version (write_version)"
                 )
-            # one epoch for the load's rows: a load inserts only, so it writes a key once
-            constants = {**(constants or {}), EPOCH_COLUMN: next_epoch(write_version)}
+            # one epoch for the load's rows, the process clock's next stamp: a load inserts only, so it writes a key once.
+            # The write's version stays required: its begin is what moved this process's clock past the previous
+            # writer's last_epoch (ScopeEpochs.begin), so the load's rows sort above that writer's
+            constants = {**(constants or {}), EPOCH_COLUMN: next_epoch()}
         reach = WholeReach(prefixes=tuple(self._load_reach(constants or {}, prefixes)))
         per_transaction = self.LOAD_ROWS_PER_TRANSACTION if rows_per_transaction is None else rows_per_transaction
         bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms

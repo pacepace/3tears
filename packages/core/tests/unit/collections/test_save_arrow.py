@@ -16,6 +16,7 @@ What the pod sends is the contract the hub's broker implements (``WIRE.md``; the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,7 @@ from threetears.core.backends.arrow_copy import (
     rows_digest,
     split_copy_request,
 )
+from threetears.core.backends.broker_generation import COMMIT_S_MIN_FIELD
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.schema_sql import build_bulk_insert_sql
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -59,7 +61,15 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, UnstampedWriteError, row_versions
+from threetears.core.ddl.row_epoch import (
+    EPOCH_COLUMN,
+    GONE_COLUMN,
+    UnstampedWriteError,
+    epoch_wall_ms,
+    next_epoch,
+    row_versions,
+    wall_clock_ms,
+)
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -617,7 +627,7 @@ async def test_an_arrow_write_of_a_versioned_table_stamps_every_row_with_its_wri
     for envelope, rows, _size in (first, second):
         assert rows.schema.field(EPOCH_COLUMN).type == pa.int64()
         [epoch] = set(rows.column(EPOCH_COLUMN).to_pylist())
-        assert _version(epoch) == 17
+        assert _fresh(epoch)
         epochs.append(epoch)
         if not copy:
             # append-only L3, chunk 2: a rewrite appends the key's new version, never an upsert
@@ -660,7 +670,7 @@ async def test_a_rewrite_of_a_versioned_table_as_python_rows_is_a_copy_that_appe
     assert envelope[APPEND_FIELD] is True
     assert ON_CONFLICT_FIELD not in envelope and DELETE_FIELD not in envelope
     assert sent.num_rows == 40
-    assert _version(sent.column(EPOCH_COLUMN)[0].as_py()) == 17
+    assert _fresh(sent.column(EPOCH_COLUMN)[0].as_py())
 
 
 async def test_an_arrow_delete_of_a_versioned_table_appends_a_gone_marker_a_key_at_a_newer_epoch() -> None:
@@ -698,10 +708,34 @@ async def test_a_whole_run_of_a_versioned_table_deleted_names_its_epoch_and_scop
     )
     [body] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.delete_prefixes")]
     assert body["scope"] == "office_key"
-    assert _version(body["epoch"]) == 23
+    assert _fresh(body["epoch"])
     assert body["prefixes"] == [{"office_key": "sn_NC1"}]
 
 
-def _version(epoch: int) -> int:
-    """the version an epoch was stamped at, by its documented encoding (``version << 31 | sequence``)."""
-    return epoch >> 31
+def _fresh(epoch: int) -> bool:
+    """whether an epoch is a fresh stamp of this process's clock (``wall_ms << 15 | logical``): its wall part no more
+    than a minute behind the wall clock (the clock never goes back, so it may be ahead), and below the clock's next
+    stamp."""
+    return epoch_wall_ms(epoch) > wall_clock_ms() - 60_000 and epoch < next_epoch()
+
+
+async def test_a_commit_on_the_rail_names_the_lowest_epoch_its_transaction_stamped() -> None:
+    hub = _Hub(write_arrow=True)
+    keys = pa.table({"office_key": ["sn_NC1"], "geo_id": ["00001"]})
+
+    async def step(collection: Any, conn: Any) -> None:
+        await collection.save_arrow(_table(2), conn=conn)
+        await collection.delete_arrow(keys, conn=conn)
+
+    await _on_rail(hub, step)
+    (_, written, _), (_, markers, _) = hub.arrow_requests()
+    [commit] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.commit")]
+    assert commit[COMMIT_S_MIN_FIELD] == written.column(EPOCH_COLUMN)[0].as_py()
+    assert commit[COMMIT_S_MIN_FIELD] < markers.column(EPOCH_COLUMN)[0].as_py()
+
+
+async def test_a_commit_that_stamped_nothing_names_no_s_min() -> None:
+    hub = _Hub(write_arrow=True)
+    await _on_rail(hub, lambda collection, conn: asyncio.sleep(0))
+    [commit] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.commit")]
+    assert COMMIT_S_MIN_FIELD not in commit

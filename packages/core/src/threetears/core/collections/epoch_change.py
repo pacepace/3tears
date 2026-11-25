@@ -300,6 +300,11 @@ class EpochChange(BaseModel):
         (the states, ``state:CA``, as the writer's seqlock names them; module docstring): what the writer re-reads
         from L3 should the file be lost past the notes' window. ``None`` when unknown, past :data:`_EPOCH_SCOPES_MAX`,
         or from a writer built before the field
+    :ivar s_min: the lowest row epoch the commit stamped (the row epoch's hybrid logical clock,
+        :mod:`~threetears.core.ddl.row_epoch`), on every record of the commit: a scrub of a restore proves its margin
+        held by it (a record after the keeper's mark whose ``s_min`` is below the restore's floor is a violation,
+        ``design-append-only-l3.md`` decision 3). ``None`` for a commit that stamped no row, and from a writer built
+        before the field
     """
 
     table: str
@@ -316,6 +321,7 @@ class EpochChange(BaseModel):
     scopes: list[str] | None = None
     delta_file_unconfirmed: bool = False
     unconfirmed_writer: str | None = None
+    s_min: int | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -342,7 +348,21 @@ class EpochChange(BaseModel):
         if self.delta_file_unconfirmed:
             _check_unconfirmed(self.delta_file, None, whole_table=self.whole_table, prefixes=self.prefixes)
         _check_unconfirmed_writer(self.unconfirmed_writer, self.delta_file if self.delta_file_unconfirmed else None)
+        _check_s_min(self.s_min)
         return self
+
+
+def _check_s_min(s_min: int | None) -> None:
+    """refuse an ``s_min`` that is no row epoch: a positive BIGINT.
+
+    :param s_min: the commit's lowest stamp, or None
+    :ptype s_min: int | None
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is refused
+    """
+    if s_min is not None and not 0 < s_min < 1 << 63:
+        raise ValueError(f"a record's s_min is a row epoch, a positive BIGINT: got {s_min}")
 
 
 def _check_unconfirmed(
@@ -743,6 +763,7 @@ async def advance_recording(
     repair: bool = True,
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
+    s_min: int | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -795,12 +816,15 @@ async def advance_recording(
     :param unconfirmed_writer: beside ``unconfirmed_delta_file`` on a load's intent record, the loading writer's beat
         key (:attr:`EpochChange.unconfirmed_writer`), for a source that records it
     :ptype unconfirmed_writer: str | None
+    :param s_min: the commit's lowest row epoch (:attr:`EpochChange.s_min`), for a source that records it
+    :ptype s_min: int | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
     :raises ValueError: when ``keys_unknown`` is set with rows, before anything is advanced
     """
     check_change_form(rows, keys_unknown=keys_unknown)
+    _check_s_min(s_min)
     _check_delta_file(delta_file)
     named_scopes = list(scopes) if scopes and keys_unknown else None
     _check_scopes(named_scopes, keys_unknown=keys_unknown)
@@ -824,6 +848,7 @@ async def advance_recording(
             scopes=named_scopes,
             unconfirmed_delta_file=unconfirmed_delta_file,
             unconfirmed_writer=unconfirmed_writer,
+            s_min=s_min,
         )
     kept_rows = None if rows is None else list(rows)
 
@@ -842,6 +867,7 @@ async def advance_recording(
             scopes=named_scopes,
             unconfirmed_delta_file=unconfirmed_delta_file,
             unconfirmed_writer=unconfirmed_writer,
+            s_min=s_min,
         )
 
     try:
@@ -869,6 +895,7 @@ async def _advance_recording_once(
     scopes: list[str] | None,
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
+    s_min: int | None = None,
 ) -> str | None:
     """one try of :func:`advance_recording`, its change already checked.
 
@@ -898,6 +925,8 @@ async def _advance_recording_once(
     :ptype unconfirmed_delta_file: str | None
     :param unconfirmed_writer: the loading writer's beat key beside it, on a load's intent record
     :ptype unconfirmed_writer: str | None
+    :param s_min: the commit's lowest row epoch
+    :ptype s_min: int | None
     :return: the token the advance wrote
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -929,6 +958,8 @@ async def _advance_recording_once(
                 # a source built before it records the intent as a stopped load's record: the writer then confirms it
                 # when asked, as decision 43 does, which the loading hub's own later record supersedes
                 extra["unconfirmed_writer"] = unconfirmed_writer
+        if s_min is not None and _takes(source, "s_min"):
+            extra["s_min"] = s_min
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
 
@@ -1097,6 +1128,9 @@ class _EpochBody(BaseModel):
     #: the loading writer's beat key, beside unconfirmed_delta_file on a load's intent record; a reader built before
     #: it ignores it
     unconfirmed_writer: str | None = None
+    #: the commit's lowest row epoch, on every record of it; last, so a keyed record's form (cut from a record naming
+    #: none) is unchanged, and a reader built before it ignores it
+    s_min: int | None = None
 
 
 def epoch_change_body(
@@ -1113,6 +1147,7 @@ def epoch_change_body(
     scopes: Sequence[str] | None = None,
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
+    s_min: int | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -1148,6 +1183,8 @@ def epoch_change_body(
     :param unconfirmed_writer: beside ``unconfirmed_delta_file`` on a load's intent record, the loading writer's beat
         key (:attr:`EpochChange.unconfirmed_writer`); ``None`` names none
     :ptype unconfirmed_writer: str | None
+    :param s_min: the commit's lowest row epoch (:attr:`EpochChange.s_min`); ``None`` names none
+    :ptype s_min: int | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, a partition with either, or a delta file name that is
@@ -1166,6 +1203,7 @@ def epoch_change_body(
             unconfirmed_delta_file, delta_file, whole_table=rows is None and not keys_unknown, prefixes=prefixes
         )
     _check_unconfirmed_writer(unconfirmed_writer, unconfirmed_delta_file)
+    _check_s_min(s_min)
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
@@ -1180,6 +1218,7 @@ def epoch_change_body(
         scopes=list(scopes) if scopes is not None else None,
         unconfirmed_delta_file=unconfirmed_delta_file,
         unconfirmed_writer=unconfirmed_writer,
+        s_min=s_min,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -1277,6 +1316,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             scopes=body.scopes,
             delta_file_unconfirmed=body.unconfirmed_delta_file is not None,
             unconfirmed_writer=body.unconfirmed_writer,
+            s_min=body.s_min,
         )
         if body.unconfirmed_delta_file is not None and body.delta_file is not None:
             raise ValueError("a record names a delta file confirmed or unconfirmed, never both")
