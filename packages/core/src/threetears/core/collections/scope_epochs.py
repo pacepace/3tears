@@ -81,6 +81,19 @@ read gives.
 of each data write, marks the scopes that write changed as pending. ``commit`` moves every pending
 scope, the ones an abandoned write left included: rows a write committed before it died are then
 covered by the next write's epochs, even when that write does not change those scopes itself.
+
+**A commit may withhold scopes** (``commit(version, scopes, withheld=...)``; reports, Pace 2026-11-25: one slow or
+failed page never throws a whole load away). The write commits -- :data:`WHOLE` moves to its version, every other scope
+it touched moves -- except the scopes withheld, which stay pending: their epochs do not move, so every reader keeps what
+it holds of them (a copy follower holds a pending scope at the epoch it last applied it at, as it holds one a write in
+progress touched) and never reads the rows a write left there part way. A withheld scope keeps its mark, ``pending`` set
+to the withholding version negated, until a later write touches it again (a touch sets ``pending`` to that write's
+version) and commits without withholding it: only then does it move, to that version. A commit that does not touch it
+leaves it withheld, so a writer that finishes the scope later, however many commits on, is the one that releases it;
+an abandon (a commit of what a dead write left) leaves it withheld too, unless the dead write touched it again.
+WHY the sign, not a column: the mark is the ``pending`` the partial index already holds, so every read of the pending
+scopes (a commit's, a reader's change) reads the withheld ones with no new column, index or migration on the owners'
+tables; a positive ``pending`` is a touch, as ever.
 """
 
 from __future__ import annotations
@@ -300,7 +313,10 @@ class EpochSnapshot:
     :ivar previous: the epoch each scope's last move replaced (None after its first move), by scope;
         :data:`WHOLE`'s is the version before the current one
     :ivar writing_since: when the write in progress began; None when none is
-    :ivar pending: the scopes a write has touched and no commit has moved since (:meth:`ScopeEpochs.touch`)
+    :ivar pending: the scopes a write has touched and no commit has moved since (:meth:`ScopeEpochs.touch`), the
+        withheld among them: a reader holds each at the epoch it has, never reading its rows
+    :ivar withheld: of the pending scopes, those a commit withheld (the module's "A commit may withhold scopes") and no
+        write has touched since
     """
 
     version: int
@@ -309,6 +325,7 @@ class EpochSnapshot:
     previous: Mapping[str, int | None]
     writing_since: datetime | None = None
     pending: frozenset[str] = frozenset()
+    withheld: frozenset[str] = frozenset()
 
     def epoch(self, scope: str) -> int:
         """one scope's epoch; 0 for a scope no write has changed.
@@ -808,8 +825,9 @@ class ScopeEpochs:
         # so a lost delta file of a commit too big to list is recovered by those states (decision 31)
         transaction.note_scopes(scopes)
 
-    async def commit(self, version: int, scopes: Iterable[str], *, conn: Any) -> None:
-        """record the write as committed and move every scope it changed, or touched before, to its version.
+    async def commit(self, version: int, scopes: Iterable[str], *, conn: Any, withheld: Iterable[str] = ()) -> None:
+        """record the write as committed and move every scope it changed, or touched before, to its version -- except
+        the scopes withheld, and those an earlier commit withheld that no write touched since, which stay pending.
 
         In the caller's transaction, with the write's last data write or after it commits; never
         before. Refused, and nothing moves (raise inside the transaction to roll it back), when
@@ -821,13 +839,21 @@ class ScopeEpochs:
         :ptype scopes: Iterable[str]
         :param conn: the caller's connection, its transaction opened by ``CallerTransaction``
         :ptype conn: Any
+        :param withheld: scopes whose rows the write left part way (the module's "A commit may withhold scopes"):
+            each one pending stays pending, its epoch unmoved, until a later write touches it and commits it; one
+            not pending is nothing to withhold
+        :ptype withheld: Iterable[str]
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``version`` is not the write in progress, a scope is :data:`WHOLE`,
-            or a scope to move is already at or past ``version``
+        :raises ValueError: when ``version`` is not the write in progress, a scope is :data:`WHOLE`, a scope is both
+            named and withheld, or a scope to move is already at or past ``version``
         """
         transaction = CallerTransaction.join(conn, writer="ScopeEpochs.commit")
         named = _named(scopes)
+        holding = frozenset(_named(withheld))
+        both = sorted(holding.intersection(named))[:5]
+        if both:
+            raise ValueError(f"commit of version {version} refused: {both} are both named to move and withheld")
         # the fence: clears the marker only while this write is still the one in progress
         fenced = await conn.fetchrow(
             f"UPDATE {self._table} SET previous_epoch = epoch, epoch = $1, writing = NULL, "  # noqa: S608 - the owner's table name
@@ -851,17 +877,32 @@ class ScopeEpochs:
         rows = await keyset_rows(
             conn,
             self.table_name,
-            columns=("scope", "epoch"),
+            columns=("scope", "epoch", "pending"),
             by={},
             order=[Sort("scope")],
             page=DEFAULT_PAGE_SIZE,
             where=[Fragment('t."pending" IS NOT NULL')],
         )
-        pending = [row for row in rows if str(row["scope"]) != WHOLE]
+        # a negative pending is a scope an earlier commit withheld and no write has touched since: it stays withheld
+        touched = [row for row in rows if str(row["scope"]) != WHOLE and int(row["pending"]) > 0]
+        pending = [row for row in touched if str(row["scope"]) not in holding]
         behind = [str(row["scope"]) for row in pending if int(row["epoch"]) >= version][:5]
         if behind:
             raise ValueError(f"commit of version {version} refused: {behind} are already at or past it")
         moved = [str(row["scope"]) for row in pending]
+        kept = [str(row["scope"]) for row in touched if str(row["scope"]) in holding]
+        if kept:
+            # withheld: the mark is the version negated (the module's why), its epoch unmoved; a later touch overwrites
+            # it with that write's version, and that write's commit moves it
+            await conn.execute(
+                f"UPDATE {self._table} SET pending = -$1::bigint, date_updated = now() "  # noqa: S608 - the owner's table name
+                "WHERE pending > 0 AND scope <> $2 AND scope = ANY($3::text[])",
+                version,
+                WHOLE,
+                kept,
+            )
+            for scope in kept:
+                transaction.enroll(self._collection, scope)
         # only the scopes read: whatever else is pending by the UPDATE stays pending for the next commit, never moved
         # unenrolled (the fence keeps a touch out until this transaction ends; this holds the commit to what it read)
         await conn.execute(
@@ -875,7 +916,14 @@ class ScopeEpochs:
             transaction.enroll(self._collection, scope)
         log.info(
             "write committed and its scopes' epochs moved",
-            extra={"extra_data": {"table": self._collection.table_name, "version": version, "scopes": len(moved)}},
+            extra={
+                "extra_data": {
+                    "table": self._collection.table_name,
+                    "version": version,
+                    "scopes": len(moved),
+                    "withheld": kept[:20],
+                }
+            },
         )
 
     def on_change(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -909,6 +957,7 @@ def _snapshot_of(rows: Iterable[Mapping[str, Any]], held: EpochSnapshot | None =
     epochs: dict[str, int] = {} if held is None else dict(held.epochs)
     previous: dict[str, int | None] = {} if held is None else dict(held.previous)
     pending: set[str] = set() if held is None else set(held.pending)
+    withheld: set[str] = set() if held is None else set(held.withheld)
     for row in rows:
         scope = str(row["scope"])
         before = None if row["previous_epoch"] is None else int(row["previous_epoch"])
@@ -922,6 +971,11 @@ def _snapshot_of(rows: Iterable[Mapping[str, Any]], held: EpochSnapshot | None =
             pending.add(scope)
         else:
             pending.discard(scope)
+        # a negative pending is a commit's withhold (the module's "A commit may withhold scopes")
+        if row["pending"] is not None and int(row["pending"]) < 0:
+            withheld.add(scope)
+        else:
+            withheld.discard(scope)
         if int(row["epoch"]) > 0:
             epochs[scope] = int(row["epoch"])
             previous[scope] = before
@@ -936,6 +990,7 @@ def _snapshot_of(rows: Iterable[Mapping[str, Any]], held: EpochSnapshot | None =
         previous=frozen(previous),
         writing_since=writing_since,
         pending=frozenset(pending),
+        withheld=frozenset(withheld),
     )
 
 
