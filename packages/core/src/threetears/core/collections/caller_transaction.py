@@ -355,16 +355,23 @@ class CallerTransaction:
         "conn",
     )
 
-    def __init__(self, conn: Any, **options: Any) -> None:
+    def __init__(self, conn: Any, *, timeout_ms: int | None = None, **options: Any) -> None:
         """name the connection to open the transaction on.
 
         :param conn: the backend-specific connection (an asyncpg connection, or the proxy
             connection :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend` yields)
         :ptype conn: Any
+        :param timeout_ms: the transaction's deadline, for a write sized to its work: handed to a connection that
+            takes one (``takes_transaction_timeout``, the L3 broker's: its statements' timeout, and how long the hub
+            lets each of its requests wait for a slot). A direct pool has no broker to queue at and takes none: its
+            statements run under the database's own timeout. None for the connection's own
+        :ptype timeout_ms: int | None
         :param options: passed to the connection's ``transaction()`` -- isolation, and the like
         :ptype options: Any
         """
         self.conn = conn
+        if timeout_ms is not None and getattr(conn, "takes_transaction_timeout", False) is True:
+            options = {**options, "timeout_ms": timeout_ms}
         self._options = options
         # every key the transaction's writes enrolled, in order: append-only chunks, each a tuple, merged
         # log-structured (with_chunk) and replaced whole, never changed in place; restatements are laid over them when
