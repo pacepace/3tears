@@ -307,6 +307,10 @@ ignore = ["N818", "N811"]
 # shutdown_telemetry without clearing it. nothing else in the workspace's src touches these
 # names. paired entries live in tests/enforcement/_underscore_exemptions.txt.
 "packages/observe/src/threetears/observe/_otel_internals.py" = ["SLF001"]
+# the ONE module that reads CPython's private sys._current_frames: the loop watchdog reads the held loop thread's
+# stack (and every other thread's) from its own thread, and CPython has no public way to read another thread's
+# frames. paired entry in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/src/threetears/observe/_cpython_internals.py" = ["SLF001"]
 # the ONE module that touches nats-py's private members (Client._pending, _pending_data_size,
 # _transport, _pongs, _flush_queue, _send_unsubscribe, _process_op_err; Subscription._id,
 # _pending_queue, _pending_size; PullSubscription._sub). nats-py has no public way to write the

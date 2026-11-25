@@ -175,6 +175,8 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_proce
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: opentelemetry Once._done: the flag that guard reads; clearing it is the only way to let the next set_tracer_provider take effect
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_done
+# rationale: CPython sys._current_frames: the only way to read another thread's frames (traceback and inspect reach the calling thread's alone); the loop watchdog's thread reads the held event loop thread's stack, and every other live thread's, while the loop is held
+packages/observe/src/threetears/observe/_cpython_internals.py:current_frames#0:_current_frames
 
 # rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _asyncpg_internals to pin the one asyncpg private it owns, connect_utils._parse_connect_dsn_and_args (verified 0.31.0, present in the floor 0.30.0), against the installed asyncpg: a DSN whose port or query does not parse and an invalid sslmode are raised inside the parser, and a bad command_timeout is not. this test exists to fail when an asyncpg release moves that boundary; raised_while_parsing_connect_parameters has no public route, since create_pool_with_startup_timeout calls it from inside the package.
 packages/core/tests/unit/utils/test_asyncpg_internals.py:<module>#0:_asyncpg_internals
