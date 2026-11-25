@@ -179,6 +179,8 @@ from operator import itemgetter
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
+from asyncpg.exceptions import QueryCanceledError
+
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
 from threetears.observe.background import cancel_and_wait
@@ -344,6 +346,27 @@ def _status_count(status: str) -> int:
     return int(last) if last.isdigit() else 0
 
 
+#: the seconds one emptying delete statement may take before the next is made smaller. WHY (replay 7, 2026-11-25,
+#: local YugabyteDB under the night's writes): a walk's first band, sized from a count capped at _BAND_COUNT_BATCHES
+#: batches, covered 1/64 of the hash space whatever the table held; on a table far past the cap that band ran past
+#: the 5 s statement timeout the pool's connections carry (the proxy's default), was rolled back, and the keeper sent
+#: the SAME band every pass (about every 6 s, 80+ timeouts), never finishing and loading the database all night. So
+#: a statement is sized by its measured seconds as well as its notes. Measured (2026-11-25, the testament pool's
+#: one-node YugabyteDB 2026.1 b118, 200,000 notes, batch 1000; test_note_emptying_live::
+#: test_an_emptying_bigger_than_a_batch_runs_bounded_statements_and_resumes_after_a_timeout): 208 statements,
+#: 41,763 notes/s, a 1000-note band about 24 ms, the slowest statement 261 ms (a walk's first, one note: a cold
+#: statement's fixed cost, not its notes). 0.5 s is a tenth of the 5 s timeout and twenty batches' time at that rate,
+#: and over that cold first statement, so a fixed cost alone never pins the bands at one hash code.
+_DELETE_SECONDS: Final = 0.5
+
+#: the most a band (or Postgres batch) grows from one statement to the next: a band that deleted a handful of notes
+#: says little of the next band's, so it grows by at most this factor, never straight to the full estimate
+_GROW_AT_MOST: Final = 4
+
+#: what a statement that timed out divides its band (or Postgres batch) by before the next one: the statement was
+#: rolled back whole, so the next covers the same keys in a band this many times smaller, never the same statement
+_SHRINK_ON_TIMEOUT: Final = 8
+
 #: the pause between two delete batches, so the emptying never crowds the writers
 _EMPTY_PAUSE: Final = timedelta(milliseconds=20)
 
@@ -413,6 +436,10 @@ _SWITCHES = counter(
 _EMPTIED = counter(
     "threetears_change_notes_emptied_total",
     description="note tables the keeper emptied (batched deletes) once nothing could still write to them",
+)
+_EMPTY_TIMEOUTS = counter(
+    "threetears_change_notes_empty_timeouts_total",
+    description="emptying delete statements the database cancelled (statement or command timeout); the next is smaller",
 )
 _EMPTIED_ROWS = counter(
     "threetears_change_notes_emptied_rows_total",
@@ -731,6 +758,32 @@ class KeeperPass:
     scrub: ScrubPass = field(default_factory=ScrubPass)
 
 
+def _resized(size: int, deleted: int, want: int, took: float, most: int) -> int:
+    """the next emptying statement's size (hash codes of a band, or notes of a batch) from the last one's.
+
+    Toward ``want`` notes and :data:`_DELETE_SECONDS` of the database's time, whichever is smaller; a statement that
+    deleted none doubles, and none grows past :data:`_GROW_AT_MOST` times the last (WHY: above ``_DELETE_SECONDS``).
+
+    :param size: the last statement's size
+    :ptype size: int
+    :param deleted: the notes it deleted
+    :ptype deleted: int
+    :param want: the notes a statement aims at (``empty_batch``)
+    :ptype want: int
+    :param took: its seconds
+    :ptype took: float
+    :param most: the largest size there is (the hash space, or ``empty_batch``)
+    :ptype most: int
+    :return: the next size, from one to ``most``
+    :rtype: int
+    """
+    factor = float(_GROW_AT_MOST)
+    factor = min(factor, want / deleted if deleted else 2.0)
+    if took > 0:
+        factor = min(factor, _DELETE_SECONDS / took)
+    return max(1, min(most, int(size * factor)))
+
+
 def _token(incarnation: str, seq: int) -> str:
     """the token of ``seq`` under ``incarnation``.
 
@@ -1026,8 +1079,11 @@ class ChangeNoteKeeper:
         #: next hash band's start (YugabyteDB) or the last id deleted (Postgres), so the next batch, or the next
         #: pass, starts past the notes already gone; None before a walk starts
         self._emptying_at: tuple[int, Any] | None = None
-        #: the hash codes a YugabyteDB emptying's next statement covers, sized to about a batch of notes
+        #: the hash codes a YugabyteDB emptying's next statement covers, sized to about a batch of notes and
+        #: about _DELETE_SECONDS of the database's time
         self._band = _HASH_SPACE // 1024
+        #: the notes a Postgres emptying's next statement deletes: empty_batch, less after a slow or cancelled one
+        self._past_batch = empty_batch
 
     def _ring_table(self, index: int) -> str:
         """the qualified name of the ring's note table at ``index``.
@@ -1630,12 +1686,16 @@ class ChangeNoteKeeper:
             speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_emptied_full_slot_s_vacuum_costs_within_twice_a_bare_vacuum",
         )
 
-    # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are
+    # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are.
+    # Why a band is sized by its seconds too, and a timed-out one shrinks: above _DELETE_SECONDS (replay 7)
     async def _delete_band(self, table: str, index: int) -> tuple[int, bool]:
         """delete the notes of the next band of key hashes (YugabyteDB); how many, and whether the walk is done.
 
         A band's statement reads only its own hash codes, so no batch steps over another's tombstones. The band
-        is resized toward ``empty_batch`` notes from the count the last one deleted.
+        is resized toward ``empty_batch`` notes and :data:`_DELETE_SECONDS` from the last statement's notes and
+        seconds (:func:`_resized`). A statement the database cancels (its statement timeout, or the pool's command
+        timeout) deleted nothing, being rolled back whole: the walk stays where it was and the next statement
+        covers the same hashes in a band :data:`_SHRINK_ON_TIMEOUT` times smaller, never the same statement again.
 
         :param table: the qualified table
         :ptype table: str
@@ -1646,8 +1706,8 @@ class ChangeNoteKeeper:
         """
         if self._reached(index) is None:
             # a walk's start: the first band is sized from a count of the table's notes, capped so the count reads
-            # at most _BAND_COUNT_BATCHES batches' worth however many the table holds (past the cap the band starts
-            # small and grows from what each band deletes); a table holding none is done without a statement a band
+            # at most _BAND_COUNT_BATCHES batches' worth however many the table holds; a table holding none is done
+            # without a statement a band
             cap = self._empty_batch * _BAND_COUNT_BATCHES
             held = int(
                 (
@@ -1659,28 +1719,67 @@ class ChangeNoteKeeper:
             )
             if held == 0:
                 return 0, True
-            self._band = max(1, min(_HASH_SPACE, _HASH_SPACE * self._empty_batch // held))
+            # past the cap the table may hold any number of notes (replay 7's held far more than 1/64 of the hash
+            # space could delete in time), so the first band is one hash code and the bands grow from what each deletes
+            self._band = 1 if held >= cap else max(1, min(_HASH_SPACE, _HASH_SPACE * self._empty_batch // held))
         start = int(self._reached(index) or 0)
         end = min(start + self._band, _HASH_SPACE)
-        status = await whole_read(
-            self._pool.execute(
-                f"DELETE FROM {table} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2",  # noqa: S608 - trusted identifiers
-                start,
-                end,
-            ),
-            kind="ring_empty",
-            reason="the idle ring slot two switches back is emptied whole: no write can reach it any more",
-            ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list, as TRUNCATE (11-11)",
-            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
-            speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete",
-        )
+        began = time.monotonic()
+        try:
+            status = await whole_read(
+                self._pool.execute(
+                    f"DELETE FROM {table} WHERE yb_hash_code(id) >= $1 AND yb_hash_code(id) < $2",  # noqa: S608 - trusted identifiers
+                    start,
+                    end,
+                ),
+                kind="ring_empty",
+                reason="the idle ring slot two switches back is emptied whole: no write can reach it any more",
+                ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list, as TRUNCATE (11-11)",
+                proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
+                speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete",
+            )
+        except (QueryCanceledError, TimeoutError) as exc:
+            self._band = self._timed_out(table, index, start, self._band, exc)
+            return 0, False
+        took = time.monotonic() - began
         count = _status_count(status)
         self._emptying_at = (index, end)
-        if count:
-            self._band = max(1, min(_HASH_SPACE, self._band * self._empty_batch // count))
-        elif self._band < _HASH_SPACE:
-            self._band = min(_HASH_SPACE, self._band * 2)
+        self._band = _resized(self._band, count, self._empty_batch, took, _HASH_SPACE)
         return count, end >= _HASH_SPACE
+
+    def _timed_out(self, table: str, index: int, reached: Any, size: int, exc: BaseException) -> int:
+        """a cancelled emptying statement: keep the walk where it was, count and say it; the next statement's size.
+
+        :param table: the qualified table
+        :ptype table: str
+        :param index: its place in the ring
+        :ptype index: int
+        :param reached: where the walk stood before the cancelled statement (None: the table's start, Postgres)
+        :ptype reached: Any
+        :param size: the cancelled statement's band (hash codes) or batch (notes)
+        :ptype size: int
+        :param exc: what cancelled it
+        :ptype exc: BaseException
+        :return: the next statement's size, :data:`_SHRINK_ON_TIMEOUT` times smaller (at least one)
+        :rtype: int
+        """
+        # the walk resumes from here: a first band's timeout must not send the walk back to its count and the same
+        # band, which is the loop replay 7 saw
+        self._emptying_at = (index, reached)
+        _EMPTY_TIMEOUTS.inc()
+        smaller = max(1, size // _SHRINK_ON_TIMEOUT)
+        log.warning(
+            "an emptying delete was cancelled by a timeout; the walk keeps its place and the next delete is smaller",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "size": size,
+                    "next_size": smaller,
+                    "exc_type": type(exc).__name__,
+                }
+            },
+        )
+        return smaller
 
     def _reached(self, index: int) -> Any:
         """where the emptying of the table at ``index`` has reached; None when no walk of it has started.
@@ -1694,9 +1793,14 @@ class ChangeNoteKeeper:
             return None
         return self._emptying_at[1]
 
-    # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are
+    # why batches, this walk and never TRUNCATE: the measured reasons above empty_slot; keep them as they are.
+    # Why a batch is sized by its seconds too, and a timed-out one shrinks: above _DELETE_SECONDS (replay 7)
     async def _delete_past(self, table: str, index: int) -> tuple[int, bool]:
-        """delete the next ``empty_batch`` notes past the last id deleted, in id order; how many, and whether done.
+        """delete the next batch of notes past the last id deleted, in id order; how many, and whether done.
+
+        The batch is ``empty_batch`` notes, less while statements run past :data:`_DELETE_SECONDS`, and
+        :data:`_SHRINK_ON_TIMEOUT` times less after one the database cancelled (rolled back whole: the walk keeps
+        its place).
 
         :param table: the qualified table
         :ptype table: str
@@ -1705,22 +1809,31 @@ class ChangeNoteKeeper:
         :return: notes deleted, and whether the batch reached the table's end
         :rtype: tuple[int, bool]
         """
-        rows = await whole_read(
-            self._pool.fetch(
-                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} "  # noqa: S608 - trusted identifiers
-                "WHERE $2::uuid IS NULL OR id > $2 ORDER BY id LIMIT $1) RETURNING id",
-                self._empty_batch,
-                self._reached(index),
-            ),
-            kind="ring_empty",
-            reason="the idle ring slot two switches back is emptied whole: no write can reach it any more",
-            ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list, as TRUNCATE (11-11)",
-            proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
-            speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete",
-        )
+        batch = self._past_batch
+        reached = self._reached(index)
+        began = time.monotonic()
+        try:
+            rows = await whole_read(
+                self._pool.fetch(
+                    f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} "  # noqa: S608 - trusted identifiers
+                    "WHERE $2::uuid IS NULL OR id > $2 ORDER BY id LIMIT $1) RETURNING id",
+                    batch,
+                    reached,
+                ),
+                kind="ring_empty",
+                reason="the idle ring slot two switches back is emptied whole: no write can reach it any more",
+                ruling="Pace 2026-11-14: emptying a used-up change-notes ring table goes on the whole-drop list, as TRUNCATE (11-11)",
+                proof="packages/core/tests/unit/collections/test_change_note_restore_reads.py::test_a_ring_slot_is_emptied_whole_only_when_idle",
+                speed="packages/core/tests/integration/test_note_emptying_live.py::test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete",
+            )
+        except (QueryCanceledError, TimeoutError) as exc:
+            self._past_batch = self._timed_out(table, index, reached, self._past_batch, exc)
+            return 0, False
+        took = time.monotonic() - began
         if rows:
             self._emptying_at = (index, max(row["id"] for row in rows))
-        return len(rows), len(rows) < self._empty_batch
+        self._past_batch = _resized(self._past_batch, len(rows), self._empty_batch, took, self._empty_batch)
+        return len(rows), len(rows) < batch
 
     def _switch_waits(self, ring: NoteRingState, taken: int, switch_at: int | None) -> None:
         """say, at ERROR on every keeper pass while it lasts, that a due switch waits for the idle table's emptying:
