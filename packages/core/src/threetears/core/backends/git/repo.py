@@ -1897,6 +1897,8 @@ class GitRepo:
             full = _with_trailers(message, trailers)
             targets = sorted({*hand, *taken})
             root = self.config.work_tree
+            head_now = await asyncio.to_thread(self.git.head)
+            await asyncio.to_thread(self._version_hand_edits_in_tree, hand, head_now)
             written = [path for path in targets if (root / path).exists()]
             removed = [path for path in targets if not (root / path).exists()]
             head_before = await asyncio.to_thread(self.git.head)
@@ -1994,6 +1996,9 @@ class GitRepo:
             writes = await asyncio.to_thread(differing)
             if not writes:
                 return CommitResult(sha=None)
+            # the files sent are hand edits made in another tree; a moved file keeps the version it had
+            sent = {path: data for path, data in writes.items() if path in files and path not in (moves or {})}
+            writes = {**writes, **await asyncio.to_thread(self._versioned_hand_edits, sent, head_before)}
             sha, taken = await self._uninterrupted(
                 self._write_and_commit(
                     _Plan(writes=frozen(writes)),
@@ -2074,6 +2079,63 @@ class GitRepo:
                     what="git_store.listener.failed: a changed-rows listener raised",
                     extra={**self._log, "error": f"{type(exc).__name__}: {exc}"},
                 )
+
+    def _versioned_hand_edits(self, files: Mapping[str, bytes | None], head: str | None) -> dict[str, bytes | None]:
+        """each hand-edited row file with a version newer than any the store held for it. BLOCKING.
+
+        A row's version (its table's ``version_column``, ``date_updated``) is what a save's compare-and-swap reads.
+        A person editing a file rarely changes it, and an edit pasted from an old copy can move it back; adopted
+        as it was, a copy loaded before the edit would pass the compare-and-swap and write over the edit. So each
+        adopted row gets ``now``, or one microsecond past the version HEAD holds when that is later. A file that is
+        not a row, a removed one, or a row of a table without a version is left as it is.
+
+        :param files: path -> the edited bytes (``None`` for a removal)
+        :ptype files: Mapping[str, bytes | None]
+        :param head: the commit the edits are made over; ``None`` before the first
+        :ptype head: str | None
+        :return: the files whose bytes changed, with their new bytes
+        :rtype: dict[str, bytes | None]
+        """
+        layout = self.layout
+        now = datetime.now(UTC)
+        versioned: dict[str, bytes | None] = {}
+        for path, data in files.items():
+            if data is None:
+                continue
+            where = PurePosixPath(path)
+            found = layout.identify(where, data)
+            column = None if found is None else layout.version_column(found[0])
+            if found is None or column is None:
+                continue
+            table = found[0]
+            row = layout.decode(table, where, data)
+            version = now
+            held = None if head is None else self.git.show(head, path)
+            if held is not None:
+                before = layout.decode(table, where, held).get(column)
+                if isinstance(before, datetime) and before >= version:
+                    version = before + timedelta(microseconds=1)
+            row[column] = version
+            versioned[path] = layout.encode(table, row)
+        return versioned
+
+    def _version_hand_edits_in_tree(self, paths: Sequence[str], head: str | None) -> None:
+        """give the hand-edited row files in the working tree their new versions (:meth:`_versioned_hand_edits`),
+        in place, before they are staged. BLOCKING.
+
+        :param paths: the hand-edited files, relative to the root
+        :ptype paths: Sequence[str]
+        :param head: the commit the edits are made over
+        :ptype head: str | None
+        :return: nothing
+        :rtype: None
+        """
+        root = self.config.work_tree
+        edited = {path: (root / path).read_bytes() if (root / path).is_file() else None for path in paths}
+        for path, data in self._versioned_hand_edits(edited, head).items():
+            assert data is not None  # noqa: S101 -- only a row's bytes are versioned
+            # the person's file keeps its mode
+            atomic_write_sync(root / path, data, mode=(root / path).stat().st_mode & 0o777)
 
     def _rows_of(self, changes: Sequence[FileChange], old: str | None, new: str, local: bool) -> list[RowChange]:
         """the rows a set of changed files hold. BLOCKING when the layout reads content.
