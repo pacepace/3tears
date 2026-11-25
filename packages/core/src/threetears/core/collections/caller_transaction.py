@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 from threetears.core.backends.broker_generation import (
     collecting_advanced_generations,
     committed_generations_record,
+    naming_commit_generations,
     naming_commit_scopes,
     naming_delta_files,
     reply_generations_since,
@@ -847,12 +848,20 @@ class CallerTransaction:
                 _OPEN.reset(self._token)
                 self._token = None
             if self._outermost is None:
-                with naming_delta_files(files if landed else {}), naming_commit_scopes(scopes if landed else []):
+                # the broker's tokens for this commit, read before the settle: a collection that advances nothing
+                # itself (its table advanced by the broker's trigger) stamps the keys it tells a copy with its table's,
+                # so the copy merges them from the commit's delta file and reads none from L3 (named_commit_generation)
+                replied = reply_generations_since(before) if landed and exc_type is None else {}
+                with (
+                    naming_delta_files(files if landed else {}),
+                    naming_commit_scopes(scopes if landed else []),
+                    naming_commit_generations(replied),
+                ):
                     generation_failure, advanced = await asyncio.shield(
                         self._settle_collecting(committed=exc_type is None)
                     )
                 if landed and exc_type is None:
-                    self._committed_generations = MappingProxyType({**reply_generations_since(before), **advanced})
+                    self._committed_generations = MappingProxyType({**replied, **advanced})
         return bool(suppressed), generation_failure
 
     async def _save_delta_files(self) -> dict[str, str]:
