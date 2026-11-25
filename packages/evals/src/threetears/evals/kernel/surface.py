@@ -227,6 +227,14 @@ class JudgedDimensionFacts(EvalDocumentModel):
     value_range: tuple[float, float] | None = Field(
         default=None, description="The scale the scores are on, when declared."
     )
+    nonnegative: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "True where the reading is declared never below zero with no range (a claim count per unit), so an "
+            "interval on a mean of it is drawn no lower than zero; False (left out) otherwise."
+        ),
+    )
     scale: MeasureScale | None = Field(
         default=None,
         description=(
@@ -241,6 +249,13 @@ class JudgedDimensionFacts(EvalDocumentModel):
             "averaged with capability — else `capability`."
         ),
     )
+
+    @property
+    def interval_floor(self) -> float | None:
+        """The lowest an interval on a mean of the reading may reach where it declares no range: zero where it is
+        never below zero (:attr:`nonnegative`), else None, as a measure's
+        (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.interval_floor`)."""
+        return 0.0 if self.nonnegative else None
 
 
 #: The fewest distinct cases a stratum holds before its figures are read on their own. Below it a
@@ -488,7 +503,7 @@ class CellFacts(EvalDocumentModel):
         return self
 
 
-def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
+def all_failed_sentence(n_all_failed: int, n_cells: int, *, code_raised: bool = False) -> str:
     """The one sentence every surface says about cells where no result took a turn (:attr:`CellFacts.all_failed`).
 
     Stated once, here, because two readers say it — the bundle the analysis is written from, and the
@@ -497,20 +512,24 @@ def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
     their arms after it when only some cells failed.
 
     :param n_all_failed: The cells where no result took a turn, at least one.
-    :ptype n_all_failed: int
     :param n_cells: The cells on the surface.
-    :ptype n_cells: int
+    :param code_raised: Whether every such cell's failures were the candidate's own code raising, which the sentence
+        then names, never its model.
     :return: The sentence.
-    :rtype: str
     """
+    cause = (
+        "the candidate's own code raised while handling the reply"
+        if code_raised
+        else "the candidate's model refused or errored"
+    )
     if n_all_failed == n_cells:
         return (
-            "Every result failed: the candidate's model refused or errored on every call and took no turn, so there "
+            f"Every result failed: {cause} on every call and took no turn, so there "
             "is no cost or latency to read — not a fast, free arm — and every failure counts against its arm in "
             "each rate, bar and judged score."
         )
     return (
-        f"Every result failed in {n_all_failed} of {n_cells} cells: the candidate's model refused or errored on "
+        f"Every result failed in {n_all_failed} of {n_cells} cells: {cause} on "
         "every call there and took no turn, so those cells have no cost or latency to read — not a fast, free arm "
         "— and every failure counts against its arm in each rate, bar and judged score."
     )
@@ -551,9 +570,7 @@ def earlier_control_mark(earlier: EarlierControl) -> str:
     control's and only the predicate differs.
 
     :param earlier: The control's cells under the earlier predicate.
-    :ptype earlier: EarlierControl
     :return: The mark.
-    :rtype: str
     """
     return f"the control under identity predicate v{earlier.identity_version}"
 
@@ -898,11 +915,8 @@ class DecisionSurface(EvalDocumentModel):
         key beside it for a reader who needs to cite it.
 
         :param measure_id: The measure's key, or a judged dimension's name.
-        :ptype measure_id: str
         :param reading: ``judged`` for a judged dimension; anything else reads a measure.
-        :ptype reading: str
         :return: The heading.
-        :rtype: str
         """
         if reading == "judged":
             return f"{measure_id} (judged)"

@@ -30,7 +30,10 @@ _OWNER = "unit_once.py"
 #: Sites the walk reads as a join that join no interval, keyed by (module relative to ``analysis/report``, the
 #: expression as written), each with why. An entry no site matches fails, so the list only shrinks.
 _NOT_INTERVALS: dict[tuple[str, str], str] = {
-    ("build.py", "f'{name} to {level}'"): "a setting moved to a level, in words: a lever's name, then where it was set",
+    (
+        "aspect/method.py",
+        "f'{name} to {level}'",
+    ): "a setting moved to a level, in words: a lever's name, then where it was set",
     ("html_parts.py", "f'{_INTERVAL_END} to {_INTERVAL_END}(?: [a-z%]+)?'"): (
         "a regular expression that finds an interval already joined, written as one"
     ),

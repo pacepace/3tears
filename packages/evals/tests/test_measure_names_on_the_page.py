@@ -24,15 +24,10 @@ import pytest
 
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import MoneyForm
-from threetears.evals.analysis import (
-    build_code_only_report,
-    campaign_report,
-    build_campaign_report,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import build_code_only_report, campaign_report, campaign_report_html, report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.campaign_readings import BarStatus, MeasureReading
 from threetears.evals.analysis.report.md_parts import code_span
 from threetears.evals.analysis.report.html_parts import check_header_links, grid_html
@@ -184,7 +179,12 @@ def test_every_table_names_each_check_by_its_name(page: str) -> None:
 @pytest.mark.parametrize(
     ("page", "lead"),
     [
-        ("campaign", f"{LONG_NAME}: v2 worse than production."),
+        # An engine campaign asking a question opens its lead on why it gives no advice, then names the check.
+        (
+            "campaign",
+            "No advice: this comparison's test is read once at a fixed count, which keeps no running evidence to "
+            f"advise on, so read what is proven. {LONG_NAME}: v2 worse than production.",
+        ),
         ("aspect", f"{LONG_NAME}: v2 worse than production; Pass rate: v2 worse than production."),
     ],
 )

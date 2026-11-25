@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "digest.py"}
+{"tool": "read", "path": "data/key_facts.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom digest import digest_file\n\n\ndef summarise(case):\n    \"\"\"The digest of the case's report.\"\"\"\n    return {\"digest\": digest_file(\"data/\" + case[\"report\"])}\n\n\ndef carries_most_facts(case, out):\n    \"\"\"The digest carries at least half the key facts the head of operations listed for the report.\"\"\"\n    carried = sum(fact in out[\"digest\"] for fact in case[\"facts\"])\n    return carried * 2 >= len(case[\"facts\"])\n\n\nreports = Eval(\"data/key_facts.jsonl\", runner=summarise, grader=[carries_most_facts], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"carries_most_facts\", \"pass_rate\": 0.625, \"finished\": true}"}

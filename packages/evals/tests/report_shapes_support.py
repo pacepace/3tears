@@ -25,7 +25,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from threetears.evals.analysis import assemble_context_bundle, build_campaign_report, build_code_only_report
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.model import CampaignReport, Report
@@ -93,6 +94,8 @@ class ArmTrials:
     :ivar cost: What each reply costs, in US dollars; None leaves the arm unpriced.
     :ivar latency_ms: Each reply's turn time at the first case, rising ten milliseconds a case; None leaves it untimed.
     :ivar scores: Each judged dimension's score per case, by the dimension; empty judges nothing.
+    :ivar unanswered: The last cases on which every attempt fails to answer, its runner's own code raising: a candidate
+        failure no grader read; none by default.
     """
 
     label: str
@@ -103,6 +106,7 @@ class ArmTrials:
     cost: float | None = 0.002
     latency_ms: float | None = None
     scores: Mapping[str, Sequence[int]] = field(default_factory=dict)
+    unanswered: int = 0
 
 
 @dataclass(frozen=True)
@@ -211,6 +215,11 @@ def _results(run: EvalRun, aspect: AspectTrials, arm: ArmTrials) -> list[EvalRes
                     latency=None
                     if arm.latency_ms is None
                     else LatencyMetrics(total_ms=arm.latency_ms + 10.0 * index + 3.0 * attempt),
+                    **(
+                        {"candidate_error": "the candidate raised KeyError: 'opened'", "candidate_code_raised": True}
+                        if index >= CASES - arm.unanswered
+                        else {}
+                    ),
                 )
             )
     return results

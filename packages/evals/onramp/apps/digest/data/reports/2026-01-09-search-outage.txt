@@ -1,0 +1,1 @@
+Product search returned no results for 25 minutes on Friday. The search cluster ran out of disk after a reindex job left old indices behind. Customers saw an empty results page, and approx. 40% of sessions in the window ended without a purchase. Disk was freed at 16:05 and search was restored by 16:12. The reindex job now deletes old indices when it finishes.

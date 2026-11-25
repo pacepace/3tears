@@ -39,10 +39,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal, get_args
 
 from threetears.evals.kernel import (
+    failed_call_output,
     MeasureFamily,
     CandidateOutput,
     CandidatePreparationFailed,
@@ -70,6 +72,8 @@ from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest, extraction_request
 from packages.evals.tests.fixtures.toyhost.tracing import OP_HOST_GRADE, OP_MODEL_CALL, OP_TURN_ROOT, toy_span
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
+
+log = logging.getLogger(__name__)
 
 #: The name a toy-host template carries on ``EvalTemplate.candidate_kind``, and the key the run
 #: wires this kind under on ``RunnerOptions.candidate_kinds``. Opaque to the engine, which
@@ -544,13 +548,22 @@ class ToyExtractorKind:
                         try:
                             extraction = await self._client.extract(request)
                         except ProviderError as declined:
-                            if declined.owner != "provider":
+                            if declined.owner not in ("provider", "unserved"):
                                 raise
-                            # The provider declined the call, as it would any request: the cell measured the
-                            # provider, not the extractor, so it is excluded and never charged, as the package's
-                            # own kinds do.
-                            return CandidateOutput(
-                                infra_errors=[f"apparatus: the extractor call was declined by the provider: {declined}"]
+                            # The provider declined the call, as it would any request, or does not serve the model
+                            # the call named: the cell measured the provider or the setup, not the extractor. It is
+                            # routed the way a host's kind routes a failed model call, through the package's one
+                            # routing, which excludes it, and for a model not served skips the judge and counts it
+                            # toward the run's circuit.
+                            described = str(declined)
+                            return failed_call_output(
+                                declined.owner,
+                                described,
+                                refused="the extractor call was refused for the calling account",
+                                declined="the extractor call was declined by the provider",
+                                failed="the extractor call failed",
+                                unserved="the extractor call named a model the provider does not serve",
+                                log=lambda what, level: log.log(level, "%s: %s", what, described),
                             )
 
             # What the candidate did, recorded through the engine's helper from what the call

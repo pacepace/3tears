@@ -31,7 +31,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import assemble_context_bundle, build_campaign_report, build_code_only_report
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
@@ -39,7 +40,7 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
-from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, legend
 from threetears.evals.analysis.report.serialize_html import campaign_report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import reason_words
@@ -68,6 +69,7 @@ from threetears.evals.run.rejudge import judged_template
 from threetears.evals.schema.hashing import identity_json
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RoleUsage
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_MINOR, DURABLE_SCHEMA_VERSION
+from threetears.evals.analysis.style import measure_name_of
 from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
 from packages.evals.tests.factories import (
     fixture_variant_key,
@@ -236,8 +238,10 @@ def identities(*, named: bool) -> dict[str, str]:
         found[f"{run.id} variant_key"] = derive_variant_identity(run=run, profile=profile).variant_key
         found[f"{run.id} case_set_fingerprint"] = case_set_fingerprint(run)
     for label, bundle in built["bundles"].items():
-        found[f"{label} fingerprint"] = bundle.fingerprint()
-        found[f"{label} evidence_digest"] = evidence_digest(bundle.to_dict())
+        # In version 2, which every pin below was taken in: it hashes the bundle's own document, so it is the one
+        # that would move if a name reached a computed field. (`v3:` is over the evidence, #1062.)
+        found[f"{label} fingerprint"] = bundle.fingerprint(like="v2:")
+        found[f"{label} evidence_digest"] = evidence_digest(bundle.to_dict(), like="v2:")
         found[f"{label} cells"] = ",".join(
             sorted(f"{cell.variant_key}@{cell.apparatus_class_id}" for cell in bundle.cells)
         )
@@ -250,8 +254,12 @@ def identities(*, named: bool) -> dict[str, str]:
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
     # Version 3, the one computed (no earlier version is: what was taken in one is regenerated), leaves the
     # campaign's name out.
-    found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
-    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint()
+    # In version 3 of the campaign's numbering, which every pin below was taken in: the digest of its frame,
+    # readings and all, each aspect named by its `v2:` fingerprint. (`v4:` is over the evidence, #1062.)
+    found["campaign fingerprint v3"] = campaign_bundle.fingerprint(like="v3:")
+    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint(
+        like="v3:"
+    )
     return found
 
 
@@ -271,6 +279,14 @@ def _as_00107a5b7_stamped(document: dict[str, Any]) -> dict[str, Any]:
     return {**document, "schema_version": _MAJOR_AT_00107A5B7, "schema_minor": _MINOR_AT_00107A5B7}
 
 
+def _less_case_places(document: dict[str, Any]) -> dict[str, Any]:
+    """A bundle document less each trial's ``case_place`` (#1209), the one field added inside a trial row since these
+    pins: its case's place in the runs' frozen case lists, read off ``EvalRun.test_case_ids``, which names no case and
+    is no name. Less it each bundle is written as before."""
+    trials = [{k: v for k, v in trial.items() if k != "case_place"} for trial in document["trials"]]
+    return {**document, "trials": trials}
+
+
 def documents() -> dict[str, str]:
     """The stored documents of the fixture as written, named nothing: the template and the campaign byte for byte,
     and each bundle in its identity form (:func:`~threetears.evals.schema.hashing.identity_json`)."""
@@ -284,7 +300,13 @@ def documents() -> dict[str, str]:
         **{
             f"{label} bundle": hashlib.sha256(
                 identity_json(
-                    {k: v for k, v in bundle.to_dict().items() if k not in ("package_version", "lever_names")}
+                    {
+                        k: v
+                        for k, v in _less_case_places(bundle.to_dict()).items()
+                        # `evidence`: the manifest a bundle carries since fingerprint version 3 (#1062), the one
+                        # field added; less it each bundle is written as before.
+                        if k not in ("package_version", "lever_names", "evidence")
+                    }
                 ).encode()
             ).hexdigest()
             for label, bundle in built["bundles"].items()
@@ -299,7 +321,7 @@ def documents() -> dict[str, str]:
 #: fingerprinted a shape-3 frame (at shape 2, without ``readings.aggregate`` or ``arm_spellings``), computes the old
 #: pin; shape 4 reads its frame as it is, so only the shape, the empty ``arm_spellings`` and the aggregate moved it.
 PINNED: dict[str, str] = {
-    "CELL_MODEL_VERSION": "14",
+    "CELL_MODEL_VERSION": "15",
     "IDENTITY_VERSION": "25",
     "Queue discipline under a full queue cells": (
         "b5891590ed94b7c2b7425372664a24f7f2c4d80e77a9e001ece5e0a7544a0ed9@6aa21c8030ab220f21fa1422945cfff2cfa"
@@ -307,10 +329,10 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under a full queue evidence_digest": (
-        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
+        "v2:319ac503d833f16a2196ba13883cbb04c3fa6319b7332d0f7f88c92ac9dd661c"
     ),
     "Queue discipline under a full queue fingerprint": (
-        "v2:b7463b061085a09aafd925e9d4d8afbe835ed46641f4e6b3f9ebf419e61d4054"
+        "v2:319ac503d833f16a2196ba13883cbb04c3fa6319b7332d0f7f88c92ac9dd661c"
     ),
     "Queue discipline under a full queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
@@ -321,23 +343,26 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under an empty queue evidence_digest": (
-        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
+        "v2:7960784ae2007af032eb33e7ebd9f98697c23e1e70224e3c3b7d42e5dfa0081a"
     ),
     "Queue discipline under an empty queue fingerprint": (
-        "v2:414ea2044e50b78ff63d6feffaf5f7d58b0ef7f13dd7e48dedc4f00610bd4098"
+        "v2:7960784ae2007af032eb33e7ebd9f98697c23e1e70224e3c3b7d42e5dfa0081a"
     ),
     "Queue discipline under an empty queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
     "bundle schema_version": "66",
-    "campaign fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
-    "campaign document fingerprint v3": "v3:0b67eb9218f25e0a8845cd936c8f874338cc8a4956f78e4aeff7a6d855b85752",
+    "campaign fingerprint v3": "v3:1d00d81a89d41ecb201eddc67203a526c9ae9c3f8b6db6d53f904dc8b1c978ac",
+    "campaign document fingerprint v3": "v3:1d00d81a89d41ecb201eddc67203a526c9ae9c3f8b6db6d53f904dc8b1c978ac",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
-    # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0. It is no part of what a run, cell,
-    # pool, pairing, analysis or reporter case keys on.
-    "durable version": "17.0",
+    # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0, a rating's evidence inputs 17.1, the
+    # first screen's declaration and call fields 17.2, a campaign's looks rule and an aspect's membership 17.3, the
+    # blind read 17.4, a blind read's preference stored as counts the minor after it (#1236), an aspect's undo 17.6, a
+    # case's reference key 17.7, the key's context tier 17.8, a template's claim criteria 17.9, the claim read 17.10. It
+    # is no part of what a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "17.10",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -372,9 +397,11 @@ PINNED: dict[str, str] = {
 #: ``fixtures/report_inputs/migrate_bundle_shape_66.py`` (the shape, the factor-pair scan's completeness and each
 #: trial's failed check held as its measure key, and nothing else), are these bundles leaf for leaf, less
 #: ``lever_names``.
+#: The two bundles were re-pinned at cell model 15 (#1187): each bundle carries the model's version
+#: (``cell_model_version``), and stamped 14 this build writes them byte for byte as pinned before; nothing else moved.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "6cecb73f534b2ab4eef7ecca16c67eca958d2df381557f7a339021b3b9b162d4",
-    "Queue discipline under an empty queue bundle": "1674792720401ffdeef819b8e0f5e5aa6f70218bd3adfbf85e82ee8ea63b4a72",
+    "Queue discipline under a full queue bundle": "e54cac528cd7f48e8da9c5cc64b28954341f26e05b121766f8687e0aef94220f",
+    "Queue discipline under an empty queue bundle": "d779537be9f6edf840dbc66665989041cac16e45289589c5d2a8cc6afbd756ed",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }
@@ -457,9 +484,11 @@ class TestAStoredReasonIsNeverReworded:
             "the pinned fixture no longer carries the reason it guards"
         )
         campaign = built["campaign_bundle"]
-        assert campaign.fingerprint() == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
+        # In the versions that hash the bundle's own document, so a reworded reason would move them; a `v3:` bundle
+        # fingerprint reads no reason at all.
+        assert campaign.fingerprint(like="v3:") == PINNED["campaign fingerprint v3"], STORED_REASON_MOVED
         for label, bundle in built["bundles"].items():
-            assert bundle.fingerprint() == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
+            assert bundle.fingerprint(like="v2:") == PINNED[f"{label} fingerprint"], STORED_REASON_MOVED
 
     def test_the_page_says_the_stored_reason_in_the_readers_words(self) -> None:
         said = reason_words(UNIFORM_MOVE_NEEDS_RANGE)

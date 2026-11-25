@@ -13,7 +13,7 @@ change), and three kinds of drawing carried nothing and are not made:
   $0 — a row carrying 0 dollars — is a reading like any other.
 
 Mutations that turn this file red: contrasting a per-label statistic or ``match``; reading ``cost_usd`` in
-``_lineage_leaves`` whatever ``spend_observed`` says; listing a cell with a measured $0 in ``_cost_unmeasured``.
+``_lineage_leaves`` whatever ``spend_observed`` says; listing a cell with a measured $0 in ``cost_unmeasured``.
 """
 
 from __future__ import annotations

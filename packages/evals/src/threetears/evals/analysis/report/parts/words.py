@@ -24,6 +24,11 @@ __all__ = [
     "OPEN_MARKS_NOTE",
     "MARGIN_BAND_TEMPLATE",
     "FAMILY_LEVEL_TEMPLATE",
+    "PLAN_LEVEL_TEMPLATE",
+    "PLAN_PAST_CLAUSE",
+    "PLAN_SIZED_CLAUSE",
+    "PLAN_UNCOUNTED_CLAUSE",
+    "UNSHOWN_PLAN_LEVEL",
     "BETTER_WORDS",
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
@@ -52,6 +57,7 @@ __all__ = [
     "BASIS_NOTE",
     "APPENDIX_TITLE",
     "ALL_PRICED_TEMPLATE",
+    "AT_LEAST_COUNT_TEMPLATE",
     "ARM_HEADERS",
     "ASPECT_HEADER_TEMPLATE",
     "ASPECTS_TABLE_ORDER",
@@ -91,6 +97,7 @@ __all__ = [
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
     "RECOMMENDED_MARK",
+    "SERVED_BY_IN_PART_TEMPLATE",
     "SERVED_BY_TEMPLATE",
     "TOOL_SPEND_TEMPLATE",
     "UPLIFT_NOT_COMPARABLE",
@@ -198,6 +205,9 @@ PRICED_HEADER = "Priced by"
 #: Who served an arm's model calls, beside its price sources: the model's providers, never a tool it called.
 SERVED_BY_TEMPLATE = "served by {providers}"
 
+#: The same, where some of its replies named who served them and the rest named nobody.
+SERVED_BY_IN_PART_TEMPLATE = "served by {providers}, the rest not recorded"
+
 #: The tools an arm's cost counts spend on, beside who served its model calls: a web-search API it called is tool
 #: spend in the cost, never a provider of the model.
 TOOL_SPEND_TEMPLATE = "tool spend at {providers}"
@@ -205,6 +215,10 @@ TOOL_SPEND_TEMPLATE = "tool spend at {providers}"
 #: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
 #: priced arm says the second in place of its cost, which would be a smaller total read as whole.
 ALL_PRICED_TEMPLATE = "all {calls} calls priced"
+
+#: A count of an arm's calls some of its trials counted none of (``calls.unanswered.<arm>.uncounted``): a lower bound,
+#: as the unanswered keys' own rule reads it, never a whole count.
+AT_LEAST_COUNT_TEMPLATE = "at least {count}"
 
 #: Code's line under a chart whose money is drawn per more of what it counts than its figures state: money per reply
 #: drawn per 1,000 replies, a price per 1,000 drawn per 1,000,000 where one is under a cent (#993).
@@ -372,6 +386,28 @@ MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
 #: ``95% intervals (adjusted for 16 comparisons)``). The per-interval level (``99.69%``) is Method's and the glossary's.
 FAMILY_LEVEL_TEMPLATE = "{joint} (adjusted for {size} comparisons)"
 
+#: What a page states in place of a plan's level not shown held (``vocabulary.plan_condition``): the level, whose
+#: intervals hold it (``each arm's`` where a correction runs per arm only), the plan, and one clause saying why it is
+#: not shown, naming the readings behind it. No clause says the level holds for a reading.
+PLAN_LEVEL_TEMPLATE = (
+    "{level} is the level {intervals} are read to hold together over the {planned} looks the design plans{clause}."
+)
+#: Within the plan, a test not shown to keep the level where a look's cases were sized from an earlier reading
+#: (:func:`~threetears.evals.analysis.significance.plan_kept`).
+PLAN_SIZED_CLAUSE = (
+    "; it holds where each look's cases were fixed before its results, and is not shown where a look's cases were "
+    "sized from an earlier reading, which is not shown to keep it for {readings}"
+)
+#: More looks were taken than the plan allows; ``taken`` is the most looks any one contrast had (``Looks.taken``).
+PLAN_PAST_CLAUSE = "; the most looks any contrast behind {readings} had is {taken}, past the plan, so it is not shown"
+#: The count of looks is a lower one, or looks were not recorded: more than planned may have been taken.
+PLAN_UNCOUNTED_CLAUSE = (
+    "; not every look behind {readings} was counted, so more than planned may have been taken, and it is not shown"
+)
+#: A written page's interval head and level cell where a plan's level is not shown held (``interval_level``): no level,
+#: since each interval's own holds no better over several looks; the caveat on looks says why.
+UNSHOWN_PLAN_LEVEL = "multiplicity-corrected"
+
 #: The words under a change chart's two ends, the left end's first, by whether higher is better.
 BETTER_WORDS: dict[bool, tuple[str, str]] = {True: ("worse", "better"), False: ("better", "worse")}
 
@@ -498,9 +534,7 @@ def change_words(direction: str) -> str:
     """A change's direction as a chart note says it (GENERATOR §3): ``worse``, ``better``, or ``cannot tell apart``.
 
     :param direction: ``worse``, ``better``, or empty where the interval crosses zero.
-    :ptype direction: str
     :return: The words.
-    :rtype: str
     """
     return _CHANGE_WORDS[direction]
 
@@ -517,11 +551,8 @@ def reading_words(direction: str, within: bool | None) -> str:
     declared (``Worse, within margin``).
 
     :param direction: ``worse``, ``better``, or empty where the interval crosses zero.
-    :ptype direction: str
     :param within: Whether the reading is within its margin; None where no margin is declared.
-    :ptype within: bool | None
     :return: The words.
-    :rtype: str
     """
     said = _READING_WORDS[direction]
     return said if within is None else f"{said}, {_MARGIN_WORDS[within]}"

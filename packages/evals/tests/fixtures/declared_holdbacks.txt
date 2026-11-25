@@ -1,33 +1,20 @@
-# The declared names held back, for tests/test_declared_holdbacks.py, which says what holds each reason to the tree.
-# One `<name> | <reason>` per line, sorted. A declared name not listed is held by something the tree shows: an import
-# here (a shipped page, an example, the courier host, another package), Discodon's import list
-# (tests/fixtures/host_imports/discodon.txt, its production and test imports mixed), a shipped page's prose or code,
-# or a declared signature.
+# Who implements each declared protocol, for tests/test_declared_holdbacks.py and scripts/surface_kinds.py (which reads
+# a protocol's kind from it). One `<name> | <reason>` per line, sorted. Whether a declared name is used at all
+# (admission criterion 2) is read from code, never listed here: tests/test_declared_holdbacks.py says what counts.
 #
-#   discodon-tests-only       Only Discodon's tests import it: no page names it, no declared signature reaches it.
-#                             It goes provisional once Discodon accepts that it may move. None: Discodon accepted
-#                             it for all 24 on 2026-11-06, and they are provisional
-#                             (tests/test_host_imports_are_declared.py's PROVISIONAL_FOR_HOST_TESTS).
 #   port-host-implements      A declared protocol a host's code implements and hands the engine.
 #   protocol-engine-provides  A declared protocol the engine implements and hands a host's code, or that the engine's
 #                             own storage satisfies over the host's store.
-#   unreached                 Declared, and nothing imports, names or reaches it. None.
+#   unreached                 Declared, and used by nothing. None.
 #
-# Computed 2026-11-06 over this tree at a3f15bfd8 and Discodon develop at e5a7f2a56 (2026-11-03): a Discodon test is
-# a file under tests/, a conftest.py or a test_*.py; the rest is its production code, which also reads the four
-# seed defaults (gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT, gen.EVAL_PROPOSER_TEMPLATE_DEFAULT,
-# analysis.EVAL_ANALYSIS_GEN_DEFAULT, and analysis.EVAL_REPORT_PLAN_DEFAULT; both analysis constants are removed in
-# this release, so that read breaks at re-pin) by name. 24 discodon-tests-only (25 less generate_analysis, removed with the
-# shims in R4), 18 port-host-implements, 13 protocol-engine-provides, 0 unreached. Since (R5, 2026-11-06): the 24
-# discodon-tests-only names, and CampaignBundle and testing.ReaderSample, which only their signatures reached, are
-# provisional, so 0 discodon-tests-only.
+# History: computed 2026-11-06 at a3f15bfd8, with a discodon-tests-only reason for names only Discodon's tests imported
+# (all of them made provisional that day, R5). 2026-11-15 (package V): CassetteStore, DefinitionStore and
+# RunRecordStore demoted, and the discodon-tests-only reason deleted, since a test alone never holds a name.
 threetears.evals.kernel.ActionSeam | port-host-implements
 threetears.evals.kernel.CandidateKind | port-host-implements
-threetears.evals.kernel.CassetteStore | protocol-engine-provides
 threetears.evals.kernel.CellCassettes | protocol-engine-provides
 threetears.evals.kernel.CellSink | protocol-engine-provides
 threetears.evals.kernel.CellSpanWindow | protocol-engine-provides
-threetears.evals.kernel.DefinitionStore | protocol-engine-provides
 threetears.evals.kernel.DeliveryRecorder | protocol-engine-provides
 threetears.evals.kernel.DeliveryReplay | protocol-engine-provides
 threetears.evals.kernel.DeliverySeam | port-host-implements
@@ -35,7 +22,6 @@ threetears.evals.kernel.DeliveryTicket | protocol-engine-provides
 threetears.evals.kernel.JobStore | protocol-engine-provides
 threetears.evals.kernel.Recordable | port-host-implements
 threetears.evals.kernel.ResultStore | protocol-engine-provides
-threetears.evals.kernel.RunRecordStore | protocol-engine-provides
 threetears.evals.kernel.RunStore | protocol-engine-provides
 threetears.evals.kernel.host.CompletionClients | port-host-implements
 threetears.evals.kernel.host.TemplateCaseFields | protocol-engine-provides

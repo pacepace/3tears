@@ -44,7 +44,6 @@ from threetears.evals.schema.versioning import (
     CORE_ADDRESSING_FIELDS,
     CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
-    DURABLE_ADDRESSING_FIELDS,
     DURABLE_DOC_TYPES,
     DURABLE_SCHEMA_MINOR,
 )
@@ -443,9 +442,7 @@ def test_a_caller_s_value_is_validated_strictly_at_every_depth_whatever_the_stor
 def test_each_core_model_names_its_doc_type() -> None:
     """The control for the parametrised tests above: every core and durable model is a stored model with a doc
     type."""
-    assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS) | set(
-        DURABLE_ADDRESSING_FIELDS
-    )
+    assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS) | DURABLE_DOC_TYPES
 
 
 # --- open vocabularies: a newer minor's value is read and named, never folded ----------------------
@@ -590,6 +587,7 @@ def test_an_unknown_reasoning_effort_is_read_and_a_call_that_would_send_it_is_re
         ("EvalRun", "judge_config_provenance", {"conversation.tone": "from_a_newer_router"}),
         ("OutOfRunSpend", "purpose", "rerank"),
         ("EvalActionJob", "refusal", {"kind": "quota_exhausted", "status": 429}),
+        ("EvalResult", "claim_failures", {"rules.claims": "gremlins"}),
     ],
 )
 def test_every_open_vocabulary_round_trips_an_unknown_value_at_a_newer_minor(
@@ -652,10 +650,11 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
     from threetears.evals.quick.guardrails import GuardrailDirection
     from threetears.evals.run.judge_second import SecondJudgeAskedBy
     from threetears.evals.run.job_work import JobOutcome
-    from threetears.evals.schema import models
+    from threetears.evals.schema import blind_read, claim_read, models, reading_states
     from threetears.evals.schema.completion import StopReason
     from threetears.evals.schema.judge_attribution import JudgeAttributionSource
     from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
+    from threetears.evals.schema.reading_states import Maker, SampleKind
     from threetears.evals.schema.world_events import WorldEventCause, WorldEventKind
 
     def values(alias: Any) -> frozenset[Any]:
@@ -668,6 +667,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "AttemptOutcome": values(AttemptOutcome),
         "ArmSchedule": values(models.ArmSchedule),
         "CellTermination": values(models.CellTermination),
+        "WrittenOver": values(models.WrittenOver),
         "GoalCheckProof": values(models.GoalCheckProof),
         "GoalCheckIntent": values(models.GoalCheckIntent),
         "ApparatusProvenance": values(models.ApparatusProvenance),
@@ -695,12 +695,44 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
+        "MembershipChange.change": frozenset({"joined", "left"}),
+        "Aspect.undo": frozenset({"hard"}),
+        "Aspect.undo_ignored": frozenset({"easy"}),
+        "ReferenceKey.type": frozenset({"entity_set"}),
+        "EvidenceProvenance": values(models.EvidenceProvenance),
+        "GradedClaim.scope": frozenset({"world", "session"}),
+        "GradedClaim.verdict": frozenset({"supported", "contradicted", "unverifiable", "true_ungrounded"}),
+        "GradedClaim.graded_against": frozenset({"case", "web"}),
+        "GradedClaim.nominated_by": frozenset({"judge"}),
+        "GradedClaim.web": frozenset({"checked", "skipped_cap", "lost", "none"}),
+        "WebCheckRecord.outcome": frozenset({"true", "false", "inconclusive"}),
+        "ClaimCitation.stance": frozenset({"supports", "contradicts"}),
+        "ClaimCall.role": frozenset({"extract", "truth", "ground", "repair", "web"}),
         "RaterKind": values(models.RaterKind),
+        "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),
         "SecondJudgeAskedBy": values(SecondJudgeAskedBy),
         "StopReason": values(StopReason),
+        "SampleKind": values(SampleKind),
         "rate_drop": frozenset({"rate_drop"}),
         "cost_lower": frozenset({"cost_lower"}),
+        "BlindSlot": values(blind_read.BlindSlot),
+        "BlindAsk": values(blind_read.BlindAsk),
+        "BlindPreferenceAnswer": values(blind_read.BlindPreferenceAnswer),
+        "BlindPreferenceTest": values(blind_read.BlindPreferenceTest),
+        "BlindPreference.verdict": frozenset({"improved", "regressed", "not_separated"}),
+        "ClaimQuestion": values(claim_read.ClaimQuestion),
+        "ClaimStratifier": values(claim_read.ClaimStratifier),
+        "ClaimStratum": values(claim_read.ClaimStratum),
+        "ClaimExclusion": values(claim_read.ClaimExclusion),
+        "ClaimRepeatAgainst": values(claim_read.ClaimRepeatAgainst),
+        "ClaimCheckRecord.result": frozenset({"met", "not_met", "undecided", "insufficient"}),
+        "ShownEvidence.provenance": frozenset({"case", "run", "web"}),
+        "ReadingState": values(reading_states.ReadingState),
+        "SetAsideReason": values(reading_states.SetAsideReason),
+        "WithheldReason": values(reading_states.WithheldReason),
+        "NotAvailableReason": values(reading_states.NotAvailableReason),
+        "Coordinate": values(reading_states.Coordinate),
     }
 
 
@@ -751,7 +783,7 @@ def test_every_vocabulary_on_a_core_shape_is_open_or_listed_closed() -> None:
 
 
 def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
-    """The eleven open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
+    """The thirteen open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
     from threetears.evals.schema import versioning
 
     registries = {
@@ -766,6 +798,8 @@ def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
         "OutOfRunPurpose": "OUT_OF_RUN_PURPOSES",
         "RefusalKind": "REFUSAL_KINDS",
         "FailedBecause": "FAILED_BECAUSE",
+        "ExhaustedBecause": "EXHAUSTED_BECAUSE",
+        "ClaimLoss": "CLAIM_LOSSES",
     }
     import threetears.evals.schema as schema
 

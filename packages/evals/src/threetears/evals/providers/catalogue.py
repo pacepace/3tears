@@ -327,16 +327,12 @@ class Catalogue:
         """Know nothing yet: nothing is fetched until :meth:`load`.
 
         :param url: The catalogue's URL.
-        :ptype url: str
         :param http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch, with a
             timeout of :data:`CATALOGUE_FETCH_TIMEOUT_S`. A client handed in keeps its own settings.
-        :ptype http: httpx.AsyncClient | None
         :param refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
             on every load.
-        :ptype refresh_after: timedelta
         :param ceiling_stale_after: How old the rows may be for :meth:`ceiling` to answer from them; older, it answers
             no ceiling. ``None`` is ``refresh_after``; below it is refused.
-        :ptype ceiling_stale_after: timedelta | None
         :raises ValueError: ``refresh_after`` is negative, or ``ceiling_stale_after`` is below it.
         """
         if refresh_after < timedelta(0):
@@ -393,9 +389,7 @@ class Catalogue:
 
         :param timeout: How long to wait on another task's fetch in flight, in seconds, or ``None`` for
             :data:`CATALOGUE_FETCH_TIMEOUT_S`; see :meth:`load`.
-        :ptype timeout: float | None
         :return: The outcome (:class:`PriceRefresh`).
-        :rtype: PriceRefresh
         """
         before = self._read_at
         try:
@@ -427,7 +421,6 @@ class Catalogue:
 
         :param timeout: Seconds to wait on another task's fetch in flight, and the timeout of the fetch this call
             starts on a client the catalogue opens; ``None`` is :data:`CATALOGUE_FETCH_TIMEOUT_S`.
-        :ptype timeout: float | None
         :raises httpx.HTTPError: The first fetch failed or answered with a failure status.
         :raises ValueError: The first fetch's body is not JSON, or holds no ``data`` list.
         :raises TimeoutError: Another task's fetch was still in flight when ``timeout`` passed.
@@ -483,7 +476,6 @@ class Catalogue:
         """One fetch of the catalogue, read into rows.
 
         :param timeout: The timeout of the client opened for it, when none was handed in.
-        :ptype timeout: float
 
         :raises httpx.HTTPError: The fetch failed or answered with a failure status.
         :raises ValueError: The body is not JSON, or holds no ``data`` list.
@@ -508,9 +500,7 @@ class Catalogue:
         """The model's input and output rates in dollars per token, or ``None`` (not loaded, not listed, unpriced).
 
         :param model_id: The catalogue's id for the model (:meth:`match` finds it for a direct provider's id).
-        :ptype model_id: str
         :return: ``(input, output)`` per token, or ``None``.
-        :rtype: tuple[Decimal, Decimal] | None
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.rates if row is not None else None
@@ -522,15 +512,11 @@ class Catalogue:
         one. Rows read ``ceiling_stale_after`` ago or longer bound nothing.
 
         :param model_id: The catalogue's id for the model.
-        :ptype model_id: str
         :param prompt_tokens: A bound on the call's prompt tokens, which also says which long-context tiers it can
             reach.
-        :ptype prompt_tokens: int
         :param output_tokens: The call's output cap, reasoning included.
-        :ptype output_tokens: int
         :return: ``(ceiling, None)``, or ``(None, why)``: not loaded, rows too old, no priced row, or a price that
             cannot be bounded.
-        :rtype: tuple[Decimal | None, str | None]
         """
         if self._rows is None or self._read_at is None:
             return None, "the price catalogue has not been read (await Catalogue.load() or Clients.load_prices())"
@@ -565,23 +551,15 @@ class Catalogue:
         or the dearer of two write rates the reply does not split between) is approximate.
 
         :param model_id: The catalogue's id for the model.
-        :ptype model_id: str
         :param input_tokens: Prompt tokens, cache reads and writes included.
-        :ptype input_tokens: int
         :param output_tokens: Completion tokens, reasoning included.
-        :ptype output_tokens: int
         :param reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the reply does not split it.
-        :ptype reasoning_tokens: int | None
         :param cache_read_tokens: Prompt tokens read from a cache.
-        :ptype cache_read_tokens: int
         :param cache_write_tokens: Prompt tokens written to a cache, both lifetimes.
-        :ptype cache_write_tokens: int
         :param cache_write_1h_tokens: The one-hour share of ``cache_write_tokens``, or ``None`` when the reply does not
             split it.
-        :ptype cache_write_1h_tokens: int | None
         :return: ``(cost, approximate, None)``, or ``(None, False, why)``: not loaded, no priced row, a price that
             cannot be read or bounded, or one that applies and that the reply's counts cannot price.
-        :rtype: tuple[Decimal | None, bool, str | None]
         """
         if self._rows is None:
             return None, False, "the price catalogue has not been read"
@@ -604,13 +582,25 @@ class Catalogue:
             return None, False, f"{model_id!r} cannot be priced: {unpriced}"
         return cost, approximate, None
 
+    def lists(self, model_id: str) -> bool | None:
+        """Whether the catalogue names the model OpenRouter is asked for, or ``None`` before it has been read.
+
+        The catalogue is OpenRouter's list of the models it serves, so a model it does not name is one an OpenRouter
+        call to would fail. A routing suffix OpenRouter takes on any model (``:nitro``, ``:floor``) is not a row of
+        its own, so an id carrying one is listed when the id before it is.
+
+        :param model_id: The model's OpenRouter id.
+        :return: Whether a row names it, or ``None`` while no rows are held.
+        """
+        if self._rows is None:
+            return None
+        return model_id in self._rows or model_id.split(":", 1)[0] in self._rows
+
     def supported_parameters(self, model_id: str) -> frozenset[str] | None:
         """The parameters some endpoint of the model takes, or ``None`` when the catalogue does not say.
 
         :param model_id: The catalogue's id for the model.
-        :ptype model_id: str
         :return: The listed parameters, or ``None`` (not loaded, not listed, or listed without them).
-        :rtype: frozenset[str] | None
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.parameters if row is not None else None
@@ -619,9 +609,7 @@ class Catalogue:
         """The model's output cap as the catalogue states it, or ``None``.
 
         :param model_id: The catalogue's id for the model.
-        :ptype model_id: str
         :return: The cap, or ``None``.
-        :rtype: int | None
         """
         row = self._rows.get(model_id) if self._rows is not None else None
         return row.max_output_tokens if row is not None else None
@@ -633,12 +621,9 @@ class Catalogue:
         ``anthropic/claude-haiku-5.5``. Variant rows (``:batch``, ``:free``) and aliases (``~…``) never match.
 
         :param model_id: The id as the provider names it.
-        :ptype model_id: str
         :param vendor: The catalogue's vendor prefix (``anthropic``, ``openai``), or ``None`` for an endpoint whose
             vendor is unknown (an OpenAI-compatible ``base_url``): then exactly one row of any vendor must match.
-        :ptype vendor: str | None
         :return: The catalogue id, or ``None`` (not loaded, no row, or more than one).
-        :rtype: str | None
         """
         if self._rows is None:
             return None

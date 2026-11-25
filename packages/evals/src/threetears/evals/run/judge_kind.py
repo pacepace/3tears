@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -49,8 +49,14 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.capped_completion import (
+    call_ceiling,
+    ceiling_is_estimate,
+    refresh_prices,
+    unpriced_because,
+)
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
@@ -83,19 +89,23 @@ from threetears.evals.run.launch import (
     KindWiring,
     LaunchableKind,
     UnknownSubject,
+    UnpricedCall,
     launch_run,
     require_candidate_model,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.runner import JudgeCallUnserved
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
+    CaseSet,
     CaseSetRef,
     EvalTestCase,
     JudgedArtifact,
     LabelKey,
     label_key_of,
+    utc_now_iso,
 )
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.logs import contain, get_logger
@@ -161,20 +171,13 @@ def judge_case_labels(
     is left out, since it answers a different question.
 
     :param storage: The store the ratings live in.
-    :ptype storage: EvalStorage
     :param scope_id: The scope the result lives in.
-    :ptype scope_id: str
     :param result: The judged result the case replays.
-    :ptype result: EvalResult
     :param dim: The criterion.
-    :ptype dim: str
     :param scale: The scale the case asks the criterion on.
-    :ptype scale: str
     :param label_key: The key of the output the case replays read on the criterion; ``None`` finds labels by the
         result alone.
-    :ptype label_key: LabelKey | None
     :return: The labels, oldest first, at most one per rater.
-    :rtype: list[CalibrationRating]
     """
     found = storage.query_calibration_ratings(scope_id, result_id=result.id)
     if label_key is not None:
@@ -225,10 +228,23 @@ class JudgeCaseFreezeReport(EvalBaseModel):
     """What a freeze froze, the case set listing it, and what it could not freeze."""
 
     template_id: str
+    """The judge template the cases are cases of: the revision the freeze wrote, where it wrote one."""
     cases: list[FrozenJudgeCase]
     case_set: CaseSetRef | None = None
     """The case set version listing exactly these cases, in order; ``None`` when no set was asked for."""
     skipped: list[JudgeCaseSkip] = []
+    revision: int | None = None
+    """The template revision this freeze wrote, because it added a case to a template that already held cases
+    (``revise``); ``None`` for a freeze that wrote none: the cases are of the template named."""
+    superseded_template_id: str | None = None
+    """The revision ``revision`` supersedes, archived and readable by id, with every run measured against it;
+    ``None`` with ``revision``."""
+    carried: dict[str, str] = {}
+    """Each case of the superseded revision -> the id of its copy on the new one (``EvalTestCase.carried_from`` names
+    the source); empty with no ``revision``."""
+    stranded_case_sets: list[str] = []
+    """Each case set whose newest version lists cases of the superseded revision, by its label: it still points
+    there until its next version is minted over ``carried``'s copies."""
 
 
 def _judge_template(template: EvalTemplate) -> EvalTemplate:
@@ -326,6 +342,107 @@ def _carried_copies(storage: EvalStorage, template: EvalTemplate, scope_id: str)
     return copies
 
 
+def _case_id(
+    template: EvalTemplate,
+    source_result_id: str | None,
+    dim: str,
+    digest: str,
+    copies: Mapping[tuple[str, str, str], str] | None,
+) -> str:
+    """The id a frozen case is stored under in ``template``: derived from the template, its source, its dim and its
+    content, or the id of the copy a new revision carries under that identity (``copies``)."""
+    source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
+    if copies is not None and (copied := copies.get((source, dim, digest))) is not None:
+        return copied
+    return str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
+
+
+@dataclass(frozen=True)
+class _Revised:
+    """A judge template's next revision, as :func:`_next_revision` wrote it."""
+
+    template: EvalTemplate
+    superseded: EvalTemplate
+    carried: dict[str, str]
+    stranded: list[str]
+
+
+def _refuse_superseded(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> list[EvalTemplate]:
+    """Every record under the template's name, refusing a write into a revision a later one supersedes: its cases are
+    the cases its runs measured, and the later revision is where the template's cases now live."""
+    records = [t for t in storage.query_templates(scope_id, archived=None) if t.name == template.name]
+    # A later revision that is archived supersedes nothing: it is one a failed write left incomplete, or one an
+    # operator retired, and the name does not resolve to it.
+    newest = max((t for t in records if not t.archived), key=lambda t: t.revision, default=template)
+    if newest.revision > template.revision:
+        raise ValidationFailedError(
+            f"template {template.id!r} is revision {template.revision} of {template.name!r}, superseded by revision "
+            f"{newest.revision} ({newest.id}); its cases are the ones its runs measured, and no case joins them",
+            remedy=f"write the case into the template's newest revision ({newest.id})",
+        )
+    return records
+
+
+def _next_revision(
+    storage: EvalStorage, template: EvalTemplate, records: Sequence[EvalTemplate], scope_id: str, *, keep: str | None
+) -> _Revised:
+    """Write a judge template's next revision as a definition reset writes one, carrying every case of the revision
+    it supersedes: a new record under the same name, the older one archived and kept for every run and case measured
+    against it. Each case is copied with its content, payload, labels, stratum, name, seed record and curation state
+    unchanged, the copy naming its source (``EvalTestCase.carried_from``), so the new revision is the old one's
+    battery until the caller adds to it. ``keep`` names the case set the caller mints next, which is never stranded.
+
+    :raises StorageError: A case could not be carried: the new revision is left archived and incomplete, the one it
+        was to supersede stays live and unchanged, and the same write again starts a new revision.
+    """
+    now = utc_now_iso()
+    revision = max((t.revision for t in records), default=template.revision) + 1
+    written = template.model_copy(
+        update={"id": str(uuid.uuid7()), "revision": revision, "archived": False, "created_at": now, "updated_at": now}
+    )
+    # Written archived, and made the live revision only once it holds every case: until then the name resolves to the
+    # revision it supersedes, so a write that fails part-way leaves no launch a partial battery.
+    storage.save_template(written.model_copy(update={"archived": True}))
+    held = storage.query_test_cases(scope_id, template_id=template.id)
+    carried: dict[str, str] = {}
+    for done, source in enumerate(held):
+        copied = source.model_copy(
+            update={"id": str(uuid.uuid7()), "template_id": written.id, "carried_from": source.id, "created_at": now}
+        )
+        try:
+            storage.save_test_case(copied)
+        except StorageError as failed:
+            raise StorageError(
+                f"{failed.message}; {template.name!r} revision {revision} ({written.id}) was left archived with "
+                f"{done} of {len(held)} case(s) carried, and revision {template.revision} ({template.id}) is still "
+                "the live one, unchanged: nothing was added, and the same write again starts a new revision"
+            ) from failed
+        carried[source.id] = copied.id
+    storage.save_template(written)
+    for record in records:
+        if not record.archived:
+            storage.save_template(record.model_copy(update={"archived": True, "updated_at": now}))
+    latest: dict[str, CaseSet] = {}
+    for case_set in storage.query_case_sets(scope_id):
+        if case_set.name not in latest or case_set.version > latest[case_set.name].version:
+            latest[case_set.name] = case_set
+    stranded = sorted(
+        case_set.ref.label
+        for case_set in latest.values()
+        if case_set.template_id == template.id and case_set.name != keep
+    )
+    log.info(
+        "eval.judge_template_revised name=%s revision=%d template=%s superseded=%s carried=%d stranded=%d",
+        template.name,
+        revision,
+        written.id,
+        template.id,
+        len(carried),
+        len(stranded),
+    )
+    return _Revised(template=written, superseded=template, carried=carried, stranded=stranded)
+
+
 def _store_case(
     storage: EvalStorage,
     template: EvalTemplate,
@@ -347,10 +464,7 @@ def _store_case(
     one.
     """
     digest = case.content_digest()
-    source = _AUTHORED_SOURCE if source_result_id is None else source_result_id
-    case_id = str(uuid.uuid5(_CASE_ID_NAMESPACE, f"{template.id}|{source}|{dim}|{digest}"))
-    if copies is not None and (copied := copies.get((source, dim, digest))) is not None:
-        case_id = copied
+    case_id = _case_id(template, source_result_id, dim, digest, copies)
     if case_id in seen:
         return None
     seen.add(case_id)
@@ -394,7 +508,6 @@ def _cases_of_labels(
     reason its rating states.
 
     :return: ``(source result id, case)`` per case, and the skipped labels.
-    :rtype: tuple[list[tuple[str, JudgeCase]], list[JudgeCaseSkip]]
     """
     skipped: list[JudgeCaseSkip] = []
     by_key: dict[LabelKey, list[CalibrationRating]] = {}
@@ -460,30 +573,18 @@ def author_judge_case(
     nothing (``collected_by`` None).
 
     :param criterion_template: The subject template whose rubric words the criterion.
-    :ptype criterion_template: EvalTemplate
     :param criterion: The rubric dimension's name on it.
-    :ptype criterion: str
     :param output: The output under review.
-    :ptype output: str
     :param case_material: What the output is judged against.
-    :ptype case_material: str
     :param expected: The verdict it must get, on the dimension's scale.
-    :ptype expected: AuthoredVerdict
     :param note: Why it must get that verdict.
-    :ptype note: str
     :param author: Who wrote it: the label's rater.
-    :ptype author: str
     :param collected_by: The calling identity that relayed it, which the host attested for ``author``; ``None`` for a
         case the host's own code writes. Provenance only: in no digest, so not in the case's id.
-    :ptype collected_by: str | None
     :param scenario: The scenario the judge reads; ``None`` reads the template's intent.
-    :ptype scenario: str | None
     :param subject: Who or what produced the output, or ``None``.
-    :ptype subject: str | None
     :param judged_artifact: A document or a transcript.
-    :ptype judged_artifact: JudgedArtifact
     :return: The case, validated.
-    :rtype: AuthoredJudgeCase
     :raises ValidationFailedError: The template has no such rubric dimension, or its scale cannot hold the verdict
         (naming both), or the case is otherwise not one a judge reads.
     """
@@ -521,17 +622,11 @@ def freeze_seeded_judge_case(
     recording the corpus name it was seeded as on the stored case (``EvalTestCase.seed_name``).
 
     :param storage: Where the case is written.
-    :ptype storage: EvalStorage
     :param template: The judge template, loaded.
-    :ptype template: EvalTemplate
     :param scope_id: The scope the case is stored in.
-    :ptype scope_id: str
     :param authored: The case, built through ``author_judge_case``.
-    :ptype authored: AuthoredJudgeCase
     :param seed_name: Its corpus name, or None for an unnamed corpus case.
-    :ptype seed_name: str | None
     :return: The case: created, or already stored (then left as it is).
-    :rtype: FrozenJudgeCase
     :raises ValidationFailedError: The template is not of the judge kind.
     :raises StorageError: The case could not be persisted.
     """
@@ -553,6 +648,7 @@ def freeze_judge_cases(
     case_set: str | None = None,
     from_labels: bool = False,
     authored: Sequence[AuthoredJudgeCase] = (),
+    revise: bool = False,
 ) -> JudgeCaseFreezeReport:
     """Freeze (output, criterion, labels) cases from stored judged results, or written by hand, into a judge template.
 
@@ -584,32 +680,36 @@ def freeze_judge_cases(
     in order — the set a launch targets, so cases a later freeze superseded are not run by it. A freeze whose cases
     the latest version already lists exactly is answered with that version.
 
+    **Into a template that holds cases** (``revise=True``, as every operator's write is): a freeze that would add a
+    case writes the template's next revision first, as a definition reset does, carrying every case of the revision
+    it supersedes, and freezes into that. Runs of two revisions never pool
+    (:func:`~threetears.evals.analysis.revisions.refuse_pooled_revisions`), so the runs measured before the write and
+    those after it never share a revision whose cases differ. The receipt names the revision, the one it superseded,
+    each carried case's copy, and each case set left listing the superseded revision's cases. A freeze that adds
+    nothing (every case already stored) writes no revision, and neither does the first freeze into a template with no
+    case. A write into a revision a later one supersedes is refused, naming the newest. Everything is read and
+    checked before the revision is written, so a refused freeze writes none.
+
     :param storage: The store the runs, their results and ratings live in, and the cases are written to.
-    :ptype storage: EvalStorage
     :param template: The judge template the cases belong to, loaded.
-    :ptype template: EvalTemplate
     :param run_ids: The judged runs whose results to freeze; empty with ``from_labels``.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The scope the runs live in, and the cases are stored in.
-    :ptype scope_id: str
     :param dims: The criteria to freeze; ``None`` for every dim each result was judged on.
-    :ptype dims: Collection[str] | None
     :param result_ids: The results to freeze; ``None`` for every result of the runs.
-    :ptype result_ids: Collection[str] | None
     :param case_set: The case set to mint over the frozen cases, or ``None`` for none.
-    :ptype case_set: str | None
     :param from_labels: Freeze from the scope's durable person labels instead of from runs.
-    :ptype from_labels: bool
     :param authored: Hand-written cases to freeze beside whatever else is frozen, each validated when it was built (its
         verdict on its criterion's scale).
-    :ptype authored: Sequence[AuthoredJudgeCase]
-    :return: The cases, the set, and every result skipped with why.
-    :rtype: JudgeCaseFreezeReport
+    :param revise: Write the template's next revision where it already holds cases and this freeze adds one. False
+        writes in place: for a caller that writes a revision itself (a definition reset) or one whose template no run
+        has measured.
+    :return: The cases, the set, every result skipped with why, and the revision written, if one was.
     :raises ValidationFailedError: The template is not of the judge kind; no run, no labels and no authored case are
-        named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs; or
-        nothing could be frozen.
+        named (or, from labels, a run or a result is); ``result_ids`` names a result outside the runs;
+        nothing could be frozen; or, under ``revise``, the template is a revision a later one supersedes.
     :raises NotFoundError: A run does not load.
     :raises StorageError: A case or the set could not be persisted.
+    :raises ValueError: A case a definition reset carried into the template holds a judge case this build cannot read.
     """
     _judge_template(template)
     if from_labels and (run_ids or result_ids is not None):
@@ -631,46 +731,68 @@ def freeze_judge_cases(
     copies = _carried_copies(storage, template, scope_id)
     wanted = None if result_ids is None else set(result_ids)
     found: set[str] = set()
-    for written in authored:
-        case = JudgeCase.from_authored(written)
-        minted_case = _store_case(storage, template, scope_id, None, case.dim, case, seen, copies=copies)
+
+    def frozen_cases() -> Iterator[tuple[str | None, str, JudgeCase]]:
+        """Every case this freeze names, as ``(source result, dim, case)``, authored ones first: each result read a
+        page at a time and let go before the next, with what could not be frozen noted in ``skipped``."""
+        for written in authored:
+            case = JudgeCase.from_authored(written)
+            yield None, case.dim, case
+        if from_labels:
+            labelled, unlabelled = _cases_of_labels(storage, scope_id, dims)
+            skipped.extend(unlabelled)
+            for source_result_id, case in labelled:
+                yield source_result_id, case.dim, case
+        for run_id in run_ids:
+            run = storage.load_eval_run(run_id, scope_id)
+            if run is None:
+                raise NotFoundError("run", run_id, remedy=FIND_RUN)
+            # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
+            # each frozen and let go before the next page is read.
+            keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
+            for result in iter_keyed_results(
+                storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
+            ):
+                found.add(result.id)
+                try:
+                    frozen = _cases_of_result(storage, template, run, result, scope_id, dims)
+                except (ValidationFailedError, NotFoundError) as refused:
+                    skipped.append(JudgeCaseSkip(result_id=result.id, reason=str(refused)))
+                    continue
+                if not frozen:
+                    skipped.append(
+                        JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it")
+                    )
+                for dim, case in frozen:
+                    yield result.id, dim, case
+
+    def refuse_stray() -> None:
+        if wanted is not None and (stray := sorted(wanted - found)):
+            raise ValidationFailedError(
+                f"result(s) {stray} are not results of the named runs in this scope",
+                remedy=f"name results of those runs ({FIND_RESULT})",
+            )
+
+    revised: _Revised | None = None
+    if revise and (held := {case.id for case in storage.query_test_cases(scope_id, template_id=template.id)}):
+        # Read once before anything is written: whether the freeze adds a case decides whether a revision is written
+        # at all, and a freeze that will be refused must not leave one behind.
+        records = _refuse_superseded(storage, template, scope_id)
+        adds = False
+        for source_result_id, dim, case in frozen_cases():
+            adds = adds or _case_id(template, source_result_id, dim, case.content_digest(), copies) not in held
+        refuse_stray()
+        skipped.clear()
+        found.clear()
+        if adds:
+            revised = _next_revision(storage, template, records, scope_id, keep=case_set)
+            template = revised.template
+            copies = _carried_copies(storage, template, scope_id)
+    for source_result_id, dim, case in frozen_cases():
+        minted_case = _store_case(storage, template, scope_id, source_result_id, dim, case, seen, copies=copies)
         if minted_case is not None:
             cases.append(minted_case)
-    if from_labels:
-        labelled, skipped = _cases_of_labels(storage, scope_id, dims)
-        for source_result_id, case in labelled:
-            minted_case = _store_case(
-                storage, template, scope_id, source_result_id, case.dim, case, seen, copies=copies
-            )
-            if minted_case is not None:
-                cases.append(minted_case)
-    for run_id in run_ids:
-        run = storage.load_eval_run(run_id, scope_id)
-        if run is None:
-            raise NotFoundError("run", run_id, remedy=FIND_RUN)
-        # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
-        # each frozen and let go before the next page is read.
-        keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
-        for result in iter_keyed_results(
-            storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
-        ):
-            found.add(result.id)
-            try:
-                frozen = _cases_of_result(storage, template, run, result, scope_id, dims)
-            except (ValidationFailedError, NotFoundError) as refused:
-                skipped.append(JudgeCaseSkip(result_id=result.id, reason=str(refused)))
-                continue
-            if not frozen:
-                skipped.append(JudgeCaseSkip(result_id=result.id, reason="none of the dims asked for was judged on it"))
-            for dim, case in frozen:
-                minted_case = _store_case(storage, template, scope_id, result.id, dim, case, seen, copies=copies)
-                if minted_case is not None:
-                    cases.append(minted_case)
-    if wanted is not None and (stray := sorted(wanted - found)):
-        raise ValidationFailedError(
-            f"result(s) {stray} are not results of the named runs in this scope",
-            remedy=f"name results of those runs ({FIND_RESULT})",
-        )
+    refuse_stray()
     if not cases:
         empty = "the scope holds no person label" if from_labels else "the runs have no results"
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or empty
@@ -708,7 +830,16 @@ def freeze_judge_cases(
         len(skipped),
         minted.label if minted is not None else "none",
     )
-    return JudgeCaseFreezeReport(template_id=template.id, cases=cases, case_set=minted, skipped=skipped)
+    return JudgeCaseFreezeReport(
+        template_id=template.id,
+        cases=cases,
+        case_set=minted,
+        skipped=skipped,
+        revision=revised.template.revision if revised is not None else None,
+        superseded_template_id=revised.superseded.id if revised is not None else None,
+        carried=revised.carried if revised is not None else {},
+        stranded_case_sets=revised.stranded if revised is not None else [],
+    )
 
 
 # =============================================================================
@@ -732,13 +863,9 @@ class _CellClient:
         """Forward one call and keep its completion, or the exception it raised.
 
         :param system: The system prompt.
-        :ptype system: str
         :param user: The user message.
-        :ptype user: str
         :param response_format: The provider directive.
-        :ptype response_format: dict[str, Any] | None
         :return: The provider's completion, unchanged.
-        :rtype: Any
         """
         try:
             completion = await self.inner.generate(system=system, user=user, response_format=response_format)
@@ -753,13 +880,9 @@ class _CellClient:
         """The ceiling of one request on the client this forwards to, or ``None`` when it cannot say.
 
         :param system: The system prompt.
-        :ptype system: str
         :param user: The user message.
-        :ptype user: str
         :param response_format: The provider directive.
-        :ptype response_format: dict[str, Any] | None
         :return: The kind's client's own ceiling for the pair.
-        :rtype: float | None
         """
         return call_ceiling(self.inner, system=system, user=user, response_format=response_format)
 
@@ -808,18 +931,13 @@ class JudgeKind:
         """Bind the judge under test.
 
         :param clients: The host's client factory; every call is asked of a ``judge``-role client bound to ``model``.
-        :ptype clients: CompletionClients
         :param model: The judge's model — the run's candidate model, which every criterion is sent to.
-        :ptype model: str
         :param failure_describer: The host's reading of what a judge client raises — the only thing that can say a call
             was refused for the calling account.
-        :ptype failure_describer: ProviderFailureDescriber
         :param configs: criterion -> the versioned config whose prompt asks it; a criterion absent from the map is
             asked with the built-in prompt.
-        :ptype configs: Mapping[str, JudgeConfig] | None
         :param temperature: The temperature every call is requested at; ``None`` for what each criterion's prompt asks
             for (its config's, else the default an unconfigured criterion is judged at).
-        :ptype temperature: float | None
         :raises ValueError: A config is keyed by another criterion than the one it asks, or names a model of its own
             other than ``model`` — the judge under test is the one named here, and a config pinning another would
             score that criterion with a judge the run does not name.
@@ -858,7 +976,6 @@ class JudgeKind:
         :attr:`~threetears.evals.run.CallCeiling.estimate`.
 
         :return: Whether any of them does.
-        :rtype: bool
         """
         return any(ceiling_is_estimate(client) for client in self._built.values())
 
@@ -900,19 +1017,12 @@ class JudgeKind:
         """Bind this cell's windows, refusing a cell recorded against another model than this judge's.
 
         :param subject_snapshot: Unread — the judge under test is the one this kind holds.
-        :ptype subject_snapshot: Any
         :param variant_config: This cell's contestant stack; its model is the judge's.
-        :ptype variant_config: VariantConfig
         :param world_seed: Unread — a judge perceives no world.
-        :ptype world_seed: Any
         :param span_window: This cell's tracing windows, opened in :meth:`invoke`.
-        :ptype span_window: CellSpanWindow
         :param cassettes: Unwired — a judge calls no tool a cassette could record, so the engine refuses a cassette run.
-        :ptype cassettes: CellCassettes | None
         :param world: Unread.
-        :ptype world: Any
         :return: The cell's bound model and windows.
-        :rtype: PreparedJudge
         :raises CandidatePreparationFailed: The cell's model is not this judge's.
         """
         if variant_config.candidate_model != self._model:
@@ -924,6 +1034,26 @@ class JudgeKind:
             )
         return PreparedJudge(model=self._model, span_window=span_window)
 
+    def client_for_case(self, test_case: EvalTestCase) -> Any:
+        """The client :meth:`invoke`'s call for ``test_case`` goes through, built on first ask and kept.
+
+        What a launch brings up to date (``refresh_prices``) before it prices the case's call, and asks why when the
+        call cannot be priced.
+
+        :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
+        :return: The kind's judge client at the temperature the case's criterion is asked at.
+        :raises ValueError: As :meth:`price_case` raises it.
+        """
+        case = judge_case_of(test_case)
+        if case is None:
+            raise ValueError(f"test case {test_case.id!r} carries no judge case to price")
+        service = JudgeService(
+            client_factory=lambda _model, temperature: self._client(temperature),
+            configs=self._configs,
+            failure_describer=self._failure_describer,
+        )
+        return service.client_for(self._request(service, case, _context_of(test_case, case)))
+
     def price_case(self, test_case: EvalTestCase) -> float | None:
         """The ceiling of the call :meth:`invoke` makes for ``test_case``, built as it builds it.
 
@@ -932,9 +1062,7 @@ class JudgeKind:
         cap on its own is one the run could never make.
 
         :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
-        :ptype test_case: EvalTestCase
         :return: The ceiling in dollars, every attempt included; ``None`` when the client cannot price the call.
-        :rtype: float | None
         :raises ValueError: The case carries no readable judge case, or its criterion cannot be asked — the plan refuses
             every such case before this is asked (:func:`launchable_judge_kind`), so reaching one is a defect —
             or the client priced the call at an amount no ceiling can be (negative, or not finite).
@@ -962,7 +1090,14 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
+        Raises only what fails the run outside the judge's answer: a
+        :class:`~threetears.evals.run.runner.JudgeCallUnserved` carrying the rig's
+        :class:`~threetears.evals.kernel.host.ApparatusError` (a replayed judge whose recording holds no call for the
+        prompt, :class:`~threetears.evals.testing.RecordingRefused`), on which the runner records the cell
+        ``apparatus_failed`` naming the call and fails the run with the fault, as a scoring judge's miss does, never a
+        trial graded ``no_reply`` and charged to the judge; and a
+        :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, which fails the run. A case that cannot
+        be read is the harness's (``infra_errors``, the cell excluded). The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was the
         account's, which excludes the cell and stops the run (``account_refused``), or the provider's (it declined the
         call: a rate limit, or the provider overloaded or unavailable), which excludes the cell and lets the run go
@@ -971,15 +1106,11 @@ class JudgeKind:
         protocol, which is what parse validity counts.
 
         :param instance: What :meth:`prepare` bound.
-        :ptype instance: PreparedJudge
         :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
-        :ptype test_case: EvalTestCase
         :param sink: This cell's sink, which keeps the one call in the cell's spend: what it cost is added when it
             returns. It refuses nothing.
-        :ptype sink: CellSink
         :return: The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
             the ``judge`` role's usage.
-        :rtype: CandidateOutput
         """
         scopes = instance.span_window
         with scopes.identity():
@@ -1010,6 +1141,11 @@ class JudgeKind:
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
+            except ApparatusError as fault:
+                # The rig could not serve the judge's call (a replay's miss): no answer of the judge's, so no trial.
+                # A judge call's miss fails the run, never one excluded trial, so a replay never reads on fewer trials
+                # in silence (owner ruling, #1162): carried through ``invoke`` for the runner to fail the run naming it.
+                raise JudgeCallUnserved(fault) from fault
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
                 # added and reported as this cell's spend, so the runner records them.
@@ -1085,6 +1221,7 @@ class JudgeKind:
                 refused="judge: the call was refused for the calling account",
                 declined="judge: the provider declined the call",
                 failed="judge",
+                unserved="judge: the call named a model the provider does not serve",
                 log=lambda what, level: log.log(level, "%s, case %s: %s", what, test_case.id, error),
                 telemetry=telemetry,
                 kind_payload=payload,
@@ -1136,20 +1273,13 @@ def judge_kind(
     """The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
 
     :param storage: The store the configs live in.
-    :ptype storage: EvalStorage
     :param clients: The host's client factory.
-    :ptype clients: CompletionClients
     :param model: The arm's judge model (its candidate model).
-    :ptype model: str
     :param scope_id: The scope the configs live in.
-    :ptype scope_id: str
     :param failure_describer: The host's reading of what a judge client raises.
-    :ptype failure_describer: ProviderFailureDescriber
     :param overlays: The arm's overlays — its prompt per criterion and its temperature; ``None`` for the built-in
         prompt on every criterion at each prompt's own temperature.
-    :ptype overlays: JudgeKindOverlays | None
     :return: The kind, owning the clients it builds.
-    :rtype: JudgeKind
     :raises NotFoundError: A config the overlays name does not load.
     :raises ValidationFailedError: A config asks another criterion than it is named for, or pins another model.
     """
@@ -1220,11 +1350,8 @@ def _judge_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
     is nothing to look up, and only a blank label, which no run could group by, is refused.
 
     :param subject_id: The label the launch names its judge by.
-    :ptype subject_id: str
     :param _scope_id: Unused; a label is a label in every scope.
-    :ptype _scope_id: str
     :return: ``None`` for a non-blank label; an :class:`~threetears.evals.run.UnknownSubject` for a blank one.
-    :rtype: UnknownSubject | None
     """
     if subject_id.strip():
         return None
@@ -1242,9 +1369,7 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
 
     :param launch_host: Returns the launch host the entry is registered on, which the launcher hands the launch tail;
         a callable because the host is built with its registry, this entry in it.
-    :ptype launch_host: Callable[[], LaunchHost]
     :return: The registry entry.
-    :rtype: LaunchableKind
     """
 
     def plan(request: LaunchRequest) -> ArmPlan:
@@ -1276,12 +1401,24 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         )
         return kind, request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
 
-    async def price_largest_call(request: LaunchRequest) -> CallCeiling | None:
+    async def price_largest_call(request: LaunchRequest) -> CallCeiling | UnpricedCall | None:
         # Every case's call is priced as invoke builds it — the prompt is the case's frozen evidence, so the
-        # largest call is the case with the most of it — on the clients the run's cells would call through.
+        # largest call is the case with the most of it — on the clients the run's cells would call through, each
+        # brought up to date first: a fresh process has read no price catalogue yet. A case whose call still cannot
+        # be priced makes the largest call unknown, which a cost cap refuses.
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:
-            priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+            for client in {id(client): client for client in map(kind.client_for_case, cases)}.values():
+                await refresh_prices(client)
+            priced: list[tuple[float, str]] = []
+            for case in cases:
+                ceiling = kind.price_case(case)
+                if ceiling is None:
+                    return UnpricedCall(
+                        call=f"the judge call on case {case.id!r} on {kind.model!r}",
+                        why=unpriced_because(kind.client_for_case(case)),
+                    )
+                priced.append((ceiling, case.id))
             estimate = kind.ceiling_is_estimate()
         finally:
             await kind.aclose()
@@ -1350,4 +1487,6 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         ignored_template_fields=frozenset(TEMPLATE_FIELDS),
         plan_arm=plan,
         price_largest_call=price_largest_call,
+        # The judge under test is called as a judge-role client of the host's factory (built()).
+        candidate_role="judge",
     )

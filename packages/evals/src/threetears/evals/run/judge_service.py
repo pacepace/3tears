@@ -63,6 +63,7 @@ call + parse + cost-log still flow through
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import cache
 from typing import Any, NamedTuple, Self
@@ -89,9 +90,12 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
+from threetears.evals.schema.call_inputs import bind_call_inputs
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.completion import BoundCompletionClient, FailureOwner, ProviderFailureDescriber
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
+from threetears.evals.kernel.claims.web import QUERY_UNIT, SearchBill
 from threetears.evals.run.judge import (
     CANNOT_TELL,
     JUDGE_CALL_ATTEMPTS,
@@ -122,11 +126,8 @@ def judge_clients_for_run(clients: CompletionClients, judge_model: str | None) -
     judge role's default.
 
     :param clients: The host's completion-client factory.
-    :ptype clients: CompletionClients
     :param judge_model: The run's judge pin, resolved, or ``None``.
-    :ptype judge_model: str | None
     :return: The factory a :class:`JudgeService` is built with.
-    :rtype: JudgeClientFactory
     """
 
     def build(model: str | None, temperature: float | None) -> BoundCompletionClient:
@@ -227,7 +228,12 @@ class JudgeFold(NamedTuple):
     cut_short: dict[str, JudgeCutShort]
 
 
-def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
+def fold_judge_outcomes(
+    outcomes: list[tuple[str, JudgeOutcome]],
+    *,
+    also_billed: Sequence[object] = (),
+    also_searched: Sequence[SearchBill] = (),
+) -> JudgeFold:
     """Fold judge calls' outcomes into their configs, errors and spend.
 
     Shared by the cell's judge phase and a later re-judge, so both read an outcome the same
@@ -240,9 +246,12 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
     when any call went unpriced (:func:`~threetears.evals.kernel.usage_capture.blended_cost`).
 
     :param outcomes: ``(dim_id, outcome)`` for every call made, in call order.
-    :ptype outcomes: list[tuple[str, JudgeOutcome]]
+    :param also_billed: The completions of the cell's other judge calls, its claim criteria's, folded into the same
+        rows after the dims' calls: one judge role, one row per model, whichever of the judge's questions a call asked.
+    :param also_searched: The searches the cell's claim criteria sent to a web port, folded into the judge role as
+        rows of their own, one per port and price source: no model and no tokens, each search a call and one
+        ``query`` unit.
     :return: The fold.
-    :rtype: JudgeFold
     """
     config_ids: dict[str, str] = {}
     errors: list[tuple[str, str]] = []
@@ -262,6 +271,21 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
             errors.append((dim_id, outcome.error or "the judge returned neither a score nor an error"))
             if outcome.cut_short is not None:
                 cut_short[dim_id] = outcome.cut_short
+    for completion in also_billed:
+        ledger.add_llm_result(completion)
+    for search in also_searched:
+        ledger.add(
+            model=None,
+            prompt_tokens=None,
+            completion_tokens=None,
+            reasoning_tokens=None,
+            cost_usd=search.cost_usd,
+            calls=1,
+            provider_units=1,
+            provider=search.provider,
+            provider_unit=QUERY_UNIT,
+            price_source=search.price_source,
+        )
     rows = ledger.rows()
     return JudgeFold(
         config_ids=config_ids,
@@ -344,12 +368,9 @@ def _dimension_instructions(dim: RubricDim, *, document: bool = False) -> str:
     """Build the default judging instructions for a template rubric dimension.
 
     :param dim: The dimension being scored.
-    :ptype dim: RubricDim
     :param document: Whether the candidate's output is a document judged against case material,
         rather than its side of a conversation.
-    :ptype document: bool
     :return: The system instructions, before the JSON-format suffix.
-    :rtype: str
     """
     return _dimension_wording(
         name=dim.name, description=dim.description, scale=dim.scale, scoring_guide=dim.scoring_guide, document=document
@@ -464,13 +485,9 @@ def judge_config_ids_for(
     result's record with.
 
     :param rubric: The template's rubric.
-    :ptype rubric: Sequence[RubricDim]
     :param configs: ``{dim_id: JudgeConfig id}`` for the dims a config asks, as a run records its set.
-    :ptype configs: Mapping[str, str]
     :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-    :ptype judged_artifact: JudgedArtifact
     :return: ``{dim_id: recorded id}``, in judge-phase order.
-    :rtype: dict[str, str]
     :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     builtin = builtin_judge_config_ids(rubric, judged_artifact=judged_artifact)
@@ -494,11 +511,8 @@ def builtin_judge_config_ids(rubric: Sequence[RubricDim], *, judged_artifact: Ju
     two judges (:func:`~threetears.evals.schema.models.builtin_judge_config_id`).
 
     :param rubric: The template's rubric.
-    :ptype rubric: Sequence[RubricDim]
     :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-    :ptype judged_artifact: JudgedArtifact
     :return: ``{dim_id: builtin id}`` for the two axes (a conversation's) and every rubric dim, in judge-phase order.
-    :rtype: dict[str, str]
     :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
@@ -546,6 +560,10 @@ class JudgeRequest(NamedTuple):
     #: What the call reads — the evidence's fingerprint and the criterion's — stamped onto its score, so a
     #: person's label of the same output on the same criterion pairs with it on any result (#628).
     label_key: LabelKey | None = None
+    #: What the call is asked about, by its inputs (:func:`_input_key`), where the evidence names what its text was
+    #: rendered from; ``None`` where it names nothing, and the call is keyed by its prompt. Bound around the call, so
+    #: a recorded replay matches it on these and a word printed differently on the page moves no recording.
+    input_key: Mapping[str, Any] | None = None
 
 
 def _criterion(dim_id: str, scale: RubricScale) -> dict[str, Any]:
@@ -566,6 +584,7 @@ def _request(
     document: bool = False,
     axis: RubricAxis = "capability",
     label_key: LabelKey | None = None,
+    inputs: _Asked | None = None,
 ) -> JudgeRequest:
     """Compose one call's system prompt from its instructions and the JSON-format contract.
 
@@ -575,10 +594,11 @@ def _request(
     ``builtin_config_id`` is the identity of the built-in prompt the dim is asked with when ``config`` is ``None``,
     and is what the call records as having asked it then.
     """
+    system_prompt = _system_prompt(dim_id=dim_id, instructions=instructions, scale=scale, document=document)
     return JudgeRequest(
         dim_id=dim_id,
         config=config,
-        system_prompt=_system_prompt(dim_id=dim_id, instructions=instructions, scale=scale, document=document),
+        system_prompt=system_prompt,
         user_prompt=user_prompt,
         scale=scale,
         label=label,
@@ -587,7 +607,40 @@ def _request(
         judge_config_id=_configured_id(config, scale, document) if config is not None else builtin_config_id,
         axis=axis,
         label_key=label_key,
+        input_key=None if inputs is None else _input_key(system_prompt, inputs),
     )
+
+
+class _Asked(NamedTuple):
+    """What a call's user prompt lays out, as the structured values it was rendered from: the part of its input key
+    the prompt carries, with the evidence's inputs standing for the evidence's text."""
+
+    intent: str
+    variation: dict[str, str]
+    goals: list[GoalStateOutcome] | None
+    evidence: dict[str, Any]
+
+
+def _input_key(system_prompt: str, asked: _Asked) -> dict[str, Any]:
+    """A judge call's input key: what it asks about, by inputs, never by the text a page or a layout prints.
+
+    Each component and why a printed word cannot move it is the table in
+    :mod:`~threetears.evals.testing.recorded_completions`. The system prompt enters by digest: it holds the judge's
+    instructions and the criterion's definition and no page text, so rewording what the judge is asked moves the key,
+    and rewording a page does not. The user prompt does not enter at all: its headings are layout, and its evidence
+    is a rendering of ``asked.evidence``.
+
+    :param system_prompt: The call's system prompt, as sent.
+    :param asked: What its user prompt was laid out from.
+    :return: The key, a JSON object.
+    """
+    return {
+        "judge_prompt": canonical_digest({"judge_prompt": system_prompt}),
+        "intent": asked.intent,
+        "variation": dict(asked.variation),
+        "goals": None if asked.goals is None else [outcome.model_dump(mode="json") for outcome in asked.goals],
+        "evidence": asked.evidence,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -609,17 +662,14 @@ class JudgeService:
 
         :param client_factory: Builds a judge client for a ``(model, temperature)``
             pair. Called at most once per distinct pair (results cached).
-        :ptype client_factory: JudgeClientFactory
         :param configs: Active :class:`JudgeConfig` per ``rubric_dim_id``, resolved
             once at run start. A dim absent from the map uses the built-in
             default prompt + default client. ``None`` ⇒ all defaults.
-        :ptype configs: dict[str, JudgeConfig] | None
         :param failure_describer: The host's reading of what a judge client raises — the only thing
             that can say a call was refused for the calling account. Required: a reading that
             cannot tell would quietly turn an account refusal into one excluded dim after
             another, so a caller with no reading of its own names
             :func:`~threetears.evals.kernel.provider.withhold_failure_detail` explicitly.
-        :ptype failure_describer: ProviderFailureDescriber
         """
         self._client_factory = client_factory
         self._failure_describer = failure_describer
@@ -693,11 +743,8 @@ class JudgeService:
         """Send one call already built by a ``*_request`` method — what a caller that priced it first sends.
 
         :param request: The call, as built.
-        :ptype request: JudgeRequest
         :param case_id: The test case, for log context.
-        :ptype case_id: str
         :return: The call's outcome.
-        :rtype: JudgeOutcome
         """
         return await self._score(request, case_id=case_id)
 
@@ -707,11 +754,25 @@ class JudgeService:
         What a caller pricing a call before it is made asks: a call's price is its client's.
 
         :param request: The call.
-        :ptype request: JudgeRequest
         :return: The client, built on first ask and cached like every other.
-        :rtype: Any
         """
         return self._client_for(request.config)
+
+    @property
+    def failure_describer(self) -> ProviderFailureDescriber:
+        """The host's reading of what a judge client raises: what a claims call's failure is read by too, so a refusal
+        of the calling account stops the run whichever of the judge's questions met it."""
+        return self._failure_describer
+
+    def default_client(self) -> Any:
+        """The client a call no config supplies is sent on: the run's judge pin, at the default judge temperature.
+
+        What the claim criteria's calls are sent on, since a claim criterion is graded by the engine's built-in prompts
+        alone; the same cached client a built-in rubric dimension's call is sent on.
+
+        :return: The client, built on first ask and cached like every other.
+        """
+        return self._client_for(None)
 
     def price_ceiling(self, request: JudgeRequest) -> float | None:
         """The most sending ``request`` can cost, every attempt included, or ``None`` when its client cannot say.
@@ -722,9 +783,7 @@ class JudgeService:
         make (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`).
 
         :param request: The call, as built.
-        :ptype request: JudgeRequest
         :return: The ceiling in dollars, or ``None`` when the client has no ``price_ceiling`` or answers ``None``.
-        :rtype: float | None
         """
         return call_ceiling(
             self.client_for(request),
@@ -743,6 +802,7 @@ class JudgeService:
         return self._transcript_call(
             self._build_user_prompt(context, include_goal_outcomes=False),
             label_key_of(context.judge_evidence, TRANSCRIPT_DIM_ID),
+            _asked(context, include_goal_outcomes=False),
         )
 
     def outcome_request(self, context: JudgeContext) -> JudgeRequest:
@@ -750,6 +810,7 @@ class JudgeService:
         return self._outcome_call(
             self._build_user_prompt(context, include_goal_outcomes=True),
             label_key_of(context.judge_evidence, OUTCOME_DIM_ID),
+            _asked(context, include_goal_outcomes=True),
         )
 
     def dimension_request(self, dim: RubricDim, context: JudgeContext) -> JudgeRequest:
@@ -759,6 +820,7 @@ class JudgeService:
             self._build_user_prompt(context, include_goal_outcomes=True),
             label_key_of(context.judge_evidence, dim),
             document=context.judged_artifact is JudgedArtifact.DOCUMENT,
+            inputs=_asked(context, include_goal_outcomes=True),
         )
 
     def floor_requests(
@@ -781,14 +843,10 @@ class JudgeService:
         least as high as its floor request.
 
         :param rubric: The template's rubric, whose dims are the per-dim calls.
-        :ptype rubric: Sequence[RubricDim]
         :param intent: The template's intent, which every call states.
-        :ptype intent: str
         :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-        :ptype judged_artifact: JudgedArtifact
         :return: One request per call, in :func:`~threetears.evals.run.runner.judge_requests`'s order, each carrying
             no label key: it reads no output.
-        :rtype: list[JudgeRequest]
         :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
         """
         if judged_artifact is JudgedArtifact.UNJUDGED:
@@ -824,18 +882,17 @@ class JudgeService:
         call returns, raises or is cut off with its cell — the same ids its calls' outcomes carry.
 
         :param rubric: The template's rubric.
-        :ptype rubric: Sequence[RubricDim]
         :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-        :ptype judged_artifact: JudgedArtifact
         :return: ``{dim_id: config id or builtin id}``, in judge-phase order.
-        :rtype: dict[str, str]
         :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
         """
         return judge_config_ids_for(
             rubric, {dim: config.id for dim, config in self._configs.items()}, judged_artifact=judged_artifact
         )
 
-    def _transcript_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
+    def _transcript_call(
+        self, user_prompt: str, label_key: LabelKey | None, inputs: _Asked | None = None
+    ) -> JudgeRequest:
         """The transcript axis's call over ``user_prompt``."""
         config = self._configs.get(TRANSCRIPT_DIM_ID)
         return _request(
@@ -848,9 +905,10 @@ class JudgeService:
             scale="ordinal",
             include_goal_outcomes=False,
             label_key=label_key,
+            inputs=inputs,
         )
 
-    def _outcome_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
+    def _outcome_call(self, user_prompt: str, label_key: LabelKey | None, inputs: _Asked | None = None) -> JudgeRequest:
         """The outcome axis's call over ``user_prompt``."""
         config = self._configs.get(OUTCOME_DIM_ID)
         return _request(
@@ -863,10 +921,17 @@ class JudgeService:
             scale="ordinal",
             include_goal_outcomes=True,
             label_key=label_key,
+            inputs=inputs,
         )
 
     def _dimension_call(
-        self, dim: RubricDim, user_prompt: str, label_key: LabelKey | None, *, document: bool
+        self,
+        dim: RubricDim,
+        user_prompt: str,
+        label_key: LabelKey | None,
+        *,
+        document: bool,
+        inputs: _Asked | None = None,
     ) -> JudgeRequest:
         """One rubric dimension's call over ``user_prompt``."""
         config = self._configs.get(dim.name)
@@ -882,6 +947,7 @@ class JudgeService:
             document=document,
             axis=dim.axis,
             label_key=label_key,
+            inputs=inputs,
         )
 
     # ------------------------------------------------------------------
@@ -894,16 +960,18 @@ class JudgeService:
         client = self._client_for(request.config)
         config_id = request.judge_config_id
 
-        result = await run_judge_llm(
-            client=client,
-            system_prompt=request.system_prompt,
-            user_prompt=request.user_prompt,
-            criteria_dicts=[_criterion(dim_id, request.scale)],
-            label=request.label,
-            case_id=case_id,
-            cannot_tell_offered=True,
-            failure_describer=self._failure_describer,
-        )
+        # Every attempt of the call, its parse retries included, is asked about the same inputs.
+        with nullcontext() if request.input_key is None else bind_call_inputs(request.input_key):
+            result = await run_judge_llm(
+                client=client,
+                system_prompt=request.system_prompt,
+                user_prompt=request.user_prompt,
+                criteria_dicts=[_criterion(dim_id, request.scale)],
+                label=request.label,
+                case_id=case_id,
+                cannot_tell_offered=True,
+                failure_describer=self._failure_describer,
+            )
         # A judge call that failed to parse, omitted its score, or errored still burned
         # tokens — every return below carries the spend so an unscored dim can't hide the
         # dollars the program paid for it.
@@ -1003,24 +1071,44 @@ class JudgeService:
         """
         evidence = context.judge_evidence
         document = context.judged_artifact is JudgedArtifact.DOCUMENT
-        goals: str | None = None
-        if document:
-            # A document's mechanical facts are the kind's own checks, shown only when it has any:
-            # a document kind that grades nothing mechanically declares no goal-state checks to say
-            # are missing.
-            if include_goal_outcomes and context.goal_outcomes:
-                goals = _render_goal_outcomes(context.goal_outcomes)
-        elif include_goal_outcomes:
-            goals = _render_goal_outcomes(context.goal_outcomes)
+        shown = _shown_goals(context, include_goal_outcomes=include_goal_outcomes)
         return _user_prompt(
             intent=context.intent,
             variation=_render_variation(context.variation),
             subject=evidence.subject,
-            goals=goals,
+            goals=None if shown is None else _render_goal_outcomes(shown),
             case_material=evidence.case_material,
             artifact=evidence.artifact,
             document=document,
         )
+
+
+def _shown_goals(context: JudgeContext, *, include_goal_outcomes: bool) -> list[GoalStateOutcome] | None:
+    """The goal-state outcomes a call's prompt shows, or ``None`` where it leaves their section out.
+
+    A document's mechanical facts are the kind's own checks, shown only when it has any: a document kind that grades
+    nothing mechanically declares no goal-state checks to say are missing. A conversation's are shown on every axis
+    that includes them, an empty list included.
+    """
+    if not include_goal_outcomes:
+        return None
+    if context.judged_artifact is JudgedArtifact.DOCUMENT and not context.goal_outcomes:
+        return None
+    return list(context.goal_outcomes)
+
+
+def _asked(context: JudgeContext, *, include_goal_outcomes: bool) -> _Asked | None:
+    """What a call over ``context`` is asked about, by inputs; ``None`` where its evidence names no inputs, and the
+    call is keyed by its prompt."""
+    inputs = context.judge_evidence.inputs
+    if inputs is None:
+        return None
+    return _Asked(
+        intent=context.intent,
+        variation=dict(context.variation),
+        goals=_shown_goals(context, include_goal_outcomes=include_goal_outcomes),
+        evidence=dict(inputs),
+    )
 
 
 def _user_prompt(
@@ -1040,21 +1128,13 @@ def _user_prompt(
     empty — what makes it a lower bound — and cannot drift from it.
 
     :param intent: The template's intent.
-    :ptype intent: str
     :param variation: The case's variation, rendered.
-    :ptype variation: str
     :param subject: The kind's rendering of the candidate, or ``None`` to leave its section out.
-    :ptype subject: str | None
     :param goals: The goal-state outcomes, rendered, or ``None`` to leave their section out.
-    :ptype goals: str | None
     :param case_material: What the output is judged against.
-    :ptype case_material: str
     :param artifact: The output under review, or the transcript.
-    :ptype artifact: str
     :param document: Whether the output is a document, which picks the headings.
-    :ptype document: bool
     :return: The user prompt.
-    :rtype: str
     """
     sections = ["# Scenario", f"**Intent:** {intent}", "", "# Variation params", variation, ""]
     if subject is not None:

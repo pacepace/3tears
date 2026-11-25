@@ -4,15 +4,35 @@
 
 | What | Recorded |
 |---|---|
-| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-10, over the pages built at `7601153ed` |
+| On | 2026-11-03, at head `28efc1fd1`, the writer's turns; the judge's calls on 2026-11-14, over the pages built at `67c222242`; re-keyed by inputs on 2026-11-15, $0 |
 | Reports | 14: 2 arms x 7 held-out cases, once each, about 12.4 writer turns a report |
 | Writer | `claude-sonnet-5-5` at effort `medium`, analyst and editor: $6.90 |
-| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.63 |
-| Total | $7.53 |
+| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.28 |
+| Total | $7.18 |
 
-The judge reads each report's page as the package lays it out, so a change to what that page prints (its words, its
-figures' precision) moves every judge call's key: the judge's calls are recorded again with the `RECORD=1` command
-below, and the writer's turns replay free.
+The judge reads each report's page as the package lays it out, but each of its calls is keyed by what the page was
+rendered from, not by the page's text: the report document the writer stored, the snapshot it was written over, its
+open findings, and the criterion asked (format 4, the table in `testing/recorded_completions.py`). So a change to what
+the page prints (its words, its figures' precision) replays every judge call as recorded, for nothing. A replay then
+checks the plumbing and the arithmetic, not the judge's opinion of today's page: that is the paid lane's job. Each
+line also keeps `prompt_key`, the key its prompt had when it was recorded, so a replay counts the calls it served over a
+page rendered otherwise since, and the run says how many among its disclosures (`judge: N call(s) replayed over a page
+rendered otherwise since it was recorded`).
+
+**When an input moves, the replay says so.** A call whose inputs moved (a report written again, a case frozen again,
+a criterion reworded) is no longer found, and it is never dropped in silence. A scoring call the recording does not
+hold fails that arm's run at the miss, and the eval exits 1. The pairwise pass stops at the first call it does not
+hold and ends `failed`, so the run prints no share and exits 1. Either way the message names `judge.jsonl`, the call's
+inputs, its key, and each input that differs from the nearest recorded call, by its path
+(`evidence.pair[0].document`). If you meant the change, record the judge again with the `RECORD=1` command below, and
+re-pin the tests that read its shares, saying why.
+
+The recording was keyed by each call's prompt until 2026-11-15, when
+`packages/evals/scripts/rekey_judge_recording.py` re-keyed its 112 lines in place: it replayed the rung at a commit
+whose pages matched every stored key, proved each line's request by recording it again (with no network) to its stored
+key, and wrote the key of its inputs. Only `key`, `recorder_version` and the added `inputs` changed; every response,
+cell and index is as recorded. Each line's old key was then kept as its `prompt_key`, taken line for line from the
+format-3 file in git, for $0.
 
 A file deleted or gone stale is refused by name, with the key that would record it: `judge.jsonl` and
 `OPENROUTER_API_KEY`, or the writer's first turn file and `ANTHROPIC_API_KEY`.
@@ -50,8 +70,9 @@ the ones it sets today:
 
 The judge's floor is one call with no page in it, $0.0101: its 2,048-token output cap and 2,048 prompt tokens at
 OpenRouter's rates. The run is refused before any arm launches when an arm's reports and judging, or the pass, could
-pass its part at that floor. The pages a call reads are priced only once they are written, and the cap is checked
-between cells, so the cells in flight when an arm's part runs out can finish past it.
+pass its part at that floor. The pages a call reads are priced only once they are written: a case's judging is then
+priced in full and admitted against what its run has left, and a case it does not fit is set aside unjudged, so an
+arm's judging stays within its part wherever the judge's price ceiling bounds what it is billed.
 
 ## When a recording run is cut short
 
@@ -76,6 +97,6 @@ part of what each call is matched on: change one after recording, and record the
 
 ## What a recording is keyed by
 
-A turn recording is keyed by everything it does not check: the arm, the skill's digest, the model, the effort, the
+A judge call is keyed by its inputs, above. A turn recording is keyed by everything it does not check: the arm, the skill's digest, the model, the effort, the
 revisions and the case's snapshot. Edit `skills/lead-first.md`, or refreeze a case, and its old recordings are no
 longer found: a run with no key refuses again, and one with both keys records them afresh.

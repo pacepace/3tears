@@ -79,6 +79,7 @@ from threetears.evals.analysis.report.blocks import (
     TrialBlock,
     fold_anchor,
 )
+from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.html_parts import (
     KIT_JS,
@@ -98,7 +99,13 @@ from threetears.evals.analysis.report.html_parts import (
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY, check_definition
+from threetears.evals.analysis.style import (
+    CANNOT_TELL_APART,
+    CANNOT_TELL_APART_PHRASE,
+    EVIDENCE_TERM,
+    GLOSSARY,
+    check_definition,
+)
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -117,14 +124,12 @@ def report_html(report: Report, *, static: bool = False) -> str:
     """Render a report as one standalone HTML page whose one script is the kit's, or, ``static``, with none.
 
     :param report: The report.
-    :ptype report: Report
     :param static: Write the static page: no ``<script>``, no ``<link>``, and every chart drawn as inline SVG above its
         table of values. False (the default) writes the page with the kit's script, byte for byte as before the option
         existed.
-    :ptype static: bool
     :return: The page.
-    :rtype: str
     """
+    report = _levels_said(report)
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     parts = [
         *page_head(report.title, static=static),
@@ -165,16 +170,22 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     and the glossary they link follow it, closed, as its evidence record, each failed or lost trial's record in them.
 
     :param report: The campaign's page.
-    :ptype report: CampaignReport
     :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart drawn as inline SVG above its table.
-    :ptype static: bool
     :return: The page.
-    :rtype: str
     """
     if report.doc_page is not None:
         if not report.doc_trials:
             return doc_page_html(report.doc_page, static=static)
         return _links_in_sight(doc_page_html(report.doc_page, static=static, record=_appendix(report, static)))
+    # The page's own charts state each level once, and so does each aspect's fold, a page of its own a reader opens
+    # on its own (#1128).
+    before, after = report.headed_sections
+    report = report.model_copy(
+        update={
+            "blocks": _said_in_order(report.blocks, [*before, *after]),
+            "aspects": [fold.model_copy(update={"report": _levels_said(fold.report)}) for fold in report.aspects],
+        }
+    )
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
     parts = [
@@ -189,7 +200,6 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         "</header>",
     ]
     # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
-    before, after = report.headed_sections
     titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included. An aspect's
     # link names it by its declared short name where it has one (its fold's heading keeps the full label); a link is
@@ -458,6 +468,23 @@ def _prefixed(markup: str, prefix: str) -> str:
     return markup
 
 
+def _said_in_order(blocks: Sequence[ReportBlock], sections: Sequence[str]) -> list[ReportBlock]:
+    """``blocks`` with each chart's head set to state each interval level once
+    (:func:`~threetears.evals.analysis.report.chart_levels.levels_said`, #1128), read as the page lays them out: the
+    first screen, then ``sections`` in order, each section's blocks in their order."""
+    order = [at for at, block in enumerate(blocks) if block.section in FIRST_SCREEN]
+    order += [at for section in sections for at, block in enumerate(blocks) if block.section == section]
+    said = list(blocks)
+    for at, block in zip(order, levels_said([blocks[at] for at in order]), strict=True):
+        said[at] = block
+    return said
+
+
+def _levels_said(report: Report) -> Report:
+    """A report whose charts state each interval level once, read as its page lays them out (:func:`_said_in_order`)."""
+    return report.model_copy(update={"blocks": _said_in_order(report.blocks, _present_sections(report))})
+
+
 def _present_sections(report: Report) -> list[str]:
     """The sections after the first screen that hold a block, in reading order; never the glossary."""
     sections = [section for section in report.section_titles if section not in FIRST_SCREEN and section != "glossary"]
@@ -657,12 +684,21 @@ def _disclosure(block: DisclosureBlock) -> str:
     return f'<p class="disclosure" data-source="{escape(block.source)}">{text}</p>'
 
 
+#: The terms a verdict line links where its own words say them, rather than after its words: the undecided reading in
+#: its sentence form, and the graded evidence a line leading on a contrast the bet read states.
+_LINKED_IN_PLACE: dict[str, re.Pattern[str]] = {
+    CANNOT_TELL_APART: CANNOT_TELL_APART_PHRASE,
+    EVIDENCE_TERM: re.compile(r"\bevidence\b"),
+}
+
+
 def _verdict_markup(block: DisclosureBlock) -> str:
     """The verdict line's markup: each piece of its raw text escaped on its own (:meth:`DisclosureBlock.emphasis_pieces`),
     its decisions set in bold, its figures and guardrails regular, so one weight carries the one emphasis. The
     undecided reading is linked where its sentence form stands whole in one piece; where it does not (a phrase cut by
     the bold, or longer than the form allows), the line links the term after its words, as every other line does."""
-    linked = block.term != CANNOT_TELL_APART
+    phrase = _LINKED_IN_PLACE.get(block.term or "")
+    linked = phrase is None
     out = []
     for piece, bold in block.emphasis_pieces():
         said = code_html(piece)
@@ -670,25 +706,25 @@ def _verdict_markup(block: DisclosureBlock) -> str:
         # earlier one may cross a span while a whole one follows it
         found = (
             None
-            if linked
+            if linked or phrase is None
             else next(
                 (
                     match
-                    for match in CANNOT_TELL_APART_PHRASE.finditer(piece)
+                    for match in phrase.finditer(piece)
                     if "`" not in match.group(0) and not piece.count("`", 0, match.start()) % 2
                 ),
                 None,
             )
         )
-        if found is not None:
+        if found is not None and block.term is not None:
             said = (
                 code_html(piece[: found.start()])
-                + term_link(CANNOT_TELL_APART, escape(found.group(0)))
+                + term_link(block.term, escape(found.group(0)))
                 + code_html(piece[found.end() :])
             )
             linked = True
         out.append(f"<strong>{said}</strong>" if bold else said)
-    if block.term is not None and (block.term != CANNOT_TELL_APART or not linked):
+    if block.term is not None and (phrase is None or not linked):
         out.append(" " + term_link(block.term, f"({escape(block.term)})", css="term"))
     return "".join(out)
 
@@ -784,9 +820,7 @@ def _links_in_sight(page: str) -> str:
     is. A link this cannot redraw keeps the target it was written with, and is recorded; the page always renders.
 
     :param page: The page, as the serializer laid it out.
-    :ptype page: str
     :return: The page, every link landing in sight.
-    :rtype: str
     """
     try:
         outline = _Outline(page)

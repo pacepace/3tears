@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import host_declarations_digest
+from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.service import campaign_report
 from threetears.evals.analysis.campaign_title import declared_title, title_arm_name

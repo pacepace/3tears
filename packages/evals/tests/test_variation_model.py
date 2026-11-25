@@ -1147,10 +1147,14 @@ def test_a_step_changing_a_dimension_s_judge_pin_stops_the_walk_naming_it():
     price = history_launch_pricer(host)(_quote(template_id=second.id))
 
     assert price.predicted_usd is None
-    assert price.basis.endswith(
+    walk, _, siblings = price.basis.partition("; nor has any other template of kind ")
+    assert walk.endswith(
         f"; revision 1 of {first.name!r} cannot price it: the step to revision 2 changed the judged dimensions or "
         "their judge pins"
     ), price.basis
+    assert siblings.startswith(f"{second.candidate_kind!r} a priced result on subject "), (
+        "an unpriced arm says its siblings price nothing either (#948)"
+    )
 
 
 def test_a_revision_with_priced_results_of_its_own_is_priced_from_them_alone():

@@ -2,7 +2,7 @@
 
 A resolver (one per kind, in a ``resolve_*`` module's ``RESOLVERS``) turns a stored chart's
 :class:`~threetears.evals.kernel.chart_query.ChartSpec` into the kit's chart data, reading the rows its query
-selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owner of that selection). It is handed a
+selects (:func:`~threetears.evals.analysis.report.rows.query_rows`, the one owner of that selection). It is handed a
 :class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the page design's §3, first written for the
 retired planned page) are here, once:
 
@@ -46,10 +46,11 @@ retired planned page) are here, once:
 - **A config's colour** (:func:`factor_token`, :func:`factor_legend`): a chart of a factorial grid's configs colours
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
-  stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
-- **An interval's level** (:func:`~threetears.evals.analysis.report.forms.interval_level`): one form wherever it
-  prints, a chart's head and a table's cell alike: where its family corrects its comparisons together, the joint
-  guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input states it, never rounded.
+  stressed one's, so labels never bury the points; narrow, the arm's letter tag.
+- **An interval's level** (:func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`): one
+  form wherever it prints, a chart's head and a table's cell alike: where its family corrects its comparisons
+  together, the joint guarantee they hold at (``95% (adjusted for 16 comparisons)``); any other level as the input
+  states it, never rounded.
 - **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted
@@ -76,16 +77,12 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY, POINTS
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem, ScatterPoint
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    figure_unit,
-    held_kind,
-    input_check_name,
-    reader_name,
-    resolve,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.names import input_check_name, reader_name
+from threetears.evals.analysis.report.keys.resolve import figure_unit, held_kind, resolve
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, quantity, series_token
-from threetears.evals.analysis.report.words import judged_name, label_case
+from threetears.evals.analysis.report.words import label_case
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
@@ -109,7 +106,7 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
-from threetears.evals.analysis.report_rows import SourceRow, query_rows
+from threetears.evals.analysis.report.rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
@@ -143,6 +140,7 @@ __all__ = [
     "measure_words",
     "misses_line",
     "missing_note",
+    "own_fmt",
     "point_labels",
     "reference_line",
     "separated",
@@ -168,7 +166,7 @@ class ChartContext:
     """One chart being resolved: what the plan stores of it, the input it reads, and the page's look.
 
     :ivar spec: The stored chart.
-    :ivar look: The page's look: arm colours, tags, names, order, survivors and the recommended arm.
+    :ivar look: The page's look: arm colours, tags, marks, order and reader names.
     :ivar title: The chart's title as its block carries it: the plan's, else the section's headline.
     :ivar forms: The page's number forms, which every figure the chart draws is spelled by, over the input it reads.
     """
@@ -193,7 +191,6 @@ class ChartContext:
         """Every row the chart's query selects, as the plan checks read them.
 
         :return: The rows, in the input's order.
-        :rtype: list[SourceRow]
         """
         return query_rows(self.spec.query, self.report_input)
 
@@ -201,9 +198,7 @@ class ChartContext:
         """The refusal of this chart: its kind, its source and why it cannot be drawn.
 
         :param why: Why, as a clause.
-        :ptype why: str
         :return: The error to raise.
-        :rtype: UnresolvableReference
         """
         return UnresolvableReference(
             f"the {self.spec.kind!r} chart over {self.spec.query.source!r} ({self.title!r}) cannot be drawn: {why}"
@@ -213,9 +208,7 @@ class ChartContext:
         """``arm_ids`` in the order the chart shows arms: its query's arms where it lists them, else the page's.
 
         :param arm_ids: The arms the chart draws.
-        :ptype arm_ids: Iterable[str]
         :return: The same arms, in the chart's order.
-        :rtype: list[str]
         """
         given = list(dict.fromkeys(arm_ids))
         if not self.spec.query.arms:
@@ -258,18 +251,13 @@ def chart_block(
     :data:`~threetears.evals.analysis.report.parts.model.WRITER_SECTION`, which the page that lays it out ignores.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param data: The kit's chart data.
-    :ptype data: KitChart
     :param read_at: The unit its values table spells values at where the format names none: a chart of what an
         analysis computes (two arms' difference, a lever's effect) reads them at its quantity's unit, so a point
         prints to one decimal as its key and note do, never at the float's four figures; empty for the format's.
-    :ptype read_at: str
     :param table_unit: The unit its values table writes on a figure and after an interval standing alone in its
         column, where its format names none (``pts`` beside a ``+num`` change, number rule 3); None for ``read_at``.
-    :ptype table_unit: str | None
     :return: The block.
-    :rtype: ChartBlock
     """
     kind = context.spec.kind
     if kind == "table":
@@ -297,19 +285,12 @@ def money_drawn(
     (:func:`money_notes`, the one owner of money's words), so no chart draws money a thousand times over unstated.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param data: The kit's chart data.
-    :ptype data: KitChart
     :param notes: Code's other lines under it.
-    :ptype notes: Sequence[str]
     :param money: Each money figure it draws, by key, with the quantity it is drawn as.
-    :ptype money: Iterable[tuple[str, Quantity]]
     :param read_at: As :func:`chart_block` reads it.
-    :ptype read_at: str
     :param table_unit: As :func:`chart_block` reads it.
-    :ptype table_unit: str | None
     :return: The drawn chart.
-    :rtype: Drawn
     """
     lines = tuple(notes)
     per = tuple(line for line in money_notes(context.report_input, money) if line not in lines)
@@ -323,9 +304,7 @@ def floor_rate(floor: FloorRead) -> str:
     beside a pass rate the page reads whole. A floor with neither (a cost floor) keys as before.
 
     :param floor: The floor's reading on one arm.
-    :ptype floor: FloorRead
     :return: The rate's key; its words, or empty, for a floor on no rate.
-    :rtype: str
     """
     if floor.reading:
         return floor.reading
@@ -338,11 +317,8 @@ def figure_kind(context: ChartContext, key: str) -> str:
     (:func:`~threetears.evals.analysis.report.figure_keys.held_kind`).
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param key: The measure or judged dimension drawn.
-    :ptype key: str
     :return: ``judged``, ``trial`` or ``measure``.
-    :rtype: str
     """
     return "judged" if context.query.source == "judged" else held_kind(context.report_input, key)
 
@@ -357,15 +333,10 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
     register; set inside a sentence (``prose``), it keeps its own case.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The key.
-    :ptype key: str
     :param kind: A contrast's kind, where the key is a contrast's.
-    :ptype kind: str | None
     :param prose: Whether the name sits inside a sentence, where it keeps its own case.
-    :ptype prose: bool
     :return: The name.
-    :rtype: str
     """
     named = _reader_name(report_input, key, kind=kind)
     return named if prose else label_case(named)
@@ -403,7 +374,13 @@ def money_noun(report_input: ReportInput, key: str) -> str:
 
 
 def money_words(
-    report_input: ReportInput, key: str, drawn: Quantity, *, kind: str | None = None, name: str = "", prose: bool = False
+    report_input: ReportInput,
+    key: str,
+    drawn: Quantity,
+    *,
+    kind: str | None = None,
+    name: str = "",
+    prose: bool = False,
 ) -> str:
     """What a reader calls a measure (:func:`measure_words`, or ``name`` where the chart names it otherwise) with the
     count its money is drawn per in it, as the one owner of money's words writes it
@@ -411,20 +388,13 @@ def money_words(
     1,000,000 reads ``Cost per 1,000,000 calls``, never both counts; any other figure's words as they are.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure, judged dimension or scoreboard figure.
-    :ptype key: str
     :param drawn: How its figures are drawn.
-    :ptype drawn: Quantity
     :param kind: A contrast's kind, where the key is a contrast's.
-    :ptype kind: str | None
     :param name: The words the chart names it by, where not its measure's.
-    :ptype name: str
     :param prose: Whether the words sit inside a sentence, where the measure's name keeps its own case
         (:func:`measure_words`).
-    :ptype prose: bool
     :return: The words.
-    :rtype: str
     """
     named = name or _money_name(report_input, key, kind=kind, prose=prose)
     return drawn.label(named, money_noun(report_input, key))
@@ -456,11 +426,8 @@ def money_notes(report_input: ReportInput, drawn: Iterable[tuple[str, Quantity]]
     its own count.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param drawn: Each money figure the chart draws, by key, with its quantity.
-    :ptype drawn: Iterable[tuple[str, Quantity]]
     :return: The lines.
-    :rtype: list[str]
     """
     lines: list[str] = []
     for key, quantity_drawn in drawn:
@@ -501,13 +468,9 @@ def contrast_groups(
     the lead one (the first asked, else the first), as the input's by-arm maps are.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param contrasts: The contrasts it selects.
-    :ptype contrasts: Sequence[Contrast]
     :param keys: Measures to take first, in this order; the rest follow in the contrasts' order.
-    :ptype keys: Iterable[str]
     :return: The groups, a measure's together, its aspects in the contrasts' order.
-    :rtype: list[ContrastGroup]
     """
     aspects = context.report_input.aspects
     lead = next((aspect.id for aspect in aspects if aspect.asked), next((aspect.id for aspect in aspects), None))
@@ -532,13 +495,9 @@ def contrast_words(report_input: ReportInput, contrast: Contrast, aspect: str | 
     (:class:`ContrastGroup`).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param contrast: The contrast.
-    :ptype contrast: Contrast
     :param aspect: The aspect's reader name, where the reader is told it; None where not.
-    :ptype aspect: str | None
     :return: The words.
-    :rtype: str
     """
     words = measure_words(report_input, contrast.measure, kind=contrast.kind)
     return ASPECT_MEASURE_TEMPLATE.format(measure=words, aspect=aspect) if aspect is not None else words
@@ -548,15 +507,10 @@ def figure_stat(report_input: ReportInput, key: str, arm: str, aspect: str = "")
     """One arm's figure on a measure or judged dimension, on the query's aspect where the key holds it, else overall.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension.
-    :ptype key: str
     :param arm: The arm.
-    :ptype arm: str
     :param aspect: The query's aspect; empty for the lead aspect's figures.
-    :ptype aspect: str
     :return: The figure; None where the input holds none.
-    :rtype: Stat | None
     """
     for table in (report_input.measures, report_input.judged):
         if key in table:
@@ -577,13 +531,9 @@ def stat_value(report_input: ReportInput, key: str, stat: Stat) -> tuple[float, 
     """The value a figure is drawn at, and the statistic it is (this module's figure value).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure the figure is on.
-    :ptype key: str
     :param stat: The figure.
-    :ptype stat: Stat
     :return: ``(value, statistic)``, ``statistic`` being ``mean``, ``p50`` or ``p95``; None where it holds none.
-    :rtype: tuple[float, str] | None
     """
     if stat.mean is not None:
         return float(stat.mean), "mean"
@@ -607,15 +557,10 @@ def computed_interval(
     the arm's overall figure, or reads none (no count, no rate, a rate of none or all).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension.
-    :ptype key: str
     :param arm: The arm.
-    :ptype arm: str
     :param stat: The figure a chart draws.
-    :ptype stat: Stat
     :return: ``((low, high), level)``; None for none.
-    :rtype: tuple[tuple[float, float], float] | None
     """
     if stat.mean is None or stat.ci is not None or stat.half_width is not None or stat.sem is not None:
         return None
@@ -651,9 +596,7 @@ def computed_notes(context: ChartContext) -> tuple[str, ...]:
     once, that the interval is read on the distinct cases, at the widest spread the repeats allow; nothing otherwise.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :return: The note, or none.
-    :rtype: tuple[str, ...]
     """
     if not context.level.endswith(COMPUTED):
         return ()
@@ -681,15 +624,10 @@ def figure_interval(context: ChartContext, key: str, arm: str, stat: Stat) -> tu
     is computed here (:data:`COMPUTED`), the one code computes (:func:`computed_interval`); None for neither.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param key: The measure or judged dimension.
-    :ptype key: str
     :param arm: The arm.
-    :ptype arm: str
     :param stat: The figure.
-    :ptype stat: Stat
     :return: ``(low, high)``, in the figure's units; None for none.
-    :rtype: tuple[float, float] | None
     """
     own = stat_interval(stat)
     if own is not None or not context.level.endswith(COMPUTED):
@@ -702,9 +640,7 @@ def stat_interval(stat: Stat) -> tuple[float, float] | None:
     """A figure's interval: its ``ci``, else its mean plus or minus its half-width; None for neither.
 
     :param stat: The figure.
-    :ptype stat: Stat
     :return: ``(low, high)``, in the figure's units; None where it carries none.
-    :rtype: tuple[float, float] | None
     """
     if stat.ci is not None:
         return float(stat.ci[0]), float(stat.ci[1])
@@ -717,9 +653,7 @@ def spread(stat: Stat) -> float | None:
     """A figure's 95% half-width for the descriptive rule: 1.96 standard errors, else its half-width.
 
     :param stat: The figure.
-    :ptype stat: Stat
     :return: The half-width, in the figure's units; None where it carries neither.
-    :rtype: float | None
     """
     if stat.sem is not None:
         return _Z95 * float(stat.sem)
@@ -731,11 +665,8 @@ def separated(change: float, spreads: Sequence[float | None]) -> bool | None:
     module's descriptive rule).
 
     :param change: The change, in the figures' units.
-    :ptype change: float
     :param spreads: Each figure's 95% half-width (:func:`spread`).
-    :ptype spreads: Sequence[float | None]
     :return: True or False; None where a spread is missing, and the rule cannot be read.
-    :rtype: bool | None
     """
     if any(one is None for one in spreads):
         return None
@@ -746,11 +677,8 @@ def reference_line(context: ChartContext, drawn: Quantity) -> ChartReference | N
     """The chart's stored reference line, read off the input in display units, labelled in code's words.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param drawn: The quantity the chart draws.
-    :ptype drawn: Quantity
     :return: The line; None where the plan stores none.
-    :rtype: ChartReference | None
     :raises UnresolvableReference: The reference's key no longer resolves to a number.
     """
     if not context.spec.reference:
@@ -801,15 +729,10 @@ def criterion_label(context: ChartContext, criterion: Criterion, value: float, d
     no line any task declared; a task's criterion on a chart of overall figures names its task, or each task).
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param criterion: The criterion the line sits at.
-    :ptype criterion: Criterion
     :param value: Its threshold, in display units.
-    :ptype value: float
     :param drawn: The quantity the chart draws.
-    :ptype drawn: Quantity
     :return: The label.
-    :rtype: str
     """
     place = criterion_place(criterion)
     per_slice = context.query.source in _PER_SLICE
@@ -867,17 +790,11 @@ def criterion_line(
     where lower is, labelled in code's words.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param key: The measure or judged dimension drawn.
-    :ptype key: str
     :param drawn: The quantity the chart draws it as.
-    :ptype drawn: Quantity
     :param where: Where the chart reads the measure (:data:`CriterionWhere`).
-    :ptype where: CriterionWhere
     :param statistic: The statistic drawn: ``mean``, ``p50`` or ``p95``.
-    :ptype statistic: str
     :return: The line; None where no criterion, or more than one line, reads it there.
-    :rtype: ChartReference | None
     """
     held = context.report_input
     aspect = context.query.aspect or lead_aspect(held)
@@ -910,11 +827,8 @@ def misses_line(value: float, line: ChartReference | None) -> bool:
     """Whether a drawn value misses a floor (under it) or a budget (over it); False for any other line or none.
 
     :param value: The value, in display units.
-    :ptype value: float
     :param line: The chart's line.
-    :ptype line: ChartReference | None
     :return: Whether it misses.
-    :rtype: bool
     """
     if line is None:
         return False
@@ -930,11 +844,8 @@ def slice_name(context: ChartContext, item: Stratum | Task) -> str:
     two that would print alike there each read as their id.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param item: The stratum or task.
-    :ptype item: Stratum | Task
     :return: Its name.
-    :rtype: str
     """
     if isinstance(item, Stratum):
         return reader_name("stratum", item.id, context.report_input, aspect=item.aspect)
@@ -958,11 +869,8 @@ def slice_keys(context: ChartContext, slices: Sequence[Stratum | Task]) -> list[
     """The measures a chart of strata or tasks reads: the ones its query names, else the one its slices hold.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param slices: The slices it selects.
-    :ptype slices: Sequence[Stratum | Task]
     :return: The measures, by key.
-    :rtype: list[str]
     :raises UnresolvableReference: The query names none, and the slices hold other than one.
     """
     if context.query.measures:
@@ -1011,13 +919,9 @@ def drawn_keys(kind: str, query: ChartQuery, report_input: ReportInput) -> list[
     - over any other source: none.
 
     :param kind: The chart's kind.
-    :ptype kind: str
     :param query: The chart's query.
-    :ptype query: ChartQuery
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The measures, by key, in the order the chart reads them.
-    :rtype: list[str]
     """
     source = query.source
     if source == "scoreboard":
@@ -1055,11 +959,8 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
     of them, so they read alike on one axis.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param values: Each measure the chart draws, by key, to the figures it draws of it, in the input's units.
-    :ptype values: Mapping[str, Sequence[float]]
     :return: Each measure's quantity, by key.
-    :rtype: dict[str, Quantity]
     """
     forms = context.forms
     units = {key: figure_unit(context.report_input, key) for key in values}
@@ -1069,14 +970,24 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
     alike = {key: forms.chart_quantity(units[key]) for key in values}
     shown: dict[Quantity, list[float]] = {}
     lead: dict[Quantity, str] = {}
-    first: dict[Quantity, str] = {}
+    members: dict[Quantity, list[str]] = {}
     for key, figures in values.items():
         lead.setdefault(alike[key], units[key])
-        first.setdefault(alike[key], key)
+        members.setdefault(alike[key], []).append(key)
         shown.setdefault(alike[key], []).extend(figure * alike[key].factor for figure in figures)
-    # The measures drawn alike share one quantity, decided today over all of their figures and named by the first.
+    # The measures drawn alike share one quantity, decided over all of their figures and named by the finest of the
+    # measures it draws a figure of (:func:`_finest`): every mark carries its own measure's text at its own precision,
+    # and a value the kit draws from the format alone never reads coarser than its measure's form, which a coarser
+    # format would round (``91.5%`` drawn as ``92``). A measure the chart draws no figure of names nothing.
     drawn = {
-        each: forms.chart_quantity(lead[each], shown[each], measure=first[each], kind=kinds[first[each]])
+        each: _finest(
+            [
+                forms.chart_quantity(lead[each], shown[each], measure=key, kind=kinds[key])
+                for key in members[each]
+                if values[key]
+            ]
+            or [forms.chart_quantity(lead[each], shown[each], measure=members[each][0], kind=kinds[members[each][0]])]
+        )
         for each in shown
     }
     # Each figure at its own factor, times what the class's money is drawn at past it (a thousand where some amount is
@@ -1087,6 +998,35 @@ def unit_quantities(context: ChartContext, values: Mapping[str, Sequence[float]]
         factor = alike[key].factor * drawn[alike[key]].factor / lead_factor
         quantities[key] = dataclasses.replace(drawn[alike[key]], factor=factor)
     return quantities
+
+
+def own_fmt(context: ChartContext, key: str, drawn: Quantity) -> str | None:
+    """The format a panel that draws one measure alone names: its measure's own, where the measures drawn alike on the
+    chart share a finer one (:func:`unit_quantities`), so each panel's axis reads at its measure's precision; None
+    where it is the chart's, for money (one form over every amount) and for a panel of no one measure.
+
+    :param context: The chart being resolved.
+    :param key: The one measure the panel draws; empty for none.
+    :param drawn: The quantity the chart draws it as.
+    :return: The panel's own format, or None.
+    """
+    if not key or drawn.unit == MONEY:
+        return None
+    own = context.forms.chart_quantity(
+        figure_unit(context.report_input, key), measure=key, kind=figure_kind(context, key)
+    ).fmt
+    return own if own != drawn.fmt and own.partition(":")[0] == drawn.fmt.partition(":")[0] else None
+
+
+def _finest(candidates: Sequence[Quantity]) -> Quantity:
+    """Of the quantities the measures drawn alike would each name, the one whose format names the most decimals
+    (``pct:1`` before ``pct:0``); the first where none names any (money, whose one form is chosen over every amount).
+
+    :param candidates: Each measure's quantity, in the order the chart reads the measures; at least one.
+    :return: The quantity the axis is named by.
+    """
+    named = [(int(places), at) for at, one in enumerate(candidates) if (places := one.fmt.rpartition(":")[2]).isdigit()]
+    return candidates[max(named, key=lambda one: (one[0], -one[1]))[1]] if named else candidates[0]
 
 
 def _a_panel_per_measure(kind: str, query: ChartQuery) -> bool:
@@ -1110,14 +1050,10 @@ def unit_refusal(kind: str, query: ChartQuery, report_input: ReportInput) -> str
     each measure in its own panel gives each panel its measure's unit and may read several.
 
     :param kind: The chart's kind.
-    :ptype kind: str
     :param query: The chart's query.
-    :ptype query: ChartQuery
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Why, as a clause; empty where the chart can be drawn in its units, or its kind reads no measure by key
         over that source.
-    :rtype: str
     """
     source = query.source
     if source not in _UNIT_RULED.get(kind, frozenset()):
@@ -1145,11 +1081,8 @@ def contrast_unit(report_input: ReportInput, contrast: Contrast) -> str:
     unit: the plan checks group a chart's contrasts and store its unit by it, and the one-unit rule compares it.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
     :return: ``points``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty.
-    :rtype: str
     """
     unit = figure_unit(report_input, contrast.measure, kind=contrast.kind)
     return "points" if quantity(unit, change=True) == quantity("points") else unit
@@ -1160,11 +1093,8 @@ def contrast_unit_of(report_input: ReportInput, key: str) -> str:
     (:func:`contrast_unit`): ``points`` for a rate, else its figures' own unit.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension.
-    :ptype key: str
     :return: ``points``, ``score``, a money unit, ``ms``, ``s``, any other declared unit, or empty.
-    :rtype: str
     """
     unit = figure_unit(report_input, key)
     return "points" if quantity(unit, change=True) == quantity("points") else unit
@@ -1184,9 +1114,7 @@ def missing_note(missing: Sequence[str]) -> tuple[str, ...]:
     """The caption naming each comparison a chart asks for that the input does not hold; nothing for none.
 
     :param missing: Each missing comparison, in words.
-    :ptype missing: Sequence[str]
     :return: The caption, or nothing.
-    :rtype: tuple[str, ...]
     """
     return (MISSING_TEMPLATE.format(missing="; ".join(missing)),) if missing else ()
 
@@ -1206,11 +1134,8 @@ def factor_token(report_input: ReportInput, arm: str) -> str | None:
     """A config's colour (this module's config colour): the kit's series colour at its first factor's level.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The config's arm.
-    :ptype arm: str
     :return: The kit colour token; None for an arm that ran no config, or an input with no factors.
-    :rtype: str | None
     """
     place = _first_factor_place(report_input, arm)
     return series_token(place) if place is not None else None
@@ -1220,11 +1145,8 @@ def factor_legend(report_input: ReportInput, arms: Iterable[str]) -> list[Legend
     """A config chart's legend: the first factor's levels the drawn configs run, each in its colour, in order.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arms: The configs drawn, by arm.
-    :ptype arms: Iterable[str]
     :return: The legend; None where no drawn arm ran a config.
-    :rtype: list[LegendItem] | None
     """
     if not report_input.factors:
         return None
@@ -1247,11 +1169,8 @@ def with_hollow_key(legend: list[LegendItem] | None, points: Iterable[ScatterPoi
     gate), so hollow is never a mark a reader must guess at; the legend as it is where none is.
 
     :param legend: The chart's legend, if it has one.
-    :ptype legend: list[LegendItem] | None
     :param points: Every point it draws, over every panel.
-    :ptype points: Iterable[ScatterPoint]
     :return: The legend.
-    :rtype: list[LegendItem] | None
     """
     if not any(point.hollow for point in points):
         return legend
@@ -1266,19 +1185,13 @@ def point_labels(context: ChartContext, arm: str, name: str, count: int) -> tupl
     """A scatter point's label at 560 px and wider, and below (this module's scatter labels).
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param arm: The point's arm.
-    :ptype arm: str
     :param name: What the point is called.
-    :ptype name: str
     :param count: How many points the panel it sits in draws.
-    :ptype count: int
-    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed or recommended,
-        else None; narrow, the arm's tag where it is labelled.
-    :rtype: tuple[str | None, str | None]
+    :return: ``(label, narrow_label)``: its name where the panel draws few points or it is stressed, else None;
+        narrow, the arm's tag where it is labelled.
     """
-    stressed = arm in (context.emphasis, context.look.recommended)
-    if count > _LABEL_ALL_UP_TO and not stressed:
+    if count > _LABEL_ALL_UP_TO and arm != context.emphasis:
         return None, None
     tag = context.look.arm(arm).tag if arm in context.look.arms else None
     return name, tag

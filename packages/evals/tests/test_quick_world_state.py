@@ -19,7 +19,8 @@ from threetears.evals import Eval, World
 from threetears.evals.quick import as_host
 from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import RecordedCall
-from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
+from threetears.evals.run import get_result_trace, list_results, list_runs
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 
@@ -233,9 +234,9 @@ async def test_a_world_less_eval_is_unchanged_it_opens_no_world_and_keeps_no_led
 @pytest.mark.parametrize(
     ("cases", "checks", "said"),
     [
-        ([{"lamp": "off", "dark": True}], [LIT_IFF_DARK], "case\\(s\\) 0 carry none"),
-        ([{"world": {"lamp": "off"}}], [LIT_IFF_DARK], "case 0's world is no Room"),
-        ([{"world": {"lamp": "dim", "dark": True}}], [LIT_IFF_DARK], "case 0's world is no Room"),
+        ([{"lamp": "off", "dark": True}], [LIT_IFF_DARK], "case\\(s\\) 1 carry none"),
+        ([{"world": {"lamp": "off"}}], [LIT_IFF_DARK], "case 1's world is no Room"),
+        ([{"world": {"lamp": "dim", "dark": True}}], [LIT_IFF_DARK], "case 1's world is no Room"),
         ([{"world": "off"}], [LIT_IFF_DARK], "a starting state maps each field to its value"),
         (CASES, ["state.colour == 1"], "reads state.colour"),
         (CASES, ['call_count("room.dim") == 0'], "names room.dim"),

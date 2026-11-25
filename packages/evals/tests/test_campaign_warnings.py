@@ -11,13 +11,9 @@ import pytest
 
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import (
-    CampaignReadings,
-    get_campaign,
-    CampaignReport,
-    campaign_report_markdown,
-    serialize_report,
-)
+from threetears.evals.analysis import CampaignReadings, CampaignReport, serialize_report
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.campaign.names import AspectNames
 
@@ -185,6 +181,10 @@ def test_each_guardrail_is_named_with_its_own_aspects_never_another_s() -> None:
 #: points even where both arms pass it on every case, so one guarded at five is undecided for the sample's size.
 _THIRTY = [{"n": index} for index in range(30)]
 
+#: The advice line a quick comparison's lead opens on, above its proof, where same leads current on 30 cases: its
+#: evidence (24) is past the bar, and the interval's low end is the one caveat.
+_ADVICE = "Advice: switch to same. At worst it is 2 points behind current. "
+
 
 def _right(case: dict[str, int], answer: str) -> bool:
     """Whether the answer is right."""
@@ -259,11 +259,14 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         if verdict.kind == "contrast" and verdict.name == "_right"
     ]
     lead, warning = _bold(page)
-    # The decision, then the figures it rests on, the interval's two ends at one precision, as a set reads: the near
-    # end of 0.0129 points takes the decimals that keep it off zero, and the far end reads at them too.
+    # The decision, then where same stands, the interval's two ends at one precision, as a set reads, the graded
+    # evidence and the counts it rests on. Read by the quick path's mixture bet in committed order, the interval reaches
+    # across zero, so it is said as how far each way it allows; the evidence is strong, yet with no question asked the
+    # even hedge holds half of it each way, short of a decision.
     assert lead == (
-        f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "
-        "Over 30 paired cases, the interval puts same between 0.01 and 43 points better.**"
+        f"**{_ADVICE}{right.heading}: {right.words}. Over 30 paired cases, same is 20 points ahead of current. The interval "
+        "allows same to be as much as 2 points worse or 46 better. The evidence that same is better is strong (24). "
+        "Of 30 trials each, Right score was met on 20 for current and 26 for same.**"
     )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
@@ -302,7 +305,7 @@ async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_o
         "26. The interval puts same between 0.01 and 43 points better.**"
     )
     led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
-    assert led.startswith("**Right score: ") and led.endswith(".**") and ", a lead" not in led
+    assert led.startswith(f"**{_ADVICE}Right score: ") and led.endswith(".**") and ", a lead" not in led
 
 
 async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_aspect_page_s_words() -> None:
@@ -335,8 +338,9 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
     lead, warning = _bold(result.page)
     assert accuracy.heading == "Accuracy"
     assert lead == (
-        f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
-        "same. Over 30 paired cases, the interval puts same between 0.01 and 43 points better.**"
+        f"**{_ADVICE}{accuracy.heading}: {accuracy.words}. Over 30 paired cases, same is 20 points ahead of current. The "
+        "interval allows same to be as much as 2 points worse or 46 better. The evidence that same is better is strong "
+        "(24). Of 30 trials each, Accuracy was right on 20 for current and 26 for same.**"
     )
     assert "same" in accuracy.words and "current" in accuracy.words
     assert warning.startswith("**same may do worse than current on the No secret score guardrail")
@@ -437,5 +441,5 @@ async def test_a_page_no_guardrail_warns_on_still_leads_on_its_first_grader() ->
         name="current vs same",
     ).run(store=":memory:")
     (lead,) = _warned(result.page.blocks, "verdict")
-    assert lead.startswith("Right score: ") and "same" in lead and "current" in lead
+    assert lead.startswith(f"{_ADVICE}Right score: ") and "same" in lead and "current" in lead
     assert _bold(result.page) == [f"**{lead}**"]

@@ -6,7 +6,7 @@ rate and bar counts them against the arm — but their round trip and their empt
 the cell's latency and cost as if each were a turn.
 
 **One predicate decides what a turn's time and spend are averaged over**:
-:func:`~threetears.evals.kernel.delivered_a_turn`. It leaves out the harness's faults and the failures
+:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`. It leaves out the harness's faults and the failures
 that took no turn — the candidate's model refused or errored straight away. A failure that DID take a turn
 — the host's turn budget ended it, the output cap cut it, the cell's deadline struck a pending call —
 stays in, because that time and spend are what failing cost the arm: leaving them out read a contestant
@@ -34,7 +34,7 @@ Pinned here, through a real store, the bundle, both reports, the frontier and a 
 Mutations that turn this file red: reading ``scored`` or ``all_observed`` for an undeclared cost or latency
 measure in ``summary_population``; widening ``delivered_a_turn`` to every candidate failure; the frontier's
 latency or cost not asking ``delivered_a_turn``; ``_accuracy_leaves`` reading a failure's ``match`` as a hit;
-dropping ``_failures_as_misses``; dropping ``n_no_turn`` from ``_cell_measures``; leaving the blank under an
+dropping ``failures_as_misses``; dropping ``n_no_turn`` from ``cell_measures``; leaving the blank under an
 all-failed stratum's cost or latency in the strata table.
 """
 
@@ -59,7 +59,8 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
-from threetears.evals.kernel import CellFacts, EvalStorage, StratumFacts, delivered_a_turn
+from threetears.evals.kernel import CellFacts, EvalStorage, StratumFacts
+from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.schema import EvalResult, EvalTestCase, GoalStateOutcome, LatencyMetrics, RoleUsage
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY, count_delivered_turns

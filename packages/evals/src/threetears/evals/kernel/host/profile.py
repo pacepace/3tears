@@ -88,7 +88,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.kernel.host.bars import BarRegistry
 from threetears.evals.kernel.host.kinds import KindContract
-from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.host.measures import ClaimReader, MeasureRegistry, MeasureRereader
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
@@ -277,6 +277,27 @@ class HostProfile:
     the host does not have with an empty set, never None, so a misspelled TOOL is refused too.
     """
 
+    measure_rereader: MeasureRereader | None = None
+    """How this host reads a stored result's measures again under its current definitions.
+    See :data:`~threetears.evals.kernel.host.measures.MeasureRereader`.
+
+    ``None`` for a host that cannot: a re-measure (``threetears.evals.run.remeasure_run``) then refuses any run one
+    of whose results holds a value of a measure whose definition moved, and such a run stays in the cell of the
+    definitions it was read under. A run none of whose results holds such a value needs no reader.
+    """
+
+    claim_readers: Mapping[str, ClaimReader] = field(default_factory=dict)
+    """PROVISIONAL. How this host reads each claim criterion's grade into its own readings of it, by criterion name.
+    See :data:`~threetears.evals.kernel.host.measures.ClaimReader`.
+
+    One reader per criterion some measure derives from (``MetricDescriptor.derived_from``), answering every such
+    measure of it: a back-announce order against the play order a cell's ``ClaimEvidence.session`` holds, a game state
+    a narrator's session claims state against the roll log. The engine runs it after the criterion's grade lands, and
+    again on a re-judge, on settling a row pending its trace, and on a re-measure of a moved definition; its readings
+    are stored with the criterion's tally and ranked, withheld and lost with the criterion's own. Empty is the normal
+    case. A reader no measure derives from, or a derived measure whose criterion has no reader, is refused here.
+    """
+
     kinds: tuple[KindContract, ...] = ()
     """What each candidate kind's runs carry beyond the engine's own fields: its overlays and its spec.
 
@@ -368,7 +389,8 @@ class HostProfile:
             blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind
             contract's lever is registered in
             :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
-            for every run, or ``release_label`` names no registered ``label``.
+            for every run, ``release_label`` names no registered ``label``, or a claim reader and the measures
+            derived from claim criteria name different criteria.
         """
         self._refuse_overlapping_kind_contracts()
         self._refuse_a_kind_lever_registered_by_hand()
@@ -389,6 +411,7 @@ class HostProfile:
         self._refuse_an_unsound_seat()
         self._refuse_a_malformed_listing_elision()
         self._refuse_a_release_label_that_is_not_a_label()
+        self._refuse_an_unmatched_claim_reader()
 
     def kind_contract(self, kind: str) -> KindContract:
         """The contract this host declares for ``kind`` — a contract declaring nothing when it declares none.
@@ -398,9 +421,7 @@ class HostProfile:
         a refusal reads the same whether the host declared the kind's models or not.
 
         :param kind: A kind's name, as a template's ``candidate_kind`` spells it.
-        :ptype kind: str
         :return: The declared contract, or an empty one.
-        :rtype: KindContract
         """
         return next((contract for contract in self.kinds if contract.kind == kind), None) or KindContract(kind)
 
@@ -408,9 +429,7 @@ class HostProfile:
         """Why ``model`` may not write an analysis for this host, or ``None`` when it may.
 
         :param model: The writer model id, as requested or as the host's client resolved its default.
-        :ptype model: str
         :return: The refusal, naming the allowed models; ``None`` when the host declares no list or lists ``model``.
-        :rtype: str | None
         """
         if not self.analysis_writer_models or model in self.analysis_writer_models:
             return None
@@ -428,10 +447,8 @@ class HostProfile:
         :func:`~threetears.evals.kernel.identity.derive_variant_identity`.
 
         :param run: The run, of any kind.
-        :ptype run: EvalRun
         :return: Lever name -> level. A run of a kind other than a contract's sits at that contract's
             "not a run of this kind" level on each of its levers.
-        :rtype: dict[str, SweepableValue]
         """
         levels = {
             CANDIDATE_MODEL_LEVER: SweepableValue.of(run.candidate_model, display=run.candidate_model),
@@ -540,6 +557,35 @@ class HostProfile:
                 f"host {self.host_id!r} names release_label {self.release_label!r}, which {what} — a release "
                 "label is a registered `label` sweepable naming the build that ran"
             )
+
+    def _refuse_an_unmatched_claim_reader(self) -> None:
+        """Refuse a claim reader no derived measure reads through, or a derived measure whose criterion has no reader.
+
+        Either way a reading would silently never be computed: a measure with no reader carries no value on any cell,
+        and a reader with no measure answers names the engine refuses. Checked where both are in hand.
+
+        :raises ProfileRegistrationError: A reader names a criterion no measure derives from, a derived measure names
+            a criterion with no reader, or a reader is not callable.
+        """
+        derived = {descriptor.derived_from for descriptor in self.measures.derived}
+        readers = set(self.claim_readers)
+        defects = [
+            f"measures {', '.join(sorted(d.name for d in self.measures.derived if d.derived_from == criterion))} "
+            f"derive from claim criterion {criterion!r}, and no claim reader is registered for it"
+            for criterion in sorted(c for c in derived - readers if c is not None)
+        ]
+        defects += [
+            f"a claim reader is registered for criterion {criterion!r}, and no measure derives from it "
+            "(MetricDescriptor.derived_from)"
+            for criterion in sorted(readers - derived)
+        ]
+        defects += [
+            f"the claim reader for criterion {criterion!r} is a {type(reader).__name__}, not a callable"
+            for criterion, reader in sorted(self.claim_readers.items())
+            if not callable(reader)
+        ]
+        if defects:
+            raise ProfileRegistrationError(f"host {self.host_id!r}: " + "; ".join(defects))
 
     def _refuse_an_engine_reserved_lever(self) -> None:
         """Refuse a host recovery rule for a lever name the engine already owns.
@@ -761,11 +807,8 @@ class HostProfile:
         judged and code-only templates alike, and a per-kind answer is false for one of them.
 
         :param run: The run.
-        :ptype run: EvalRun
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :return: Whether the run's rig had that seat.
-        :rtype: bool
         :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         self._require_apparatus("seats", dimension)
@@ -777,11 +820,8 @@ class HostProfile:
         """Whether ``kind``'s contract seats ``dimension`` — the declaration alone, before any run narrows it.
 
         :param kind: A kind's name, as a template's ``candidate_kind`` spells it.
-        :ptype kind: str
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :return: True when the kind's contract seats it, or declares no seats and so holds the kind to every dimension.
-        :rtype: bool
         """
         seated = self._seated(kind)
         return seated is None or dimension in seated
@@ -795,13 +835,9 @@ class HostProfile:
         have the seat and recorded nothing in it.
 
         :param run: The run.
-        :ptype run: EvalRun
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :param value: What the run's reader returned for it.
-        :ptype value: Any
         :return: ``value``, or :data:`UNSEATED_LEVEL`.
-        :rtype: Any
         :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         self._require_apparatus("apparatus_level", dimension)
@@ -830,14 +866,11 @@ class HostProfile:
           unjudged run) contradicts no declaration, so it is reported without the warning.
 
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :param observed: ``(run, value)`` for every run under consideration. Pass them all: one run that
             seats the dimension keeps it, and one run recording a level refutes the claim, so a
             caller that passes only the first would omit on the strength of the run that agreed.
-        :ptype observed: Iterable[tuple[EvalRun, Any]]
         :return: True when no kind present seats the dimension and nothing contradicts it, which is
             when a surface should behave as though the host never had it.
-        :rtype: bool
         :raises ValueError: No runs were passed. Answering without them is the unvalidated omission this
             method replaces, and it is available to a caller that simply forgets the argument — so
             it is refused rather than defaulted. Or ``dimension`` is not an apparatus dimension
@@ -920,12 +953,10 @@ class HostProfile:
         member while advertising a list that held neither.
 
         :param dimension: The input a campaign wants to sweep.
-        :ptype dimension: str
         :return: ``covered`` when the host's registry admits the name as an axis; ``uncovered``
             carrying the registry's reason otherwise. The registry cannot drift from itself
             because it is the same set of declarations the engine reads to bisect and to build
             variant keys.
-        :rtype: Coverage
         """
         refusal = self.sweepables.refuse_as_axis(dimension)
         return Coverage("covered") if refusal is None else Coverage("uncovered", refusal)
@@ -941,14 +972,12 @@ class HostProfile:
         dimension needs somebody to declare it, a witnessed one needs the scenario rewritten.
 
         :param dimension: The state dimension a scenario presumes.
-        :ptype dimension: str
         :return: ``inapplicable`` when this host instantiates no world at all — a different answer
             from ``uncovered``, and the one a consumer evaluating production traffic deserves;
             ``covered`` when a run can seed the dimension; ``uncovered`` naming the dimension
             otherwise. The reason names the **dimension**, never the area: "this area is
             unevaluable" is a conclusion this map is not entitled to draw, and an author told so
             would abandon a probe that another mechanism could have answered.
-        :rtype: Coverage
         """
         if self.world is None:
             return Coverage("inapplicable", "this host instantiates no simulated world")
@@ -979,14 +1008,12 @@ class HostProfile:
         so no cell's end state ever holds it and a check over it can never be established.
 
         :param path: A dotted path into the world, with the language's own root already stripped.
-        :ptype path: str
         :return: ``covered`` when a declared dimension covers the path and declares a ``read`` handle;
             ``uncovered`` naming the path otherwise — including on a host that instantiates no world
             at all, and for a dimension nothing reads back. The goal language
             roots ``state`` at declared dimensions only, so on such a host a state path names
             nothing a run could ever read, and a check over it is a typo or a check written for
             another host, not an inapplicable question.
-        :rtype: Coverage
         """
         if self.world is None:
             return Coverage(
@@ -1020,14 +1047,12 @@ class HostProfile:
         registered.
 
         :param path: A dotted path into the world, with the language's own root already stripped.
-        :ptype path: str
         :return: ``inapplicable`` when this host instantiates no world at all — a scenario on such a
             host presumes nothing this map can speak for; ``covered`` when a run can seed the
             dimension the path addresses; ``uncovered`` naming the path and the remedy otherwise.
             The two ``uncovered`` reasons differ because the remedies do, exactly as
             :meth:`representable`'s do: an unknown path needs the dimension declared or the
             expression corrected, a witnessed one needs the scenario rewritten.
-        :rtype: Coverage
         """
         if self.world is None:
             return Coverage("inapplicable", "this host instantiates no simulated world")

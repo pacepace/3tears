@@ -37,7 +37,6 @@ from threetears.evals.run.judge_service import (
     judge_config_ids_for,
 )
 from threetears.evals.schema.models import (
-    BUILTIN_JUDGE_CONFIG_PREFIX,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     GoalStateOutcome,
@@ -138,7 +137,7 @@ async def test_an_axis_s_built_in_identity_is_a_fingerprint_of_the_prompt_it_was
 
 def test_a_built_in_identity_is_the_prefix_and_twelve_hex_characters() -> None:
     config_id = builtin_judge_config_id("Score it.")
-    assert re.fullmatch(rf"{re.escape(BUILTIN_JUDGE_CONFIG_PREFIX)}[0-9a-f]{{12}}", config_id)
+    assert re.fullmatch(rf"{re.escape('builtin:')}[0-9a-f]{{12}}", config_id)
     assert not is_builtin_judge_config_id(None)
     assert not is_builtin_judge_config_id("0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
 

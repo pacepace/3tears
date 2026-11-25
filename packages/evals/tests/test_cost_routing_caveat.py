@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis import campaign_report_html, campaign_report_markdown, report_html, report_markdown
+from threetears.evals.analysis import campaign_report_html, report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT, priced_aspects
 from threetears.evals.analysis.report.model import FIRST_SCREEN, CampaignReport, DisclosureBlock, Report, TableBlock
 from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, Shape, shape_of

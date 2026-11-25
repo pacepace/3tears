@@ -16,13 +16,7 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, CampaignReadings, campaign_kind, campaign_readings
 from threetears.evals.analysis.campaign_readings import reading_name
-from threetears.evals.analysis.report.decision import (
-    evaluate_floor,
-    floor_projection,
-    floor_readings,
-    floor_subject,
-    read_floor,
-)
+from threetears.evals.analysis.floors import evaluate_floor, floor_projection, floor_readings, floor_subject, read_floor
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,

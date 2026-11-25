@@ -123,12 +123,9 @@ def world_prose_matches(expression: str, registry: WorldRegistry | None) -> tupl
     that declaration, not something this function can infer.
 
     :param expression: A goal-state expression.
-    :ptype expression: str
     :param registry: The host's world vocabulary, or None for a host that declares no world (nothing
         is prose there, so nothing is returned).
-    :ptype registry: WorldRegistry | None
     :return: The offending matches, in source order.
-    :rtype: tuple[TextMatch, ...]
     :raises DSLError: The expression does not parse.
     """
     if registry is None:
@@ -183,11 +180,8 @@ def call_parameter_matches(
     parameter the schema does not name are each refused, since none can say the value is not prose.
 
     :param expression: A goal-state expression.
-    :ptype expression: str
     :param reader: The host's ``(tool, action) -> parameter schema`` reader, or None.
-    :ptype reader: Callable[[str, str], Mapping[str, Any] | None] | None
     :return: ``(match, reason)`` per refused predicate, in source order.
-    :rtype: tuple[tuple[TextMatch, str], ...]
     :raises DSLError: The expression does not parse.
     """
     refused: list[tuple[TextMatch, str]] = []
@@ -221,13 +215,9 @@ def undefined_action(tool: str, action: str, actions: Callable[[str], frozenset[
     what a host answers for a tool it does not have.
 
     :param tool: The tool a call names.
-    :ptype tool: str
     :param action: The action a call names.
-    :ptype action: str
     :param actions: The host's ``tool -> action names`` reader, or None.
-    :ptype actions: Callable[[str], frozenset[str] | None] | None
     :return: One sentence naming the undefined action, or None.
-    :rtype: str | None
     """
     known = actions(tool) if actions is not None else None
     if known is None or action in known:
@@ -245,11 +235,8 @@ def undefined_fire_references(expression: str, world: WorldRegistry | None) -> t
     declared but not triggered is refused too — it arrives at t=0 and has no condition to fire.
 
     :param expression: A goal-state expression.
-    :ptype expression: str
     :param world: The host's world registry, or None for a host that declares no world.
-    :ptype world: WorldRegistry | None
     :return: One reason per name that is not a triggered dimension, in source order.
-    :rtype: tuple[str, ...]
     :raises DSLError: The expression does not parse.
     """
     return tuple(
@@ -268,11 +255,8 @@ def undefined_fired_dimension(name: str, world: WorldRegistry | None) -> str | N
     and its control are held to one rule.
 
     :param name: A dimension named as having fired.
-    :ptype name: str
     :param world: The host's world registry, or None for a host that declares no world.
-    :ptype world: WorldRegistry | None
     :return: One sentence naming the defect, or None.
-    :rtype: str | None
     """
     if world is None:
         return f"fired({name!r}) reads world events, and this host declares no world"
@@ -305,13 +289,9 @@ def undefined_call_references(
     parameter.
 
     :param expression: A goal-state expression.
-    :ptype expression: str
     :param actions: The host's ``tool -> action names`` reader, or None.
-    :ptype actions: Callable[[str], frozenset[str] | None] | None
     :param parameters: The host's ``(tool, action) -> parameter schema`` reader, or None.
-    :ptype parameters: Callable[[str, str], Mapping[str, Any] | None] | None
     :return: One reason per undefined reference, in source order, each named once.
-    :rtype: tuple[str, ...]
     :raises DSLError: The expression does not parse.
     """
     body = parse(expression).body
@@ -344,11 +324,8 @@ def _collect_call_operands(node: ast.AST, it_binding: TextOperand | None, found:
     """Record every path read through ``calls()`` under ``node``; ``it_binding`` is what ``it`` addresses.
 
     :param node: The node to walk.
-    :ptype node: ast.AST
     :param it_binding: The operand ``it`` stands for inside the enclosing ``any()``/``all()``.
-    :ptype it_binding: TextOperand | None
     :param found: Appended to in place.
-    :ptype found: list[TextOperand]
     """
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("any", "all"):
         if node.args and isinstance(node.args[0], ast.GeneratorExp):
@@ -381,27 +358,20 @@ def evaluate(
     """Evaluate a goal-state expression and return its boolean result.
 
     :param expression: DSL expression text.
-    :ptype expression: str
     :param end_state: The world to read ``state.<dimension>`` against, keyed by declared dimension name.
-    :ptype end_state: Mapping[str, Any]
     :param ledger: The calls the candidate made, read by the call predicates.
-    :ptype ledger: CallLedger
     :param world: The host's world registry, through which ``state.<path>`` resolves to a declared
         dimension — the resolution the authoring gate refuses an unknown path by. None for a
         host that declares no world, where any ``state`` path raises.
-    :ptype world: WorldRegistry | None
     :param variation: Variation parameter dict (test case's variation_params).
         Defaults to empty when omitted.
-    :ptype variation: dict[str, Any] | None
     :param fired: What fired during the cell — read by ``fired()`` — and which firings were of the event the
         seed armed — read by ``fired_armed()``. None when no world events were recorded for this
         evaluation, where both raise rather than answering False: an evaluation with no record cannot
         say nothing fired. When it cannot know which firings were armed (``armed_known=False`` — a
         witnessed cell, built by :meth:`Firings.of`), ``fired_armed()`` is :data:`Missing`.
-    :ptype fired: Firings | None
     :return: ``True`` if the expression's value is truthy after coercion; ``False`` otherwise, including
         when it is :data:`Missing` — not established, which is never a pass.
-    :rtype: bool
     :raises DSLError: For malformed expressions, for a ``state`` path on a host that declares no world,
         and for ``fired()`` or ``fired_armed()`` with no world events recorded. A path that names no
         declared dimension, or that does not resolve inside one, is :data:`Missing` instead, and
@@ -435,20 +405,13 @@ def evaluate_with_detail(
         (False, "not established: state.support.messages resolved to nothing")
 
     :param expression: DSL expression text.
-    :ptype expression: str
     :param end_state: The world to read, keyed by declared dimension name, as :func:`evaluate` takes it.
-    :ptype end_state: Mapping[str, Any]
     :param ledger: The calls the candidate made, as :func:`evaluate` takes it.
-    :ptype ledger: CallLedger
     :param world: The host's world registry, as :func:`evaluate` takes it.
-    :ptype world: WorldRegistry | None
     :param variation: Variation parameter dict. Defaults to empty when omitted.
-    :ptype variation: dict[str, Any] | None
     :param fired: What fired, as :func:`evaluate` takes it.
-    :ptype fired: Firings | None
     :return: The boolean result and the resolved value's ``repr``; for a :data:`Missing` value, ``False``
         and a detail starting ``"not established"`` that names the paths that resolved to nothing.
-    :rtype: tuple[bool, str]
     :raises DSLError: As :func:`evaluate` raises it.
     """
     tree = parse(expression)
@@ -471,10 +434,8 @@ def not_established_detail(unresolved: list[str]) -> str:
 
     :param unresolved: The paths that resolved to :data:`Missing` while the expression was evaluated,
         in the order met; repeats are dropped.
-    :ptype unresolved: list[str]
     :return: ``"not established: ..."`` naming each path, or saying a value resolved to nothing when no
         path did (``length()`` of a value that has no length).
-    :rtype: str
     """
     named = list(dict.fromkeys(unresolved))
     if not named:
@@ -601,10 +562,8 @@ def _state_segments(node: ast.Attribute) -> list[str] | None:
     lies beyond it addresses inside a value, and the walker resolves it from the chain below.
 
     :param node: An attribute node.
-    :ptype node: ast.Attribute
     :return: ``["inbox", "messages", "length"]`` for ``state.inbox.messages.length``; None when the chain
         roots anywhere but ``state`` or passes through an index or a call.
-    :rtype: list[str] | None
     """
     segments: list[str] = []
     current: ast.AST = node
@@ -625,14 +584,10 @@ def _resolve_dimension_path(segments: list[str], world: WorldRegistry, end_state
     the value the gate resolved it to. The end state is keyed by that name, so no layout is consulted.
 
     :param segments: The attribute chain below ``state``.
-    :ptype segments: list[str]
     :param world: The host's world registry.
-    :ptype world: WorldRegistry
     :param end_state: The world to read, keyed by declared dimension name.
-    :ptype end_state: Mapping[str, Any]
     :return: The value at the path, or :data:`Missing` when it names no declared dimension, the end state
         holds no value for the dimension, or the rest of the path does not resolve inside it.
-    :rtype: Any
     """
     name = world.resolve_path(".".join(segments))
     if name is None or name not in end_state:
@@ -767,18 +722,13 @@ def _builtin_fired(predicate: str, ctx: _EvalContext, call: str, name: Any) -> A
 
     :param predicate: ``fired`` (any firing, whoever caused it) or ``fired_armed`` (a firing of the event
         the cell's seed armed, so not the world's own firing on the same dimension).
-    :ptype predicate: str
     :param ctx: The evaluation context, whose ``fired`` is what fired (None when no world events were
         recorded) and whose ``unresolved`` names what a :data:`Missing` rests on.
-    :ptype ctx: _EvalContext
     :param call: The call as written, named in the detail when it is not established.
-    :ptype call: str
     :param name: The dimension.
-    :ptype name: Any
     :return: Whether it fired as the predicate asks; :data:`Missing` for ``fired_armed`` when which firings
         were armed cannot be known (:attr:`~threetears.evals.schema.world_events.Firings.armed_known`
         — a witnessed cell, which no seed armed), so ``not fired_armed(...)`` is not established either.
-    :rtype: Any
     :raises DSLError: No world events were recorded for this evaluation. Answering False there would
         score a cell whose events nobody recorded as one in which nothing fired.
     """

@@ -44,7 +44,6 @@ import pytest
 from threetears.evals.analysis import (
     MIN_CASES,
     campaign_report,
-    frontier_text,
     comparison_sets,
     export_results,
     frontier,
@@ -54,6 +53,7 @@ from threetears.evals.analysis import (
     program_budget,
     reads,
 )
+from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel import ResultKey, ValidationFailedError
@@ -61,10 +61,13 @@ from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.claim_read import ClaimRead
 from threetears.evals.schema.store_port import GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.quick import EXIT_REFUSED, run_cli
-from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
+from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch
+from threetears.evals.ops.lenses import history_text
+from threetears.evals.ops.lenses import pivot_text
 from threetears.evals.run.reads import list_runs
 from threetears.evals.kernel.evidence_tiers import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import GoalStateOutcome, RoleUsage, RubricScore, WorldEvent
@@ -158,6 +161,9 @@ class FakeCountingStore:
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         return self._inner.query_judge_profiles(scope_id)
 
+    def query_claim_reads(self, scope_id: str, /, *, campaign_id: str | None = None) -> list[ClaimRead]:
+        return self._inner.query_claim_reads(scope_id, campaign_id=campaign_id)
+
     def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
         return self._inner.load_templates(template_ids, scope_id)
 
@@ -182,8 +188,11 @@ class FakeCountingStore:
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
     ) -> GroupsRead:
-        groups = self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
+        groups = self._inner.result_groups(
+            run_ids, scope_id, by=by, measures=measures, exclude_in_items=exclude_in_items
+        )
         if run_ids is not None:
             self.run_reads.extend(dict.fromkeys(run_ids))
         else:
@@ -669,7 +678,11 @@ def test_an_unset_disclosure_leaves_a_bundles_fingerprint_where_it_was() -> None
         update={"frontier": bundle.frontier.model_copy(update={"narrowed_read_disclosure": "read for one subject"})}
     )
 
-    assert said.fingerprint() != bundle.fingerprint(), "set, it is evidence"
+    # In version 2, which hashes the bundle's own document: a field written only when set must leave it where it
+    # was while unset. A `v3:` fingerprint is over the evidence and reads no disclosure either way (#1062).
+    assert said.fingerprint(like="v2:") != bundle.fingerprint(like="v2:"), "set, it is in the version 2 pre-image"
+    assert said.fingerprint() == bundle.fingerprint()
+    assert bundle.model_copy(deep=True).fingerprint(like="v2:") == bundle.fingerprint(like="v2:")
     assert bundle.model_copy(deep=True).fingerprint() == bundle.fingerprint()
     assert "narrowed_read_disclosure" not in json.dumps(
         said.model_copy(

@@ -32,7 +32,7 @@ retired, and the package ships no kind for a stored reporter template, so its la
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, Literal
@@ -42,8 +42,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report_doc_checks import DocVerdict
-from threetears.evals.analysis.report_doc_store import doc_verdicts
+from threetears.evals.analysis.report.doc_page.checks import DocVerdict
+from threetears.evals.analysis.report.doc_page.store import doc_verdicts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
@@ -57,7 +57,7 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s, writer_ceiling_s
 from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
-from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.ops.analyst import report_snapshot_restore, snapshot_input
@@ -84,6 +84,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WriterOverlays,
 )
 from threetears.evals.schema.completion import RequestCeiling
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import EvalTestCase, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.values import SweepableValue
@@ -186,13 +187,9 @@ class WriterCase(BaseModel):
         """Freeze a stored snapshot into a case.
 
         :param snapshot: The snapshot the report is written over.
-        :ptype snapshot: EvalReportSnapshot
         :param withhold: The notes the analyst is not given.
-        :ptype withhold: Collection[str]
         :param origin: Where the case came from, as its mint records it; ``None`` for a case no mint writes.
-        :ptype origin: WriterCaseOrigin | None
         :return: The case.
-        :rtype: WriterCase
         :raises TypeError: ``withhold`` is a single string rather than a collection of names.
         """
         if isinstance(withhold, str):
@@ -204,7 +201,6 @@ class WriterCase(BaseModel):
         """The id of the snapshot the case froze.
 
         :return: The id.
-        :rtype: str
         :raises ValidationError: The frozen snapshot carries no id, campaign or report input digest that reads.
         """
         return _FrozenIdentity.model_validate(self.snapshot).id
@@ -214,7 +210,6 @@ class WriterCase(BaseModel):
         """What makes two mints one case: the campaign the snapshot froze, or its report input for a bare one.
 
         :return: ``campaign:<id>``, or ``report-input:<digest>`` for a snapshot with no campaign behind it.
-        :rtype: str
         :raises ValidationError: The frozen snapshot carries no id, campaign or report input digest that reads, so
             no source can be named for it.
         """
@@ -228,9 +223,7 @@ def writer_case_payload(case: WriterCase) -> dict[str, Any]:  # Any: the case's 
     """The ``host_payload`` a writer ``EvalTestCase`` carries.
 
     :param case: The case to store.
-    :ptype case: WriterCase
     :return: The payload, keyed so :func:`writer_case_of` can read it back.
-    :rtype: dict[str, Any]
     """
     return {WRITER_CASE_KEY: case.model_dump(mode="json")}
 
@@ -239,9 +232,7 @@ def writer_case_of(test_case: EvalTestCase) -> WriterCase | None:
     """Read a writer case back off a stored test case.
 
     :param test_case: Any stored case.
-    :ptype test_case: EvalTestCase
     :return: The case, or ``None`` when this test case carries no writer case.
-    :rtype: WriterCase | None
     :raises ValidationError: It carries one that does not read.
     """
     payload = test_case.host_payload
@@ -258,9 +249,7 @@ def writer_subject_components(skill: AnalystSkill) -> dict[str, SweepableValue]:
     ``skill`` overlay, so the variant identity's derivation accepts it only beside an arm that runs that skill.
 
     :param skill: The skill the arm runs.
-    :ptype skill: AnalystSkill
     :return: ``{SKILL_LEVER: the digest as a level}``.
-    :rtype: dict[str, SweepableValue]
     """
     return {SKILL_LEVER: SweepableValue.of(skill.digest, display=f"skill {skill.digest[:12]}")}
 
@@ -286,21 +275,13 @@ def writer_cell_timeout_s(
     Not covered: restoring the case's snapshot and the tool calls the turns make, which the host's headroom covers.
 
     :param limits: What the arm's writing loop is held to.
-    :ptype limits: WriterLimits
     :param request_s: The host's ceiling for one request on its client, by output cap.
-    :ptype request_s: RequestCeiling
     :param turns: The report budget's turn cap, or ``None`` when it declares none.
-    :ptype turns: int | None
     :param judge_dims: Rubric dimensions the run's judge scores on each cell.
-    :ptype judge_dims: int
     :param judge_concurrency: Judge requests in flight at once.
-    :ptype judge_concurrency: int
     :param judge_call_attempts: Requests one judge dimension can make, its parse retries included.
-    :ptype judge_call_attempts: int
     :param judge_max_tokens: The judge's output cap.
-    :ptype judge_max_tokens: int
     :return: The cell ceiling in seconds.
-    :rtype: float
     """
     judging_s = judge_phase_ceiling_s(
         judge_dims=judge_dims,
@@ -366,24 +347,15 @@ class ReportWriterKind:
 
         :param host: The host whose store the analyst tools read, and whose failure describer reads what a model
             client raises.
-        :ptype host: OpsHost
         :param scope_id: The scope the mounts read: each case's snapshot is restored there.
-        :ptype scope_id: str
         :param overlays: The arm's overlays, as the launch validated and froze them.
-        :ptype overlays: WriterOverlays
         :param models: The host's model factory: the arm's candidate model at a reasoning effort.
-        :ptype models: WriterModels
         :param budget: Each report's budget; every cell is written under a fresh one of the same caps.
-        :ptype budget: ReportBudget
         :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, its gap note storing nothing.
-        :ptype analyst_mount: ToolMount
         :param editor_mount: The tool on the editor's cut, bound the same way.
-        :ptype editor_mount: ToolMount
         :param skills: The skill versions the launch may run, by digest. The shipped skill is always one of them.
-        :ptype skills: Mapping[str, AnalystSkill]
         :param editor_models: The host's model factory for the editor's model, at a reasoning effort, for an arm whose
             overlays name an ``editor_model``; ``None`` for an arm whose editor runs on the candidate model.
-        :ptype editor_models: WriterModels | None
         :raises ValueError: A skill is keyed by a digest other than its own.
         """
         if misfiled := sorted(digest for digest, skill in skills.items() if skill.digest != digest):
@@ -414,17 +386,12 @@ class ReportWriterKind:
         :param subject_snapshot: The arm's subject, which must carry the skill lever's component, at the arm's skill.
         :ptype subject_snapshot: SubjectSnapshot | None
         :param variant_config: This cell's contestant stack; its model is the one the factory must build.
-        :ptype variant_config: VariantConfig
         :param world_seed: Unread: a writer acts on no world.
-        :ptype world_seed: Any
         :param span_window: This cell's tracing windows, opened in :meth:`invoke`.
-        :ptype span_window: CellSpanWindow
         :param cassettes: Unwired: the writer's turns are recorded by its model (``turn_recording``), not a cassette.
         :ptype cassettes: CellCassettes | None
         :param world: Unread: a writer acts on no world.
-        :ptype world: Any
         :return: The cell's model, skill and windows.
-        :rtype: PreparedWriter
         :raises CandidatePreparationFailed: The arm's revisions are not ones the loop runs; the arm's skill is not one
             the launch was given, or its ``editor.md`` states no rubric its reviews can be read on; the subject does
             not carry it; the factory's model is not the cell's, or not the editor's the arm names; or, under a
@@ -503,13 +470,9 @@ class ReportWriterKind:
         output's usage and on the sink's reading, so a cell cut off at its deadline keeps what it paid for.
 
         :param instance: What :meth:`prepare` bound.
-        :ptype instance: PreparedWriter
         :param test_case: The cell's case, carrying the writer case in its ``host_payload``.
-        :ptype test_case: EvalTestCase
         :param sink: This cell's sink, handed the tally's reading.
-        :ptype sink: CellSink
         :return: The final page, its judge evidence, the run's measures and its usage.
-        :rtype: CandidateOutput
         """
         with instance.span_window.identity():
             prepared = await self._case_input(instance, test_case)
@@ -539,7 +502,7 @@ class ReportWriterKind:
                     limits=instance.limits,
                     editor_model=instance.editor_model,
                 )
-        return self._output(outcome, tally, instance, report_input, analyst_skill, editor_skill)
+        return self._output(outcome, tally, instance, snapshot_id, report_input, analyst_skill, editor_skill)
 
     async def _case_input(
         self, instance: PreparedWriter, test_case: EvalTestCase
@@ -578,11 +541,15 @@ class ReportWriterKind:
         outcome: WritingOutcome,
         tally: Tally,
         instance: PreparedWriter,
+        snapshot_id: str,
         report_input: ReportInput,
         analyst_skill: SkillText,
         editor_skill: SkillText,
     ) -> CandidateOutput:
-        """The cell's output for how the loop ended: the page and its evidence when a document was stored."""
+        """The cell's output for how the loop ended: the page and its evidence when a document was stored.
+
+        The evidence names what its page and facts were rendered from (:func:`_page_inputs`), so a judge's recorded
+        call over the page is keyed by those and a word the package prints differently moves no recording."""
         telemetry = _telemetry(tally, instance.model.model_name)
         measures = _measures(outcome, tally)
         payload: dict[str, JsonValue] = {
@@ -595,12 +562,14 @@ class ReportWriterKind:
         }
         if outcome.doc is not None:
             page = doc_page_text(build(outcome.doc, report_input, strict=True, findings=outcome.findings, made=""))
+            stored = outcome.doc.model_dump(mode="json", by_alias=True)
             return CandidateOutput(
-                output=[outcome.doc.model_dump(mode="json", by_alias=True)],
+                output=[stored],
                 judge_evidence=JudgeEvidence(
                     case_material="Computed facts, from the snapshot the report was written over. Code computed each; "
                     "none is a verdict:\n" + computed_facts(outcome.doc, report_input),
                     artifact=page,
+                    inputs=_page_inputs(stored, snapshot_id, outcome.findings),
                 ),
                 telemetry=telemetry,
                 host_measures=measures,
@@ -632,11 +601,33 @@ class ReportWriterKind:
             refused="report_writer: a turn was refused for the calling account",
             declined="report_writer: a turn was declined by the provider",
             failed="report_writer: a turn failed",
+            unserved="report_writer: a turn named a model the provider does not serve",
             log=lambda what, level: log_provider_failure(log, described, failure, "%s", what, level=level),
             telemetry=telemetry,
             host_measures=measures,
             kind_payload=payload,
         )
+
+
+def _page_inputs(document: Mapping[str, Any], snapshot_id: str, findings: Sequence[ReportFinding]) -> dict[str, Any]:
+    """What a writer's page and its computed facts are rendered from, as a judge's recorded call is keyed by them.
+
+    The page is ``build`` over the stored document, the snapshot's report input and the editor's open findings, and
+    the facts are computed from the first two; the package's words for any of it are not among them. So each is named
+    by content: the document as stored (keys and prose as the writer submitted them, before any figure is rendered),
+    the snapshot by its id (derived from its evidence, so the same id is the same snapshot), and the findings as
+    stored.
+
+    :param document: The stored report document (the cell's output).
+    :param snapshot_id: The snapshot it was written over.
+    :param findings: The editor's findings left open, which the page prints.
+    :return: The evidence's inputs.
+    """
+    return {
+        "document": canonical_digest({"report_document": dict(document)}),
+        "snapshot": snapshot_id,
+        "findings": canonical_digest({"open_findings": [finding.model_dump(mode="json") for finding in findings]}),
+    }
 
 
 def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
@@ -651,6 +642,10 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
     so the result's ``cost_usd`` is the sum of the turns that were priced, those delivered before the failure
     included: a failed write is the candidate's failure, never spend the run cannot count. Only a reply that reported
     usage its client could not price is unpriced spend, which stops a capped run.
+
+    **No row names a served provider, and none is lost.** A tool turn goes to Anthropic's own Messages API alone
+    (``Model.turn`` refuses any other route), and a direct provider's reply names no upstream: ``served_provider``
+    names the provider a router sent a call to, so a turn's row records none, as a direct completion's does.
     """
     ledger = RoleUsageLedger(role="candidate")
     for turn in tally.turns:
@@ -663,6 +658,9 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
             cost_usd=turn.cost_usd,
             price_source=turn.price_source,
             unpriced_reason=turn.pricing_failure,
+            # A send that broke before any response began may have been billed too: counted beside the row's cost,
+            # and by the run's cap, as a completion's is.
+            maybe_billed_sends=turn.maybe_billed_sends or None,
         )
     if unreturned := tally.unreturned_turns():
         ledger.add_unanswered(model=model, lost=unreturned)

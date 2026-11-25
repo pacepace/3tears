@@ -134,9 +134,7 @@ def _call_shape_text(role: str) -> str:
     """How a handle role is called, rendered for an error a host has to act on.
 
     :param role: One of :data:`_HANDLE_CALL_SHAPES`.
-    :ptype role: str
     :return: A parenthesised argument list, e.g. ``(value)`` or ``(*, surfaces=...)``.
-    :rtype: str
     """
     args, kwargs = _HANDLE_CALL_SHAPES[role]
     rendered = ["value"] * len(args) + [f"{name}=..." for name in kwargs]
@@ -155,11 +153,8 @@ def _admits(json_type: str, value: Any) -> bool:
       correct registration, which is worse than having no check at all.
 
     :param json_type: A key of :data:`_SCHEMA_TYPE_MEMBERS`.
-    :ptype json_type: str
     :param value: The enumerated value.
-    :ptype value: Any
     :return: Whether the type admits it.
-    :rtype: bool
     """
     if isinstance(value, bool):
         return json_type == "boolean"
@@ -177,13 +172,10 @@ def _enum_type_defects(schema: Mapping[str, Any], *, path: str) -> list[str]:
     here is the same move as the bound pairs above: incoherence the record shows on its face.
 
     :param schema: The schema to check.
-    :ptype schema: Mapping[str, Any]
     :param path: Where this schema sits, for an error that can be acted on.
-    :ptype path: str
     :return: One sentence naming the excluded values, or saying the enum admits nothing; empty when
         they agree, when there is neither ``enum`` nor ``const``, or when the declared type is
         one this table does not describe.
-    :rtype: list[str]
     """
     # `const` is normalised into a one-value enum rather than given a parallel check. The two are
     # the same declaration — here are the values, exhaustively — and every rule below applies to
@@ -235,11 +227,8 @@ def _schema_defects(schema: Mapping[str, Any], *, path: str = "schema") -> list[
     An unbased dimension's schema is held to self-consistency alone.
 
     :param schema: The schema to check.
-    :ptype schema: Mapping[str, Any]
     :param path: Where this schema sits, for an error that can be acted on.
-    :ptype path: str
     :return: One sentence per contradiction; empty when the schema is coherent.
-    :rtype: list[str]
     """
     defects = [
         f"{path} declares {floor}={floor_value!r} above {ceiling}={ceiling_value!r}, which admits no value"
@@ -439,7 +428,6 @@ class WorldDimension:
         start reporting as controllable.
 
         :return: The seed handle, else the perturbation handle, else None.
-        :rtype: str | None
         """
         return self.seed or self.perturb
 
@@ -453,7 +441,6 @@ class WorldDimension:
         """What a run can do with this dimension — the registration-time quadrant.
 
         :return: ``representable``, ``judge_only`` or ``witnessed``.
-        :rtype: WorldCapability
         :raises WorldRegistrationError: The dimension is neither seedable nor perceivable — the
             fourth combination, which a registry refuses. This class is public and
             constructible standalone, so the property refuses to answer for a shape no
@@ -473,11 +460,8 @@ def _key_is_the_name(carrier: str, key: str) -> str:
     """The default addressing: a seed key IS the dimension's name, and the namespace is its carrier.
 
     :param carrier: The seed namespace (unused — the carrier is checked, not composed into the name).
-    :ptype carrier: str
     :param key: The seed key.
-    :ptype key: str
     :return: ``key``.
-    :rtype: str
     """
     del carrier
     return key
@@ -510,18 +494,15 @@ class WorldRegistry(HostAttributed):
         """Validate and store one host's world.
 
         :param declarations: The dimensions this host declares, in reporting order.
-        :ptype declarations: Iterable[WorldDimension]
         :param bindings: The resolution table — ``{handle: callable}``. A callable may be
             synchronous or return an awaitable; :meth:`call` awaits uniformly, so both kinds
             of consumer use one design with no migration between them.
-        :ptype bindings: Mapping[str, Callable[..., Any]] | None
         :param subject_view: HANDLE rendering what a subject perceives of this world, given the
             surfaces attached for that subject: called with ``surfaces=``, it returns a mapping of
             each attached surface's name to that surface's rendering — one entry per surface, so
             the conformance kit can hold each surface to the dimensions it names. Required before any dimension may
             declare ``perceived_by``, because perception the kit cannot vary against is an
             unverifiable claim.
-        :ptype subject_view: str | None
         :param perturb_ambient: OPTIONAL HANDLE moving state this registry declares no dimension
             for. A host capability, not an obligation: with one, conformance can hold every
             declared dimension fixed, jostle the surroundings, and catch a subject
@@ -529,14 +510,12 @@ class WorldRegistry(HostAttributed):
             Without one that check records unproved, forever and visibly. It may return the
             names of what it moved, which the verdict then carries; an empty answer is a rig
             that moved nothing, and the check records that rather than passing over it.
-        :ptype perturb_ambient: str | None
         :param base_world: OPTIONAL. The world every conformance check composes over — dimension name
             to value — for a host whose dimensions are coupled the way its production world is:
             one that cannot hold some value of one dimension as stated unless another sits at a
             particular value. Each check starts from it, so a dimension is proved beside siblings
             the host can actually hold it with. Every name must be a declared dimension that
             something here can set at t=0, and every value must conform to its schema.
-        :ptype base_world: Mapping[str, Any] | None
         :param coherence: OPTIONAL HANDLE answering whether this host holds a composed world as
             stated. Called ``coherence(world)`` with ``{dimension name: value}``; returns the
             reasons it does not — empty when it does. The kit draws only values the host holds
@@ -546,7 +525,6 @@ class WorldRegistry(HostAttributed):
             values a check draws and never decides whether a check runs: a handle leaving a
             dimension too few values over the base world fails that dimension's checks, so it
             cannot act as a waiver (``world_conformance._not_held``).
-        :ptype coherence: str | None
         :param address: OPTIONAL. How a key in a world seed names a dimension, given ``(carrier, key)``
             — the carrier being the seed namespace the key sits under. Omitted, the key IS the
             dimension's name. A host whose names compose the carrier in (``{"inbox": {"messages":
@@ -555,7 +533,6 @@ class WorldRegistry(HostAttributed):
             per call, so the seed walk, a goal check's ``state.<dimension>`` and a control end
             state all read one answer. Pure and synchronous: the goal language calls it while
             evaluating.
-        :ptype address: Callable[[str, str], str] | None
         :param settle: OPTIONAL. Carrier name → HANDLE the engine awaits once a cell's seed has been
             written through that carrier and before the candidate's first turn. Called
             ``settle()``. For a carrier whose world does work of its own after a write — an
@@ -564,7 +541,6 @@ class WorldRegistry(HostAttributed):
             capability, not an obligation: a carrier with nothing to settle declares none, and
             the engine awaits only the carriers a cell attached. Every key must be a carrier some
             declared dimension names.
-        :ptype settle: Mapping[str, str] | None
         :param binds_per_cell: Whether every cell must bind its OWN world before it seeds. False — the
             default — says this table's handles are safe for every cell to share: they are
             stateless, or open per-cell state themselves, and an unbound cell session calls them
@@ -573,7 +549,6 @@ class WorldRegistry(HostAttributed):
             declares it, each cell's kind supplies that cell's table through
             :meth:`~threetears.evals.kernel.world_session.WorldSession.bind`, and a cell session
             that seeds without binding is refused rather than writing into the shared one.
-        :ptype binds_per_cell: bool
         :raises WorldRegistrationError: The declaration set is unsound. Every defect is reported at
             once rather than one per construction, so a host fixing them sees the whole list.
         """
@@ -595,7 +570,6 @@ class WorldRegistry(HostAttributed):
         """Name every way the declaration set contradicts what this module promises.
 
         :return: One sentence per defect; empty when the declaration set is sound.
-        :rtype: list[str]
         """
         defects: list[str] = []
         seen: set[str] = set()
@@ -699,7 +673,6 @@ class WorldRegistry(HostAttributed):
 
         :return: One sentence per entry naming no declared dimension, one nothing here can set at t=0, or a
             value its dimension's schema refuses; empty when every entry is one a check can seed.
-        :rtype: list[str]
         """
         by_name = {declared.name: declared for declared in self._declarations}
         defects: list[str] = []
@@ -731,7 +704,6 @@ class WorldRegistry(HostAttributed):
         :return: One sentence per entry naming a carrier no declared dimension names, or a handle the binding
             table cannot resolve or the engine could not call as ``settle()``; empty when every entry is
             one a cell attaching that carrier would await.
-        :rtype: list[str]
         """
         carriers = {declared.carrier for declared in self._declarations}
         defects: list[str] = []
@@ -755,13 +727,10 @@ class WorldRegistry(HostAttributed):
         """Refuse a bound callable the engine could not call in this role's shape.
 
         :param role: One of :data:`_HANDLE_CALL_SHAPES`.
-        :ptype role: str
         :param handle: The handle naming it, already known to resolve.
-        :ptype handle: str
         :return: One sentence when the signature cannot take the call, empty otherwise. Empty also when
             the callable has no introspectable signature — a builtin or a C extension is a real
             binding, and refusing what cannot be checked would be a canary crying wolf.
-        :rtype: list[str]
         """
         bound = self._bindings[handle]
         try:
@@ -788,9 +757,7 @@ class WorldRegistry(HostAttributed):
         whatever the run was doing.
 
         :param declared: The dimension to check.
-        :ptype declared: WorldDimension
         :return: One sentence per unresolvable handle.
-        :rtype: list[str]
         """
         handles: list[tuple[str, str | None]] = [
             ("seed", declared.seed),
@@ -872,9 +839,7 @@ class WorldRegistry(HostAttributed):
         the profile's was, by the same code.
 
         :param bindings: The cell's table — ``{handle: callable}``, one per handle this registry binds.
-        :ptype bindings: Mapping[str, Callable[..., Any]]
         :return: A new validated registry; this one is not changed.
-        :rtype: WorldRegistry
         :raises WorldRegistrationError: The handle set differs from this registry's, or a callable is not
             one the engine could call in its role.
         """
@@ -917,11 +882,8 @@ class WorldRegistry(HostAttributed):
         """The dimension name a world seed's ``key`` under ``carrier`` addresses, by this host's addressing.
 
         :param carrier: The seed namespace the key sits under.
-        :ptype carrier: str
         :param key: The key.
-        :ptype key: str
         :return: The dimension name. Whether this host declares it is :meth:`get`'s question.
-        :rtype: str
         """
         return self._address(carrier, key)
 
@@ -933,12 +895,9 @@ class WorldRegistry(HostAttributed):
         keys actually held, so the engine never inverts a name it may not interpret.
 
         :param name: A dimension name.
-        :ptype name: str
         :param namespaces: Carrier → (key → value).
-        :ptype namespaces: Mapping[str, Any]
         :return: The key under the dimension's carrier that addresses it, or None when the dimension is
             undeclared or the world holds no value for it.
-        :rtype: str | None
         """
         declared = self._by_name.get(name)
         if declared is None:
@@ -957,9 +916,7 @@ class WorldRegistry(HostAttributed):
         :meth:`address`, so both reach a check in one shape.
 
         :param namespaces: Carrier → (key → value).
-        :ptype namespaces: Mapping[str, Any]
         :return: Dimension name → a deep copy of its value, in the order the keys appear.
-        :rtype: dict[str, Any]
         :raises ValueError: A carrier's value is not a mapping, a key addresses no declared dimension,
             or a key sits under a carrier other than the one supplying its dimension. Each is a
             value no read handle could ever return, so naming it anyway would hand a check a
@@ -996,11 +953,9 @@ class WorldRegistry(HostAttributed):
         already refuses two declarations of the same name, so the answer is unambiguous.
 
         :param path: A dotted path with the language's own root already stripped.
-        :ptype path: str
         :return: The declared dimension name, or None when no prefix of the path is declared. None is
             the refusal the authoring gate reads, and it is why an expression naming a dimension
             this host removed cannot resolve to nothing quietly.
-        :rtype: str | None
         """
         segments = path.split(".")
         for depth in range(len(segments), 0, -1):
@@ -1013,12 +968,10 @@ class WorldRegistry(HostAttributed):
         """What a run can do with ``name``, or None when this host never declared it.
 
         :param name: A dimension name.
-        :ptype name: str
         :return: The registration-time quadrant, or None. None and ``witnessed`` are different
             answers — "we have no such concept" versus "your subject sees this and your
             experiment does not control it" — and collapsing them is the error this contract
             exists to prevent.
-        :rtype: WorldCapability | None
         """
         declared = self._by_name.get(name)
         return None if declared is None else declared.capability
@@ -1031,10 +984,8 @@ class WorldRegistry(HostAttributed):
         disclosure surface names once for the host rather than once per run.
 
         :param capability: The quadrant to select.
-        :ptype capability: WorldCapability
         :return: The matching declarations. Empty is an answer, not an absence: a host every one of
             whose dimensions a run can seed has no witnessed state to disclose.
-        :rtype: tuple[WorldDimension, ...]
         """
         return tuple(declared for declared in self._declarations if declared.capability == capability)
 
@@ -1057,11 +1008,9 @@ class WorldRegistry(HostAttributed):
 
         :param path: A dotted path with the language's own root already stripped, as
             :meth:`resolve_path` takes it.
-        :ptype path: str
         :return: The carrier name, or None when no declared dimension covers the path. None is "this
             host has no such vocabulary", which is the authoring gate's refusal rather than an
             assembly one — by the time a run is assembled it has already been made.
-        :rtype: str | None
         """
         dimension = self.resolve_path(path)
         return None if dimension is None else self._by_name[dimension].carrier
@@ -1099,13 +1048,10 @@ class WorldRegistry(HostAttributed):
         what a run ASKED to set; the registration is what says whether asking could work.
 
         :param seeded: Dimension names this run actually set, however it set them.
-        :ptype seeded: Iterable[str]
         :param carriers: Carrier names attached for the subject this run measured.
-        :ptype carriers: Iterable[str]
         :return: Dimension name → its placement for this run, one entry per declaration. Every
             declaration appears, because ``out_of_play`` is a finding about this run rather than
             an absence of one.
-        :rtype: dict[str, WorldPlacement]
         """
         was_seeded = set(seeded)
         attached = set(carriers)
@@ -1153,30 +1099,21 @@ class WorldRegistry(HostAttributed):
         otherwise have to remember which of them contributed a common handle first.
 
         :param declarations: The host's own dimensions.
-        :ptype declarations: Iterable[WorldDimension]
         :param bindings: Additional handle resolutions. A handle this registry already binds to a
             different callable is refused rather than replaced.
-        :ptype bindings: Mapping[str, Callable[..., Any]] | None
         :param subject_view: The host's subject-view handle. Refused when this registry already has
             a different one, for the same reason.
-        :ptype subject_view: str | None
         :param perturb_ambient: The host's ambient-perturbation handle, under the same rule.
-        :ptype perturb_ambient: str | None
         :param base_world: Further base-world entries. One naming a dimension this registry already
             bases at a different value is refused, for the same reason: every check already
             proved was proved over the first.
-        :ptype base_world: Mapping[str, Any] | None
         :param coherence: The host's coherence handle, under the subject view's rule.
-        :ptype coherence: str | None
         :param settle: Further carriers' settle handles. One naming a carrier this registry already settles
             through a different handle is refused, for the binding table's reason.
-        :ptype settle: Mapping[str, str] | None
         :param binds_per_cell: True makes the extended world bind per cell. Never turned OFF by extending:
             a world this registry already binds per cell stays so, because the handles it inherits
             are still the conformance kit's, not every cell's.
-        :ptype binds_per_cell: bool
         :return: A new validated registry.
-        :rtype: WorldRegistry
         :raises WorldRegistrationError: The combined set is unsound, or the addition would displace a
             binding, the subject view, the ambient-perturbation handle, the coherence handle, a
             carrier's settle handle or a base-world value.
@@ -1255,9 +1192,7 @@ class WorldRegistry(HostAttributed):
         seeded value and reports as the host's world being wrong.
 
         :param handle: A handle written on a registration or on ``subject_view``.
-        :ptype handle: str
         :return: The bound callable, which may be synchronous or return an awaitable.
-        :rtype: Callable[..., Any]
         :raises WorldRegistrationError: Nothing binds the handle. Registration refuses this for every
             handle it can see, so reaching it here means a caller supplied one from outside.
         """
@@ -1280,13 +1215,9 @@ class WorldRegistry(HostAttributed):
         surfaces attributed to whatever the run happened to be doing.
 
         :param handle: A handle written on a registration or on ``subject_view``.
-        :ptype handle: str
         :param *args: Passed through to the binding.
-        :ptype args: Any
         :param **kwargs: Passed through to the binding.
-        :ptype kwargs: Any
         :return: The binding's result, awaited if it produced an awaitable.
-        :rtype: Any
         :raises WorldRegistrationError: Nothing binds the handle.
         """
         bound = self._resolve(handle)
@@ -1330,15 +1261,12 @@ def resolve_preconditions(template: EvalTemplate, world: WorldRegistry | None) -
     speaks for yet, and refusing to load them would refuse the corpus rather than the defect.
 
     :param template: The stored template being used.
-    :ptype template: EvalTemplate
     :param world: The host's world registry, or None when the host declares no world at
         all. None is not an empty registry: it says this host instantiates nothing, so
         "the registry no longer has it" is a question with no subject. Whether a template
         may presume a world on such a host is the authoring gate's to answer, through
         ``HostProfile.representable``, which calls it inapplicable rather than uncovered.
-    :ptype world: WorldRegistry | None
     :return: The preconditions in declaration order — what a run asserts before the first turn.
-    :rtype: list[Precondition]
     :raises ValueError: A precondition reads a path no declared dimension covers. Its callers
         translate it — an untranslated ``ValueError`` reaches an operator as a 500 with
         no message, which is the opposite of failing loudly.

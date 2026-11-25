@@ -59,7 +59,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, contrast_key
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import ASSUMED_SHARE, assumable, pairing_contrast, separation_wheres
+from threetears.evals.analysis.report.keys.separation import pairing_contrast
+from threetears.evals.analysis.report.keys.settle import ASSUMED_SHARE, assumable, separation_wheres
 from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -100,11 +101,8 @@ def cite_or_why(key: str, report_input: ReportInput) -> tuple[CitedFigure | None
     """A figure a key names, or None and the resolver's reason it is unstated (its key left out).
 
     :param key: The path, without braces or filters.
-    :ptype key: str
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :return: The figure and an empty reason, or None and why the input leaves it unstated.
-    :rtype: tuple[CitedFigure | None, str]
     :raises UnresolvableReference: The key names nothing the input holds, or reads two ways.
     """
     try:
@@ -119,15 +117,10 @@ def mean_key(report_input: ReportInput, arm: str, key: str, where: str) -> str:
     """The key of an arm's own mean on a measure or judged dimension at a separation key's ``<where>``.
 
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :param arm: The arm, by id.
-    :ptype arm: str
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :param where: ``overall``, ``task.<task>``, ``cells.<row>.<column>`` or ``strata.<stratum>``.
-    :ptype where: str
     :return: The key.
-    :rtype: str
     """
     if where != "overall":
         return f"{where}.{arm}.{key}.mean"
@@ -138,11 +131,8 @@ def place_name(report_input: ReportInput, where: str) -> CitedFigure | None:
     """What a reader calls a separation key's ``<where>``: a task's, cell's or stratum's name; None overall.
 
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :param where: The place, as the key spells it.
-    :ptype where: str
     :return: The name, as its key reads it; None overall.
-    :rtype: CitedFigure | None
     """
     return None if where == "overall" else cite(f"{where}.name", report_input)
 
@@ -151,11 +141,8 @@ def better_direction(report_input: ReportInput, key: str) -> Literal["higher_is_
     """Which way a measure or judged dimension is better: a judged dimension higher; a measure as it states.
 
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :return: The direction, or ``unstated``.
-    :rtype: Literal["higher_is_better", "lower_is_better", "unstated"]
     """
     higher = True if key in report_input.judged else report_input.measures[key].higher_is_better
     return "unstated" if higher is None else "higher_is_better" if higher else "lower_is_better"
@@ -165,13 +152,9 @@ def refuse_arms(report_input: ReportInput, arms: Sequence[str], count: Sequence[
     """Refuse ``arm_ids`` naming the wrong number of arms, an arm twice, or an arm the snapshot does not hold.
 
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :param arms: The arms named.
-    :ptype arms: Sequence[str]
     :param count: The numbers of arms the call may name.
-    :ptype count: Sequence[int]
     :param action: The action, as a refusal names it.
-    :ptype action: str
     :raises RefusedInput: Any of those.
     """
     held = [arm.id for arm in report_input.arms]
@@ -408,20 +391,13 @@ def arms_compare(
     """The first arm minus the second on one measure, overall and in each slice holding both, with an interval.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param arms: The two arms, by id: every difference is the first minus the second.
-    :ptype arms: Sequence[str]
     :param measure: The measure or judged dimension, by key.
-    :ptype measure: str
     :param assumed: A what-if: the cases each slice stating no count of its own is read as holding, or ``share``
         (each arm's own distinct cases times the slice's traffic share); its figures are keyed ``assumed.<cases>.``.
-    :ptype assumed: int | str | None
     :param limit: The most places one page holds.
-    :ptype limit: int
     :param offset: The first place the page holds.
-    :ptype offset: int
     :return: Each place's comparison, overall first.
-    :rtype: ArmsComparison
     :raises RefusedInput: Not two distinct arms of the snapshot; a measure both do not hold; or no spread to read an
         interval from anywhere both hold it.
     """
@@ -499,9 +475,7 @@ def assumed_words(assumed: int | str | None) -> str:
     """What an assumed count is, as a result says it; empty for none.
 
     :param assumed: The cases each slice stating no count is read as holding, ``share``, or None.
-    :ptype assumed: int | str | None
     :return: The words.
-    :rtype: str
     """
     if assumed is None:
         return ""
@@ -520,9 +494,7 @@ def unkeyed_strata(report_input: ReportInput) -> list[str]:
     """Each stratum a separation key cannot name, since the input holds its id more than once, as a note.
 
     :param report_input: The frozen report input.
-    :ptype report_input: ReportInput
     :return: One note per such stratum id; empty for none.
-    :rtype: list[str]
     """
     ids = [stratum.id for stratum in report_input.strata]
     repeated = [stratum for stratum in dict.fromkeys(ids) if ids.count(stratum) > 1]

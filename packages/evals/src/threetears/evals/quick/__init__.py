@@ -16,6 +16,10 @@ product adopting the engine as a host reaches for beside it:
   and :class:`ExampleGrade` are what the root's names hand back (``grader(...)``, ``World(...)(agent)``, what a world
   runner's graders see, a result's judge calibration, how its judge graded its examples and each one), named here so
   a host can annotate them.
+- :class:`Claims` lists and checks the factual claims in each answer, a grader listed beside the rest, with readings
+  of your own (``readers``, each a :class:`ClaimReading`) over the run's own record (``session``, or
+  ``Answer.session``); :class:`Document` is what a candidate read, returned on ``Answer.documents``; and :class:`ClaimCell` is one cell's claims and readings, read back with
+  ``Result.claim_cells()``. All are provisional, served here and not at the package root until they are promoted.
 - ``@measure(...)`` declares a measure on the function that computes it (a :class:`Measure`, whose ``descriptor`` a
   host registers): an ordinary contract object, mixed freely with ones the host writes by hand, and a function
   grader an eval reads as the measure it declares.
@@ -30,8 +34,6 @@ below it, and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.quick.cli import (
-    DEFAULT_PROG,
-    ENGINE_COMMANDS,
     EXIT_FAILED,
     EXIT_GATE_FAILED,
     EXIT_OK,
@@ -39,9 +41,10 @@ from threetears.evals.quick.cli import (
     EXIT_RUN_DID_NOT_COMPLETE,
     HostCommand,
     HostFactory,
-    build_parser,
     run_cli,
 )
+from threetears.evals.quick.answer import Document
+from threetears.evals.quick.claims import ClaimCell, ClaimReading, Claims
 from threetears.evals.quick.contract import as_host
 from threetears.evals.quick.graders import Grader
 from threetears.evals.quick.judged import ExampleGrade, JudgeExamples
@@ -50,8 +53,10 @@ from threetears.evals.quick.result import JudgeCalibration
 from threetears.evals.quick.world import WorldOutcome, WorldRunner
 
 __all__ = [
-    "DEFAULT_PROG",
-    "ENGINE_COMMANDS",
+    "ClaimCell",
+    "ClaimReading",
+    "Claims",
+    "Document",
     "EXIT_FAILED",
     "EXIT_GATE_FAILED",
     "EXIT_OK",
@@ -67,7 +72,6 @@ __all__ = [
     "WorldOutcome",
     "WorldRunner",
     "as_host",
-    "build_parser",
     "measure",
     "run_cli",
 ]

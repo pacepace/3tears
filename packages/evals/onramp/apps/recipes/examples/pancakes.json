@@ -1,0 +1,11 @@
+{
+  "name": "pancakes",
+  "serves": 4,
+  "ingredients": [
+    {"item": "flour", "qty": 200, "unit": "g"},
+    {"item": "milk", "qty": 300, "unit": "ml"},
+    {"item": "egg", "qty": 2, "unit": "each"},
+    {"item": "baking powder", "qty": 2, "unit": "tsp"},
+    {"item": "sugar", "qty": 1, "unit": "tbsp"}
+  ]
+}

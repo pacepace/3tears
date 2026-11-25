@@ -40,7 +40,9 @@ Misses are loud, and they are the rig's
 
 Every replay failure is an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`, so a
 kind's tool boundary must re-raise it rather than absorb it into an ordinary failed tool result — the
-cell is the measuring rig's failure, not the candidate's.
+cell is the measuring rig's failure, not the candidate's. Each is a
+:class:`~threetears.evals.kernel.host.apparatus.ReplayMiss`: a corpus that cannot serve the run, so the run fails with
+it, its cell recorded first.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Self, runtime_checkable
 
-from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.apparatus import ReplayMiss
 from threetears.evals.schema.models import CassetteKey
 
 __all__ = [
@@ -89,7 +91,7 @@ DeliveryOutcome = Literal["delivered", "failed", "undelivered"]
 # =============================================================================
 
 
-class CassetteMiss(ApparatusError, LookupError):
+class CassetteMiss(ReplayMiss, LookupError):
     """A replay asked for something its corpus never recorded.
 
     Carries the whole key, so an operator can see exactly what the candidate asked that the capture
@@ -100,7 +102,6 @@ class CassetteMiss(ApparatusError, LookupError):
         """Name the key the corpus has no recording for.
 
         :param key: What the replay looked up.
-        :ptype key: CassetteKey
         """
         self.key = key
         super().__init__(
@@ -110,7 +111,7 @@ class CassetteMiss(ApparatusError, LookupError):
         )
 
 
-class CassetteExhausted(ApparatusError, LookupError):
+class CassetteExhausted(ReplayMiss, LookupError):
     """A replay asked for something one more time than its capture did.
 
     The corpus recorded ``key.occurrence`` answers to this exact ask and the candidate is asking for
@@ -122,7 +123,6 @@ class CassetteExhausted(ApparatusError, LookupError):
         """Name the ask and how many answers to it were recorded.
 
         :param key: The occurrence the replay looked up, one past the last recorded.
-        :ptype key: CassetteKey
         """
         self.key = key
         self.recorded = key.occurrence
@@ -134,14 +134,14 @@ class CassetteExhausted(ApparatusError, LookupError):
         )
 
 
-class CassetteCorrupt(ApparatusError, ValueError):
+class CassetteCorrupt(ReplayMiss, ValueError):
     """The corpus cannot be used as recorded.
 
     A recording could not be read back — its stored document no longer loads (written under another
     cassette format version, or carrying a field this build does not know), the store failed to answer, or its payload
     no longer rebuilds as the type its seam declares — or a capture could not clear a case's previous
-    recording, which would leave two sessions mixed in one corpus. An
-    :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
+    recording, which would leave two sessions mixed in one corpus. A
+    :class:`~threetears.evals.kernel.host.apparatus.ReplayMiss` (a corpus that cannot serve the run, so the run fails)
     rather than the underlying error, because a ``ValueError`` reaching a kind's tool boundary would
     be absorbed into an ordinary failed tool result and the candidate would be scored on its manner
     toward a broken corpus.
@@ -254,7 +254,6 @@ class DeliveryTicket(Protocol):
         """Record that the work reached the candidate with ``payload``.
 
         :param payload: The delivered payload, of the seam's declared ``payload_type``.
-        :ptype payload: Recordable
         """
         ...  # pragma: no cover — protocol
 
@@ -262,7 +261,6 @@ class DeliveryTicket(Protocol):
         """Record that the work ended in an error and delivered nothing.
 
         :param error: Why it failed, as the kind would report it.
-        :ptype error: str
         """
         ...  # pragma: no cover — protocol
 
@@ -281,9 +279,7 @@ class DeliveryRecorder(Protocol):
 
         :param request: What the candidate asked the tool for — the parameters a replay must repeat to
             be served this recording. JSON-shaped.
-        :ptype request: Mapping[str, Any]
         :return: The ticket to settle when the work ends.
-        :rtype: DeliveryTicket
         """
         ...  # pragma: no cover — protocol
 
@@ -316,9 +312,7 @@ class DeliveryReplay[P: Recordable](Protocol):
         """Take the recording of this request, in place of starting live work.
 
         :param request: What the candidate asked the tool for this time.
-        :ptype request: Mapping[str, Any]
         :return: The recording of the capture's matching ask — the Nth one for the Nth time it is asked.
-        :rtype: ReplayedDelivery[P]
         :raises CassetteMiss: The capture never asked this.
         :raises CassetteExhausted: The capture asked this fewer times than the candidate now has.
         :raises CassetteCorrupt: The recording could not be read back.
@@ -351,7 +345,6 @@ class ActionSeam(Protocol):
         missing from the mapping is refused, because in replay it would run live.
 
         :param wrap: Maps the current tools to the ones the candidate must use from now on.
-        :ptype wrap: ToolWrap
         """
         ...  # pragma: no cover — protocol
 
@@ -378,7 +371,6 @@ class SyncActionSeam(Protocol):
         back as a proxy whose ``act_sync`` captures or replays.
 
         :param wrap: Maps the current tools to the ones the candidate must use from now on.
-        :ptype wrap: SyncToolWrap
         """
         ...  # pragma: no cover — protocol
 
@@ -396,7 +388,6 @@ class DeliverySeam(Protocol):
         """Run the tool live, reporting each piece of work to ``recorder`` where it starts and where it ends.
 
         :param recorder: This cell's recorder for this tool.
-        :ptype recorder: DeliveryRecorder
         """
         ...  # pragma: no cover — protocol
 
@@ -409,7 +400,6 @@ class DeliverySeam(Protocol):
         engine knows how many it served and refuses a cell that reports fewer, or reports one live.
 
         :param replay: This cell's replay for this tool.
-        :ptype replay: DeliveryReplay[Any]
         """
         ...  # pragma: no cover — protocol
 
@@ -459,7 +449,6 @@ class CellCassettes(Protocol):
         leaves the candidate as the kind built it.
 
         :param seams: The candidate's seams.
-        :ptype seams: CassetteSeams
         :raises TypeError: ``seams`` is not a :class:`CassetteSeams`, or its action seam is neither an
             :class:`ActionSeam` nor a :class:`SyncActionSeam`.
         :raises ValueError: This cell was already wired; ``seams`` declares no seam at all; its action

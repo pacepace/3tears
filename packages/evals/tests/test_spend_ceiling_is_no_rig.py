@@ -7,24 +7,24 @@ bisection still reports a difference in it as a plain fact; what takes it out of
 ``Sweepable.no_rig_coordinate``. A real apparatus dimension (who judged) still splits the rig.
 
 The quick path's runs carry it too: an ``Eval`` shares its cap equally between its arms, so the same arm run in a
-comparison of two arms and in one of three is capped at a half and at a third of the same figure.
+comparison of two arms and in one of three is capped at a half and at a third of the same figure. And a comparison run
+again under its name at a raised cap continues itself: the cells its earlier launch never recorded run at the new cap
+and pool with the ones recorded at the old, one test setup over runs of both caps.
 """
 
 from __future__ import annotations
 
+import json
+from collections import Counter
 from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
 
 import pytest
 
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    assemble_context_bundle,
-    aspect_view,
-    campaign_readings,
-    get_campaign,
-)
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, campaign_readings
+from threetears.evals.analysis.aspects import aspect_view
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage
@@ -60,13 +60,24 @@ _QUESTION = "Does the candidate pass more support requests than production?"
 _ASKED_AT = "2000-01-01T00:00:00+00:00"
 
 
-def _passing(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
-    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at 0.2 cents."""
+def _passing(
+    right: int, *, cost: float = 0.002, calls: Counter[tuple[str, int]] | None = None, name: str = ""
+) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, Answer]]:
+    """A runner answering right on every trial of the first ``right`` cases and wrong on the rest, at ``cost`` dollars
+    a trial (0.2 cents unless given); ``calls`` counts its calls by ``(name, case index)``."""
 
     async def run(case: Mapping[str, Any]) -> Answer:
         index = int(case["text"].rsplit(" ", 1)[1])
+        if calls is not None:
+            calls[name, index] += 1
         return Answer(
-            case["label"] if index < right else "skipped", model="m", input_tokens=100, output_tokens=10, cost_usd=0.002
+            case["label"] if index < right else "skipped",
+            model="m",
+            # A scripted stand-in knows what answers: itself. Named, so its runs pool as one model's (#1187).
+            served_model="m",
+            input_tokens=100,
+            output_tokens=10,
+            cost_usd=cost,
         )
 
     return run
@@ -75,10 +86,22 @@ def _passing(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, An
 _CASES = [{"text": f"support request {index}", "label": "queued"} for index in range(CASES)]
 
 
-async def _launch(store: InMemoryDocumentStore, arms: Mapping[str, int], *, max_cost_usd: float) -> Result:
-    """One launch of the eval over :data:`_CASES` into ``store``: each arm passing its first so many cases, capped as
-    given. Every launch on one store runs on one template, since an eval's template is named by its cases."""
-    runners = {name: _passing(right) for name, right in arms.items()}
+async def _launch(
+    store: InMemoryDocumentStore,
+    arms: Mapping[str, int],
+    *,
+    max_cost_usd: float,
+    costs: Mapping[str, float] | None = None,
+    calls: Counter[tuple[str, int]] | None = None,
+) -> Result:
+    """One launch of the eval over :data:`_CASES` into ``store``: each arm passing its first so many cases, at its cost
+    in ``costs`` (0.2 cents a trial otherwise), capped as given. Every launch on one store runs on one template, since
+    an eval's template is named by its cases, and a launch under the eval's name into a store holding its comparison
+    continues that comparison."""
+    runners = {
+        name: _passing(right, cost=(costs or {}).get(name, 0.002), calls=calls, name=name)
+        for name, right in arms.items()
+    }
     return await Eval(_CASES, runners, ["label"], k=REPEATS, name="support", max_cost_usd=max_cost_usd).run(store=store)
 
 
@@ -122,30 +145,53 @@ def _named(bundle: AnalysisContextBundle) -> set[str]:
     return named | set(bundle.confound_catalog)
 
 
-class TestTwoLaunchesThatDifferOnlyInTheirCapAreOneTestSetup:
-    async def test_the_control_and_the_candidate_pair_and_read_an_interval(self) -> None:
-        """The reported case: production launched at 75 cents, the candidate at 3 dollars, on one template."""
+#: A trial of production's that costs a quarter of a candidate's, so a cap that stops the candidate lets production
+#: finish: 60 trials of production cost 3 cents, of the candidate 12.
+_CHEAP = {"production": 0.0005}
+
+#: The low launch's cap, per arm: production's 60 trials fit in it, the candidate stops at 25 of its 60.
+_STOPPING_CAP = 0.05
+
+
+class TestARelaunchAtARaisedCapContinuesTheComparisonAsOneTestSetup:
+    async def test_the_cells_filled_at_the_raised_cap_pool_with_the_low_cap_s_and_read_the_full_depth(self) -> None:
+        """The reported case, as the quick path runs it now: production and the candidate launched at five cents an arm,
+        which stops the candidate short, then launched again under the same name at three dollars, which continues the
+        comparison (a new name would start a fresh one). The second launch runs only the candidate's cells the first
+        never recorded, nothing twice, and the comparison is one test setup over runs at both caps: one cell per arm,
+        both under one rig, every case at every repeat, and no confound list names the cap."""
         store = InMemoryDocumentStore()
-        # Each launch's cap is shared between its two arms: 1.50 is 0.75 an arm, 6.00 is 3.00.
-        low = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * _LOW_CAP)
-        high = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * _HIGH_CAP)
-        host = low.host
-        control_run, candidate_run = low.arms["production"].run_id, high.arms["candidate"].run_id
-        caps = {
-            off_loop(get_run, host.storage, run_id, low.scope_id).max_cost_usd
-            for run_id in (control_run, candidate_run)
-        }
-        assert caps == {_LOW_CAP, _HIGH_CAP}, "the two runs must differ in their cap"
-        campaign = off_loop(_campaign, host, low, [control_run, candidate_run])
+        calls: Counter[tuple[str, int]] = Counter()
+        arms = {"production": CASES, "candidate": 6}
+        # Each launch's cap is shared between its two arms: 0.10 is 0.05 an arm, 6.00 is 3.00.
+        low = await _launch(store, arms, max_cost_usd=2 * _STOPPING_CAP, costs=_CHEAP, calls=calls)
+        assert low.arms["candidate"].status == "budget_stopped" and low.arms["production"].status == "completed"
+        high = await _launch(store, arms, max_cost_usd=2 * _HIGH_CAP, costs=_CHEAP, calls=calls)
+        assert {summary.status for summary in high.arms.values()} == {"completed"}
+        assert high.campaign_id != low.campaign_id
+        # Nothing ran twice: every case three times on each arm, the raised cap filling only what the low one left.
+        assert set(calls.values()) == {REPEATS} and len(calls) == 2 * CASES
+        host = high.host
+        (aspect,) = off_loop(get_campaign, host.storage, high.campaign_id, high.scope_id).aspects
+        run_ids = list(aspect.run_ids)
+        assert len(run_ids) == 4, "each arm's run at each cap, in one comparison"
+        caps = {off_loop(get_run, host.storage, run_id, high.scope_id).max_cost_usd for run_id in run_ids}
+        assert caps == {_STOPPING_CAP, _HIGH_CAP}, "the comparison's runs were launched at both caps"
+        campaign = off_loop(_campaign, host, high, run_ids)
         bundle = off_loop(_bundle, host, campaign)
 
         (rig,) = {cell.apparatus_class_id for cell in bundle.cells}
         assert len(bundle.cells) == 2, "one cell per arm, both under the one rig"
+        assert [cell.n_observations for cell in bundle.cells] == [CASES * REPEATS] * 2
         assert "max_cost_usd" not in _named(bundle)
         assert campaign.control is not None
-        arms = [campaign.control, CampaignArm(label="v2", role="candidate", variant_key=_key(bundle, "candidate"))]
-        (row,) = campaign_readings(campaign, {"support": bundle}, arms=arms).readings
+        arms_read = [campaign.control, CampaignArm(label="v2", role="candidate", variant_key=_key(bundle, "candidate"))]
+        (row,) = campaign_readings(campaign, {"support": bundle}, arms=arms_read).readings
         assert "no test setup in common" not in row.reason
+        full = Depth(
+            cases=CASES, trials=CASES * REPEATS, repeats_min=REPEATS, repeats_median=float(REPEATS), repeats_max=REPEATS
+        )
+        assert row.control_depth == full and row.arm_depth == full
         # Production passes all twenty cases and the candidate the first six: 30% - 100% is -70 points.
         assert row.change == pytest.approx(-70.0)
         assert row.reading == "worse"
@@ -272,20 +318,20 @@ class TestNoRigCoordinateIsRegisteredOnApparatusOnly:
 
 
 class TestALowCapStopsItsArmShortAndTheReadingsDepthShowsIt:
-    async def test_a_budget_stopped_arm_pools_with_a_higher_cap_arm_and_states_its_truncated_depth(self) -> None:
+    async def test_a_budget_stopped_arm_beside_a_finished_one_states_its_truncated_depth(self) -> None:
+        """A launch whose cap stops the candidate short while production, cheaper a trial, finishes: its comparison's
+        reading states production's whole depth and the candidate's truncated one, and the print opens on the stop."""
         store = InMemoryDocumentStore()
-        # Each trial costs 0.2 cents, so a whole arm of 20 cases at 3 repeats costs 12 cents. The low launch gives each
-        # arm 5 cents, which stops it part-way; the high launch gives each arm 3 dollars, which never binds.
-        low = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * 0.05)
-        high = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * _HIGH_CAP)
+        low = await _launch(store, {"production": CASES, "candidate": 6}, max_cost_usd=2 * _STOPPING_CAP, costs=_CHEAP)
         host = low.host
-        control_run, candidate_run = high.arms["production"].run_id, low.arms["candidate"].run_id
+        control_run, candidate_run = low.arms["production"].run_id, low.arms["candidate"].run_id
         stopped = off_loop(get_run, host.storage, candidate_run, low.scope_id)
         assert stopped.status == "budget_stopped"
+        assert low.exit_code() == 1
         campaign = off_loop(_campaign, host, low, [control_run, candidate_run])
         bundle = off_loop(_bundle, host, campaign)
 
-        assert len({cell.apparatus_class_id for cell in bundle.cells}) == 1, "the two caps are one rig"
+        assert len({cell.apparatus_class_id for cell in bundle.cells}) == 1
         assert campaign.control is not None
         arms = [campaign.control, CampaignArm(label="v2", role="candidate", variant_key=_key(bundle, "candidate"))]
         (row,) = campaign_readings(campaign, {"support": bundle}, arms=arms).readings
@@ -297,3 +343,11 @@ class TestALowCapStopsItsArmShortAndTheReadingsDepthShowsIt:
         # The cap stopped the candidate short of its matrix: fewer trials, so some case ran short or not at all.
         assert depth.trials < CASES * REPEATS
         assert depth.cases < CASES or depth.repeats_min < REPEATS
+        # The print and the page say the same depths: production's whole matrix, the candidate's trials short of it.
+        printed = str(low)
+        assert "candidate was stopped by its budget, so there is no verdict" in printed
+        assert f"production (control): {CASES * REPEATS} result(s)" in printed
+        assert f"candidate: {depth.trials} result(s)" in printed
+        assert "cells not started" in printed
+        page = json.dumps(low.page.model_dump(mode="json"))
+        assert f"of {depth.trials} trials" in page and f"{CASES * REPEATS} of {CASES * REPEATS} trials" in page

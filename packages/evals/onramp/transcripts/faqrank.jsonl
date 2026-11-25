@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "search.py"}
+{"tool": "read", "path": "data/queries.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "import json\n\nfrom threetears.evals import Eval\n\nfrom search import search\n\nwith open(\"data/queries.jsonl\", encoding=\"utf-8\") as queries, open(\"data/judgments.jsonl\", encoding=\"utf-8\") as graded:\n    by_id = {row[\"id\"]: row[\"query\"] for row in map(json.loads, queries)}\n    GRADES = {by_id[row[\"query_id\"]]: row[\"grades\"] for row in map(json.loads, graded)}\n\n\ndef ask(case):\n    \"\"\"The help articles the search gives for the query, best first.\"\"\"\n    return {\"ids\": [hit.id for hit in search(case[\"query\"])]}\n\n\ndef best_first(case, out):\n    \"\"\"The first article is one the support team graded best for the query.\"\"\"\n    grades = GRADES[case[\"query\"]]\n    return bool(out[\"ids\"]) and grades.get(out[\"ids\"][0], 0) == max(grades.values())\n\n\nqueries = Eval(\"data/queries.jsonl\", runner=ask, grader=[best_first], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"best_first\", \"pass_rate\": 0.7273, \"finished\": true}"}

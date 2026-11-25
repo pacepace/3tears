@@ -64,15 +64,22 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     ArmPricing,
     FamilyComparison,
+    JudgedArm,
+    JudgedMeasure,
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
+from threetears.evals.analysis.cells import split_arms
+from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
-from threetears.evals.analysis.report.decision import floor_subject
+from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.schema.reading_states import Coordinate, StateOf
+from threetears.evals.analysis.completeness import unfinished_opening
+from threetears.evals.analysis.caveats import evidence_of, gate_of, raise_caveats, screen
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
     ANALYST_ASPECT_FIELDS,
@@ -81,6 +88,7 @@ from threetears.evals.analysis.report_input import (
     Arm,
     Aspect,
     BarRead,
+    CallRead,
     CaseOverlap,
     Caveats,
     Contrast,
@@ -111,9 +119,16 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels, trial_dimension
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import check_held, declared_check_name, measure_name
+from threetears.evals.analysis.style import (
+    check_held,
+    declared_arm_names,
+    declared_check_name,
+    measure_name,
+    measure_name_of,
+    printed_arm_labels,
+    trial_dimension,
+)
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -180,29 +195,40 @@ def report_input(
     per_slice: int = 1,
     excerpt: ExcerptAt = "start",
     counted: bool = False,
+    call: CallRead | None = None,
 ) -> ReportInput:
-    """The report input for one campaign, read off its bundle.
+    """The report input for one campaign, read off its bundle, with its one caveat list and its first screen.
 
     :param bundle: The campaign's bundle.
-    :ptype bundle: CampaignBundle
     :param provenance: Where the bundle came from, as the masthead's provenance line says it; None says nothing.
-    :ptype provenance: str | None
     :param examples: The most failed trials to show.
-    :ptype examples: int
     :param per_slice: The most failed trials to show per aspect, arm and stratum (this module's Examples).
-    :ptype per_slice: int
     :param excerpt: Where each shown trial's excerpt is cut from: the start of what the judge read, or around the
         failure.
-    :ptype excerpt: ExcerptAt
     :param counted: Whether the input also carries what is counted off the bundle's trials for an analyst (this
         module's Counted): each slice's failed trials, each example's case input, and which cases each two aspects
         share. An uncounted input carries none of them, so it digests as it did.
-    :ptype counted: bool
+    :param call: The campaign's call as the first screen reads it; None reads the one the bundle was assembled with,
+        if any.
     :return: The input.
-    :rtype: ReportInput
     """
-    return _Builder(bundle).build(
+    built = _Builder(bundle).build(
         provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt, counted=counted
+    )
+    if call is None and bundle.first_screen is not None:
+        call = bundle.first_screen.call
+    # The list is raised off the input the bundle built, and the first screen read off the list: both are copied
+    # onto the input, which the models check field by field already.
+    caveats = raise_caveats(built, bundle)
+    value = screen(built, caveats, gate=gate_of(bundle), call=call, evidence=evidence_of(bundle))
+    return built.model_copy(update={"caveat_list": caveats, "first_screen": value})
+
+
+def _split_state(on: Mapping[Coordinate, int]) -> StateOf:
+    """A scoreboard row's state where the cells keep its arm apart on ``on``: withheld, split, on the answering model
+    where that is one of the coordinates (the one :meth:`_Builder._split_note` names first), else the first."""
+    return StateOf(
+        state="withheld", reason="split", coordinate="served_model" if "served_model" in on else next(iter(on))
     )
 
 
@@ -328,6 +354,18 @@ class _Builder:
             else:
                 settings = {axis: display for axis, display in differing.get(key, {}).items()}
                 settings.pop(CANDIDATE_MODEL_LEVER, None)
+            # Only where declared, so a view dumping what was set carries no key for an arm naming none.
+            declared_name: dict[str, Any] = {"short_name": declared[key]} if key in declared else {}
+            # Whether the arm is one thing, where the bundle's design read it: what raises a withheld reading.
+            identity = next(
+                (
+                    arm.identity
+                    for aspect in self.ordered
+                    for arm in aspect.design.contrasts
+                    if arm.variant_key == key and arm.identity is not None
+                ),
+                None,
+            )
             arms.append(
                 Arm(
                     id=label,
@@ -337,8 +375,8 @@ class _Builder:
                     variant_key=key,
                     settings={"model": model, **settings},
                     reasoning_ratio=ratios.get(label),
-                    # Only where declared, so a view dumping what was set carries no key for an arm naming none.
-                    **({"short_name": declared[key]} if key in declared else {}),
+                    identity=identity,
+                    **declared_name,
                 )
             )
         return arms
@@ -410,6 +448,7 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
+            looks=aspect.reading_scope.looks,
             **_analyst_only(ANALYST_ASPECT_FIELDS, counted, lambda: self.how_trials_pass(aspect, depth)),
         )
 
@@ -581,16 +620,22 @@ class _Builder:
         ]
 
     def scoreboard(self, aspect: AnalysisContextBundle) -> dict[str, ScoreboardRow]:
-        """How each arm's trials came out on one aspect, by label."""
+        """How each arm's trials came out on one aspect, by label. An arm split on a coordinate of its identity
+        (:func:`~threetears.evals.analysis.cells.split_arms`) has no one count of passes or failures, so its row
+        carries none, and, where the answering model splits it, no cost per reply either: its trials are two cells',
+        and ``caveats.unreported`` says why, as for its cell (:meth:`cells`)."""
+        split = split_arms(aspect.cells)
+        for key, on in split.items():
+            self._split_note(aspect, self.arm(key), on)
         return {
             self.arm(row.variant_key): ScoreboardRow(
                 ran=row.ran,
                 lost=row.lost,
                 usable=row.usable,
-                passed=row.passed,
-                failed=row.failed,
+                passed=None if row.variant_key in split else row.passed,
+                failed={} if row.variant_key in split else row.failed,
                 cases=row.cases,
-                reply_cost_usd=row.reply_cost_usd,
+                reply_cost_usd=None if "served_model" in split.get(row.variant_key, {}) else row.reply_cost_usd,
                 test_cost_usd=row.test_cost_usd,
                 # Only where a role counted them: None for an arm none counted for, which its document leaves out.
                 unanswered={
@@ -608,6 +653,9 @@ class _Builder:
                 else None,
                 # None where the census read none, which the row leaves out of its document.
                 pricing=_pricing(row.pricing),
+                # The typed fact a reader withholds the row's counts by: never the counts' absence, which an input
+                # that never stated them shares.
+                state=_split_state(split[row.variant_key]) if row.variant_key in split else None,
             )
             for row in aspect.scoreboard
         }
@@ -664,11 +712,17 @@ class _Builder:
 
     def cells(self, aspect: AnalysisContextBundle) -> dict[str, CellFacts]:
         """Each arm's cell on one aspect, by label: its first rig's where it ran under more than one, which
-        ``caveats.unreported`` then says."""
+        ``caveats.unreported`` then says. An arm whose results there were answered by more than one candidate model
+        holds a cell per model under one rig and has NO cell here: none of them is the arm's, so its figures are
+        withheld and ``caveats.unreported`` says why."""
         cells: dict[str, CellFacts] = {}
         rigs: dict[str, int] = {}
+        split = split_arms(aspect.cells)
         for cell in aspect.cell_measures:
             label = self.arm(cell.variant_key)
+            if cell.variant_key in split:
+                self._split_note(aspect, label, split[cell.variant_key])
+                continue
             cells.setdefault(label, cell)
             rigs[label] = rigs.get(label, 0) + 1
         for label, count in rigs.items():
@@ -677,6 +731,23 @@ class _Builder:
                 if note not in self.unreported:
                     self.unreported.append(note)
         return cells
+
+    def _split_note(self, aspect: AnalysisContextBundle, label: str, on: Mapping[Coordinate, int]) -> None:
+        """Say once, in ``caveats.unreported``, why the arm ``label``, split on ``on``, has no figure on ``aspect``."""
+        if "served_model" in on:
+            note = (
+                f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, or "
+                f"by one no response named, so they are read per model in {on['served_model']} cells and no "
+                f"figure is given for {label} there."
+            )
+        else:
+            note = (
+                f"{label}'s runs on {aspect.aspect} were read under more than one definition of a host "
+                f"measure, or under none recorded, so they are read per definition in "
+                f"{on['measure_definition']} cells and no figure is given for {label} there."
+            )
+        if note not in self.unreported:
+            self.unreported.append(note)
 
     def measures(self) -> dict[str, Measure]:
         """Every measure the cells carry: what it is, and each arm's figure on the lead aspect and on every other.
@@ -711,8 +782,11 @@ class _Builder:
                         p95=tail,
                     )
                     facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
+            split = split_arms(aspect.cells)
             for measured in self.bundle.readings.measures:
-                if measured.aspect != aspect.aspect:
+                # An arm read per answering model has no figure of its own (`cells`), so none is filled in for it
+                # from readings frozen before they withheld it.
+                if measured.aspect != aspect.aspect or measured.arm in split:
                     continue
                 held = figures.setdefault(measured.measure, {}).setdefault(aspect.aspect, {})
                 if measured.arm_label not in held:
@@ -786,18 +860,34 @@ class _Builder:
                         mean=reading.mean, sem=reading.sem, n=reading.n, n_cases=reading.n_independent
                     )
                     evidence.setdefault(reading.dimension, reading.evidence_tier)
+        # Each judge's checks, as the bundle's judged measures hold them, each once: what raises a judge not checked.
+        checks: dict[str, list[Check]] = {}
+        for aspect in self.ordered:
+            for measure in aspect.judged_measures:
+                held = checks.setdefault(measure.name, [])
+                held.extend(check for check in measure.checks if check not in held)
+        # A claim reading, as the lead aspect's judged measures hold it: its criterion, its reader name, whether it is
+        # withheld, and each arm's cells lost, pending and past the web budget.
+        claimed = {measure.name: measure for measure in self.lead.judged_measures if measure.instrument is not None}
         judged: dict[str, Judged] = {}
         for dimension, by_aspect in figures.items():
             tier = tiers.get(dimension)
+            claim = claimed.get(dimension)
+            per_arm = by_aspect.get(self.lead.aspect, {})
+            if claim is not None and claim.withheld is not None:
+                per_arm = {label: stat.model_copy(update={"state": claim.withheld}) for label, stat in per_arm.items()}
             judged[dimension] = Judged(
+                label=claim.reader_name if claim is not None else None,
                 scale=tier.scale if tier is not None else described.get(dimension),
                 tier=evidence[dimension],
                 judge_model=tier.judge_model if tier is not None else None,
                 calibration=tier.calibration.state if tier is not None else None,
                 calibration_ratings=tier.calibration.n if tier is not None else None,
                 agreement=tier.calibration.agreement if tier is not None else None,
-                per_arm=by_aspect.get(self.lead.aspect, {}),
+                per_arm=per_arm,
+                checks=checks.get(dimension, []),
                 by_aspect={label: arms for label, arms in by_aspect.items() if label != self.lead.aspect},
+                **(_claim_counts(claim, self.arm) if claim is not None else {}),
             )
         return judged
 
@@ -1043,8 +1133,20 @@ class _Builder:
                 short.setdefault(run, ShortRun(run=run, arm=self.arm(key) if key is not None else None, note=note))
             for observation in aspect.telemetry.measures.unreported_observations:
                 unreported.setdefault(observation)
+            for negative in aspect.negative_values:
+                unreported.setdefault(
+                    negative.sentence(measure_name_of(aspect, negative.measure), self.arm(negative.variant_key))
+                )
         for note in self.unreported:
             unreported.setdefault(note)
+        # What stopped each run that did not finish, as the aspect's own page opens with it, named by its aspect
+        # where the campaign reads several.
+        several = len(self.ordered) > 1
+        unfinished = [
+            f"On {aspect.aspect}: {opening[1]}" if several else opening[1]
+            for aspect in self.ordered
+            if (opening := unfinished_opening(aspect, self.arm)) is not None
+        ]
         return Caveats(
             late_criteria=[
                 LateCriterion(criterion=criterion, name=name, set_at=set_at, aspect=aspect, reading=reading)
@@ -1056,6 +1158,7 @@ class _Builder:
             latency=" ".join(latency) or None,
             short_runs=list(short.values()),
             unreported=list(unreported),
+            unfinished=unfinished,
         )
 
 
@@ -1109,6 +1212,29 @@ def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:
 def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
     """Judged where a rubric dimension counts toward a pass, checked where checks alone do, else neither."""
     return "judged" if rule.dimensions else "checked" if rule.checks else None
+
+
+def _claim_counts(measure: JudgedMeasure, arm: Callable[[str], str]) -> dict[str, Any]:
+    """A claim reading's criterion and its arms' cells lost, pending, unread by the host's reader, silent, past the
+    web budget, lost to a failed web step and read from a recorded web, by arm label, each where any arm has one."""
+
+    def by_arm(count: Callable[[JudgedArm], int]) -> dict[str, int]:
+        found: dict[str, int] = {}
+        for held in measure.arms:
+            if count(held):
+                found[arm(held.variant_key)] = found.get(arm(held.variant_key), 0) + count(held)
+        return found
+
+    return {
+        "instrument": measure.instrument,
+        "lost": by_arm(lambda held: held.n_claim_lost),
+        "pending": by_arm(lambda held: held.n_claim_pending),
+        "unread": by_arm(lambda held: held.n_claim_unread),
+        "silent": by_arm(lambda held: held.n_claim_silent),
+        "web_skipped": by_arm(lambda held: held.n_web_skipped),
+        "web_lost": by_arm(lambda held: held.n_web_lost),
+        "web_replayed": by_arm(lambda held: held.n_web_replayed),
+    }
 
 
 def _pass_rule_sentence(rule: PassRule) -> str:
@@ -1274,6 +1400,7 @@ def _pricing(held: ArmPricing | None) -> Pricing | None:
     return Pricing(
         sources=held.sources,
         providers=held.providers,
+        providers_in_part=held.providers_in_part,
         tool_providers=held.tool_providers,
         calls=held.calls,
         priced_calls=held.priced_calls,

@@ -21,13 +21,11 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import (
-    DisclosureBlock,
-    TableBlock,
-    get_campaign,
-    report_markdown,
-)
-from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
+from threetears.evals.analysis import DisclosureBlock, TableBlock
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.kernel import AspectDesign, GuardrailMargin
+from threetears.evals.kernel.declaration import refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -129,8 +127,9 @@ class TestAScorerGuardrail:
         # On the row's ruler, points for a pass/fail, as the margin column states it.
         assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
-        # The level sits once in the table's header; a pass/fail reads in points.
-        assert same["interval"] == "-8 to +8 pts", "a pass/fail is on 0 to 1: the bounded test's"
+        # The level sits once in the table's header; a pass/fail reads in points, at the tenth the measure's narrowest
+        # interval sets (the precision rule, owner ruling 2026-11-14), where it read "-8 to +8 pts".
+        assert same["interval"] == "-8.1 to +8.1 pts", "a pass/fail is on 0 to 1: the bounded test's"
         assert comparison.guardrail_readings.checks[0].interval_basis == "bounded"
 
     async def test_the_standing_of_each_arm_and_none_for_the_control(self) -> None:
@@ -164,7 +163,9 @@ class TestAScorerGuardrail:
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
-        assert gain["verdict"] == "leaky better than current", "the breached arm gained, and its breach is still named"
+        assert gain["verdict"] == "leaky better than current, decided at 38 cases when the evidence reached 132", (
+            "the breached arm gained, and its breach is still named"
+        )
 
     async def test_with_every_scorer_a_guardrail_the_breach_is_named_once_above_the_guardrails_table(self) -> None:
         comparison = await _compare(graders=[grader(no_leak, guard=NO_LEAK)])
@@ -197,8 +198,10 @@ class TestAScorerGuardrail:
         rude = {"current": _answers(misses=0, leaks=0), "please": _answers(misses=0, leaks=0, tail=" please")}
         comparison = await _compare(rude, polite)
         summary = comparison.arms["please"]
-        assert summary.n_excluded == len(CASES) and summary.n_scored == 0
-        assert "outside the range 0 to 1" in summary.errors[0]
+        # Re-pinned deliberately (T1, coordinator ruling): every cell was excluded, one by one; a score off its declared
+        # scale is the rig's defect, so the run fails at the first such answer, naming it, and nothing is scored.
+        assert summary.status == "failed" and summary.n_scored == 0
+        assert "outside the range 0 to 1 declared for it" in summary.errors[0]
 
     async def test_with_no_range_a_reading_is_never_held_and_the_reason_names_ranges(self) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}

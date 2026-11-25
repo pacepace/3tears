@@ -1,0 +1,44 @@
+{"query_id": "q-01", "grades": {"kb-101": 3}}
+{"query_id": "q-02", "grades": {"kb-101": 3}}
+{"query_id": "q-03", "grades": {"kb-101": 3}}
+{"query_id": "q-04", "grades": {"kb-102": 3, "kb-103": 2}}
+{"query_id": "q-05", "grades": {"kb-103": 3, "kb-102": 1}}
+{"query_id": "q-06", "grades": {"kb-103": 3, "kb-102": 1}}
+{"query_id": "q-07", "grades": {"kb-104": 3, "kb-105": 1}}
+{"query_id": "q-08", "grades": {"kb-105": 3}}
+{"query_id": "q-09", "grades": {"kb-105": 3, "kb-104": 1}}
+{"query_id": "q-10", "grades": {"kb-201": 3, "kb-206": 1}}
+{"query_id": "q-11", "grades": {"kb-201": 3, "kb-206": 1}}
+{"query_id": "q-12", "grades": {"kb-202": 3, "kb-201": 1}}
+{"query_id": "q-13", "grades": {"kb-202": 3, "kb-201": 1}}
+{"query_id": "q-14", "grades": {"kb-203": 3}}
+{"query_id": "q-15", "grades": {"kb-204": 3}}
+{"query_id": "q-16", "grades": {"kb-204": 3}}
+{"query_id": "q-17", "grades": {"kb-204": 3, "kb-203": 1}}
+{"query_id": "q-18", "grades": {"kb-205": 3}}
+{"query_id": "q-19", "grades": {"kb-205": 3}}
+{"query_id": "q-20", "grades": {"kb-206": 3, "kb-201": 1}}
+{"query_id": "q-21", "grades": {"kb-206": 3}}
+{"query_id": "q-22", "grades": {"kb-207": 3}}
+{"query_id": "q-23", "grades": {"kb-207": 3, "kb-202": 1}}
+{"query_id": "q-24", "grades": {"kb-208": 3}}
+{"query_id": "q-25", "grades": {"kb-209": 3}}
+{"query_id": "q-26", "grades": {"kb-209": 3}}
+{"query_id": "q-27", "grades": {"kb-301": 3}}
+{"query_id": "q-28", "grades": {"kb-301": 3, "kb-302": 1}}
+{"query_id": "q-29", "grades": {"kb-302": 3}}
+{"query_id": "q-30", "grades": {"kb-302": 3}}
+{"query_id": "q-31", "grades": {"kb-304": 3, "kb-303": 2}}
+{"query_id": "q-32", "grades": {"kb-303": 3, "kb-304": 2}}
+{"query_id": "q-33", "grades": {"kb-305": 3}}
+{"query_id": "q-34", "grades": {"kb-306": 3}}
+{"query_id": "q-35", "grades": {"kb-306": 3}}
+{"query_id": "q-36", "grades": {"kb-401": 3, "kb-402": 1}}
+{"query_id": "q-37", "grades": {"kb-402": 3, "kb-401": 1}}
+{"query_id": "q-38", "grades": {"kb-403": 3}}
+{"query_id": "q-39", "grades": {"kb-501": 3}}
+{"query_id": "q-40", "grades": {"kb-502": 3, "kb-209": 1}}
+{"query_id": "q-41", "grades": {"kb-503": 3}}
+{"query_id": "q-42", "grades": {"kb-601": 3}}
+{"query_id": "q-43", "grades": {"kb-602": 3}}
+{"query_id": "q-44", "grades": {"kb-603": 3}}

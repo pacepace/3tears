@@ -2,7 +2,7 @@
 
 A rate floor (``RateDrop(max_points=9.5)``: no pass rate drops by more than 9.5 points) reads ``held`` when the
 interval on the candidate minus the control keeps the drop within the margin
-(:mod:`~threetears.evals.analysis.report.decision`), at the nominal level with no correction. That is a claim of no
+(:mod:`~threetears.evals.analysis.floors`), at the nominal level with no correction. That is a claim of no
 worse by more than the margin, so at a true drop of exactly the margin it must be made no more often than the
 interval's one tail. A pass rate's per-case values are coarse shares of a few repeats, and a candidate that
 breaks one case in ten leaves most samples of a dozen cases agreeing with the control.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 
-from threetears.evals.analysis.report.decision import FloorReadings, RateReading, read_floor
+from threetears.evals.analysis.floors import FloorReadings, RateReading, read_floor
 from threetears.evals.kernel.declaration import Floor, RateDrop
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,

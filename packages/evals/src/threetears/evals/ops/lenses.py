@@ -45,6 +45,7 @@ from threetears.evals.analysis.reads import (
 from threetears.evals.analysis.report.forms import PageForms
 
 from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
+from threetears.evals.analysis.bundle.observations import measure_definition_levels
 
 from threetears.evals.analysis.stats import (
     DETECTABLE_POWER,
@@ -58,9 +59,12 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.cost_estimate import (
+    BORROWED_PREDICTION_METHOD,
     COST_BAND_SAFETY_MARGIN,
     COST_ESTIMATE_MIN_BASIS,
+    BorrowedCost,
     CostObservation,
+    compute_borrowed_cost,
     compute_estimate_cost,
 )
 from threetears.evals.analysis.significance import format_significance
@@ -78,9 +82,10 @@ from threetears.evals.kernel.campaign import ReadingKind
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 
-from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
+from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost
+from threetears.evals.kernel.host.bars import pass_threshold_label
 
-from threetears.evals.kernel.metrics import measure_title
+from threetears.evals.kernel.metrics import describe_reported_measure, holds_host_measure, measure_title, reads_as_rate
 
 from threetears.evals.schema.models import EvalRun, EvalTemplate
 
@@ -126,32 +131,21 @@ def scope_pivot(
     """One measure over the scope's observations, aggregated over two coordinates.
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param row_factor: The coordinate the rows are.
-    :ptype row_factor: str
     :param column_factor: The coordinate the columns are.
-    :ptype column_factor: str
     :param metric: The measure; ``None`` or blank takes the composite.
-    :ptype metric: str | None
     :param weighting: The aggregation weighting; ``None`` or blank takes the disclosed default.
-    :ptype weighting: str | None
     :param subject_id: Only this subject's observations; required to pivot a judged measure over many.
-    :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` reads every run.
-    :ptype status: str | None
     :param predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
         each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
         arm's prediction) or an analysis :class:`~threetears.evals.analysis.lenses.cost_estimate.CostEstimate` — the
         model, or its JSON form as a caller across a wire holds it.
-    :ptype predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None
     :param launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
         says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
         the prediction was drawn from among them. Refused without ``predicted_cost``.
-    :ptype launched_run_ids: Sequence[str]
     :return: The table.
-    :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
         :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
         :data:`~threetears.evals.analysis.reads.PIVOT_READ_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
@@ -203,22 +197,14 @@ def scope_history(
     """One measure over time for each contestant in the scope, with its regressions flagged.
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
         declares (a quick-path scorer's name); ``None`` or blank takes the composite.
-    :ptype metric: str | None
     :param min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
-    :ptype min_absolute_change: float
     :param min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
-    :ptype min_relative_change: float
     :param subject_id: Only this subject's observations.
-    :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` reads every run.
-    :ptype status: str | None
     :return: The series.
-    :rtype: HistoryResult
     :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
         :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
@@ -250,18 +236,12 @@ def scope_frontier(
     files every arm under one subject, so its arms (models among them) are one frontier.
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
-    :ptype bar: float | str | None
     :param subject_id: Only this subject's variants; what the others count as is
         :func:`~threetears.evals.analysis.frontier`'s ``subject_id`` (filtered out, or, past the read budget, unread).
-    :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` ranks every run.
-    :ptype status: str | None
     :return: The frontier.
-    :rtype: FrontierResult
     :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
         past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs
         that fit.
@@ -297,23 +277,15 @@ def scope_export(
     ``after_case_id`` (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param format: ``"csv"`` (the default) or ``"json"``.
-    :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
-    :ptype status: str | None
     :param run_ids: Only these runs — archived ones included, since they were named. Runs whose results would pass
         the ceiling are paged as the scope is, the pages holding them alone; one past it is paged by its cases.
-    :ptype run_ids: list[str] | None
     :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
-    :ptype after_run_id: str | None
     :param after_case_id: The previous page's ``page.next_after_case_id``; ``None`` starts at the run after
         ``after_run_id``.
-    :ptype after_case_id: str | None
     :return: The export.
-    :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one there is, the status is no run's, ``after_run_id`` is no run
         in the scope or is given with ``run_ids`` that do not name it, or ``after_case_id`` is given alone or is no
         case of that run.
@@ -345,7 +317,8 @@ class RunsCompared(EvalBaseModel):
     comparison: dict[str, Any] = Field(
         description=(
             "The two-run lens's answer: `comparison_basis` (whether the runs share a template, not the test's basis), "
-            "`composite_comparability` (why composites are withheld, across subjects), `comparison.arm` (each "
+            "`composite_comparability` (why the deltas are withheld: across subjects, a side split on a coordinate of "
+            "its identity, or the two read under different definitions), `comparison.arm` (each "
             "arm's model and the models its responses named as having answered it, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
             "paired and over how many cases, Hedges' g, p and the verdict), `comparison.per_template` and each "
             "run's `subject_detail_{a,b}`."
@@ -376,15 +349,10 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
     same helpers.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param baseline_run_id: The run read as the baseline.
-    :ptype baseline_run_id: str
     :param candidate_run_id: The run read against it.
-    :ptype candidate_run_id: str
     :param scope_id: The scope both runs live in.
-    :ptype scope_id: str
     :return: The comparison and its disclosures.
-    :rtype: RunsCompared
     :raises NotFoundError: Either run is not in the scope.
     """
     storage = host.storage
@@ -485,15 +453,10 @@ def runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sco
     """Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
 
     :param host: The host whose store and sweepable declarations are read.
-    :ptype host: EvalHost
     :param baseline_run_id: The run read as the baseline.
-    :ptype baseline_run_id: str
     :param candidate_run_id: The run read against it.
-    :ptype candidate_run_id: str
     :param scope_id: The scope both runs live in.
-    :ptype scope_id: str
     :return: The split and its disclosures.
-    :rtype: RunsBisected
     :raises NotFoundError: Either run is not in the scope.
     """
     split = bisect_runs(host.storage, baseline_run_id, candidate_run_id, scope_id, profile=host.profile)
@@ -544,6 +507,10 @@ class ArmEstimate(EvalBaseModel):
     :ivar call_ceiling_estimate: Whether ``call_ceiling_usd`` is built on rates the host's pricer does not guarantee
         (:attr:`~threetears.evals.run.CallCeiling.estimate`): the arm's cap is checked against an estimate. Left out
         of the JSON while false.
+    :ivar served_check_skipped: Each served-model check of the arm's candidate, judge or simulator model that could
+        not be made, and why (its provider's model list could not be read now): the launch would go ahead without
+        knowing whether the provider still serves that model. A model the list does not name refuses the arm instead.
+        Left out of the JSON while empty.
     """
 
     described: str
@@ -563,6 +530,7 @@ class ArmEstimate(EvalBaseModel):
     call_ceiling_usd: float | None = None
     call_ceiling_lower_bound: bool = False
     call_ceiling_estimate: bool = Field(default=False, exclude_if=lambda value: value is False)
+    served_check_skipped: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class DetectableEffect(EvalBaseModel):
@@ -585,12 +553,18 @@ class DetectableEffect(EvalBaseModel):
     :ivar difference_sd: The planned standard deviation of one case's difference of means at the planned ``k``.
     :ivar n_history_cases: The earlier cases the between-case figure rests on.
     :ivar run_ids: The earlier runs whose values were read.
+    :ivar rate: Whether the reading is a rate (:func:`~threetears.evals.kernel.metrics.reads_as_rate`). A family
+        separates a rate only where its bounded interval excludes zero as well as its t-test rejecting, and
+        ``delta`` plans the t-test alone, so a rate's ``delta`` is the least the launch could detect: at it, 20 to
+        80 planned cases separated a pass rate 37–62% of the time in simulation against the 80% stated
+        (``tests/test_power_preflight.py`` holds the 20-case row).
     """
 
     reading: ReadingKind
     name: str
     delta: float | None
     cannot_estimate: str | None
+    rate: bool = False
     basis: Literal["paired_runs", "unrelated_case_effects"] | None = None
     within_case_sd: float | None = None
     between_case_sd: float | None = None
@@ -604,8 +578,17 @@ DETECTABLE_EFFECT_ASSUMPTIONS = (
     "the planned arms run the same cases and are compared paired, as a family compares them; one case's difference "
     "of means is near normal (the paired t-test's own assumption — on a coarse pass/fail or 1-5 reading over few "
     "cases it is only approximate); the earlier runs' variance holds for the planned arms; only the one comparison "
-    "differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); and the "
-    "variance is an estimate from the earlier runs, whose own error is not in the figure"
+    "differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); the "
+    "variance is an estimate from the earlier runs, whose own error is not in the figure; and the test planned is "
+    "the paired t-test alone, where a rate is separated only once its bounded interval excludes zero too, which "
+    "takes more cases, so a rate's Δ is the least the launch could detect, not what it will"
+)
+
+#: Added to :data:`DETECTABLE_EFFECT_ASSUMPTIONS` only where the earlier runs read were not all read under one
+#: definition of each host measure, or some recorded none: the variance is pooled over them all the same, so a shift
+#: between definitions widens it. Until the planning read keeps them apart, the block says so.
+_DEFINITIONS_POOLED = (
+    "; and its variance pools earlier runs read under different definitions of a host measure, or under none recorded"
 )
 
 
@@ -615,7 +598,10 @@ class DetectableEffects(EvalBaseModel):
     A power pre-flight beside the price. Each reading's difference is the smallest true difference between two
     arms that the paired two-sided t-test on per-case means (the test a comparison family runs on cases both
     arms ran) rejects with probability :attr:`power`, at the per-comparison level the first step of Holm's
-    correction asks of a family of :attr:`family_size` comparisons. The variance it plans from is measured,
+    correction asks of a family of :attr:`family_size` comparisons. **For a rate that is the less demanding of the
+    two tests that decide it** (:attr:`DetectableEffect.rate`): the family also needs the rate's bounded interval to
+    exclude zero, whose power has no closed form and is not planned here, so the figure is optimistic for a rate
+    and each such line says so. The variance it plans from is measured,
     never supplied: the within-case (repeat) and between-case components of earlier runs of the same template
     (:func:`~threetears.evals.analysis.stats.variance_components`). With none to measure, it says so.
 
@@ -689,12 +675,10 @@ class LaunchEstimate(EvalBaseModel):
 
         :param run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty
             before, when the cost a pivot sets beside each prediction is history the launch did not make.
-        :ptype run_ids: Sequence[str]
         :return: One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan
             and a prediction; the prediction's point is the pricer's central estimate where it gave a range (the
             band then running from its lower end to its band's own upper end, never to a cap's safety margin above
             it) and its single figure otherwise.
-        :rtype: list[PlannedCost]
         """
         planned: list[PlannedCost] = []
         for arm in self.arms:
@@ -741,16 +725,11 @@ async def launch_estimate(
     by the launch itself (``EvalStorage.query_out_of_run_spend`` reads what they spent).
 
     :param host: The launching host.
-    :ptype host: OpsHost
     :param arguments: What the launch would name.
-    :ptype arguments: LaunchArguments
     :param scope_id: The scope the launch would run in.
-    :ptype scope_id: str
     :param n_test_cases: A case count to price each planned arm at in place of its plan's, for a hypothetical grid;
         ``None`` prices each at its plan, as the launch would.
-    :ptype n_test_cases: int | None
     :return: The estimate.
-    :rtype: LaunchEstimate
     :raises NotFoundError: The template is not in the scope.
     :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
         below one. The template's earlier runs past the read tier's budget refuse no estimate: the planning block
@@ -873,19 +852,12 @@ def detectable_effects(
     no earlier run, or too few repeated cases, the reading says it cannot estimate and why.
 
     :param host: The host whose store holds the earlier runs and whose vocabulary reads them.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param template_id: The template the launch runs.
-    :ptype template_id: str
     :param n_cases: The cases per arm the launch plans; ``None`` when its kind plans none.
-    :ptype n_cases: int | None
     :param k_runs: The repeats per case.
-    :ptype k_runs: int
     :param n_arms: The arms the launch runs.
-    :ptype n_arms: int
     :return: The block.
-    :rtype: DetectableEffects
     :raises ValidationFailedError: The template's earlier runs are estimated past
         :data:`~threetears.evals.analysis.reads.PLANNING_READ_BUDGET` results by their matrices (refused before any result
         is read), or their read returned more than it (refused once the read is walked). A launch estimate reports
@@ -903,10 +875,9 @@ def detectable_effects(
     # history read whole held every result of every run at once. The read holds one page of results and their readings
     # at a time, on either path; on the engine's path its key read is one call for every run.
     read_counts: dict[str, int] = {}
-    walk = _counted(
-        host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True), read_counts
-    )
-    readings = planning_readings(runs, walk, profile=host.profile)
+    holding: dict[str, list[ResultView]] = {}
+    with host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True) as read:
+        readings = planning_readings(runs, _counted(read, read_counts, holding), profile=host.profile)
     hold_to_read_budget(
         _PLANNING_LENS,
         scope_id,
@@ -923,6 +894,9 @@ def detectable_effects(
         family_size=family_size,
         per_comparison_alpha=SIGNIFICANCE_ALPHA / family_size,
         run_ids=[run.id for run in runs],
+        # Read as the cells read the runs (one result holding a host measure says what all of a run's would).
+        assumptions=DETECTABLE_EFFECT_ASSUMPTIONS
+        + (_DEFINITIONS_POOLED if measure_definition_levels(runs, holding) else ""),
     )
     if not runs:
         return block.model_copy(
@@ -945,25 +919,38 @@ def detectable_effects(
         )
     launched = {run.id: (run.candidate_model, run.overlays, run.apparatus_settings) for run in runs}
     effects = [
-        _detectable_effect(reading, launched, n_cases=n_cases, k_runs=k_runs, alpha=block.per_comparison_alpha)
+        _detectable_effect(
+            reading, launched, n_cases=n_cases, k_runs=k_runs, alpha=block.per_comparison_alpha
+        ).model_copy(update={"rate": _planned_as_rate(reading, host)})
         for reading in readings
     ]
     return block.model_copy(update={"effects": effects})
 
 
-def _counted(readings: Iterable[ResultView], counts: dict[str, int]) -> Iterator[ResultView]:
+def _planned_as_rate(reading: PlanningReading, host: EvalHost) -> bool:
+    """Whether a family would read ``reading`` as a rate, and so separate it only on its bounded interval too."""
+    if reading.reading == "measure":
+        descriptor = describe_reported_measure(reading.name, host.profile.measures)
+        return reads_as_rate("measure", reading.name, descriptor=descriptor)
+    return reads_as_rate(reading.reading, reading.name, value_range=reading.value_range)
+
+
+def _counted(
+    readings: Iterable[ResultView], counts: dict[str, int], holding: dict[str, list[ResultView]]
+) -> Iterator[ResultView]:
     """``readings``, each handed on as it is read, counted per run into ``counts``: which runs the planning read found
-    results of, and how many, known once the walk ends.
+    results of, and how many, known once the walk ends; and the first of each run's that holds a host measure kept in
+    ``holding``, all :func:`~threetears.evals.analysis.bundle.observations.measure_definition_levels` asks of them.
 
     :param readings: The read's readings, walked once.
-    :ptype readings: Iterable[ResultView]
     :param counts: Where each run's count is added.
-    :ptype counts: dict[str, int]
+    :param holding: Where each run's first result holding a host measure is kept, by run id.
     :return: The readings, in their order.
-    :rtype: Iterator[ResultView]
     """
     for reading in readings:
         counts[reading.eval_run_id] = counts.get(reading.eval_run_id, 0) + 1
+        if reading.eval_run_id not in holding and holds_host_measure(reading.host_measures):
+            holding[reading.eval_run_id] = [reading]
         yield reading
 
 
@@ -1038,13 +1025,9 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
     """One arm's verdict, as the estimate reports it.
 
     :param arm: The verdict.
-    :ptype arm: ArmVerdict
     :param k_runs: Repeats per case.
-    :ptype k_runs: int
     :param n_variations: Cases the launch generates; ``0`` for stored cases.
-    :ptype n_variations: int
     :return: The arm.
-    :rtype: ArmEstimate
     """
     plan = arm.plan
     price = arm.price
@@ -1066,6 +1049,9 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
         call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
         call_ceiling_estimate=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.estimate,
+        served_check_skipped=[
+            notice for check in (plan.served_checks if plan is not None else ()) if (notice := check.skipped_notice())
+        ],
     )
 
 
@@ -1074,15 +1060,10 @@ def _band_from_history(forms: PageForms, low: float, centre: float, high: float)
     sits from the centre, so a reader can judge whether one or two percent matters.
 
     :param forms: The surface's forms.
-    :ptype forms: PageForms
     :param low: The band's lower end.
-    :ptype low: float
     :param centre: The central estimate.
-    :ptype centre: float
     :param high: The band's upper end.
-    :ptype high: float
     :return: The words, after "the band from history".
-    :rtype: str
     """
     if low == high:
         return f"has no width, at {forms.lone(centre, money=True).text}"
@@ -1138,10 +1119,21 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     only under other launch conditions is named with the conditions that differ. A revision with priced results of its
     own is priced from them alone. This is pricing only: analysis never pools two revisions' results.
 
+    **A template with no priced history, its own or its revisions', borrows from its siblings'.** A sibling is another
+    template in the scope, of the same candidate kind and not a revision of the arm's own. Only its runs launched as
+    the arm will be are drawn on (the same candidate model, cassette mode, judges, simulator, apparatus and overlays),
+    and only on the arm's subject. A sibling whose template differs from the arm's in what a run spends (its judged
+    dimensions with their judge pins, conversation shape, world seed, allowed tools or kind spec) is not drawn on, and
+    is named: the estimate is per case, and a case's cost cannot be scaled across such a change. The price says it is
+    borrowed: its method is ``borrowed-history`` and its basis names each sibling and its result count. Its band is
+    never narrower than a direct estimate's from the same results, nor than the cap's safety margin either side of
+    its centre (:func:`~threetears.evals.analysis.lenses.cost_estimate.compute_borrowed_cost`), and needs results
+    over at least :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` cases. A borrowed figure budgets a
+    launch only; it never enters a reading, a cell, a pool or a recommendation. With no sibling to draw on, the arm
+    reads unpriced, and its basis says what its own history and its siblings each lack.
+
     :param host: The host whose store holds the history and whose vocabulary reads it.
-    :ptype host: EvalHost
     :return: The pricer.
-    :rtype: LaunchPricer
     """
 
     def priced_history(quote: ArmQuote, template_id: str) -> CostEstimateCell:
@@ -1213,6 +1205,96 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             ),
         )
 
+    def borrowed(quote: ArmQuote, template: EvalTemplate, launched: str) -> ArmPrice | str:
+        """The arm's price borrowed from its sibling templates' priced results, or why none prices it.
+
+        A sibling is another template in the scope (not a revision of the arm's own) of the same candidate kind, and
+        it is drawn on only through its runs launched as the arm will be, on the arm's subject, and only while its
+        template leaves what a run spends as the arm's does (:func:`_pricing_shape`): the estimate is per case, and
+        a case's cost cannot be scaled across a change there.
+        """
+        runs_by_template: dict[str, list[EvalRun]] = {}
+        for run in list_runs(host, quote.scope_id, include_archived=True):
+            if run.template_id is not None and run.template_id != template.id:
+                runs_by_template.setdefault(run.template_id, []).append(run)
+        reasons: list[str] = []
+        observations: list[CostObservation] = []
+        drawn_on: list[str] = []
+        for sibling_id in sorted(runs_by_template):
+            sibling = host.storage.load_template(sibling_id, quote.scope_id)
+            if sibling is None or sibling.name == template.name or sibling.candidate_kind != template.candidate_kind:
+                continue
+            named = f"template {sibling.name!r} ({sibling.id!r})"
+            matching = [run for run in runs_by_template[sibling_id] if not _sibling_differences(run, quote)]
+            if not matching:
+                if differences := _closest_priced_sibling_differences(host, quote, runs_by_template[sibling_id]):
+                    reasons.append(f"{named}'s priced runs differ in {differences}")
+                continue
+            if changed := _sibling_shape_changes(sibling, template):
+                reasons.append(
+                    f"{named} differs from the arm's in {', '.join(changed)}, across which a case's cost cannot be "
+                    "scaled"
+                )
+                continue
+            # Read a page at a time, and of the arm's model only, as the arm's own history is.
+            its_own = [
+                CostObservation.of(result)
+                for run in matching
+                for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+                if result.model == quote.candidate_model
+            ]
+            n_priced = sum(1 for observation in its_own if observation.cost_usd is not None)
+            if n_priced:
+                observations += its_own
+                drawn_on.append(f"{named}, {n_priced} result(s)")
+        borrowing: BorrowedCost | None = compute_borrowed_cost(
+            observations, n_cases=quote.case_count, k_runs=quote.k_runs
+        )
+        if borrowing is None:
+            missing = (
+                f"nor has any other template of kind {template.candidate_kind!r} a priced result on subject "
+                f"{quote.subject_id!r} {launched}"
+            )
+            return "; ".join([missing, *reasons])
+        forms = PageForms.off_page()
+        predicted = borrowing.predicted
+        sources = "; ".join(drawn_on)
+        if predicted.interval_high is None:
+            return (
+                f"the {borrowing.n_historical} priced result(s) of sibling templates ({sources}) cover "
+                f"{borrowing.n_cases} case(s), too few to bound an arm whose cases are new (a borrowed band needs "
+                f"{COST_ESTIMATE_MIN_BASIS} cases and {COST_ESTIMATE_MIN_BASIS} results; their mean alone puts it at "
+                f"{forms.lone(predicted.value, money=True).text})"
+            )
+        cell = CostEstimateCell(
+            model=quote.candidate_model,
+            n_observations=quote.case_count * quote.k_runs,
+            n_historical=borrowing.n_historical,
+            mean_cost_per_observation=borrowing.mean_cost_per_observation,
+            predicted=predicted,
+            basis="historical",
+            band_basis=borrowing.band_basis,
+            n_unpriced_historical=borrowing.n_unpriced_historical,
+        )
+        return priced(
+            cell,
+            predicted,
+            f"sibling templates on subject {quote.subject_id!r} {launched}",
+            drawn_on=f"borrowed from {sources}: template {template.name!r} has no priced result of its own; the "
+            f"same candidate kind, subject, overlays, kind spec, {_PRICING_UNCHANGED}; a budgeting figure only, never "
+            "a reading; ",
+        )
+
+    def or_borrowed(quote: ArmQuote, template: EvalTemplate | None, launched: str, basis: str) -> ArmPrice:
+        """The arm's price borrowed from its siblings when its own history and its revisions price nothing
+        (``basis`` says why they do not); unpriced, saying what each lacks, when no sibling prices it either."""
+        if template is None:
+            return ArmPrice(predicted_usd=None, basis=basis)
+        sibling = borrowed(quote, template, launched)
+        if isinstance(sibling, ArmPrice):
+            return sibling
+        return ArmPrice(predicted_usd=None, basis=f"{basis}; {sibling}")
+
     def price(quote: ArmQuote) -> ArmPrice:
         judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
         launched = (
@@ -1231,16 +1313,18 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
         basis = f"no priced past result of {condition} is in scope {quote.scope_id!r}{unpriced}"
         template = host.storage.load_template(quote.template_id, quote.scope_id)
         if template is None or template.revision == 1:
-            return ArmPrice(predicted_usd=None, basis=basis)
+            return or_borrowed(quote, template, launched, basis)
         # A revision a reset wrote prices from the one before it while the step leaves what an arm spends alone
         # (_PRICING_UNCHANGED). Its results only predict the cost; analysis never pools two revisions.
         later = template
         mismatched: list[str] = []
         while (earlier := _predecessor(host, later)) is not None:
             if changed := _pricing_changes(earlier, later):
-                return ArmPrice(
-                    predicted_usd=None,
-                    basis=f"{basis}; revision {earlier.revision} of {template.name!r} cannot price it: the step to "
+                return or_borrowed(
+                    quote,
+                    template,
+                    launched,
+                    f"{basis}; revision {earlier.revision} of {template.name!r} cannot price it: the step to "
                     f"revision {later.revision} changed {', '.join(changed)}",
                 )
             earlier_cell = priced_history(quote, earlier.id)
@@ -1256,19 +1340,22 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 mismatched.append(f"revision {earlier.revision}'s priced runs differ in {differences}")
             later = earlier
         if later is template:
-            return ArmPrice(
-                predicted_usd=None,
-                basis=f"{basis}; the store holds no one revision {template.revision - 1} of {template.name!r} to "
-                "draw on",
+            return or_borrowed(
+                quote,
+                template,
+                launched,
+                f"{basis}; the store holds no one revision {template.revision - 1} of {template.name!r} to draw on",
             )
         earlier_revisions = (
             f"revision {later.revision}"
             if later.revision == template.revision - 1
             else f"revisions {later.revision}-{template.revision - 1}"
         )
-        return ArmPrice(
-            predicted_usd=None,
-            basis=f"{basis}, nor of {earlier_revisions} of {template.name!r}, which would price it with "
+        return or_borrowed(
+            quote,
+            template,
+            launched,
+            f"{basis}, nor of {earlier_revisions} of {template.name!r}, which would price it with "
             f"{_PRICING_UNCHANGED}" + (f"; {'; '.join(mismatched)}" if mismatched else ""),
         )
 
@@ -1327,6 +1414,55 @@ def _predecessor(host: EvalHost, template: EvalTemplate) -> EvalTemplate | None:
     return earlier[0] if len(earlier) == 1 else None
 
 
+def _sibling_shape_changes(sibling: EvalTemplate, template: EvalTemplate) -> list[str]:
+    """What of a sibling template moves what a run of it spends otherwise than ``template``: its pricing shape
+    (:func:`_pricing_shape`) and its kind spec, which between two templates of one kind is often exactly what differs
+    (a larger table the candidate or a judge reads), and whose bearing on cost the engine cannot tell. Empty when the
+    sibling's priced results price ``template``'s arm, case for case.
+
+    :param sibling: The sibling template.
+    :param template: The arm's template.
+    :return: Each difference, by the name a basis gives it.
+    """
+    changed = _pricing_changes(sibling, template)
+    if dict(sibling.kind_spec) != dict(template.kind_spec):
+        changed.append("the kind spec")
+    return changed
+
+
+def _sibling_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
+    """The launch conditions a sibling template's ``run`` differs from ``quote``'s arm in, its subject and overlays
+    among them: a borrowed price crosses templates and nothing else (:func:`_launch_differences`, then the subject and
+    the overlays).
+
+    :param run: A run of a sibling template.
+    :param quote: The arm being priced.
+    :return: Each condition that differs; empty when the run was launched as the arm will be, on its subject.
+    """
+    differences = _launch_differences(run, quote)
+    subject = run.subject_snapshot.subject_id
+    if subject != quote.subject_id:
+        differences.append(f"subject ({subject!r} there, {quote.subject_id!r} here)")
+    if dict(run.overlays) != dict(quote.overlays):
+        differences.append(f"overlays ({dict(run.overlays)!r} there, {dict(quote.overlays)!r} here)")
+    return differences
+
+
+def _closest_priced_sibling_differences(host: EvalHost, quote: ArmQuote, runs: Sequence[EvalRun]) -> str:
+    """What the closest priced run among a sibling template's ``runs`` differs from the arm in; empty for none
+    priced."""
+    closest: list[str] | None = None
+    for run in runs:
+        # Read a page at a time, and only until a priced result is met.
+        pages = iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+        if not any(result.cost_usd is not None for result in pages):
+            continue
+        differences = _sibling_differences(run, quote)
+        if closest is None or len(differences) < len(closest):
+            closest = differences
+    return ", ".join(closest or [])
+
+
 def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalTemplate) -> str:
     """The launch conditions the closest priced run of ``template`` differs from the arm in; empty for none priced."""
     closest: list[str] | None = None
@@ -1347,13 +1483,10 @@ def _launch_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
     """The launch conditions ``run`` was launched under otherwise than ``quote``'s arm will be, beside its template.
 
     :param run: A run from the scope's history.
-    :ptype run: EvalRun
     :param quote: The arm being priced.
-    :ptype quote: ArmQuote
     :return: Each condition that moves what a run spends and differs, as ``<condition> (<run's> there, <arm's> here)``
         — the judges and the simulator by the models that ran, not by what the launch named. Empty when the run was
         launched as the arm will be.
-    :rtype: list[str]
     """
     judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
     pairs: list[tuple[str, object, object]] = [
@@ -1514,6 +1647,10 @@ def history_text(result: HistoryResult) -> str:
                 else f", {forms.lone(point.delta_from_baseline, signed=True, measure=result.metric).text} from baseline"
             )
             epoch = ", suite changed here" if point.epoch_boundary else ""
+            if point.split_on:
+                # A boundary the series is not read across: no verdict for the step, a fresh baseline after it.
+                apart = " and ".join(word.replace("_", " ") for word in point.split_on)
+                epoch += f", {apart} apart from the previous run here: no step is read across it"
             if point.epoch_boundary and (point.epoch_label or previous_label):
                 epoch += f" ({previous_label or 'no named case set'} to {point.epoch_label or 'no named case set'})"
             previous_label = point.epoch_label
@@ -1571,6 +1708,9 @@ def estimate_text(estimate: LaunchEstimate) -> str:
             if arm.predicted_usd is not None
             else "unpriced"
         )
+        if arm.method_id == BORROWED_PREDICTION_METHOD:
+            # Up front, beside the figure: a budgeting figure from other templates, which no reading may take as one.
+            figure += ", borrowed from sibling templates"
         # one line: an arm's description is its repr'd model and template id and its counts (run.launch)
         lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
         if arm.call_ceiling_estimate:
@@ -1578,6 +1718,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
                 "  its cap is checked against estimated rates: its largest call is bounded on rates the host's "
                 "pricer does not guarantee"
             )
+        lines += [f"  {notice}" for notice in arm.served_check_skipped]
         if arm.refusal is not None:
             lines.append(f"  refused: {arm.refusal}")
             lines.append(f"  remedy: {arm.remedy}")
@@ -1595,7 +1736,7 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
     """A launch's power pre-flight as text: one line per reading, then what every line assumes."""
     forms = PageForms.off_page()
     head = (
-        f"detectable difference ({forms.lone(100 * block.power).text}% power, paired, Holm over {block.family_size} "
+        f"detectable difference ({forms.lone(100 * block.power).text}% power, paired t-test, Holm over {block.family_size} "
         f"comparison(s) so α/m = {forms.lone(block.per_comparison_alpha).text}):"
     )
     if block.cannot_estimate is not None:
@@ -1615,6 +1756,11 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
                 if effect.basis == "paired_runs"
                 else "no earlier paired runs, so two arms' case levels are taken as unrelated)"
             )
+            + (
+                "; a rate: its bounded interval must exclude zero too, so a difference this size needs more cases"
+                if effect.rate
+                else ""
+            )
         )
     lines.append(f"assumes: {block.assumptions}")
     return lines
@@ -1624,12 +1770,9 @@ def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
     """An export as text: a line of its row count and what it left out, its page, then the body itself.
 
     :param export: The export.
-    :ptype export: ScoreExport
     :param next_call: How the calling surface spells the call that reads the next page, set under the page's lines;
         ``None`` names none.
-    :ptype next_call: str | None
     :return: The text.
-    :rtype: str
     """
     lines = [f"export ({export.format}, {export.n_records} row(s))"]
     lines += exclusion_lines(export.exclusions)

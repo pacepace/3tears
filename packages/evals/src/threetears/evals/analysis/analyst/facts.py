@@ -14,7 +14,7 @@ parameters:
   them;
 - :func:`caveats_list`: every caveat, where it may land, whether code proved it immaterial, and what it touches: the
   ones the input states, then the ones what it holds implies
-  (:func:`~threetears.evals.analysis.report_decision.implied_caveats`).
+  (:func:`~threetears.evals.analysis.report.call.implied_caveats`).
 
 **Intervals are read wherever they are held.** A measure read with no statistics named reads every statistic the
 input holds on it read that way, its interval (``ci`` or ``half_width``) among them, and names what it holds and the
@@ -52,8 +52,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if, contrast_key
 from threetears.evals.analysis.cell_mean import NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import NamedKind, reader_names
-from threetears.evals.analysis.report_decision import (
+from threetears.evals.analysis.report.keys.names import NamedKind, reader_names
+from threetears.evals.analysis.report.call import (
     Caveat,
     CaveatReach,
     ImpliedCaveat,
@@ -301,6 +301,13 @@ class ArmRow(_Fact):
         exclude_if=lambda value: not value,
         description="The providers that served its model calls, as its pricing names them: its cost is this routing's, "
         "not the model's alone, so a cost comparison names them.",
+    )
+    # Left out while False, so an arm whose providers were all or none recorded reads as it did before the field.
+    served_by_in_part: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its pricing names who served part of its model calls only: the rest are not recorded, so its "
+        "cost's routing is known in part.",
     )
     tool_spend: list[str] = Field(
         default_factory=list,
@@ -693,15 +700,10 @@ def campaign_overview(
     (its meta, candidates, cases, repeats, when the late criteria were set) are on every page.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param snapshot_id: The snapshot's id.
-    :ptype snapshot_id: str
     :param limit: The most rows one page holds; None for every one.
-    :ptype limit: int | None
     :param offset: The first row the page holds.
-    :ptype offset: int
     :return: The overview, or one page of it.
-    :rtype: CampaignOverview
     """
     reaches = report_caveats(report_input)
     late = report_input.caveats.late_criteria
@@ -719,6 +721,7 @@ def campaign_overview(
             ),
             unanswered=_unanswered(report_input, arm.id),
             served_by=_pricing(report_input, arm.id).providers,
+            served_by_in_part=_pricing(report_input, arm.id).providers_in_part,
             tool_spend=_pricing(report_input, arm.id).tool_providers,
         )
         for arm in report_input.arms
@@ -1018,17 +1021,11 @@ def readings_list(
     """A page of every aspect's readings against the control, pair readings, floors and bars, grouped by aspect.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param aspect_filter: Only this aspect's rows.
-    :ptype aspect_filter: str | None
     :param arm_filter: Only the rows of this arm (a pair reading of either of its arms).
-    :ptype arm_filter: str | None
     :param limit: The most rows on the page.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :return: The page.
-    :rtype: ReadingsListing
     :raises RefusedInput: A filter names an aspect or arm the snapshot does not hold.
     """
     aspects = [aspect.id for aspect in report_input.aspects]
@@ -1088,11 +1085,8 @@ def confound_caveat_id(caveats: Iterable[Caveat], dimension: str) -> str:
     alike.
 
     :param caveats: The caveats code assigns on the snapshot (``report_caveats``).
-    :ptype caveats: Iterable[Caveat]
     :param dimension: The confound's dimension, as a contrast names it.
-    :ptype dimension: str
     :return: ``apparatus:<dimension>`` or ``confound:<dimension>``, whichever the caveats hold, else the dimension.
-    :rtype: str
     """
     ids = {caveat.id for caveat in caveats}
     return next((held for held in (f"apparatus:{dimension}", f"confound:{dimension}") if held in ids), dimension)
@@ -1110,19 +1104,12 @@ def contrasts_list(
     """A page of the corrected contrasts, each by its figure keys, and the contrast families correcting them.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param arm_filter: Only this arm's contrasts.
-    :ptype arm_filter: str | None
     :param measure_filter: Only the contrasts on this measure or judged dimension.
-    :ptype measure_filter: str | None
     :param aspect_filter: Only the contrasts read on this aspect, and its family.
-    :ptype aspect_filter: str | None
     :param limit: The most contrasts on the page.
-    :ptype limit: int
     :param offset: The contrasts to skip.
-    :ptype offset: int
     :return: The page.
-    :rtype: ContrastListing
     :raises RefusedInput: A filter names an arm, measure or aspect the snapshot does not hold.
     """
     contrasts = report_input.contrasts
@@ -1346,23 +1333,14 @@ def measure_read(
     ``vs_control`` is each candidate's mean minus the control's there (derived, descriptive); the control has none.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param measure_key: The measure or judged dimension, by key.
-    :ptype measure_key: str
     :param by: What to read it by.
-    :ptype by: MeasureBy
     :param statistics: The statistics to read, each where the input states it; None for every one it holds.
-    :ptype statistics: Sequence[MeasureStatistic] | None
     :param aspect_filter: Only this aspect: its figures by arm, or its strata.
-    :ptype aspect_filter: str | None
     :param arm_filter: Only this arm.
-    :ptype arm_filter: str | None
     :param limit: The most rows on the page.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :return: The page.
-    :rtype: MeasureFigures
     :raises RefusedInput: The key names no measure; a filter names an arm or aspect the snapshot does not hold; the
         snapshot holds no slice of that kind, or holds the measure in none; ``vs_control`` is asked by arm, or with no
         control; an aspect is named for tasks or cells, which no aspect holds.
@@ -1594,23 +1572,14 @@ def examples_list(
     An arm or aspect filter keeps an example naming none, as an examples chart does.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param example_result_ids: Each shown trial's stored result, by trial id, as the snapshot froze them.
-    :ptype example_result_ids: Mapping[str, str]
     :param arm_filter: Only this arm's examples.
-    :ptype arm_filter: str | None
     :param stratum_filter: Only the examples in this stratum or task.
-    :ptype stratum_filter: str | None
     :param aspect_filter: Only this aspect's examples.
-    :ptype aspect_filter: str | None
     :param outcome_filter: Only the examples of this failure class.
-    :ptype outcome_filter: str | None
     :param limit: The most examples on the page.
-    :ptype limit: int
     :param offset: The examples to skip.
-    :ptype offset: int
     :return: The page.
-    :rtype: ExampleListing
     :raises RefusedInput: A filter names an arm, stratum, aspect or failure class the snapshot does not hold.
     """
     examples = report_input.examples
@@ -1795,16 +1764,12 @@ def caveats_list(report_input: ReportInput, *, limit: int | None = None, offset:
     """Every caveat the snapshot carries: where it may land, whether code proved it immaterial, and what it touches,
     each read from the input (a confound: the contrasts naming it; a short run: its arm; a late criterion: what it
     set; an unsettled aspect: its candidates). The caveats the input states come first, then the ones what it holds
-    implies (:func:`~threetears.evals.analysis.report_decision.implied_caveats`), each with when it matters.
+    implies (:func:`~threetears.evals.analysis.report.call.implied_caveats`), each with when it matters.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param limit: The most caveats one page holds; None for every one.
-    :ptype limit: int | None
     :param offset: The first caveat the page holds.
-    :ptype offset: int
     :return: The caveats, or one page of them.
-    :rtype: CaveatListing
     """
     materiality = caveat_materiality(report_input)
     unsettled = unsettled_arms(report_input)

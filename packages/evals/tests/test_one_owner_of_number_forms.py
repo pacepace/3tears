@@ -4,11 +4,12 @@ right for good.
 A number's form is its digits, sign, unit and interval as printed. Spelling one number is centralised already
 (``kernel/numbers.py``); deciding which figures form a set, and how many digits the set reads at, is not: it happens
 at hundreds of sites, at three different times, by several owners, so one measure prints two ways on one page ("85%"
-in a table, "85.3%" in the chart head). Every decision is ``analysis/report/forms.py``'s, and this test holds it there:
+in a table, "85.3%" in the chart head). Every decision is ``analysis/report/forms.py``'s (with the parts it decides
+with, under ``analysis/report/number_forms/``), and this test holds it there:
 
 * **The walk** reads every module of ``threetears/evals`` and the kit's ``kit.js``, and finds each site that decides
   a form: a digit-choosing format spec, ``round(``, a call to a spelling or set primitive outside the two owners
-  (``kernel/numbers.py`` and ``analysis/report/forms.py``), and in ``kit.js`` the digit primitives and the named
+  (``kernel/numbers.py``, and ``analysis/report/forms.py`` with its parts), and in ``kit.js`` the digit primitives and the named
   formats used outside the kit's owners of them (:data:`_KIT_OWNERS`), but a pick by a field of the chart's data,
   whose format Python decided. A package function that returns what a site produced is a primitive
   too, to the fixed point, so a call rerouted through a wrapper is still a site where it is called. That holds where
@@ -17,14 +18,18 @@ in a table, "85.3%" in the chart head). Every decision is ``analysis/report/form
   and alone, handed a value nobody decided, it is no site. A primitive stored in a table or bound to a name is a site
   where it is stored, handed on as a parameter's default or returned by name, and a wrapper property is one where
   ``self`` reads it; a class named in an ``isinstance`` or ``issubclass`` test is read, not handed on, and is none.
-  So is a public free function of ``forms.py`` (a decision relocated there): only ``PageForms``, asked by measure and
+  So is a public free function of ``forms.py`` or its parts (a decision relocated there): only ``PageForms``, asked by measure and
   role, is the migrated route.
 * **The engine** (:data:`_ENGINE_TREES`): the trees whose imports, followed to their end, never reach
   ``threetears.evals.analysis`` reach no page's forms, and what they spell (a launch's refusal, a timeout's
   message) is no page figure. There a call to a primitive of ``kernel/numbers.py`` is the route, not a site, and a
   function returning one is no wrapper to a caller in the engine, though it is one to a caller above the line; a
-  format spec, ``round()``, ``quantize()`` and digits from a ``log10`` stay sites there as anywhere. Above that line
-  ``PageForms`` is the only route, through ``PageForms.off_page()`` for a surface no page prints.
+  format spec, ``round()``, ``quantize()`` and digits from a ``log10`` stay sites there as anywhere.
+* **The numbers side** of the analysis package (the modules ``test_report_layer_direction.py`` places there, and
+  holds to importing no presentation module by any route) reaches no page's forms either, so it spells a fixed form
+  by the same route and on the same terms as the engine: a ``kernel/numbers.py`` primitive, and nothing else. A
+  numbers function that returns a primitive's text is a wrapper to a caller in presentation, where it is a site.
+  Everywhere else ``PageForms`` is the only route, through ``PageForms.off_page()`` for a surface no page prints.
 * **The rule** fails on any site the walk finds that :data:`_PERMANENT` does not name at its function and form, on
   one more site there than an entry counts, and on an entry counting more sites than the walk finds.
 * **What the wrapper rule cannot see** is a stated limit, not a hidden one: a figure reached through another object's
@@ -56,15 +61,27 @@ from pathlib import Path
 
 import pytest
 
+from packages.evals.tests import test_report_layer_direction as direction
+
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 _PACKAGE = "threetears/evals"
 
-#: The rule's spelling primitives, and the module that decides a page's forms. Nothing in either is a site: they are
-#: where a form is meant to be decided. A tree without ``forms.py`` (a self-test's) walks as before it existed.
+#: The rule's spelling primitives, and the modules that decide a page's forms: ``forms.py`` and the parts it decides
+#: with, every module under ``number_forms/``. Nothing in any of them is a site: they are where a form is meant to be
+#: decided. A tree without them (a self-test's) walks as before they existed.
 _RULE = "threetears/evals/kernel/numbers.py"
 _FORMS = "threetears/evals/analysis/report/forms.py"
-_OWNERS = (_RULE, _FORMS)
+_NUMBER_FORMS = "threetears/evals/analysis/report/number_forms"
+
+
+def _forms_modules(root: Path = _SOURCE_ROOT) -> list[Path]:
+    """``forms.py`` and every module of ``number_forms/`` under ``root``, each that exists."""
+    return [path for path in (root / _FORMS, *sorted((root / _NUMBER_FORMS).glob("*.py"))) if path.exists()]
+
+
+_FORMS_MODULES = tuple(path.relative_to(_SOURCE_ROOT).as_posix() for path in _forms_modules())
+_OWNERS = (_RULE, *_FORMS_MODULES)
 
 #: The kit's script. Its copy under ``docs/eval-report-kit/kit/`` is pinned byte-identical to this one
 #: (``test_report_kit_pages``), so walking one walks both.
@@ -87,7 +104,7 @@ _KIT_PICKERS = ("namedFmt", "kTickFmt", "kTickLabels")
 #: live where ``forms.py`` imports them, so they cannot route through it: each stays a primitive by name, so its
 #: callers are sites even where its own body is named in :data:`_PERMANENT` (a permanent site wraps nothing, so
 #: derivation alone would let them go).
-#: ``figure_keys.held_means`` is not listed: it returns a measure's floats, and what reads them to classify a measure
+#: ``keys.reads.held_means`` is not listed: it returns a measure's floats, and what reads them to classify a measure
 #: (its scale, its unit, whether it is a rubric score) sets no digits.
 #: ``figure_keys.format_figure`` is not listed: it chooses which spelling a key's filters name and refuses one that
 #: does not suit, and every number it prints, an interval's precision and how its ends are joined are a
@@ -110,17 +127,6 @@ _SET_HELPERS = frozenset(
 
 #: Families named by prefix (``percent_*``, ``respell_*``, ``quantity*``), so a new member is a site too.
 _SET_HELPER_PREFIXES = ("percent_", "respell_", "quantity")
-
-#: Private helpers that decide a figure's places, keyed by the one module allowed to call them (a leading underscore
-#: binds nothing outside its module). Matched by name alone they would also catch ``levers._places``, which lists
-#: where an effect is read, and ``build._at``, which links a cell to a finding.
-_PRIVATE_SET_HELPERS = frozenset(
-    {
-        ("threetears/evals/analysis/report/campaign/scorecard.py", "_one_precision"),
-        ("threetears/evals/analysis/report/figure_keys.py", "_one_precision"),
-        ("threetears/evals/harness/writer_eval.py", "_places"),
-    }
-)
 
 #: The trees whose every number is shown to a reader, held to the stricter rule: the analysis package, what the
 #: generator writes from, and the ops surfaces it renders through. A host's own renders (an operator console, a tool
@@ -161,6 +167,19 @@ _ANALYSIS = "threetears.evals.analysis"
 def _in_engine(module: str) -> bool:
     """Whether ``module`` (relative to the package's ``src``) sits in a tree of :data:`_ENGINE_TREES`."""
     return any(module.startswith(f"{tree}/") for tree in _ENGINE_TREES)
+
+
+def _on_the_numbers_side(module: str) -> bool:
+    """Whether ``module`` (relative to the package's ``src``) is on the numbers side of the analysis package, as
+    ``test_report_layer_direction.py`` places it: the one placement, read from there and written nowhere else."""
+    return direction.side(_dotted(module)) == direction.NUMBERS
+
+
+def _spells_by_the_rule(module: str) -> bool:
+    """Whether a ``kernel/numbers.py`` primitive is the route in ``module``: in the engine, whose imports never reach
+    the analysis package, and on the numbers side of that package, whose imports never reach presentation. Neither
+    reaches a page's forms, so neither can route through them, and what either spells is a fixed form."""
+    return _in_engine(module) or _on_the_numbers_side(module)
 
 
 #: Presentation types that choose how many digits a reader sees. ``d`` and ``s`` do not.
@@ -221,6 +240,10 @@ _RESPELL = (
 )
 _TABLE_CELL = "a values cell that holds words, a yes or no, or nothing; a number cell carries its decided text"
 _HOST_CHART = "a chart a host built with no decided texts, spelled by the number rule so it still reads"
+_HOST_CHART_COLUMN = (
+    "a host-built chart's column of one measure, read at one precision, its narrowest interval's, as the owner's "
+    "per-measure rule (2026-11-14) reads a measure; forms.py imports blocks.py, so it cannot route through forms"
+)
 _STORED_READING = "a reason stored in a campaign's readings, which are fingerprinted, so its text may not move"
 _WHOLE_COUNT = "a test that a count is whole, not a printed figure"
 _CSS_WIDTH = "a table column's width in rem, written to the page's CSS, not a figure"
@@ -228,8 +251,6 @@ _CLASSIFIER = "a classifier: it reads a figure's unit to refuse mismatched axes 
 _SVG_FIXED = _KIT_FORMAT + "a number at the format's fixed decimals, as toFixed writes it"
 _SVG_USD = _KIT_FORMAT + "dollars at two significant figures under ten"
 _SVG_TICKS = "axis arithmetic: where a tick falls and how fine the step is, as the kit's script places them"
-_BUNDLE = "text stored in the fingerprinted analysis bundle, so changing its form moves every bundle's fingerprint"
-_SNAPSHOT = "text stored in the report-input snapshot, which a stored report reads back unchanged"
 _CENT_CEILING = "arithmetic: a budget in cents with its float error cleaned before it is rounded up to the cent"
 _STORED_MEAN = "a stored mean latency, rounded as arithmetic before it is kept"
 _COUNTS_FROM_SHARES = "arithmetic: a count recovered from a share of a whole count"
@@ -257,30 +278,25 @@ _SVG_STROKE = "an SVG stroke width and its opacity, which no reader reads as a n
 #: and its callers are sites only where it is a primitive by its name.
 _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/actions/analyst.py", "<module>", "group_thousands()"): (1, _TOOL_LIMIT),
-    ("threetears/evals/analysis/aspects.py", "_unread_without_control", "format_number()"): (1, _BUNDLE),
-    ("threetears/evals/analysis/bundle/assemble.py", "_declared_words", "format_number()"): (3, _BUNDLE),
-    ("threetears/evals/analysis/bundle/bars.py", "_frontier_bar.named", "format_number()"): (1, _BUNDLE),
-    ("threetears/evals/analysis/bundle/comparisons.py", "_family_disclosure", "format_number()"): (3, _BUNDLE),
-    ("threetears/evals/analysis/bundle/comparisons.py", "_guardrail_check", "format_number()"): (3, _BUNDLE),
-    ("threetears/evals/analysis/bundle/coverage.py", "_within_level_dispersion", "format_number()"): (1, _BUNDLE),
-    ("threetears/evals/analysis/bundle/schema.py", "AnalysisContextBundle", "format_number()"): (2, _BUNDLE),
     ("threetears/evals/analysis/depth.py", "precision", "round()"): (1, _COUNTS_FROM_SHARES),
-    ("threetears/evals/analysis/latency_partition.py", "decompose_total_ms", "format_number()"): (1, _BUNDLE),
-    ("threetears/evals/analysis/lenses/frontier.py", "_decide_boundary_pillar", "format_number()"): (1, _BUNDLE),
+    ("threetears/evals/analysis/floors.py", "_held", "round()"): (2, _WHOLE_COUNT),
+    ("threetears/evals/analysis/floors.py", "floor_readings", "round()"): (2, _WHOLE_COUNT),
     ("threetears/evals/analysis/lenses/frontier.py", "_frontier_point", "round()"): (1, _STORED_MEAN),
     ("threetears/evals/analysis/measurement_windows.py", "format_window_gap", "round()"): (1, _WHOLE_SECONDS),
     ("threetears/evals/analysis/quantities.py", "_at_precision", "round()"): (1, _QUANTITIES),
-    ("threetears/evals/analysis/quantities.py", "number_in", "format_number()"): (1, _QUANTITIES),
-    ("threetears/evals/analysis/quantities.py", "render_cell", "format_number()"): (1, _QUANTITIES),
-    ("threetears/evals/analysis/quantities.py", "signed_with_unit", "format_signed()"): (1, _QUANTITIES),
     ("threetears/evals/analysis/quantities.py", "with_unit", "number_in()"): (1, _QUANTITIES),
+    ("threetears/evals/analysis/said.py", "_stored_figure", "round()"): (2, _STORED_READING),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._cost_drawn", "with_unit()"): (1, _HOST_CHART),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._cost_quality_scatter", "with_unit()"): (3, _HOST_CHART),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._outcome_bars", "with_unit()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "ChartBlock._values_table", "policy_interval_set()"): (
+        2,
+        _HOST_CHART_COLUMN,
+    ),
     ("threetears/evals/analysis/report/blocks.py", "ChartBlock._values_table.said", "number_in()"): (1, _HOST_CHART),
     ("threetears/evals/analysis/report/blocks.py", "TableCell.figure", "render_cell()"): (1, _TABLE_CELL),
-    ("threetears/evals/analysis/report/blocks.py", "interval_text", "number_in()"): (2, _HOST_CHART),
-    ("threetears/evals/analysis/report/blocks.py", "interval_value_text", "number_in()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "interval_text", "policy_lone_interval()"): (1, _HOST_CHART),
+    ("threetears/evals/analysis/report/blocks.py", "interval_value_text", "policy_lone_interval()"): (1, _HOST_CHART),
     ("threetears/evals/analysis/report/campaign/scorecard.py", "_rate_counts", "round()"): (1, _WHOLE_FROM_SHARE),
     ("threetears/evals/analysis/report/campaign/scorecard.py", "row_figures", "interval_words()"): (
         1,
@@ -335,17 +351,15 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/analysis/report/cost_unit.py", "money_ruler", "money_form()"): (2, _COST_UNIT),
     ("threetears/evals/analysis/report/cost_unit.py", "per_count", "format_number()"): (1, _COST_UNIT),
     ("threetears/evals/analysis/report/cost_unit.py", "per_count", "group_thousands()"): (1, _COST_UNIT),
-    ("threetears/evals/analysis/report/decision.py", "_held", "round()"): (2, _WHOLE_COUNT),
-    ("threetears/evals/analysis/report/decision.py", "floor_readings", "round()"): (2, _WHOLE_COUNT),
-    ("threetears/evals/analysis/report/figure_keys.py", "_assumed_cases", "round()"): (2, _WHOLE_CASES),
-    ("threetears/evals/analysis/report/figure_keys.py", "_unanswered_figure", "group_thousands()"): (
-        1,
-        _UNANSWERED_COUNT,
-    ),
     ("threetears/evals/analysis/report/html_parts.py", "_head_width", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_id_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_key_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_lines_rem", "round()"): (1, _CSS_WIDTH),
+    ("threetears/evals/analysis/report/keys/prices.py", "_unanswered_figure", "group_thousands()"): (
+        1,
+        _UNANSWERED_COUNT,
+    ),
+    ("threetears/evals/analysis/report/keys/settle.py", "_assumed_cases", "round()"): (2, _WHOLE_CASES),
     ("threetears/evals/analysis/report/kit/kit.js", "kConfusion", "namedFmt"): (1, _KIT_DEFAULT),
     ("threetears/evals/analysis/report/kit/kit.js", "kDiffHeatmap", "Math.round()"): (2, _KIT_COLOUR),
     ("threetears/evals/analysis/report/kit/kit.js", "kHeatmap", "toLocaleString()"): (1, _KIT_TOOLTIP_COUNT),
@@ -381,13 +395,10 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
         _TABLE_CLASSIFIER,
     ),
     ("threetears/evals/analysis/report/parts/resolve_table.py", "_floors", "quantity()"): (1, _TABLE_CLASSIFIER),
-    ("threetears/evals/analysis/report/said.py", "_stored_figure", "format_number()"): (3, _STORED_READING),
-    ("threetears/evals/analysis/report/said.py", "_stored_figure", "round()"): (2, _STORED_READING),
     ("threetears/evals/analysis/report/svg.py", "tenth_px", "f-string spec"): (
         1,
         "an SVG coordinate, to a tenth of a px, which no reader reads as a number",
     ),
-    ("threetears/evals/analysis/report_input_build.py", "_level", "format_number()"): (1, _SNAPSHOT),
     ("threetears/evals/kernel/covariates.py", "_reasoning_ratio_of", "round()"): (1, _COVARIATE_RATIO),
     ("threetears/evals/kernel/covariates.py", "fold_phase_timings", "round()"): (1, _PHASE_TIMINGS),
     ("threetears/evals/negotiation/settings.py", "_budget_for_word", "round()"): (1, _TOKEN_BUDGET),
@@ -419,14 +430,19 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
 }
 
 #: How many entries :data:`_PERMANENT` holds, pinned: an entry routed through ``forms.py`` lowers it in the same
-#: change, and a new exemption raises it only by an owner's decision, so no slack is ever refilled unseen.
-_PERMANENT_CEILING = 118
+#: change, and a new exemption raises it only by an owner's decision, so no slack is ever refilled unseen. 119: the
+#: owner's per-measure precision ruling (2026-11-14) reads a host-built chart's column at one precision. 106: the
+#: numbers side of the analysis package spells by the rule's primitives, as the engine does, so the thirteen entries
+#: that named a ``format_number()`` or ``format_signed()`` call there (a bundle's stored text, a quantity's helper,
+#: a stored reading's figure) name no site. 105: the report input's builder joined the numbers side, so its one
+#: entry (an interval level in the snapshot's text) names no site either.
+_PERMANENT_CEILING = 105
 
 #: The one-line remedy every failure of the rule ends with.
 _REMEDY = (
     "route the figure through analysis/report/forms.py (PageForms; off_page() where no page prints it), or, in the "
-    "engine trees, through a kernel/numbers.py primitive; naming it in _PERMANENT is an owner's decision, which "
-    "raises _PERMANENT_CEILING"
+    "engine trees and on the numbers side of the analysis package, through a kernel/numbers.py primitive; naming it "
+    "in _PERMANENT is an owner's decision, which raises _PERMANENT_CEILING"
 )
 
 #: A citation of a plan, a chunk, a review or a question that no reader of the clone can open: a reason states itself.
@@ -507,18 +523,16 @@ _RULE_CALLABLES, _RULE_METHODS = _rule_primitives()
 
 
 def _forms_primitives(root: Path = _SOURCE_ROOT) -> frozenset[str]:
-    """The public module-level functions of ``forms.py``: a decision relocated there and called as a free function
-    is still decided where it is called, so its caller is a site. Only :class:`PageForms`, built once per page and
-    asked by measure and role, is the migrated route: its classes (the page's forms and the value types it hands out)
-    and their methods are not primitives. None before ``forms.py`` exists.
+    """The public module-level functions of ``forms.py`` and its parts under ``number_forms/``: a decision relocated
+    there and called as a free function is still decided where it is called, so its caller is a site. Only
+    :class:`PageForms`, built once per page and asked by measure and role, is the migrated route: its classes (the
+    page's forms and the value types it hands out) and their methods are not primitives. Empty where none of those
+    files exists.
     """
-    path = root / _FORMS
-    if not path.exists():
-        return frozenset()
-    tree = ast.parse(path.read_text(encoding="utf-8"))
     return frozenset(
         node.name
-        for node in tree.body
+        for path in _forms_modules(root)
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
     )
 
@@ -719,9 +733,9 @@ class _Lookup:
     :ivar primitives: The names a call is a site by: the rule's, the set helpers and ``forms.py``'s public functions.
     :ivar carriers: Each function, by its key, that returns what some of its parameters were given, with those
         parameters: a call that hands one of them a form returns that form, so it carries a site to its caller.
-    :ivar engine_route: Whether a ``numbers`` primitive is the route inside :data:`_ENGINE_TREES`: so for a call made
-        there, and not for one made above the line, where an engine function returning a primitive's text is a
-        wrapper like any other.
+    :ivar engine_route: Whether a ``numbers`` primitive is the route inside :data:`_ENGINE_TREES` and on the numbers
+        side of the analysis package (:func:`_spells_by_the_rule`): so for a call made there, and not for one made
+        above the line, where a function there returning a primitive's text is a wrapper like any other.
     """
 
     index: _Index
@@ -785,13 +799,14 @@ class _Lookup:
         A family prefix or a method name is also an ordinary local's name (``quantity``, ``places``), so a value
         handed on is matched by exact name only, and a method only as an attribute call. ``where`` is the call's
         module and enclosing class (empty outside one), which is what ``self`` names. In the engine
-        (:data:`_ENGINE_TREES`) the rule's own callables and methods are the route and name nothing.
+        (:data:`_ENGINE_TREES`) and on the numbers side of the analysis package the rule's own callables and methods
+        are the route and name nothing.
         """
         module, cls = where
-        engine = self.engine_route and _in_engine(module)
+        engine = self.engine_route and _spells_by_the_rule(module)
         if isinstance(node, ast.Name):
             name = node.id
-            if (module, name) in _PRIVATE_SET_HELPERS or (module, name) in self.functions:
+            if (module, name) in self.functions:
                 return name
             if self.index.resolve(module, name) in self.functions:
                 return name
@@ -1227,15 +1242,16 @@ def _derive_wrappers(
 def _walk_python(sources: dict[str, str], primitives: frozenset[str] = _BASE_PRIMITIVES) -> list[_Site]:
     """Every site in ``sources`` (module to text), with the wrappers derived over them as primitives.
 
-    Derived twice where the engine is walked: a call made inside :data:`_ENGINE_TREES` is read with ``numbers`` as
-    the route, and one made above the line with every engine function that returns a primitive's text a wrapper.
+    Derived twice where the engine or the numbers side is walked: a call made inside :data:`_ENGINE_TREES` or on the
+    numbers side of the analysis package is read with ``numbers`` as the route, and one made above the line with
+    every function there that returns a primitive's text a wrapper.
     """
     index = _Index({module: ast.parse(text) for module, text in sources.items()})
     above = _derive_wrappers(index, primitives, engine_route=False)
-    engine = _derive_wrappers(index, primitives) if any(_in_engine(module) for module in index.trees) else above
+    engine = _derive_wrappers(index, primitives) if any(map(_spells_by_the_rule, index.trees)) else above
     sites = []
     for module, tree in index.trees.items():
-        visitor = _PythonForms(module, engine if _in_engine(module) else above)
+        visitor = _PythonForms(module, engine if _spells_by_the_rule(module) else above)
         visitor.visit(tree)
         sites.extend(visitor.sites)
     return sorted(sites, key=lambda site: (site.module, site.line, site.form, site.expression))
@@ -1733,10 +1749,12 @@ class TestTheWalkSeesEveryPythonForm:
         source = "class Look:\n    def text(self, v):\n        def inner():\n            return round(v)\n        return inner\n"
         assert _forms(_python_sites(source)) == [("Look.text.inner", "round()", "round(v)")]
 
-    def test_a_private_helper_is_a_site_only_in_the_module_that_decides_with_it(self):
-        deciding = "threetears/evals/harness/writer_eval.py"
-        assert _forms(_python_sites("_places(vs)", deciding)) == [("<module>", "_places()", "_places(vs)")]
-        assert _python_sites("_places(vs)", "threetears/evals/analysis/report/build.py") == []
+    def test_a_private_helper_is_never_a_site_by_its_name_alone(self):
+        """A private name is matched only where the walk derived it as a wrapper in that module: by name alone it would
+        also catch ``levers._places``, which lists where an effect is read, and ``_at``, which links a cell to a
+        finding."""
+        for module in ("threetears/evals/harness/writer_eval.py", "threetears/evals/analysis/report/build.py"):
+            assert _python_sites("_places(vs)", module) == []
 
     @pytest.mark.parametrize(
         "source",
@@ -1857,10 +1875,14 @@ class TestAWrapperIsAPrimitive:
             encoding="utf-8",
         )
         assert _forms_primitives(tmp_path) == frozenset({"relocated"})
-        live = ast.parse((_SOURCE_ROOT / _FORMS).read_text(encoding="utf-8"))
+        part = tmp_path / _NUMBER_FORMS / "policy.py"
+        part.parent.mkdir(parents=True)
+        part.write_text("def relocated_to_a_part(v):\n    return v\n", encoding="utf-8")
+        assert _forms_primitives(tmp_path) == frozenset({"relocated", "relocated_to_a_part"})
         assert _FORMS_CALLABLES == {
             node.name
-            for node in live.body
+            for path in _forms_modules()
+            for node in ast.parse(path.read_text(encoding="utf-8")).body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
         }
         assert _FORMS_CALLABLES <= _BASE_PRIMITIVES
@@ -1891,9 +1913,32 @@ class TestAWrapperIsAPrimitive:
     def test_forms_primitives_are_none_before_forms_exists(self, tmp_path):
         assert _forms_primitives(tmp_path) == frozenset()
 
+    def test_the_forms_free_functions_are_pinned_wherever_their_module_moves(self):
+        """The free functions read as primitives, pinned by name: a function moved out of ``forms.py`` and its parts,
+        or a part the walk stops reading, shrinks the set and fails here rather than letting its callers go unseen."""
+        assert "threetears/evals/analysis/report/number_forms/policy.py" in _FORMS_MODULES
+        assert _FORMS_CALLABLES == {
+            "campaign_set",
+            "interval_level",
+            "level_text",
+            "policy_bounded_places",
+            "policy_declared",
+            "policy_effect",
+            "policy_figure",
+            "policy_interval",
+            "policy_interval_places",
+            "policy_interval_set",
+            "policy_level",
+            "policy_lone_interval",
+            "policy_p",
+            "policy_percent",
+            "policy_places",
+            "policy_rate",
+        }
+
     def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path):
         """``forms.py`` is an owner before it exists: the walk and the report trees both pass over it."""
-        for module in (_FORMS, _RULE, "threetears/evals/analysis/report/figures.py"):
+        for module in (_FORMS, f"{_NUMBER_FORMS}/policy.py", _RULE, "threetears/evals/analysis/report/figures.py"):
             (tmp_path / module).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / module).write_text("x = round(1.5)\n", encoding="utf-8")
         walked = [path.relative_to(tmp_path).as_posix() for path in _walked_modules(tmp_path)]
@@ -2315,6 +2360,119 @@ class TestTheEngineRule:
         }
         assert [(site.module, site.qualname, site.form) for site in _walk_python(sources)] == [
             ("threetears/evals/analysis/report/notes.py", "note", "cap_words()")
+        ]
+
+
+class TestTheNumbersSideRule:
+    """On the numbers side of the analysis package a ``numbers`` primitive is the route, on the engine's terms;
+    anything else that decides a form there is a site, and presentation cannot borrow the route."""
+
+    _NUMBERS = "threetears/evals/analysis/significance.py"
+    _IN_A_NUMBERS_TREE = "threetears/evals/analysis/bundle/words.py"
+    _PAGE = "threetears/evals/analysis/report/notes.py"
+    _SURFACE = "threetears/evals/analysis/summary.py"
+
+    def test_the_numbers_side_is_the_one_the_direction_gate_places(self):
+        """Read from ``test_report_layer_direction.py``, never listed again here: a module is on the numbers side by
+        its directory or its name there, and a module no side places yet (a new file directly in ``analysis/``, the
+        package's root) is not, so its figures route through ``PageForms`` until it is placed."""
+        assert _on_the_numbers_side(self._NUMBERS)
+        assert _on_the_numbers_side(self._IN_A_NUMBERS_TREE)
+        assert _on_the_numbers_side("threetears/evals/analysis/lenses/cost_estimate.py")
+        for elsewhere in (
+            self._PAGE,
+            self._SURFACE,
+            _FORMS,
+            "threetears/evals/analysis/analyst/skill.py",
+            "threetears/evals/analysis/__init__.py",
+            "threetears/evals/analysis/planted.py",
+            "threetears/evals/ops/results.py",
+            "threetears/evals/quick/result.py",
+            "sample.py",
+        ):
+            assert not _on_the_numbers_side(elsewhere), elsewhere
+            assert not _spells_by_the_rule(elsewhere), elsewhere
+        assert _spells_by_the_rule(self._NUMBERS) and not _in_engine(self._NUMBERS)
+        assert _spells_by_the_rule("threetears/evals/run/launch.py")
+        walked = [path.relative_to(_SOURCE_ROOT).as_posix() for path in _walked_modules()]
+        assert sum(map(_on_the_numbers_side, walked)) > 50  # the whole side is read, not one module of it
+
+    def test_no_numbers_module_reaches_a_page_s_forms(self):
+        """The rule holds only while no page's forms are reachable there, which is the direction gate's own claim,
+        asked of it here so the two never part: no numbers module imports presentation, itself or through a module
+        on neither side."""
+        try:
+            assert direction.presentation_imports(direction.SOURCE_ROOT) == {}
+            assert direction.laundered_presentation(direction.SOURCE_ROOT) == []
+        finally:
+            direction.import_graph.cache_clear()  # the package's parsed graph is large, and that file's to keep
+
+    def test_a_numbers_primitive_is_the_route_on_the_numbers_side_and_a_site_in_presentation(self):
+        """Called, handed on, a default or a method of the rule's: none is a site on the numbers side, and a function
+        returning one is no wrapper there. The same text on a page or a printing surface is a site at every one."""
+        body = (
+            "from threetears.evals.kernel.numbers import format_number, spell_share\n\n"
+            "def disclosure(p):\n    return f'p={format_number(p)} at {spell_share(0.95)}'\n\n"
+            "def line(p):\n    return disclosure(p)\n\n"
+            "SPELL = {'n': format_number}\n\n"
+            "def ends(form, v, spell=format_number):\n    return form.spell(v)\n"
+        )
+        sites = _walk_python({module: body for module in (self._NUMBERS, self._IN_A_NUMBERS_TREE, self._PAGE)})
+        assert {site.module for site in sites} == {self._PAGE}
+        assert [(site.qualname, site.form) for site in sites] == [
+            ("disclosure", "format_number()"),
+            ("disclosure", "spell_share()"),
+            ("line", "disclosure()"),
+            ("<module>", "format_number()"),
+            ("ends", "format_number()"),
+            ("ends", "spell()"),
+        ]
+        assert {site.module for site in _walk_python({self._SURFACE: body})} == {self._SURFACE}
+
+    def test_a_spec_round_quantize_and_log10_stay_sites_on_the_numbers_side(self):
+        source = (
+            "def waited(s):\n    return f'{s:.1f} s'\n\n"
+            "def message(s):\n    return 'after ' + waited(s)\n\n"
+            "def places(v, step):\n"
+            "    return round(v, 2), Decimal(v).quantize(step), math.floor(math.log10(v))\n"
+        )
+        assert _forms(_python_sites(source, self._NUMBERS)) == [
+            ("waited", "f-string spec", "s"),
+            ("message", "waited()", "waited(s)"),
+            ("places", "floor(log10)", "math.floor(math.log10(v))"),
+            ("places", "quantize()", "Decimal(v).quantize(step)"),
+            ("places", "round()", "round(v, 2)"),
+        ]
+
+    def test_a_set_helper_stays_a_site_on_the_numbers_side(self):
+        """Only the rule's own primitives are the route: a helper that decides a figure's form by its unit or its set
+        (``with_unit``, a ``percent_*``) is a site there as anywhere."""
+        source = (
+            "from threetears.evals.analysis.quantities import with_unit\n\n"
+            "def bound(v, unit):\n    return with_unit(v, unit)\n"
+        )
+        assert _forms(_python_sites(source, self._NUMBERS)) == [("bound", "with_unit()", "with_unit(v, unit)")]
+
+    def test_a_presentation_module_calling_a_numbers_helper_is_a_site(self):
+        """``numbers`` is the route only for a call made on the numbers side: a function there that returns a
+        primitive's text is a wrapper to a page module and to a printing surface, so neither borrows the route to
+        decide a figure. On the numbers side, its own callers stay no site."""
+        sources = {
+            self._NUMBERS: "def p_words(p):\n    return f'p={format_number(p)}'\n",
+            self._PAGE: (
+                "from threetears.evals.analysis.significance import p_words\n\ndef note(p):\n    return p_words(p)\n"
+            ),
+            self._SURFACE: (
+                "from threetears.evals.analysis.significance import p_words\n\ndef line(p):\n    return p_words(p)\n"
+            ),
+            "threetears/evals/analysis/references.py": (
+                "from threetears.evals.analysis.significance import p_words\n\n"
+                "def row(p):\n    return 'read at ' + p_words(p)\n"
+            ),
+        }
+        assert [(site.module, site.qualname, site.form) for site in _walk_python(sources)] == [
+            (self._PAGE, "note", "p_words()"),
+            (self._SURFACE, "line", "p_words()"),
         ]
 
 

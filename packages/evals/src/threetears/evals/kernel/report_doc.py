@@ -30,13 +30,13 @@ facts) reads it through :func:`report_doc_prose`, which walks this tuple, never 
 - **Validity** (:func:`report_doc_validity`) refuses a well-shaped document that names what its snapshot does not
   hold: a recommended arm that is no arm, a caveat id that is neither one code assigns on the snapshot nor
   ``analyst:<slug>``. It is a precondition of the invariants, not one of them.
-- **The invariants** (``analysis/report_doc_checks.py``) refuse what code can prove wrong about a valid document on its
+- **The invariants** (``analysis/report/doc_page/checks.py``) refuse what code can prove wrong about a valid document on its
   snapshot: a number not given by a key, a block that does not render, a caveat landing short, a confidence form its
   caveats contradict, an internal id above the appendix.
 
 **Caveats** are named by the id code assigns
-(:func:`~threetears.evals.analysis.report_decision.report_caveats` and
-:func:`~threetears.evals.analysis.report_decision.implied_caveats`: ``late:margin``, ``judge_uncalibrated``,
+(:func:`~threetears.evals.analysis.report.call.report_caveats` and
+:func:`~threetears.evals.analysis.report.call.implied_caveats`: ``late:margin``, ``judge_uncalibrated``,
 ``point_estimate:<criterion>``, ...), or by ``analyst:<slug>`` for one the analyst found that code does not assign.
 Code has a label for each kind it assigns, so a code caveat's ``label`` is optional; an analyst caveat has no code
 label, so it carries its own and is declared once in ``confidence.caveats``, where a claim or method item may name it
@@ -155,9 +155,7 @@ def report_doc_prose(doc: ReportDoc) -> Iterator[tuple[str, str]]:
     they scan the same text.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :return: ``(path, text)`` for each prose field, a list field once per item.
-    :rtype: Iterator[tuple[str, str]]
     """
     for field in _PROSE_FIELDS:
         yield from _prose_at(doc, field.split("."), "")
@@ -184,9 +182,7 @@ def is_analyst_caveat(caveat_id: str) -> bool:
     """Whether a caveat id names one the analyst found, rather than one code assigns.
 
     :param caveat_id: A caveat id as a report document names it.
-    :ptype caveat_id: str
     :return: Whether it starts ``analyst:``.
-    :rtype: bool
     """
     return caveat_id.startswith(ANALYST_CAVEAT_PREFIX)
 
@@ -413,17 +409,13 @@ def report_doc_validity(doc: ReportDoc, *, arms: Collection[str], caveats: Colle
 
     The kernel does not read the report input, so its caller passes the snapshot's arm ids and the caveat ids code
     assigns on it, stated and implied: the ids of
-    :func:`~threetears.evals.analysis.report_decision.every_caveat`, the one set ``caveats_list`` pages too. Emphasis and every query are the invariants' to check, since a block names
+    :func:`~threetears.evals.analysis.report.call.every_caveat`, the one set ``caveats_list`` pages too. Emphasis and every query are the invariants' to check, since a block names
     strata and tasks too and its query's names are read where it is drawn.
 
     :param doc: The document.
-    :ptype doc: ReportDoc
     :param arms: The snapshot's arm ids.
-    :ptype arms: Collection[str]
     :param caveats: The caveat ids code assigns on the snapshot.
-    :ptype caveats: Collection[str]
     :return: Each fault as ``(field path, why)``, in document order; empty for a valid document.
-    :rtype: list[tuple[str, str]]
     """
     faults = [
         (f"recommends[{i}]", f"names arm {arm!r}, which the snapshot does not hold; {_ARM_REMEDY}")
@@ -442,7 +434,6 @@ def report_doc_json_schema() -> dict[str, Any]:
     """The ``report-doc/1`` JSON schema an analyst writes against, as ``report-doc.schema.json`` holds it.
 
     :return: :class:`ReportDoc`'s validation schema, by alias.
-    :rtype: dict[str, Any]
     """
     return ReportDoc.model_json_schema(by_alias=True)
 
@@ -487,7 +478,6 @@ def new_report_doc_id() -> str:
     the id it will be stored under (:func:`report_session_id`).
 
     :return: The id.
-    :rtype: str
     """
     return str(uuid.uuid7())
 
@@ -496,11 +486,8 @@ def report_session_id(report_doc_id: str, name: str) -> str:
     """The id a report's session is stored under: its report's id and its name, so one report holds one of each name.
 
     :param report_doc_id: The report document's id.
-    :ptype report_doc_id: str
     :param name: The session's name (``analyst``, ``editor-<round>``).
-    :ptype name: str
     :return: ``<report_doc_id>:session:<name>``.
-    :rtype: str
     """
     return f"{report_doc_id}:session:{name}"
 
@@ -571,9 +558,7 @@ class EvalReportDoc(EvalDocumentModel):
         as a fault to fix rather than a document to make again (the module docstring's strict-read decision).
 
         :param data: The input under validation; only a mapping is read.
-        :ptype data: Any
         :return: The input, unchanged.
-        :rtype: Any
         :raises ValueError: Its ``schema_version`` is not this build's
             :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`.
         """
@@ -590,7 +575,6 @@ class EvalReportDoc(EvalDocumentModel):
         before findings had ids, which stored its ``should_fix`` findings open, and is a draft.
 
         :return: True for a draft; False for a finished document.
-        :rtype: bool
         """
         return self.ending != "stored" or any(not finding.get("id") for finding in self.findings)
 
@@ -672,9 +656,7 @@ class EvalReportSession(EvalDocumentModel):
         """Refuse a session written under another report version by its version alone, before its body is read.
 
         :param data: The input under validation; only a mapping is read.
-        :ptype data: Any
         :return: The input, unchanged.
-        :rtype: Any
         :raises ValueError: Its ``schema_version`` is not this build's
             :data:`~threetears.evals.schema.versioning.REPORT_DOC_SCHEMA_VERSION`.
         """

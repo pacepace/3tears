@@ -29,8 +29,8 @@ from threetears.evals.analysis import (
     TableColumn,
     dollars_text,
     report_html,
-    report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.confusion import ConfusionCount
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
 from threetears.evals.analysis.report.model import table_row

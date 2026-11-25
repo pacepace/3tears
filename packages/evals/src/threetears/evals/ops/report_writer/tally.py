@@ -99,6 +99,8 @@ class TurnCost:
     :ivar sent_binding: The thinking binding's behaviour the request carried, or ``None`` when it carried none.
     :ivar input_transformations: What the provider reported doing to the request's input, as it wrote it, or ``None``
         when the response carried no report.
+    :ivar maybe_billed_sends: How many of the turn's sends broke before any response began and were sent again, which
+        the provider may have billed and ``cost_usd`` does not hold (:attr:`TurnReply.maybe_billed_sends`).
     """
 
     session: str
@@ -121,6 +123,7 @@ class TurnCost:
     admitted_on_estimate: bool = False
     sent_binding: str | None = None
     input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
+    maybe_billed_sends: int = 0
 
     @classmethod
     def of(
@@ -138,23 +141,14 @@ class TurnCost:
         """The tally entry for one reply.
 
         :param reply: The reply the turn was answered with.
-        :ptype reply: TurnReply
         :param session: The session that sent it.
-        :ptype session: str
         :param role: The role the session writes as.
-        :ptype role: WriterRole
         :param round: The round the turn belongs to.
-        :ptype round: int
         :param turn: Its index in its session.
-        :ptype turn: int
         :param wall_s: Seconds from sending it to its reply.
-        :ptype wall_s: float
         :param refused: Why the client refused the reply after it was paid for; ``None`` for one it handed back.
-        :ptype refused: str | None
         :param admitted_on_estimate: Whether a dollar budget admitted it on an estimated ceiling.
-        :ptype admitted_on_estimate: bool
         :return: The entry.
-        :rtype: TurnCost
         """
         return cls(
             session=session,
@@ -177,13 +171,13 @@ class TurnCost:
             admitted_on_estimate=admitted_on_estimate,
             sent_binding=reply.sent_binding,
             input_transformations=reply.input_transformations,
+            maybe_billed_sends=reply.maybe_billed_sends,
         )
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
-        """The entry as JSON, every member written, ``None`` as ``null``.
+        """The entry as JSON, every member written, ``None`` as ``null``; ``maybe_billed_sends`` only when set.
 
         :return: The entry.
-        :rtype: dict[str, Any]
         """
         return {
             "session": self.session,
@@ -208,6 +202,8 @@ class TurnCost:
             "input_transformations": (
                 None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
             ),
+            # Only when a send broke, so an entry none of whose sends did is written as it was before the member.
+            **({"maybe_billed_sends": self.maybe_billed_sends} if self.maybe_billed_sends else {}),
         }
 
 
@@ -249,7 +245,6 @@ class Tally:
         """Keep one paid turn.
 
         :param cost: The turn.
-        :ptype cost: TurnCost
         """
         self._turns.append(cost)
 
@@ -257,11 +252,8 @@ class Tally:
         """Count tool calls a role's round made.
 
         :param role: The role.
-        :ptype role: WriterRole
         :param round: The round.
-        :ptype round: int
         :param calls: How many calls to add.
-        :ptype calls: int
         """
         self._calls[(role, round)] += calls
 
@@ -269,11 +261,8 @@ class Tally:
         """Count one bounce of a role's round: a submission sent back with what was wrong with it.
 
         :param role: The role.
-        :ptype role: WriterRole
         :param round: The round.
-        :ptype round: int
         :param kind: Which check sent it back.
-        :ptype kind: BounceKind
         """
         self._bounces.setdefault((role, round), []).append(kind)
 
@@ -281,7 +270,6 @@ class Tally:
         """Every bounce of every round, counted by kind: each kind present, a kind no round bounced as ``0``.
 
         :return: The counts, in :data:`BounceKind`'s order.
-        :rtype: dict[BounceKind, int]
         """
         counted = Counter(kind for kinds in self._bounces.values() for kind in kinds)
         return {kind: counted[kind] for kind in get_args(BounceKind)}
@@ -290,9 +278,7 @@ class Tally:
         """Keep the digest of a session's messages as they now stand, replacing the one kept before.
 
         :param session: The session.
-        :ptype session: str
         :param digest: The sha256 of its messages' canonical JSON.
-        :ptype digest: str
         """
         self._transcripts[session] = digest
 
@@ -301,7 +287,6 @@ class Tally:
         nothing and never makes the sum ``None`` (:meth:`unpriced_turns`).
 
         :return: The sum, or ``None``.
-        :rtype: float | None
         """
         if self.unpriced_turns():
             return None
@@ -314,7 +299,6 @@ class Tally:
         (:meth:`unpriced_turns`).
 
         :return: The sum.
-        :rtype: float
         """
         return math.fsum(turn.cost_usd for turn in self._turns if turn.cost_usd is not None)
 
@@ -325,7 +309,6 @@ class Tally:
         flight may have been served, and no reply carries what it cost).
 
         :return: The count.
-        :rtype: int
         """
         return self.sent - len(self._turns)
 
@@ -334,7 +317,6 @@ class Tally:
         one (:meth:`unreturned_turns`).
 
         :return: The count.
-        :rtype: int
         """
         return sum(1 for turn in self._turns if turn.cost_usd is None)
 
@@ -342,7 +324,6 @@ class Tally:
         """The tally as the stored report's ``generation``: the turns, then the sums by role, by round and in all.
 
         :return: ``{"turns", "by_role", "by_round", "total", "transcripts"}``; ``by_round`` keyed ``<role>:<round>``.
-        :rtype: dict[str, Any]
         """
         roles = sorted({turn.role for turn in self._turns} | {role for role, _ in (*self._calls, *self._bounces)})
         rounds = sorted({(turn.role, turn.round) for turn in self._turns} | set(self._calls) | set(self._bounces))
@@ -393,12 +374,14 @@ def _sum_count(counts: Iterable[int | None]) -> int | None:
 
 def _sum_cost(turns: Iterable[TurnCost]) -> float | None:
     """What the turns cost together, or ``None`` when any of them is unpriced."""
-    total = 0.0
+    costs: list[float] = []
     for turn in turns:
         if turn.cost_usd is None:
             return None
-        total += turn.cost_usd
-    return total
+        costs.append(turn.cost_usd)
+    # The one summation the ledger and the analysis' token cost use, so a total never differs from them in the last
+    # place.
+    return math.fsum(costs)
 
 
 class ReportBudget:
@@ -424,11 +407,8 @@ class ReportBudget:
         """Set the cap, in one form.
 
         :param usd: The most the report may spend, in dollars: finite and above 0.
-        :ptype usd: float | None
         :param tokens: The most tokens its turns may use, in all: a whole number above 0.
-        :ptype tokens: int | None
         :param turns: The most turns it may send: a whole number above 0, beside dollars or tokens or alone.
-        :ptype turns: int | None
         :raises ValueError: Both forms (dollars and tokens), or neither; a dollar cap that is not a finite amount above 0; a token or turn
             cap that is not a whole number above 0.
         """
@@ -477,12 +457,9 @@ class ReportBudget:
 
         :param ceiling: The client's price ceiling for the turn, or ``None`` when it cannot bound it; read by a dollar
             budget alone.
-        :ptype ceiling: TurnCeiling | None
         :param tokens: A bound on the tokens the turn can use: its prompt's bound and its output cap; read by a token
             budget alone.
-        :ptype tokens: int
         :return: ``None``, or the refusal.
-        :rtype: str | None
         """
         if self.turns is not None and self._sent >= self.turns:
             return f"the report's {self.turns}-turn budget is spent"
@@ -527,12 +504,9 @@ class ReportBudget:
         turns really cost, which no launch knows, so nothing above it is refused.
 
         :param ceiling: The first turn's ceiling, or a floor of it priced before the turn's prompt is known.
-        :ptype ceiling: TurnCeiling
         :param priced: What the ceiling prices, as the refusal names it (``this first turn``).
-        :ptype priced: str
         :return: ``None``, or the refusal: the budget asked, the ceiling, the fewest turns and the budget that admits
             the turn.
-        :rtype: str | None
         """
         if self.usd is None or ceiling.usd <= self.usd:
             return None
@@ -549,9 +523,7 @@ class ReportBudget:
         built on rates the host's pricer does not guarantee.
 
         :param ceiling: The ceiling the turn is admitted on.
-        :ptype ceiling: TurnCeiling | None
         :return: Whether it is an estimate the cap is checked against.
-        :rtype: bool
         """
         return self.usd is not None and ceiling is not None and ceiling.estimate
 
@@ -559,11 +531,8 @@ class ReportBudget:
         """Count a sent turn: its dollars, its tokens, and the turn itself.
 
         :param reply: The reply it was answered with, a refused one included: it was paid for.
-        :ptype reply: TurnReply
         :param ceiling: The price ceiling it was admitted on, counted for its dollars when nothing priced it.
-        :ptype ceiling: TurnCeiling | None
         :param tokens: The token bound it was admitted on, counted when the reply reported no token count.
-        :ptype tokens: int
         """
         counted = reply.cost_usd if reply.cost_usd is not None else ceiling.usd if ceiling is not None else None
         if counted is not None:

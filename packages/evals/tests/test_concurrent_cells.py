@@ -30,13 +30,13 @@ from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.run import (
     CellExecutor,
     CellWork,
-    InProcessCellExecutor,
     LaunchHost,
     MeteredCallLedger,
     RunnerOptions,
     execute_run,
     start_run,
 )
+from threetears.evals.run.executor import InProcessCellExecutor
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
 from threetears.evals.storage import InMemoryDocumentStore

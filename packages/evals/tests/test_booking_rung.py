@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.harness.analyse import analyse, recording_path
-from threetears.evals.analysis.report_decision import every_caveat
+from threetears.evals.analysis.report.call import every_caveat
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.kernel.host import check_world_conformance
 from threetears.evals.ops import OpsHost

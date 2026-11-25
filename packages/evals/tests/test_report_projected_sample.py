@@ -21,18 +21,13 @@ from dataclasses import replace
 from typing import Any
 
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    Report,
-    assemble_context_bundle,
-    build_code_only_report,
-    get_campaign,
-    report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, Report, assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import ArmScoreboard, MultipleComparisons
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     CasesNeeded,
     FloorReadings,
     FloorVerdict,
@@ -42,11 +37,10 @@ from threetears.evals.analysis.report.decision import (
     floors_projection,
     project_rate,
     project_sample,
-    projected_cell,
-    projection_note,
     rate_projections,
     read_floor,
 )
+from threetears.evals.analysis.report.projection_words import projected_cell, projection_note
 from threetears.evals.analysis import stats
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import (
@@ -413,11 +407,16 @@ def _page(bundle: AnalysisContextBundle) -> Report:
 async def test_the_bundle_carries_what_the_bounded_interval_read() -> None:
     _, bundle = await _ruled()
     (family,) = bundle.multiple_comparisons.families
-    (passed,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
-    assert passed.case_values is not None and family.interval_level == LEVEL
+    # An eval of one label: its pass rate is the label's accuracy case for case, so the family reads it once, alone, at
+    # 95%.
+    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (passed,) = [comparison for comparison in family.comparisons if comparison.name == "accuracy"]
+    assert passed.case_values is not None and family.interval_level == INTERVAL_LEVEL
     control, contrast = passed.case_values
     assert sorted(control) == sorted(CONTROL) and sorted(contrast) == sorted(CANDIDATE)
-    again = bounded_difference_interval(control, contrast, paired=True, value_range=(0.0, 1.0), confidence=LEVEL)
+    again = bounded_difference_interval(
+        control, contrast, paired=True, value_range=(0.0, 1.0), confidence=INTERVAL_LEVEL
+    )
     assert again == passed.bounded_interval
 
 

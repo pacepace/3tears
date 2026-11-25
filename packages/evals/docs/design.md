@@ -49,7 +49,10 @@ from a [cassette](adopting-a-host.md#cassettes-recording-and-replaying-tools).
 An arm's identity is a digest of every setting it ran with, defaults included, so a shared name never
 merges two configurations. Observations pool only within one [cell](concepts.md#cell): one arm under one
 rig. Observations whose rig was set beforehand (commissioned) never pool with ones whose rig was recorded
-as found (witnessed), because only the first can show cause.
+as found (witnessed), because only the first can show cause. An arm is keyed by the model it asked for, and a
+provider may answer one id with another model, so an arm's cell also holds one answering model: runs answered by
+different models, or by a model some responses did not name, stand in cells of their own and are each compared
+with the control alone.
 
 **Whatever the subject perceives is seeded world, so a case reads the same every run.**
 A seed carries every field production shows, with production's types. State the rig cannot seed is
@@ -87,7 +90,7 @@ recommend the arm whatever it gained, and an undecided one is never read as safe
 **A failure of the rig is not a measurement.**
 A rig fault excludes its cell and is counted beside the value, never scored as the subject failing; a
 failure the candidate caused is the candidate's. Unknown is never shown as zero, and a cost nobody could
-price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run).
+price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run).
 
 **Count test cases, not attempts.**
 Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated. So
@@ -109,8 +112,11 @@ so a declared rule may stop it early
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
 Code assigns every judged reading an [evidence tier](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)
 from its judge's measured agreement with people and with itself. A comparison between arms can stand on a
-lower tier, since bias mostly cancels across arms; an absolute claim needs agreement with people, since
-self-consistency measures precision, not accuracy. The one floor: an improvement whose judge has no calibration
+lower tier on one assumption: that the judge's bias is the same for every arm, so it cancels in the difference. The
+engine cannot test that today (no control scores one arm against itself), and it fails where the arms differ in
+something a judge is known to favour apart from the work: model family (a judge scoring its own family's output),
+verbosity or style. A contrast across such arms carries a judge bias of unknown size. An absolute claim needs
+agreement with people, since self-consistency measures precision, not accuracy. The one floor: an improvement whose judge has no calibration
 evidence at all (`undetermined` or `insufficient`) is shown and set aside, so it makes no option better; a judge
 measured and found short (`separation`, `incidental`) still counts.
 
@@ -198,10 +204,14 @@ figure against any other.
    notes, tooltips, glyph titles and the prose keys that cite it share one count of decimals. The set is
    the measure, not the surface, the column or the role. Two measures on one page can differ, because each reads to
    its own uncertainty: a pass rate at `85%` beside a check near the ceiling at `99.7%`.
-2. **The digits come from the measure's uncertainty.** Take the narrowest 95% half-width among the intervals of the
-   figures a reader compares (each arm's level and each comparison's change, on every page of the campaign), and print
-   to its first significant digit, or to its second when that digit is a 1 or a 2. A pooled figure (the code page's
-   campaign-wide pass rate, or one pooled over the comparisons) prints at the measure's form but never sets it.
+2. **The digits come from the measure's uncertainty.** Take the narrowest 95% interval among the figures a reader
+   compares (each arm's level and each comparison's change, on every page of the campaign), and print to two
+   significant figures of its width (owner ruling, 2026-11-14). The precision is the measure's, not each interval's:
+   every figure of the measure on every page of the campaign reads at the one precision its narrowest interval sets,
+   so a change whose own interval is wider still reads at it (Kairo's pass rate: `85.3%`, `-7.6 pts`, `-12.9 to -1.8
+   pts`, set by its 7-point interval). A pooled figure (the code page's campaign-wide pass rate, or one pooled over the comparisons)
+   prints at the measure's form but never sets it. A figure and interval no measure's set holds (a chart a host built
+   with no decided texts, a glyph drawn with no table) read at two significant figures of their own interval's width.
    - A rate, or a change in points, never goes past one decimal, except next to a boundary: an end that would round
      onto zero, 0% or 100% takes just enough digits to stay off it. `99.7%` never reads `100%`, and an interval whose
      end excludes zero never reads as touching it (`-15 to -0.03 pts`). A judge's preference share keeps off even,
@@ -218,8 +228,11 @@ figure against any other.
 4. **A heading states the joint guarantee.** A chart's head reads `95% intervals (adjusted for 16 comparisons)`, a
    column's header `95% interval (adjusted for 16 comparisons)`, and either plain `95%` where nothing is adjusted.
    The package's own words print the per-interval level a correction implies (99.69%) only in Method and the
-   glossary, as stored, so they never round a level. `{family.level}` is the key that cites it, at that stored
-   precision. An interval at another level, one no family adjustment explains, states its own.
+   glossary. `{family.level}` is the key that cites it. A level printed as text rounds as a value does by its
+   interval: its distance from 100% to two significant figures (`99.69%`, `97.5%`, an uncorrected 98.33% as `98.3%`;
+   owner ruling, 2026-11-14), in a head, a cell and the prose alike. The level a figure holds stays exact, so only
+   the text gives up "never rounded": two levels that differ past those figures print alike. An interval at another
+   level, one no family adjustment explains, states its own.
 5. **Figures that are not measurements keep fixed forms.**
    - A count is whole and grouped: `765 of 897`.
    - A declared value prints as declared: a margin, a floor or a setting reads `-15 pts`, never `-15.0 pts`.
@@ -234,12 +247,14 @@ figure against any other.
    `low_text` and `high_text` for its interval), and a cell without it is refused when it is built: a cell that
    spelled its own number would be a second owner of its form.
 
-The scope of a set is decided in one place, `campaign_set` in `forms.py`, so a later ruling that each page decides
+The scope of a set is decided in one place, `campaign_set` in `report/number_forms/sets.py`, so a later ruling that each page decides
 its own forms changes one line there (`_SET_SCOPE`).
 
-The digits follow the Particle Data Group's rule (quote an uncertainty to one or two significant figures and round
-the value to the same place), simplified to "two when the first is 1 or 2" so that two measures of similar
-uncertainty don't split across a threshold on one page. Cole ("Too many digits", 2015) gives the same advice for
+The digits follow the Particle Data Group's practice (quote an uncertainty to one or two significant figures and
+round the value to the same place), fixed at two figures of the interval's width so that one rule covers every
+measure and two measures of similar uncertainty don't split across a threshold on one page. Until 2026-11-14 the
+rule read the half-width's first figure, or its second when that was a 1 or a 2, which read a pass rate with a 3.7
+point half-width whole (`85%`, `-8 pts`); two figures of its 7.4 point width read it to a tenth. Cole ("Too many digits", 2015) gives the same advice for
 effect sizes and measures of spread, and the APA manual (§6.36) the p-value form; gtsummary is the tooling precedent
 for deciding a whole table's forms once.
 
@@ -256,9 +271,9 @@ What the policy changed, on Kairo's written page and the scaled campaign's code 
 
 | Figure | Reads | Read before |
 |---|---|---|
-| A candidate's change in pass rate (Kairo) | `-8 pts`, `-13 to -2 pts` | `-7.6`, `-12.9 to -1.8`, beside a table at `85%` |
+| A candidate's change in pass rate (Kairo) | `-7.6 pts`, `-12.9 to -1.8 pts`, beside a table at `85.3%` | `-7.6`, `-12.9 to -1.8`, beside a table at `85%` |
 | A check near the ceiling (Kairo) | `99.7%`, `-1.0 pts`, `-3.6 to +1.6 pts` | the same: its interval is ±0.6 points |
-| Failed-reply notices (Kairo) | `0.002 notices`, `-0.002 notices`, `-0.007 to +0.002 notices` | four decimals, set by one stratum's figure |
+| Failed-reply notices (Kairo) | `0.0022 notices`, `-0.0022 notices`, `-0.0069 to +0.0025 notices` | four decimals, set by one stratum's figure |
 | The margin (Kairo) | `-15 pts` in the chart, "the 15-point margin" in the prose | `-15.0 pts` in the chart |
 | Adjusted p (Kairo) | `< 0.001`, `0.005`, `0.11`, `0.50`, `1.00` | `< 0.000001`, `0.00008342`, `0.4996`, `1` |
 | A corrected interval's heading (Kairo) | `95% interval (adjusted for 16 comparisons)` | `99.7% (95% across 16 comparisons)` |
@@ -381,8 +396,8 @@ Rules that came with it (`kernel/identity.py`):
   key. Whether a stored run still counts is structural: its variant, its context resolved at today's identity
   version, its template revision, its apparatus and the model that answered. Labels, and how long ago it ran,
   never count. A run kept out of a pool is not counted in the pool's reading: it stands beside it as a cell of
-  its own, named with its reason, never dropped. A record's silence (no template digest frozen, no served model
-  named) is never evidence of a match, so that run is a cell of its own, named with what it did not record. A
+  its own, named with its reason, never dropped. A record's silence (no template digest frozen, no measure
+  definitions recorded for the host measures it holds, no served model named) is never evidence of a match, so that run is a cell of its own, named with what it did not record. A
   candidate that made no model call recorded that, and its runs pool on everything else. A candidate requested by
   a floating alias the provider echoes back (an OpenRouter `~`, `-latest` or `openrouter/` id), or called through
   a client that reports no served model, leaves the served model silent, so each of its runs stands apart: a host
@@ -550,7 +565,9 @@ Six steps, each fixing the last:
    completing with a page that says "rerun" hid it. A run lost only to judge-call errors completes, since a
    re-judge recovers it; a sweep goes on past an arm that measured nothing. A model's own
    failures stay its outcome, as in step 4: a declined call is the provider declining it, not the model failing
-   it. The lost trials are bounded in every verdict, and an arm
+   it. The lost trials are given their best and worst outcomes where a floor or a campaign
+   reading is decided, and nowhere else (a bar, the frontier's pass^k and an aspect page's contrasts read the trials
+   left; a cell a budget stop never started is in no lost count), and an arm
    that loses more than a tenth of its trials to one cause is flagged (`differential_exclusions`). Rejected: a
    second `rationed` flag beside `account_refused`, two flags for one question that could both be set.
 
@@ -679,7 +696,7 @@ Most of what follows is established practice; what the engine adds is narrower
 | [Harbor `nop` and `oracle` agents](https://docs.harborframework.com/agents/pre-integrated-agents) | `nop` does nothing and `oracle` runs the task's reference solution, so a sound task fails the first and passes the second. | Adapted | The do-nothing control is `nop`'s. There is no `oracle`: a control is an authored end state no run reaches, so it is not a reference solution and proves the check, not the task. |
 | [Inspect error handling](https://inspect.aisi.org.uk/handling-errors.html) | A sample that raises is an error, not scored by default; `fail_on_error` sets how many the eval tolerates and `retry_on_error` retries them. | Adapted | The same split, decided by whose code failed: a rig fault excludes the cell and is counted, while the candidate's own raise is a scored failure. Nothing retries a cell. |
 | [Turner-Trauring, verified fakes](https://pythonspeed.com/articles/verified-fakes) | Run the same contract tests against the real service and its fake, so the fake is proven to match. | Adopted | The store kit (`STORE_CONFORMANCE_CASES`) runs against the in-memory store and any host's store alike, and the world kit runs against the host's own world. |
-| [vcrpy](https://vcrpy.readthedocs.io/en/latest/usage.html) | Record HTTP interactions to a cassette on the first run and replay them afterwards. | Adapted | [Cassettes](concepts.md#cassette) record what a tool answered per case. A replay asked something its capture never recorded is a rig failure that excludes the cell; it is never sent live. |
+| [vcrpy](https://vcrpy.readthedocs.io/en/latest/usage.html) | Record HTTP interactions to a cassette on the first run and replay them afterwards. | Adapted | [Cassettes](concepts.md#cassette) record what a tool answered per case. A replay asked something its capture never recorded is a rig failure that fails the run, its cell recorded first; it is never sent live. |
 | [Gymnasium `Env`](https://gymnasium.farama.org/api/env/); [OpenEnv core API](https://huggingface.co/docs/openenv/main/en/reference/core.md) | Type the action and observation spaces. `reset` takes a seed and an untyped options dict (Gymnasium) or untyped keyword arguments (OpenEnv). | Not adopted | Neither declares what a harness may set before the agent starts. The world registry declares exactly that. |
 | [Model Context Protocol](https://modelcontextprotocol.io/specification) | A server declares tools (`inputSchema`, `outputSchema`) and resources for a client that does not know it in advance. | Adapted (precedent) | It is the precedent for "the app declares, a generic engine consumes". It lacks "can a harness set this?" and "does the subject perceive this?", which the world contract adds. |
 | [METR Task Standard](https://github.com/METR/task-standard) | Define a task as a class with imperative `install`, `start` and `score`. METR has since moved to Inspect. | Not adopted | Imperative setup cannot be introspected. |

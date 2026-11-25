@@ -63,7 +63,6 @@ class TurnText:
         """The block as the Messages API writes it.
 
         :return: ``{"type": "text", "text": ...}``.
-        :rtype: dict[str, Any]
         """
         return {"type": "text", "text": self.text}
 
@@ -85,7 +84,6 @@ class TurnToolUse:
         """The block as the Messages API writes it.
 
         :return: ``{"type": "tool_use", "id", "name", "input"}``.
-        :rtype: dict[str, Any]
         """
         return {"type": "tool_use", "id": self.id, "name": self.name, "input": dict(self.input)}
 
@@ -113,7 +111,6 @@ class TurnThinking:
         """The block exactly as the reply carried it.
 
         :return: The block.
-        :rtype: dict[str, Any]
         """
         return _copied(self.block)
 
@@ -135,7 +132,6 @@ class TurnToolResult:
         """The block as the Messages API reads it; ``is_error`` is written only on a refusal.
 
         :return: ``{"type": "tool_result", "tool_use_id", "content"}``, plus ``"is_error": true`` on a refusal.
-        :rtype: dict[str, Any]
         """
         written: dict[str, Any] = {"type": "tool_result", "tool_use_id": self.tool_use_id, "content": self.content}
         if self.is_error:
@@ -151,9 +147,7 @@ def block_from_json(value: Mapping[str, Any]) -> TurnBlock:  # Any: a JSON objec
     """A block read from its JSON, as the Messages API writes it.
 
     :param value: The block's JSON object.
-    :ptype value: Mapping[str, Any]
     :return: The block.
-    :rtype: TurnBlock
     :raises ValueError: A block type a tool turn does not carry, or a block missing a member, named.
     """
     kind = value.get("type")
@@ -213,9 +207,7 @@ class TurnMessage:
         """Build the message.
 
         :param role: ``user`` or ``assistant``.
-        :ptype role: Literal["user", "assistant"]
         :param content: Its blocks, or a string for one text block.
-        :ptype content: str | Sequence[TurnBlock]
         :raises ValueError: A role that is neither, or no blocks.
         """
         if role not in ("user", "assistant"):
@@ -230,7 +222,6 @@ class TurnMessage:
         """The message as the Messages API reads it.
 
         :return: ``{"role", "content": [block, ...]}``.
-        :rtype: dict[str, Any]
         """
         return {"role": self.role, "content": [block.to_json() for block in self.content]}
 
@@ -252,7 +243,6 @@ class TurnToolSpec:
         """The definition as the Messages API reads it.
 
         :return: ``{"name", "description", "input_schema"}``.
-        :rtype: dict[str, Any]
         """
         return {"name": self.name, "description": self.description, "input_schema": _copied(self.input_schema)}
 
@@ -283,6 +273,9 @@ class TurnReply:
         before (``anthropic 520: the response body is not JSON``, ``anthropic 529: Overloaded``) or the connection
         that was never made. Empty when the first attempt was answered. A recording keeps it with the reply, so a
         replay says the turn was sent more than once.
+    :ivar maybe_billed_sends: How many of the turn's sends broke before any response began and were sent again: the
+        provider may have served and billed each, and ``cost_usd`` holds none of it. ``0`` when none did. A recording
+        keeps it with the reply, as it keeps the reply's cost.
     """
 
     content: tuple[TurnBlock, ...]
@@ -301,6 +294,7 @@ class TurnReply:
     sent_binding: str | None = None
     input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
     resent_after: tuple[str, ...] = ()
+    maybe_billed_sends: int = 0
 
     @property
     def text(self) -> str:
@@ -316,7 +310,6 @@ class TurnReply:
         """The reply as the assistant message the next turn sends back, every block (thinking included) unchanged.
 
         :return: The message.
-        :rtype: TurnMessage
         """
         return TurnMessage("assistant", self.content)
 
@@ -324,10 +317,12 @@ class TurnReply:
         """The reply as JSON, read back by :meth:`from_json`.
 
         :return: Every member, the blocks as the Messages API writes them; ``resent_after`` only when the turn was
-            resent, so a reply answered at once is written as it was before the member existed.
-        :rtype: dict[str, Any]
+            resent, and ``maybe_billed_sends`` only when a send broke before any response began, so a reply answered
+            at once is written as it was before either member existed.
         """
         resent: dict[str, Any] = {"resent_after": list(self.resent_after)} if self.resent_after else {}
+        if self.maybe_billed_sends:
+            resent["maybe_billed_sends"] = self.maybe_billed_sends
         return {
             "content": [block.to_json() for block in self.content],
             "stop_reason": self.stop_reason,
@@ -355,7 +350,6 @@ class TurnReply:
         ``input_transformations`` were reads them as ``None``, and one without ``resent_after`` was answered at once.
 
         :param value: The JSON object.
-        :ptype value: Mapping[str, Any]
         :return: The reply.
         :rtype: TurnReply
         :raises ValueError: A member missing, extra or of the wrong type, named.
@@ -390,6 +384,7 @@ class TurnReply:
             sent_binding=_optional_text(value, "sent_binding"),
             input_transformations=_transformations(value.get("input_transformations")),
             resent_after=_resends(value.get("resent_after")),
+            maybe_billed_sends=_maybe_billed(value.get("maybe_billed_sends")),
         )
 
 
@@ -411,9 +406,19 @@ def _resends(value: Any) -> tuple[str, ...]:  # Any: JSON
     return tuple(value)
 
 
+def _maybe_billed(value: Any) -> int:  # Any: JSON
+    """A reply's stored ``maybe_billed_sends``: absent for a turn none of whose sends broke, else a count of at least
+    1."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"a turn reply's maybe_billed_sends {value!r} is not a whole number of at least 1")
+    return value
+
+
 #: The members :meth:`TurnReply.to_json` writes since it first could, each read as absent (``None``, or no resend)
 #: where a reply written before lacks it.
-_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations", "resent_after"})
+_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations", "resent_after", "maybe_billed_sends"})
 
 #: The members every reply :meth:`TurnReply.to_json` wrote has, and :meth:`TurnReply.from_json` requires.
 _REPLY_MEMBERS = frozenset(
@@ -464,9 +469,7 @@ class TurnReplyRefused(Exception):
         """Name why the reply is refused, and carry it.
 
         :param message: Why the client refuses the reply.
-        :ptype message: str
         :param reply: The reply, as the provider answered it.
-        :ptype reply: TurnReply
         """
         super().__init__(message)
         self.reply = reply
@@ -509,7 +512,6 @@ class ToolResultClearing:
         """The request's ``context_management`` member.
 
         :return: ``{"edits": [{"type": "clear_tool_uses_20250919", "trigger", "keep", "clear_at_least"}]}``.
-        :rtype: dict[str, Any]
         """
         return {
             "edits": [
@@ -572,7 +574,6 @@ class ThinkingBinding:
         """The request's ``thinking.block_binding`` member.
 
         :return: ``{"prefix_mismatch_behavior": ...}``.
-        :rtype: dict[str, str]
         """
         return {"prefix_mismatch_behavior": self.prefix_mismatch_behavior}
 
@@ -594,7 +595,6 @@ class ToolTurnClient(Protocol):
         once. Never raises for prices it cannot read: :meth:`turn_price_ceiling` answers ``None`` then.
 
         :return: What the read found, in the client's own terms (the shipped client's ``PriceRefresh``), or ``None``.
-        :rtype: object
         """
         ...
 
@@ -611,21 +611,14 @@ class ToolTurnClient(Protocol):
         """Send the conversation so far and answer the model's next message.
 
         :param system: The system prompt.
-        :ptype system: str
         :param messages: The conversation, oldest first, ending on the message the model answers.
-        :ptype messages: Sequence[TurnMessage]
         :param tools: The tools the model may call.
-        :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: The turn's output cap, thinking included.
-        :ptype max_tokens: int
         :param clearing: Old tool results the provider clears itself once the input grows past its trigger; ``None``
             clears nothing. A turn's price ceiling ignores it: clearing only ever sends less.
-        :ptype clearing: ToolResultClearing | None
         :param binding: The check the provider runs on the thinking blocks the conversation replays; ``None`` asks
             for none. It goes only where the turn sends thinking, and a turn's price ceiling ignores it.
-        :ptype binding: ThinkingBinding | None
         :return: The model's reply.
-        :rtype: TurnReply
         """
         ...
 
@@ -636,14 +629,9 @@ class ToolTurnClient(Protocol):
         (never a lower figure).
 
         :param system: The system prompt the turn would send.
-        :ptype system: str
         :param messages: The conversation it would send.
-        :ptype messages: Sequence[TurnMessage]
         :param tools: The tools it would send.
-        :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: Its output cap.
-        :ptype max_tokens: int
         :return: The ceiling, or ``None``.
-        :rtype: TurnCeiling | None
         """
         ...

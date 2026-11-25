@@ -35,12 +35,8 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
 )
 from threetears.evals.analysis.bundle.schema import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
-from threetears.evals.kernel import (
-    REASONING_RATIO_KEY,
-    ControlDeclaration,
-    SweptAxis,
-    resolve_variant_identity,
-)
+from threetears.evals.kernel import ControlDeclaration, SweptAxis, resolve_variant_identity
+from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.kernel.metrics import MeasurePopulation, MetricDescriptor
 from threetears.evals.kernel.host import (

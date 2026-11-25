@@ -1,0 +1,129 @@
+# The plan of the first held-out comparison of the on-ramp docs, committed before any run of it.
+#
+# `./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/held-out-1.toml --dry-run` quotes it.
+# `ONRAMP_LIVE=1 ./scripts/onramp-agent.sh --plan packages/evals/onramp/plans/held-out-1.toml --cap 29.00` runs it,
+# once the owner approves the spend. A live run is refused while the plan is uncommitted or changed since its last
+# commit, while any app below is a placeholder, or when the command line says anything the plan does not. The run
+# records the commit this file was last changed in (`run.json`): a change to this file after a run has started is a
+# new plan, and that run is read under the plan it recorded.
+#
+# The owner's ruling of 2026-11-18: 24 held-out apps, the cheap tier. The ceiling tier waits for a second plan.
+
+name = "held-out-1"
+question = "Does the candidate docs build let a coding agent add an eval that measures the app more often, on apps nobody tuned the docs against?"
+
+# The held-out apps, read from held-out.jsonl, which nothing reads by default: a run covers them only on a committed
+# plan that names them. Each was written, with its twin, by a builder who never read the docs' history or any
+# transcript. None is recipes, holds or glossator, the development set the docs were tuned on, which this plan never
+# reads. Their planted defects are recorded in held-out-defects.md, which no trial sees. The order is held-out.jsonl's,
+# and is the order the package's bet reads the apps in.
+#
+# THE LEAK RULE. An app stops being held out once any trial's transcript on it is read while writing a docs change.
+# From then on it is a development-set app, and a comparison on it is development-set evidence. So no one working on
+# the docs reads this plan's runs' transcripts (steps.jsonl, record.json, the stuck lines) before its result is read.
+# The scripted transcripts in transcripts/ are the harness's fixtures, written by someone who has read the docs, and
+# are not trial transcripts.
+cases = ["held-out.jsonl"]
+apps = [
+    "parcelrate",
+    "weatherboard",
+    "docnames",
+    "previews",
+    "tickets",
+    "faqrank",
+    "digest",
+    "statements",
+    "reorder",
+    "standups",
+    "postal",
+    "passcheck",
+    "moodscore",
+    "logtally",
+    "shelfprice",
+    "loyalty",
+    "contactmerge",
+    "slotfinder",
+    "shipeta",
+    "standings",
+    "mdtable",
+    "gradecurve",
+    "plurals",
+    "proration",
+]
+
+# Trials per arm on each app. The app is the unit: k repeats an app, it does not add a case, so k steadies each app's
+# share at a cost the quote below bears; power comes from the apps (see "Sizing").
+k = 3
+
+# The arms, the control first. Each arm is the wheel of 3tears-evals built from its commit, with the llms.txt and the
+# messages that commit ships. The control is the build before any on-ramp fix; the candidate is evals/main as of this
+# plan, whose llms.txt carries the on-ramp passage. The comparison is of the two builds whole: docs and messages.
+[[arms]]
+name = "docs@control"
+ref = "f9ab6f74d"
+
+[[arms]]
+name = "docs@candidate"
+ref = "1f0ec4c68"
+
+# The tier: the cheap one, as campaign.py's TIERS names it at this plan's commit (run.json records its model).
+#
+# The quote (`--dry-run` of this plan, 2026-11-18), at 2 arms x 24 apps x k=3:
+#   cheap: 144 runs, each capped at $0.20 (29.00 / 144); at most $29.00; expected $7.45
+# The per-run cap sits well above what a run of the cheap tier has been billed (the live runs of 2026-11-16 billed at
+# most $0.614 for 42 runs, about $0.015 a run), so no run is expected to reach it. A run the cap does stop is graded and
+# read like any other trial: THE TEST counts it in its app's share, against the arm it ran on; only the census names
+# its cause as the harness's.
+[tiers.cheap]
+cap_usd = 29.00
+
+# The check compared. The primary decides; the secondaries are read with no question, as leads, never as a result.
+[check]
+primary = "measures_the_app"
+secondary = ["eval_runs", "read_right"]
+
+# THE TEST
+#
+# The package's own paired reading over apps (packages/evals/onramp/reading.py): the stored trials replayed through
+# threetears.evals's front door as an Eval whose cases are the apps, k trials per arm on each, graded on the primary
+# check alone, with this plan's question. The package averages each app's trials, pairs the two arms app by app, and
+# tests the question's measure alone and one-sided, leaning toward the candidate, by its anytime-valid bet at its
+# level (5%). It leads with the estimate, its interval and the direction, then the evidence, and says `improved`,
+# `regressed`, `equivalent`, `not_separated` or `untested`. No other test is run on this plan's data. Its error rate at
+# this plan's size, arms that differ only by noise, is the no-effect row under SIZING: 1 of 200 simulated 24-app
+# runs separated.
+#
+# WHAT COUNTS AS A RESULT
+#
+# - The candidate is promoted on held-out apps, for the cheap tier's model, when the primary reads `improved`.
+# - `regressed`: the candidate build is worse on held-out apps; not promoted.
+# - `not_separated`, `equivalent` or `untested`: no result; not promoted.
+# - A claim for another model waits for the second plan, on its own apps' run.
+#
+# WHAT DOES NOT COUNT
+#
+# - Any test whose unit is the trial: a pooled share, Fisher's exact test, a chi-square, or the trial-level ranges the
+#   census prints. The unit is the app.
+# - Trials of two arms taken together, or of this run and any other.
+# - The secondary checks, the per-app tallies, errors_hit, cost or turns: description, never a result.
+# - The development set's apps, or any app added after this plan is committed for its run.
+# - Any held-out app whose trial transcripts were read while writing a docs change before this plan's result is read.
+# - A rerun on more apps after reading this one: that is a new plan, committed before it runs.
+# - Attribution to llms.txt alone: the arms are whole builds.
+#
+# SIZING: WHAT THIS PLAN CAN SHOW
+#
+# `./scripts/onramp-agent.sh --power 24 3 EFFECT --spread SD` simulates this plan through the same reading (arms whose
+# share on the primary check differs by EFFECT on every app, base shares from 0.1 to 0.6, each arm's share on each app
+# moved by an arm-by-app draw of sd SD, 200 simulated runs, seed 1), on the package's reading of 2026-11-18
+# (evals/main 1f0ec4c68):
+#
+#   apps  k  effect  spread  separated in       95% range
+#     24  3   0.00    0.10     1 of 200         0.00 to 0.03
+#     24  3   0.30    0.10   151 of 200         0.69 to 0.81
+#     24  3   0.30    0.25   107 of 200         0.46 to 0.61
+#
+# The power rests on the arm-by-app spread, which no run has measured: at an effect of 0.30 (the size of the gain the
+# development set showed) the plan reads `improved` about three times in four if the apps' shares move by sd 0.10
+# between arms, and about one time in two at sd 0.25. A smaller effect, or a larger spread, is likelier to read
+# `not_separated`, which is no result, not evidence of no effect.

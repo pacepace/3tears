@@ -30,11 +30,8 @@ def remainder_state(delta: float | None, withheld: str | None) -> RemainderState
     """Name which of its two states a remainder is in, refusing a pair that is in neither or both.
 
     :param delta: The quantified remainder, or None.
-    :ptype delta: float | None
     :param withheld: The sentence withholding it, or None. A blank sentence counts as None.
-    :ptype withheld: str | None
     :return: ``"stated"`` when only ``delta`` is set, ``"withheld"`` when only a non-blank ``withheld`` is.
-    :rtype: RemainderState
     :raises ValueError: If both are set, or neither is.
     """
     stated = delta is not None

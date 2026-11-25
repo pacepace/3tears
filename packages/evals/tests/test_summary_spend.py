@@ -5,19 +5,24 @@ six credits' worth on an external API; its summary printed "judge spend" and "ca
 agent's spend — the largest — was invisible, and nothing summed to what the results cost. A judge campaign, whose
 every trial bills the ``judge`` role and none other, printed no spend at all and told its reader that "the candidate
 reported none". So the summary carries a line per role that spent, external units included, and the results' total.
+A role whose every call went unanswered (#1238: ``run_get`` raised ``KeyError``) has a line stating no answered call.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import math
+from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import summarize_run
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.ops import run_get
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.schema import EvalResult, RoleUsage
+from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -52,6 +57,11 @@ def _result(
 
 
 def _summary(results: list[EvalResult]):  # type: ignore[no-untyped-def]
+    return summarize_run(_host(results), _RUN, _SCOPE)
+
+
+def _host(results: list[EvalResult], **run_fields: Any) -> EvalHost:
+    """A host whose store holds the run (``run_fields`` set on it) and ``results``, stored in the order given."""
     storage = EvalStorage(InMemoryDocumentStore())
     run = make_eval_run(
         id=_RUN,
@@ -59,11 +69,12 @@ def _summary(results: list[EvalResult]):  # type: ignore[no-untyped-def]
         k_runs=1,
         test_case_ids=sorted({result.test_case_id for result in results}),
         status="completed",
+        **run_fields,
     )
     storage.save_eval_run(run)
     for result in results:
         storage.save_eval_result(result)
-    return summarize_run(dataclasses.replace(callable_host(), storage=storage), _RUN, _SCOPE)
+    return dataclasses.replace(callable_host(), storage=storage)
 
 
 def test_every_role_that_spent_is_stated_with_a_total_equal_to_the_results() -> None:
@@ -190,3 +201,84 @@ def test_a_role_outside_the_total_says_so() -> None:
 def test_a_run_that_reported_no_spend_states_none() -> None:
     summary = _summary([_result([], rubric=False)])
     assert summary.spend == [] and summary.spend_lines == [] and summary.total_spend_text is None
+
+
+# --- a role whose calls all went unanswered (#1238) -----------------------------------------------------------------
+
+#: A candidate call sent and never answered, on a row no answered call reached (``RoleUsage.answers_nothing``).
+_UNANSWERED = RoleUsage(role="candidate", model="m-cand", unanswered_lost=1)
+_JUDGED = RoleUsage(role="judge", model="m-judge", cost_usd=0.002, call_count=1, price_source="provider")
+_ANSWERED = RoleUsage(role="candidate", model="m-cand", cost_usd=0.001, call_count=1, price_source="provider")
+
+
+def test_a_result_holding_only_an_unanswered_candidate_row_read_first_is_summarised() -> None:
+    """``run_get`` raised ``KeyError: 'candidate'``: the tally skipped the row, then looked its role up. A later
+    result answers for the role, so the candidate's line counts that call alone and the lines add up to the total."""
+    summary = run_get(
+        _host([_result([_UNANSWERED, _JUDGED], case="tc-0"), _result([_ANSWERED, _JUDGED], case="tc-1")]), _RUN, _SCOPE
+    )
+    candidate = summary.role_spend("candidate")
+    assert candidate is not None and (candidate.calls, candidate.cost_usd) == (1, pytest.approx(0.001))
+    assert summary.total_cost_usd == pytest.approx(0.005) == _counted_dollars(summary)
+    assert "candidate spend: $0.0010 over 1 call(s)" in summary.render()
+
+
+def test_a_role_none_of_whose_calls_were_answered_is_stated_as_no_spend_never_unpriced() -> None:
+    """Its line states no answered call: an unanswered call adds nothing to a cost and never unprices it (owner,
+    2026-10-27), so the line names no unpriced call and the total stays the judge's, which the lines add up to."""
+    summary = run_get(_host([_result([_UNANSWERED, _JUDGED], case=f"tc-{i}") for i in range(2)]), _RUN, _SCOPE)
+    candidate = summary.role_spend("candidate")
+    assert candidate is not None and (candidate.calls, candidate.cost_usd, candidate.unpriced_calls) == (0, None, 0)
+    assert summary.total_cost_usd == pytest.approx(0.004) == _counted_dollars(summary)
+    text = summary.render()
+    assert "candidate spend: no spend, over no answered call" in text
+    assert "total spend: $0.0040, the results' cost" in text
+    assert UNPRICED not in text
+
+
+def test_a_run_none_of_whose_calls_were_answered_states_each_role_and_no_total() -> None:
+    summary = run_get(_host([_result([_UNANSWERED], case="tc-0", rubric=False)]), _RUN, _SCOPE)
+    assert summary.spend_lines == ["candidate spend: no spend, over no answered call"]
+    assert summary.total_cost_usd is None and summary.total_spend_text is None
+
+
+@pytest.mark.parametrize(
+    ("cap", "said"),
+    [
+        ({}, None),
+        ({"max_cost_usd_origin": "uncapped"}, None),
+        (
+            {"max_cost_usd": 2.0, "max_cost_usd_origin": "chosen"},
+            "spend cap: $2.00 for this run; it counts only spend a result reports, and no result reported any",
+        ),
+    ],
+    ids=["no-cap", "uncapped", "capped"],
+)
+def test_a_run_none_of_whose_calls_were_answered_states_its_cap_as_a_run_with_no_spend_does(
+    cap: dict[str, Any], said: str | None
+) -> None:
+    """Its role lines make the spend list non-empty, which the cap line read as spend reported: an uncapped run with no
+    judge printed a cap line, and a capped one lost "no result reported any". It reads as a run with no usage row."""
+    unanswered = run_get(_host([_result([_UNANSWERED], case="tc-0", rubric=False)], **cap), _RUN, _SCOPE)
+    no_usage = run_get(_host([_result([], case="tc-0", rubric=False)], **cap), _RUN, _SCOPE)
+    assert unanswered.spend_cap_text == no_usage.spend_cap_text == said
+    assert (unanswered.spend_cap_text is None) == ("spend cap:" not in unanswered.render())
+
+
+#: An external API's spend a host reported as units alone (``ExternalSpend.calls`` defaults to 0): an answered row,
+#: metered, over no counted call, in a run that declared no external rate.
+_UNITS_ONLY = RoleUsage(role="external", provider="p", provider_unit="credits", provider_units=5, call_count=0)
+
+
+def test_an_external_row_reporting_units_over_no_call_is_spend_never_no_answered_call() -> None:
+    """Whether a role answered nothing is its rows' fact (``RoleUsage.answers_nothing``), never its sums': this row
+    counts no call and no dollar, and metered five credits, so its line states them unpriced and the run states its
+    total line, where reading the sums called it no spend and dropped the total."""
+    summary = run_get(_host([_result([_UNITS_ONLY], case="tc-0", rubric=False)]), _RUN, _SCOPE)
+    external = summary.role_spend("external")
+    assert external is not None and not external.answers_nothing
+    assert summary.spend_lines == [
+        "external spend: 5 credits (p), unpriced over 0 call(s): the run declared no external rate, so its total sums "
+        "no external dollars"
+    ]
+    assert summary.total_spend_text is not None

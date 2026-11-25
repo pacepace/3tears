@@ -45,6 +45,12 @@ sent back exactly as they were, and a store is free to hand an object's keys bac
 whose bytes differ from the one sent, which misses the prompt cache. A string comes back as it was written, so the
 history a resume rebuilds is the one sent, byte for byte, whatever order the store keeps keys in.
 
+**A client's failure is told from a defect by where it was raised.** What escapes the client (the provider's
+failure, after its retries; a transport's; a reply refused after it was paid for) is raised on as itself and marked,
+so :meth:`ToolSession.defect` reads it as the client's. Anything else a round raises (a tool call's handler or its
+parameters, the submission check, the review's reading) is the package's own defect (:class:`PackageDefect`), which
+names where it was raised and the session's last tool call, by name alone (:attr:`ToolSession.last_call`).
+
 A reply cut at its output cap (``max_tokens``) is tallied and not kept (its thinking may stop short of its
 signature); it was never sent back, so leaving it out edits nothing, and the session's caller says what it needs as a
 new user message. A model refusal or a reply cut for another cause stops the session ``failed``.
@@ -55,7 +61,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Final, Literal, Protocol
 
 from threetears.evals.analysis.analyst.skill import SkillText
@@ -81,7 +88,7 @@ from threetears.evals.schema.turns import (
 
 #: The names the analyst's and the editor's sessions call, and ``ToolOutcome``, what the mount the report writer's
 #: entry point builds answers.
-__all__ = ["SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
+__all__ = ["PackageDefect", "SessionLimits", "SessionStop", "ToolMount", "ToolOutcome", "ToolSession"]
 
 #: The check every turn asks the provider to run on the thinking blocks it replays, wherever the turn thinks (see
 #: :class:`ThinkingBinding`): the history is append-only, so a thinking block's conversation never changes under it,
@@ -133,7 +140,6 @@ class ToolMount(Protocol):
         """The JSON schema of the tool's arguments.
 
         :return: The schema.
-        :rtype: dict[str, Any]
         """
         ...
 
@@ -141,9 +147,7 @@ class ToolMount(Protocol):
         """Run one call.
 
         :param arguments: The call's arguments, as the model wrote them.
-        :ptype arguments: Mapping[str, Any]
         :return: What it answered.
-        :rtype: ToolOutcome
         """
         ...
 
@@ -182,7 +186,6 @@ class SessionLimits:
         """The limits as JSON.
 
         :return: Each limit by name.
-        :rtype: dict[str, int]
         """
         return {
             "max_tokens": self.max_tokens,
@@ -197,7 +200,6 @@ class SessionLimits:
         """The server-side clearing every turn carries.
 
         :return: The clearing, from these limits.
-        :rtype: ToolResultClearing
         """
         return ToolResultClearing(
             trigger_input_tokens=self.clear_over_tokens,
@@ -220,6 +222,60 @@ class SessionStop:
     kind: Literal["answered", "cut", "over_budget", "failed"]
     reply: TurnReply | None
     reason: str = ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PackageDefect:
+    """A failure a session's round ended on that the package's own code raised, not its client: an internal error.
+
+    What a session's client raises (the provider's failure, after its retries; a transport's; a reply the client
+    refused after it was paid for) is the client's failure, which a caller describes through the host's describer.
+    Anything else raised while the session ran (a tool call's handler or its parameters, the submission check, the
+    review's reading) is this package's defect, and :meth:`ToolSession.defect` says which an error is. A defect is
+    never described as the provider's: it names where it was raised and the last tool call the session made, by the
+    tool, the action it named and the arguments' names, never their values (which hold what the model wrote).
+
+    :ivar error: The exception, for the caller's log; never stored.
+    :ivar session: The session it was raised in, by name (``analyst``, ``editor-<round>``).
+    :ivar round: The round the session was in.
+    :ivar raised_in: Where it was raised, as ``module:qualified.function``: the innermost frame of its traceback.
+    :ivar package_frame: The innermost of this package's frames it was raised through, where that is not
+        ``raised_in`` (a library's frame raised it); ``None`` otherwise.
+    :ivar last_call: The session's last tool call, as :meth:`ToolSession.last_call` spells it; ``None`` before any.
+    """
+
+    error: Exception = field(compare=False, repr=False)
+    session: str
+    round: int
+    raised_in: str
+    package_frame: str | None = None
+    last_call: str | None = None
+
+    def line(self) -> str:
+        """The defect in a sentence, as an operator reads it on the job: the type, where, and the last tool call.
+
+        :return: The sentence; it carries no exception text, since a defect's text may quote what the model sent.
+        """
+        through = f" (through {self.package_frame})" if self.package_frame is not None else ""
+        call = f"the last tool call was {self.last_call}" if self.last_call is not None else "no tool had been called"
+        return (
+            f"an internal error, not the provider's: {type(self.error).__name__} raised in {self.raised_in}{through}, "
+            f"in session {self.session} round {self.round}; {call}"
+        )
+
+
+#: The root of every module this package's code runs in, by which a traceback's package frames are told apart.
+_PACKAGE: Final = "threetears."
+
+
+def _frames(trace: TracebackType | None) -> list[str]:
+    """Each frame of a traceback as ``module:qualified.function``, outermost first."""
+    frames = []
+    while trace is not None:
+        frame = trace.tb_frame
+        frames.append(f"{frame.f_globals.get('__name__', '<unknown>')}:{frame.f_code.co_qualname}")
+        trace = trace.tb_next
+    return frames
 
 
 class ToolSession:
@@ -249,23 +305,14 @@ class ToolSession:
         """Start an empty session.
 
         :param name: The session's name.
-        :ptype name: str
         :param role: The role it writes as.
-        :ptype role: WriterRole
         :param model: The model id the client sends to (``Model.model_name``).
-        :ptype model: str
         :param client: The client its turns go through (``Model.turn_session(name, snapshot=...)``).
-        :ptype client: ToolTurnClient
         :param mount: The tool its model may call.
-        :ptype mount: ToolMount
         :param system: The role's system text.
-        :ptype system: SkillText
         :param tally: The report's tally, which every turn is counted in.
-        :ptype tally: Tally
         :param budget: The report's budget, which admits every turn.
-        :ptype budget: ReportBudget
         :param limits: What every turn is held to; :class:`SessionLimits`' defaults when ``None``.
-        :ptype limits: SessionLimits | None
         :raises ValueError: An empty name or model id.
         """
         if not name:
@@ -292,6 +339,10 @@ class ToolSession:
         self._used = 0
         self._warned = False
         self._closing = False
+        #: The last failure the client raised, by which :meth:`defect` tells the client's failure from a defect.
+        self._client_failure: Exception | None = None
+        #: The last tool call made, spelled with its arguments' names only (:meth:`last_call`).
+        self._last_call: str | None = None
 
     @property
     def mount(self) -> ToolMount:
@@ -323,11 +374,62 @@ class ToolSession:
         """The tool calls the current round has made."""
         return self._used
 
+    @property
+    def last_call(self) -> str | None:
+        """The last tool call the session made, as an operator's record names it: the tool, the action it named where
+        that is one the tool declares, and its arguments' names where the tool declares them (the rest counted),
+        never their values; ``None`` before any."""
+        return self._last_call
+
+    def defect(self, error: Exception) -> PackageDefect | None:
+        """Whether ``error``, raised while the session ran, is the package's defect rather than its client's failure.
+
+        :param error: What the session's round raised.
+        :return: ``None`` when it is the last failure the client raised (the provider's, a transport's, a reply
+            refused after it was paid for, a reply from another model): the caller describes it as the client's.
+            Otherwise the defect, naming where it was raised and the session's last tool call.
+        """
+        if error is self._client_failure:
+            return None
+        frames = _frames(error.__traceback__)
+        raised_in = frames[-1] if frames else "<unknown>"
+        package = [frame for frame in frames if frame.startswith(_PACKAGE)]
+        return PackageDefect(
+            error=error,
+            session=self.name,
+            round=self._round,
+            raised_in=raised_in,
+            package_frame=package[-1] if package and package[-1] != raised_in else None,
+            last_call=self._last_call,
+        )
+
+    async def call_tool(self, arguments: Mapping[str, Any]) -> ToolOutcome:  # Any: the call's JSON arguments
+        """Call the session's tool outside a turn (a brief's overview), recorded as its last call like any other.
+
+        :param arguments: The call's arguments.
+        :return: What the tool answered.
+        """
+        self._last_call = self._spelled(self._mount.name, arguments)
+        return await self._mount.call(arguments)
+
+    def _spelled(self, tool: str, arguments: Mapping[str, Any]) -> str:  # Any: the call's JSON arguments
+        """A call as :attr:`last_call` names it, keeping no text the model wrote: the action only where it is one the
+        tool's schema declares, each argument by name alone where the schema declares that name, and the rest
+        counted, never named (a key is the model's text as much as a value is)."""
+        (spec,) = self.tools
+        properties = spec.input_schema.get("properties", {})
+        declared = properties.get("action", {}).get("enum", ())
+        action = arguments.get("action")
+        named = f" action {action}" if isinstance(action, str) and action in declared else ""
+        names = [name for name in arguments if isinstance(name, str) and name in properties]
+        undeclared = len(arguments) - len(names)
+        listed = [*names, *([f"{undeclared} undeclared"] if undeclared else [])]
+        return f"{tool}{named}, with arguments {', '.join(listed) or 'none'}"
+
     def tools_digest(self) -> str:
         """The sha256 of the tool definitions every turn sends.
 
         :return: The digest.
-        :rtype: str
         """
         return canonical_digest([tool.to_json() for tool in self.tools])
 
@@ -335,7 +437,6 @@ class ToolSession:
         """The sha256 of the messages as they now stand.
 
         :return: The digest.
-        :rtype: str
         """
         return canonical_digest([message.to_json() for message in self._messages])
 
@@ -343,9 +444,7 @@ class ToolSession:
         """Start a round with its own call budget: the draft, a revision, an editor's review.
 
         :param round: The round's number, above the current one.
-        :ptype round: int
         :param calls: The most tool calls the round may make.
-        :ptype calls: int
         :raises ValueError: A round not above the current one, or a call budget below 1.
         """
         if round <= self._round:
@@ -358,9 +457,7 @@ class ToolSession:
         """``text`` held to the session's result limit: cut at ``result_chars``, saying so.
 
         :param text: A tool's text, as it answered.
-        :ptype text: str
         :return: The text the model is sent.
-        :rtype: str
         """
         cap = self.limits.result_chars
         if len(text) <= cap:
@@ -375,9 +472,7 @@ class ToolSession:
         """Append a user message and run turns until the model answers without a tool call, or is stopped.
 
         :param content: The message: a text, or its blocks.
-        :ptype content: str | Sequence[TurnBlock]
         :return: Why it stopped.
-        :rtype: SessionStop
         :raises ValueError: No round is open, or a reply came from another model than the session's.
         :raises TurnReplyRefused: The client refused a reply it was paid for; the turn is tallied first.
         """
@@ -385,11 +480,16 @@ class ToolSession:
             raise ValueError("open a round (open_round) before sending: a round's call budget holds every turn")
         self._append_user(list((TurnText(content),) if isinstance(content, str) else content))
         while True:
-            # The port declares it, so no wrapper can drop it: a turn is never priced from prices never read.
-            await self._client.refresh_prices()
-            ceiling = self._client.turn_price_ceiling(
-                system=self._system, messages=self._messages, tools=self.tools, max_tokens=self.limits.max_tokens
-            )
+            try:
+                # The port declares it, so no wrapper can drop it: a turn is never priced from prices never read.
+                await self._client.refresh_prices()
+                ceiling = self._client.turn_price_ceiling(
+                    system=self._system, messages=self._messages, tools=self.tools, max_tokens=self.limits.max_tokens
+                )
+            except Exception as failed:
+                # The client's failure, raised on as itself; marked so the caller never takes it for a defect.
+                self._client_failure = failed
+                raise
             tokens = turn_prompt_token_bound(self._system, self._messages, self.tools) + self.limits.max_tokens
             refused = self._budget.admit(ceiling, tokens=tokens)
             if refused is not None:
@@ -433,16 +533,25 @@ class ToolSession:
                 binding=_APPEND_ONLY,
             )
         except TurnReplyRefused as refused:
+            self._client_failure = refused
             self._sent += 1
             self._count(refused.reply, turn, time.monotonic() - started, ceiling, tokens, refused=str(refused))
+            raise
+        except Exception as failed:
+            # The client's failure (the provider's, after its retries; a transport's), raised on as itself and
+            # marked, so the caller describes it as the client's and never as a defect (:meth:`defect`).
+            self._client_failure = failed
             raise
         self._sent += 1
         self._count(reply, turn, time.monotonic() - started, ceiling, tokens)
         if reply.model != self.model:
-            raise ValueError(
+            # The client's reply, from another model than it was handed for: the client's failure, not a defect.
+            mismatch = ValueError(
                 f"session {self.name!r} runs on {self.model!r}, and its client sent the turn to {reply.model!r}: "
                 "hand it the client of the model it runs on"
             )
+            self._client_failure = mismatch
+            raise mismatch
         return reply
 
     def _count(
@@ -483,6 +592,7 @@ class ToolSession:
                 refusal = f"refused: there is no tool {use.name!r}; the one tool is {self._mount.name!r}"
                 results.append(TurnToolResult(use.id, refusal, is_error=True))
                 continue
+            self._last_call = self._spelled(use.name, use.input)
             outcome = await self._mount.call(use.input)
             text = self.capped(outcome.text)
             self._answered[use.id] = canonical_digest(text)
@@ -536,7 +646,6 @@ class ToolSession:
         :return: ``{"format", "name", "role", "model", "skill_digest", "tools_digest", "limits", "messages",
             "results", "state"}``; each of ``messages`` is that message's JSON text, so no store's key order reaches
             what a resume sends again.
-        :rtype: dict[str, Any]
         """
         dropped = set(self._answered) if self._mount.rederivable else set()
         messages = [
@@ -589,21 +698,13 @@ class ToolSession:
         """Resume a stored session: the same model, system text and tool, its messages, and where its round stood.
 
         :param record: What :meth:`to_json` wrote.
-        :ptype record: Mapping[str, Any]
         :param model: The model id the client sends to, which must be the one the session ran on.
-        :ptype model: str
         :param client: The client its next turns go through.
-        :ptype client: ToolTurnClient
         :param mount: The tool, which re-derives each result body the record dropped.
-        :ptype mount: ToolMount
         :param system: The role's system text, which must be the one the session started with.
-        :ptype system: SkillText
         :param tally: The tally its next turns are counted in.
-        :ptype tally: Tally
         :param budget: The budget that admits its next turns.
-        :ptype budget: ReportBudget
         :return: The session, ready for its next user message.
-        :rtype: ToolSession
         :raises ValueError: A record of another format or out of shape; a model, system text or tool other than the
             stored one; a dropped result body the tool no longer answers the same.
         """

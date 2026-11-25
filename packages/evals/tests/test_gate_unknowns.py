@@ -1,6 +1,6 @@
 """A gate with no figure for an option at a place it reads is unknown there, never a fail.
 
-Contracts held here (``report_margins``' unknown places and undecided options, ``report_gates``' findings, the count
+Contracts held here (``report_margins``' unknown places and undecided options, ``report.gates``' findings, the count
 keys, and the analyst's dominance, sensitivity, settle and weakest-margin refusal), on every fixture input (r1 to r5,
 the misfits, Kairo round 2, s1 to s3), with expectations read off the input's own tables:
 
@@ -34,8 +34,8 @@ from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_decision import surviving_options
-from threetears.evals.analysis.report_gates import gate_check, gate_findings
+from threetears.evals.analysis.report.call import surviving_options
+from threetears.evals.analysis.report.gates import gate_check, gate_findings
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.kernel.errors import RefusedInput
 

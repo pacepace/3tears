@@ -40,7 +40,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.report_decision import report_caveats
+from threetears.evals.analysis.report.call import report_caveats
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin, weakest_margin
 
 FIXTURES = ("r1", "r2", "r3", "r4", "r5")

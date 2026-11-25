@@ -40,20 +40,14 @@ from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
-    REPLIES,
     MoneyRuler,
     money_ruler,
     per_one,
     priced_in_part,
 )
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    aspect_costs_per_thousand,
-    cost_basis,
-    cost_measure,
-    format_figure,
-    held_figure,
-)
+from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.report.keys.reads import aspect_costs_per_thousand, cost_basis, cost_measure
+from threetears.evals.analysis.report.keys.resolve import format_figure, held_figure
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.look import ArmLook, PageLook
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION, PageArmsKey
@@ -61,6 +55,7 @@ from threetears.evals.analysis.report.words import given_name
 from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
+    AT_LEAST_COUNT_TEMPLATE,
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
     ASPECT_HEADER_TEMPLATE,
@@ -72,6 +67,7 @@ from threetears.evals.analysis.report.parts.words import (
     PASSES_TEMPLATE,
     PRICED_HEADER,
     RECOMMENDED_MARK,
+    SERVED_BY_IN_PART_TEMPLATE,
     SERVED_BY_TEMPLATE,
     TOOL_SPEND_TEMPLATE,
     UPLIFT_NOT_COMPARABLE,
@@ -81,7 +77,7 @@ from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.numbers import UNPRICED
 
-__all__ = ["arms_key", "arms_table", "pass_rate_cell"]
+__all__ = ["arms_key", "arms_table", "pass_rate_cell", "unanswered_calls_said"]
 
 
 def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()) -> str | None:
@@ -89,20 +85,65 @@ def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()
     return format_figure(figure, filters, forms=forms) if figure is not None else None
 
 
-def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
-    """How many of the arm's calls went unanswered, where any did: retried and lost together, else each kind a role
-    counted alone (the two together are not counted there). ``where`` is the keys' aspect prefix
-    (``aspects.<aspect>.``), empty for the lead aspect's."""
+def _unanswered_counts(arm: str, report_input: ReportInput, where: str) -> list[tuple[str, Figure]]:
+    """The arm's unanswered calls as counted: retried and lost together, else each kind a role counted alone (the two
+    together are not counted there), each with the words its count reads in; empty where no role counted them.
+    ``where`` is the keys' aspect prefix (``aspects.<aspect>.``), empty for the lead aspect's."""
     together = held_figure(f"{where}calls.unanswered.{arm}", report_input)
     if together is not None:
-        return [_calls(together, "unanswered", forms)] if together.value else []
+        return [("unanswered", together)]
     kinds = ((kind, held_figure(f"{where}calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
-    return [_calls(held, f"{kind} unanswered", forms) for kind, held in kinds if held is not None and held.value]
+    return [(f"{kind} unanswered", held) for kind, held in kinds if held is not None]
 
 
-def _calls(figure: Figure, what: str, forms: PageForms) -> str:
-    """A count of calls in words: ``1 call unanswered``, ``3 calls unanswered``."""
-    return f"{format_figure(figure, forms=forms)} {'call' if figure.value == 1 else 'calls'} {what}"
+def _counted_in_part(arm: str, report_input: ReportInput, where: str) -> bool:
+    """Whether some of the arm's trials counted none of their calls in a role that counted unanswered ones
+    (``calls.unanswered.<arm>.uncounted``): each count is then a lower bound, read ``at least`` (the keys' rule)."""
+    uncounted = held_figure(f"{where}calls.unanswered.{arm}.uncounted", report_input)
+    return uncounted is not None and bool(uncounted.value)
+
+
+def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
+    """How many of the arm's calls went unanswered, where any did (:func:`_unanswered_counts`), each ``at least``
+    where some trials counted none."""
+    at_least = _counted_in_part(arm, report_input, where)
+    return [
+        _calls(held, what, forms, at_least=at_least)
+        for what, held in _unanswered_counts(arm, report_input, where)
+        if held.value
+    ]
+
+
+def unanswered_calls_said(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> str | None:
+    """An arm's calls answered and unanswered, as a scoreboard's cell states them: the answered calls of the roles that
+    counted unanswered ones (``18 calls answered``), then its unanswered ones in the words the options table flags
+    them in (``8 calls unanswered``, else each kind a role counted alone), a zero included. Each count is its key's
+    (``calls.unanswered.<arm>`` and ``.calls``), never a sum of the roles' records, which hold no one number; a count
+    no role counted is left out, and an arm none counted is None (a dash). Where some trials counted none
+    (``.uncounted``), every count is a lower bound and reads so (``at least 18 calls answered``), as the options
+    table's flag does.
+
+    :param arm: The arm, by id.
+    :param report_input: The report input.
+    :param forms: The page's forms, which print each count.
+    :param where: The keys' aspect prefix (``aspects.<aspect>.``), empty for the input's own scoreboard.
+    :return: The counts in words, joined by ``; ``; None where no role counted any.
+    """
+    at_least = _counted_in_part(arm, report_input, where)
+    answered = held_figure(f"{where}calls.unanswered.{arm}.calls", report_input)
+    said = [_calls(answered, "answered", forms, at_least=at_least)] if answered is not None else []
+    said += [
+        _calls(held, what, forms, at_least=at_least) for what, held in _unanswered_counts(arm, report_input, where)
+    ]
+    return "; ".join(said) or None
+
+
+def _calls(figure: Figure, what: str, forms: PageForms, *, at_least: bool = False) -> str:
+    """A count of calls in words: ``1 call unanswered``, ``3 calls unanswered``; ``at least 3 calls unanswered`` where
+    the count is a lower bound (:data:`~threetears.evals.analysis.report.parts.words.AT_LEAST_COUNT_TEMPLATE`)."""
+    count = format_figure(figure, forms=forms)
+    said = AT_LEAST_COUNT_TEMPLATE.format(count=count) if at_least else count
+    return f"{said} {'call' if figure.value == 1 else 'calls'} {what}"
 
 
 def _chip(arm: ArmLook) -> TableCell:
@@ -138,16 +179,11 @@ def arms_table(
     """The arms table, a report document's options table (this module's account).
 
     :param report_input: The report input the document was written from.
-    :ptype report_input: ReportInput
     :param look: The page's look.
-    :ptype look: PageLook
     :param recommends: The arms the document recommends, by id; empty for no call.
-    :ptype recommends: Collection[str]
     :param forms: The page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of` over the same
         input), which state each arm's pass rate.
-    :ptype forms: PageForms
     :return: The table, a row per arm in the input's order.
-    :rtype: TableBlock
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)
@@ -159,9 +195,7 @@ def arms_table(
     header, cells = _arm_costs(report_input, look, forms)
     costed = not aspects and any(cell.value is not None for cell in cells.values())
     cells = {arm: _unknown_cost(cell) for arm, cell in cells.items()} if costed else cells
-    grouped, by_aspect = _aspect_groups(
-        report_input, look, aspects, (_PASS_RATE, _COST, "usable"), per=1, forms=forms
-    )
+    grouped, by_aspect = _aspect_groups(report_input, look, aspects, (_PASS_RATE, _COST, "usable"), per=1, forms=forms)
     priced = {arm: _priced_by(_pricing(report_input, arm)) for arm in arms}
     sourced = any(cell.value is not None or cell.flag is not None for cell in priced.values())
     columns = [
@@ -236,27 +270,18 @@ def _costs(
     times as many (and again), which the header says, so the cells are written without the mark. A partly priced arm
     is left out of the choice and states its priced share in place of a cost.
     """
-    noun = cost_basis(report_input).noun
     costs: dict[tuple[str | None, str], float] = {}
     for aspect in aspects:
-        board = aspect_board(report_input, aspect)
         held = aspect_costs_per_thousand(report_input, aspect)
         for arm in (arm.id for arm in report_input.arms):
-            row = board.get(arm)
             if priced_in_part(report_input, arm, aspect) is not None:
                 continue
             if arm in held:
                 costs[aspect, arm] = held[arm] * per / 1000
-            elif noun == REPLIES and row is not None and row.reply_cost_usd is not None:
-                # The cost source the page reads may lack an arm another source holds: the scoreboard's cost per reply
-                # is the same cost over the same count, so an arm it states is not left blank beside arms that carry a
-                # dollar figure.
-                costs[aspect, arm] = row.reply_cost_usd * per
     # The one owner of money's scale states the column: per ``per``, or per 1,000 (1,000,000) times as many where a
     # cost is under a cent there.
-    ruler = money_ruler(
-        costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None
-    )
+    ruler = money_ruler(costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None)
+    noun = cost_basis(report_input).noun
     return COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun)), costs, ruler
 
 
@@ -317,18 +342,22 @@ def _priced_share(pricing: Pricing | None) -> str | None:
 
 
 def _priced_by(pricing: Pricing | None) -> TableCell:
-    """What priced an arm's cost: its price sources, and beside them who served its model calls, then the tools it
-    spent on as tool spend (never as the model's providers); empty where unsaid."""
+    """What priced an arm's cost: its price sources, and beside them who served its model calls (and that the rest
+    were not recorded where only some replies named one, never guessed), then the tools it spent on as tool spend
+    (never as the model's providers); empty where unsaid.
+
+    Where no reply named a provider the cell names none, as it did before any was recorded: every page built over
+    calls recorded before then reads byte for byte as it did, and a judge comparing such pages is asked what it was
+    asked when its replies were recorded."""
     if pricing is None:
         return TableCell(value=None)
-    said = [
-        template.format(providers=", ".join(providers))
-        for template, providers in (
-            (SERVED_BY_TEMPLATE, pricing.providers),
-            (TOOL_SPEND_TEMPLATE, pricing.tool_providers),
-        )
-        if providers
-    ]
+    served = ", ".join(pricing.providers)
+    said: list[str] = []
+    if served:
+        template = SERVED_BY_IN_PART_TEMPLATE if pricing.providers_in_part else SERVED_BY_TEMPLATE
+        said.append(template.format(providers=served))
+    if pricing.tool_providers:
+        said.append(TOOL_SPEND_TEMPLATE.format(providers=", ".join(pricing.tool_providers)))
     return TableCell(value=", ".join(pricing.sources) or None, flag="; ".join(said) or None)
 
 
@@ -373,16 +402,11 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     one, so the options, arms and full-results tables state one rate for an arm, in the pass rate's form on the page.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm, by id.
-    :ptype arm: str
     :param aspect: The aspect, by id (:func:`~threetears.evals.analysis.report_margins.aspect_board`); None for the
         lead aspect's, the input's own scoreboard.
-    :ptype aspect: str | None
     :param forms: The page's forms, which hold the pass rate's wherever a scoreboard counts passes.
-    :ptype forms: PageForms
     :return: The cell; a dash where neither the scoreboard nor, on the lead aspect, the figure states a rate.
-    :rtype: TableCell
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)
@@ -427,7 +451,10 @@ def _aspect_groups(
         return [], {arm.id: {} for arm in report_input.arms}
     cost_header, costs, ruler = _costs(report_input, [aspect.id for aspect in aspects], per=per)
     readers: dict[str, tuple[str, Callable[[Aspect, str], TableCell]]] = {
-        _PASS_RATE: (OPTION_HEADERS[_PASS_RATE], lambda aspect, arm: _aspect_pass_rate(report_input, arm, aspect, forms)),
+        _PASS_RATE: (
+            OPTION_HEADERS[_PASS_RATE],
+            lambda aspect, arm: _aspect_pass_rate(report_input, arm, aspect, forms),
+        ),
         _COST: (cost_header, lambda aspect, arm: _cost_cell(arm, report_input, look, costs, ruler, forms, aspect.id)),
         "usable": (ARM_HEADERS["usable"], lambda aspect, arm: _trials(report_input, arm, aspect.id)),
     }
@@ -476,13 +503,9 @@ def arms_key(report_input: ReportInput, look: PageLook, *, forms: PageForms) -> 
     """The arms key (this module's account).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param look: The page's look.
-    :ptype look: PageLook
     :param forms: The page's forms, which state each arm's reasoning share.
-    :ptype forms: PageForms
     :return: The key, under code's eyebrow and takeaway.
-    :rtype: PageArmsKey
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)

@@ -245,6 +245,36 @@ async def test_a_judge_completion_breaking_the_protocol_is_raised_to_the_host_no
     assert judging.spent([]) == [pytest.approx(0.001)]
 
 
+@dataclass(frozen=True)
+class _ResentTemperaturelessCompletion(_TemperaturelessCompletion):
+    """The defective reply, its first send dropped before any response began and resent."""
+
+    maybe_billed_sends: int = 1
+
+
+@dataclass
+class _ResendingDefectiveJudge(_ScriptedJudge):
+    """Every call answered with the defective reply, after a send that may have been billed too."""
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None) -> _Completion:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        return _ResentTemperaturelessCompletion(**vars(reply))  # type: ignore[return-value]
+
+
+async def test_a_protocol_defect_s_judging_counts_what_its_dropped_send_may_have_billed() -> None:
+    """The call that found the defect cost $0.001, and its dropped first send may have cost as much again: no cell is
+    recorded, and the run's judge ceiling counts both, as a judged cell's judging would."""
+    judge = _ResendingDefectiveJudge(temperatureless=True)
+    host, template, run, case = off_loop(_setup, judge)
+    stamped = off_loop(_stamped, host, template, run)
+    judging = WitnessedJudging(stamped.id)
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await _record(host, stamped, case, _output(), judging=judging)
+
+    assert judging.spent([]) == [pytest.approx(0.002)]
+
+
 async def test_a_rejudge_whose_judge_completion_breaks_the_protocol_raises_and_stores_nothing() -> None:
     judge = _ScriptedJudge(failing={_DIM})
     host, template, run, case = off_loop(_setup, judge)
@@ -478,6 +508,31 @@ class TestAJudgedRunIsHeldToItsCeiling:
         with pytest.raises(BudgetStoppedError, match=r"\$1\.2000 spent against a \$1\.0000 cap"):
             await _record(host, stamped, case, _output())
         assert len(judge.calls) == 1, "only the cell inside the ceiling was judged"
+
+    async def test_a_judge_send_that_may_have_been_billed_twice_counts_toward_the_ceiling(self) -> None:
+        """A saved cell's judge call met a send that broke before any response began, and was resent: $0.60 on its
+        row, and as much again the provider may have billed. Counted, $1.20 is past a $1.00 ceiling, so the next cell
+        is refused before its judge; from the row's cost alone, $0.60, it was judged."""
+        judge = _ScriptedJudge()
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(host.storage.save_eval_run, stamped)
+        dropped = make_eval_result(
+            id="dropped",
+            scope_id=_SCOPE,
+            eval_run_id=stamped.id,
+            test_case_id=case.id,
+            usage=[
+                RoleUsage(
+                    role="judge", model=_JUDGE, cost_usd=0.6, price_source="script", call_count=1, maybe_billed_sends=1
+                )
+            ],
+        )
+        off_loop(host.storage.save_eval_result, dropped)
+
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.2000 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output())
+        assert judge.calls == [], "refused before its judge"
 
     async def test_the_ceiling_reads_the_saved_cells_a_page_at_a_time_and_counts_every_one(
         self, monkeypatch: pytest.MonkeyPatch

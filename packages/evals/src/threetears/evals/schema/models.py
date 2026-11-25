@@ -76,6 +76,9 @@ from threetears.evals.schema.versioning import (
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
+from threetears.evals.schema.reading_states import SampleKind
+from threetears.evals.schema.claims import Segment
+from threetears.evals.schema.reference import ReferenceFact, ReferenceKey
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
@@ -94,9 +97,7 @@ def _current_schema_only(version: int) -> int:
     """Refuse a regenerable document written under any schema version but this build's.
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`.
     """
     if version != REGENERABLE_SCHEMA_VERSION:
@@ -122,9 +123,7 @@ def _current_cassette_only(version: int) -> int:
     so a bump of the regenerable version, which every analysis shape change makes, leaves a recorded corpus readable.
 
     :param version: The cassette's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`.
     """
     if version != CASSETTE_SCHEMA_VERSION:
@@ -148,9 +147,7 @@ def _current_core_only(version: int) -> int:
     so this refuses only a construction or a payload naming an old or future version.
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CORE_SCHEMA_VERSION`.
     """
     if version != CORE_SCHEMA_VERSION:
@@ -173,9 +170,7 @@ def _current_durable_only(version: int) -> int:
     (:data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`).
 
     :param version: The document's ``schema_version``.
-    :ptype version: int
     :return: The version, unchanged.
-    :rtype: int
     :raises ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.DURABLE_SCHEMA_VERSION`.
     """
     if version != DURABLE_SCHEMA_VERSION:
@@ -414,7 +409,6 @@ class ConversationSpec(EvalDocumentModel, CoreShapeModel):
         """Refuse a block a driver could not run as written.
 
         :return: The block, unchanged.
-        :rtype: ConversationSpec
         :raises ValueError: Two actors share an id, an actor's id is one the scheduler or the transcript
             reserves, or ``sessions`` exceeds ``max_turns`` and so names a session with no turn in it.
         """
@@ -488,9 +482,7 @@ class WorldSeed(EvalDocumentModel, CoreShapeModel):
         """Refuse a turn named twice: perturbation is applied once per named turn, so a repeat states nothing.
 
         :param value: The turns.
-        :ptype value: list[int]
         :return: They, unchanged.
-        :rtype: list[int]
         :raises ValueError: A turn appears more than once.
         """
         if len(set(value)) != len(value):
@@ -548,9 +540,7 @@ class Precondition(EvalDocumentModel, CoreShapeModel):
         was doing.
 
         :param value: The expression text.
-        :ptype value: str
         :return: It unchanged.
-        :rtype: str
         :raises ValueError: The expression is malformed or uses something outside the grammar, or reads
             ``fired()``.
         """
@@ -572,7 +562,6 @@ class Precondition(EvalDocumentModel, CoreShapeModel):
 
         :return: Dotted paths for a world registry to resolve. Case parameters are deliberately not
             here: ``variation.tone`` is an input the case carries, not state anything seeds.
-        :rtype: tuple[str, ...]
         """
         return extract_paths(self.expression).world
 
@@ -729,7 +718,6 @@ class GoalCheckControls(EvalDocumentModel, CoreShapeModel):
         """Refuse a block whose own references do not close: a duplicate check, a missing or an unused end state.
 
         :return: The block, unchanged.
-        :rtype: GoalCheckControls
         :raises ValueError: A check is listed twice, names an end state the block does not hold, or an
             end state is named by no check — data nothing would evaluate, which reads as proof
             and is not.
@@ -854,11 +842,8 @@ def rubric_dim_scale(dim: str, scales: Mapping[str, RubricScale]) -> RubricScale
     ``EvalRun.rubric_scales``, captured at launch from its template, or the scales its scores carried.
 
     :param dim: The dimension, or a reserved axis id.
-    :ptype dim: str
     :param scales: The scales recorded for the template's dims, by dim.
-    :ptype scales: Mapping[str, RubricScale]
     :return: The scale.
-    :rtype: RubricScale
     :raises ValueError: ``dim`` is no reserved axis and no scale was recorded for it.
     """
     if dim in RESERVED_DIM_IDS:
@@ -891,7 +876,6 @@ def require_namespaced_dim_name(name: str) -> None:
     persist.
 
     :param name: The dim name or ``rubric_dim_id`` being checked.
-    :ptype name: str
     :raises ValueError: ``name`` is not namespaced. Reserved dual-score axis ids
         (:data:`RESERVED_DIM_IDS`) are exempt and raise nothing.
     """
@@ -919,9 +903,7 @@ def _namespaced_dim_name(name: str) -> str:
     """Pass a namespaced dim name (or a reserved axis id) through; refuse any other.
 
     :param name: The name being validated.
-    :ptype name: str
     :return: ``name``, unchanged.
-    :rtype: str
     :raises ValueError: ``name`` is not namespaced — see :func:`require_namespaced_dim_name`.
     """
     require_namespaced_dim_name(name)
@@ -1030,14 +1012,16 @@ def fingerprint_judged_output(evidence: JudgeEvidence) -> str:
     nothing is normalised), which is what "byte-identical judged output" means here. The scenario's intent,
     variation and goal-state outcomes, which the engine places beside the evidence in a judge prompt, are the
     case's context rather than the output and are not part of it; nor is the judge's prompt, which is the
-    judge's, not the output's.
+    judge's, not the output's. Nor is the evidence's ``inputs``, which names what the strings were rendered from
+    for a replay's key and is not what was read, so a fingerprint is what it was before the field existed.
+    Recording keys are over the inputs (what was asked) and label keys over what was read, so a label does not
+    carry across a re-render: a page reworded is another judged output, and a label pairs with exactly what its
+    labeller read.
 
     :param evidence: What the judge reads, as stored on the cell's trace (or frozen on a judge case).
-    :ptype evidence: JudgeEvidence
     :return: A 64-character sha256 hex digest, domain-separated from every other digest the package takes.
-    :rtype: str
     """
-    return canonical_digest({"judged_output": evidence.model_dump(mode="json")})
+    return canonical_digest({"judged_output": evidence.model_dump(mode="json", exclude={"inputs"})})
 
 
 def fingerprint_criterion(dim: RubricDim | str) -> str:
@@ -1055,9 +1039,7 @@ def fingerprint_criterion(dim: RubricDim | str) -> str:
     the engine states it — so its criterion is its id and its 1-5 scale.
 
     :param dim: A template rubric dimension, or a reserved axis id.
-    :ptype dim: RubricDim | str
     :return: A 64-character sha256 hex digest.
-    :rtype: str
     :raises ValueError: ``dim`` is a string that is not a reserved axis id: a template dimension's name alone does
         not say what it asks.
     """
@@ -1087,11 +1069,8 @@ def label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey:
     criterion) pair and wants the labels people gave it (``EvalStorage.query_calibration_ratings(label_key=...)``).
 
     :param evidence: What was read.
-    :ptype evidence: JudgeEvidence
     :param dim: The template dimension, or reserved axis id, it was read on.
-    :ptype dim: RubricDim | str
     :return: The key.
-    :rtype: LabelKey
     """
     return LabelKey(fingerprint_judged_output(evidence), fingerprint_criterion(dim))
 
@@ -1378,16 +1357,11 @@ def _calibration_rating_id(result_id: str, rubric_dim: str, rater: str, rater_ki
     judge — and an id without the kind would let either silently overwrite the other.
 
     :param result_id: The rated result.
-    :ptype result_id: str
     :param rubric_dim: The rated dimension.
-    :ptype rubric_dim: str
     :param rater: Who rated it.
-    :ptype rater: str
     :param rater_kind: Whether a ``person`` or an ``agent`` wrote it.
-    :ptype rater_kind: str
     :return: ``rating:`` and the digest of the four, so it can never collide with the result's own id or
         its trace sibling's in a shared partition.
-    :rtype: str
     """
     return "rating:" + canonical_digest([result_id, rubric_dim, rater, rater_kind])
 
@@ -1598,9 +1572,7 @@ class CalibrationRating(DurableDocumentModel):
         a later major's first minor (v16.0) included: only v15.0 predates the field.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: The rating.
-        :rtype: Self
         :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
         """
         if (
@@ -1699,18 +1671,17 @@ DECLARED_NAME_CHARS: Final[int] = 32
 #: (:func:`~threetears.evals.run.definition_digests.template_digest`, ``measured_template_digest``), out of every
 #: bundle fingerprint (a bundle carries them under the same names), and an edit of these alone leaves the template's
 #: ``updated_at`` as it was, since that stamp decides which runs still read the template's criteria and intent.
-TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names", "stratum_names"})
+TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"goal_check_names", "stratum_names", "claim_unit_names"}
+)
 
 
 def declared_name(name: str, *, what: str) -> str:
     """Refuse a declared display name that is blank or longer than :data:`DECLARED_NAME_CHARS`.
 
     :param name: The name, as declared.
-    :ptype name: str
     :param what: What it names, as the refusal says it.
-    :ptype what: str
     :return: The name, unchanged.
-    :rtype: str
     :raises ValueError: The name is blank, or longer than the cap.
     """
     if not name.strip():
@@ -1721,6 +1692,204 @@ def declared_name(name: str, *, what: str) -> str:
             "shorten it, or leave it out to print it whole"
         )
     return name
+
+
+# =============================================================================
+# Claim criteria — the claim-grading instrument a template declares (#1287)
+# =============================================================================
+
+#: Where a document a claim is checked against came from. ``case``: the case's own evidence, the same for every arm (a
+#: summary's source, the rules in force, a gold passage). ``run``: what this cell's candidate was given or fetched
+#: itself (a retrieved passage, a page it fetched and read), which differs by arm. Closed: truth reads only ``case``
+#: evidence and groundedness reads what a criterion names, so a provenance an older build cannot name would be read
+#: as evidence of the wrong kind.
+EvidenceProvenance = Literal["case", "run"]
+
+#: The most bytes the claims payload of one trace may hold, serialized as UTF-8 JSON: its claim evidence and every
+#: criterion's grade, documents and web windows included. Under the row limit a host's store must provide for a trace.
+#: It may rise in a later build and never fall, since a stored trace over a lower cap would no longer read.
+CLAIM_TRACE_BYTES: Final[int] = 3 * 1024 * 1024
+
+#: The most bytes of :data:`CLAIM_TRACE_BYTES` a cell's evidence documents may hold, serialized. A kind truncates its
+#: documents to fit and says so in each title; the engine never truncates.
+CLAIM_DOCUMENT_BYTES: Final[int] = 1024 * 1024
+
+#: The most bytes of :data:`CLAIM_TRACE_BYTES` the web windows a criterion may read in one cell may hold, a character
+#: counted at four bytes, the most UTF-8 spends on one. A :class:`WebBudget` whose windows could exceed it is refused.
+CLAIM_WINDOW_BYTES: Final[int] = 1024 * 1024
+
+#: The most UTF-8 bytes one character can take, at which a budget in characters is counted against a cap in bytes.
+_MAX_UTF8_BYTES: Final = 4
+
+
+class PageBudget(EvalDocumentModel, CoreShapeModel):
+    """How much of a cell's evidence documents a criterion's verify calls may read: passages chosen by code.
+
+    Each verify step reads under it on its own: the truth step over the case's documents, the ground step over the
+    candidate's own. So what an arm fetched never takes the case's share, and truth reads the same case passages
+    whatever an arm fetched.
+    """
+
+    per_document_chars: int = Field(ge=1, description="The most characters read from any one document.")
+    total_chars: int = Field(
+        ge=1,
+        description="The most characters one verify step reads from all of its documents together: the truth step's "
+        "case documents and the ground step's run documents each have this much, separately.",
+    )
+    window_chars: int = Field(ge=1, description="The length of one passage cut around what a claim names.")
+
+    @model_validator(mode="after")
+    def _windows_fit_documents(self) -> Self:
+        """Refuse a passage longer than a document's share, or a document's share longer than the whole.
+
+        :raises ValueError: ``window_chars`` exceeds ``per_document_chars``, or that exceeds ``total_chars``.
+        """
+        if not self.window_chars <= self.per_document_chars <= self.total_chars:
+            raise ValueError(
+                f"a page budget reads window_chars <= per_document_chars <= total_chars, and this one reads "
+                f"{self.window_chars}, {self.per_document_chars} and {self.total_chars}"
+            )
+        return self
+
+
+class RepairBudget(EvalDocumentModel, CoreShapeModel):
+    """How many items a criterion asks again, and how often, past which the cell is the criterion's loss.
+
+    Held per step, each on its own: the extraction, the truth step and the ground step each have the whole budget.
+    So a ground step that spends its repairs on the candidate's own documents never costs truth one, and the most a
+    cell asks again is three times ``max_items_per_cell``.
+    """
+
+    rounds: int = Field(default=2, ge=0, description="How many rounds a failing item is asked again alone, per step.")
+    max_items_per_cell: int = Field(
+        ge=0,
+        description="The most items one step of one cell may ask again, over every round: the extraction, the truth "
+        "step and the ground step each have this many, separately.",
+    )
+
+
+class WebBudget(EvalDocumentModel, CoreShapeModel):
+    """How far a criterion's web check may go in one cell. A criterion with no budget checks nothing on the web."""
+
+    max_queries_per_claim: int = Field(ge=1, description="The most searches written for one nominated claim.")
+    max_checked_per_cell: int = Field(
+        ge=1, description="The most nominated claims checked in one cell; the rest are recorded as skipped for it."
+    )
+    results_per_query: int = Field(ge=1, description="The most pages read of one search's results.")
+    page_chars: int = Field(ge=1, description="The most characters of one page read and stored, in windows.")
+    window_chars: int = Field(ge=1, description="The length of one window cut from a page around what a claim names.")
+
+    @model_validator(mode="after")
+    def _windows_fit_the_trace(self) -> Self:
+        """Refuse a window longer than a page's share, or windows that could outgrow their share of the trace.
+
+        :raises ValueError: ``window_chars`` exceeds ``page_chars``, or the most a cell could read, at four bytes a
+            character, exceeds :data:`CLAIM_WINDOW_BYTES`.
+        """
+        if self.window_chars > self.page_chars:
+            raise ValueError(
+                f"a web budget's window_chars ({self.window_chars}) is at most its page_chars ({self.page_chars})"
+            )
+        most = self.max_checked_per_cell * self.max_queries_per_claim * self.results_per_query * self.page_chars
+        if most * _MAX_UTF8_BYTES > CLAIM_WINDOW_BYTES:
+            raise ValueError(
+                f"a web budget may read {most} characters of windows in one cell (max_checked_per_cell x "
+                f"max_queries_per_claim x results_per_query x page_chars), up to {most * _MAX_UTF8_BYTES} bytes, "
+                f"and a trace holds at most CLAIM_WINDOW_BYTES ({CLAIM_WINDOW_BYTES}) of windows; lower one of them"
+            )
+        return self
+
+
+class ClaimCriterion(EvalDocumentModel, CoreShapeModel):
+    """One claim-grading instrument a template declares: which claims its judge lists, and what it grades them against.
+
+    The engine lists the factual claims in a cell's output, grades each for truth against the case's evidence (and the
+    web, where a budget allows), and, where ``grounded_in`` names them, for support by the documents the candidate
+    itself was given. Its readings are judged readings keyed under its name, so the name, and every name that starts
+    with it and ``_``, belongs to it alone within the template. Stored with the template; how a page calls one unit
+    of its denominator is presentation, on the template (``EvalTemplate.claim_unit_names``).
+    """
+
+    name: DimName = Field(
+        description="Its namespaced name (`rules.claims`), unique in the template and owning every name `<name>_...`."
+    )
+    guidance: str = Field(
+        default="",
+        description=(
+            "The host's own notes on what counts as a claim in its domain, and how to read one, with its own "
+            "examples; sent with every prompt the criterion's judge is asked."
+        ),
+    )
+    grounded_in: tuple[EvidenceProvenance, ...] | None = Field(
+        default=None,
+        description=(
+            "Which documents the candidate itself was given, that a claim's support by reads as grounded: `run` for "
+            "documents it retrieved or fetched, `case` for a summary of its source. A set, kept in one order. None "
+            "(the default): no groundedness reading. Never case evidence the candidate was not shown."
+        ),
+    )
+    web: WebBudget | None = Field(
+        default=None, description="How far the web check may go in one cell; None checks nothing on the web."
+    )
+    pages: PageBudget = Field(description="How much of a cell's documents its verify calls read.")
+    repairs: RepairBudget = Field(description="How much it asks again before the cell is its loss.")
+    judge: JudgeDeclaration = Field(
+        description="Which judge grades it, declared as a rubric dimension's is. Only `builtin`: no configured claim "
+        "judge exists."
+    )
+
+    @field_validator("grounded_in", mode="after")
+    @classmethod
+    def _grounded_in_one_order(cls, given: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        """``grounded_in`` is a set: kept sorted, once each, and never empty, since an empty set is ``None``'s meaning.
+
+        :raises ValueError: It is empty.
+        """
+        if given is None:
+            return None
+        if not given:
+            raise ValueError("grounded_in names at least one provenance; leave it out for no groundedness reading")
+        return tuple(sorted(set(given)))
+
+    @field_validator("judge", mode="after")
+    @classmethod
+    def _built_in_judge_only(cls, judge: str) -> str:
+        """Refuse a configured judge, which no claim criterion has.
+
+        :raises ValueError: ``judge`` is ``configured``.
+        """
+        if judge != "builtin":
+            raise ValueError("a claim criterion is graded by the engine's built-in prompts; declare judge 'builtin'")
+        return judge
+
+
+def _refuse_claim_names_shared(template: EvalTemplate) -> None:
+    """Refuse a claim criterion whose name, or a name its readings could take, another criterion or a dimension holds.
+
+    :param template: The template.
+    :raises ValueError: Two criteria share a name, or a rubric dimension or another criterion is named a criterion's
+        name or that name and ``_`` and more.
+    """
+    criteria = [criterion.name for criterion in template.claim_criteria]
+    if twice := sorted({name for name in criteria if criteria.count(name) > 1}):
+        raise ValueError(f"claim_criteria names {', '.join(map(repr, twice))} more than once; name each apart")
+    names = [dim.name for dim in template.rubric] + criteria
+    for criterion in criteria:
+        taken = [name for name in names if name.startswith(f"{criterion}_") or name == criterion]
+        if len(taken) > 1:
+            others = sorted(set(taken) - {criterion}) or [criterion]
+            raise ValueError(
+                f"claim criterion {criterion!r} owns its name and every name {criterion + '_...'!r} for its readings, "
+                f"and the template also names {', '.join(map(repr, others))}; rename one"
+            )
+    if stray := sorted(set(template.claim_unit_names) - set(criteria)):
+        raise ValueError(
+            f"claim_unit_names names {', '.join(map(repr, stray))}, which "
+            + ("is not a claim criterion" if len(stray) == 1 else "are not claim criteria")
+            + " of this template; key each noun by a criterion's name"
+        )
+    for criterion, noun in template.claim_unit_names.items():
+        declared_name(noun, what=f"the unit of claim criterion {criterion!r}")
 
 
 class EvalTemplate(DurableDocumentModel):
@@ -1871,6 +2040,28 @@ class EvalTemplate(DurableDocumentModel):
             "or candidate, so naming a check changes nothing a run measures."
         ),
     )
+    # The claim-grading instruments (#1287), graded in the judge phase beside the rubric. Written only when one is
+    # declared, so a template without one is stored, digested and measured exactly as before the field existed.
+    claim_criteria: list[ClaimCriterion] = Field(
+        default_factory=list,
+        exclude_if=lambda criteria: not criteria,
+        description=(
+            "The claim criteria a run of this template grades: each lists the factual claims in a cell's output and "
+            "grades them for truth (and, where it names grounded_in, for support by the candidate's own documents). "
+            "Each name is unique in the template and owns every name that starts with it and `_`, which its readings "
+            "are keyed under, so no rubric dimension may take one. Empty (the default) grades no claims."
+        ),
+    )
+    # What a page calls one unit of each criterion's denominator: presentation only, like `goal_check_names`.
+    claim_unit_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a page calls one unit of a claim criterion's denominator (`stop`, `answer`, `entry`), by the "
+            f"criterion's name: at most {DECLARED_NAME_CHARS} characters. A criterion with none here is printed per "
+            "unit. Read by no judge, simulator or candidate, so naming a unit changes nothing a run measures."
+        ),
+    )
     # What a page calls each stratum: presentation only, like `goal_check_names`.
     stratum_names: dict[str, str] = Field(
         default_factory=dict,
@@ -1950,9 +2141,7 @@ class EvalTemplate(DurableDocumentModel):
         author naming a check the template does not declare is still refused.
 
         :param data: The stored document, as the store returned it.
-        :ptype data: dict[str, Any]
         :return: The template.
-        :rtype: Self
         :raises ValidationError: As :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`.
         """
         if isinstance(data, Mapping) and isinstance(names := data.get("goal_check_names"), Mapping):
@@ -1974,7 +2163,9 @@ class EvalTemplate(DurableDocumentModel):
 
         :return: The validated template.
         :rtype: EvalTemplate
-        :raises ValueError: A name is keyed by no goal check of the template, is blank or too long, or is repeated.
+        :raises ValueError: A name is keyed by no goal check of the template, is blank or too long, or is repeated; or
+            a claim criterion's name, or a name its readings could take, is held by another
+            (:func:`_refuse_claim_names_shared`).
         """
         if stray := sorted(set(self.goal_check_names) - set(self.goal_state_checks)):
             raise ValueError(
@@ -1998,6 +2189,7 @@ class EvalTemplate(DurableDocumentModel):
             raise ValueError(
                 f"stratum_names gives {', '.join(map(repr, twice))} to more than one stratum; name each stratum apart"
             )
+        _refuse_claim_names_shared(self)
         return self
 
 
@@ -2008,9 +2200,7 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
     the order a store returned the records in.
 
     :param revisions: The records of one name, in any order.
-    :ptype revisions: Iterable[EvalTemplate]
     :return: The current revision, or None for no records.
-    :rtype: EvalTemplate | None
     """
     ordered = sorted(revisions, key=lambda t: (not t.archived, t.revision, t.created_at, t.id))
     return ordered[-1] if ordered else None
@@ -2023,11 +2213,11 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
 #: What every built-in judge prompt's identity starts with, in the place a versioned :class:`JudgeConfig`'s id
 #: stands (``EvalResult.judge_config_ids``, and every ``judge_config_id`` read from it). A config's id is a uuid
 #: and may never start with it (:class:`JudgeConfig` refuses one that does), so the two cannot be confused.
-BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
+_BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
 
 
 def builtin_judge_config_id(wording: str) -> str:
-    """The identity of a built-in judge prompt: :data:`BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
+    """The identity of a built-in judge prompt: :data:`_BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
 
     A dimension with no :class:`JudgeConfig` is judged with the engine's own wording, and that wording is an
     instrument as much as an operator's prompt is: change it and the judge is a different judge. So it has an id,
@@ -2041,11 +2231,9 @@ def builtin_judge_config_id(wording: str) -> str:
     :mod:`~threetears.evals.schema.versioning`).
 
     :param wording: The built-in prompt's fixed text, as the judge service renders it for the dimension's family.
-    :ptype wording: str
     :return: ``builtin:<sha12>``.
-    :rtype: str
     """
-    return BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
+    return _BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
 
 
 #: The sentence a release's ``MIGRATIONS.toml`` notes carry, verbatim, when it changes the wording of a built-in judge
@@ -2066,11 +2254,9 @@ def is_builtin_judge_config_id(config_id: str | None) -> bool:
     """Whether a recorded judge config id names a built-in prompt rather than a versioned :class:`JudgeConfig`.
 
     :param config_id: A recorded config id, or ``None`` for a dim no judge asked.
-    :ptype config_id: str | None
     :return: True for a :func:`builtin_judge_config_id`.
-    :rtype: bool
     """
-    return config_id is not None and config_id.startswith(BUILTIN_JUDGE_CONFIG_PREFIX)
+    return config_id is not None and config_id.startswith(_BUILTIN_JUDGE_CONFIG_PREFIX)
 
 
 #: A configured judge's recorded identity: its config's id, ``@``, and the fingerprint of the reply-format wording the
@@ -2089,11 +2275,8 @@ def configured_judge_config_id(config_id: str, reply_format: str) -> str:
     (:func:`builtin_judge_config_id`). :func:`judge_config_of` reads the config's id back.
 
     :param config_id: The :class:`JudgeConfig`'s id.
-    :ptype config_id: str
     :param reply_format: The suffix's fixed wording, as the judge service renders it for the dimension's family.
-    :ptype reply_format: str
     :return: ``<config id>@<sha12>``.
-    :rtype: str
     """
     return f"{config_id}@{bytes_digest(reply_format.encode('utf-8'))[:12]}"
 
@@ -2105,9 +2288,7 @@ def judge_config_of(recorded: str | None) -> str | None:
     prompt's identity, or ``None`` (a dim no judge asked), names no config.
 
     :param recorded: A recorded judge config id, or ``None``.
-    :ptype recorded: str | None
     :return: The config's id, or ``None``.
-    :rtype: str | None
     :raises ValueError: ``recorded`` is neither a built-in prompt's identity nor a configured judge's: a bare config id
         is the config, not the prompt that was sent, so it is no judge's recorded identity.
     """
@@ -2223,7 +2404,7 @@ class JudgeConfig(DurableDocumentModel):
         """Refuse an id spelled as a built-in prompt's, which a recorded score could not tell from one."""
         if is_builtin_judge_config_id(v):
             raise ValueError(
-                f"judge config id {v!r} starts with {BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
+                f"judge config id {v!r} starts with {_BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
                 "built-in prompts; give the config another id, or leave it to the default"
             )
         if _CONFIGURED_JUDGE_ID.match(v):
@@ -2315,9 +2496,7 @@ class CatalogRubricDim(DurableDocumentModel):
         unreadable, and the direction that never lets a guardrail be averaged with capability is the safe one.
 
         :param data: The raw input.
-        :ptype data: Any
         :return: The input with both axes set alike.
-        :rtype: Any
         """
         if not isinstance(data, dict) or "dim" not in data:
             return data
@@ -2350,9 +2529,7 @@ def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
     here, so it reads the types a real case holds and cannot pass on one no case could have.
 
     :param params: The parameters, by name.
-    :ptype params: Mapping[str, Any]
     :return: The same names, each value a string: verbatim when it already is one.
-    :rtype: dict[str, str]
     """
     return {
         name: value if isinstance(value, str) else json.dumps(value, sort_keys=True) for name, value in params.items()
@@ -2430,11 +2607,8 @@ def case_set_doc_id(name: str, version: int) -> str:
     """The stored id of version ``version`` of the case set ``name`` — one document per ``(scope, name, version)``.
 
     :param name: The set's name.
-    :ptype name: str
     :param version: Its version.
-    :ptype version: int
     :return: The id.
-    :rtype: str
     """
     return f"case_set:{name}:v{version}"
 
@@ -2445,22 +2619,31 @@ calls (``max_metered_calls``). Closed: a new currency changes how an older build
 
 
 class BudgetStop(EvalBaseModel, CoreShapeModel):
-    """One per-run ceiling that stopped a run between cells: the numbers it was stopped on, from the counters.
+    """One per-run ceiling that stopped a run: the numbers it was stopped on, from the counters.
 
-    A ceiling never refuses a call inside a cell. It is read between cells, against what has LANDED — the
-    cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
-    finish, so the run ends past the ceiling by up to the width's worth of cells; that overshoot is
+    A ceiling never refuses a candidate's call inside a cell. It is read between cells, against what has LANDED —
+    the cells already recorded — and once landed amount reaches it no new cell starts. The cells already running
+    finish, so the run can end past the ceiling by what their candidates go on to spend; that overshoot is
     ``landed_final - ceiling``, derived (:attr:`overshoot`) and never stored, and every figure here is a
-    counter's reading, never parsed from prose. A run stopped by both ceilings at one boundary carries one
-    record for each (``EvalRun.budget_stops``).
+    counter's reading, never parsed from prose. The cost cap also admits each cell's judge phase before any of its
+    calls is paid for, so judging stays within it wherever its price ceiling bounds the bill; a cell whose judging
+    it could not admit is set
+    aside unjudged, and the first such cell stops the run as a crossing does. A run stopped by both ceilings at
+    one boundary carries one record for each (``EvalRun.budget_stops``). A run the account's refusal or the
+    unserved-model circuit stopped first, whose running cell's judging the cap then set aside, ends ``exhausted`` and
+    carries the cap's record all the same, so its ``cells_not_judged`` is kept.
 
     :ivar currency: What the ceiling counts.
     :ivar ceiling: The ceiling, in the currency.
-    :ivar landed_at_stop: The landed amount when the stop was decided, which is when the next cell would have
-        started. Dollars are the priced spend of the recorded cells.
+    :ivar landed_at_stop: The landed amount when the stop was decided: when the next cell would have started, or
+        when the cost cap first set a cell's judging aside. Dollars are the priced spend of the recorded cells.
     :ivar landed_final: The landed amount once the cells in flight at the stop had finished and been recorded.
     :ivar cells_in_flight: Cells running when the stop was decided.
     :ivar cells_not_started: Cells of the matrix that never started because of the stop.
+    :ivar cells_not_judged: ``cost_usd`` only: cells that ran but whose judging the cap refused, having too little left
+        for it, so nothing judged them. A cell whose deadline struck while its judging waited for the cap's room is
+        marked the same way but not counted here: the cap's shortage was never established for it. Each is marked (``EvalResult.judging_set_aside``) and left out of the judged readings
+        under its own cause (``cost_cap``), never failed; its other readings count it, and a re-judge takes it up. Zero for ``metered_calls``, and on a record stored before the field existed.
     :ivar unpriced_results: ``cost_usd`` only: recorded results whose spend could not be priced. An enforcing
         cap cannot count against what it cannot price, so any of these stops the run on their own, whatever
         ``landed_at_stop`` says. Zero for ``metered_calls``.
@@ -2474,6 +2657,11 @@ class BudgetStop(EvalBaseModel, CoreShapeModel):
     landed_final: int | float = Field(ge=0, description="The landed amount once the in-flight cells finished.")
     cells_in_flight: int = Field(ge=0, description="Cells running when the stop was decided.")
     cells_not_started: int = Field(ge=0, description="Cells that never started because of the stop.")
+    cells_not_judged: int = Field(
+        default=0,
+        ge=0,
+        description="Cost stops only: cells that ran but whose judging the cap had too little left for.",
+    )
     unpriced_results: int = Field(
         default=0, ge=0, description="Cost stops only: recorded results whose spend could not be priced."
     )
@@ -2642,6 +2830,25 @@ class EvalTestCase(DurableDocumentModel):
         ),
     )
 
+    reference: ReferenceKey | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The case's reference key: the entities its answer is graded against, a required `core` and the "
+            "`acceptable` others that also count, each with its aliases and checkable facts, and at least one of "
+            "them. It may also carry `context`: entities outside the answer set whose facts a grader may check a "
+            "reply against, which a set grade never counts, so a context entity a reply names reads unverified; "
+            "`reference_material` renders it under its own heading saying they are not answers. The package states "
+            "its shape and the host fills it. Never stimulus: a kind never hands it to the candidate, renders it for "
+            "the judges that grade against it (`threetears.evals.kernel.reference_material`, appended to "
+            "`JudgeEvidence.case_material`), and its code measures read it here. Part of the case: a template's own "
+            "case digests it with its content, so an edited key is a new case under a new id that never pools or "
+            "pairs with the old one, and drift reads its corpus case stale. Its parts are sets, kept in one order, so "
+            "writing them in another order is the same key and the same case. None when the case has no key, and "
+            "then left out of the document, so a case without one is stored exactly as before."
+        ),
+    )
+
     stratum: str | None = Field(
         default=None,
         min_length=1,
@@ -2675,10 +2882,12 @@ class EvalTestCase(DurableDocumentModel):
     content_hash: str | None = Field(
         default=None,
         description=(
-            "Digest of this case's generated content (variation_params), pinning the identity of an "
-            "LLM-generated artifact so 'the same cell' cannot silently differ between runs. None when the "
-            "case has no generated content to pin, and its identity is then its template plus its id. Stored rather than computed on read so it is groupable "
-            "in a query."
+            "Digest of this case's content, pinning its identity so 'the same cell' cannot silently differ "
+            "between runs: a generated case's `variation_params` (`kernel.identity.compute_content_hash`), and a "
+            "template's own case's `variation_params`, `host_payload` and `reference`, each left out when empty, "
+            "which the seed sets when it writes a `SeedTemplateCase` (`SeedTemplateCase.test_case`). "
+            "None when the case has no generated content to pin, and its identity is then its template plus its id. "
+            "Stored rather than computed on read so it is groupable in a query."
         ),
     )
 
@@ -2727,7 +2936,9 @@ class EvalTestCase(DurableDocumentModel):
             "The id of the case this one is a copy of, when a definition reset carried it into its template's next "
             "revision (`run.reset_definitions(..., carry_live_cases=True)`): a live case of the superseded revision "
             "the seed corpus does not carry, copied with its content, payload, labels, stratum, name and seed record "
-            "unchanged. The source stays on the archived revision with every run measured against it; the copy's "
+            "unchanged; or when an operator's judge-case write into a judge template that held cases wrote its next "
+            "revision (`judge_case_author`, `judge_cases_freeze`), which carries every case of the superseded one. "
+            "The source stays on the archived revision with every run measured against it; the copy's "
             "own runs are the new revision's, and the two never pool. In no digest pre-image and no identity key. "
             "None for a case written any other way."
         ),
@@ -2877,6 +3088,19 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
             "equal."
         ),
     )
+    measure_definitions: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The definition digest of each measure the run's host declared when the run was launched, measure key "
+            "-> digest (EvalRun.measure_definitions): what each of the host's measures counted when the run's "
+            "values were read. Its own component because a host changes what a measure counts and keeps its key, "
+            "and runs read under two definitions of one measure are not repeats of one condition. Kept as the map, "
+            "as subject_state is, so a badge names WHICH measure moved. Additive: None where the run recorded none "
+            "or an empty map (stored before runs recorded it, assembled without a launch, or a host with no measure "
+            "of its own), and then left out of the key, which is what it was before the component existed."
+        ),
+    )
     scope: str | None = Field(
         default=None,
         description="Storage scope the run executed in, kept raw so a mismatch badges as a value.",
@@ -2892,10 +3116,12 @@ class ContextComponents(EvalDocumentModel, CoreShapeModel):
 #: budget, ``EvalRun.budget_stop_reason`` says which: a designed stop that keeps what the run delivered,
 #: never ``failed``.
 #:
-#: ``exhausted`` is the account-side twin of ``budget_stopped``: the provider account paying for the
-#: run refused a candidate call (out of credit, or the key refused), so every later cell would be
-#: refused the same way. The run stops, keeps what it delivered, and names the account — not the
-#: harness and not the candidate — as the reason it is short.
+#: ``exhausted`` is the account-side twin of ``budget_stopped``: something every later cell would meet
+#: gave out, outside both the harness and the candidate — the provider account paying for the run
+#: refused a call (out of credit, or the key refused), or the provider does not serve the model the
+#: run's candidate names (retired, or a model id it does not know). ``EvalRun.exhausted_because``
+#: says which. The run stops, keeps what it delivered, names the cause as the reason it is short, and
+#: is resumable once the account is funded or the model served.
 EvalRunStatus = Literal["pending", "running", "completed", "failed", "cancelled", "budget_stopped", "exhausted"]
 
 #: How the arms of one comparison shared time and provider capacity, recorded on each arm's run.
@@ -3111,6 +3337,28 @@ FAILED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownFailedBecause)
 #: value that minor added.
 StoredFailedBecause = Annotated[FailedBecause, known_unless_newer_minor("failed-because reason", FAILED_BECAUSE)]
 
+#: Why a run the job manager filed ``exhausted`` stopped (:attr:`EvalRun.exhausted_because`): ``account_refused`` —
+#: the provider refused the account paying for the run (:class:`~threetears.evals.run.AccountExhaustedError`);
+#: ``model_unserved`` — the provider does not serve the model the run's candidate names
+#: (:class:`~threetears.evals.run.ModelUnservedError`). Either is resumable once its cause is cleared.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`EXHAUSTED_BECAUSE`, read as
+#: :data:`FailedBecause` is: a reader that branches on it names a value a newer minor added rather than folding it
+#: into one it knows.
+ExhaustedBecause = str
+
+#: A value of :data:`ExhaustedBecause` this build knows, as a type: what this build writes.
+KnownExhaustedBecause = Literal["account_refused", "model_unserved"]
+
+#: The values of :data:`ExhaustedBecause` this build knows.
+EXHAUSTED_BECAUSE: Final[tuple[str, ...]] = get_args(KnownExhaustedBecause)
+
+#: The type of the stored field: one of :data:`EXHAUSTED_BECAUSE`, or, on the stored read of a newer minor's document,
+#: a value that minor added.
+StoredExhaustedBecause = Annotated[
+    ExhaustedBecause, known_unless_newer_minor("exhausted-because reason", EXHAUSTED_BECAUSE)
+]
+
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
     """Every dim a judged cell of this kind is scored on, in the order the judge phase calls them.
@@ -3122,11 +3370,8 @@ def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact)
     judge phase that asks them and the re-judge that asks again.
 
     :param rubric_dim_names: The template's rubric dim names, in template order.
-    :ptype rubric_dim_names: list[str]
     :param judged_artifact: What the kind's judge reads (:class:`JudgedArtifact`).
-    :ptype judged_artifact: JudgedArtifact
     :return: The dim ids, reserved axes first for a conversation; empty for an unjudged kind.
-    :rtype: list[str]
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
         return []
@@ -3150,17 +3395,13 @@ def resolve_effective_judges(
     the result alone without re-deriving the cascade against ``judge_model``.
 
     :param dim_ids: The dims to attribute, from :func:`scored_dim_ids`.
-    :ptype dim_ids: list[str]
     :param judge_config_for_dim: Resolves a dim id to the governing config, or
         ``None``. Injected so the launch path can pass the same frozen config
         load it built the judge service from, without reaching for storage
         here.
-    :ptype judge_config_for_dim: Callable[[str], JudgeConfig | None]
     :param judge_pin: The run's resolved run-level judge, used wherever no config
         names a model.
-    :ptype judge_pin: str
     :return: ``{dim_id: resolved_model}`` over exactly ``dim_ids``.
-    :rtype: dict[str, str]
     """
     effective = {}
     for dim_id in dim_ids:
@@ -3419,7 +3660,6 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
         """Refuse a settings value that asks for reasoning both by a token budget and by an effort level.
 
         :return: The settings, unchanged.
-        :rtype: Self
         :raises ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set, or a budget is named both as
             sent and as unsent.
         """
@@ -3443,9 +3683,7 @@ def request_settings_order(settings: ClientRequestSettings) -> str:
     is a model and not hashable, and its fields have no natural order of their own.
 
     :param settings: The settings.
-    :ptype settings: ClientRequestSettings
     :return: Its canonical JSON.
-    :rtype: str
     """
     return json.dumps(settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
@@ -3459,9 +3697,7 @@ def request_settings_words(settings: ClientRequestSettings) -> str:
     two requests.
 
     :param settings: The settings.
-    :ptype settings: ClientRequestSettings
     :return: The phrase.
-    :rtype: str
     """
     parts = [f"max_tokens={settings.max_tokens}"]
     if settings.reasoning_effort is not None:
@@ -3480,10 +3716,8 @@ def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
     """A judge's sent settings as the clause a sentence naming the judge carries.
 
     :param settings: What its calls were sent with (``None`` = unverified).
-    :ptype settings: ClientRequestSettings | None
     :return: ``"sent {...}"`` (:func:`request_settings_words`), or ``"request settings
         unconfirmed"`` when its client did not report them.
-    :rtype: str
     """
     return "request settings unconfirmed" if settings is None else f"sent {request_settings_words(settings)}"
 
@@ -3572,9 +3806,7 @@ def run_label_problem(label: str) -> str | None:
     """Why ``label`` cannot name a run, or None when it can.
 
     :param label: A candidate label, as given.
-    :ptype label: str
     :return: The reason, as a clause, or None.
-    :rtype: str | None
     """
     if not label.strip():
         return "is blank"
@@ -3583,6 +3815,86 @@ def run_label_problem(label: str) -> str | None:
     if len(label) > RUN_LABEL_MAX_LENGTH:
         return f"is {len(label)} characters, longer than {RUN_LABEL_MAX_LENGTH}"
     return None
+
+
+class MeasureRemeasure(EvalBaseModel, CoreShapeModel):
+    """One re-measure of a run, recorded on the run it re-read (``threetears.evals.run.remeasure_run``).
+
+    A re-measure reads the run's stored results again, from what each cell stored, under the host's current
+    definition of every measure whose definition the run did not record or recorded otherwise. Nothing is
+    interpolated: a stored value the host's reader cannot read again refuses the whole re-measure. This entry is the
+    mark: a run that carries one joined the cell of the definitions it names by being read again, not by being
+    launched under them.
+    """
+
+    remeasured_at: str = Field(default_factory=utc_now_iso)
+    completed_at: str | None = Field(
+        default=None,
+        description=(
+            "When the re-measure finished: every result written, then the run's measure_definitions moved to "
+            "``now``. None = it began and has not finished (it is written on the run before any result is), so the "
+            "run's results may hold values read under two definitions and the run pools with nothing until a "
+            "re-measure finishes it."
+        ),
+    )
+    was: dict[str, str] | None = Field(
+        description=(
+            "The run's measure_definitions before this re-measure, measure key -> digest. None = it recorded none."
+        )
+    )
+    now: dict[str, str] = Field(description="Its measure_definitions after: the host's, when it was re-measured.")
+    reread: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The measures whose stored values were read again, sorted. A measure whose definition moved and of which "
+            "no result of the run held a value is not here: there was nothing to read again."
+        ),
+    )
+    results_reread: int = Field(default=0, ge=0, description="How many of the run's results had a value read again.")
+
+
+class MeasureAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the measure definitions a stored run ran under.
+
+    Written by ``threetears.evals.run.attest_measure_definitions`` on a run that recorded none. It is the host's word
+    and never the engine's guess: the host knows which revision of its reading code was live when the run was made.
+    No result is touched. The run's ``measure_definitions`` then hold the attested map, and this entry is what tells
+    it from a map the launch recorded.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    definitions: dict[str, str] = Field(
+        min_length=1, description="The definitions stated, measure key -> digest: the run's measure_definitions."
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
+
+
+class ServedModelAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the model that answered a stored run's candidate calls whose responses
+    named none.
+
+    Written by the ``runs_attest`` action (coordinate ``served_model``) on a run some of whose candidate usage rows
+    name no served model. It is the host's word and never the engine's guess: the id a run asked for
+    (``RoleUsage.model``) is not evidence of what answered, and nothing else a silent run stores is. No row is
+    touched: the rows stay as the responses left them, so a reading still tells a model a response named from one a
+    host stated, and the identity disclosure stays true. A reading that pools by answering model (a campaign's cells,
+    pass^k) reads the silent rows of the results named here THROUGH the statement, and says it was stated.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    served_model: str = Field(
+        min_length=1, description="The model stated as having answered the run's candidate calls that named none."
+    )
+    result_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "The results whose candidate rows named no model when the statement was made, sorted: what it covers. A "
+            "result written after it (a take-up) is not covered, and its silence stays a silence."
+        ),
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
 
 
 class RunLifetime(EvalBaseModel, CoreShapeModel):
@@ -3606,7 +3918,8 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar reason: Why it ended, when something said: the cancellation's reason, the budget stop's, or the error an
         exhausted or failed holding recorded.
     :ivar lost: The loss, for a holding that was lost.
-    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped.
+    :ivar budget_stops: The per-run ceilings that stopped it, for a holding they stopped; for one that ended exhausted,
+        the cost cap's record of the cells it refused judging beside that stop.
     :ivar completeness: The run's completeness when it ended, over the whole matrix.
     :ivar cells_stored: The result rows stored for the run when it ended.
     :ivar spend_lower_bound: Whether what this holding spent is known only as a lower bound: a holding that was
@@ -3617,6 +3930,12 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     :ivar template_edited_at: When the run's template was last edited, for a holding that began after an edit made
         after the run was created: an edit in nothing the run froze of it, which measures alike and is disclosed here
         rather than refused. ``None`` when the template was not edited since the run was created.
+    :ivar goal_check_proof_rules: The goal-check proof rules (``GOAL_CHECK_PROOF_RULES``) the run's goal checks were
+        proved under for this holding: the launch's, on the run's first holding, and the rules a take-up re-proved the
+        run's own checks under, on each holding a take-up began. A take-up whose re-proof under newer rules matched
+        the run's own proofs moves the run's ``goal_check_proof_rules`` forward to them, so a ``proven`` the launch
+        recorded reads as proven again, and its lifetimes say which rules proved the checks in which holding.
+        ``None`` when the run recorded no proofs, or the holding was recorded before holdings recorded their rules.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -3636,7 +3955,12 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
     )
     lost: JobLoss | None = Field(default=None, description="The loss, for a holding that was lost.")
     budget_stops: list[BudgetStop] | None = Field(
-        default=None, description="The per-run ceilings that stopped the holding, for one they stopped."
+        default=None,
+        description=(
+            "The per-run ceilings that stopped the holding, for one they stopped; on a holding that ended exhausted, "
+            "the cost cap's record of the cells whose judging it refused after the account or the model had stopped "
+            "it, which is a count beside that stop, never the stop."
+        ),
     )
     completeness: RunCompleteness | None = Field(
         default=None, description="The run's completeness when the holding ended, over the whole matrix."
@@ -3663,6 +3987,16 @@ class RunLifetime(EvalBaseModel, CoreShapeModel):
             "created — an edit in nothing the run froze of it, disclosed rather than refused; None when it was not."
         ),
     )
+    goal_check_proof_rules: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The goal-check proof rules the run's goal checks were proved under for this holding: the launch's on "
+            "the first holding, the rules a take-up re-proved them under on each later one. None when the run "
+            "recorded no proofs, or the holding was recorded before holdings recorded their rules."
+        ),
+    )
 
 
 def ended_lifetimes(
@@ -3684,24 +4018,15 @@ def ended_lifetimes(
     closes it here. Lifetimes with no open holding are returned as they are.
 
     :param lifetimes: The run's lifetimes.
-    :ptype lifetimes: Sequence[RunLifetime]
     :param status: The status the run ended with.
-    :ptype status: EvalRunStatus
     :param at: When it ended.
-    :ptype at: str
     :param reason: Why, when something said.
-    :ptype reason: str | None
     :param lost: The loss, when it was lost.
-    :ptype lost: JobLoss | None
     :param budget_stops: The per-run ceilings that stopped it.
-    :ptype budget_stops: list[BudgetStop] | None
     :param completeness: Its completeness when it ended.
-    :ptype completeness: RunCompleteness | None
     :param cells_stored: The result rows stored for the run, when the writer counted them; else the completeness's
         persisted cells.
-    :ptype cells_stored: int | None
     :return: The lifetimes, the last one closed when it was open.
-    :rtype: list[RunLifetime]
     """
     if not lifetimes or lifetimes[-1].status != "running":
         return list(lifetimes)
@@ -3728,9 +4053,7 @@ def run_ending_reason(run: EvalRun) -> str | None:
     stop's reason, or the error an exhausted or failed run recorded last.
 
     :param run: The run, ended.
-    :ptype run: EvalRun
     :return: The reason, or None when its record gives none.
-    :rtype: str | None
     """
     if run.lost is not None:
         return run.lost.cause
@@ -3773,7 +4096,6 @@ class EvalRun(CoreDocumentModel):
         """Record that ``paths`` were left out of this copy's ``host_payload`` by the read.
 
         :param paths: Dotted paths relative to ``host_payload``.
-        :ptype paths: frozenset[str]
         """
         self._elided_payload_paths = frozenset(paths)
 
@@ -4081,8 +4403,10 @@ class EvalRun(CoreDocumentModel):
         ge=1,
         description=(
             "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`): set exactly when "
-            "they are. A `proven` recorded under rules older than the current ones reads as unproven "
-            "(`goal_check_proofs_as_read`), and is counted as needing re-proof."
+            "they are. The launch's, or the newer rules a take-up re-proved the run's checks under when they proved "
+            "alike; each holding names its own (`RunLifetime.goal_check_proof_rules`). A `proven` recorded under "
+            "rules older than the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as "
+            "needing re-proof."
         ),
     )
     refused_goal_checks: dict[str, str] | None = Field(
@@ -4233,7 +4557,8 @@ class EvalRun(CoreDocumentModel):
             "ceiling (origin None); a run the ceiling stopped is visible either way through the budget_stopped "
             "status and budget_stops. The cap is read between cells against the spend of the cells already "
             "recorded: once that reaches it no new cell starts, and cells already running finish, so a run may "
-            "land past it by up to the width's worth of cells."
+            "land past it by what their candidates spend. Each cell's judging is admitted against it before any "
+            "judge call is paid for, so judging stays within it wherever its price ceiling bounds the bill."
         ),
     )
     max_cost_usd_origin: StoredCostCapOrigin | None = Field(
@@ -4397,6 +4722,49 @@ class EvalRun(CoreDocumentModel):
             "regrouped. None exactly when context_key is."
         ),
     )
+    measure_definitions: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The definition digest of each measure the host declared when this run was launched, measure key -> "
+            "digest (MeasureRegistry.definition_digests()): what each host measure on this run's results counted "
+            "when it was read. Stamped by the launch before the context key, which composes it "
+            "(ContextComponents.measure_definitions) when it is non-empty, and moved afterwards only by a host's "
+            "attestation (measure_attestation) or a re-measure (measure_remeasures). None = NOT RECORDED: stored "
+            "before runs recorded it, or assembled by its host without a launch. Where such a run's results hold a "
+            "host measure it pools with nothing, since nothing says which definition its values were read under; "
+            "where they hold none it pools as it always did. {} is a recording: the host declared no measure of "
+            "its own."
+        ),
+    )
+    measure_attestation: MeasureAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the definitions this run ran under, made after the run by "
+            "attest_measure_definitions on a run that recorded none. None = never attested: measure_definitions, "
+            "where set, is the launch's own record."
+        ),
+    )
+    measure_remeasures: list[MeasureRemeasure] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each re-measure of this run, oldest first (MeasureRemeasure). Empty for a run whose values are as its "
+            "cells wrote them. A run carrying one has its context identity derived at read, from "
+            "measure_definitions as the re-measure left them, never read off the key its launch stamped."
+        ),
+    )
+    served_model_attestation: ServedModelAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the model that answered this run's candidate calls whose responses named none, "
+            "made after the run by the runs_attest action. The rows are never rewritten: a reading that pools by "
+            "answering model reads the silent rows of the results it names through it, as attested, not recorded. "
+            "None = never attested: a row naming no model is unknown, which pools with nothing."
+        ),
+    )
 
     # Contestant identity's PRE-IMAGE, stamped at launch beside the context key's.
     variant_levers: dict[str, SweepableValue] | None = Field(
@@ -4479,12 +4847,16 @@ class EvalRun(CoreDocumentModel):
         description=(
             "The per-run ceilings that stopped this run between cells, one record per ceiling, each with the "
             "counters' numbers: the ceiling, what had landed when the stop was decided and once the cells in "
-            "flight finished, how many were running and how many never started. Both the cost cap and the "
-            "metered-call ceiling are read between cells against what has landed; neither refuses a call inside a "
-            "cell, so the cells running at the stop finish whole and the run may land past a ceiling by up to the "
-            "width's worth of cells. Both are recorded when both tripped at the same boundary. Written with the "
-            "``budget_stopped`` status. None on a run no ceiling stopped, including a run stopped by its wall-clock "
-            "budget (``budget_stop_reason``) and one whose writer predates the field."
+            "flight finished, how many were running, how many never started and how many ran but were not judged. "
+            "Both the cost cap and the metered-call ceiling are read between cells against what has landed; neither "
+            "refuses a candidate's call inside a cell, so the cells running at the stop finish and the run may land "
+            "past a ceiling by what they add. The cost cap also admits each cell's judging before it is paid for, "
+            "and stops the run at the first cell whose judging it sets aside. Both are recorded when both tripped at "
+            "the same boundary. Written with the "
+            "``budget_stopped`` status, and with ``exhausted`` when the cost cap set a running cell's judging aside "
+            "after the account's refusal or the unserved-model circuit had stopped the run, so the cells it left "
+            "unjudged are counted however the run stopped. None on a run no ceiling stopped, including a run stopped "
+            "by its wall-clock budget (``budget_stop_reason``) and one whose writer predates the field."
         ),
     )
     failed_because: StoredFailedBecause | None = Field(
@@ -4495,6 +4867,16 @@ class EvalRun(CoreDocumentModel):
             "sweep goes on past such an arm). Written once, by the job manager, with the ``failed`` status. None on "
             "every other run: one that did not fail, one that failed for any other reason, and one stored before "
             "the field existed."
+        ),
+    )
+    exhausted_because: StoredExhaustedBecause | None = Field(
+        default=None,
+        description=(
+            "Why the run stopped `exhausted`, beside its `error_details` entry: `account_refused` when the provider "
+            "refused the account paying for it, `model_unserved` when the provider does not serve the model its "
+            "candidate names (the entry names the model and quotes the provider). Written once, by the job manager, "
+            "with the `exhausted` status; cleared when the run is taken up again. None on every other run, and on an "
+            "exhausted run stored before the field existed, which only the account could stop."
         ),
     )
     error_details: list[str] = Field(
@@ -4567,7 +4949,6 @@ class EvalRun(CoreDocumentModel):
 
         :return: The promised cell count. Never zero — ``test_case_ids`` is ``min_length=1`` and
             ``k_runs`` is ``ge=1``.
-        :rtype: int
         """
         return len(self.test_case_ids) * self.k_runs
 
@@ -4712,13 +5093,13 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped under older rules may hold a ``proven`` its control
     earned under a rule since found wrong. It cannot be re-derived when read — the controls are editable
     and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
-    run graded — so it is read as ``unproven`` until the template is launched again.
+    run graded — so it is read as ``unproven`` until the template is launched again, or the run is taken up again:
+    a take-up goes ahead only while the template's measured content, its controls included, is as the run froze it,
+    re-proves the run's checks under the rules in force, and moves the run to them when they prove alike.
     ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
 
     :param run: The run.
-    :ptype run: EvalRun
     :return: The proofs as read, or None when the run recorded none.
-    :rtype: dict[str, GoalCheckProof] | None
     """
     if run.goal_check_proofs is None:
         return None
@@ -4731,9 +5112,7 @@ def stale_goal_check_proofs(run: EvalRun) -> list[str]:
     """The checks whose ``proven`` the run recorded under an older proof rule — read as unproven, needing re-proof.
 
     :param run: The run.
-    :ptype run: EvalRun
     :return: The checks, sorted; empty when the run's proofs are current or it recorded none.
-    :rtype: list[str]
     """
     if run.goal_check_proofs is None or (run.goal_check_proof_rules or 0) >= GOAL_CHECK_PROOF_RULES:
         return []
@@ -4747,9 +5126,7 @@ def refused_goal_checks(checks: Sequence[str]) -> dict[str, str]:
     grading it raises in every cell. Read at launch, so the run grades its cells without the check and names it.
 
     :param checks: The template's goal checks.
-    :ptype checks: Sequence[str]
     :return: Each refused check -> why; empty when the grammar reads every one.
-    :rtype: dict[str, str]
     """
     refused: dict[str, str] = {}
     for check in checks:
@@ -4923,7 +5300,6 @@ class AsyncExternalSpend(EvalDocumentModel, CoreShapeModel):
         so the two cannot disagree about what the work reported.
 
         :return: The same report as an :class:`~threetears.evals.schema.external_spend.ExternalSpend`.
-        :rtype: ExternalSpend
         """
         return ExternalSpend(
             provider=self.provider,
@@ -5006,6 +5382,19 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             "its own entry). Never set on a substituted delivery, which ran on no model."
         ),
     )
+    # Left out of the document when unset, so an entry naming none is stored as it was before the field existed.
+    served_provider: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the work's responses named as having served its calls (the provider a router "
+            "sent them to), as the work's client reported it; the host fills it, and it is folded into the "
+            "inner_agent role's `RoleUsage.served_provider`, a key of the row. None = not recorded: the responses named none (a direct provider names "
+            "none), named more than one (report each upstream's work as its own entry), or the entry was stored "
+            "before the field existed. Never set on a substituted delivery, which ran on no model."
+        ),
+    )
     acknowledged_turn: int | None = Field(
         default=None,
         ge=0,
@@ -5064,7 +5453,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
 
         :raises ValueError: An error without a failure or a failure without one; a delivery's own
             fields on an entry that delivered nothing; a delivery before its acknowledgement;
-            a substituted entry naming the model it supposedly ran on or reporting spend; or a
+            a substituted entry naming the model it supposedly ran on, the provider that served it, or reporting
+            spend; or a
             price source for a cost nobody reported.
         """
         defects: list[str] = []
@@ -5091,6 +5481,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             defects.append(f"a substituted delivery ran on no model, yet names {self.model!r}")
         if self.substituted and self.served_model is not None:
             defects.append(f"a substituted delivery was answered by no model, yet names {self.served_model!r}")
+        if self.substituted and self.served_provider is not None:
+            defects.append(f"a substituted delivery was served by no provider, yet names {self.served_provider!r}")
         if self.substituted and (spent := self.reported_spend):
             defects.append(f"a substituted delivery spent nothing, yet reports {', '.join(spent)}")
         if self.price_source is not None and self.cost_usd is None:
@@ -5190,13 +5582,15 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
     carries ``None`` reasoning — coercing it to 0 would fabricate an observation.
     A genuine zero (a non-reasoning model reporting 0 reasoning tokens) stays 0.
 
-    Rows are keyed by **(role, model, served model, price source)**, not role alone: a role that spent
-    tokens on more than one model — a run whose per-dim judge configs pin different
+    Rows are keyed by **(role, model, served model, served provider, price source)**, not role alone: a role that
+    spent tokens on more than one model — a run whose per-dim judge configs pin different
     models, say — contributes one row per model, because blending them would have
     to drop ``model`` and with it the ability to re-derive the dollars. Dollars priced
     two ways stay in two rows for the same reason, and so do calls one requested alias had
     answered by two different models: ``served_model`` is the evidence of which model produced
-    the numbers, and a blended row could name neither.
+    the numbers, and a blended row could name neither. Calls a router sent to two upstream providers are two rows
+    too (``served_provider``): one model's cost differs by who served it, so a row naming one provider never holds
+    another's calls.
 
     The ``external`` role (paid non-LLM APIs, e.g. web search) has no token
     concept at all: it reports ``call_count`` and — where the caller could count
@@ -5232,6 +5626,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
             "None = not recorded: the responses named no model. "
             "Never read the alias in `model` in its place."
+        ),
+    )
+    # Left out of the document when unset, so a row whose replies named no upstream is stored as it was before the
+    # field existed, and an older build reading one that names it keeps it unread.
+    served_provider: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The upstream provider the RESPONSE named as having served this row's token-metered calls (OpenRouter's "
+            "reply names the provider it routed to). None = not recorded: the replies named none, a direct "
+            "provider's never do, or the row was stored before the field existed; never a guess. A different field "
+            "from provider, which names who was called for an external contribution."
         ),
     )
     prompt_tokens: int | None = Field(default=None, ge=0)
@@ -5340,6 +5746,18 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "reason is counted there and not here. None = no reasons were counted."
         ),
     )
+    maybe_billed_sends: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Sends of this row's calls whose connection broke before any response began and that were sent again: "
+            "the provider may have served and billed each, and this row's `cost_usd` holds none of it, so the row's "
+            "dollars may undercount by that many calls. Beside `call_count` and never in it. Counted per row. None = "
+            "none counted: no send met such a drop, its client counts none, or the row was stored before the field "
+            "existed."
+        ),
+    )
 
     unpriced_reasons: list[str] | None = Field(
         default=None,
@@ -5357,7 +5775,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse reasons beside a known cost, an empty list, or an empty reason.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``unpriced_reasons`` is set beside a ``cost_usd``, is empty, or holds an empty reason.
         """
         if self.unpriced_reasons is None:
@@ -5372,16 +5789,21 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
 
     @property
     def answers_nothing(self) -> bool:
-        """Whether the row holds only unanswered calls: it counts no answered call, no token and no dollar, and counts
-        calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
+        """Whether the row holds only unanswered calls: it counts no answered call, no token, no dollar and no unit,
+        and counts calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
 
         Such a row is no spend at all, so it neither prices nor unprices a total (owner, 2026-10-27: unanswered calls
         add nothing to cost and never unprice it): :func:`~threetears.evals.kernel.usage_capture.blended_cost` and the
-        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census.
+        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census. It is no answer
+        either (#1238): every reader that reads a row as one skips it.
+
+        The one statement of the rule: a reading of the row (``UsageReading``) carries this value, never restates it.
         """
+        # The dollars first: the field every reader of a row reads, so a row that spent some is decided without
+        # reading a field its reader never otherwise reads (``test_result_reading_fields.py`` pins what each reads).
         return (
-            self.call_count is None
-            and self.cost_usd is None
+            self.cost_usd is None
+            and self.call_count is None
             and self.prompt_tokens is None
             and self.completion_tokens is None
             and self.reasoning_tokens is None
@@ -5394,7 +5816,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse reasons with no unanswered count beside them, a reason counting no call, or more reasons than calls.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``unanswered_reasons`` is set with neither count, counts a reason zero times or less, or
             accounts for more calls than ``unanswered_retried`` and ``unanswered_lost`` count.
         """
@@ -5425,9 +5846,7 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         value once, so a writer repeating one has counted calls where it was asked for values.
 
         :param sent: The values as written, or ``None`` (unverified).
-        :ptype sent: list[ClientRequestSettings] | None
         :return: The values in canonical order, or ``None``.
-        :rtype: list[ClientRequestSettings] | None
         :raises ValueError: ``sent`` is empty, or repeats a value.
         """
         if sent is None:
@@ -5444,7 +5863,6 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
         """Refuse an actor or a purpose on a row of any role but ``simulator``.
 
         :return: The row, unchanged.
-        :rtype: RoleUsage
         :raises ValueError: ``actor_id`` or ``purpose`` is set on a row whose role is not ``simulator``.
         """
         if (self.actor_id is not None or self.purpose is not None) and self.role != "simulator":
@@ -5526,6 +5944,12 @@ CellTermination = Literal[
     "apparatus_failed",
     "cancelled",
 ]
+
+#: What a row a run taken up again wrote over its cell's stored row had replaced (``EvalResult.written_over``): ``cut``
+#: where some attempt it replaces was cut while it ran (termination ``cancelled``), else ``unanswered`` (a call the
+#: account refused, or a model the provider did not serve), each a row that recorded no answer
+#: (:func:`~threetears.evals.kernel.result_condition.runs_again`).
+WrittenOver = Literal["cut", "unanswered"]
 
 
 class ConversationStopCause(StrEnum):
@@ -5634,6 +6058,854 @@ class JudgeEvidence(CoreShapeModel):
     """The candidate's output as the judge should read it: a document, or a conversation's
     transcript in whatever form the kind renders turns, tool calls and their results."""
 
+    inputs: VerbatimJsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
+    """What the three strings were rendered from, as structured values, where the kind renders them from inputs it
+    can name: the report writer's page names its stored document's digest, the content-derived snapshot id it was
+    written over and its open findings' digest. ``None`` (left out of the document) where the strings are the
+    input themselves, as a conversation's transcript is.
+
+    A recorded judge call over evidence that names its inputs is keyed by them instead of by its prompt
+    (:class:`~threetears.evals.testing.RecordedCompletions`), so a word the package prints differently on the page
+    moves no recording. These inputs, together with the package's own rendering code, must determine all three
+    strings: anything else that can change them belongs in ``inputs``, or a changed question replays a stale answer.
+    It is in no fingerprint: :func:`fingerprint_judged_output` hashes the three strings alone. Recording keys are over
+    the inputs (what was asked) and label keys over what was read, so a label does not carry across a re-render."""
+
+
+# =============================================================================
+# Claim evidence, grades and tallies — what claim grading stores (#1287)
+# =============================================================================
+#
+# Beside JudgeEvidence, never on it: a field there would enter every rubric label key (fingerprint_judged_output
+# hashes its whole dump) and ride along with every batch read of judge evidence. Each shape is frozen and keeps its
+# strings as written, as JudgeEvidence does: a quote is checked verbatim against what it quotes, so whitespace is part
+# of what was read. A segment is the extractor's own Segment (schema.claims), whose excerpts are slices of its text.
+
+#: The closed vocabularies of a claim's grade, each written inline on its field and listed closed in
+#: :mod:`~threetears.evals.schema.versioning`: a claim's ``scope`` (``world``, graded for truth, or ``session``, about
+#: the output or session itself), its ``verdict`` (``supported``, ``contradicted``, ``unverifiable``,
+#: ``true_ungrounded``), what decided it (``graded_against``: ``case`` or ``web``), who nominated it for the web check
+#: (``nominated_by``: only ``judge``, never the arm's pages), whether the web checked it (``web``: ``checked``,
+#: ``skipped_cap``, ``none``), what a web check found (``true``, ``false``, ``inconclusive``), a citation's ``stance``
+#: (``supports``, ``contradicts``) and a call's ``role`` (``extract``, ``truth``, ``ground``, ``repair``, ``web``).
+
+#: Why a cell lost a claim criterion's readings, which the cell keeps for every other reading: ``cut_short`` (a reply
+#: the provider cut off), ``unreadable`` (a reply that would not parse after its retries), ``repair_budget_spent``,
+#: ``provider_error`` (the judge's provider failed a call, or a completion broke the protocol),
+#: ``protocol_defect`` (a ground call's completion broke the protocol: the host's client is at fault, and only the
+#: ground step is lost, as :attr:`ClaimTally.ground_loss`, since a defect in any other step fails the run),
+#: ``documents_undeclared`` (a criterion naming ``grounded_in`` met a cell whose evidence declares no documents, None
+#: rather than empty: nothing says what the candidate was given, so only the ground step is lost, never asked, and
+#: truth stands),
+#: ``port_error`` (the web port failed), ``cost_cap`` (the run's cost cap set the criterion aside, or had too little
+#: left for its next call), ``hold_exceeded`` (a call would have spent past the ceiling the criterion was priced and
+#: held at: a reply outgrew what its price assumed, which is the pricing's miss, never the cap's), ``deadline`` (the
+#: cell's deadline struck inside it), ``evidence_over_cap`` (the claims payload would not fit
+#: :data:`CLAIM_TRACE_BYTES`) or ``trace_lost`` (the trace holding its grade could not be written). An open
+#: vocabulary: a reader counts every loss, a reason it does not know by name. One value is no loss:
+#: ``trace_pending`` (:data:`CLAIM_PENDING`), a row written before its trace whose trace write is not yet known to
+#: have landed; it reads as not yet known, never lost. Its grade is on the trace whenever the trace landed, so it is
+#: recovered without a call, when its run's holding ends, when the run is taken up and on a re-judge: its tally is
+#: recomputed from the stored grade, which records its ground step's loss (:attr:`ClaimGrade.ground_loss`), so a lost
+#: groundedness is never read as lost truth; and once the run's writes are done a pending criterion whose trace was
+#: never stored is lost (``trace_lost``).
+ClaimLoss = str
+
+#: A value of :data:`ClaimLoss` this build knows, as a type: what this build writes.
+KnownClaimLoss = Literal[
+    "cut_short",
+    "unreadable",
+    "repair_budget_spent",
+    "provider_error",
+    "protocol_defect",
+    "documents_undeclared",
+    "port_error",
+    "cost_cap",
+    "hold_exceeded",
+    "deadline",
+    "evidence_over_cap",
+    "trace_lost",
+    "trace_pending",
+]
+
+#: The one value of :data:`ClaimLoss` that is no loss: a criterion whose tally waits on its trace's write, which every
+#: reader takes as not yet known, never as a lost criterion.
+CLAIM_PENDING: Final = "trace_pending"
+
+#: The claim losses this build knows, in the order its readers list them.
+CLAIM_LOSSES: Final[tuple[str, ...]] = get_args(KnownClaimLoss)
+
+#: The type of a stored claim loss: one of :data:`CLAIM_LOSSES`, or, on a newer minor's stored read, one it added.
+StoredClaimLoss = Annotated[ClaimLoss, known_unless_newer_minor("claim loss", CLAIM_LOSSES)]
+
+#: The most characters a citation's or a web check's quote holds: one sentence or table row.
+CLAIM_QUOTE_CHARS: Final[int] = 300
+
+_CLAIM_RECORD = ConfigDict(extra="forbid", frozen=True)
+
+#: The most of a claim reader's defect a tally records (:attr:`ClaimTally.derived_unread`): enough to name the reader,
+#: the exception and its message; the full traceback is the operator's log line.
+CLAIM_READER_DEFECT_CHARS: Final = 500
+
+
+def _serialized_bytes(value: object) -> int:
+    """How many bytes ``value`` takes as UTF-8 JSON, as a store would hold it."""
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _not_blank(text: str, what: str) -> str:
+    """Refuse text that is empty or whitespace alone.
+
+    :raises ValueError: It is.
+    """
+    if not text.strip():
+        raise ValueError(f"{what} is blank")
+    return text
+
+
+class TextSpan(CoreShapeModel):
+    """A stretch of a text, by character offsets: from ``start`` up to ``end``, which is excluded."""
+
+    model_config = _CLAIM_RECORD
+
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _ends_after_it_starts(self) -> Self:
+        """:raises ValueError: ``end`` is not past ``start``."""
+        if self.end <= self.start:
+            raise ValueError(f"a span ends past where it starts, and this one runs {self.start} to {self.end}")
+        return self
+
+    def within(self, text: str, what: str) -> None:
+        """Refuse a span that runs past the end of ``text``.
+
+        :param text: The text it is a span of.
+        :param what: What it spans, for the refusal.
+        :raises ValueError: It runs past it.
+        """
+        if self.end > len(text):
+            raise ValueError(f"a span of {what} ends at {self.end}, past its {len(text)} characters")
+
+
+class EvidenceDocument(CoreShapeModel):
+    """One document a cell's claims may be checked against: case evidence, or one the candidate itself was given."""
+
+    model_config = _CLAIM_RECORD
+
+    id: str = Field(min_length=1, description="Its id, unique in the cell's evidence.")
+    provenance: EvidenceProvenance = Field(description="`case`, the same for every arm, or `run`, this cell's own.")
+    title: str = Field(min_length=1, description="Its title; a kind that truncated it says so here.")
+    url: str | None = Field(default=None, min_length=1, description="Where it was read, when it has an address.")
+    text: str = Field(min_length=1, description="Its text, as read; every quote of it is checked against this.")
+    overrides: tuple[str, ...] = Field(
+        default=(),
+        exclude_if=lambda ids: not ids,
+        description="The case documents this case document overrides, by id: where it and one of them bear on a claim "
+        "with opposite stances, its own stance decides (house rules over a rulebook, an erratum over its text, a "
+        "policy update over the old policy). Where it is silent, the other's stands. Precedence follows the chain: a "
+        "document overrides what the documents it overrides override. It never reaches the case key's facts, which "
+        "are no document: a key fact an overriding document contradicts reads supported with a conflict, so keep key "
+        "facts to the values in force. Empty (left out) for a document that overrides none, and always for a `run` "
+        "document.",
+    )
+
+    @field_validator("text", mode="after")
+    @classmethod
+    def _text_not_blank(cls, text: str) -> str:
+        return _not_blank(text, "an evidence document's text")
+
+    @model_validator(mode="after")
+    def _overrides_other_case_documents(self) -> Self:
+        """Refuse an override on a `run` document, of itself, of a blank id, or of one id twice.
+
+        :raises ValueError: One of those.
+        """
+        if not self.overrides:
+            return self
+        if self.provenance != "case":
+            raise ValueError(
+                f"evidence document {self.id!r} is a {self.provenance} document and overrides "
+                f"{', '.join(map(repr, self.overrides))}: only case evidence, the same for every arm, overrides"
+            )
+        if self.id in self.overrides:
+            raise ValueError(f"evidence document {self.id!r} overrides itself")
+        if any(not other.strip() for other in self.overrides):
+            raise ValueError(f"evidence document {self.id!r} overrides a blank id")
+        if twice := sorted({other for other in self.overrides if self.overrides.count(other) > 1}):
+            raise ValueError(f"evidence document {self.id!r} overrides {', '.join(map(repr, twice))} more than once")
+        return self
+
+
+def document_precedence(documents: Sequence[EvidenceDocument]) -> Mapping[str, frozenset[str]]:
+    """Which of ``documents`` each one overrides, by id, following the chain: a document overrides the ones it names
+    and every one they override in turn. A document that overrides none is not listed.
+
+    :param documents: A cell's evidence documents.
+    :return: Each overriding document's id, and the ids of every document it overrides.
+    :raises ValueError: An override names a document ``documents`` do not hold or a `run` document, or overrides run
+        in a cycle, which would leave no document's stance standing; each named.
+    """
+    by_id = {document.id: document for document in documents}
+    for document in documents:
+        if unknown := [other for other in document.overrides if other not in by_id]:
+            raise ValueError(
+                f"evidence document {document.id!r} overrides {', '.join(map(repr, unknown))}, which the cell's "
+                "evidence does not hold"
+            )
+        if fetched := [other for other in document.overrides if by_id[other].provenance != "case"]:
+            raise ValueError(
+                f"evidence document {document.id!r} overrides {', '.join(map(repr, fetched))}, a run document: only "
+                "case evidence, the same for every arm, is overridden"
+            )
+    below: dict[str, frozenset[str]] = {}
+
+    def overridden(at: str, path: tuple[str, ...]) -> frozenset[str]:
+        """Every document ``at`` overrides; ``path`` is the chain of documents walked down to it."""
+        if at in path:
+            cycle = [*path[path.index(at) :], at]
+            raise ValueError(f"evidence documents override in a cycle: {' -> '.join(map(repr, cycle))}")
+        if at not in below:
+            reached: set[str] = set()
+            for other in by_id[at].overrides:
+                reached |= {other, *overridden(other, (*path, at))}
+            below[at] = frozenset(reached)
+        return below[at]
+
+    return MappingProxyType({document.id: overridden(document.id, ()) for document in documents if document.overrides})
+
+
+class ClaimEvidence(CoreShapeModel):
+    """What a cell's claims are listed from and graded against, as its kind rendered it.
+
+    Stored on the cell's trace (:attr:`EvalTrace.claim_evidence`), beside its judge evidence and never in it, so no
+    rubric label key reads it. The case's key facts are not here: the engine reads them off the case.
+    """
+
+    model_config = _CLAIM_RECORD
+
+    segmentation: str = Field(
+        min_length=1,
+        description="The host's name for how it cut the output into segments and units; change it whenever the "
+        "cutting changes, since it sets every per-unit denominator.",
+    )
+    segments: tuple[Segment, ...] = Field(
+        description="The output, cut, in the order it reads. Empty: the candidate said nothing in an output that holds "
+        "other parties' lines (a candidate cut off, or given no turn), so the cell is graded with no call and carries "
+        "no claim reading, never a reading of 0 (`ClaimTally.silent`)."
+    )
+    documents: tuple[EvidenceDocument, ...] | None = Field(
+        default=None,
+        description="The documents claims may be checked against. Empty: the candidate was given or fetched none, "
+        f"which is recorded. None: not declared. At most CLAIM_DOCUMENT_BYTES ({CLAIM_DOCUMENT_BYTES}) serialized.",
+    )
+    session: VerbatimJsonObject | None = Field(
+        default=None,
+        description="The run's own record (a play order, a game state), host-shaped, for a host's reading of session "
+        "claims against it: stored as written, read by no prompt and by nothing in the engine.",
+    )
+
+    @model_validator(mode="after")
+    def _units_numbered_and_documents_capped(self) -> Self:
+        """Refuse units not numbered 0..n-1 with no gap (the extractor's own rule; a unit may span several segments),
+        two documents of one id, an override of a document it does not hold or of a `run` document, overrides that
+        run in a cycle, or documents over their share of the trace.
+
+        :raises ValueError: One of those.
+        """
+        units = sorted({segment.unit for segment in self.segments if segment.unit is not None})
+        if units != list(range(len(units))):
+            raise ValueError(
+                f"a cell's units are numbered 0..n-1 with no gap, each in at least one segment, and its segments carry "
+                f"the units {units}"
+            )
+        documents = self.documents or ()
+        ids = [document.id for document in documents]
+        if twice := sorted({doc_id for doc_id in ids if ids.count(doc_id) > 1}):
+            raise ValueError(f"evidence documents {', '.join(map(repr, twice))} each appear more than once")
+        document_precedence(documents)
+        held = _serialized_bytes([document.model_dump(mode="json") for document in documents])
+        if held > CLAIM_DOCUMENT_BYTES:
+            raise ValueError(
+                f"a cell's evidence documents take {held} bytes, and CLAIM_DOCUMENT_BYTES allows {CLAIM_DOCUMENT_BYTES}; "
+                "the kind truncates them to fit and says so in each title"
+            )
+        return self
+
+
+class ClaimCitation(CoreShapeModel):
+    """One piece of evidence a verify call cited for a claim: its ref in the grade's index, its stance, its quote."""
+
+    model_config = _CLAIM_RECORD
+
+    ref: str = Field(min_length=1, description="The evidence it cites, by its ref in the grade's index (`K1`, `S3`).")
+    stance: Literal["supports", "contradicts"]
+    quote: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CLAIM_QUOTE_CHARS,
+        description="The sentence or row quoted, verbatim in the cited text; None for a key fact, which is quoted "
+        "whole.",
+    )
+    subject_span: TextSpan | None = Field(default=None, description="Where the quote names the claim's subject.")
+    value_span: TextSpan | None = Field(default=None, description="Where the quote states the value at issue.")
+
+    @model_validator(mode="after")
+    def _spans_inside_the_quote(self) -> Self:
+        """:raises ValueError: A span is set with no quote, or runs past it."""
+        for name, span in (("subject_span", self.subject_span), ("value_span", self.value_span)):
+            if span is None:
+                continue
+            if self.quote is None:
+                raise ValueError(f"a citation's {name} is a span of its quote, and it quotes nothing")
+            span.within(self.quote, "a citation's quote")
+        return self
+
+
+class EvidenceRef(CoreShapeModel):
+    """One numbered piece of evidence a grade's calls were shown: a passage of a document, or a key fact."""
+
+    model_config = _CLAIM_RECORD
+
+    ref: str = Field(min_length=1, description="How the calls cited it (`K1` a key fact, `S1` a passage).")
+    provenance: EvidenceProvenance = Field(description="Where it came from; a key fact is `case`.")
+    document: str | None = Field(default=None, min_length=1, description="The passage's document, by id.")
+    span: TextSpan | None = Field(default=None, description="Where the passage sits in its document's text.")
+    entity: str | None = Field(default=None, min_length=1, description="The key entity a key fact is about.")
+    fact: ReferenceFact | None = Field(default=None, description="The key fact.")
+
+    @model_validator(mode="after")
+    def _a_passage_or_a_fact(self) -> Self:
+        """:raises ValueError: It is neither a passage (document and span) nor a key fact (entity and fact), or both,
+        or a key fact that is not case evidence."""
+        passage = self.document is not None and self.span is not None
+        fact = self.entity is not None and self.fact is not None
+        loose = (self.document is None) != (self.span is None) or (self.entity is None) != (self.fact is None)
+        if passage == fact or loose:
+            raise ValueError(f"evidence {self.ref!r} is a passage (document and span) or a key fact (entity and fact)")
+        if fact and self.provenance != "case":
+            raise ValueError(f"key fact {self.ref!r} is case evidence, and its provenance reads {self.provenance!r}")
+        return self
+
+
+class ClaimCall(CoreShapeModel):
+    """One call a criterion's grade made, as the judge's identity is recorded for a rubric score."""
+
+    model_config = _CLAIM_RECORD
+
+    role: Literal["extract", "truth", "ground", "repair", "web"] = Field(
+        description="What it was asked: list the claims, verify against case evidence, verify against the candidate's "
+        "own documents, ask a failing item again, or write a search or read its results."
+    )
+    served_model: str | None = Field(
+        default=None, description="The model the provider said answered; None when the response named none."
+    )
+    judge_temperature: JudgeTemperature | None = Field(default=None, description="The temperature it was sent at.")
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None, description="The request settings it was sent with; None when unverified."
+    )
+
+
+class GradedClaim(CoreShapeModel):
+    """One claim a criterion listed in a cell's output, with its tags and what grading it found."""
+
+    model_config = _CLAIM_RECORD
+
+    segment: int = Field(ge=0, description="The segment it was said in, by its place in the evidence's segments.")
+    unit: int | None = Field(ge=0, description="That segment's unit, or None for a segment of none.")
+    claim: str = Field(min_length=1, description="The proposition, stated on its own.")
+    excerpt: str = Field(min_length=1, description="The segment's own text at start..end that the claim stands in.")
+    start: int = Field(ge=0)
+    end: int = Field(ge=1)
+    scope: Literal["world", "session"] = Field(
+        description="`world`, graded for truth, or `session`, about the output itself."
+    )
+    specific: bool = Field(description="It states a detail a source could settle: a name, number, date or rule.")
+    hedged: bool = Field(description="The text marks it as its own uncertain recollection.")
+    attributed: bool = Field(
+        description="The text reports it without vouching for it: a rumour, another party's or a character's statement, "
+        "`some say`. A statement the text backs with a source (`the rules say`) is its own, and asserted."
+    )
+    restates: int | None = Field(
+        default=None, ge=0, description="The earlier claim of the same scope it says again, by its place; None."
+    )
+    truth_citations: tuple[ClaimCitation, ...] = ()
+    ground_citations: tuple[ClaimCitation, ...] = ()
+    suspect: bool = Field(default=False, description="No evidence covers it, and the judge doubts it.")
+    nominated_by: Literal["judge"] | None = Field(default=None, description="Who nominated it for the web check.")
+    verdict: Literal["supported", "contradicted", "unverifiable", "true_ungrounded"] | None = Field(
+        default=None, description="Its truth verdict; None for a session claim."
+    )
+    graded_against: Literal["case", "web"] | None = Field(
+        default=None, description="What decided the verdict; None for `unverifiable` and session claims."
+    )
+    grounded: bool | None = Field(
+        default=None,
+        description="Whether a document the candidate itself was given supports it; None where no criterion asked.",
+    )
+    evidence_conflict: bool = Field(
+        default=False,
+        description="Case evidence both supports and contradicts it, and no document's override settles which stands.",
+    )
+    web: Literal["checked", "skipped_cap", "lost", "none"] = Field(
+        default="none",
+        description="`checked` on the web; `skipped_cap`, nominated and not checked (past the cell's web budget, "
+        "refused by the cost cap, or cut by the cell's deadline); `lost`, nominated and left undecided by a web step "
+        "that failed (the grade's `web_loss`); or `none`. A restatement reads its original's.",
+    )
+    decided_by: int | None = Field(
+        default=None, ge=0, description="The call whose answer fixed the verdict, by its place in the grade's calls."
+    )
+
+    @model_validator(mode="after")
+    def _grade_reads_as_one(self) -> Self:
+        """Refuse a claim whose tags, verdict, evidence and web check contradict one another.
+
+        :raises ValueError: The excerpt's offsets are not its length; a session claim carries a truth or web grade; a
+            world claim has no verdict or no deciding call; the verdict and what decided it disagree; a web check
+            nobody nominated; or a ground citation that contradicts.
+        """
+        if self.end - self.start != len(self.excerpt) or self.end <= self.start:
+            raise ValueError(
+                f"claim {self.claim!r}: its excerpt runs {self.start} to {self.end} and holds {len(self.excerpt)} "
+                "characters"
+            )
+        # prose-canary: allow — `scope` here is the closed Literal world/session, not an insight's free-text scope
+        if self.scope == "session":
+            graded = (
+                self.truth_citations,
+                self.ground_citations,
+                self.suspect,
+                self.nominated_by,
+                self.verdict,
+                self.graded_against,
+                self.grounded is not None,
+                self.evidence_conflict,
+                self.web != "none",
+                self.decided_by is not None,
+            )
+            if any(graded):
+                raise ValueError(f"session claim {self.claim!r} is graded by no truth, ground or web step")
+            return self
+        if self.verdict is None or self.decided_by is None:
+            raise ValueError(f"world claim {self.claim!r} has a verdict and the call that decided it")
+        against = {"supported": {"case"}, "contradicted": {"case", "web"}, "true_ungrounded": {"web"}}
+        if self.graded_against not in against.get(self.verdict, {None}):
+            raise ValueError(
+                f"claim {self.claim!r} reads {self.verdict!r}, and graded_against reads {self.graded_against!r}"
+            )
+        if self.graded_against == "case" and not self.truth_citations:
+            raise ValueError(f"claim {self.claim!r} was decided by case evidence it cites none of")
+        if self.evidence_conflict and self.verdict != "supported":
+            raise ValueError(f"claim {self.claim!r}: case evidence in conflict reads supported, not {self.verdict!r}")
+        if (self.web != "none" or self.graded_against == "web") and self.nominated_by is None:
+            raise ValueError(f"claim {self.claim!r} went to the web check, and nobody nominated it")
+        if self.graded_against == "web" and self.web != "checked":
+            raise ValueError(f"claim {self.claim!r} was decided by the web, and its web check reads {self.web!r}")
+        if self.nominated_by is not None and not self.suspect:
+            raise ValueError(f"claim {self.claim!r} was nominated by the judge, which did not suspect it")
+        if any(citation.stance != "supports" for citation in self.ground_citations):
+            raise ValueError(f"claim {self.claim!r}: a ground citation only supports")
+        if self.grounded and not self.ground_citations:
+            raise ValueError(f"claim {self.claim!r} reads grounded, and cites no document that supports it")
+        return self
+
+
+class WebWindow(CoreShapeModel):
+    """One window of a page a web check read, stored so a repeat re-reads it and never searches again."""
+
+    model_config = _CLAIM_RECORD
+
+    url: str = Field(min_length=1)
+    title: str = ""
+    text: str = Field(min_length=1, description="The window, as read.")
+    snippet_only: bool = Field(default=False, description="Only the search result's snippet was read, not the page.")
+
+
+class WebCheckRecord(CoreShapeModel):
+    """What one claim's web check searched, read and found."""
+
+    model_config = _CLAIM_RECORD
+
+    claim: int = Field(ge=0, description="The claim checked, by its place in the grade's claims.")
+    queries: tuple[str, ...] = Field(min_length=1, description="The searches written for it, in order.")
+    urls: tuple[str, ...] = Field(default=(), description="Every result the searches returned, in order.")
+    windows: tuple[WebWindow, ...] = Field(default=(), description="The windows read.")
+    outcome: Literal["true", "false", "inconclusive"]
+    deciding_url: str | None = Field(default=None, min_length=1, description="The page whose quote decided it.")
+    quote: str | None = Field(default=None, min_length=1, max_length=CLAIM_QUOTE_CHARS)
+    subject_span: TextSpan | None = None
+    value_span: TextSpan | None = None
+
+    @model_validator(mode="after")
+    def _decided_by_a_quote_it_read(self) -> Self:
+        """Refuse a decisive check without a quote from a window it read, or an inconclusive one that names one.
+
+        :raises ValueError: One of those, or a span past its quote.
+        """
+        decided = (self.deciding_url, self.quote, self.value_span)
+        if self.outcome == "inconclusive":
+            if any(part is not None for part in (*decided, self.subject_span)):
+                raise ValueError(f"an inconclusive web check of claim {self.claim} names no deciding page or quote")
+            return self
+        if any(part is None for part in decided):
+            raise ValueError(
+                f"a web check of claim {self.claim} that reads {self.outcome!r} names its deciding url, its quote and "
+                "the quote's value span"
+            )
+        if self.deciding_url not in {window.url for window in self.windows}:
+            raise ValueError(f"web check of claim {self.claim}: its deciding url is no window it read")
+        for span in (self.subject_span, self.value_span):
+            if span is not None and self.quote is not None:
+                span.within(self.quote, "a web check's quote")
+        return self
+
+
+#: A web check's outcome, and the verdict and decider it gives the claim it checked.
+_WEB_VERDICTS: Final[Mapping[str, tuple[str, str | None]]] = MappingProxyType(
+    {"true": ("true_ungrounded", "web"), "false": ("contradicted", "web"), "inconclusive": ("unverifiable", None)}
+)
+
+
+class ClaimGrade(CoreShapeModel):
+    """What one claim criterion found in one cell: every call it made, the evidence it numbered, every claim it
+    listed and graded, and every web check, stored on the cell's trace (:attr:`EvalTrace.claim_grades`)."""
+
+    model_config = _CLAIM_RECORD
+
+    criterion_fingerprint: str = Field(pattern=_SHA256_HEX, description="The criterion's definition it graded under.")
+    claim_evidence_digest: str = Field(pattern=_SHA256_HEX, description="The claim evidence it graded, by digest.")
+    calls: tuple[ClaimCall, ...] = Field(
+        description="Every call it made, in order. None for a cell whose candidate said nothing (claim evidence with no "
+        "segment), which lists no claim."
+    )
+    evidence: tuple[EvidenceRef, ...] = Field(default=(), description="The evidence its calls were shown, numbered.")
+    documents_truncated: tuple[str, ...] = Field(
+        default=(), description="The documents its page budget did not read whole, by id."
+    )
+    claims: tuple[GradedClaim, ...] = Field(default=(), description="Every claim it listed, in the order said.")
+    web: tuple[WebCheckRecord, ...] = Field(
+        default=(),
+        description="Every web check, in claim order: one per claim checked that restates nothing, which every "
+        "restatement of it shares.",
+    )
+    ground_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why its ground step was lost alone (CLAIM_LOSSES), as its tally records it: no claim is grounded, "
+        "and every truth verdict stands. So the tally is recomputed from the grade alone, and a lost groundedness "
+        "never reads as lost truth. None (left out) when the step was not lost, or not asked.",
+    )
+    web_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the web step failed (CLAIM_LOSSES), which costs the cell only the web's decisions: the claims "
+        "it had not decided read `lost` and unverifiable, never false, and every verdict case evidence or an earlier "
+        "web check decided stands. None (left out) when it did not fail, or was not asked.",
+    )
+    web_replayed: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its web checks read results a recording served, never a live search: a check that needs a live "
+        "search over this grade is not available (replayed). Left out while False.",
+    )
+
+    @model_validator(mode="after")
+    def _references_resolve(self) -> Self:
+        """Refuse a grade whose claims, citations and checks point at what it does not hold, or disagree with it.
+
+        A restatement takes its original's web check: it reads the web state its original reads, and a checked one
+        shares its original's record, so the grade holds one record per check made.
+
+        :raises ValueError: Two refs alike; a citation of no ref; a deciding call it did not make; a restatement of no
+            earlier claim of its scope, or one whose web state is not its original's; a web check of no claim, of one
+            twice, of a restatement, or for a claim not checked; a claim's verdict that is not the one its web check
+            gives; a claim grounded where the ground step was lost; or a grade that made no call and holds anything
+            but its identity (a silent cell's grade lists no claim, numbers no evidence and loses no step).
+        """
+        if not self.calls and (
+            self.claims
+            or self.evidence
+            or self.documents_truncated
+            or self.web
+            or self.ground_loss is not None
+            or self.web_loss is not None
+            or self.web_replayed
+        ):
+            raise ValueError(
+                "a claim grade that made no call is a silent cell's: it lists no claim, numbers no evidence, checks "
+                "nothing on the web and loses no step"
+            )
+        if self.ground_loss is not None and any(claim.grounded for claim in self.claims):
+            raise ValueError(
+                f"a claim grade grounds a claim, and its ground step was lost ({self.ground_loss!r}), which grounds none"
+            )
+        refs = [entry.ref for entry in self.evidence]
+        if twice := sorted({ref for ref in refs if refs.count(ref) > 1}):
+            raise ValueError(f"a claim grade numbers {', '.join(map(repr, twice))} more than once")
+        for place, claim in enumerate(self.claims):
+            if stray := sorted(
+                {c.ref for c in (*claim.truth_citations, *claim.ground_citations) if c.ref not in set(refs)}
+            ):
+                raise ValueError(
+                    f"claim {place} cites {', '.join(map(repr, stray))}, which the grade numbers no evidence"
+                )
+            if claim.decided_by is not None and claim.decided_by >= len(self.calls):
+                raise ValueError(
+                    f"claim {place} was decided by call {claim.decided_by}, and the grade made {len(self.calls)}"
+                )
+            if claim.restates is not None and not (
+                claim.restates < place and self.claims[claim.restates].scope == claim.scope
+            ):
+                raise ValueError(
+                    f"claim {place} restates claim {claim.restates}, which is no earlier claim of its scope"
+                )
+        lost = [place for place, claim in enumerate(self.claims) if claim.web == "lost"]
+        if bool(lost) != (self.web_loss is not None):
+            raise ValueError(
+                f"the grade's web step reads lost ({self.web_loss!r}) and claims {lost} read web 'lost': a failed web "
+                "step leaves at least one claim lost, and only a failed one does"
+            )
+        for place, claim in enumerate(self.claims):
+            if claim.restates is not None and claim.web != self.claims[claim.restates].web:
+                raise ValueError(
+                    f"claim {place} restates claim {claim.restates}, and reads web {claim.web!r} where its original "
+                    f"reads {self.claims[claim.restates].web!r}: a restatement takes its original's web check"
+                )
+        checked = [record.claim for record in self.web]
+        if misplaced := sorted({place for place in checked if place >= len(self.claims) or checked.count(place) > 1}):
+            raise ValueError(f"the grade's web checks name claims {misplaced} more than once, or that it does not hold")
+        wanted = {place for place, claim in enumerate(self.claims) if claim.web == "checked" and claim.restates is None}
+        if set(checked) != wanted:
+            raise ValueError(
+                f"the grade checked claims {sorted(checked)} on the web, and its claims read checked {sorted(wanted)}, "
+                "each restatement sharing its original's check"
+            )
+        for record in self.web:
+            sharing = [record.claim] + [
+                place for place, claim in enumerate(self.claims) if claim.restates == record.claim
+            ]
+            for place in sharing:
+                claim = self.claims[place]
+                if (claim.verdict, claim.graded_against) != _WEB_VERDICTS[record.outcome]:
+                    raise ValueError(
+                        f"claim {place}'s web check found {record.outcome!r}, and the claim reads {claim.verdict!r} "
+                        f"against {claim.graded_against!r}"
+                    )
+        return self
+
+
+class ClaimJudgeCounts(CoreShapeModel):
+    """One judge's share of a cell's world claims under one criterion: the verdicts the calls of one key decided."""
+
+    model_config = _CLAIM_RECORD
+
+    served_model: str | None = Field(description="The model that served the deciding calls; None when unnamed.")
+    judge_temperature: JudgeTemperature | None = Field(description="The temperature they were sent at.")
+    judge_sent_settings: ClientRequestSettings | None = Field(description="The settings they were sent with.")
+    claims: int = Field(ge=1, description="World claims whose verdict a call of this key decided.")
+    asserted: int = Field(ge=0, description="Of them, those neither hedged nor attributed.")
+    hedged: int = Field(ge=0, description="Of them, those the text marks as its own uncertain recollection.")
+    attributed: int = Field(ge=0, description="Of them, those the text reports without vouching for them.")
+    asserted_specific: int = Field(ge=0)
+    contradicted: int = Field(ge=0, description="Of them, those contradicted, whatever their tags.")
+    asserted_contradicted: int = Field(ge=0)
+    hedged_contradicted: int = Field(ge=0)
+    attributed_contradicted: int = Field(ge=0)
+    grounded_specific: int = Field(ge=0, description="Asserted specific claims a grounded_in document supports.")
+    unverifiable: int = Field(ge=0)
+    true_ungrounded: int = Field(ge=0)
+    web_decided: int = Field(ge=0, description="Asserted claims whose verdict the web decided.")
+    evidence_conflicts: int = Field(ge=0)
+    web_checked: int = Field(ge=0)
+    web_skipped: int = Field(
+        ge=0,
+        description="Claims nominated and not checked on the web: past the cell's budget, refused by the cost cap, or "
+        "cut by the cell's deadline.",
+    )
+
+    @model_validator(mode="after")
+    def _counts_nest(self) -> Self:
+        """Refuse counts no set of claims could give.
+
+        A claim not asserted is hedged, attributed or both, so hedged and attributed together cover those claims and
+        neither exceeds them; a contradiction among them is counted under each tag it carries, so the contradicted
+        claims are the asserted ones and at least as many as either tag's, and at most both tags' together.
+
+        :raises ValueError: A count exceeds the claims it is a part of, or the tags and contradictions disagree.
+        """
+        unasserted = self.claims - self.asserted
+        unasserted_contradicted = self.contradicted - self.asserted_contradicted
+        supported = self.claims - self.contradicted - self.unverifiable - self.true_ungrounded
+        parts = (
+            ("asserted", self.asserted, self.claims),
+            ("hedged", self.hedged, unasserted),
+            ("attributed", self.attributed, unasserted),
+            ("claims - asserted", unasserted, self.hedged + self.attributed),
+            ("asserted_specific", self.asserted_specific, self.asserted),
+            ("asserted_contradicted", self.asserted_contradicted, min(self.asserted, self.contradicted)),
+            ("contradicted - asserted_contradicted", unasserted_contradicted, unasserted),
+            ("hedged_contradicted", self.hedged_contradicted, min(self.hedged, unasserted_contradicted)),
+            ("attributed_contradicted", self.attributed_contradicted, min(self.attributed, unasserted_contradicted)),
+            (
+                "contradicted - asserted_contradicted",
+                unasserted_contradicted,
+                self.hedged_contradicted + self.attributed_contradicted,
+            ),
+            ("grounded_specific", self.grounded_specific, self.asserted_specific),
+            ("contradicted + unverifiable + true_ungrounded", self.claims - supported, self.claims),
+            ("evidence_conflicts", self.evidence_conflicts, supported),
+            ("web_checked + web_skipped", self.web_checked + self.web_skipped, self.claims),
+            ("true_ungrounded", self.true_ungrounded, self.web_checked),
+            ("web_decided", self.web_decided, min(self.asserted, self.web_checked)),
+        )
+        if over := sorted({name for name, part, whole in parts if part > whole}):
+            raise ValueError(f"a claim tally's counts do not nest: {', '.join(over)}")
+        return self
+
+
+class ClaimTally(CoreShapeModel):
+    """A cell's counts under one claim criterion, derived from its grade, on the result
+    (:attr:`EvalResult.claim_tallies`) so every reading is computed without reading the trace."""
+
+    model_config = _CLAIM_RECORD
+
+    criterion_fingerprint: str = Field(pattern=_SHA256_HEX, description="The criterion's definition it counts under.")
+    documents_declared: bool = Field(description="The cell's evidence declared its documents (none, or some).")
+    units: int = Field(
+        ge=0, description="The cell's distinct units, the per-unit readings' denominator, never segments."
+    )
+    units_with_false: int = Field(
+        ge=0,
+        description="Distinct units holding at least one asserted contradicted world claim, in any of its segments.",
+    )
+    session_claims: int = Field(ge=0, description="Claims about the output itself, graded by no truth step.")
+    by_judge: tuple[ClaimJudgeCounts, ...] = Field(
+        default=(), description="The world claims' counts, one entry per judge key whose calls decided a verdict."
+    )
+    silent: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="The candidate said nothing in the cell (its claim evidence holds no segment): graded with no "
+        "call, it counts no unit and no claim, and carries no claim reading at all, so it is in no reading's "
+        "population and never reads as 0 false claims; it is no loss, and each arm counts it apart. Its absence may "
+        "track arm, so arms silent on shares of cells that differ beyond chance have the readings withheld, as uneven "
+        "losses do. False (left out) for a cell with something said.",
+    )
+    grounded: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Whether the criterion asks groundedness (declares grounded_in), which alone gives the cell a "
+        "grounded share: what lets every reading be computed from the tally, with no template in hand. False (left "
+        "out) for a criterion with no groundedness reading.",
+    )
+    ground_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the cell lost its ground step alone (CLAIM_LOSSES), which costs it the groundedness reading "
+        "and no other: its truth counts stand, and it counts no grounded claim. None (left out) when the step was not "
+        "lost, or not asked.",
+    )
+    web_loss: StoredClaimLoss | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the cell's web step failed (CLAIM_LOSSES), its grade's `web_loss`, which costs it only the "
+        "web's decisions: the claims the web had not decided count unverifiable, never false, and every other count "
+        "stands. None (left out) when the step did not fail, or was not asked.",
+    )
+    web_replayed: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Its grade's `web_replayed`: the cell's web checks read results a recording served, never a live "
+        "search, so a page says its web verdicts are a recording's. Left out while False.",
+    )
+    derived: dict[str, float] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="The host's readings of the cell's grade under this criterion (each measure declaring "
+        "`derived_from` this criterion), by name, as its claim reader answered them when the tally was made: a "
+        "boolean reading as 1 or 0. A reading the reader left out is one the cell does not carry. Empty (left out) "
+        "for a criterion no measure derives from.",
+    )
+
+    derived_unread: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CLAIM_READER_DEFECT_CHARS,
+        exclude_if=lambda value: value is None,
+        description="Why the host's claim reader could not read this cell (it raised, or answered what its measures "
+        "cannot hold), as recorded when the tally was made: the cell's counts stand, it carries none of the readings "
+        "derived from the criterion, and a re-measure with a fixed reader reads them from the stored grade. None (left "
+        f"out) when the reader read it, or none is registered. At most CLAIM_READER_DEFECT_CHARS "
+        f"({CLAIM_READER_DEFECT_CHARS}) characters.",
+    )
+
+    @field_validator("derived", mode="after")
+    @classmethod
+    def _derived_readings_are_finite(cls, derived: dict[str, float]) -> dict[str, float]:
+        """:raises ValueError: A derived reading is not a finite number, or is named by a blank name."""
+        if bad := sorted(name for name, value in derived.items() if not name.strip() or not math.isfinite(value)):
+            raise ValueError(f"a tally's derived readings are finite numbers under a name, and {bad} are not")
+        return derived
+
+    @model_validator(mode="after")
+    def _one_entry_per_judge(self) -> Self:
+        """Refuse counts the cell's claims could not give.
+
+        :raises ValueError: More units with a false claim than units, or than asserted contradicted claims (a unit
+            holds a false claim only by holding one); derived readings beside a reader's defect; a grounded claim where no documents were declared, where the
+            ground step was lost, or where the criterion asks no groundedness; a lost ground step where it asks none;
+            a ground step lost to undeclared documents where documents were declared; a silent cell counting a unit,
+            a claim, a loss or a derived reading; or two entries for one judge.
+        """
+        if self.silent and (
+            self.units
+            or self.session_claims
+            or self.by_judge
+            or self.ground_loss is not None
+            or self.web_loss is not None
+            or self.derived
+            or self.derived_unread is not None
+        ):
+            raise ValueError(
+                "a silent cell's tally counts no unit and no claim, loses no step and carries no derived reading"
+            )
+        if self.ground_loss == "documents_undeclared" and self.documents_declared:
+            raise ValueError("a tally lost its ground step to undeclared documents, and the cell declared them")
+        if self.units_with_false > self.units:
+            raise ValueError(f"a tally counts {self.units_with_false} units with a false claim, of {self.units} units")
+        if self.derived_unread is not None and self.derived:
+            raise ValueError("a tally whose claim reader could not read the cell carries none of its readings")
+        false = sum(entry.asserted_contradicted for entry in self.by_judge)
+        if self.units_with_false > false:
+            raise ValueError(
+                f"a tally counts {self.units_with_false} units with a false claim, and {false} asserted contradicted "
+                "claims: each such unit holds one"
+            )
+        if not self.documents_declared and any(entry.grounded_specific for entry in self.by_judge):
+            raise ValueError("a tally counts grounded claims, and the cell declared no documents to ground them")
+        if not self.grounded and (self.ground_loss is not None or any(e.grounded_specific for e in self.by_judge)):
+            raise ValueError(
+                "a tally of a criterion that asks no groundedness counts grounded claims or a lost ground step"
+            )
+        if self.ground_loss is not None and any(entry.grounded_specific for entry in self.by_judge):
+            raise ValueError(
+                f"a tally counts grounded claims, and the cell lost its ground step ({self.ground_loss!r}), which "
+                "grounds none"
+            )
+        keys = [
+            (
+                entry.served_model,
+                entry.judge_temperature,
+                None if entry.judge_sent_settings is None else request_settings_order(entry.judge_sent_settings),
+            )
+            for entry in self.by_judge
+        ]
+        if len(set(keys)) != len(keys):
+            raise ValueError("a tally holds two entries for one judge; one entry per judge key")
+        return self
+
 
 def eval_trace_doc_id(result_id: str) -> str:
     """Doc id for a result's :class:`EvalTrace` sibling.
@@ -5713,6 +6985,12 @@ class EvalTrace(CoreDocumentModel):
     #: ``None`` when nothing was read: a host with no world, a kind that never seeded through its world
     #: session, or a cell cut off before its end state was read.
     end_state: VerbatimJsonObject | None = None
+    #: What the cell's claims are listed from and graded against, as its kind rendered it (#1287): beside
+    #: ``judge_evidence``, never in it, and independent of it, so a cell of a kind whose declaration is unjudged may
+    #: carry it, and is claim-graded all the same. ``None`` (left out of the document) for a cell with none.
+    claim_evidence: ClaimEvidence | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: Each claim criterion's grade of this cell, by the criterion's name. Empty (left out) for a cell none graded.
+    claim_grades: dict[DimName, ClaimGrade] = Field(default_factory=dict, exclude_if=lambda grades: not grades)
 
     @model_validator(mode="after")
     def _evidence_and_its_declaration_travel_together(self) -> Self:
@@ -5720,13 +6998,66 @@ class EvalTrace(CoreDocumentModel):
 
         A re-judge reads both: evidence alone cannot say whether the transcript and outcome axes
         apply, and a declaration alone has nothing to send. An unjudged declaration has no
-        evidence by definition, so it is never stored.
+        evidence by definition, so it is never stored. Claim evidence is no part of the pair.
         """
         if (self.judge_evidence is None) != (self.judged_artifact is None):
             raise ValueError("judge_evidence and judged_artifact are stored together or not at all")
         if self.judged_artifact is JudgedArtifact.UNJUDGED:
             raise ValueError("an unjudged kind renders no judge evidence, so none is stored for it")
         return self
+
+    @model_validator(mode="after")
+    def _claim_grades_read_their_evidence(self) -> Self:
+        """Refuse a claim grade with no claim evidence to have graded, a claim that is no slice of its segment, or a
+        claims payload over :data:`CLAIM_TRACE_BYTES`.
+
+        :raises ValueError: One of those.
+        """
+        if self.claim_grades and self.claim_evidence is None:
+            raise ValueError("a trace holds claim grades only beside the claim evidence they graded")
+        segments = self.claim_evidence.segments if self.claim_evidence is not None else ()
+        for criterion, grade in self.claim_grades.items():
+            for place, claim in enumerate(grade.claims):
+                if claim.segment >= len(segments):
+                    raise ValueError(f"{criterion} claim {place} names segment {claim.segment}, of {len(segments)}")
+                segment = segments[claim.segment]
+                if claim.unit != segment.unit:
+                    raise ValueError(
+                        f"{criterion} claim {place} reads unit {claim.unit}, and its segment is in unit {segment.unit}"
+                    )
+                if segment.text[claim.start : claim.end] != claim.excerpt:
+                    raise ValueError(f"{criterion} claim {place}'s excerpt is not its segment's text at its offsets")
+        if self.claim_evidence is not None or self.claim_grades:
+            held = _serialized_bytes(
+                self.model_dump(mode="json", include={"claim_evidence", "claim_grades"}, exclude_none=False)
+            )
+            if held > CLAIM_TRACE_BYTES:
+                raise ValueError(
+                    f"a trace's claim evidence and grades take {held} bytes, and CLAIM_TRACE_BYTES allows "
+                    f"{CLAIM_TRACE_BYTES}"
+                )
+        return self
+
+
+class MeasureReread(EvalDocumentModel, CoreShapeModel):
+    """One re-read of a result's host measures under another definition, recorded on the result it changed.
+
+    Written by a re-measure of the result's run (``threetears.evals.run.remeasure_run``). It keeps what the cell
+    wrote, so a re-read result is never indistinguishable from one whose cell wrote the value it holds.
+    """
+
+    reread_at: str = Field(default_factory=utc_now_iso)
+    definitions: dict[str, str] = Field(
+        min_length=1,
+        description="measure key -> the definition digest its value was read again under, for each measure re-read.",
+    )
+    was: dict[str, bool | float | str] = Field(
+        default_factory=dict,
+        description=(
+            "measure key -> the value the result held before, for each re-read measure it held one of. A measure "
+            "absent here and present in host_measures was first read by this re-read."
+        ),
+    )
 
 
 class JudgeRescore(EvalDocumentModel, CoreShapeModel):
@@ -5779,6 +7110,79 @@ class JudgeRescore(EvalDocumentModel, CoreShapeModel):
             "went unpriced: unknown, never zero."
         ),
     )
+
+
+class ClaimRescore(EvalDocumentModel, CoreShapeModel):
+    """One re-judge of a result's lost claim criteria, recorded on the result it changed.
+
+    A criterion lost after its cell's trial finished (a reply cut short, the provider failing a call, the cap, a
+    deadline) is graded again whole from the claim evidence the cell's trace stores, by the same judge under the same
+    criterion fingerprint. A completed grade whose web step was lost alone (its ``web_loss``) has that step finished
+    instead, and nothing else: its truth and ground steps stand as stored, and the checks it made are never searched
+    again (``web_steps``). This entry keeps either visible: without it a re-graded criterion is indistinguishable from
+    one graded in a single pass. A pending criterion settled from its stored grade with no call completes the cell's
+    own write and records none.
+
+    **Its spend is recorded here and nowhere else**, as a :class:`JudgeRescore`'s is: ``EvalResult.cost_usd`` and
+    ``usage`` measure the cell as it ran.
+    """
+
+    rejudged_at: str = Field(default_factory=utc_now_iso)
+    criteria: list[DimName] = Field(
+        min_length=1,
+        description="The criteria graded again, in the template's order: each lost one whole, and each in `web_steps` "
+        "its web step alone.",
+    )
+    prior: dict[DimName, StoredClaimLoss] = Field(
+        description="criterion -> what the result held for it before this re-judge, verbatim: its claim_failures "
+        "entry, or for one in `web_steps` its tally's web_loss."
+    )
+    lost: dict[DimName, StoredClaimLoss] = Field(
+        default_factory=dict,
+        description="criterion -> why a criterion graded again was lost again (CLAIM_LOSSES): the criterion, or for "
+        "one in `web_steps` its web step again, its truth standing.",
+    )
+    web_steps: list[DimName] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The criteria of `criteria` whose completed grade had its lost web step finished, and nothing "
+        "else: their truth and ground steps stand as stored. Left out while empty.",
+    )
+    skipped: dict[DimName, StoredClaimLoss] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+        description="criterion -> the loss it was left as stored with, not graded again: a criterion or web step lost "
+        "to the trace's cap (evidence_over_cap), whose evidence a re-judge reads unchanged, so the grade would outgrow "
+        "the trace again. Left out while empty.",
+    )
+    judge_model: str = Field(min_length=1, description="The run's judge pin, which every claims call was sent on.")
+    usage: list[RoleUsage] = Field(default_factory=list, description="The re-judge's own judge-role usage rows.")
+    cost_usd: float | None = Field(
+        ge=0.0,
+        description=(
+            "What the re-judge cost. Not part of ``EvalResult.cost_usd``. None when any of its calls went unpriced: "
+            "unknown, never zero."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _one_account_per_criterion(self) -> Self:
+        """Refuse a re-judge whose criteria do not add up.
+
+        :raises ValueError: ``prior`` names other criteria than it graded again, a criterion is lost again, or had
+            its web step finished, that was not graded again, or one is both graded again and skipped.
+        """
+        if set(self.prior) != set(self.criteria):
+            raise ValueError("a claim re-judge's prior losses name exactly the criteria it graded again")
+        if stray := sorted(set(self.lost) - set(self.criteria)):
+            raise ValueError(f"claim criteria {', '.join(map(repr, stray))} are lost again, and were not graded again")
+        if stray := sorted(set(self.web_steps) - set(self.criteria)):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, stray))} had their web step finished, and were not graded again"
+            )
+        if both := sorted(set(self.skipped) & set(self.criteria)):
+            raise ValueError(f"claim criteria {', '.join(map(repr, both))} are both graded again and skipped")
+        return self
 
 
 class RepeatedScore(EvalDocumentModel, CoreShapeModel):
@@ -5876,6 +7280,16 @@ class JudgeRepeat(EvalDocumentModel, CoreShapeModel):
         description=(
             "dim -> the versioned JudgeConfig that answered the repeat, or a ``builtin:`` id = the built-in prompt, by "
             "its wording, for every dim the repeat asked."
+        ),
+    )
+    sample: SampleKind | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the result was chosen for the repeat: ``random`` = asked of every result of the run, in an order the "
+            "engine drew, so the results repeated before any stop are a random draw from the run's; ``selected`` = "
+            "named by id. None = a repeat stored before this was recorded. Only a random draw stands for an arm's "
+            "results, so only it is read into the arm's re-score noise."
         ),
     )
 
@@ -6039,7 +7453,7 @@ StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "e
 #: early for a cause the provider did not name (``truncated``). A cut-off reply with either is excluded as
 #: ``truncated`` (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`); a filtered or errored one stays
 #: a fault of the rig.
-OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
+_OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
 
 
 class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
@@ -6085,8 +7499,8 @@ class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
 
     @property
     def out_of_room(self) -> bool:
-        """Whether the reply ran out of room (:data:`OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
-        return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
+        """Whether the reply ran out of room (:data:`_OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
+        return self.stop_reason in _OUT_OF_ROOM_STOP_REASONS
 
 
 #: The namespace every cell's result id is derived in (:func:`cell_result_id`). Fixed for good: moving it would give
@@ -6104,15 +7518,10 @@ def cell_result_id(run_id: str, test_case_id: str, model: str, k_iteration: int)
     Readers order a run's results by when they were stored, never by id, so an id carries no order.
 
     :param run_id: The run.
-    :ptype run_id: str
     :param test_case_id: The cell's case.
-    :ptype test_case_id: str
     :param model: The cell's candidate model.
-    :ptype model: str
     :param k_iteration: Which repetition, from 1.
-    :ptype k_iteration: int
     :return: The id, as a uuid string.
-    :rtype: str
     """
     name = json.dumps([run_id, test_case_id, model, k_iteration], separators=(",", ":"))
     return str(uuid.uuid5(CELL_RESULT_ID_NAMESPACE, name))
@@ -6185,6 +7594,37 @@ class EvalResult(CoreDocumentModel):
             "refused), which ends the run exhausted. The cell is excluded as an apparatus fault, and a run taken up "
             "again once the account is topped up runs it again, written over this row. False on a row stored before "
             "the field existed."
+        ),
+    )
+    model_unserved: bool = Field(
+        default=False,
+        description=(
+            "Whether the provider answered this cell's candidate call that it does not serve the model the call named "
+            "(retired, or a model id it does not know). The trial is lost to the test setup, never judged, and its "
+            "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
+            "again once the model is served runs this cell again, written over this row. False on a row stored "
+            "before the field existed."
+        ),
+    )
+    written_over: WrittenOver | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What this row was written over: a row of its cell that recorded no answer (cut while it ran, its call "
+            "refused for the account, or its model not served), which a run taken up again runs again under the same "
+            "row. `cut` where some attempt it replaces was cut while it ran, else `unanswered`. A cell cut and taken "
+            "up again keeps no row of its cut, so this is how many cells ran again is still counted "
+            "(`redrawn_cells`). None on a row written over nothing, and on one stored before the field existed."
+        ),
+    )
+    judging_set_aside: bool = Field(
+        default=False,
+        description=(
+            "Whether the run's cost cap had too little left for this cell's judging, so the dims it had not asked were "
+            "not asked: each names the cap in `judge_error`. The trial ran whole and is never scored low: its judged "
+            "readings leave it out under the `cost_cap` exclusion cause, while its measures, checks and cost count as "
+            "measured, and a re-judge, which reads the evidence the cell stored, takes it up and clears this. A run taken up again counts the cell done. False on a row "
+            "stored before the field existed."
         ),
     )
 
@@ -6298,6 +7738,10 @@ class EvalResult(CoreDocumentModel):
     # Re-judges of this result's failed judge dimensions, oldest first — see
     # :class:`JudgeRescore`. Empty for a result scored in one pass.
     judge_rescores: list[JudgeRescore] = Field(default_factory=list)
+
+    # Re-reads of this result's host measures under another definition, oldest first: see
+    # :class:`MeasureReread`. Empty, and left out of the document, for a result whose measures are as its cell wrote them.
+    measure_rereads: list[MeasureReread] = Field(default_factory=list, exclude_if=lambda value: not value)
 
     # Repeats of this result's judge scores, oldest first — see :class:`JudgeRepeat`. A measurement
     # of the judge, never a change to the scores above. Empty for a result nobody repeated.
@@ -6537,6 +7981,40 @@ class EvalResult(CoreDocumentModel):
             "Empty when no judge reply was cut short."
         ),
     )
+    # Claim grading (#1287): the counts each criterion's grade gives this cell, and the criteria it lost. A loss is
+    # never a judge error: the cell keeps its pass, its rubric scores and every other reading, and leaves only that
+    # criterion's. Each is left out of the document while empty, so a result no criterion graded is stored as before.
+    claim_tallies: dict[DimName, ClaimTally] = Field(
+        default_factory=dict,
+        exclude_if=lambda tallies: not tallies,
+        description=(
+            "criterion -> this cell's counts under it, derived from its grade on the trace: what every claim reading is "
+            "computed from. Empty when no claim criterion graded the cell."
+        ),
+    )
+    claim_failures: dict[DimName, StoredClaimLoss] = Field(
+        default_factory=dict,
+        exclude_if=lambda failures: not failures,
+        description=(
+            "criterion -> why the cell lost its readings (CLAIM_LOSSES): the criterion has no tally here, and every "
+            "other reading keeps the cell. Never a judge_error. Empty when no criterion was lost."
+        ),
+    )
+    claim_fingerprints: dict[DimName, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda fingerprints: not fingerprints,
+        description=(
+            "criterion -> the fingerprint of the definition the cell was graded under, for every criterion its claims "
+            "phase was due, tallied or lost: what a re-judge of a lost criterion must still grade under, as a dim's "
+            "judge_config_ids names the prompt a re-judge must ask it with. A tallied criterion's equals its tally's. "
+            "Empty when no criterion was due."
+        ),
+    )
+    claim_rescores: list[ClaimRescore] = Field(
+        default_factory=list,
+        exclude_if=lambda rescores: not rescores,
+        description="Every re-judge of the cell's claim criteria, in order (ClaimRescore). Empty when none.",
+    )
 
     # Error taxonomy. A result's error is one of two kinds,
     # and scoring treats them oppositely (an infra failure
@@ -6559,6 +8037,14 @@ class EvalResult(CoreDocumentModel):
     # does not fall back to ``runner_error``: the runner writes all three from one ledger,
     # so a categorized field is never missing beside a set ``runner_error``.
     candidate_error: str | None = Field(default=None)
+    candidate_code_raised: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="True where `candidate_error` is the candidate's own code raising a programming error (a "
+        "KeyError, a TypeError) while handling the reply, not a call to a model it runs failing: the trial fails all "
+        "the same, and a report names that code as the cause and its handling of the reply as what to check. Null "
+        "(left out) otherwise, so a result stored before it existed reads as it did.",
+    )
     infra_error: str | None = Field(default=None)
 
     scored_at: str = Field(default_factory=utc_now_iso)
@@ -6571,6 +8057,33 @@ class EvalResult(CoreDocumentModel):
             raise ValueError(f"doc_type must be 'eval_result', got '{v}'")
         return v
 
+    @model_validator(mode="after")
+    def _a_criterion_tallied_or_lost(self) -> Self:
+        """Refuse a criterion both tallied and lost: a lost criterion's counts rest on no stored grade.
+
+        :raises ValueError: A criterion is in both ``claim_tallies`` and ``claim_failures``; a fingerprint names a
+            criterion neither tallied nor lost; or a tallied criterion's fingerprint is not its tally's.
+        """
+        if both := sorted(set(self.claim_tallies) & set(self.claim_failures)):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, both))} are both tallied and lost; a loss has no tally"
+            )
+        if stray := sorted(set(self.claim_fingerprints) - {*self.claim_tallies, *self.claim_failures}):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, stray))} carry a fingerprint, and the cell neither tallied nor "
+                "lost them"
+            )
+        if moved := sorted(
+            name
+            for name, tally in self.claim_tallies.items()
+            if self.claim_fingerprints.get(name, tally.criterion_fingerprint) != tally.criterion_fingerprint
+        ):
+            raise ValueError(
+                f"claim criteria {', '.join(map(repr, moved))} are tallied under another fingerprint than the cell "
+                "recorded for them"
+            )
+        return self
+
     def judge_score(self, dim: str) -> RubricScore | None:
         """The judge's score for one dimension, wherever this result carries it.
 
@@ -6579,9 +8092,7 @@ class EvalResult(CoreDocumentModel):
         write and every agreement read find the same score.
 
         :param dim: The dimension, as its score spells it.
-        :ptype dim: str
         :return: The score, or ``None`` when this result carries none on that dimension.
-        :rtype: RubricScore | None
         """
         return next((score for score in self.judge_scores() if score.dim == dim), None)
 
@@ -6592,7 +8103,6 @@ class EvalResult(CoreDocumentModel):
         axis is never on one of those surfaces and missing from another.
 
         :return: The scores as the judge gave them, in that order; empty for a result no judge scored.
-        :rtype: list[RubricScore]
         """
         return [
             score for score in (*self.rubric_scores, self.transcript_score, self.outcome_score) if score is not None
@@ -6760,21 +8270,13 @@ class EvalCassette(EvalDocumentModel):
         """Construct a cassette with its key's document id.
 
         :param key: The ask this recording answers.
-        :ptype key: CassetteKey
         :param scope_id: The scope the corpus lives in.
-        :ptype scope_id: str
         :param seam: Which seam recorded it.
-        :ptype seam: CassetteSeam
         :param captured_model: The capture run's candidate model.
-        :ptype captured_model: str
         :param response: The action's result, or the delivered payload.
-        :ptype response: dict[str, Any] | None
         :param outcome: How the background work ended (delivery seam only).
-        :ptype outcome: CassetteDeliveryOutcome | None
         :param error: Why it failed (delivery seam only).
-        :ptype error: str | None
         :return: The unsaved cassette.
-        :rtype: EvalCassette
         """
         return cls(
             id=key.doc_id,
@@ -6805,6 +8307,7 @@ __all__ = [
     "FailedBecause",
     "FAILED_BECAUSE",
     "StoredFailedBecause",
+    "KnownExhaustedBecause",
     "KnownReasoningEffort",
     "KnownUsageRole",
     "KnownSimulatorPurpose",
@@ -6868,6 +8371,7 @@ __all__ = [
     "CassetteSeam",
     "CatalogRubricDim",
     "CellTermination",
+    "WrittenOver",
     "ClientRequestSettings",
     "RunDisclosure",
     "CompletenessSource",
@@ -6880,7 +8384,11 @@ __all__ = [
     "RUN_LABELS_MAX",
     "RUN_LABEL_MAX_LENGTH",
     "run_label_problem",
+    "MeasureAttestation",
     "MeasureDeclaration",
+    "MeasureRemeasure",
+    "MeasureReread",
+    "ServedModelAttestation",
     "EvalRunStatus",
     "ArmSchedule",
     "EvalTemplate",
@@ -6889,7 +8397,6 @@ __all__ = [
     "GoalCheckControls",
     "GoalCheckIntent",
     "GoalStateOutcome",
-    "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
     "JUDGE_WORDING_CHANGE_SENTENCE",

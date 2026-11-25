@@ -21,7 +21,8 @@ from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, NAMES, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
-from threetears.evals.actions import Action, analyst_actions
+from threetears.evals.actions import Action
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.analyst.compare import ArmsComparison, arms_compare
 from threetears.evals.analysis.analyst.analyses import sensitivity
@@ -29,7 +30,7 @@ from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.analyst.price import PriceTradeoff, price_tradeoff
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import analyst_input, report_snapshot
-from threetears.evals.analysis.report_decision import every_caveat
+from threetears.evals.analysis.report.call import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput

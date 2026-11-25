@@ -1,8 +1,7 @@
 """What a campaign's page reads across its aspects, each aspect weighed alike: the scorecard's equal-weight row and
 the cost/quality chart.
 
-Both read the readings' own figures across aspects
-(:func:`~threetears.evals.analysis.campaign_readings.campaign_aggregate`), so the page prints what the JSON states,
+Both read the readings' own figures across aspects (``CampaignReadings.aggregate``), so the page prints what the JSON states,
 weighting included. They are descriptive: nothing here is tested, no figure decides a reading, a floor or a bar, and
 no word says one arm is better.
 
@@ -34,8 +33,10 @@ from threetears.evals.analysis.campaign_readings import (
 )
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
+from threetears.evals.analysis.bundle.trials import reads_a_rate
+from threetears.evals.analysis.report.campaign.common import PASS_WORDS, RateWords, rate_words
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
@@ -45,6 +46,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.analysis.style import declared_arm_names
 
 __all__ = ["EQUAL_WEIGHT_ROW", "WITHHELD", "aggregate_blocks", "equal_weight_figures"]
 
@@ -74,14 +76,10 @@ def equal_weight_figures(
     where its cell prints it. A withheld figure holds no value.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :return: One figure per arm the matrix holds a column for; none on one aspect, for a measurement, or where no
         matrix is laid out.
-    :rtype: dict[str, tuple[AggregateFigure, str]]
     """
     aggregate = _row_aggregate(readings)
     if aggregate is None:
@@ -96,27 +94,29 @@ def aggregate_blocks(
     weighting once in the methods.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The blocks; none for a measurement, or where neither the row nor the chart is laid out.
-    :rtype: list[ReportBlock]
     """
     aggregate = readings.aggregate
     if aggregate is None:
         return []
     names = AspectNames.of((report.bundle for report in reports.values()), campaign=campaign.name or None)
+    # The rate across aspects named as each aspect's page names it: no figure over an aspect nothing graded can fail a
+    # trial on is called a pass rate.
+    words = rate_words(
+        reports[aspect].bundle
+        for aspect in readings.aspects
+        if aspect in reports and reads_a_rate(reports[aspect].bundle)
+    )
     row = _row_aggregate(readings) is not None
     charted = _charted(readings, aggregate)
     blocks: list[ReportBlock] = []
     lines: list[str] = []
     if row:
         lines += [
-            _row_withheld_line(arm, names, figure)
+            _row_withheld_line(arm, names, figure, words)
             for arm in aggregate.arms
             if (figure := _row_figure(arm)[0]).value is None
         ]
@@ -142,19 +142,20 @@ def aggregate_blocks(
             chart = ChartBlock(
                 section="scorecard",
                 chart="cost_quality",
-                title="Pass rate and cost",
+                title=f"{words.heading} and cost",
                 unit=MONEY,
                 level=level,
                 points=points,
+                rate_heading=None if words is PASS_WORDS else words.heading,
             )
             # The title says what is compared and in what unit: the count each cost is per as the chart's own axis
             # states it, from the block's one money ruler, never a count chosen here.
             drawn = chart.kit_chart()
             per = str(drawn[1].get("x_title") or "").removeprefix("Cost ") if drawn is not None else ""
-            measured = f"Pass rate and cost {per}, each arm, {level} intervals"
+            measured = f"{words.heading} and cost {per}, each arm, {level} intervals"
             title = f"{measured}, {_ACROSS}" if len(readings.aspects) > 1 else measured
             blocks.append(chart.model_copy(update={"title": title}))
-        lines += [line for arm in aggregate.arms for line in _chart_withheld_lines(arm, names)]
+        lines += [line for arm in aggregate.arms for line in _chart_withheld_lines(arm, names, words)]
     blocks += [DisclosureBlock(section="scorecard", source="comparisons", text=line) for line in lines]
     if len(readings.aspects) > 1 and (row or blocks):
         line = _weighting_line(aggregate.weighting)
@@ -225,15 +226,16 @@ def _aspects(names: AspectNames, labels: list[str]) -> str:
     return ", ".join(names(label) for label in labels)
 
 
-def _row_withheld_line(arm: ArmAggregate, names: AspectNames, figure: AggregateFigure) -> str:
+def _row_withheld_line(arm: ArmAggregate, names: AspectNames, figure: AggregateFigure, words: RateWords) -> str:
     """Why an arm's cell in the equal-weight row is withheld: the aspects lacking its figure."""
     if arm.change is not None:
         return f"{arm.arm_label}'s change across aspects is withheld: it has none on {_aspects(names, figure.missing)}."
-    return f"{arm.arm_label}'s pass rate across aspects is withheld: it has none on {_aspects(names, figure.missing)}."
+    rate = words.noun.removeprefix("the ")
+    return f"{arm.arm_label}'s {rate} across aspects is withheld: it has none on {_aspects(names, figure.missing)}."
 
 
-def _chart_withheld_lines(arm: ArmAggregate, names: AspectNames) -> list[str]:
-    """Why an arm is left off the chart: the aspects lacking its cost per reply, then those lacking its pass rate."""
+def _chart_withheld_lines(arm: ArmAggregate, names: AspectNames, words: RateWords) -> list[str]:
+    """Why an arm is left off the chart: the aspects lacking its cost per reply, then those lacking its rate."""
     lines = []
     if arm.cost.value is None:
         lines.append(
@@ -241,6 +243,7 @@ def _chart_withheld_lines(arm: ArmAggregate, names: AspectNames) -> list[str]:
         )
     if arm.pass_rate.value is None:
         lines.append(
-            f"{arm.arm_label} is left off the chart: it has no pass rate on {_aspects(names, arm.pass_rate.missing)}."
+            f"{arm.arm_label} is left off the chart: it has no {words.noun.removeprefix('the ')} on "
+            f"{_aspects(names, arm.pass_rate.missing)}."
         )
     return lines

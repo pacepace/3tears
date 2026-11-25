@@ -164,9 +164,7 @@ def level_share(text: str | float | None) -> float | None:
     """A stated level as a share: ``95%`` and ``0.95`` are both 0.95; None where none is stated or it is no level.
 
     :param text: The level as the input states it.
-    :ptype text: str | float | None
     :return: The level, strictly between 0 and 1; None otherwise.
-    :rtype: float | None
     """
     if text is None:
         return None
@@ -184,9 +182,7 @@ def _z_two_sided(level: float) -> float:
     """The normal quantile a two-sided interval at ``level`` spans on each side of its centre (1.96 at 95%).
 
     :param level: The level, as a share.
-    :ptype level: float
     :return: The quantile.
-    :rtype: float
     """
     return _NORMAL.inv_cdf(0.5 + level / 2.0)
 
@@ -195,9 +191,7 @@ def _z_one_sided(level: float) -> float:
     """The normal quantile a one-sided bound at ``level`` sits at (1.645 at 95%).
 
     :param level: The level, as a share.
-    :ptype level: float
     :return: The quantile.
-    :rtype: float
     """
     return _NORMAL.inv_cdf(level)
 
@@ -217,24 +211,15 @@ def stat_spread(
     error, or (for a pass/fail rate with a count) its binomial spread.
 
     :param mean: The arm's mean.
-    :ptype mean: float | None
     :param ci: Its interval, low then high, where stated.
-    :ptype ci: tuple[float, float] | None
     :param half_width: Its interval's half-width, where only that is stated.
-    :ptype half_width: float | None
     :param sem: Its standard error, where stated.
-    :ptype sem: float | None
     :param n: The count it rests on, where one is known.
-    :ptype n: float | None
     :param stated_level: The level its interval was stated at, as a share; None where the input states none.
-    :ptype stated_level: float | None
     :param rate: For a pass/fail rate, the scale its mean is on (a share, or a percent); None for any other figure.
-    :ptype rate: Literal["share", "percent"] | None
     :param cases: The distinct cases behind a count of trials, where the figure states them and they are fewer: one
         case's spread is then its mean's over today's repeats. None where the count counts cases, or says neither.
-    :ptype cases: float | None
     :return: The spread.
-    :rtype: Spread
     :raises NoSpread: The mean is absent, or nothing it states gives a spread.
     """
     if mean is None or not math.isfinite(mean):
@@ -285,15 +270,10 @@ def difference_spread(
     cases each arm runs *(inferred: the reading states no per-arm spread to weigh the two by)*.
 
     :param change: The difference, in its own units (points for a rate).
-    :ptype change: float
     :param interval: Its interval, low then high, in the same units.
-    :ptype interval: tuple[float, float]
     :param level: The interval's stated level, as a share; None where none is stated.
-    :ptype level: float | None
     :param counts: The cases each arm ran; empty where none is stated.
-    :ptype counts: tuple[float, ...]
     :return: The spread, its count the harmonic mean of the arms' cases.
-    :rtype: Spread
     :raises NoSpread: No level is stated, or the interval reads no spread.
     """
     if level is None:
@@ -312,11 +292,8 @@ def spread_interval(spread: Spread, *, rate: Literal["share", "percent"] | None 
     error, a rate's ends held to its scale (this module's An arm's own interval).
 
     :param spread: The arm's spread (:func:`stat_spread`).
-    :ptype spread: Spread
     :param rate: For a pass/fail rate, the scale its mean is on (a share, or a percent); None for any other figure.
-    :ptype rate: Literal["share", "percent"] | None
     :return: The interval, low then high, in the mean's units.
-    :rtype: tuple[float, float]
     :raises NoSpread: A rate's binomial spread is zero (a rate of none or all).
     """
     if spread.basis == "binomial" and spread.se == 0:
@@ -333,13 +310,9 @@ def independent_difference(first: Spread, second: Spread, level: float) -> tuple
     """The difference of two independent arms' means, first minus second, and its interval's half-width at ``level``.
 
     :param first: The first arm's spread.
-    :ptype first: Spread
     :param second: The second arm's.
-    :ptype second: Spread
     :param level: The level, as a share.
-    :ptype level: float
     :return: The difference, and the half-width of its interval.
-    :rtype: tuple[float, float]
     """
     return first.mean - second.mean, _z_two_sided(level) * math.hypot(first.se, second.se)
 
@@ -349,17 +322,13 @@ def cases_to_separate(per_case: float, distance: float, level: float, *, sided: 
     chance ``power`` that one does if the truth equals today's estimate (0.5: the coin-toss size).
 
     :param per_case: The spread of one case (two arms: the root of the sum of their squares), in the figure's units.
-    :ptype per_case: float
     :param distance: Today's estimate's distance from the line (two arms: their difference), in the same units.
-    :ptype distance: float
     :param level: The level, as a share.
-    :ptype level: float
-    :param sided: 1 for an estimate against a line, 2 for two arms against each other.
-    :ptype sided: Literal[1, 2]
+    :param sided: 1 for a one-sided bound at ``level``; 2 for an interval stated two-sided at ``level``: two arms
+        against each other, or an estimate whose two-sided interval must clear its line (what a page prints and what
+        a gate's borderline or an unsettled reading is lifted by).
     :param power: The share of such designs that clear, if the truth equals today's estimate.
-    :ptype power: float
     :return: The cases (per arm, for two arms).
-    :rtype: int
     :raises NoSpread: The estimate sits on its line, or one case carries no spread.
     """
     if distance == 0 or not math.isfinite(distance):
@@ -378,11 +347,8 @@ def wrong_side_share(distance: float, se: float) -> float:
     ahead), if the truth equals today's estimate: ``Phi(-|distance| / se)``.
 
     :param distance: Today's estimate's distance from the line, or the two arms' difference.
-    :ptype distance: float
     :param se: Its standard error at today's size.
-    :ptype se: float
     :return: The share of such designs, 0 to one half; one half for an estimate exactly on its line.
-    :rtype: float
     :raises NoSpread: The distance is not a number, or the estimate carries no spread.
     """
     if not math.isfinite(distance):

@@ -120,8 +120,17 @@ class CountingStore(InMemoryDocumentStore):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
         self.calls.append("grouped")
-        return super().grouped(doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
+        return super().grouped(
+            doc_type,
+            scope_id,
+            by=by,
+            measures=measures,
+            exclude_in_items=exclude_in_items,
+            field_in=field_in,
+            **field_eq,
+        )

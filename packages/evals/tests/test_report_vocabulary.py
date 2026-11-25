@@ -14,7 +14,8 @@ from typing import Any, get_args
 
 import pytest
 
-from threetears.evals.analysis import Report, report_html, report_markdown
+from threetears.evals.analysis import Report, report_html
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.model import FIRST_SCREEN
 from threetears.evals.analysis.report.verdict import FAIL_CAUSE_WORDS, LOSS_CAUSE_WORDS, fail_words, loss_words
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED

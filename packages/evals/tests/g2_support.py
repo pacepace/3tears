@@ -20,13 +20,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    Report,
-    assemble_context_bundle,
-    build_code_only_report,
-    get_campaign,
-)
+from threetears.evals.analysis import AnalysisContextBundle, Report, assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.kernel.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,

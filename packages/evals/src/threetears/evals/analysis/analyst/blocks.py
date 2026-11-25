@@ -5,7 +5,7 @@ it the way the document page draws an evidence block, by the same code:
 :func:`~threetears.evals.analysis.report.block_spec.complete_chart` completes it (its reference line's key, interval
 level, unit and axis), :func:`~threetears.evals.analysis.report.block_spec.chart_faults` and
 :func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults` hold it to the document checks' own rules
-(:mod:`~threetears.evals.analysis.report_doc_checks`), and the page's resolver draws it
+(:mod:`~threetears.evals.analysis.report.doc_page.checks`), and the page's resolver draws it
 (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`, under
 :func:`~threetears.evals.analysis.report.block_spec.block_look`), as the page does. So
 a block the analyst sees drawn is one a page draws, and a block refused here is refused there. What comes back is the block's values
@@ -15,7 +15,7 @@ the picture or the kit's chart data. Every fault is refused together, each named
 **What there is to draw** is :func:`block_catalog`: each kind and the sources it draws
 (:data:`~threetears.evals.analysis.report.block_spec.BLOCK_SOURCES`, the kit's chart models in
 :data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`), each source's rows and the query fields that narrow
-them (:mod:`~threetears.evals.analysis.report_rows`), whether the snapshot holds any, and the figure key forms
+them (:mod:`~threetears.evals.analysis.report.rows`), whether the snapshot holds any, and the figure key forms
 (:func:`~threetears.evals.analysis.report.figure_keys.figure_key_grammar`). No kind is chosen for the analyst: every
 block is open on every eval, and what refuses one is the data.
 
@@ -58,12 +58,14 @@ from threetears.evals.analysis.report.block_spec import (
 )
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS
-from threetears.evals.analysis.report.figure_keys import figure_key_grammar, price_frontier, render
+from threetears.evals.analysis.report.keys.grammar import figure_key_grammar
+from threetears.evals.analysis.report.keys.prices import price_frontier
+from threetears.evals.analysis.report.keys.resolve import render
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_rows import query_rows
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.rows import query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 
@@ -239,7 +241,7 @@ class BlockCatalog(BaseModel):
 
 
 #: What each source's rows are, how they are labelled and whether they carry an interval, and the query fields that
-#: narrow them (:mod:`~threetears.evals.analysis.report_rows`, whose selection the page and the checks read).
+#: narrow them (:mod:`~threetears.evals.analysis.report.rows`, whose selection the page and the checks read).
 _SOURCE_ROWS: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {
     "readings": ("an arm's reading on the query's aspect: its change from the control", "the arm", True,
                  ("arms", "aspect")),
@@ -290,28 +292,18 @@ def block_render(
     """The block a page would draw of ``query`` as a ``block_kind``, as its values table (this module's account).
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param block_kind: The kind of block.
-    :ptype block_kind: str
     :param query: What it reads.
-    :ptype query: ChartQuery
     :param reference: The reference line to draw (``margin``, ``floor``, ``budget``, ``no_preference``); None for none.
-    :ptype reference: str | None
     :param emphasis: The one arm, stratum or task it stresses, by id; empty for none.
-    :ptype emphasis: str
     :param title: Its title, figure keys allowed; empty for none.
-    :ptype title: str
     :param limit: The most values-table rows on this page; a page of long cells stops sooner, its ``next_offset``
         naming where the next starts.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :param fits: Whether a page is short enough, as the tool writes it: the page holds the most rows within ``limit``
         that pass it (one at least). None sizes a page by its cells' characters (:data:`_PAGE_CHARS`), for a caller
         that writes no text.
-    :ptype fits: Callable[[RenderedBlock], bool] | None
     :return: The block.
-    :rtype: RenderedBlock
     :raises RefusedInput: The block cannot be drawn on this input, naming every fault at the parameter it sits at.
     """
     try:
@@ -457,9 +449,7 @@ def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[s
     tenth, and a rate at its measure's tenth (``78.0%``) never drops to the whole percent a column rule would pick.
 
     :param block: The drawn block: a chart, or a table.
-    :ptype block: ChartBlock | TableBlock
     :return: ``(columns, rows)``: the headers, and each row's cells as text.
-    :rtype: tuple[list[str], list[list[str]]]
     """
     if isinstance(block, ChartBlock):
         return block.values_table()
@@ -475,11 +465,8 @@ def block_catalog(report_input: ReportInput, snapshot_id: str) -> BlockCatalog:
     """Every block the snapshot can be shown by (this module's account).
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :return: The catalog.
-    :rtype: BlockCatalog
     """
     sources: tuple[str, ...] = get_args(ChartQuery.model_fields["source"].annotation)
     return BlockCatalog(

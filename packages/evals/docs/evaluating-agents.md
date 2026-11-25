@@ -229,7 +229,11 @@ capture = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=1).r
 replay = await Eval(QUERIES, LOOKUPS(answers_from_search), ["expected"], k=3).run(store=":memory:", scope="search")
 ```
 
-A replay asked something the recording does not hold excludes that cell as a rig failure; it never runs live.
+A replay asked something the recording does not hold is a rig failure, never run live: the cell is recorded as one,
+naming the call, and the run fails, since the next cell reads the same recording. Its print opens with that
+failure, naming the call, and prints no verdict: the readings after it cover only the results recorded before it.
+Every run that did not finish reads so, on every surface: a failed, cancelled or budget-stopped run's print, its
+report in Markdown and HTML, and the line its analysis is listed by open on what stopped it, with no verdict.
 `RECORD=1` records the file again. A world with state takes no recording. A host's own kind can wire cassettes for its
 lookups next to a world ([cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools)).
 
@@ -370,7 +374,7 @@ for replay). Two lessons from this phase still hold:
   valuable because the model chooses its own query. The first host answered by delivering a seeded payload to
   *whatever* call the subject makes; that is a technique a host builds into its own tools, not an engine feature.
   From this came the split between a rig failure (a replay miss, a malformed seed:
-  [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run), excluded) and an
+  [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-a-recording-that-cannot-serve-costs-the-run), never scored) and an
   in-world failure (a rate limit, an item not found: shown to the subject, which may be scored on how it copes).
 
 **Production handlers on seeded production state.** A muted call reported success, so it skipped every refusal
@@ -464,7 +468,10 @@ stores them, each one string, so no check is proven on a type no case can carry.
 template saved past authoring, or a quick run) is recorded as unproven on its run and marked wherever its pass
 rate is shown. A run stamps the proof rules it was proven under; a `proven` recorded under older proof rules
 reads as unproven, counted as needing re-proof, because the controls were not frozen
-with the run and cannot be re-proven for the template it graded. A stored template can carry a check a later
+with the run and cannot be re-proven for the template it graded. A resume is the exception: it goes ahead only
+while the template's measured content, its controls included, is as the run froze it, so it re-proves the run's
+checks under the current rules. When they prove alike, the run reads as proved under the current rules, and each
+holding names the rules that proved its checks (`RunLifetime.goal_check_proof_rules`). A stored template can carry a check a later
 grammar rule refuses: the launch records it with the reason, grades every cell on the other checks, and the run
 summary, the bundle and the report name it as refused under the current grammar.
 
@@ -491,7 +498,8 @@ live world handle are different callables that never collide.
   hosts whose world moves on its own.
 - A dimension whose meaning changes under the same name passes every check.
 - Deriving a detection eval's answer key from the planted fact is designed but deferred; host predicates in the goal
-  language are specified but not built.
+  language are specified but not built. A case can carry an answer key the host writes (its reference key; see
+  [judges and calibration](judges-and-calibration.md#step-2-write-a-rubric-dimension)), but nothing derives one.
 - Every fidelity defect the first host found in its October audit came from running and reading cells, none from a
   gate: an unseeded count the subject cited, carried state leaking into cells, a check reading a parameter instead of
   its effect, and others.

@@ -243,9 +243,7 @@ def load_toml(path: str | Path) -> Eval:
     """The eval a TOML file declares.
 
     :param path: The file.
-    :ptype path: str | Path
     :return: The eval, not yet run.
-    :rtype: Eval
     :raises ValueError: A file that is not TOML, a key it does not take, a slot missing or malformed, a case lacking a
         field the prompt fills, or anything the eval refuses — each naming the file.
     """
@@ -269,7 +267,8 @@ def load_toml(path: str | Path) -> Eval:
         raise _refuse(path, f"runner lacks prompt; {_RUNNER_TAKES}")
     system = _runner_text(path, runner_table, "system")
     for field in _placeholders(path, prompt):
-        if lacking := [str(case.get("id", index)) for index, case in enumerate(loaded) if field not in case]:
+        # Each by its id, else its place in the list from 1, as every line names a case.
+        if lacking := [str(case.get("id", index + 1)) for index, case in enumerate(loaded) if field not in case]:
             raise _refuse(path, f"the prompt fills {{{field}}}, which case(s) {', '.join(lacking)} lack")
     runner = _prompt_runner(path, runner_table, prompt, system, recording)
     k = table.get("k")

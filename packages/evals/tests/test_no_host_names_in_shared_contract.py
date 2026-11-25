@@ -195,8 +195,18 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
+    # The blind read's stored shapes: a draw, a sheet, answers and what a close found. No host is named.
+    "schema/blind_read.py",
+    "schema/claim_read.py",
     # The one function reading a lever id as words, which every surface naming a lever calls.
     "schema/lever_words.py",
+    # A case's reference key, which a host fills, and the case material a judge reads it as. No host is named.
+    "schema/reference.py",
+    # The segments a candidate's text is cut into for claims grading: engine vocabulary every host fills.
+    "schema/claims.py",
+    # The web search port claims grading's web check sends its queries to: a page and a search, named by no host.
+    "schema/web_search.py",
+    "kernel/reference.py",
     "kernel/declaration.py",
     "kernel/eval_scope.py",
     # The measure names one result carries, read off the result model, below the declaration and the host profile.
@@ -230,6 +240,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/subject.py",
     "schema/external_spend.py",
     "schema/traces.py",
+    "schema/call_inputs.py",
     # Which stored documents are kept and how an old one is upgraded: the engine's own version policy.
     "schema/versioning.py",
     "analysis/bundle/assemble.py",
@@ -265,6 +276,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/errors.py",
     # The spend ledger a runner call's model calls are counted in: the engine's own usage vocabulary.
     "kernel/runner_spend.py",
+    # The set grader and the model step that lists a prose answer's entities: engine vocabulary for grading any
+    # named set against a case's key, so a host noun here would reach every host's set measures.
+    "kernel/set_grade.py",
+    "kernel/entity_extraction.py",
     # Where an eval file's relative paths resolve while `python -m threetears.evals FILE` loads it:
     # the engine's own loading vocabulary, read by Eval, Model, World, Judge and Log alike.
     "kernel/eval_file.py",
@@ -387,6 +402,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # function, and asks its failed judged dims again through the re-judge. It reads no kind's trace shape, so a host
     # noun here would be one kind's replay written back into the engine.
     "run/regrade.py",
+    "run/remeasure.py",
     "schema/store_port.py",
     # The curation family, the variation generator and the job manager moved off
     # _HOST_COUPLED_MODULES when the runtime tier's host-named partition became `scope_id`: that
@@ -401,6 +417,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # and stores a rating, in the engine's own words. Shared contract from the day it existed, and
     # scanned because the noun that would most plausibly arrive here is a host's name for its people.
     "run/ratings.py",
+    # A model reading a blind read's sheet, one call per item: the sheet's content and nothing of a host's, so the
+    # engine's own words from the day it existed.
+    "run/blind_review.py",
     # What a result scored, what a set of results scored together, and whether a run's loop
     # delivered the matrix it promised. It carries `CellSummary` with it — the bounded per-cell
     # record `summarize_completeness` counts. Shared contract from the day it existed rather than
@@ -501,7 +520,12 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/job_context.py",
     "kernel/job_leases.py",
     "kernel/job_timeout.py",
+    # A listing's page size and its opaque cursor (#1145): the package's own encoding of a place in the engine's own
+    # listing order, so a host noun here would be one host's codec written into every host's paging.
+    "kernel/list_pages.py",
     "schema/job_lease.py",
+    # The shared reading states: the engine's own closed sets, which every layer holds.
+    "schema/reading_states.py",
     "schema/refusal.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became
@@ -573,7 +597,9 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``gen/prompts`` is the two proposers' seed prompts, which belong to the gen package and are
 #: scanned on exactly the terms above. It is a nested tree because its parent
 #: ``gen`` is not classifiable whole yet: see :func:`test_every_eval_module_is_classified_one_way_or_the_other`.
-#: ``kernel/host`` and ``kernel/prompts`` are nested for the same reason: ``kernel`` and ``schema`` are
+#: ``kernel/claims`` is claims grading's engine-internal steps (listing a text's claims, the verbatim fold): one
+#: instrument every host's judge phase runs, so a host noun there would reach every host's claim readings.
+#: ``kernel/host``, ``kernel/claims`` and ``kernel/prompts`` are nested for the same reason: ``kernel`` and ``schema`` are
 #: classified module by module (every ``kernel/`` and ``schema/`` entry above).
 #:
 #: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
@@ -595,6 +621,7 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: would report the design as a violation.
 _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "kernel/host",
+    "kernel/claims",
     "analysis",
     "kernel/prompts",
     "gen/prompts",

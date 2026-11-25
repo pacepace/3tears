@@ -10,7 +10,7 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, launch_job_id, parse_job_id, run_job_id
 from threetears.evals.ops.sweeps import sweep_resume
-from threetears.evals.run.resume import resume_launch, resume_run
+from threetears.evals.run.resume import resume_launch, take_up_run
 
 __all__ = ["job_resume"]
 
@@ -19,7 +19,7 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
     """Take an interrupted job up again as the same job, and start it: a run's, a sweep's or a launch's.
 
     A run that was lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again
-    (:func:`~threetears.evals.run.resume_run`); its cells not yet measured run as its job, polled by the run's own job
+    (:func:`~threetears.evals.run.resume.take_up_run`); its cells not yet measured run as its job, polled by the run's own job
     id. A sweep (``sweep:<id>``) or a launch (``launch:<id>``) that was lost, cancelled, or stopped by its own time
     budget is taken up as a whole: each arm's unfinished run is taken up again, each arm of a sweep that never
     launched is launched, and the arm schedule is kept — an interleaved sweep's or launch's arms run in one group under
@@ -33,17 +33,14 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
     and for a sweep or a launch, every arm's. Any other kind of job is started again by the action that started it.
 
     :param host: The host whose launcher wires the runs again and whose job manager runs them.
-    :ptype host: OpsHost
     :param job_id: The job's id, as its start returned it or ``resumable_jobs`` lists it.
-    :ptype job_id: str
     :param scope_id: The scope the job lives in.
-    :ptype scope_id: str
     :param max_cost_usd: The cost cap to resume under — every arm's, for a sweep or a launch — above what was spent;
         ``None`` keeps each run's recorded cap. Not part of the measurement: each holding records the cap it ran
         under.
-    :ptype max_cost_usd: float | None
-    :return: The job taken up (``run:<id>``, ``sweep:<id>`` or ``launch:<id>``).
-    :rtype: JobsStarted
+    :return: The job taken up (``run:<id>``, ``sweep:<id>`` or ``launch:<id>``). Its ``notices`` say what admitting
+        the take-up found and did not refuse it for: a served-model check that could not be made because the
+        provider's model list could not be read.
     :raises ValidationFailedError: The id names no job, or a job of a kind not resumed; the job cannot be taken up, or
         would measure otherwise now (every difference named); or a launch of a run would be refused now.
     :raises NotFoundError: No such job in the scope, or a template is gone.
@@ -55,17 +52,19 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
     if kind == "sweep":
         return await sweep_resume(host, target_id, scope_id, max_cost_usd=max_cost_usd)
     if kind == "launch":
-        launch = await resume_launch(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
+        launch, notices = await resume_launch(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
         label = ", ".join(launch.models) or "the kind's default model"
         return JobsStarted(
-            jobs=[JobHandle(job_id=launch_job_id(launch.id), kind="launch", target_id=launch.template_id, label=label)]
+            jobs=[JobHandle(job_id=launch_job_id(launch.id), kind="launch", target_id=launch.template_id, label=label)],
+            notices=list(notices),
         )
     if kind != "run":
         raise ValidationFailedError(
             f"{kind} job {job_id!r} is not resumed; only a run's, a sweep's or a launch's job is",
             remedy="start the work again with the action that started it",
         )
-    run = await resume_run(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
+    run, notices = await take_up_run(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
     return JobsStarted(
-        jobs=[JobHandle(job_id=run_job_id(run.id), kind="run", target_id=run.id, label=run.candidate_model)]
+        jobs=[JobHandle(job_id=run_job_id(run.id), kind="run", target_id=run.id, label=run.candidate_model)],
+        notices=list(notices),
     )

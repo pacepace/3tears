@@ -140,6 +140,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "completions: two sessions recording onto one file never interleave a line. It holds no value and "
         "nothing a host reads; a file is process-wide, so a per-host lock would let two hosts corrupt it"
     ),
+    ("threetears/evals/testing/recorded_web_search.py", "_APPEND_LOCK"): (
+        "serialises appends to web search recording files in the process, as recorded_completions' lock does for "
+        "completions: two recorders on one file never interleave a line. It holds no value and nothing a host "
+        "reads; a file is process-wide, so a per-host lock would let two hosts corrupt it"
+    ),
     ("threetears/evals/kernel/campaign_writes.py", "_CAMPAIGN_WRITES"): (
         "serialises every read-modify-write of a campaign in the process. Shared across hosts, which "
         "over-serialises and never leaks: it holds no value, and a per-store lock would be weaker, "
@@ -155,6 +160,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "that cell's own task, and a host where it carries that work into a context of its own, and each resets it "
         "on leaving; it holds that cell's identity, never a host, and a second host in the same process cannot "
         "observe another task's value"
+    ),
+    ("threetears/evals/schema/call_inputs.py", "_CURRENT_INPUTS"): (
+        "a ContextVar, so its value is per task, never per process: the judge service sets it around one call, in "
+        "that call's own task, and resets it on leaving; it holds what that call is asked about, never a host, and a "
+        "second host in the same process cannot observe another task's value"
     ),
     ("threetears/evals/kernel/runner_spend.py", "_SPEND"): (
         "a ContextVar, so its value is per task, never per process: the callable kind sets it around one runner "

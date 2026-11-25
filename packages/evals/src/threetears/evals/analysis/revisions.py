@@ -3,7 +3,9 @@
 A definition reset (:func:`~threetears.evals.run.reset_definitions`) writes a template's new content as a new revision:
 a new record under the same name, the older one kept for every run, result and case measured against it. Runs of two
 revisions are measured against two definitions (a battery of four cases and one of seven, say), so their results are
-two datasets. Nothing in the cell algebra separates them, since a template is no apparatus dimension: two revisions
+two datasets. An operator's judge-case write into a judge template that holds cases
+(``judge_case_author``, ``judge_cases_freeze``) writes a revision the same way, so a judge's runs before a case was
+added and after it are two datasets too. Nothing in the cell algebra separates them, since a template is no apparatus dimension: two revisions
 run at one model are one variant under one rig. So a campaign holding runs of two revisions of one name is refused at
 every door that would pool them — creating it, adding a run to it, and assembling its bundle, which every analysis,
 contrast and report of a campaign reads — naming the template and its revisions. Where two revisions are shown side by
@@ -37,12 +39,9 @@ def refuse_pooled_revisions(
     number), so they are not refused.
 
     :param template_ids: The template each run ran; None for an ad-hoc run, which pools with none of them.
-    :ptype template_ids: Iterable[str | None]
     :param load_template: Reads a template by id, archived or not; None when it no longer resolves, which can say
         nothing about its name and is passed over.
-    :ptype load_template: Callable[[str], EvalTemplate | None]
     :param what: The campaign, as the refusal names it.
-    :ptype what: str
     :raises ValidationFailedError: Naming each template whose runs span revisions, and every revision held.
     """
     # A revision is what a reset writes: a record one past the newest under its name, so two revisions of one template
@@ -65,8 +64,9 @@ def refuse_pooled_revisions(
             for name, held in spanning.items()
         )
         raise ValidationFailedError(
-            f"{what} holds runs of more than one revision of a template: {named}. A reset wrote each revision's "
-            "content as a new definition, so their results are two datasets and never pool as one",
+            f"{what} holds runs of more than one revision of a template: {named}. Each revision was written as a "
+            "new definition (by a definitions reset, or by a judge case added to a judge template that held cases), "
+            "so their results are two datasets and never pool as one",
             remedy=POOLED_REVISIONS_REMEDY,
         )
 

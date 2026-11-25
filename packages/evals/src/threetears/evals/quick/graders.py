@@ -2,10 +2,18 @@
 
 An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or a list of them, each one of:
 
-- **A function** ``(case, out) -> bool | float``. Its ``__name__`` names its measure and the first line of its
-  docstring describes it; higher is better, and one annotated ``-> bool`` is a pass/fail on 0 to 1.
-- **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
-  ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
+- **A function** ``(case, out)``. Its ``__name__`` names its measure and the first line of its docstring describes
+  it; higher is better. Its kind is what its author declared (:func:`declares_a_check`): annotated ``-> bool``, or
+  not annotated, it is a check, a pass/fail whose False fails its case; annotated ``-> float`` or ``-> int``, or given
+  a range (``grader(f, range=(1, 5))``), it grades a number. An annotation read as neither, or as both
+  (``-> bool | float``), one naming ``None``, and an ``async def`` are refused when the eval is built. A check returns
+  a Python ``True`` or ``False`` (or 0 or 1) on every path, and anything else from it (``None`` from a function that
+  falls off its end, a numpy bool, 0.25) fails the run, naming the case and the fix; so does anything from a grader of
+  a number that is not a finite number on its declared range (a bool, ``None``, NaN, a score off its scale). A grader
+  that raises leaves its case ungraded: the run goes on, and every count says how many were not graded, and which.
+- **A field name** (``"category"``): the answer's ``category`` (``out["category"]`` on a mapping, the answer itself
+  when it is a plain value, ``out.category`` on anything else: a pydantic model, a dataclass) against the case's
+  ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion
   matrix, each label's precision, recall and F1, and ``accuracy``
   (:attr:`~threetears.evals.analysis.EvalSummary.confusion`); every other field is a pass/fail of its own name, and
@@ -14,6 +22,7 @@ An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or 
 - **An expression** (``"state.light == 'on'"``, ``'calls("room.switch") <= 1'``): a goal-state check over the world
   the runner left and the calls it made, accepted only when the runner is a world's.
 - **A** :class:`~threetears.evals.quick.judged.Judge`, scoring one dimension per rubric key.
+- **A** :class:`~threetears.evals.quick.claims.Claims`, listing the factual claims in each answer and checking each.
 
 Any function or field may be wrapped by :func:`grader` to declare what the reading needs beside its grade: a margin
 for equivalence (``margin=``), a guardrail no arm may get worse on by more than its margin (``guard=``), or the range
@@ -22,17 +31,23 @@ a numeric grade lies in (``range=``). Every grade is higher-is-better, so a guar
 
 from __future__ import annotations
 
+import annotationlib
+import ast
+import inspect
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, overload
 
 from pydantic import BaseModel
 
 from threetears.evals.kernel import ACCURACY_MEASURE, METRIC_DESCRIPTORS
+from threetears.evals.quick.claims import Claims
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
+from threetears.evals.quick.measures import Measure
 from threetears.evals.quick.world import WorldOutcome
 
 #: A function grader: takes the case and the runner's answer, returns a number (``True``/``False`` as 1 and 0).
@@ -44,6 +59,12 @@ UNUSABLE_ANSWER = "(unusable answer)"
 
 #: What :func:`field_value` returns for an answer that has no such field.
 _MISSING = object()
+
+
+class _CannotTell(Enum):
+    """What reading a grader's signature finds when it has none. Cannot tell means do not refuse: it is called."""
+
+    NO_SIGNATURE = "no signature to read"
 
 
 def _a_number(value: object) -> bool:
@@ -78,6 +99,8 @@ class Grader:
         """
         if isinstance(self.target, Judge):
             raise ValueError("a Judge declares its guardrails itself (Judge(guard={'dimension': 0.02})); list it bare")
+        if isinstance(self.target, Claims):
+            raise ValueError("Claims declares its readings itself, each ranked on its own; list it bare")
         if not (isinstance(self.target, str) and self.target.isidentifier()) and not callable(self.target):
             raise ValueError(f"grader() wraps a function or a field name, not {self.target!r}")
         for name in ("margin", "guard"):
@@ -139,15 +162,10 @@ def grader(
 
     :param target: The function or field name to wrap; ``None`` returns a decorator that wraps the function it
         decorates.
-    :ptype target: Callable[[Mapping[str, Any], Any], float | bool] | str | None
     :param margin: The equivalence margin, in the reading's own units (0.05 is five points on a pass rate).
-    :ptype margin: float | None
     :param guard: Makes the reading a guardrail with this margin.
-    :ptype guard: float | None
     :param range: The lowest and highest grade a function returning a number gives.
-    :ptype range: tuple[float, float] | None
     :return: The :class:`Grader`, or, with no ``target``, the decorator building one.
-    :rtype: Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]
     :raises ValueError: As :class:`Grader` refuses.
     """
     if target is None:
@@ -160,15 +178,13 @@ def grader(
 
 
 def field_value(out: Any, name: str) -> Any:
-    """The answer's value of one field: an attribute of a pydantic model, a key of a mapping, or the answer itself.
+    """The answer's value of one field: a key of a mapping, the answer itself when it is a plain value, else the
+    answer's attribute of that name (a pydantic model's field, a dataclass's).
 
     :param out: The runner's answer; a world runner's is read through its ``answer``.
-    :ptype out: Any
     :param name: The field.
-    :ptype name: str
     :return: The value as JSON would carry it, or a sentinel the label reads as unusable when the answer has no such
         field.
-    :rtype: Any
     """
     if isinstance(out, WorldOutcome):
         out = out.answer
@@ -178,7 +194,8 @@ def field_value(out: Any, name: str) -> Any:
         return out.get(name, _MISSING)
     if out is None or isinstance(out, str | int | float | bool):
         return out
-    return _MISSING
+    # Any other object is read as out.<name> is: a dataclass's field, a named tuple's, an attribute.
+    return getattr(out, name, _MISSING)
 
 
 def label_text(value: Any) -> str | None:
@@ -226,9 +243,7 @@ def field_scorer(name: str) -> GraderFunction:
     labels, refuses a ``null``.
 
     :param name: The field.
-    :ptype name: str
     :return: The grading function, named ``name`` and annotated ``-> bool``.
-    :rtype: GraderFunction
     """
 
     def matches(case: Mapping[str, Any], out: Any) -> bool:
@@ -244,6 +259,124 @@ def field_scorer(name: str) -> GraderFunction:
     return matches
 
 
+#: How a function grader's return annotation spells each kind the engine reads it as, by the spelling.
+_KIND_SPELLINGS = {
+    "bool": "bool",
+    "builtins.bool": "bool",
+    "float": "number",
+    "builtins.float": "number",
+    "int": "number",
+    "builtins.int": "number",
+}
+
+#: The spellings of a union whose members an annotation is read as: ``Optional[A]``, ``Union[A, B]``.
+_UNION_SPELLINGS = frozenset({"Optional", "typing.Optional", "Union", "typing.Union"})
+
+
+def declares_a_check(function: Callable[..., Any], *, ranged: bool = False) -> bool:
+    """Whether a function grader is a check, a pass/fail on 0 to 1, as its author declared it.
+
+    Its return annotated ``-> bool``: a check. Annotated ``-> float`` or ``-> int``, or given a range (``ranged``:
+    ``grader(f, range=(1, 5))``): a number. Neither: a check, since the grader a newcomer writes first answers pass or
+    fail (``def right(case, out): return out == case["label"]``). ``-> bool`` outranks a range, which is refused on it.
+
+    The annotation is read as the text it was written as (``annotationlib.Format.STRING``), parsed as an expression and
+    never evaluated, so a name imported only for type checking is no error and the kind is one in every process that
+    reads it. Each member of a union (``A | B``, ``Union[A, B]``, a quoted ``'A'``) is read. ``None`` is no member a
+    grader may declare (``-> bool | None``, ``Optional[float]``): a grader returns a grade on every path, so a ``None``
+    it returns fails the run, and one it declares is refused here. A decorated function's is the function it wraps,
+    followed through ``__wrapped__``. A coroutine function (``async def``) is refused: a grader is called as a plain
+    function of ``(case, out)``, never awaited.
+
+    :param function: The function grader.
+    :param ranged: Whether a range is declared for it.
+    :return: Whether it is a check.
+    :raises ValueError: It is an ``async def``; its annotation names ``None``, or both bool and a number
+        (``-> bool | float``), or something read as neither (``-> np.float64``, ``-> Decimal``, an alias, ``-> Any``):
+        the message says what was read and the spellings accepted.
+    """
+    if inspect.iscoroutinefunction(inspect.unwrap(function)) or inspect.iscoroutinefunction(function):
+        name = getattr(function, "__name__", "the grader")
+        raise ValueError(
+            f"the grader {name} is an async def, and a grader is called as a plain function of (case, out), never "
+            f"awaited, so it would grade a coroutine: write it def {name}(case, out) (a grader that needs a model's "
+            "reading is a Judge)"
+        )
+    kinds = _declared_kinds(function)
+    if kinds == {"bool"}:
+        return True
+    return not ranged and not kinds
+
+
+def _declared_kinds(function: Callable[..., Any]) -> frozenset[str]:
+    """The kind a function grader's return annotation declares, ``{"bool"}`` or ``{"number"}``; none when it has no
+    annotation, or no signature to read one from (a builtin's).
+
+    :raises ValueError: An annotation read as both kinds, or as neither.
+    """
+    try:
+        returned = inspect.signature(function, annotation_format=annotationlib.Format.STRING).return_annotation
+    except TypeError, ValueError:
+        return frozenset()
+    if returned is inspect.Signature.empty:
+        return frozenset()
+    text = returned if isinstance(returned, str) else annotationlib.type_repr(returned)
+    name = getattr(function, "__name__", "the grader")
+    try:
+        members = _union_members(ast.parse(text.strip(), mode="eval").body)
+    except SyntaxError, ValueError:
+        raise ValueError(_unreadable_kind(name, text, text)) from None
+    if any(isinstance(member, ast.Constant) and member.value is None for member in members):
+        raise ValueError(
+            f"the grader {name} is annotated -> {text}, and None is no grade: a grader returns one on every path, and "
+            f"a None it returns fails the run. Annotate it def {name}(case, out) -> bool and return True or False on "
+            f"every path, or def {name}(case, out) -> float and return a number; raise where no grade can be given"
+        )
+    kinds: set[str] = set()
+    for member in members:
+        spelled = ast.unparse(member)
+        if spelled not in _KIND_SPELLINGS:
+            raise ValueError(_unreadable_kind(name, text, spelled))
+        kinds.add(_KIND_SPELLINGS[spelled])
+    if len(kinds) > 1:
+        raise ValueError(
+            f"the grader {name} is annotated -> {text}, which names both a pass or fail (bool) and a number, so "
+            f"nothing says which it grades: annotate it def {name}(case, out) -> bool to grade pass or fail, or "
+            f"def {name}(case, out) -> float to grade a score, with grader({name}, range=(low, high)) to declare its "
+            "scale"
+        )
+    return frozenset(kinds)
+
+
+def _union_members(node: ast.expr) -> list[ast.expr]:
+    """The members an annotation's expression unions, each read on its own: ``A | B``, ``Optional[A]`` (``A`` and
+    ``None``), ``Union[A, B]``, and a quoted ``'A'`` as the expression it quotes; anything else is one member.
+
+    :raises SyntaxError: A quoted member that is no expression.
+    """
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return [*_union_members(node.left), *_union_members(node.right)]
+    if isinstance(node, ast.Subscript) and ast.unparse(node.value) in _UNION_SPELLINGS:
+        parts = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+        # ``Optional[A]`` is ``A | None``.
+        none = [ast.Constant(None)] if ast.unparse(node.value).endswith("Optional") else []
+        return [member for part in parts for member in _union_members(part)] + none
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _union_members(ast.parse(node.value.strip(), mode="eval").body)
+    return [node]
+
+
+def _unreadable_kind(name: str, text: str, spelled: str) -> str:
+    """Why a function grader's annotation is refused when it names something read as neither kind."""
+    return (
+        f"the grader {name} is annotated -> {text}, and {spelled} is read as neither a pass or fail nor a number: a "
+        f"grader's kind is read from its annotation as written, which names bool for pass or fail (def {name}(case, "
+        f"out) -> bool), or float or int for a number (def {name}(case, out) -> float), alone. An alias, a numpy or "
+        "Decimal type, Any or a Literal is not read through; name the built-in type, or leave the grader unannotated "
+        "to grade pass or fail"
+    )
+
+
 @dataclass
 class GraderPlan:
     """An eval's graders, sorted by what reads them.
@@ -253,12 +386,14 @@ class GraderPlan:
     :ivar fields: Every field grader, in order, the classifier first.
     :ivar goal_checks: Every expression grader.
     :ivar judge: The judge, or ``None``.
+    :ivar claims: The claims grader, or ``None``.
     :ivar margins: Each scorer's equivalence margin, by name.
     :ivar ranges: Each numeric scorer's range, by name.
     :ivar guardrails: Each scorer declared a guardrail, by name.
     :ivar classifier_margin: The classifier's accuracy margin, declared on the runs; ``None`` for none.
     :ivar readings: The measure each grader reads, in the order the graders are listed: the classifier's
         ``accuracy``, any other field's or function's own name, a judge's every dimension, an expression as written.
+        A claims grader's readings are none of them: each ranks on the page on its own, and no lead or bar reads one.
     """
 
     scorers: list[GraderFunction] = field(default_factory=list)
@@ -266,6 +401,7 @@ class GraderPlan:
     fields: list[str] = field(default_factory=list)
     goal_checks: list[str] = field(default_factory=list)
     judge: Judge | None = None
+    claims: Claims | None = None
     margins: dict[str, float] = field(default_factory=dict)
     ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     guardrails: dict[str, Guardrail] = field(default_factory=dict)
@@ -278,22 +414,70 @@ class GraderPlan:
         return None if self.classifier_margin is None else {ACCURACY_MEASURE: self.classifier_margin}
 
 
+def _bare(signature: inspect.Signature) -> inspect.Signature:
+    """A signature as its parameters' names and defaults, the annotations left out: what the author wrote to call it."""
+    return signature.replace(
+        parameters=[
+            parameter.replace(annotation=inspect.Parameter.empty) for parameter in signature.parameters.values()
+        ],
+        return_annotation=inspect.Signature.empty,
+    )
+
+
+def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], name: str) -> None:
+    """Refuse a function grader that cannot be called as ``name(case, out)``: it would raise on every answer, after the
+    runner had answered (and spent on) every case.
+
+    A grader's signature is read for two questions, and both read its annotations as the text they were written as
+    (``annotationlib.Format.STRING``), never evaluated, so a name imported only for type checking is no error. Its
+    arity, here, is read off the outermost signature, what is called (a decorator's wrapper, not the function it wraps:
+    ``follow_wrapped=False``). Its kind, in :func:`declares_a_check`, is read off its declaration, the function a
+    decorator wraps (followed through ``__wrapped__``).
+
+    :raises ValueError: Its signature cannot bind two positional arguments.
+    """
+    signature = _signature_as_called(target)
+    if isinstance(signature, _CannotTell):
+        return
+    try:
+        signature.bind("case", "out")
+    except TypeError:
+        raise ValueError(
+            f"the grader {name}{_bare(signature)} cannot be called as {name}(case, out), which is how each answer is handed to "
+            f"it; declare it to take exactly that: def {name}(case, out): ..."
+        ) from None
+
+
+def _signature_as_called(target: Callable[..., Any]) -> inspect.Signature | _CannotTell:
+    """The outermost signature, what is called (a decorator's wrapper, not the function it wraps), or
+    :attr:`_CannotTell.NO_SIGNATURE` when it has none to read.
+
+    Its annotations are read as the text they were written as, never evaluated: a name imported only for type checking
+    is no error.
+    """
+    try:
+        return inspect.signature(target, follow_wrapped=False, annotation_format=annotationlib.Format.STRING)
+    except TypeError, ValueError:
+        # inspect.signature's own refusal: a builtin or a C wrapper (functools.cache) shows no signature to read.
+        return _CannotTell.NO_SIGNATURE
+
+
 def plan_graders(graders: Any) -> GraderPlan:
     """Sort an eval's ``grader`` slot into what reads each grader.
 
     :param graders: One grader, or a list of them, each a function, a field name, an expression, a
         :class:`~threetears.evals.quick.judged.Judge` or a :class:`Grader`.
-    :ptype graders: Any
     :return: The plan.
-    :rtype: GraderPlan
-    :raises ValueError: No grader; two judges; a grader of no known form; a field named after an engine core measure; or
-        a name graded twice.
+    :raises ValueError: No grader; two judges, two claims graders, or a judge and a claims grader on two models; a
+        grader of no known form; a function that cannot take ``(case,
+        out)``; a function written ``async def`` or whose return annotation is read as both kinds, neither, or names
+        ``None`` (:func:`declares_a_check`); a field named after an engine core measure; or a name graded twice.
     """
     listed: Sequence[Any] = graders if isinstance(graders, list | tuple) else [graders]
     if not listed:
         raise ValueError(
-            "an eval needs at least one grader — a function, a field name, an expression or a Judge: a run nothing "
-            "grades measures nothing"
+            "an eval needs at least one grader — a function, a field name, an expression, a Judge or Claims: a run "
+            "nothing grades measures nothing"
         )
     plan = GraderPlan()
     seen: list[str] = []
@@ -305,6 +489,15 @@ def plan_graders(graders: Any) -> GraderPlan:
                 raise ValueError("an eval is graded by one judge; list one Judge, with every dimension in its rubric")
             plan.judge = target
             plan.readings += [dimension.name for dimension in target.dims]
+            continue
+        if isinstance(target, Claims):
+            if plan.claims is not None:
+                raise ValueError(
+                    "an eval is graded by one Claims: each answer is cut once, and its claims read against one "
+                    "set of documents"
+                )
+            # Its readings rank on the page beside the rest, and none is a grader's reading a lead or a bar reads.
+            plan.claims = target
             continue
         if isinstance(target, str):
             if not target.isidentifier():
@@ -332,8 +525,8 @@ def plan_graders(graders: Any) -> GraderPlan:
             target = field_scorer(target)
         elif not callable(target):
             raise ValueError(
-                f"a grader is a function (case, out) -> bool | float, a field name, an expression over a world, a "
-                f"Judge or a grader(...), not {target!r}"
+                "a grader is a function (case, out) -> bool for pass or fail or -> float for a score, a field name, "
+                f"an expression over a world, a Judge, Claims or a grader(...), not {target!r}"
             )
         else:
             name = getattr(target, "__name__", None)
@@ -342,7 +535,11 @@ def plan_graders(graders: Any) -> GraderPlan:
                     f"a grader's __name__ names its measure, and {target!r} has none a measure can carry; write each "
                     "grader as a def"
                 )
+            _refuse_a_grader_that_cannot_take_its_arguments(target, name)
             seen.append(name)
+            if not isinstance(target, Measure):
+                # Read now, so an annotation read as both kinds or neither is refused before anything runs.
+                declares_a_check(target, ranged=declared is not None and declared.range is not None)
         plan.scorers.append(target)
         name = target.__name__
         plan.readings.append(name)
@@ -355,6 +552,11 @@ def plan_graders(graders: Any) -> GraderPlan:
                 plan.guardrails[name] = Guardrail(margin=declared.guard, direction="higher_is_better")
     if repeated := sorted({name for name in seen if seen.count(name) > 1}):
         raise ValueError(f"{', '.join(repeated)} is graded more than once; each grader is one reading")
+    if plan.judge is not None and plan.claims is not None and plan.judge.model != plan.claims.model:
+        raise ValueError(
+            f"a run has one judge model, and its Judge calls {plan.judge.model!r} while its Claims calls "
+            f"{plan.claims.model!r}; give both the same model"
+        )
     return plan
 
 
@@ -363,6 +565,7 @@ __all__ = [
     "Grader",
     "GraderFunction",
     "GraderPlan",
+    "declares_a_check",
     "expected_label",
     "field_scorer",
     "field_value",

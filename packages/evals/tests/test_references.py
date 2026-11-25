@@ -31,7 +31,9 @@ from threetears.evals.kernel.surface import (
 _REF = cell_ref("v1", "rig")
 
 
-def _surface(*, n_independent: int = 4, judged_cases: int = 4, judged_sem: float | None = 0.25) -> DecisionSurface:
+def _surface(
+    *, n_independent: int = 4, judged_cases: int = 4, judged_sem: float | None = 0.25, time_interval: bool = True
+) -> DecisionSurface:
     cell = CellFacts(
         variant_key="v1",
         apparatus_class_id="rig",
@@ -50,8 +52,8 @@ def _surface(*, n_independent: int = 4, judged_cases: int = 4, judged_sem: float
                     p50=1100.0,
                     p95=1900.0,
                     sem=50.0,
-                    ci_low=1040.9,
-                    ci_high=1359.1,
+                    ci_low=1040.9 if time_interval else None,
+                    ci_high=1359.1 if time_interval else None,
                 ),
                 MeasureSummary(
                     population="scored",
@@ -123,6 +125,17 @@ def test_a_reading_of_one_case_has_no_interval_and_says_why():
 
     assert (reading.ci_low, reading.ci_high) == (None, None)
     assert reading.dispersion == "unestimable: 4 obs of one case, which has no between-case spread"
+
+
+def test_a_time_on_too_few_cases_says_why_it_has_no_interval_and_what_would_give_one():
+    """A standard error with no interval is a spend or a time under five cases above zero: the spread is estimable,
+    so "unestimable" would be false, and the row says how many cases state one."""
+    reading = resolve_reading(_surface(time_interval=False), _REF, "total_ms")
+
+    assert (reading.ci_low, reading.ci_high) == (None, None)
+    assert reading.dispersion == (
+        "no interval: a spend or a time states one from 5 cases above zero, and this has fewer (4 cases)"
+    )
 
 
 def test_an_unestimable_spread_counts_cases_never_observations():

@@ -36,7 +36,6 @@ def running_eval() -> RunningEval | None:
     """The eval run the calling task's work belongs to, or ``None`` outside every one.
 
     :return: The run, or ``None``.
-    :rtype: RunningEval | None
     """
     return _RUNNING_EVAL.get()
 
@@ -46,9 +45,7 @@ def eval_running(name: str) -> Iterator[RunningEval]:
     """Mark the enclosed code, and every task it creates, as one run of eval ``name``.
 
     :param name: The eval's name.
-    :ptype name: str
     :yield: The run.
-    :rtype: Iterator[RunningEval]
     """
     run = RunningEval(name)
     token = _RUNNING_EVAL.set(run)

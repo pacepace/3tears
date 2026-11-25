@@ -22,10 +22,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
-from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, SKEWED_INTERVAL_WITHHELD, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.bars import BarProposal, no_better_end
+from threetears.evals.kernel.numbers import format_number, spell_share
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 
@@ -87,19 +87,15 @@ def propose_bars(
     it describe one set of observations. A cost or latency measure is over the turns the incumbent took
     (population ``delivered``), as its bar will be read; an incumbent none of whose calls took a turn has
     no such interval, and nothing is proposed on it. Nor is anything proposed on a measure observed fewer
-    than two times: one value has no interval to account for its own error.
+    than two times: one value has no interval to account for its own error; nor on a spend or a time with under
+    five cases above zero, which states none (``stats.SKEWED_INTERVAL_WITHHELD`` is the reason given).
 
     :param host: The host whose measures, bars and storage this reads.
-    :ptype host: EvalHost
     :param baseline_campaign_id: The campaign that measured the incumbent configuration.
-    :ptype baseline_campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param aspect: The aspect whose incumbent is read, by label; None reads the campaign's only aspect.
-    :ptype aspect: str | None
     :return: The proposals, each flagged vacuous where nothing could fail it, and the measures nothing
         could be proposed on, with why.
-    :rtype: BaselineBarProposals
     :raises NotFoundError: No such campaign in the scope.
     :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
     :raises ValidationFailedError: The campaign measured no cell, or more than one — a baseline is one
@@ -137,13 +133,15 @@ def propose_bars(
             continue
         if summary.ci_low is None or summary.ci_high is None:
             not_proposed[summary.name] = (
-                f"it was observed {summary.n} time(s), and a single observation has no interval to seed a threshold "
-                "from — nothing would account for the seed's own error"
+                f"{SKEWED_INTERVAL_WITHHELD} ({summary.n_independent} cases), so nothing would account for the "
+                "seed's own error"
+                if summary.sem is not None
+                else f"it was observed {summary.n} time(s), and a single observation has no interval to seed a "
+                "threshold from — nothing would account for the seed's own error"
             )
             continue
         higher_is_better = bool(descriptor.higher_is_better)
         seed = bar_seed(summary.mean, (summary.ci_low, summary.ci_high), higher_is_better=higher_is_better)
-        forms = PageForms.off_page()
         proposals.append(
             host.profile.bars.propose(
                 behavior=campaign.behavior,
@@ -152,11 +150,11 @@ def propose_bars(
                 measures=measures,
                 rationale=(
                     f"the incumbent's measured baseline in campaign {campaign.id}: a mean of "
-                    f"{forms.lone(summary.mean).text} over {summary.n} observations of {summary.n_independent} "
+                    f"{format_number(summary.mean)} over {summary.n} observations of {summary.n_independent} "
                     f"cases, moved √2 − 1 of the way to the {'low' if higher_is_better else 'high'} end of its "
-                    f"{forms.share(INTERVAL_LEVEL).text} interval "
-                    f"({forms.lone(summary.ci_low if higher_is_better else summary.ci_high).text}) "
-                    f"to {forms.lone(seed).text}, so its own measurement error misses an unchanged incumbent only at "
+                    f"{spell_share(INTERVAL_LEVEL)} interval "
+                    f"({format_number(summary.ci_low if higher_is_better else summary.ci_high)}) "
+                    f"to {format_number(seed)}, so its own measurement error misses an unchanged incumbent only at "
                     "the interval's nominal rate"
                 ),
             )

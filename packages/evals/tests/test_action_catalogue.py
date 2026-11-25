@@ -11,8 +11,9 @@ is pinned here holds for FastMCP (``test_fastmcp_transport.py``) and any adapter
   value, an engine refusal — each says what was wrong and what would be right.
 - **A host contributes actions** that mount and run like the engine's.
 - **Every construction refusal fires** — a name that is not ``noun_verb``, an undescribed or nested or
-  reserved parameter, a destructive action with no ``confirm``, long work that returns no job, an
-  example that is not a valid call, a duplicate name, one parameter name meaning two things on a tool.
+  reserved parameter, a required one declaring ``null`` not given, a destructive action with no ``confirm``,
+  long work that returns no job, an example that is not a valid call, a duplicate name, one parameter name
+  meaning two things on a tool.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from __future__ import annotations
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 
 import re
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 from pydantic import BaseModel, Field
@@ -31,14 +32,15 @@ from threetears.evals.actions import (
     Caller,
     HelpTopic,
     analyst_tools,
-    catalogue_primer,
     ToolSpec,
-    engine_actions,
     eval_catalogue,
     read_only_tools,
     render_jobs_started,
     standard_tools,
 )
+from threetears.evals.actions.catalogue import catalogue_primer
+from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
+from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.actions.render import render_cited
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -96,7 +98,7 @@ def tools() -> dict[str, Any]:
 
 
 def test_every_engine_action_is_noun_verb_and_classed() -> None:
-    names = {action.name: action.permission for action in engine_actions()}
+    names = {action.name: action.permission for action in engine_actions_in_catalogue()}
     assert names == {
         "templates_list": "read",
         "judge_configs_list": "read",
@@ -158,14 +160,30 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "campaign_archive": "write",
         "analysis_archive": "write",
         "result_regrade": "write",
+        "run_remeasure": "write",
+        "runs_attest": "write",
         "result_rate": "write",
         "result_rate_person": "write",
+        "blind_read_create": "write",
+        "blind_read_sheet": "read",
+        "blind_read_answer": "write",
+        "blind_read_review": "spend",
+        "blind_read_close": "write",
+        "blind_read_get": "read",
+        "blind_reads_list": "read",
+        "claim_read_create": "write",
+        "claim_read_sheet": "read",
+        "claim_read_answer": "write",
+        "claim_read_close": "write",
+        "claim_read_repeat": "spend",
+        "claim_read_get": "read",
+        "claim_reads_list": "read",
         "writer_case_archive": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
         "insight_delete": "destructive",
     }
-    assert {action.name for action in engine_actions() if action.long_running} == {
+    assert {action.name for action in engine_actions_in_catalogue() if action.long_running} == {
         "run_launch",
         "sweep_launch",
         "job_resume",
@@ -174,9 +192,11 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_drift_check",
         "judge_temperature",
         "writer_pairwise",
+        "blind_read_review",
+        "claim_read_repeat",
     }
-    assert {action.name for action in engine_actions() if action.permission == "spend"} == {
-        action.name for action in engine_actions() if action.long_running
+    assert {action.name for action in engine_actions_in_catalogue() if action.permission == "spend"} == {
+        action.name for action in engine_actions_in_catalogue() if action.long_running
     }, "no engine spend action waits on a model in its call"
 
 
@@ -238,7 +258,7 @@ async def test_a_help_page_carries_the_parameters_and_an_example(tools: dict[str
 
 def test_every_example_is_a_call_its_action_accepts() -> None:
     """The example help prints is held at construction; this proves the hold covers every engine action."""
-    for action in engine_actions():
+    for action in engine_actions_in_catalogue():
         action.params.model_validate(dict(action.example))
 
 
@@ -366,6 +386,10 @@ class _Reserved(EvalBaseModel):
     topic: str = Field(description="Collides with help's.")
 
 
+class _RequiredNullIsOmitted(EvalBaseModel):
+    note: Annotated[str | None, Field(description="Required, so null cannot read as left out."), NullIsOmitted()]
+
+
 class _OptionalConfirm(EvalBaseModel):
     confirm: str | None = Field(default=None, description="Optional, which a destructive action may not be.")
 
@@ -404,6 +428,10 @@ async def _no_path(stage: Any) -> dict[str, Any]:
         ({"params": _Undescribed, "example": {"note": "x"}}, "note is not"),
         ({"params": _Nested, "example": {"inner": {"note": "x"}}}, "parameters are flat"),
         ({"params": _Reserved, "example": {"topic": "x"}}, "topic is reserved"),
+        (
+            {"params": _RequiredNullIsOmitted, "example": {"note": "x"}},
+            "note declares null not given .* but is required",
+        ),
         ({"permission": "destructive"}, "declares a required `confirm`"),
         ({"permission": "destructive", "params": _OptionalConfirm, "example": {}}, "declares a required `confirm`"),
         ({"long_running": True}, "long work returns JobsStarted"),
@@ -454,7 +482,9 @@ def test_long_work_reads_back_as_the_jobs_it_started_with_no_render_declared() -
 
 
 def test_every_engine_action_that_starts_jobs_reads_them_back_the_one_way() -> None:
-    assert {a.name for a in engine_actions() if a.long_running and a.render is not render_jobs_started} == set()
+    assert {
+        a.name for a in engine_actions_in_catalogue() if a.long_running and a.render is not render_jobs_started
+    } == set()
 
 
 def test_a_short_action_declaring_no_render_is_refused() -> None:
@@ -480,7 +510,7 @@ def test_no_engine_parameter_is_described_by_the_action_that_takes_it() -> None:
     host action using the same name for another purpose; it says what the value is.
     """
     named_by_action = []
-    for action in engine_actions():
+    for action in engine_actions_in_catalogue():
         verb = action.name.rsplit("_", 1)[1]
         for field_name, field in action.params.model_fields.items():
             if re.search(rf"\bto {verb}\b", field.description or ""):

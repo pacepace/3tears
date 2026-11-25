@@ -135,11 +135,12 @@ each vocabulary also has a ``Literal`` of the values this build knows (``KnownUs
 caller-facing parameter (an action's filter, a query's) and every writer here takes, so a caller's misspelt value
 is refused as before, and the registry is that ``Literal``'s values. The open vocabularies:
 ``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``FailedBecause``
-(``FAILED_BECAUSE``), ``CostCapOrigin``
+(``FAILED_BECAUSE``), ``ExhaustedBecause`` (``EXHAUSTED_BECAUSE``), ``CostCapOrigin``
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
 (``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
-(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``); on a durable shape, ``GapKind``
+(``OUT_OF_RUN_PURPOSES``), ``RefusalKind`` (``REFUSAL_KINDS``) and ``ClaimLoss`` (``CLAIM_LOSSES``); on a durable
+shape, ``GapKind``
 (``GAP_KINDS``).
 
 Every other vocabulary on a core shape is *closed by design*: a new value changes how an older build must read
@@ -150,6 +151,8 @@ the document, so extending one is a major. Each, and why:
 - ``ArmSchedule`` — whether a comparison's arms were co-loaded on their providers; a reader that cannot say which
   cannot say whether a difference between arms can be the host's capacity.
 - ``CellTermination`` — decides whether a cell is excluded from every figure.
+- ``WrittenOver`` — whether a cell that ran again was cut while it ran, which the count of cells run again names
+  apart, since only a cut can lean a reading.
 - ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
   which excludes the cell.
 - ``GoalCheckProof``, ``GoalCheckIntent`` — what a goal check proves, and how it is checked.
@@ -177,11 +180,42 @@ the document, so extending one is a major. Each, and why:
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
+- ``Aspect.undo``, ``Aspect.undo_ignored`` — the bar the advice on a question switches at, and a lowering of it that
+  was ignored; a value an older build cannot name would be read at a bar it does not know, so the promise it states
+  would not be the one it keeps.
+- ``MembershipChange.change`` — the engine records it, never a host, and the looks at a contrast are counted by it
+  (a join after the results is a look, a departure keeps the look the run made); a change an older build cannot name
+  would be counted as neither, and a look erased.
+- ``ReferenceKey.type`` — how a case's reference key is graded against; a key of a type an older build cannot name
+  would be graded as a set of entities it is not.
+- ``EvidenceProvenance`` — whether a document is case evidence, the same for every arm, or the cell's own; truth reads
+  only case evidence, so a provenance an older build cannot name would be read as evidence of the wrong kind.
+- On a claim's grade: ``GradedClaim.scope``, ``GradedClaim.verdict``, ``GradedClaim.graded_against``,
+  ``GradedClaim.nominated_by``, ``GradedClaim.web``, ``WebCheckRecord.outcome``, ``ClaimCitation.stance`` and
+  ``ClaimCall.role`` — the truth readings count by them (a session claim is in none, a verdict is derived from its
+  citations and its web check, only the judge nominates), so a value an older build cannot name would be counted as
+  the wrong one.
 - ``RaterKind`` — calibration reads a person as ground truth.
+- ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
+  would be stated as neither.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
+- ``SampleKind`` — whether the items a measurement was read on stand for what they were drawn from; a figure is read
+  only from a random draw, so a new kind of sample changes what an older build may claim from it.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
+- On a blind read: ``BlindSlot``, ``BlindAsk``, ``BlindPreferenceAnswer`` — what an item showed and asked, and
+  what an answer gave, which its ratings are read from (who made an answer is a ``Maker``, above: a person's is read
+  as people's and a model's apart, never pooled); ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
+  test a preference was read by, and what it read.
+- On a claim read: ``ClaimQuestion``, ``ClaimStratifier``, ``ClaimStratum``, ``ClaimExclusion``,
+  ``ShownEvidence.provenance``, ``ClaimRepeatAgainst`` and ``ClaimCheckRecord.result`` — what an item asks, the instrument
+  answer its draw is stratified by, the stratum each item stands for (its weight in every figure), why a claim was
+  left out, where a piece of shown evidence came from, whether a repeat was the instrument's own judge or another, and
+  what a closed read's check decided; a new value changes what a figure weights or reads.
+- The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
+  ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one
+  module, for every reader at once.
 - Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
@@ -214,7 +248,7 @@ the frozen fixtures under ``tests/fixtures/core_documents/`` (``scripts/regenera
 in its release notes that every core document is deleted before deploying it (``EvalStorage.reset_core``). A
 durable major instead appends one :class:`CoreUpgrader` to :data:`DURABLE_UPGRADERS`, whose ``from_version`` is
 the old major. A step reads every minor of its ``from_version`` up to the newest one released, and obeys four
-rules: it is pure (no store, host, clock or randomness); it never touches :data:`DURABLE_ADDRESSING_FIELDS`,
+rules: it is pure (no store, host, clock or randomness); it never touches a field the store addresses the document by,
 ``host_payload``, ``kind_payload`` or a stored key or digest (``variant_key``, ``context_key``,
 ``context_components``, ``content_hash``, ``identity_version``), because the store filters, sorts and projects on
 the stored bytes before any upgrade runs; a value it cannot derive becomes None, read as "not recorded"; and its
@@ -382,7 +416,135 @@ CORE_SCHEMA_VERSION: int = 15
 #:   so a run setting none is stored byte for byte as before. None is in any identity, context or variant key, cell or
 #:   confound; the disclosure is carried into the bundle, so a run setting one moves its bundle's fingerprint.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 11
+#: - **v15.12** — a usage row names the upstream provider that served its token-metered calls, as the replies named
+#:   it: ``RoleUsage.served_provider`` (default None: not recorded, a direct provider, or stored before the field
+#:   existed), beside ``served_model``, and a key of the row as it is, so calls a router sent to two upstreams are two
+#:   rows. Left out of the document when unset, so a row setting none is stored byte for byte as before. In no
+#:   identity, key or digest; the bundle's census reads it into each arm's pricing, which no fingerprint covers.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.13** — a model the provider does not serve is a cause of its own: ``EvalResult.model_unserved`` (default
+#:   False: stored before the field existed) marks a cell whose candidate call the provider answered that it does not
+#:   serve the model named (retired, or a model id it does not know); the cell is excluded with an ``infra_error``
+#:   quoting the provider, never judged, and a run taken up again runs it again. ``EvalRun.exhausted_because`` (an open
+#:   vocabulary, ``ExhaustedBecause``: ``account_refused`` or ``model_unserved``; default None: the run did not stop
+#:   exhausted, or was stored before the field existed, when only the account could stop it) says why an ``exhausted``
+#:   run stopped. Neither is in any identity, context key or digest. An older build reads a ``model_unserved`` cell as
+#:   the infra exclusion its ``infra_error`` makes it, and an ``exhausted`` run's cause from its ``error_details``,
+#:   which name the model; an older build taking such a run up keeps its unserved cells as done, excluded.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.14** — a run's cost cap admits each cell's judge phase before any of its calls is paid for, and the run
+#:   records the cells it set aside: ``BudgetStop.cells_not_judged`` (default 0: none set aside, a metered-call stop,
+#:   or stored before the field existed) counts the cells that ran but whose judging the cap had too little left
+#:   for. Such a cell is stored as any cell whose judging did not finish: each of its dims carries a judge error that
+#:   names the cap, which excludes it from every reading and which a re-judge takes up. In no identity, key or
+#:   digest. An older build reads the cell as excluded by its judge errors, and the record without the count.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.15** — a cell whose judging the cost cap set aside is marked: ``EvalResult.judging_set_aside`` (default
+#:   False: judged, or nothing set it aside, or stored before the field existed). Such a cell is no fault of the
+#:   harness: its measures, checks and cost count, and only its judged readings leave it out, under a cause of its own,
+#:   ``cost_cap``, which a report names with its remedy (a re-judge). A re-judge clears it. In no identity, key or
+#:   digest. An older build reads such a cell as excluded whole by its judge errors, under ``infra``, as it did before
+#:   this minor; a re-judge on an older build leaves the mark, which this build reads only while a judge error stands.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.16** — a usage row counts the sends of its calls whose connection broke before any response began and that
+#:   were sent again: ``RoleUsage.maybe_billed_sends`` (default None: none counted, its client counts none, or stored
+#:   before the field existed), beside ``call_count`` and never in it; the provider may have served and billed each,
+#:   and the row's ``cost_usd`` holds none of it. A background delivery names the upstream that served its calls:
+#:   ``AsyncDelivery.served_provider`` (default None: not recorded, a direct provider, or stored before the field
+#:   existed), filled by the host, never on a substituted delivery. Each is left out of the document when unset, so a
+#:   row or entry setting none is stored byte for byte as before. In no identity, key or digest.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.17** — a run's holding records the goal-check proof rules its checks were proved under:
+#:   ``RunLifetime.goal_check_proof_rules`` (default None: the run recorded no proofs, or the holding was stored before
+#:   the field existed), the launch's on the first holding and the rules a take-up re-proved the run's own checks
+#:   under on each later one. A take-up whose re-proof matched moves ``EvalRun.goal_check_proof_rules`` forward to the
+#:   rules it re-proved under. Left out of the document when unset, so a holding setting none is stored byte for byte
+#:   as before. In no identity, key or digest. An older build reads the run's rules as the one version its proofs
+#:   stand under, which the re-proof made true.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.18** — a run records what each of its host's measures counted, and a statement or a re-measure of it is
+#:   recorded: ``EvalRun.measure_definitions`` (default None: stored before the field existed, or assembled without a
+#:   launch; NOT RECORDED, never "unchanged") is the definition digest of each measure the host declared at launch, by
+#:   measure key, and ``ContextComponents.measure_definitions`` is the same map as an additive component of the
+#:   context key: composed only where it is non-empty, so every key computed without it is what it was and
+#:   ``IDENTITY_VERSION`` stays 25. ``EvalRun.measure_attestation`` (default None: never attested) records a host's
+#:   later statement of the definitions a run ran under; ``EvalRun.measure_remeasures`` (default empty: never
+#:   re-measured) and ``EvalResult.measure_rereads`` (default empty: its measures are as its cell wrote them) record a
+#:   re-measure of the run and the values it replaced on each result. Each is left out of the document when unset, so
+#:   a run or result setting none is stored as before. An older build reads a re-measured result's values as its
+#:   cell's own and pools an attested or re-measured run on the key its launch stamped, so a host attests or
+#:   re-measures only once every reader runs this build.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.19** — an out-of-run call can be a blind read's model reviewer's: ``reviewer``, a new value of the open
+#:   vocabulary ``OutOfRunPurpose`` on ``OutOfRunSpend.purpose``, written when a model answers a blind read's sheet
+#:   (one call per item). Measurement spend on its own line, never the candidate's and never the judge's. In no
+#:   identity, key or digest. An older build refuses a row carrying it unless the row says this minor wrote it, and
+#:   then lists the purpose by name beside the ones it knows.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.20** — a judge's evidence can name what its text was rendered from: ``JudgeEvidence.inputs`` (default None:
+#:   the strings are the input themselves, as a conversation's transcript is, or the evidence was stored before the
+#:   field existed), on ``EvalTrace.judge_evidence``. The report writer's page names its stored document's digest, the
+#:   snapshot id it was written over and its open findings' digest, and a pair of pages names both in the order shown.
+#:   A recorded judge call over such evidence is keyed by them instead of by its prompt (recording format 4), so a word
+#:   a page prints differently moves no recording. Left out of the document when unset, so evidence naming none is
+#:   stored byte for byte as before. In no identity, key or digest: ``fingerprint_judged_output`` hashes the three
+#:   strings alone, so every label key is what it was. An older build reads such evidence without it, and a re-judge
+#:   there keys its calls by their prompts, as it did.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.21** — a host's statement of the model that answered a run's candidate calls is recorded:
+#:   ``EvalRun.served_model_attestation`` (default None: never attested, or stored before the field existed) holds
+#:   who stated it, when, the model and the results it covers (``result_ids``: those whose candidate rows named no
+#:   model when it was made), written by the ``runs_attest`` action. No usage row is rewritten: a reading that pools by
+#:   answering model reads those rows through it. Left out of the document when unset, so a run never attested is
+#:   stored as before. In no identity, key or digest. An older build reads the run's rows as they were recorded and
+#:   pools none of them on the statement, which is what the rows say.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.22** — a judge repeat records how its result was chosen: ``JudgeRepeat.sample`` (default None), on
+#:   ``EvalResult.judge_repeats``: ``random`` where every result of the run was asked, in an order the engine drew
+#:   (``judge_repeat_work`` with no result named), so the results repeated before any stop are a random draw;
+#:   ``selected`` where results were named by id. An arm's re-score noise reads only a random draw's repeats; an
+#:   arm whose repeats are none of them one reads ``not available`` (``not_drawn_at_random``, or ``not_recorded``
+#:   for a repeat stored before this minor). Left out of the document when unset, so a repeat stored before is stored
+#:   byte for byte as before. Evidence in a bundle's fingerprint only where set. An older build reads such a repeat
+#:   without it, and reads its self-agreement as it did.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.23** — a row a run taken up again writes over its cell's stored row records what it replaced:
+#:   ``EvalResult.written_over`` (default None: written over nothing, or stored before the field existed), ``cut``
+#:   where some attempt it replaces was cut while it ran, else ``unanswered`` (a call the account refused, or a model
+#:   not served). The count of cells that ran again (``redrawn_cells``) reads it, since the take-up keeps no row of the
+#:   cut, and an engine family discloses that count. Left out of the document when unset, so a row written over
+#:   nothing is stored byte for byte as before. In no identity or key. Evidence in a bundle's fingerprint only where set,
+#:   so no stored fingerprint moves: a row taken up before this build carries none, and a bundle over it fingerprints as
+#:   it did (and counts fewer cells run again, a lower bound it does not flag); a row taken up under this build carries
+#:   it from its first write, so a bundle over it is fingerprinted with it from the start. An older build reads such a
+#:   row as the cell's one answer, which it is, and counts no cell run again for it, which only its disclosure misses.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.24** — claim grading's stored shapes (#1287): a trace may carry ``EvalTrace.claim_evidence``
+#:   (``ClaimEvidence``: the host's segmentation, its segments with their units, the documents claims are checked
+#:   against, each case document naming the case documents it overrides in ``EvidenceDocument.overrides``, left out
+#:   while empty, and an opaque session record) and ``EvalTrace.claim_grades`` (criterion -> ``ClaimGrade``: its calls, its
+#:   numbered evidence, every ``GradedClaim``, every ``WebCheckRecord`` (one per check, which a restatement shares) and
+#:   ``web_loss`` and ``web_replayed``, each left out while unset), beside its judge evidence and never in it,
+#:   and without it: a cell of an unjudged kind may carry claim evidence. A result may carry
+#:   ``EvalResult.claim_tallies`` (criterion -> ``ClaimTally``, whose ``grounded`` says the criterion asks
+#:   groundedness, so every reading is read off the tally with no template in hand, whose ``ground_loss`` records a
+#:   ground step lost alone, costing only the groundedness reading, as ``ClaimGrade.ground_loss`` records it on the
+#:   grade (``documents_undeclared`` where the evidence declares no documents under ``grounded_in``), whose
+#:   ``web_loss`` records a web step lost alone, costing only the web's decisions, as ``ClaimGrade.web_loss`` records
+#:   it, and whose ``silent`` marks a cell whose candidate said nothing: its evidence holds no segment, its grade makes
+#:   no call, and it carries no claim reading and no loss) and
+#:   ``EvalResult.claim_failures`` (criterion -> a ``ClaimLoss``, an open vocabulary), beside
+#:   ``EvalResult.claim_fingerprints`` (criterion -> the definition the cell was due to be graded under, tallied or
+#:   lost) and ``EvalResult.claim_rescores`` (each re-judge of its claim criteria, a ``ClaimRescore``, whose
+#:   ``web_steps`` names the completed criteria whose lost web step alone it finished, and ``skipped`` those lost to the
+#:   trace's cap it left as stored). Each is left
+#:   out of the document while unset, so a trace or result carrying
+#:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
+#:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims
+#:   payload holds at most ``CLAIM_TRACE_BYTES`` (3 MiB), its documents at most ``CLAIM_DOCUMENT_BYTES`` (1 MiB). An
+#:   older build reads such a trace or result under its newer-minor tolerance, keeps the fields and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 24
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -541,25 +703,6 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_second_judge_pass": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_judge_temperature_check": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_action_job": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
-    }
-)
-
-#: Per durable type, every field the store reads on the stored bytes, as :data:`CORE_ADDRESSING_FIELDS` is per core
-#: type, and under the same rule: a durable upgrader may not touch one.
-DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
-    {
-        "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
-        "calibration_rating": _ADDRESSED_EVERYWHERE
-        | {"run_id", "result_id", "rated_at", "output_fingerprint", "criterion_fingerprint"},
-        "eval_template": _ADDRESSED_EVERYWHERE | {"name", "archived", "universal"},
-        "judge_config": _ADDRESSED_EVERYWHERE | {"rubric_dim_id", "archived", "created_at"},
-        "rubric_dim": _ADDRESSED_EVERYWHERE | {"key", "archived", "created_at"},
-        "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
-        "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
-        # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
-        "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
     }
 )
 
@@ -805,10 +948,112 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   holding the source's content, payload, stratum, name and seed record unchanged. Written only on such a copy, so
 #:   every case stored before reads as a copy of nothing. In no digest pre-image and no identity key, so it changes no
 #:   reading, pool or drift. An older build (v16.8 and earlier) reading a copy keeps the field opaquely and writes it
-#:   back.
+#:   back, but does not know the copy stands for its source: a judge-case freeze run on such a pod during a rolling
+#:   deploy stores the case again beside its carried copy.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 #: - **v17.0** — the lever's reader name (above): every other durable shape exactly as v16.9 stored it.
-DURABLE_SCHEMA_MINOR: int = 0
+#: - **v17.1** — the judge evidence a calibration rating holds (``CalibrationRating.rated.evidence``) can name what
+#:   its text was rendered from: ``JudgeEvidence.inputs`` (default None), the core field of v15.20. Left out of the
+#:   document when unset, so every rating that names none is stored byte for byte as before. In no digest pre-image:
+#:   a rating's label key is proven against ``fingerprint_judged_output``, which hashes the evidence's three strings
+#:   alone, so every stored rating still proves. An older build (v17.0) reading a rating that holds it keeps it
+#:   opaquely and writes it back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.2** — a campaign may state what the first screen reads beside its readings: a swept axis may say its levels
+#:   are points on one scale (``SweptAxis.ordered``, default False), an aspect's design how many looks it plans
+#:   (``AspectDesign.planned_looks``, default None), the campaign what its subject serves a month
+#:   (``EvalCampaign.volume_per_month``, default None, snapshotted as ``CampaignDeclaration.volume_per_month``), and
+#:   a recorded call who made it (``CampaignCall.made_by``, ``model``, ``on_behalf_of``, each default None) and the
+#:   campaign bundle's fingerprint it was read against (``CampaignCall.evidence_fingerprint``, default None). Each is
+#:   written only when set, so a campaign setting none is stored exactly as v17.1 stored it, and a call stored before
+#:   reads as made by nobody recorded. None is in a variant key, a measurement context or a fingerprint until a
+#:   campaign sets it; a campaign bundle's fingerprint reads the declaration without its defaults, so it moves only for
+#:   a campaign filed at this minor that sets one. An older build reading a campaign at this minor keeps the fields
+#:   opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.3** — a campaign created once each contrast's looks were counted says so: ``EvalCampaign.looks_rule``
+#:   (``1``, default None), stamped by the engine at creation and never taken from a caller. Written only when set, so a
+#:   campaign created before is stored exactly as v17.2 stored it, and reads as created before looks were counted: its
+#:   looks qualify the method only and none of its stored verdicts moves. Each aspect records its runs joining and
+#:   leaving, append-only: ``Aspect.membership`` (a list of ``MembershipChange``, default empty, left out while empty),
+#:   so a look a run's evidence made is never erased by removing it; an aspect with a member stored before reads its
+#:   looks as not recorded (no count of looks, as neither bound). Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
+#:   reading a campaign at this minor keeps both opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.4** — a new durable type, the blind read: ``blind_read`` (``BlindRead``), a seeded random order of a
+#:   campaign's judged outputs, the answers given to it (a person's, relayed by a caller the host attests for them, or
+#:   the declared reviewer model's, taken only from its own review job), and its close. Stored by the host door's
+#:   actions (``blind_read_create`` and its siblings); the quick path still recomputes its read and stores none. Its
+#:   report stores the judge's scores against each reader as counts only (``BlindVerdictTable``: the confusion counts
+#:   on pass/fail, the full cross-table on 1-5; one reading per model that served a reviewer's answers), never a
+#:   kappa, bar verdict, tier or results-needed figure (#1208), so retiring a statistic never moves this shape. Its
+#:   optional fields ``reviewer``, ``review_job_id`` and ``closed_early`` are written only when set. No other durable
+#:   shape moves, so every document v17.3 stored is stored byte for byte as before. An older build never reads the
+#:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
+#:   deletes never reach them (a new doc type's two disclosed costs, above).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.5** — a blind read's preference stores its counts only, and its p and verdict are read off them when the
+#:   read is loaded or closed (#1236, owner ruling 2026-11-17: store facts, derive judgements, as #1208 ruled for a
+#:   judge's agreement). ``BlindPreference.shares`` (each pair item's candidate share, in the order its test reads
+#:   them) and ``BlindPreference.stake_items`` (the anytime test's planned pair items, its stakes fixed for them before
+#:   the first answer) are written by every preference a close builds, which writes no ``p``, ``verdict`` or too-few
+#:   ``state``: ``threetears.evals.analysis.blind_read.read_preference`` computes all three, for the close and for the
+#:   door's response alike. A preference stored at v17.4 holds no ``shares``; it reads with the ``p``, ``verdict`` and
+#:   ``state`` it carries, and writes them back as stored (a too-few ``state`` its counts contradict is refused). No
+#:   other durable shape moves, and every document v17.4 stored is read and written byte for byte as before. **A recorded exception, for this step only (owner ruling, 2026-11-17).** The rule it
+#:   departs from: an older reader that refuses a newer document makes the change a major. A v17.4 build refuses a blind
+#:   read closed at this minor, by name (``p`` and ``verdict`` are required there; a validation error on
+#:   ``report.preferences.*.p``), and never misreads it. Accepted because v17.4 (the blind read) exists only on
+#:   evals/main SHAs of 2026-11-16 and 2026-11-17, no host pinned one, and the one production host runs
+#:   ``56edc697e``, which predates v17.4: no v17.4 reader can meet a document of this minor. It covers this step alone
+#:   and is no precedent: the rule stands for every other step. (This step's number is the minor after v17.4 that it
+#:   merges at; ``evals/bp-q2`` claims a durable minor too, and integration numbers whichever merges second next.)
+#:   The closing sentence is false for a v17.4 build's read of a ``blind_read`` closed at this minor, the recorded
+#:   exception above, and true of every other durable type, whose shape does not move:
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.6** — an aspect declares how hard its switch is to undo, which sets the bar its advice reads at:
+#:   ``Aspect.undo`` (``"hard"``, default None, the default being easy) and ``Aspect.undo_ignored`` (``"easy"`` where a
+#:   lowering declared after the results was ignored and the earlier ``"hard"`` kept; default None). Both are written
+#:   only when set, so a campaign that declares neither is stored, keyed and fingerprinted exactly as v17.5 stored
+#:   it; neither is in a variant key or measurement context. A v17.5 build reading a campaign at this minor keeps both
+#:   opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.7** — a test case may carry a reference key, the entities its answer is graded against:
+#:   ``EvalTestCase.reference`` (``ReferenceKey``: ``type``, ``core`` and ``acceptable``, each a set of
+#:   ``ReferenceEntity`` with ``name``, ``aliases`` and ``facts`` of ``ReferenceFact``; default None). Written only when
+#:   set, so a case without a key is stored, digested and identified exactly as v17.6 stored it. A template's own case
+#:   digests its key with its content, so an edited key is a new case under a new id. A v17.6 build reading a case at
+#:   this minor keeps the key opaquely and writes it back; its drift digests that case without the key.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.8** — a reference key may carry a context tier, entities outside the answer set whose facts a grader may
+#:   check a reply against: ``ReferenceKey.context`` (a set of ``ReferenceEntity``; default empty). Written only when
+#:   it has an entity, so a key without context is stored, digested, identified and rendered for a judge exactly as
+#:   v17.7 stored it. A set grade never counts a context entity; a name or alias folds to one entity across all three
+#:   tiers. A v17.7 build reading a case at this minor keeps the context opaquely and writes it back; its drift digests
+#:   that case's key without the context.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.9** — a template may declare claim criteria (#1287): ``EvalTemplate.claim_criteria`` (a list of
+#:   ``ClaimCriterion``: ``name``, ``guidance``, ``grounded_in``, ``web`` (``WebBudget``), ``pages`` (``PageBudget``),
+#:   ``repairs`` (``RepairBudget``) and ``judge``; default empty) and ``EvalTemplate.claim_unit_names`` (criterion ->
+#:   the noun a page calls one unit; default empty, presentation like ``goal_check_names``). Each is written only when
+#:   set, so a template without them is stored, digested and measured exactly as v17.8 stored it. A criterion is
+#:   measured content (``measured_template_digest``, ``template_digest``); a unit's noun is in neither. A v17.8 build
+#:   reading a template at this minor keeps both opaquely and writes them back; its digests read the template without
+#:   them, and its launch runs it grading no claims, since the refusal of a kept field at launch ships with this minor.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.10** — a new durable type, the claim read (#1287): ``claim_read`` (``ClaimRead``), one claim criterion's
+#:   graded claims drawn by stratum of the instrument's own answer (its truth verdict, or whether it grounded the
+#:   claim; at most two claims a cell; a seed, each stratum's population by arm, plan and draws, and what was left out
+#:   by why, on ``ClaimDraw``; each item's chance of being drawn on ``ClaimItem.inclusion``), each
+#:   item the claim as the instrument read it (``ClaimItemView``: the claim, its excerpt and segment, the numbered evidence
+#:   and web windows, no verdict, citation or arm; its digest the label key) beside the instrument's answer, and the
+#:   answers people (or a model, read apart) gave to the questions ``true``, ``grounded`` and ``is_claim``. Nothing
+#:   derived is stored: every figure is read off the answers when the read is read. Stored through
+#:   ``EvalStorage.save_claim_read``; no other durable shape moves, so every document v17.9 stored is stored byte for
+#:   byte as before. An older build never reads the type (every read selects by ``doc_type``); its operator wipe of
+#:   durable documents leaves these in place, and its deletes never reach them (a new doc type's two disclosed costs).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 10
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
@@ -891,17 +1136,11 @@ def upgrade_document(
     step never writes the number itself. A document already at ``current`` is returned as a copy, unchanged.
 
     :param document: The stored document, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :param steps: The upgrade chain (:data:`DURABLE_UPGRADERS` in production; the core's is empty).
-    :ptype steps: Sequence[CoreUpgrader]
     :param current: The version to read to.
-    :ptype current: int
     :param baseline: The oldest version read.
-    :ptype baseline: int
     :param space: The version space's name, as a refusal states it.
-    :ptype space: str
     :return: A new document at ``current``; the input is not modified.
-    :rtype: dict[str, Any]
     :raises CoreVersionRefused: ``schema_version`` is missing or not an integer, above ``current``, below
         ``baseline``, or a step the chain needs is not registered; or a step failed on the document, whatever it
         raised, so a stored read meets one refusal type and never a step's own exception.
@@ -952,11 +1191,8 @@ def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
     field's absence reads as its default.
 
     :param document: The stored document, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :param space: The version space's name, as a refusal states it.
-    :ptype space: str
     :return: Its ``schema_minor``.
-    :rtype: int
     :raises CoreVersionRefused: ``schema_minor`` is present and is not a whole number of zero or more.
     """
     if "schema_minor" not in document:
@@ -974,9 +1210,7 @@ def upgrade_durable_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """:func:`upgrade_document` with this build's durable chain, version and baseline.
 
     :param document: A stored durable document.
-    :ptype document: Mapping[str, Any]
     :return: The document at :data:`DURABLE_SCHEMA_VERSION`.
-    :rtype: dict[str, Any]
     :raises CoreVersionRefused: See :func:`upgrade_document`.
     """
     return upgrade_document(
@@ -997,7 +1231,6 @@ __all__ = [
     "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_VERSION_SPACE",
-    "DURABLE_ADDRESSING_FIELDS",
     "DURABLE_BASELINE_VERSION",
     "DURABLE_DOC_TYPES",
     "DURABLE_SCHEMA_MINOR",

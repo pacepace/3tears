@@ -42,19 +42,13 @@ from packages.evals.tests.ops_support import (
     settled,
 )
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.analysis import host_declarations_digest
-from threetears.evals.harness import ReasonedOn, WriterCaseFile
+from threetears.evals.analysis.bundle.schema import host_declarations_digest
+from threetears.evals.harness import ReasonedOn
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.kernel import EvalInsight, NotFoundError, UnreadableRecordError, ValidationFailedError
 from threetears.evals.ops import CampaignExport, OpsHost, UnresolvedLink, campaign_export
-from threetears.evals.schema import (
-    BUILTIN_JUDGE_CONFIG_PREFIX,
-    DOC_TYPE_FACTS,
-    CatalogRubricDim,
-    JudgeConfig,
-    JudgeConfigTombstone,
-    RubricDim,
-    judge_config_of,
-)
+from threetears.evals.schema import DOC_TYPE_FACTS, CatalogRubricDim, JudgeConfig, JudgeConfigTombstone, RubricDim
+from threetears.evals.schema.models import judge_config_of
 from threetears.evals.storage import InMemoryDocumentStore
 
 SCOPE = TOYHOST_SCOPE
@@ -292,8 +286,8 @@ def test_a_campaign_not_in_the_scope_is_refused_naming_it() -> None:
 #: asked, and the refusals: a bare config id, an empty string and three malformed ``@`` shapes.
 JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
     ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "config"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}not-twelve-hex", "builtin"),
+    ("builtin:576896bef534", "builtin"),
+    ("builtin:not-twelve-hex", "builtin"),
     (None, "none"),
     ("bare-config-id", "refused"),
     ("", "refused"),
@@ -346,7 +340,7 @@ def test_a_recorded_judge_identity_is_read_as_the_packages_reader_reads_it(recor
 #: names the prompt sent rather than the config committed to, and an empty string, which names no config.
 RUN_JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
     ("01a15a15-f896-70a5-946f-b987ea7c2276", "config"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
+    ("builtin:576896bef534", "builtin"),
     (None, "none"),
     ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "refused"),
     ("", "refused"),
@@ -422,7 +416,7 @@ def test_judged_results_reach_their_judge_configs_and_dims_and_name_the_builtin_
     storage.save_rubric_dim(stray)
     storage.save_judge_config_tombstone(tombstone)
     result = _first_result(toy)
-    builtin = f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534"
+    builtin = "builtin:576896bef534"
     judged = {"toy.dim": f"{config.id}@{'0' * 12}", "toy.gone": f"cfg-gone@{'1' * 12}", "toy.builtin": builtin}
     assert toy.store.merge_fields(result["id"], SCOPE, {"judge_config_ids": judged})
 
@@ -605,7 +599,13 @@ async def test_the_action_pages_the_closure_and_its_pages_join_to_the_export() -
         assert not outcome.is_error, outcome.text
         pages.append(CampaignExport.model_validate(outcome.structured))
         page = pages[-1].page
-        if page is None or page.next_after_doc_type is None:
+        assert page is not None, "a closure past one page is answered a page at a time"
+        assert (
+            "Pages are not a snapshot: when a page's manifest closure_keys_digest is not the first page's "
+            f"({pages[0].manifest.closure_keys_digest[:12]}…), the campaign moved between calls; read it again from "
+            "the first page."
+        ) in outcome.text
+        if page.next_after_doc_type is None:
             assert "More:" not in outcome.text
             break
         assert (
@@ -637,6 +637,7 @@ async def test_the_mint_hint_names_every_flag_the_mint_requires() -> None:
     assert not outcome.is_error, outcome.text
     for required in ("--documents", "--profile", "--host", "--campaign", "--name <case>", "--out <file>.json.gz"):
         assert required in outcome.text, required
+    assert "Pages are not a snapshot" not in outcome.text, "a closure inside one page is answered whole, unpaged"
 
 
 async def test_the_action_reads_the_callers_scope_and_refuses_a_campaign_it_does_not_hold() -> None:
@@ -926,3 +927,56 @@ async def test_the_action_on_a_reading_host_holds_the_ceiling_it_was_given() -> 
     reading = OpsHost.reading(toy.host.eval_host, campaign_export_max_bytes=1_000_000)
     (refused,) = await _action_pages(reading, toy.campaign_id)
     assert refused.is_error and "export ceiling of 1,000,000 bytes" in refused.text
+
+
+def test_a_claim_read_over_the_campaign_travels_with_its_export_and_reads_the_same_figures() -> None:
+    """A claim read drawn over the campaign is its claim criteria's calibration evidence, as a blind read is its rubric
+    dims': the export carries it with people's answers, and a store the export is put into reads the same figures off
+    it, its items still naming the exported results they were drawn from."""
+    from packages.evals.tests.claim_read_support import CRITERION, FINGERPRINT, graded_cell
+    from threetears.evals.analysis.claim_read import draw_claim_read, read_claim_calibration
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.claim_read import ClaimAnswer, ClaimReadArm, ClaimVerdict
+
+    toy = Toy()
+    run_ids = [run_id for aspect in toy.campaign()["aspects"] for run_id in aspect["run_ids"]]
+    cells = [
+        graded_cell(run_id, result["id"], ["contradicted", "supported", "unverifiable"])
+        for run_id in run_ids
+        for result in toy.documents("eval_result", eval_run_id=run_id)
+    ]
+    drawn = draw_claim_read(
+        cells,
+        [ClaimReadArm(key=f"arm-{at}", run_ids=[run_id]) for at, run_id in enumerate(run_ids)],
+        criterion=CRITERION,
+        criterion_fingerprint=FINGERPRINT,
+        questions=["true"],
+        scope_id=SCOPE,
+        created_by="agent:test",
+        campaign_id=toy.campaign_id,
+        created_at="2026-11-22T00:00:00+00:00",
+    )
+    answers = [
+        ClaimAnswer(
+            item=item.item,
+            rater="ana@example.com",
+            collected_by="agent:test",
+            verdicts=[ClaimVerdict(question="true", score=int(item.stratum != "contradicted"))],
+        )
+        for item in drawn.items
+    ]
+    read = drawn.model_copy(update={"answers": answers})
+    EvalStorage(toy.store).save_claim_read(read, create_only=True)
+
+    exported = toy.export()
+
+    (carried,) = [document for document in exported.documents if document["doc_type"] == "claim_read"]
+    assert carried["answers"] and exported.manifest.doc_type_counts["claim_read"] == 1
+    imported = InMemoryDocumentStore()
+    for document in exported.documents:
+        imported.upsert(document)
+    loaded, _ = EvalStorage(imported).load_claim_read_with_etag(read.id, SCOPE)
+    assert loaded == read
+    exported_results = {document["id"] for document in exported.documents if document["doc_type"] == "eval_result"}
+    assert {item.result_id for item in loaded.items} <= exported_results
+    assert read_claim_calibration(loaded) == read_claim_calibration(read)

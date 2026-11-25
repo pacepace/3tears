@@ -58,10 +58,10 @@ from threetears.evals.run import (
     SECOND_JUDGE_JOB,
     EvalSecondJudgePass,
     SecondJudgeReport,
-    estimate_second_judge,
     run_job_work,
     second_judge_work,
 )
+from threetears.evals.run.judge_second import estimate_second_judge
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.launch import build_judge_service

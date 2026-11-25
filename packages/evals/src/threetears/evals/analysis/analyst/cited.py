@@ -19,15 +19,9 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report.figure_keys import (
-    Figure,
-    FigureKind,
-    Scale,
-    format_figure,
-    page_arm_names,
-    resolve,
-    written_arm,
-)
+from threetears.evals.analysis.report.keys.figure import Figure, FigureKind, Scale, written_arm
+from threetears.evals.analysis.report.keys.names import page_arm_names
+from threetears.evals.analysis.report.keys.resolve import format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import Contrast, ReportInput
@@ -63,7 +57,6 @@ class CitedFigure(BaseModel):
         """The key as a report cites it, as a result's text writes it before `` = ``: the path.
 
         :return: The path.
-        :rtype: str
         """
         return self.key
 
@@ -80,7 +73,6 @@ class WrittenFigure(CitedFigure):
         """The key as a report cites it: the path and its filters, ``path|filter``.
 
         :return: The path, then each filter after a bar.
-        :rtype: str
         """
         return "|".join([self.key, *self.filters])
 
@@ -113,14 +105,10 @@ def cite(key: str, report_input: ReportInput, *, forms: PageForms | None = None)
     """The figure a key names on the report input, with the text the page writes it as.
 
     :param key: The path, without braces or filters (``reading.fast.v2.change``, ``arm:base``).
-    :ptype key: str
     :param report_input: The frozen report input the tool reads.
-    :ptype report_input: ReportInput
     :param forms: The forms the caller prints in, built from ``report_input`` once for all it prints; None for the
         input's own, built for this figure alone.
-    :ptype forms: PageForms | None
     :return: The figure.
-    :rtype: CitedFigure
     :raises UnresolvableReference: The key names nothing the input holds, reads two ways, or names a figure the input
         leaves unstated.
     :raises ValueError: ``forms`` were built from another input.
@@ -149,14 +137,10 @@ def cite_if(key: str, report_input: ReportInput, *, forms: PageForms | None = No
     that type alone as absent. Every other refusal is the tool's own key being wrong, and is raised.
 
     :param key: The path, without braces or filters.
-    :ptype key: str
     :param report_input: The frozen report input the tool reads.
-    :ptype report_input: ReportInput
     :param forms: The forms the caller prints in, built from ``report_input`` once for all it prints (:func:`cite`);
         None for the input's own, built for this figure alone.
-    :ptype forms: PageForms | None
     :return: The figure, or ``None`` when the input does not state it.
-    :rtype: CitedFigure | None
     :raises UnresolvableReference: The key names nothing the input holds, or reads two ways.
     """
     try:
@@ -173,16 +157,11 @@ def cite_written(
     """The figure a key names, written through its filters as the page writes ``{key|filter}``.
 
     :param key: The path, without braces or filters; never an arm, which takes no filter.
-    :ptype key: str
     :param filters: The key's filters, as :func:`~threetears.evals.analysis.report.figure_keys.parse_key` checked them.
-    :ptype filters: tuple[str, ...]
     :param report_input: The frozen report input the tool reads.
-    :ptype report_input: ReportInput
     :param forms: The forms the caller prints in, built from ``report_input`` once for all it prints; None for the
         input's own, built for this figure alone.
-    :ptype forms: PageForms | None
     :return: The figure, ``reads`` written through the filters.
-    :rtype: WrittenFigure
     :raises UnresolvableReference: The key does not resolve, or a filter does not suit its figure.
     :raises ValueError: ``forms`` were built from another input.
     """
@@ -207,14 +186,11 @@ def cite_written(
 def contrast_key(report_input: ReportInput, contrast: Contrast) -> str:
     """The key a contrast's figures are read under: unqualified, or by its aspect where the input holds its arm and
     measure more than once. ``contrasts_list`` cites a contrast's figures under it, ``arms_compare`` its cases, and the
-    editor's ``caveat_not_carried`` fact (``analysis/report_doc_facts.py``) names them alike.
+    editor's ``caveat_not_carried`` fact (``analysis/report/doc_page/facts.py``) names them alike.
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
     :return: The key's path, before its statistic (``contrast.<arm>.<measure>``).
-    :rtype: str
     """
     held = [c for c in report_input.contrasts if (c.arm, c.measure) == (contrast.arm, contrast.measure)]
     if len(held) > 1 and contrast.aspect is not None:

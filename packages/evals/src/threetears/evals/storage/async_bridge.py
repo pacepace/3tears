@@ -15,7 +15,7 @@ worker thread waits for its answer.
   The engine copies its context onto the executor thread
   (:func:`~threetears.evals.kernel.offload.run_blocking`); the bridge carries it on into the task.
 - **A call on a loop thread is refused**, before anything is scheduled
-  (:func:`~threetears.evals.schema.refuse_on_event_loop`). Waiting on ``loop`` from ``loop``'s own thread
+  (:func:`~threetears.evals.schema.store_port.refuse_on_event_loop`). Waiting on ``loop`` from ``loop``'s own thread
   never returns, and waiting from another loop's thread stalls that loop for the round trip.
 - **A loop that is not running is named**, rather than waited on: a call scheduled on a stopped loop never
   starts, and its caller would wait forever.
@@ -44,7 +44,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Mapping, Sequence
 from datetime import datetime
 from functools import partial
 from types import MappingProxyType
@@ -55,7 +55,12 @@ from threetears.evals.schema.store_port import (
     AsyncResultReadings,
     AsyncStoreClock,
     GroupMeasure,
+    check_after,
+    narrow_groups,
+    order_and_page,
     refuse_on_event_loop,
+    takes_after,
+    takes_exclude_in_items,
 )
 
 __all__ = ["AsyncStoreBridge", "bridge_async_store"]
@@ -78,9 +83,7 @@ class AsyncStoreBridge:
         """Bridge ``store``, whose calls run on ``loop``.
 
         :param store: The async store.
-        :ptype store: AsyncDocumentStore
         :param loop: The loop its calls run on.
-        :ptype loop: asyncio.AbstractEventLoop
         """
         self.store = store
         self.loop = loop
@@ -89,9 +92,7 @@ class AsyncStoreBridge:
         """Run the coroutine ``make`` builds as a task on :attr:`loop`, in the caller's context, and wait for it.
 
         :param make: Builds the store call's coroutine; called on the loop, inside the task.
-        :ptype make: Callable[[], Coroutine[Any, Any, T]]
         :return: What the coroutine returned.
-        :rtype: T
         :raises StoreCalledOnEventLoop: The calling thread is running an event loop.
         :raises RuntimeError: :attr:`loop` is not running, so the call would never start.
         :raises concurrent.futures.CancelledError: The task was cancelled on its loop before it answered.
@@ -152,11 +153,28 @@ class AsyncStoreBridge:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`."""
+        """See :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`.
+
+        ``after`` is passed on to a store whose ``by_doc_type`` declares it
+        (:func:`~threetears.evals.schema.store_port.takes_after`). A store written before it is asked an ordered read
+        as the whole match, which is ordered and paged here
+        (:func:`~threetears.evals.schema.store_port.order_and_page`), ties by ``id``, as the port promises of a store
+        that declares ``after``, which the bridge does.
+        """
+        if takes_after(self.store.by_doc_type):
+            field_eq = {**field_eq, "after": after}
+        else:
+            check_after(after, order_by)
+            if order_by is not None:
+                rows = self._call(
+                    partial(self.store.by_doc_type, doc_type, scope_id, exclude=exclude, field_in=field_in, **field_eq)
+                )
+                return order_and_page(rows, order_by=order_by, descending=descending, after=after, limit=limit)
         return self._call(
             partial(
                 self.store.by_doc_type,
@@ -272,8 +290,11 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
                 exhausted = True
                 batch, exhausted = self._call(partial(_take, rows, _ROWS_PER_HOP))
         finally:
-            if not exhausted and isinstance(rows, AsyncGenerator):
-                self._call(rows.aclose)
+            # Any async iterator that can be closed is closed, not only an async generator: a store's own cursor class
+            # releases its cursor in ``aclose`` as a generator does.
+            aclose = getattr(rows, "aclose", None)
+            if not exhausted and callable(aclose):
+                self._call(aclose)
 
     def grouped(
         self,
@@ -282,15 +303,33 @@ class _ReadingAsyncStoreBridge(AsyncStoreBridge):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop."""
-        return self._call(
-            partial(
-                self._readings().grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`: the async store's ``grouped``, on its loop.
+
+        ``exclude_in_items`` is passed on to a store whose ``grouped`` declares it; one written before it is asked
+        without it, and its values are narrowed here (:func:`~threetears.evals.schema.store_port.narrow_groups`).
+        """
+        grouped = self._readings().grouped
+        if exclude_in_items and takes_exclude_in_items(grouped):
+            return self._call(
+                partial(
+                    grouped,
+                    doc_type,
+                    scope_id,
+                    by=by,
+                    measures=measures,
+                    exclude_in_items=exclude_in_items,
+                    field_in=field_in,
+                    **field_eq,
+                )
             )
+        groups = self._call(
+            partial(grouped, doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq)
         )
+        return narrow_groups(groups, measures, exclude_in_items)
 
 
 class _ClockedReadingAsyncStoreBridge(ClockedAsyncStoreBridge, _ReadingAsyncStoreBridge):
@@ -317,13 +356,10 @@ def bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoo
     arrive off that loop.
 
     :param store: The async adapter.
-    :ptype store: AsyncDocumentStore
     :param loop: The loop its calls run on.
-    :ptype loop: asyncio.AbstractEventLoop
     :return: The bridge: one that offers :class:`~threetears.evals.schema.StoreClock` exactly when ``store`` offers
         :class:`~threetears.evals.schema.AsyncStoreClock`, and :class:`~threetears.evals.schema.ResultReadings`
         exactly when it offers :class:`~threetears.evals.schema.AsyncResultReadings`.
-    :rtype: AsyncStoreBridge
     :raises TypeError: ``store`` has a ``now`` that is not a coroutine function: an async store's clock is awaited,
         and a synchronous one would be the calling process's time passed off as the database's. Or it offers the
         readings with a ``grouped`` that is not a coroutine function, or an ``iter_narrowed`` that is one (it gives an

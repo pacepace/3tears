@@ -348,7 +348,7 @@ def _seeded_campaign(
     ``contrast-one`` is shifted by ``shift`` on ``field_accuracy``; nothing else moves. ``noise`` scales each
     observation's own noise around its case's level: at 0 every arm reads its case's level exactly, so a shift
     moves every case by one amount and the comparison has no spread. ``cases_of`` names
-    which case indices an arm ran (default: the first ``n_cases``; up to ``n_cases + 4``), so a contrast can
+    which case indices an arm ran (default: the first ``n_cases``), so a contrast can
     share some or only one of the control's cases and take the paired or the unpaired branch.
 
     :return: The bundle, and ``{(arm, reading): {case id: per-case mean}}`` as the observations were written.
@@ -356,7 +356,8 @@ def _seeded_campaign(
     """
     runs, results = [], {}
     written: dict[tuple[str, str], dict[str, float]] = {}
-    case_levels = {index: (rng.gauss(0.0, 0.08), rng.gauss(0.0, 1.0)) for index in range(n_cases + 5)}
+    ran = [index + 1 for indices in (cases_of or {}).values() for index in indices]
+    case_levels = {index: (rng.gauss(0.0, 0.08), rng.gauss(0.0, 1.0)) for index in range(max([n_cases + 5, *ran]))}
     for model in _ARMS:
         run = make_eval_run(status="completed", candidate_model=model)
         runs.append(run)
@@ -416,7 +417,9 @@ class TestTheBundleAppliesTheRule:
         ("label", "n_cases", "repeats", "shift", "cases_of", "branch"),
         [
             ("no difference, paired", 5, 3, 0.0, None, ("contrast-one", "paired", "not_separated")),
-            ("a clear difference, paired", 6, 2, 0.25, None, ("contrast-one", "paired", "improved")),
+            # On field_accuracy's range of 0 to 1 the bounded test reads every comparison: thirty cases show a move of
+            # 0.25 where six showed it to the t-test.
+            ("a clear difference, paired", 30, 2, 0.25, None, ("contrast-one", "paired", "improved")),
             (
                 "a small difference, partly shared cases",
                 8,
@@ -427,10 +430,10 @@ class TestTheBundleAppliesTheRule:
             ),
             (
                 "one shared case, so unpaired",
-                8,
+                40,
                 3,
                 0.35,
-                {"contrast-one": range(7, 13)},
+                {"contrast-one": range(39, 79)},
                 ("contrast-one", "unpaired", "improved"),
             ),
             # No spread: every case moved by one amount, so no t exists. On field_accuracy's declared range the

@@ -1,7 +1,8 @@
 """A completion client whose calls count in the run's cost cap, one call at a time, through one cell's sink.
 
 A cell's paid calls are what a run's cost cap counts, once the cell's result is recorded; the cap is read
-between cells and refuses no call inside one. :class:`CappedCompletion` reports a cell's spend as it goes,
+between cells and refuses no call made through this. (The engine's own judging is admitted against the cap before a
+cell's judge phase, apart from this wrapper.) :class:`CappedCompletion` reports a cell's spend as it goes,
 for a completion client, written once: when each call returns it adds what the call cost to the cell's sink
 (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`).
 
@@ -41,6 +42,7 @@ __all__ = [
     "prompt_token_bound",
     "refresh_prices",
     "turn_prompt_token_bound",
+    "unpriced_because",
 ]
 
 #: The tokens :func:`prompt_token_bound` allows for a prompt's framing beyond its text (role markers, a schema's
@@ -69,13 +71,9 @@ def prompt_token_bound(system: str, user: str, response_format: Mapping[str, Any
     ``approx_input_tokens`` line is a separate characters-over-two ballpark of the same request.
 
     :param system: The system prompt the call sends.
-    :ptype system: str
     :param user: The user message the call sends.
-    :ptype user: str
     :param response_format: The provider directive the call sends, or ``None``.
-    :ptype response_format: Mapping[str, Any] | None
     :return: The bound, in tokens.
-    :rtype: int
     """
     bound = _text_bytes(system) + _text_bytes(user) + PROMPT_FRAMING_TOKENS
     if response_format is not None:
@@ -93,13 +91,9 @@ def turn_prompt_token_bound(system: str, messages: Sequence[TurnMessage], tools:
     two never measure one turn differently.
 
     :param system: The system prompt the turn sends.
-    :ptype system: str
     :param messages: The conversation it sends.
-    :ptype messages: Sequence[TurnMessage]
     :param tools: The tools it sends.
-    :ptype tools: Sequence[TurnToolSpec]
     :return: The bound, in tokens.
-    :rtype: int
     """
     sent = json.dumps(
         [message.to_json() for message in messages] + [tool.to_json() for tool in tools], ensure_ascii=False
@@ -133,9 +127,7 @@ def ceiling_is_estimate(client: object) -> bool:
     bound, as its ``price_ceiling`` says it is; a wrapper forwards the shipped client's.
 
     :param client: The client a call will be made on.
-    :ptype client: object
     :return: Whether its ceilings are estimates.
-    :rtype: bool
     """
     return isinstance(client, _SaysWhetherItEstimates) and client.ceiling_is_estimate() is True
 
@@ -144,11 +136,32 @@ async def refresh_prices(client: object) -> None:
     """Bring ``client``'s prices up to date before its calls are priced: await its ``refresh_prices()``, if it has one.
 
     :param client: The client whose calls are about to be priced.
-    :ptype client: object
     """
     refresh = getattr(client, "refresh_prices", None)
     if callable(refresh):
         await refresh()
+
+
+def unpriced_because(client: object) -> str:
+    """Why ``client`` gives no price ceiling for a call: its own words when it offers them, else what the engine saw.
+
+    Read beside :func:`call_ceiling` when it answers ``None``, by whoever refuses or discloses the unpriced call. A
+    client that says why offers ``price_ceiling_refusal()`` (the shipped ``Model`` does: a catalogue that could not be
+    read, a model no row prices); one that does not is named, with what it did.
+
+    :param client: The client a call will be made on, whose ceiling was ``None``.
+    :return: Why there is no ceiling, in a clause a refusal quotes.
+    """
+    name = getattr(client, "model_name", None)
+    model = f"{name!r}" if isinstance(name, str) else "the model"
+    if not isinstance(client, _PricesItsCalls):
+        return f"the host's client for {model} has no price_ceiling, so it bounds no call"
+    explain = getattr(client, "price_ceiling_refusal", None)
+    if callable(explain):
+        why = explain()
+        if isinstance(why, str) and why.strip():
+            return why
+    return f"the host's client for {model} answered no price ceiling and gave no reason"
 
 
 def call_ceiling(
@@ -162,19 +175,13 @@ def call_ceiling(
     """The most ``attempts`` requests of one prompt pair on ``client`` can cost, or ``None`` when it cannot say.
 
     :param client: The client the call will be made on.
-    :ptype client: object
     :param system: The system prompt the call sends.
-    :ptype system: str
     :param user: The user message the call sends.
-    :ptype user: str
     :param response_format: The provider directive the call sends, or ``None``.
-    :ptype response_format: dict[str, Any] | None
     :param attempts: How many requests the call can become in the engine's own hands — a judge's parse retry
         (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`) re-sends the same pair. The client's
         own re-sends are already inside its ceiling.
-    :ptype attempts: int
     :return: The ceiling in dollars; ``None`` for a client with no ``price_ceiling``, or one that answered ``None``.
-    :rtype: float | None
     :raises ValueError: ``attempts`` is below 1, or the client answered an amount that is negative or not finite.
     """
     if attempts < 1:
@@ -203,12 +210,9 @@ class CappedCompletion:
         """Bind the client, the cell's sink, and whose spend its calls are.
 
         :param inner: The client every call is forwarded to.
-        :ptype inner: CompletionGenerator
         :param sink: The cell's sink, which counts each call's cost.
-        :ptype sink: CellSink
         :param source: Whose spend the calls are — ``simulator`` for the simulated user's, ``candidate`` for a
             candidate's own.
-        :ptype source: CellPending
         """
         self._inner = inner
         self._sink = sink
@@ -218,13 +222,9 @@ class CappedCompletion:
         """Make the call, and count what it cost in the cell's spend.
 
         :param system: The system prompt.
-        :ptype system: str
         :param user: The user message.
-        :ptype user: str
         :param response_format: The provider directive, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: The client's completion, unchanged.
-        :rtype: Any
         """
         await refresh_prices(self._inner)
         # A call that raises — or is cancelled — returns no cost to count; whatever it was billed is unknown here, and

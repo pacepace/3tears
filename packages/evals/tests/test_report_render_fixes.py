@@ -29,7 +29,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_margins import weakest_margin
 from threetears.evals.analysis.style import check_names
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.numbers import UNPRICED
 

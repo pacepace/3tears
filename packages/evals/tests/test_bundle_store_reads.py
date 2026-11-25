@@ -29,6 +29,7 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.storage import READINGS_PAGE, EvalStorage
 from threetears.evals.schema import GroupMeasure, JudgedArtifact, JudgeEvidence
+from threetears.evals.schema.models import ClaimCriterion, PageBudget, RepairBudget
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
     DEFAULT_SUBJECT,
@@ -91,7 +92,7 @@ class _CallCounter(InMemoryDocumentStore):
 
 
 def _assembly_reads(
-    *, runs: int, archived: int, templates: int, insights: int, capable: bool
+    *, runs: int, archived: int, templates: int, insights: int, capable: bool, claims: bool = False
 ) -> Counter[tuple[str, str]]:
     """The store calls one assembly makes over a campaign of this size, whose declared control needs its archived runs.
 
@@ -100,11 +101,14 @@ def _assembly_reads(
     :param templates: Distinct templates the runs ran.
     :param insights: Prior insights of the subject, each minted by an analysis of its own.
     :param capable: Read through the store as it is (the store's path), or behind the port alone (the engine's).
+    :param claims: Whether the templates declare a claim criterion, whose judge's claim reads assembly then reads.
     """
     store = _CallCounter()
     storage = EvalStorage(store if capable else EngineOnlyStore(store))
     for index in range(templates):
-        storage.save_template(make_template(id=f"tpl-{index}", name=f"template-{index}"))
+        storage.save_template(
+            make_template(id=f"tpl-{index}", name=f"template-{index}", claim_criteria=[_CRITERION] if claims else [])
+        )
     run_ids = []
     for index in range(runs):
         run = make_eval_run(
@@ -162,6 +166,15 @@ _BATCHES = Counter(
 )
 
 
+#: A claim criterion a template may declare, so its bundle reads the claim reads of its judge.
+_CRITERION = ClaimCriterion(
+    name="answer.claims",
+    pages=PageBudget(per_document_chars=2000, total_chars=4000, window_chars=1000),
+    repairs=RepairBudget(rounds=2, max_items_per_cell=4),
+    judge="builtin",
+)
+
+
 def test_on_the_stores_path_the_store_calls_do_not_grow_with_the_campaign() -> None:
     small = _assembly_reads(runs=2, archived=1, templates=1, insights=1, capable=True)
     large = _assembly_reads(runs=16, archived=3, templates=4, insights=6, capable=True)
@@ -182,3 +195,17 @@ def test_on_the_engines_path_the_results_take_a_key_read_per_run_and_a_read_per_
         pages = math.ceil(runs * _CASES / READINGS_PAGE)
 
         assert reads == _BATCHES + Counter({("by_doc_type", "eval_result"): runs, ("get_many", "eval_result"): pages})
+
+
+def test_a_bundle_grading_claims_reads_its_claim_reads_in_one_batch_more() -> None:
+    """A template declaring a claim criterion adds one batch, the claim reads its judge's check stands on, on either
+    path; a bundle grading no claims never asks (the budgets above)."""
+    stores = _assembly_reads(runs=6, archived=2, templates=3, insights=4, capable=True, claims=True)
+    engines = _assembly_reads(runs=2, archived=1, templates=2, insights=3, capable=False, claims=True)
+
+    one_more = Counter({("by_doc_type", "claim_read"): 1})
+    assert stores == _BATCHES + one_more + Counter({("iter_narrowed", "eval_result"): 1})
+    pages = math.ceil(2 * _CASES / READINGS_PAGE)
+    assert engines == _BATCHES + one_more + Counter(
+        {("by_doc_type", "eval_result"): 2, ("get_many", "eval_result"): pages}
+    )

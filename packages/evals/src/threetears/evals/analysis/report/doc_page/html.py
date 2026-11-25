@@ -37,6 +37,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
+from threetears.evals.analysis.report.chart_levels import levels_said
 from threetears.evals.analysis.report.doc_page.model import (
     DocCheck,
     DocClaim,
@@ -161,6 +162,36 @@ def _block(evidence: DocEvidence, chart_id: str, *, static: bool) -> str:
     return f'{drawn}<p class="cap">{_prose(evidence.caption)}</p>{degraded}'
 
 
+def _levels_said(claims: Sequence[DocClaim]) -> list[DocClaim]:
+    """The claims with their evidence charts' heads set to state each interval level once on the page, in the order
+    the page draws them (:func:`~threetears.evals.analysis.report.chart_levels.levels_said`, #1128)."""
+    placed = [
+        (at, place, evidence.chart)
+        for at, claim in enumerate(claims)
+        for place, evidence in enumerate(claim.evidence)
+        if evidence.chart is not None
+    ]
+    said = levels_said([chart.chart for _, _, chart in placed])
+    moved = {
+        (at, place): chart.model_copy(update={"chart": block})
+        for (at, place, chart), block in zip(placed, said, strict=True)
+        if block is not chart.chart
+    }
+    return [
+        claim.model_copy(
+            update={
+                "evidence": [
+                    evidence.model_copy(update={"chart": moved[at, place]}) if (at, place) in moved else evidence
+                    for place, evidence in enumerate(claim.evidence)
+                ]
+            }
+        )
+        if any(key[0] == at for key in moved)
+        else claim
+        for at, claim in enumerate(claims)
+    ]
+
+
 def _claim(claim: DocClaim, *, static: bool) -> str:
     opening, closing = _WEIGHT_TAGS[claim.weight]
     blocks = "".join(
@@ -271,15 +302,11 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
     """Write a report document's page as one standalone HTML page (this module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :param static: Write the static page: no ``<script>``, no ``<link>``, every chart drawn as inline SVG above its
         table of values.
-    :ptype static: bool
     :param record: Markup this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
         out closed after the document, which it leaves as it is; none by default.
-    :ptype record: Sequence[str]
     :return: The page.
-    :rtype: str
     """
     highlighted = page.recommended_rows
     headline = one_line(page.headline)
@@ -302,6 +329,7 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="page">',
         '<article data-page="doc">',
         _masthead(page.masthead, page.title),
+        *([f'<p class="callout warn" data-part="stopped">{escape(page.stopped)}</p>'] if page.stopped else []),
         *([f'<p class="callout warn" data-part="draft">{escape(draft_line(page))}</p>'] if page.draft else []),
         *(
             [f'<p class="callout" data-part="open"><a href="#findings">{escape(opened)}</a></p>']
@@ -312,7 +340,7 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="bluf">',
         *bluf,
         "</div>",
-        *(_claim(claim, static=static) for claim in page.claims),
+        *(_claim(claim, static=static) for claim in _levels_said(page.claims)),
         *([_explore(page.explore)] if page.explore is not None else []),
         *([_next(page.next)] if page.next else []),
         *_appendix(page),

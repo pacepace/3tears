@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import AnalysisContextBundle, campaign_report, record_campaign_call, serialize_report
+from threetears.evals.analysis import AnalysisContextBundle, campaign_report, serialize_report
+from threetears.evals.analysis.service import record_campaign_call
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.storage import InMemoryDocumentStore

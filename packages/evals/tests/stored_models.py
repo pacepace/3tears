@@ -48,6 +48,33 @@ from packages.evals.tests.fixtures.report_inputs.dataset import report_input_of
 from threetears.evals.analysis.analyst.snapshot import report_snapshot
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.blind_read import (
+    BlindAgreement,
+    BlindAnswer,
+    BlindArm,
+    BlindDraw,
+    BlindItem,
+    BlindOutput,
+    BlindPreference,
+    BlindRead,
+    BlindReadReport,
+    BlindReview,
+    BlindReviewerCheck,
+    BlindVerdict,
+    BlindVerdictTable,
+)
+from threetears.evals.schema.claim_read import (
+    ClaimAnswer,
+    ClaimDraw,
+    ClaimItem,
+    ClaimRead,
+    ClaimReadArm,
+    ClaimStratumDraw,
+    ClaimVerdict,
+    ClaimItemView,
+    ShownEvidence,
+    item_view_digest,
+)
 from threetears.evals.schema.models import (
     builtin_judge_config_id,
     CaseSet,
@@ -159,6 +186,19 @@ _RATED_CRITERION = RubricDim(name="conversation.tone", description="Warm and on 
 #: The label key a sampled judge score and the rating of it carry (#628): the sample result's tone score, read
 #: off one rendered output on the tone dimension's definition.
 _LABEL_KEY = label_key_of(_RATED_EVIDENCE, _RATED_CRITERION)
+
+#: A claim as a claim read shows it: the claim, its excerpt in its segment, a case passage and a web window.
+_CLAIM_VIEW = ClaimItemView(
+    claim="The Lantern Almanac was first printed in 1921.",
+    excerpt="first printed in 1921",
+    start=24,
+    end=45,
+    segment="The Lantern Almanac was first printed in 1921.",
+    evidence=[
+        ShownEvidence(ref="S1", provenance="case", title="Catalogue", text="Lantern Almanac, first printing 1921."),
+        ShownEvidence(ref="W1", provenance="web", title="The Lantern Almanac", text="It was first printed in 1921."),
+    ],
+)
 
 
 #: The lease fault every job record's sample carries, so the frozen core corpus from v13 holds a record with one.
@@ -315,6 +355,187 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         findings=[{"claim": "c4", "severity": "should_fix", "finding": "The off-lane share is a lead."}],
         generation={"turns": [{"role": "analyst", "round": 1, "cost_usd": None}], "bounces": 0},
         created_by="agent:test",
+    ),
+    # A pair read closed early: one person's answer, a declared reviewer's review, the judge's scores against the person
+    # and against the reviewer as one served model (counts only), the reviewer against the person, and a preference
+    # too few to read, stored as its shares and its stakes' planned pair items with no p, verdict or state (#1236).
+    # One claim drawn from the supported stratum of a draw by truth verdict, its view holding a case passage and a web
+    # window, and one person's answer to both questions asked.
+    "ClaimRead": lambda: ClaimRead(
+        id="claimread-0b5b9abb32a0",
+        scope_id="uni-1",
+        name="almanac claims",
+        created_by="agent:test",
+        campaign_id="c-1",
+        criterion="almanac.claims",
+        criterion_fingerprint="7" * 64,
+        questions=["true", "is_claim"],
+        arms=[ClaimReadArm(key="k-control", run_ids=["run-a"])],
+        draw=ClaimDraw(
+            seed=7,
+            stratify_by="truth",
+            per_cell=2,
+            population_digest="9" * 64,
+            strata=[
+                ClaimStratumDraw(stratum="contradicted", population=0, cells=0, planned=0, drawn=0),
+                ClaimStratumDraw(stratum="true_ungrounded", population=0, cells=0, planned=0, drawn=0),
+                ClaimStratumDraw(stratum="unverifiable", population=0, cells=0, planned=0, drawn=0),
+                ClaimStratumDraw(
+                    stratum="supported", population=3, cells=2, planned=1, drawn=1, by_arm={"k-control": 3}
+                ),
+            ],
+            excluded={"restatement": 1},
+        ),
+        items=[
+            ClaimItem(
+                item="0b5b9abb32a0",
+                stratum="supported",
+                arm="k-control",
+                run_id="run-a",
+                result_id="res-a",
+                case_id="case-1",
+                claim=0,
+                verdict="supported",
+                grounded=None,
+                inclusion=0.25,
+                view_digest=item_view_digest(_CLAIM_VIEW),
+                view=_CLAIM_VIEW,
+            )
+        ],
+        answers=[
+            ClaimAnswer(
+                item="0b5b9abb32a0",
+                rater="ana@example.com",
+                collected_by="agent:test",
+                verdicts=[
+                    ClaimVerdict(question="true", score=1, reason="The catalogue says 1921."),
+                    ClaimVerdict(question="is_claim", score=1),
+                ],
+            )
+        ],
+    ),
+    "BlindRead": lambda: BlindRead(
+        id="blind-0b5b9abb32a0",
+        scope_id="uni-1",
+        name="tone, blind",
+        created_by="agent:test",
+        campaign_id="c-1",
+        arms=[
+            BlindArm(key="k-control", role="control", run_ids=["run-a"]),
+            BlindArm(key="k-candidate", role="candidate", run_ids=["run-b"]),
+        ],
+        criteria=[_RATED_CRITERION],
+        ask=["verdicts", "preference"],
+        draw=BlindDraw(
+            seed=7, population=1, population_digest="9" * 64, planned_items=1, excluded={"identical outputs": 1}
+        ),
+        items=[
+            BlindItem(
+                item="0b5b9abb32a0",
+                case_id="case-1",
+                outputs=[
+                    BlindOutput(
+                        slot=slot,
+                        arm=arm,
+                        run_id=run_id,
+                        result_id=result_id,
+                        output_fingerprint=_LABEL_KEY.output_fingerprint,
+                        criterion_fingerprints={"conversation.tone": _LABEL_KEY.criterion_fingerprint},
+                        evidence=_RATED_EVIDENCE,
+                    )
+                    for slot, arm, run_id, result_id in (
+                        ("A", "k-candidate", "run-b", "res-b"),
+                        ("B", "k-control", "run-a", "res-a"),
+                    )
+                ],
+            )
+        ],
+        answers=[
+            BlindAnswer(
+                item="0b5b9abb32a0",
+                rater="ana@example.com",
+                collected_by="agent:test",
+                verdicts=[BlindVerdict(slot="A", dim="conversation.tone", score=4)],
+                prefer="A",
+            )
+        ],
+        reviews=[BlindReview(reviewer="reviewer/model", asked=1, calls=1, cost_usd=0.01)],
+        reviewer="reviewer/model",
+        review_job_id="0193a1b2-job",
+        closed_at="2026-11-15T12:00:00+00:00",
+        closed_by="agent:test",
+        closed_early=True,
+        report=BlindReadReport(
+            cases=1,
+            agreement=[
+                BlindAgreement(
+                    dim="conversation.tone",
+                    scale="ordinal",
+                    judge_model="judge/served-1",
+                    anchor="person",
+                    anchor_names=["ana@example.com"],
+                    pairs=1,
+                    results=1,
+                    cases=1,
+                    blind_pairs=1,
+                    random_pairs=1,
+                    table=BlindVerdictTable(
+                        scores=[1, 2, 3, 4, 5],
+                        counts=[[0] * 5, [0] * 5, [0] * 5, [0, 0, 1, 0, 0], [0] * 5],
+                    ),
+                ),
+                BlindAgreement(
+                    dim="conversation.tone",
+                    scale="ordinal",
+                    judge_model="judge/served-1",
+                    anchor="model",
+                    anchor_names=["reviewer/model"],
+                    served_model="reviewer/model-0613",
+                    pairs=1,
+                    results=1,
+                    cases=1,
+                    blind_pairs=1,
+                    random_pairs=1,
+                    table=BlindVerdictTable(
+                        scores=[1, 2, 3, 4, 5],
+                        counts=[[0] * 5, [0] * 5, [0, 0, 1, 0, 0], [0] * 5, [0] * 5],
+                    ),
+                ),
+            ],
+            reviewer_checks=[
+                BlindReviewerCheck(
+                    dim="conversation.tone",
+                    reviewer="reviewer/model",
+                    served_model="reviewer/model-0613",
+                    outputs=1,
+                    table=BlindVerdictTable(
+                        scores=[1, 2, 3, 4, 5],
+                        counts=[[0] * 5, [0] * 5, [0] * 5, [0, 0, 1, 0, 0], [0] * 5],
+                    ),
+                )
+            ],
+            preferences=[
+                BlindPreference(
+                    anchor="person",
+                    anchor_names=["ana@example.com"],
+                    random=True,
+                    control="k-control",
+                    candidate="k-candidate",
+                    planned=1,
+                    answered=1,
+                    items=1,
+                    prefer_candidate=1,
+                    prefer_control=0,
+                    ties=0,
+                    test="anytime",
+                    shares=[1.0],
+                    stake_items=1,
+                    slot_a_share=1.0,
+                    slot_a=1,
+                    slot_choices=1,
+                )
+            ],
+        ),
     ),
     # A suspect gap the analyst noted during a write, with what reproduces it and where it came from.
     "EvalAnalystGap": lambda: EvalAnalystGap(

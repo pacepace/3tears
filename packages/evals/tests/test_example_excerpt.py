@@ -21,7 +21,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Trial
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report_input import Example, ReportInput
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
-from threetears.evals.analysis.report.words import trial_dimension
+from threetears.evals.analysis.style import trial_dimension
 
 SNAPSHOT = "report-snapshot:" + "0" * 32
 
@@ -113,4 +113,6 @@ def test_the_cases_input_is_filled_where_the_trial_has_one_and_expected_stays_un
 def test_a_planners_input_carries_no_reasons_so_its_digest_is_as_it_was() -> None:
     held = report_input(kairo_bundle())
     assert held.examples and all(example.reasons is None for example in held.examples)
-    assert '"reasons"' not in held.model_dump_json(by_alias=True)
+    # What the digest reads: the caveat list and the first screen are derived and outside it (a first screen's own
+    # ``reasons`` are caveat ids, no example's).
+    assert '"reasons"' not in held.model_dump_json(by_alias=True, exclude={"caveat_list", "first_screen"})

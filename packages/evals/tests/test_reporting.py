@@ -17,7 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
-from threetears.evals.analysis.lenses import aggregation, history
+from threetears.evals.analysis.lenses import aggregation
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     METRIC_COST_USD,
@@ -51,13 +51,10 @@ from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_TOOL_CONFIG_DIFFERS,
     ComparisonSet,
     compute_comparison_sets,
-    difference_was_declared_at_launch,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
 from threetears.evals.analysis.lenses.pivot import (
-    CELL_MEASURED,
     CELL_UNMEASURED,
-    CELL_WITHHELD,
     PivotError,
     compute_pivot,
 )
@@ -69,7 +66,7 @@ from threetears.evals.analysis.lenses.export import ExportError, export_projecti
 from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze
-from threetears.evals.ops import pivot_text
+from threetears.evals.ops.lenses import pivot_text
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
@@ -173,6 +170,18 @@ def _stamped_run(**run_overrides):
     run.context_components = identity.context_components
     run.identity_version = identity.identity_version
     return run
+
+
+#: The measures a history may be asked for, as the history lens accepts them.
+HISTORY_METRICS = frozenset(
+    {
+        reporting.METRIC_COMPOSITE,
+        reporting.METRIC_COST_USD,
+        reporting.METRIC_TOTAL_MS,
+        reporting.METRIC_TRANSCRIPT,
+        reporting.METRIC_OUTCOME,
+    }
+)
 
 
 class TestProjectionCoordinates:
@@ -2528,7 +2537,7 @@ class TestPivotPoolingDisclosures:
         table = self._cost_pivot([run_a, run_b], results)
 
         (cell,) = table.cells
-        assert cell.status == CELL_MEASURED
+        assert cell.status == "measured"
         assert cell.cost_compositions == sorted([self.PRICED, self.METERED])
         assert table.cost_compositions_differ is True
         assert "cost compositions differ" in pivot_text(table)
@@ -2556,7 +2565,7 @@ class TestPivotPoolingDisclosures:
         table = self._cost_pivot([live, replayed], results)
 
         (cell,) = table.cells
-        assert cell.status == CELL_WITHHELD
+        assert cell.status == "withheld"
         assert cell.value is None and cell.sem is None
         assert cell.withheld is not None and "replay" in cell.withheld
         # Withheld is not empty: what the cell held is still counted.
@@ -2585,7 +2594,7 @@ class TestPivotPoolingDisclosures:
 
         table = self._cost_pivot([live, replayed], results, metric=METRIC_COMPOSITE)
 
-        assert table.cells[0].status == CELL_MEASURED
+        assert table.cells[0].status == "measured"
         assert table.cassette_mode_disclosure is not None
 
     def test_off_and_capture_pool_without_withholding(self):
@@ -2596,7 +2605,7 @@ class TestPivotPoolingDisclosures:
 
         cell = self._cost_pivot([live, captured], results).cells[0]
 
-        assert cell.status == CELL_MEASURED
+        assert cell.status == "measured"
         assert cell.cassette_modes == ["capture", "off"]
 
     def test_a_seeded_delivery_within_one_mode_is_reported_and_exported(self):
@@ -2611,7 +2620,7 @@ class TestPivotPoolingDisclosures:
 
         cell = self._cost_pivot([run], [self._result(run, case="tc-1"), seeded]).cells[0]
 
-        assert cell.status == CELL_MEASURED
+        assert cell.status == "measured"
         assert (cell.n_substituted, cell.n) == (1, 2)
         assert cell.substitution_disclosure is not None and cell.substitution_disclosure.startswith("1 of the 2")
         rows = csv.DictReader(io.StringIO(export_projection(projection, fmt="csv").body))
@@ -2631,7 +2640,7 @@ class TestPivotPoolingDisclosures:
         quality = self._cost_pivot([run], seeded, metric=METRIC_COMPOSITE)
 
         (cell,) = table.cells
-        assert (cell.status, cell.n_substituted, cell.n) == (CELL_MEASURED, 2, 2)
+        assert (cell.status, cell.n_substituted, cell.n) == ("measured", 2, 2)
         assert cell.substitution_disclosure is not None and "no live run's spend" in cell.substitution_disclosure
         assert "no live run's spend" in pivot_text(table)
         assert quality.cells[0].n_substituted == 2, "counted on every metric"
@@ -4433,26 +4442,6 @@ class TestCassetteBadge:
 
         assert sorted(group.run_ids) == sorted([run_a.id, run_b.id])
         assert group.shared_test_case_ids
-
-
-class TestDifferenceWasDeclaredAtLaunch:
-    """The generic half — the rule that extracts, tested apart from its vocabulary."""
-
-    def test_every_arm_declaring_is_a_declared_difference(self):
-        assert difference_was_declared_at_launch(["chosen", "chosen"]) is True
-
-    @pytest.mark.parametrize("origins", [["chosen", "inherited"], ["subject", "subject"], ["chosen", None]])
-    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins):
-        """Conservative by construction.
-
-        A comparison cannot claim to be sweeping an axis one of its arms was never
-        pointed at, so a single inheriting arm settles it for the set.
-        """
-        assert difference_was_declared_at_launch(origins) is False
-
-    def test_nothing_declared_is_never_read_as_a_declaration(self):
-        """An empty set is silence, and silence is not consent to call it a sweep."""
-        assert difference_was_declared_at_launch([]) is False
 
 
 class TestComparisonSetsScope:
@@ -6807,7 +6796,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(history.HISTORY_METRICS):
+        for row_name in sorted(HISTORY_METRICS):
             out = compute_history([run], results, metric=row_name, profile=_JUDGED_HOST, archived_run_ids=None)
             expected = out.measure.transferability_class == "scenario_bound"
             assert (out.attribution_disclosure is not None) is expected, (
@@ -7285,7 +7274,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(history.HISTORY_METRICS):
+        for row_name in sorted(HISTORY_METRICS):
             catalog_name = _catalog_name_of(row_name)
             assert describe_measure(catalog_name, _JUDGED_HOST.measures).family is not None, (
                 f"{catalog_name!r} is offered as the catalog name of {row_name!r} but the registry does not "
@@ -7326,7 +7315,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
     def test_the_alias_table_is_one_table_read_both_ways(self):
         """Derived, not written twice — a pair added to one direction only cannot exist."""
-        accepted = sorted(reporting.PROJECTED_METRICS | history.HISTORY_METRICS)
+        accepted = sorted(reporting.PROJECTED_METRICS | HISTORY_METRICS)
         catalog = {observation: _catalog_name_of(observation) for observation in accepted}
 
         assert len(set(catalog.values())) == len(catalog), (
@@ -7360,7 +7349,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(excinfo.value)
-        for row_name in history.HISTORY_METRICS:
+        for row_name in HISTORY_METRICS:
             assert row_name in message
             assert _catalog_name_of(row_name) in message
 
@@ -7645,8 +7634,9 @@ def _short_run(status, completeness, *, subject_id="ent-maple", model="sonnet", 
             test_case_id=f"tc-{i}",
             model=model,
             # A production-replicating cost, so the frontier can name a verdict at all —
-            # a pick cannot be called cheapest on a cost nobody observed.
-            usage=[RoleUsage(role="candidate", cost_usd=0.01)],
+            # a pick cannot be called cheapest on a cost nobody observed. Its response names the model that
+            # answered, as a launch records it: two runs whose responses named none are never stepped between (#1187).
+            usage=[RoleUsage(role="candidate", cost_usd=0.01, served_model=model)],
         )
         for i in range(1, n_results + 1)
     ]
@@ -7953,31 +7943,6 @@ class TestSignificanceFormatting:
         assert f"{PAIRED_EFFECT_LABEL}=4.02" in paired
         assert f"{UNPAIRED_EFFECT_LABEL}=4.02" in unpaired
         assert f"{PAIRED_EFFECT_LABEL}=" not in unpaired
-
-    def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
-        from threetears.evals.analysis.significance import significance_disclosure
-        from threetears.evals.analysis.stats import PAIRED_TEST_NAME
-
-        sentence = significance_disclosure(paired=True)
-
-        assert PAIRED_TEST_NAME in sentence
-        assert "Descriptive only" in sentence
-
-    def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self):
-        """Which test ran is most of what a small arm's verdict rests on."""
-        from threetears.evals.analysis.significance import significance_disclosure
-        from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
-
-        sentence = significance_disclosure(paired=False)
-
-        assert UNPAIRED_TEST_NAME in sentence
-        assert PAIRED_TEST_NAME not in sentence
-
-    def test_the_disclosure_promises_no_alerting(self):
-        """Reporting presents and compares; it never routes a verdict anywhere."""
-        from threetears.evals.analysis.significance import significance_disclosure
-
-        assert "no alerting" in significance_disclosure(paired=True)
 
 
 class TestCrossSubjectDisclosure:

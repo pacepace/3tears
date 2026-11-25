@@ -63,6 +63,7 @@ from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeOutcome, JudgeService, fold_judge_outcomes, judge_clients_for_run
+from threetears.evals.kernel.claims.derived import claim_derivations
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.rejudge import (
@@ -73,6 +74,9 @@ from threetears.evals.run.rejudge import (
 )
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.run_pages import iter_stored_results
+from threetears.evals.kernel.usage_capture import maybe_billed_usd
+from threetears.evals.kernel.claims.web import SearchBill
+from threetears.evals.schema.web_search import WebSearch
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
@@ -120,30 +124,20 @@ def stamp_witnessed_judge(
     (:class:`~threetears.evals.run.budget.EvalRunCostCap`).
 
     :param host: The host: where the judge configs are read and the judge clients come from.
-    :ptype host: EvalHost
     :param run: The witnessed run, unjudged and not yet identity-stamped.
-    :ptype run: EvalRun
     :param template: The template whose intent and rubric the judge reads; in the run's scope, and of the
         kind the run recorded.
-    :ptype template: EvalTemplate
     :param judge_model: The run-level judge pin, resolved.
-    :ptype judge_model: str
     :param judged_artifact: What the kind's judge reads, which picks the dims it scores.
-    :ptype judged_artifact: JudgedArtifact
     :param selection: Optional ``{dim_id: config_id}`` naming configs per dim, as a launch's
         ``judge_config_ids`` does; the rest inherit each dim's active config.
-    :ptype selection: dict[str, str] | None
     :param configured_max_cost_usd: The host's run cost ceiling, which the run inherits when ``max_cost_usd``
         names none (a launching host's ``LaunchSettings.max_cost_usd``).
-    :ptype configured_max_cost_usd: float
     :param enforcement_enabled: Whether the host enforces eval ceilings; when it does not, the run records
         none and its judging is unbounded, as a launched run's is.
-    :ptype enforcement_enabled: bool
     :param max_cost_usd: Optional per-run override; must be ``> 0`` and may only LOWER
         ``configured_max_cost_usd``, never raise it.
-    :ptype max_cost_usd: float | None
     :return: A copy of the run carrying the judge and its ceiling.
-    :rtype: EvalRun
     :raises ValueError: The run is not witnessed; it already names a judge or a template; its identity is
         already stamped; the template is in another scope or of another kind; ``judged_artifact``
         declares a kind no judge reads; or the host supplies no completion clients.
@@ -219,6 +213,7 @@ async def record_witnessed_cell(
     world_events: Sequence[WorldEvent] | None = None,
     end_state: Mapping[str, Any] | None = None,
     judging: WitnessedJudging | None = None,
+    web_search: WebSearch | None = None,
 ) -> tuple[EvalResult, EvalTrace]:
     """Record one cell a host observed — a session it witnessed, not one the engine ran — as a result and its trace.
 
@@ -288,43 +283,49 @@ async def record_witnessed_cell(
     unless the run is judged, when it names the template the judge reads. A conversation its real participants
     ended carries ``stop_cause=participants_ended``; the causes only an engine-driven conversation produces
     (``user_done``, ``simulator_error``, ``budget_stopped``) are refused here. The run's terminal state is the host's to
-    write too, as the job manager writes a commissioned run's: ``status="completed"`` and
-    ``completeness=summarize_completeness(run, cells)``, ``cells`` being one
-    ``CellSummary.from_result(result, persisted=...)`` per cell the capture recorded, the ``persisted``
-    flag what its save returned.
+    write too, as the job manager writes a commissioned run's, with public names alone: ``status="completed"``,
+    ``completed_at`` and ``completeness=summarize_completeness(run, cells)``, ``cells`` being one
+    ``CellSummary.from_result(result, persisted=...)`` per cell the capture recorded, ``persisted`` True where its
+    ``host.storage.save_eval_result`` returned and False where it raised ``StorageError`` (all three from
+    :mod:`threetears.evals.kernel`), written through the run's :class:`~threetears.evals.run.JobRecorder` (below).
+
+    **The run is held under a lease while it is open.** Every read of a run through the storage settles it: an open run
+    whose lease has lapsed, or that carries none, is written lost (``cancelled``, its ``cancellation_reason`` saying
+    why) by the first read that meets it, from any process, while the host is still recording its cells. So the run's
+    first write carries a lease from the host's :class:`~threetears.evals.kernel.JobLeases`
+    (``run.model_copy(update={"lease": leases.grant()})``), the lease is renewed from that write until the ending
+    (``leases.hold(RUN_JOB, run.id, run.scope_id, cancel=..., stop=...)``, then ``release`` and ``forget``), and the
+    ending is written with ``JobRecorder(host.storage, executor, RUN_JOB, run, leases=leases).save``, which raises
+    :class:`~threetears.evals.kernel.JobFenced` where the run has already ended elsewhere instead of writing over that
+    ending. A plain ``host.storage.save_eval_run`` of the ending would overwrite a run another reader wrote lost. A
+    run whose process died reads lost once its lease lapses: at its next read, or at the next
+    :func:`~threetears.evals.run.sweep_abandoned_runs`.
 
     :param host: The host the run belongs to — its profile resolves the run's contestant identity.
-    :ptype host: EvalHost
     :param run: The witnessed run the cell belongs to.
-    :ptype run: EvalRun
     :param test_case: The case the observation answers; one of ``run.test_case_ids``.
-    :ptype test_case: EvalTestCase
     :param output: What the candidate produced.
-    :ptype output: CandidateOutput
     :param k_iteration: The repeat, ``1..run.k_runs``.
-    :ptype k_iteration: int
     :param result_id: The result's id — the caller's, so a re-capture of the same observation is the same record.
-    :ptype result_id: str
     :param scored_at: When the observation was recorded, as an ISO-8601 timestamp.
-    :ptype scored_at: str
     :param judged_artifact: What the kind that produced ``output`` declares a judge reads. Held to the
         output as the runner holds it, and kept on the trace beside any evidence.
-    :ptype judged_artifact: JudgedArtifact
     :param external_rates: The rate table that prices the output's external calls, or ``None`` for none.
-    :ptype external_rates: ExternalRateTable | None
     :param spans: The host's trace record of the session's own work, or ``None`` when it collected none —
         the trace's spans and the result's latency buckets are read off it.
-    :ptype spans: CellTrace | None
     :param world_events: What moved the session's world, or ``None`` when it had none.
-    :ptype world_events: Sequence[WorldEvent] | None
     :param end_state: The world the session left, or ``None`` when it was not read.
-    :ptype end_state: Mapping[str, Any] | None
     :param judging: For a judged run, the run's :class:`WitnessedJudging` — one per run, handed to every cell's
         recording, which serialises the cells' ceiling checks with the judgements they admit; required for a
         judged run and ignored for an unjudged one.
-    :ptype judging: WitnessedJudging | None
+    :param web_search: For a judged run whose template declares a claim criterion with a web budget, the web search
+        its nominated claims are checked on, as a run's cells check theirs
+        (:func:`~threetears.evals.run.runner.judge_witnessed_output`): the host's live port, or a
+        :class:`~threetears.evals.testing.RecordedWebSearch` of it to replay. Its queries are priced by
+        ``external_rates`` where it declares ``(identity, "query")``, else by the port's own ceiling, and under an
+        enforced ceiling a search priced by neither is refused before the judge is called. ``None`` refuses such a
+        criterion; ignored otherwise.
     :return: The result and its trace, unsaved.
-    :rtype: tuple[EvalResult, EvalTrace]
     :raises ValueError: The run is not ``witnessed``; it names a template and no judge, or a judge and no
         template; it is judged and ``judging`` is missing or judges another run; ``test_case`` is not one of its cases,
         sits in another scope, or names a template; ``k_iteration`` is outside ``1..run.k_runs``; the output's stop
@@ -436,6 +437,8 @@ async def record_witnessed_cell(
         # holds the output to the same checks again, idempotently.
         goal_outcomes = hold_to_goal_checks(candidate_kind, template.goal_state_checks, output)
         settled: list[tuple[str, JudgeOutcome]] = []
+        claims_billed: list[object] = []
+        claims_searched: list[SearchBill] = []
         try:
             async with judge_service:
                 judged, judge_ms = await judge_witnessed_output(
@@ -448,12 +451,24 @@ async def record_witnessed_cell(
                     concurrency=DEFAULT_JUDGE_CONCURRENCY,
                     eval_run_id=run.id,
                     settled=settled,
+                    kind_name=candidate_kind,
+                    claims_billed=claims_billed,
+                    web_search=web_search,
+                    external_rates=external_rates,
+                    enforced=run.max_cost_usd is not None,
+                    claims_searched=claims_searched,
+                    derivations=claim_derivations(host.profile),
                 )
         except CompletionProtocolDefect:
             # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was
-            # found were paid for, so they count against the run's judge ceiling as a judged cell's would.
-            if settled:
-                judging.count_unrecorded(fold_judge_outcomes(settled).cost_usd)
+            # found were paid for, its claim criteria's calls and searches included, so they count against the run's
+            # judge ceiling as a judged cell's would.
+            if settled or claims_billed or claims_searched:
+                fold = fold_judge_outcomes(settled, also_billed=claims_billed, also_searched=claims_searched)
+                # Beside their cost, what their dropped sends may have billed, as a judged cell's judging counts it.
+                judging.count_unrecorded(
+                    None if fold.cost_usd is None else fold.cost_usd + maybe_billed_usd(fold.usage, {"judge"})
+                )
             raise
         result, trace = assemble(judged, judge_ms, template.goal_state_checks)
         judging.count(result)
@@ -469,7 +484,6 @@ def _refuse_rig_world_events(world_events: Sequence[WorldEvent]) -> None:
     the re-check would read it under the witnessed rule while the event itself asserts the seed's arming.
 
     :param world_events: What moved the session's world, as the host hands them over.
-    :ptype world_events: Sequence[WorldEvent]
     :raises ValueError: An event claims ``armed=True`` or ``caused_by="rig"``.
     """
     for index, event in enumerate(world_events):
@@ -509,41 +523,23 @@ def _assembled(
     """The witnessed cell through the runner's own assembly.
 
     :param run: The witnessed run.
-    :ptype run: EvalRun
     :param test_case: The case.
-    :ptype test_case: EvalTestCase
     :param output: What the candidate produced.
-    :ptype output: CandidateOutput
     :param measures: The host's measure registry, which types each of the output's ``host_measures``.
-    :ptype measures: MeasureRegistry
     :param goal_checks: The goal checks of the template the run is judged against; empty for an unjudged run.
-    :ptype goal_checks: Sequence[str]
     :param candidate_kind: The kind the run stamped.
-    :ptype candidate_kind: str
     :param k_iteration: The repeat.
-    :ptype k_iteration: int
     :param variant: The run's variant identity.
-    :ptype variant: Any
     :param judged_artifact: What the kind's judge reads.
-    :ptype judged_artifact: JudgedArtifact
     :param external_rates: The rate table, or ``None``.
-    :ptype external_rates: ExternalRateTable | None
     :param result_id: The result's id.
-    :ptype result_id: str
     :param scored_at: When it was recorded.
-    :ptype scored_at: str
     :param judged: The judge phase's outcome, or ``None`` unjudged.
-    :ptype judged: Any
     :param judge_ms: The judge phase's latency, or ``None``.
-    :ptype judge_ms: Any
     :param spans: The host's trace record, or ``None``.
-    :ptype spans: CellTrace | None
     :param world_events: What moved the world, or ``None``.
-    :ptype world_events: Sequence[WorldEvent] | None
     :param end_state: The world it left, or ``None``.
-    :ptype end_state: Mapping[str, Any] | None
     :return: The result and its trace.
-    :rtype: tuple[EvalResult, EvalTrace]
     """
     return assemble_completed_cell(
         scope_id=run.scope_id,
@@ -578,14 +574,15 @@ def _judge_spend(result: EvalResult) -> float | None | Literal[False]:
     """What ``result``'s judging cost: the sum of its judge rows, ``None`` when any is unpriced, ``False`` for none.
 
     :param result: A judged witnessed cell.
-    :ptype result: EvalResult
     :return: The judge spend; ``None`` for an unpriced one; ``False`` when the result carries no judge row.
-    :rtype: float | None | Literal[False]
     """
     judging = [row.cost_usd for row in result.usage if row.role == "judge"]
     if not judging:
         return False
-    return None if None in judging else math.fsum(cost for cost in judging if cost is not None)
+    if None in judging:
+        return None
+    # Beside the rows' cost, what the judge's dropped sends may have billed, which no row's cost holds.
+    return math.fsum(cost for cost in judging if cost is not None) + maybe_billed_usd(result.usage, {"judge"})
 
 
 class WitnessedJudging:
@@ -609,7 +606,6 @@ class WitnessedJudging:
         """Judging for ``run_id``, nothing judged yet.
 
         :param run_id: The judged witnessed run.
-        :ptype run_id: str
         """
         self.run_id = run_id
         self._lock = asyncio.Lock()
@@ -630,7 +626,6 @@ class WitnessedJudging:
         judgement stays counted, since it was paid for, though the store will keep only this one.
 
         :param result: The cell just judged.
-        :ptype result: EvalResult
         """
         spend = _judge_spend(result)
         if spend is False:
@@ -645,7 +640,6 @@ class WitnessedJudging:
         """Count judging that was paid for and that no cell will carry — a judgement a protocol defect stopped.
 
         :param spend: What it cost; ``None`` when any of its calls went unpriced.
-        :ptype spend: float | None
         """
         self._superseded.append(spend)
 
@@ -660,9 +654,7 @@ class WitnessedJudging:
         :param saved: What each of the run's results as the store holds them spent on its judge, by result id: the
             sum of its judge rows, ``None`` when any is unpriced, ``False`` when it carries none. A pair per result,
             so the run is read a page at a time and none of its results is kept.
-        :ptype saved: Iterable[tuple[str, float | None | Literal[False]]]
         :return: Each judgement's spend; ``None`` for an unpriced one.
-        :rtype: list[float | None]
         """
         self._stored = {}
         for result_id, spend in saved:
@@ -681,7 +673,6 @@ class WitnessedJudging:
         """Hold the run's ceiling check and the judgement it admits — what :func:`record_witnessed_cell` enters.
 
         :yield: Nothing; the check and the judgement run while it is held.
-        :rtype: AsyncIterator[None]
         """
         async with self._lock:
             yield
@@ -706,11 +697,8 @@ async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, judging: 
     unpriced, never as $0, and stops an enforced ceiling.
 
     :param host: The host, whose store holds the run's saved cells.
-    :ptype host: EvalHost
     :param run: The judged witnessed run.
-    :ptype run: EvalRun
     :param judging: The run's judging in this process.
-    :ptype judging: WitnessedJudging
     :raises ValueError: The run records no ceiling origin — it was not stamped by :func:`stamp_witnessed_judge`.
     :raises BudgetStoppedError: The ceiling is enforced and the judge spend is past it, or unpriced.
     """
@@ -744,24 +732,18 @@ async def _recorded_judge(
     makes its own; the judge service is built on the loop, where its clients will run.
 
     :param host: The host: its store, its blocking executor and its judge clients.
-    :ptype host: EvalHost
     :param run: The judged witnessed run.
-    :ptype run: EvalRun
     :param judged_artifact: What the kind's judge reads.
-    :ptype judged_artifact: JudgedArtifact
     :return: The judge service and the template.
-    :rtype: tuple[JudgeService, EvalTemplate]
-    :raises ValueError: The kind declares nothing a judge reads, or the host supplies no completion clients.
+    :raises ValueError: The kind declares nothing a judge reads and the template declares no claim criteria, or the
+        host supplies no completion clients.
     :raises ValidationFailedError: The run's recorded apparatus cannot be reproduced (see the rejudge checks).
     :raises NotFoundError: The template or a recorded config does not load.
     """
-    if judged_artifact is JudgedArtifact.UNJUDGED:
-        raise ValueError(
-            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
-            "reads; a run naming a judge claims every cell was scored by it"
-        )
-    judge_model = recorded_judge_pins(run, request_settings="today")
     template, configs = await run_blocking(host.blocking_executor, _recorded_apparatus, host, run, judged_artifact)
+    judge_model = recorded_judge_pins(
+        run, request_settings="today", claims_only=judged_artifact is JudgedArtifact.UNJUDGED
+    )
     # A dim the run recorded no config for is scored by the judge's built-in prompt, as a launch scores it.
     service = JudgeService(
         client_factory=judge_clients_for_run(host.completion_clients("a judged witnessed cell"), judge_model),
@@ -779,16 +761,19 @@ def _recorded_apparatus(
     Blocking: :func:`_recorded_judge` calls it on the host's blocking executor.
 
     :param host: The host, whose store holds both.
-    :ptype host: EvalHost
     :param run: The judged witnessed run.
-    :ptype run: EvalRun
     :param judged_artifact: What the kind's judge reads, which picks the dims scored.
-    :ptype judged_artifact: JudgedArtifact
     :return: The template and the recorded config of each scored dim that recorded one.
-    :rtype: tuple[EvalTemplate, dict[str, JudgeConfig]]
+    :raises ValueError: The kind declares nothing a judge reads and the template declares no claim criteria.
     """
     storage = host.storage
     template = judged_template(storage, run, run.scope_id)
+    # A kind graded by code is judged on its template's claim criteria alone, which no dimension's judge records.
+    if judged_artifact is JudgedArtifact.UNJUDGED and not template.claim_criteria:
+        raise ValueError(
+            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
+            "reads; a run naming a judge claims every cell was scored by it"
+        )
     dims = recorded_judged_dims(run, template, judged_artifact)
     return template, recorded_judge_configs(storage, run, dims, run.scope_id)
 

@@ -43,8 +43,8 @@ from threetears.evals.schema import (
     omit_paths,
 )
 from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, ResultKey, resolve_variant_identity
-from threetears.evals.kernel.host import HostProfile
-from threetears.evals.schema import SubjectSnapshot, SweepableValue
+from threetears.evals.kernel.host import HostProfile, MeasureRegistry
+from threetears.evals.schema import ClaimRead, SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY, TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
@@ -195,7 +195,16 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
         # every arm record a grader, and an arm that means to move it must be able to.
         host_payload={"toyhost": {"grader_version": TOYHOST_GRADER_VERSION, **toyhost_values}},
         world_placements=dict(TOYHOST_OBSERVATIONAL_PLACEMENTS),
+        # What a host assembling its own runs records, as the launch does: each of its measures' definitions.
+        measure_definitions=_toyhost_measure_definitions(),
     )
+
+
+def _toyhost_measure_definitions() -> dict[str, str]:
+    """The toy host's measure definitions, by measure key. Imported here: the profile module reads this one."""
+    from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_EXTRACTION_FAMILY, TOYHOST_MEASURES
+
+    return MeasureRegistry(TOYHOST_MEASURES, families=(TOYHOST_EXTRACTION_FAMILY,)).definition_digests()
 
 
 #: Two observations differing in exactly one lever. The confound scan must report nothing: this
@@ -291,6 +300,7 @@ class ToyhostStorage:
         insights: Sequence[EvalInsight] = (),
         analyses: Sequence[EvalAnalysis] = (),
         templates: Sequence[EvalTemplate] = (),
+        claim_reads: Sequence[ClaimRead] = (),
     ) -> None:
         """Hold one campaign's observations.
 
@@ -307,7 +317,11 @@ class ToyhostStorage:
         :param templates: The templates the batches were judged against. Empty by default — the toy
             batches name none — so no judged criterion is known and no judge profile is read.
         :ptype templates: Sequence[EvalTemplate]
+        :param claim_reads: The claim reads drawn over the campaign's claim grades. Empty by default — the toy batches
+            grade no claims — and supplied by a test that needs a claim criterion's judge checked against people.
+        :ptype claim_reads: Sequence[ClaimRead]
         """
+        self._claim_reads = list(claim_reads)
         self._runs = list(runs)
         self._results_by_run = dict(results_by_run)
         self._insights = list(insights)
@@ -466,6 +480,17 @@ class ToyhostStorage:
     def save_judge_profile(self, profile: EvalJudgeProfile) -> None:
         """Hold a judge profile, replacing the one of the same judge and criterion, as the real store does."""
         self._judge_profiles[profile.id] = profile
+
+    def query_claim_reads(self, scope_id: str, *, campaign_id: str | None = None) -> list[ClaimRead]:
+        """The claim reads in one scope, drawn over ``campaign_id`` where it is given, oldest first."""
+        return sorted(
+            (
+                read
+                for read in self._claim_reads
+                if read.scope_id == scope_id and (campaign_id is None or read.campaign_id == campaign_id)
+            ),
+            key=lambda read: read.created_at,
+        )
 
     def query_judge_profiles(self, scope_id: str) -> list[EvalJudgeProfile]:
         """The judge profiles in one scope, oldest recording first."""

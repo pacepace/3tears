@@ -14,16 +14,21 @@ time a view is taken every campaign holds its aspects, and the view reads them a
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 from pydantic import Field
 
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
+from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor, MembershipChange
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalDocumentModel
 
-__all__ = ["AspectDeclaration", "AspectView", "aspect_view", "aspect_views"]
+__all__ = [
+    "AspectDeclaration",
+    "AspectView",
+    "aspect_view",
+]
 
 
 class AspectDeclaration(EvalDocumentModel):
@@ -78,6 +83,19 @@ class AspectDeclaration(EvalDocumentModel):
     )
     declared_at: str | None = Field(description="When this aspect's design was declared (ISO-8601).")
     declared_by: str = Field(description="Who declared the campaign; empty when unrecorded.")
+    undo: Literal["hard"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How hard switching to a candidate is to undo (`Aspect.undo`), declared with the question at `asked_at`: "
+            "`hard` reads the advice at strong evidence. None = easy to undo, the default."
+        ),
+    )
+    undo_ignored: Literal["easy"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="A lowering of `undo` declared after the results and ignored (`Aspect.undo_ignored`); None for none.",
+    )
     unread_without_control: str | None = Field(
         default=None,
         description=(
@@ -106,18 +124,20 @@ class AspectView(EvalDocumentModel):
         description="The eval_template the aspect's runs were gathered on; None names none."
     )
     run_ids: list[str] = Field(description="The runs this aspect reads, as curated.")
+    membership: list[MembershipChange] = Field(
+        default_factory=list,
+        description="Every run that joined or left the aspect, and when (`Aspect.membership`): what its looks count.",
+    )
     declared: AspectDeclaration | None = Field(
         description="What the campaign declared, as this aspect reads it. None = exploratory: the aspect declares no design."
     )
 
 
-def aspect_views(campaign: EvalCampaign) -> list[AspectView]:
+def _aspect_views(campaign: EvalCampaign) -> list[AspectView]:
     """Every aspect of ``campaign``, each as a per-aspect reader reads it, in the campaign's order.
 
     :param campaign: The stored campaign.
-    :ptype campaign: EvalCampaign
     :return: One view per aspect; a campaign stored before aspects existed has one, labelled with its behavior.
-    :rtype: list[AspectView]
     """
     return [_view(campaign, aspect) for aspect in campaign.aspects]
 
@@ -126,14 +146,11 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
     """One aspect of ``campaign``, by its label, or its only aspect when ``aspect`` is None.
 
     :param campaign: The stored campaign.
-    :ptype campaign: EvalCampaign
     :param aspect: The aspect's label; None reads the campaign's only aspect.
-    :ptype aspect: str | None
     :return: The aspect's view.
-    :rtype: AspectView
     :raises RefusedInput: ``aspect`` is None and the campaign has more than one aspect, or it names none of them.
     """
-    views = aspect_views(campaign)
+    views = _aspect_views(campaign)
     labels = [view.aspect for view in views]
     if aspect is None:
         if len(views) == 1:
@@ -188,6 +205,8 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
             declared_at=aspect.declared_at,
             declared_by=campaign.declared_by,
             unread_without_control=unread,
+            undo=aspect.undo,
+            undo_ignored=aspect.undo_ignored,
         )
     )
     return AspectView(
@@ -201,5 +220,6 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
         short_name=aspect.short_name,
         template_id=aspect.template_id,
         run_ids=list(aspect.run_ids),
+        membership=list(aspect.membership),
         declared=declared,
     )

@@ -1,0 +1,3396 @@
+{
+  "dj_enumerate_v1": {
+    "mclaren-dive": {
+      "type": "entity_set",
+      "core": [
+        {
+          "name": "New York Dolls",
+          "aliases": [
+            "Dolls",
+            "The New York Dolls"
+          ],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren was involved with New York Dolls",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Malcolm McLaren and New York Dolls: supplied their stage wear from 1973 and advised them in the US before the Sex Pistols",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "The New York Dolls were the first band McLaren worked with.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Personality Crisis is a New York Dolls song from 1973.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls_(album)"
+            },
+            {
+              "claim": "McLaren took up with the New York Dolls around 1975.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "McLaren dressed the New York Dolls in red patent leather.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "McLaren hung a large communist flag as the New York Dolls' stage backdrop; the band were not handed flags to wave at the audience.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "After the Dolls broke up, McLaren went back to London.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Trash is a New York Dolls song on their 1973 debut album.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls_(album)"
+            },
+            {
+              "claim": "The New York Dolls' debut album opens with 'Personality Crisis'; 'Trash' opens side two.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls_(album)"
+            },
+            {
+              "claim": "McLaren took on the New York Dolls in 1975, just before they broke up.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "The New York Dolls were a five-piece.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "McLaren put the Dolls in red patent leather with communist imagery.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "McLaren had run his shop at 430 King's Road since 1971 (renamed SEX in 1974), before he managed the New York Dolls in 1975.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "The New York Dolls formed in New York in 1971.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "McLaren dressed the Dolls in red leather in front of a communist flag.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "After the Dolls, McLaren came home to London.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "McLaren took on the New York Dolls.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "McLaren gave the Dolls red leather and Soviet styling.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls"
+            },
+            {
+              "claim": "Personality Crisis is on the New York Dolls' debut album.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls_(album)"
+            },
+            {
+              "claim": "Todd Rundgren produced the New York Dolls' debut.",
+              "source_url": "https://en.wikipedia.org/wiki/New_York_Dolls_(album)"
+            },
+            {
+              "claim": "After the Dolls broke up, McLaren returned to London's King's Road.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            }
+          ]
+        },
+        {
+          "name": "Sex Pistols",
+          "aliases": [
+            "Pistols",
+            "The Sex Pistols"
+          ],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren was involved with Sex Pistols",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Malcolm McLaren and Sex Pistols: manager; named the band and recruited John Lydon",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "McLaren came to public attention in 1976 as manager of the Sex Pistols.",
+              "source_url": "https://en.wikipedia.org/wiki/Anarchy_in_the_U.K."
+            },
+            {
+              "claim": "The Sex Pistols broke up within two years of their 1976 rise.",
+              "source_url": "https://en.wikipedia.org/wiki/Sex_Pistols"
+            },
+            {
+              "claim": "Liar is a Sex Pistols song on Never Mind the Bollocks.",
+              "source_url": "https://faroutmagazine.co.uk/anthem-sex-pistols-wrote-about-malcolm-mclaren/"
+            },
+            {
+              "claim": "Far Out Magazine says Liar is the Sex Pistols writing about their manager McLaren.",
+              "source_url": "https://faroutmagazine.co.uk/anthem-sex-pistols-wrote-about-malcolm-mclaren/"
+            },
+            {
+              "claim": "McLaren assembled the Sex Pistols.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "McLaren built the Sex Pistols from young people who frequented his shop.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "McLaren timed the Sex Pistols' single to the Silver Jubilee.",
+              "source_url": "https://www.songfacts.com/facts/sex-pistols/god-save-the-queen"
+            },
+            {
+              "claim": "McLaren got the Sex Pistols onto early-evening national television.",
+              "source_url": "https://en.wikipedia.org/wiki/Sex_Pistols"
+            },
+            {
+              "claim": "EMI signed and dropped the Sex Pistols within three months.",
+              "source_url": "https://faroutmagazine.co.uk/sex-pistols-emi-contract-timeline/"
+            },
+            {
+              "claim": "Anarchy in the UK is a Sex Pistols song.",
+              "source_url": "https://en.wikipedia.org/wiki/Anarchy_in_the_U.K."
+            }
+          ]
+        },
+        {
+          "name": "Adam and the Ants",
+          "aliases": [
+            "Adam & the Ants",
+            "Ants"
+          ],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren managed Adam and the Ants: the article's lede names them among the bands he managed",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Malcolm McLaren and Adam and the Ants: Adam Ant approached him to manage the band after their debut album in late 1979; three members soon left to form Bow Wow Wow under his management",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Adam Ant brought McLaren in as a consultant.",
+              "source_url": "https://popmatters.com/adam-ants-subculture-image-culture"
+            },
+            {
+              "claim": "McLaren pushed the pop image that made Adam Ant successful.",
+              "source_url": "https://popmatters.com/adam-ants-subculture-image-culture"
+            },
+            {
+              "claim": "McLaren coaxed Adam Ant's band away from him.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Adam Ant's backing musicians left him for McLaren's new band.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "McLaren persuaded Adam and the Ants' musicians to leave their singer.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Kings of the Wild Frontier is a 1980 Adam and the Ants release.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "McLaren was involved with Adam and the Ants.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "McLaren took over managing Adam and the Ants after the Sex Pistols broke up.",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "McLaren's plan for the Ants drew on a field recording of Burundian drummers.",
+              "source_url": "https://www.electronicsound.co.uk/features/time-machine/malcolm-mclaren/"
+            },
+            {
+              "claim": "McLaren left with the Ants' rhythm section.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Adam and the Ants reached number one after McLaren left.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "McLaren's stint with Adam and the Ants was brief.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Adam and the Ants' 'Zerox' was released in July 1979, before McLaren's involvement with the band (late 1979 to January 1980).",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Zerox is an Adam and the Ants song.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "McLaren took the Ants' Burundi-style drumming (drummer Barbarossa) to his next band.",
+              "source_url": "https://en.wikipedia.org/wiki/Bow_Wow_Wow"
+            },
+            {
+              "claim": "McLaren took three members of the Ants with him.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            }
+          ]
+        },
+        {
+          "name": "Bow Wow Wow",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren was involved with Bow Wow Wow",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Malcolm McLaren and Bow Wow Wow: formed them from three former Ants and managed them",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "McLaren found a teenage singer, Annabella Lwin, for Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Annabella_Lwin"
+            },
+            {
+              "claim": "Bow Wow Wow's sound was built on Burundi-style drumming.",
+              "source_url": "https://en.wikipedia.org/wiki/Bow_Wow_Wow"
+            },
+            {
+              "claim": "Go Wild in the Country is a Bow Wow Wow single from 1982.",
+              "source_url": "https://en.wikipedia.org/wiki/Bow_Wow_Wow"
+            },
+            {
+              "claim": "McLaren engineered a scandal around Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Bow_Wow_Wow"
+            },
+            {
+              "claim": "C30 C60 C90 Go is a Bow Wow Wow song.",
+              "source_url": "https://en.wikipedia.org/wiki/C%C2%B730_C%C2%B760_C%C2%B790_Go"
+            },
+            {
+              "claim": "McLaren took Adam and the Ants' rhythm section away from Adam Ant to form Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Annabella Lwin was 13 when she became Bow Wow Wow's singer.",
+              "source_url": "https://en.wikipedia.org/wiki/Annabella_Lwin"
+            },
+            {
+              "claim": "Matthew Ashman left Adam and the Ants for Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Leigh Gorman left Adam and the Ants for Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "Dave Barbarossa left Adam and the Ants for Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Adam_and_the_Ants"
+            },
+            {
+              "claim": "C30 C60 C90 Go is Bow Wow Wow's debut single.",
+              "source_url": "https://en.wikipedia.org/wiki/C%C2%B730_C%C2%B760_C%C2%B790_Go"
+            },
+            {
+              "claim": "Annabella Lwin fronted Bow Wow Wow.",
+              "source_url": "https://en.wikipedia.org/wiki/Bow_Wow_Wow"
+            }
+          ]
+        },
+        {
+          "name": "Malcolm McLaren",
+          "aliases": [
+            "Malcolm McLaren & The World's Famous Supreme Team",
+            "Malcolm McLaren and the Bootzilla Orchestra"
+          ],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren: his own records, credited to him alone or with a named ensemble",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren_discography"
+            },
+            {
+              "claim": "Malcolm McLaren release: Waltz Darling (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren_discography"
+            },
+            {
+              "claim": "Malcolm McLaren release: Duck Rock (1983)",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren_discography"
+            },
+            {
+              "claim": "Waltz Darling is credited to Malcolm McLaren & The Bootzilla Orchestra",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren_discography"
+            },
+            {
+              "claim": "Waltz Darling is McLaren's only record with the Bootzilla Orchestra.",
+              "source_url": "https://en.wikipedia.org/wiki/Waltz_Darling"
+            },
+            {
+              "claim": "McLaren does not perform on Never Mind the Bollocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Sex_Pistols"
+            },
+            {
+              "claim": "McLaren was in New York looking for a support act for Bow Wow Wow when he discovered scratching at an Afrika Bambaataa block party.",
+              "source_url": "https://en.wikipedia.org/wiki/Buffalo_Gals_(Malcolm_McLaren_song)"
+            },
+            {
+              "claim": "McLaren heard scratching at a New York block party, which led to Buffalo Gals.",
+              "source_url": "https://en.wikipedia.org/wiki/Buffalo_Gals_(Malcolm_McLaren_song)"
+            },
+            {
+              "claim": "McLaren's label said Buffalo Gals wasn't music.",
+              "source_url": "https://www.pressreader.com/usa/the-guardian-usa/20230531/282011856741194"
+            },
+            {
+              "claim": "The label threatened McLaren with breach of contract over Buffalo Gals.",
+              "source_url": "https://torpedotheark.blogspot.com/search/label/buffalo%20gals"
+            },
+            {
+              "claim": "Deep in Vogue is McLaren with Bootsy Collins' Bootzilla Orchestra.",
+              "source_url": "https://popdose.com/lost-in-the-80s-malcolm-mclaren/"
+            },
+            {
+              "claim": "Duck Rock is a McLaren project.",
+              "source_url": "https://en.wikipedia.org/wiki/Duck_Rock"
+            },
+            {
+              "claim": "McLaren timed God Save the Queen's release to the Queen's Silver Jubilee.",
+              "source_url": "https://www.songfacts.com/facts/sex-pistols/god-save-the-queen"
+            },
+            {
+              "claim": "C30 C60 C90 Go was written by McLaren with the band.",
+              "source_url": "https://en.wikipedia.org/wiki/C%C2%B730_C%C2%B760_C%C2%B790_Go"
+            },
+            {
+              "claim": "McLaren delivers square-dance calls on Buffalo Gals.",
+              "source_url": "https://en.wikipedia.org/wiki/Buffalo_Gals_(Malcolm_McLaren_song)"
+            },
+            {
+              "claim": "Malcolm McLaren's Deep in Vogue (May 1989) came out less than a year before Madonna's 'Vogue' (1990).",
+              "source_url": "https://en.wikipedia.org/wiki/Waltz_Darling"
+            },
+            {
+              "claim": "McLaren's plan for the band involved a female singer out front.",
+              "source_url": "https://faroutmagazine.co.uk/adam-ant-vs-malcolm-mclaren-the-betrayal-that-launched-the-new-romantic-80s/"
+            }
+          ]
+        }
+      ],
+      "acceptable": [
+        {
+          "name": "The Slits",
+          "aliases": [
+            "Slits"
+          ],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren was involved with The Slits",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "The Slits: the article says he advised them",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            }
+          ]
+        },
+        {
+          "name": "Jimmy the Hoover",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren was involved with Jimmy the Hoover",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Jimmy the Hoover: the article says he advised them",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            }
+          ]
+        },
+        {
+          "name": "The World's Famous Supreme Team",
+          "aliases": [
+            "World's Famous Supreme Team"
+          ],
+          "facts": [
+            {
+              "claim": "Malcolm McLaren made Duck Rock (1983) in collaboration with The World's Famous Supreme Team",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren"
+            },
+            {
+              "claim": "Duck Rock is credited to Malcolm McLaren & The World's Famous Supreme Team",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_McLaren_discography"
+            },
+            {
+              "claim": "The World's Famous Supreme Team perform on Buffalo Gals.",
+              "source_url": "https://en.wikipedia.org/wiki/Buffalo_Gals_(Malcolm_McLaren_song)"
+            },
+            {
+              "claim": "The World's Famous Supreme Team scratch on Buffalo Gals.",
+              "source_url": "https://en.wikipedia.org/wiki/Buffalo_Gals_(Malcolm_McLaren_song)"
+            }
+          ]
+        }
+      ]
+    },
+    "broadrick-bands": {
+      "type": "entity_set",
+      "core": [
+        {
+          "name": "Napalm Death",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Napalm Death, 1985-1986",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Napalm Death",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Broadrick was a member of Napalm Death at age seventeen.",
+              "source_url": "https://en.wikipedia.org/wiki/Napalm_Death"
+            },
+            {
+              "claim": "Napalm Death's Scum was released in 1987.",
+              "source_url": "https://en.wikipedia.org/wiki/Scum_(Napalm_Death_album)"
+            },
+            {
+              "claim": "Broadrick played guitar in Napalm Death as a teenager.",
+              "source_url": "https://en.wikipedia.org/wiki/Scum_(Napalm_Death_album)"
+            },
+            {
+              "claim": "Napalm Death and Broadrick's start were in Birmingham.",
+              "source_url": "https://en.wikipedia.org/wiki/Napalm_Death"
+            },
+            {
+              "claim": "Broadrick's career started in Birmingham grindcore (Napalm Death).",
+              "source_url": "https://en.wikipedia.org/wiki/Napalm_Death"
+            },
+            {
+              "claim": "Broadrick was fifteen when he joined Napalm Death.",
+              "source_url": "https://en.wikipedia.org/wiki/Napalm_Death"
+            }
+          ]
+        },
+        {
+          "name": "Head of David",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Head of David, 1987-1989",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Head of David",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Broadrick was the drummer in Head of David.",
+              "source_url": "https://en.wikipedia.org/wiki/Dustbowl_(Head_of_David)"
+            },
+            {
+              "claim": "Head of David made a record called Dustbowl.",
+              "source_url": "https://en.wikipedia.org/wiki/Dustbowl_(Head_of_David)"
+            },
+            {
+              "claim": "Broadrick joined Head of David after Napalm Death and before Godflesh.",
+              "source_url": "https://en.wikipedia.org/wiki/Napalm_Death"
+            },
+            {
+              "claim": "'Dog Day Sunrise' is a Head of David song.",
+              "source_url": "https://en.wikipedia.org/wiki/Dustbowl_(Head_of_David)"
+            },
+            {
+              "claim": "Head of David's Dustbowl came out in 1988.",
+              "source_url": "https://en.wikipedia.org/wiki/Dustbowl_(Head_of_David)"
+            }
+          ]
+        },
+        {
+          "name": "Godflesh",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Godflesh, 1988-2002, 2009-present",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Godflesh",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Justin Broadrick and Godflesh: founder",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Godflesh's Streetcleaner was released in 1989.",
+              "source_url": "https://en.wikipedia.org/wiki/Streetcleaner"
+            },
+            {
+              "claim": "Godflesh on Streetcleaner was one guitar, one bass and a drum machine.",
+              "source_url": "https://en.wikipedia.org/wiki/Streetcleaner"
+            },
+            {
+              "claim": "Broadrick was making industrial metal (Godflesh) at about twenty.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh officially disbanded on 10 April 2002.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh was formed in 1988 by Broadrick and G.C. Green.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh used a drum machine instead of a drummer.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh was Broadrick with G.C. Green.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh was Broadrick with Ben Green on bass.",
+              "source_url": "https://en.wikipedia.org/wiki/G._C._Green"
+            },
+            {
+              "claim": "Godflesh formed in Birmingham in 1988.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh broke up in 2002.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Godflesh later re-recorded 'Life Is Easy'.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            },
+            {
+              "claim": "'Christbait Rising' is on Godflesh's 1989 Streetcleaner.",
+              "source_url": "https://en.wikipedia.org/wiki/Streetcleaner"
+            }
+          ]
+        },
+        {
+          "name": "Jesu",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Jesu, 2003-present",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Jesu",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Jesu's first album came out in 2004.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(album)"
+            },
+            {
+              "claim": "'Friends Are Evil' is on Jesu's first album.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(album)"
+            },
+            {
+              "claim": "Jesu emerged after the Godflesh breakup.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(band)"
+            },
+            {
+              "claim": "'Silver' is a Jesu track.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(band)"
+            },
+            {
+              "claim": "Jesu emerged after Godflesh broke up.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(band)"
+            },
+            {
+              "claim": "Jesu's Silver dates from the mid-2000s.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(band)"
+            },
+            {
+              "claim": "Jesu's self-titled album came out in 2004.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(album)"
+            },
+            {
+              "claim": "'Your Path to Divinity' opens Jesu's self-titled album.",
+              "source_url": "https://en.wikipedia.org/wiki/Jesu_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Techno Animal",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Techno Animal, 1990-2004",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Techno Animal",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Techno Animal was Broadrick and Kevin Martin.",
+              "source_url": "https://en.wikipedia.org/wiki/Techno_Animal"
+            },
+            {
+              "claim": "Techno Animal released Re-Entry in 1995.",
+              "source_url": "https://godflesh.com/projects/ta"
+            },
+            {
+              "claim": "'Flight of the Hermaphrodite' is on Techno Animal's Re-Entry.",
+              "source_url": "https://godflesh.com/projects/ta"
+            },
+            {
+              "claim": "Techno Animal originally started in 1991.",
+              "source_url": "https://en.wikipedia.org/wiki/Techno_Animal"
+            },
+            {
+              "claim": "'Needle Park' is on Techno Animal's Re-Entry.",
+              "source_url": "https://godflesh.com/projects/ta"
+            },
+            {
+              "claim": "Justin Broadrick's duo with Kevin Martin is Techno Animal; he has no project called Tektonic Animal.",
+              "source_url": "https://en.wikipedia.org/wiki/Techno_Animal"
+            },
+            {
+              "claim": "Techno Animal's Ghosts came out in 1991.",
+              "source_url": "https://godflesh.com/projects/ta"
+            },
+            {
+              "claim": "'Burn' is on Techno Animal's Ghosts.",
+              "source_url": "https://godflesh.com/projects/ta"
+            }
+          ]
+        },
+        {
+          "name": "Final",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Final, 1983-present",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Final",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Final is Broadrick's ambient/drone project.",
+              "source_url": "https://en.wikipedia.org/wiki/Final_(band)"
+            },
+            {
+              "claim": "Final has been running since the early 1980s.",
+              "source_url": "https://en.wikipedia.org/wiki/Final_(band)"
+            },
+            {
+              "claim": "Final predates Broadrick's time in Napalm Death.",
+              "source_url": "https://en.wikipedia.org/wiki/Final_(band)"
+            },
+            {
+              "claim": "Final is the oldest of Broadrick's projects.",
+              "source_url": "https://en.wikipedia.org/wiki/Final_(band)"
+            },
+            {
+              "claim": "Final goes back to 1983.",
+              "source_url": "https://www.brooklynvegan.com/justin-k-broadrick-unleashing-new-jk-flesh-final-and-council-estate-electronics-material-listen/"
+            },
+            {
+              "claim": "'The Light Orchestra' is a Final track.",
+              "source_url": "https://api.discogs.com/masters/2814623"
+            }
+          ]
+        }
+      ],
+      "acceptable": [
+        {
+          "name": "Sweet Tooth",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Sweet Tooth, 1989-1993",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Scorn",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Scorn, 1991-1992",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Ice",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Ice, 1993-1998",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Curse of the Golden Vampire",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Curse of the Golden Vampire, 1998-2003",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Curse of the Golden Vampire released its debut in 1998.",
+              "source_url": "https://en.wikipedia.org/wiki/Curse_of_the_Golden_Vampire"
+            },
+            {
+              "claim": "Curse of the Golden Vampire was Broadrick with Alec Empire.",
+              "source_url": "https://en.wikipedia.org/wiki/Curse_of_the_Golden_Vampire"
+            },
+            {
+              "claim": "'Total Annihilation of Self' is a Curse of the Golden Vampire track.",
+              "source_url": "https://curseofthegoldenvampire.bandcamp.com"
+            },
+            {
+              "claim": "Curse of the Golden Vampire's 'Total Annihilation of Self' opens Mass Destruction (Ipecac, 2003), which was made without Alec Empire.",
+              "source_url": "https://curseofthegoldenvampire.bandcamp.com"
+            }
+          ]
+        },
+        {
+          "name": "Council Estate Electronics",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Council Estate Electronics, 2008-",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Council Estate Electronics is Broadrick's analogue-synth project released on Glacial Movements.",
+              "source_url": "https://glacialmovements.kudosrecords.co.uk/release/iceberg2/council-estate-electronics-arktika"
+            },
+            {
+              "claim": "'Urals' is a Council Estate Electronics track.",
+              "source_url": "https://glacialmovements.bandcamp.com/album/arktika"
+            }
+          ]
+        },
+        {
+          "name": "The Blood of Heroes",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of The Blood of Heroes, 2010-",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Zonal",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Zonal, 2000-present",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Zonal",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Zonal is Broadrick and Kevin Martin.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            },
+            {
+              "claim": "Zonal came about thirty years after Techno Animal.",
+              "source_url": "https://en.wikipedia.org/wiki/Techno_Animal"
+            },
+            {
+              "claim": "Moor Mother features with Zonal.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            },
+            {
+              "claim": "'Body of Wire' is on Zonal's Wrecked.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            },
+            {
+              "claim": "Zonal is Broadrick and Kevin Martin reuniting their Techno Animal partnership.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            },
+            {
+              "claim": "Moor Mother is the vocalist with Zonal.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            },
+            {
+              "claim": "'Medulla' is a Zonal track.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            },
+            {
+              "claim": "Zonal's Wrecked came out in 2019.",
+              "source_url": "https://zonal.bandcamp.com/album/wrecked"
+            }
+          ]
+        },
+        {
+          "name": "Greymachine",
+          "aliases": [
+            "Grey Machine"
+          ],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Greymachine",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Greymachine",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Greymachine released music in 2009.",
+              "source_url": "https://en.wikipedia.org/wiki/Greymachine"
+            },
+            {
+              "claim": "'Vultures Descend' is a Greymachine track.",
+              "source_url": "https://en.wikipedia.org/wiki/Greymachine"
+            }
+          ]
+        },
+        {
+          "name": "Fall of Because",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of Fall of Because, 1984-1987",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of Fall of Because",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Fall of Because included Broadrick and Ben Green before Godflesh.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            },
+            {
+              "claim": "'Life Is Easy' is a Fall of Because recording.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            },
+            {
+              "claim": "The Fall of Because recordings were released in 1999 on Invisible.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            },
+            {
+              "claim": "Fall of Because had ended long before the 1999 release.",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "Fall of Because became Godflesh.",
+              "source_url": "https://en.wikipedia.org/wiki/Godflesh"
+            },
+            {
+              "claim": "Fall of Because recorded in Birmingham in 1986, before the Godflesh name.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            },
+            {
+              "claim": "Fall of Because included Broadrick and Ben Green.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            },
+            {
+              "claim": "The 1986 Fall of Because material came out as a compilation in 1999, thirteen years later.",
+              "source_url": "https://en.wikipedia.org/wiki/Life_Is_Easy"
+            }
+          ]
+        },
+        {
+          "name": "God",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Justin Broadrick was a member of God, 1991-1996",
+              "source_url": "https://musicbrainz.org/artist/d547a180-6445-42e8-96d6-aabdb6425ab1/relationships"
+            },
+            {
+              "claim": "Justin Broadrick was a member of God",
+              "source_url": "https://en.wikipedia.org/wiki/Justin_Broadrick"
+            },
+            {
+              "claim": "God was a project of Broadrick with Kevin Martin.",
+              "source_url": "https://en.wikipedia.org/wiki/God_(British_band)"
+            },
+            {
+              "claim": "God's 'Meathead' dates from 1990.",
+              "source_url": "https://godflesh.com/projects/god"
+            }
+          ]
+        }
+      ]
+    },
+    "connelly-bands": {
+      "type": "entity_set",
+      "core": [
+        {
+          "name": "Fini Tribe",
+          "aliases": [
+            "Finitribe"
+          ],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Fini Tribe, from 1980; founding member",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Finitribe",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Chris Connelly was a member of Fini Tribe.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Fini Tribe, in Edinburgh, was Connelly's first band, before he moved to America.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "'Cathedral' is a Fini Tribe track.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "'Cathedral' appears on a Fini Tribe compilation covering 1982-1987.",
+              "source_url": "https://chrisconnelly.bandcamp.com/album/the-sheer-action-of-the-fini-tribe-1982-1987"
+            },
+            {
+              "claim": "Fini Tribe kept releasing records after 1987 (as Finitribe, until 1998); the 1982-1987 compilation covers only their early years.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Chris Connelly sings on Fini Tribe's 'Cathedral'.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "Fini Tribe, in Edinburgh, was Connelly's first band.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "'Detestimony' is a Fini Tribe track.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "Chris Connelly sings on Fini Tribe's 'Detestimony'.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "Fini Tribe were from Edinburgh.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Connelly started out in Fini Tribe in Edinburgh in the mid-1980s.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Fini Tribe's 'De Testimony' ('Detestimony') comes from the 1986 Let the Tribe Grow EP.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "Connelly started in Edinburgh post-punk (Fini Tribe).",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Chris Connelly was Finitribe's vocalist in Edinburgh in 1984.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "'Forevergreen' is a Finitribe track.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Finitribe's 'Forevergreen' dates from 1992-93, after Chris Connelly left the band in 1988.",
+              "source_url": "https://en.wikipedia.org/wiki/Finitribe"
+            },
+            {
+              "claim": "Fini Tribe's 'I Want More' was released in 1987.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            },
+            {
+              "claim": "'I Want More' is a Fini Tribe track.",
+              "source_url": "https://chrisconnelly.com/discography/fini-tribe/"
+            }
+          ]
+        },
+        {
+          "name": "Ministry",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Ministry, 1987-1991",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Chris Connelly was a member of Ministry",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Connelly played keyboards and sang in Ministry (Mind era).",
+              "source_url": "https://en.wikipedia.org/wiki/Ministry_(band)"
+            },
+            {
+              "claim": "'Cannibal Song' is on Ministry's The Mind Is a Terrible Thing to Taste.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Mind_Is_a_Terrible_Thing_to_Taste"
+            },
+            {
+              "claim": "Connelly performed with Ministry on The Mind Is a Terrible Thing to Taste.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Mind_Is_a_Terrible_Thing_to_Taste"
+            },
+            {
+              "claim": "Chris Connelly sang with Ministry.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Mind_Is_a_Terrible_Thing_to_Taste"
+            },
+            {
+              "claim": "Connelly toured with Ministry into the early 1990s.",
+              "source_url": "https://slicingupeyeballs.com/2018/04/07/chris-connelly-al-jourgensen-so-what-chicago/"
+            },
+            {
+              "claim": "Connelly and Ministry/Jourgensen parted ways.",
+              "source_url": "https://slicingupeyeballs.com/2018/04/07/chris-connelly-al-jourgensen-so-what-chicago/"
+            }
+          ]
+        },
+        {
+          "name": "Revolting Cocks",
+          "aliases": [
+            "RevCo"
+          ],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Revolting Cocks, 1988-1994",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Chris Connelly was a member of Revolting Cocks",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Revolting Cocks was a side project of Al Jourgensen and Paul Barker.",
+              "source_url": "https://en.wikipedia.org/wiki/Wax_Trax!_Records"
+            },
+            {
+              "claim": "'Stainless Steel Providers' is a Revolting Cocks track.",
+              "source_url": "https://en.wikipedia.org/wiki/Beers,_Steers,_and_Queers"
+            },
+            {
+              "claim": "Revolting Cocks were a Wax Trax! (Chicago) act.",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            },
+            {
+              "claim": "Al Jourgensen and Luc Van Acker were in Revolting Cocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            },
+            {
+              "claim": "Richard 23 left Revolting Cocks in 1986, before Chris Connelly joined in 1987.",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            },
+            {
+              "claim": "'Beers, Steers & Queers' is a Revolting Cocks track.",
+              "source_url": "https://en.wikipedia.org/wiki/Beers,_Steers,_and_Queers"
+            },
+            {
+              "claim": "Revolting Cocks' line-up included Jourgensen, Barker, Van Acker, Rieflin and Connelly.",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            }
+          ]
+        },
+        {
+          "name": "Murder, Inc.",
+          "aliases": [
+            "Murder Inc."
+          ],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Murder, Inc.",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Murder Inc.",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Killing Joke broke apart (parted with Jaz Coleman) before Murder, Inc. formed.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Paul Ferguson was a member of Murder, Inc.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Martin Atkins was a member of Murder, Inc.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Chris Connelly was Murder, Inc.'s vocalist.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Murder, Inc.'s self-titled album came out in 1992.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Geordie Walker played guitar in Murder, Inc.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "'Mania' is a Murder, Inc. track.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Murder, Inc.'s 'Mania' is from 1992.",
+              "source_url": "https://en.wikipedia.org/wiki/Murder,_Inc._(band)"
+            },
+            {
+              "claim": "Connelly, Atkins and Walker had previously played together in Murder, Inc.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            }
+          ]
+        },
+        {
+          "name": "The Damage Manual",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of The Damage Manual",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly and The Damage Manual: vocalist, with Martin Atkins, Geordie Walker and Jah Wobble",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of The Damage Manual",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Jah Wobble was a member of The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "The Damage Manual's line-up was Martin Atkins, Jah Wobble, Geordie Walker and Chris Connelly.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Of Murder, Inc.'s members, Martin Atkins, Geordie Walker and Chris Connelly went on to The Damage Manual; Paul Ferguson was never a member of The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Martin Atkins and Chris Connelly were both in The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Jah Wobble played bass in The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Geordie Walker played guitar in The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "The Damage Manual's records came out in 2000.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Connelly, Martin Atkins and Geordie Walker were in The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "'Sunset Gun' is a Damage Manual track.",
+              "source_url": "https://chrisconnelly.com/discography/damage-manual"
+            },
+            {
+              "claim": "The Damage Manual's 'Sunset Gun' is from 2000.",
+              "source_url": "https://chrisconnelly.com/discography/damage-manual"
+            },
+            {
+              "claim": "The Damage Manual formed around 2000.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Martin Atkins played drums in The Damage Manual.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            },
+            {
+              "claim": "Connelly was The Damage Manual's vocalist.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Damage_Manual"
+            }
+          ]
+        }
+      ],
+      "acceptable": [
+        {
+          "name": "Catherine",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Catherine",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Catherine: Wikipedia lists his part on Catherine's Hot Saki & Bedtime Stories (1996) under guest appearances, not band affiliations",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            }
+          ]
+        },
+        {
+          "name": "Acid Horse",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Acid Horse, 1989",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Chris Connelly was a member of Acid Horse",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            }
+          ]
+        },
+        {
+          "name": "PTP",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of PTP",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of PTP",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Pigface",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Pigface",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Pigface (as an additional member)",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Pigface is Martin Atkins' collective.",
+              "source_url": "https://en.wikipedia.org/wiki/Pigface"
+            },
+            {
+              "claim": "Chris Connelly sings on Pigface's 'Point Blank'.",
+              "source_url": "https://en.wikipedia.org/wiki/Gub"
+            },
+            {
+              "claim": "Nivek Ogre is the only credited vocalist on Pigface's 'Tapeworm'; Chris Connelly does not sing on it.",
+              "source_url": "https://en.wikipedia.org/wiki/Gub"
+            },
+            {
+              "claim": "Pigface's 'Tapeworm' (on Gub) was released in 1991.",
+              "source_url": "https://en.wikipedia.org/wiki/Gub"
+            },
+            {
+              "claim": "'Tapeworm' is on Pigface's Gub.",
+              "source_url": "https://en.wikipedia.org/wiki/Gub"
+            },
+            {
+              "claim": "Nivek Ogre and En Esch were Pigface participants.",
+              "source_url": "https://en.wikipedia.org/wiki/Pigface"
+            },
+            {
+              "claim": "Connelly was one of Pigface's vocalists.",
+              "source_url": "https://chrisconnelly.com/discography/pigface/"
+            },
+            {
+              "claim": "'The Bushmaster' is on Pigface's Gub.",
+              "source_url": "https://en.wikipedia.org/wiki/Gub"
+            },
+            {
+              "claim": "Many Wax Trax! artists played in Pigface.",
+              "source_url": "https://en.wikipedia.org/wiki/Pigface"
+            },
+            {
+              "claim": "Connelly's discography credits him with lead vocals on a number of Pigface tracks.",
+              "source_url": "https://chrisconnelly.com/discography/pigface/"
+            },
+            {
+              "claim": "'Suck' is a Pigface track.",
+              "source_url": "https://en.wikipedia.org/wiki/Gub"
+            }
+          ]
+        },
+        {
+          "name": "The Bells",
+          "aliases": [
+            "Chris Connelly and The Bells"
+          ],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of The Bells",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "The Bells release: The Ultimate Seaside Companion (1997)",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of The Bells",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Everyoned",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Everyoned",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Everyoned",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Cocksure",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Cocksure, from 2013, with Jason C. Novak",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Cocksure",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Cocksure is Chris Connelly with Jason Novak.",
+              "source_url": "https://cocksure.bandcamp.com/album/tvmalsv"
+            },
+            {
+              "claim": "Cocksure describe themselves as bridging Wax Trax!-era industrial and 'the future sounds of mass corruption'.",
+              "source_url": "https://cocksure.bandcamp.com/album/tvmalsv"
+            },
+            {
+              "claim": "'Guilt, Speed & Carbon' is a Cocksure track.",
+              "source_url": "https://chrisconnelly.com/discography/cocksure/"
+            },
+            {
+              "claim": "'Hustler Face' is a Cocksure track.",
+              "source_url": "https://chrisconnelly.com/discography/cocksure/"
+            }
+          ]
+        },
+        {
+          "name": "Bells Into Machines",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly was a member of Bells Into Machines, from 2013, with Paul Barker",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Bells Into Machines",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            },
+            {
+              "claim": "Bells Into Machines is Connelly with Paul Barker.",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "'Your Crime Scene - My Career' is a Bells Into Machines track.",
+              "source_url": "https://musicbrainz.org/ws/2/recording/?query=recording:%22Your%20Crime%20Scene%22&fmt=json"
+            }
+          ]
+        },
+        {
+          "name": "Die Warzau",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly: Die Warzau is among his band affiliations",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Die Warzau",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            }
+          ]
+        },
+        {
+          "name": "The Love Interest",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly: The Love Interest is among his band affiliations",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of The Love Interest",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            }
+          ]
+        },
+        {
+          "name": "The Final Cut",
+          "aliases": [
+            "Final Cut"
+          ],
+          "facts": [
+            {
+              "claim": "Chris Connelly: The Final Cut is among his band affiliations",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            },
+            {
+              "claim": "Chris Connelly was a member of Final Cut",
+              "source_url": "https://musicbrainz.org/artist/ecb41014-1d7a-4987-a107-df49b2d8d77c/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Sevendials",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly: in 2025 he was in Sevendials, with Paul Ferguson and Mark Gemini Thwaite; album A Crash Course in Catastrophe",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            }
+          ]
+        },
+        {
+          "name": "The High Confessions",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Chris Connelly: The High Confessions (2010), with Steve Shelley and Sanford Parker; album Turning Lead into Gold",
+              "source_url": "https://en.wikipedia.org/wiki/Chris_Connelly_(musician)"
+            }
+          ]
+        }
+      ]
+    },
+    "lunch-groups": {
+      "type": "entity_set",
+      "core": [
+        {
+          "name": "Teenage Jesus and the Jerks",
+          "aliases": [
+            "Teenage Jesus & the Jerks"
+          ],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Teenage Jesus and the Jerks, 1977-1979",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "Lydia Lunch was a member of Teenage Jesus and the Jerks",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch and Teenage Jesus and the Jerks: founded it with James Chance; singer and guitarist",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks formed in New York in 1976 or 1977 (sources differ).",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks was founded by Lydia Lunch and James Chance.",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "'Orphans' was Teenage Jesus and the Jerks' first 7-inch single.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "Brian Eno proposed No New York after seeing Teenage Jesus and the Jerks and other bands at the 1978 Artists Space festival.",
+              "source_url": "https://en.wikipedia.org/wiki/No_New_York"
+            },
+            {
+              "claim": "Lydia Lunch formed Teenage Jesus and the Jerks.",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks helped originate no wave.",
+              "source_url": "https://en.wikipedia.org/wiki/No_wave"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks always had a bass player: Reck, then Gordon Stevenson, then Jim Sclavunos.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks_(album)"
+            },
+            {
+              "claim": "'Baby Doll' is a Teenage Jesus and the Jerks track.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks were a downtown New York no wave band active around 1978.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "'Orphans' is a Teenage Jesus and the Jerks track.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks were a New York band active in 1978.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "Teenage Jesus and the Jerks' songs ran about a minute.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks_(album)"
+            },
+            {
+              "claim": "Lydia Lunch was 17 when she fronted Teenage Jesus and the Jerks.",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Brian Eno put Teenage Jesus and the Jerks on No New York in 1978.",
+              "source_url": "https://en.wikipedia.org/wiki/No_New_York"
+            }
+          ]
+        },
+        {
+          "name": "Beirut Slump",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Beirut Slump",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch was a member of Beirut Slump",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "Beirut Slump was formed while Teenage Jesus and the Jerks was still active.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            },
+            {
+              "claim": "Beirut Slump dates from late 1978.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            },
+            {
+              "claim": "Beirut Slump released the single 'Try Me' on Migraine Records.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "Jim Sclavunos played drums in Beirut Slump.",
+              "source_url": "https://en.wikipedia.org/wiki/Jim_Sclavunos"
+            },
+            {
+              "claim": "Beirut Slump dates from 1978.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            },
+            {
+              "claim": "Beirut Slump co-existed with Teenage Jesus and the Jerks and was disbanded in 1979, before Teenage Jesus's final tour; it did not form out of Teenage Jesus's breakup.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            },
+            {
+              "claim": "Bobby Berkowitz was in Beirut Slump with Lydia Lunch.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "'Try Me' is a Beirut Slump track.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "Beirut Slump's 'Try Me' came from the same year (c. 1978) and city as 'Orphans'.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "Beirut Slump was a short-lived project running in parallel with Teenage Jesus.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            },
+            {
+              "claim": "In Beirut Slump Lunch played guitar rather than singing.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            },
+            {
+              "claim": "'See Pretty' is a Beirut Slump track.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "'See Pretty' and 'Sidewalk' are on the same Beirut Slump release.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "Beirut Slump was founded in 1978; only its single 'Try Me' came out in 1979.",
+              "source_url": "https://fromthearchives.com/ll/chronology2.html"
+            }
+          ]
+        },
+        {
+          "name": "8 Eyed Spy",
+          "aliases": [
+            "8-Eyed Spy",
+            "Eight Eyed Spy"
+          ],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of 8 Eyed Spy",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch was a member of 8 Eyed Spy",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "George Scott III played bass in 8 Eyed Spy.",
+              "source_url": "https://fromthearchives.com/ll/chronology4.html"
+            },
+            {
+              "claim": "Jim Sclavunos was the drummer in 8 Eyed Spy.",
+              "source_url": "https://fromthearchives.com/ll/discography2.html"
+            },
+            {
+              "claim": "8 Eyed Spy recorded a version of 'Diddy Wah Diddy'.",
+              "source_url": "https://en.wikipedia.org/wiki/8_Eyed_Spy"
+            },
+            {
+              "claim": "8 Eyed Spy's record came out in 1981, after the band had ended.",
+              "source_url": "https://en.wikipedia.org/wiki/8_Eyed_Spy"
+            },
+            {
+              "claim": "8 Eyed Spy's 'Diddy Wah Diddy' is a cover.",
+              "source_url": "https://en.wikipedia.org/wiki/8_Eyed_Spy"
+            },
+            {
+              "claim": "8 Eyed Spy first played Hurrah in 1980; their 1979 shows were at Tier 3 and Max's.",
+              "source_url": "https://fromthearchives.com/ll/chronology4.html"
+            }
+          ]
+        },
+        {
+          "name": "Big Sexy Noise",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Big Sexy Noise, formed 2009, with members of Gallon Drunk",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch was a member of Big Sexy Noise",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "Big Sexy Noise dates from 2009.",
+              "source_url": "https://fromthearchives.com/ll/discography22.html"
+            },
+            {
+              "claim": "Big Sexy Noise included James Johnston and Ian White of Gallon Drunk.",
+              "source_url": "https://en.wikipedia.org/wiki/Gallon_Drunk"
+            },
+            {
+              "claim": "'Collision Course' is a Big Sexy Noise track.",
+              "source_url": "https://fromthearchives.com/ll/discography22.html"
+            },
+            {
+              "claim": "Big Sexy Noise's work came some thirty years after 'Orphans'.",
+              "source_url": "https://en.wikipedia.org/wiki/Teenage_Jesus_and_the_Jerks"
+            },
+            {
+              "claim": "'Another Man Comin' (While the Bed Is Still Warm)' is a Big Sexy Noise track.",
+              "source_url": "https://fromthearchives.com/ll/discography22.html"
+            },
+            {
+              "claim": "Big Sexy Noise came some thirty years after Teenage Jesus and the Jerks.",
+              "source_url": "https://fromthearchives.com/ll/discography22.html"
+            },
+            {
+              "claim": "Big Sexy Noise paired Lunch with members of Gallon Drunk.",
+              "source_url": "https://en.wikipedia.org/wiki/Gallon_Drunk"
+            },
+            {
+              "claim": "Big Sexy Noise released records through Cherry Red.",
+              "source_url": "https://fromthearchives.com/ll/discography22.html"
+            },
+            {
+              "claim": "Big Sexy Noise's records came out on labels including Sartorial, Le Son du Maquis, Alone and Cherry Red; Widowspeak is credited only as their music publisher.",
+              "source_url": "https://api.discogs.com/releases/5145130"
+            },
+            {
+              "claim": "'The Gospel Singer' is a Big Sexy Noise track.",
+              "source_url": "https://fromthearchives.com/ll/discography22.html"
+            }
+          ]
+        },
+        {
+          "name": "Retrovirus",
+          "aliases": [
+            "Lydia Lunch Retrovirus"
+          ],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Retrovirus",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Retrovirus release: Retrovirus (live, 2013)",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch and Retrovirus: with Weasel Walter, Algis Kizys and Bob Bert",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Retrovirus has been Lunch's band for about the last fifteen years.",
+              "source_url": "https://daily.bandcamp.com/features/weasel-walter-list"
+            },
+            {
+              "claim": "Retrovirus performs material from Lunch's back catalogue.",
+              "source_url": "https://www.sledisland.com/2020/lydia-lunch-retrovirus"
+            },
+            {
+              "claim": "'Red Alert' is a Retrovirus track.",
+              "source_url": "https://lydialunch.bandcamp.com/album/retrovirus"
+            }
+          ]
+        }
+      ],
+      "acceptable": [
+        {
+          "name": "Shotgun Wedding",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Shotgun Wedding",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Shotgun Wedding: her duo album and project with Rowland S. Howard (1991)",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch was a member of Shotgun Wedding",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "Shotgun Wedding was recorded in Memphis.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "Shotgun Wedding was recorded in 1991.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "Shotgun Wedding was recorded at Easley Studios.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "Shotgun Wedding was a collaboration between Lydia Lunch and Rowland S. Howard.",
+              "source_url": "https://en.wikipedia.org/wiki/Rowland_S._Howard"
+            },
+            {
+              "claim": "'Endless Fall' is a track on Shotgun Wedding.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "Shotgun Wedding was recorded live at Easley Studios in Memphis.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "Shotgun Wedding was recorded over six days.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "Shotgun Wedding was recorded in May 1991.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            },
+            {
+              "claim": "'Burning Skulls' is a track on Shotgun Wedding.",
+              "source_url": "https://fromthearchives.com/ll/discography14.html"
+            }
+          ]
+        },
+        {
+          "name": "Medusa's Bed",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Medusa's Bed",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Medusa's Bed: with Zahra Mani and Mia Zabelka (2013)",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch was a member of Medusa's Bed",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            }
+          ]
+        },
+        {
+          "name": "Harry Crews",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of Harry Crews",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Harry Crews: the band, not the novelist",
+              "source_url": "https://en.wikipedia.org/wiki/Lydia_Lunch"
+            },
+            {
+              "claim": "Lydia Lunch was a member of Harry Crews",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "The band Harry Crews was named after the novelist Harry Crews.",
+              "source_url": "https://en.wikipedia.org/wiki/Harry_Crews_(band)"
+            },
+            {
+              "claim": "The band Harry Crews was musically active only in 1988.",
+              "source_url": "https://en.wikipedia.org/wiki/Harry_Crews_(band)"
+            },
+            {
+              "claim": "'Man Hates A Man' is a Harry Crews track.",
+              "source_url": "https://fromthearchives.com/ll/discography9.html"
+            },
+            {
+              "claim": "Harry Crews' album Naked in Garden Hills was released in 1989 or 1990 (sources differ).",
+              "source_url": "https://fromthearchives.com/ll/discography9.html"
+            },
+            {
+              "claim": "Harry Crews was an all-female band.",
+              "source_url": "https://en.wikipedia.org/wiki/Harry_Crews_(band)"
+            },
+            {
+              "claim": "Kim Gordon was in Harry Crews.",
+              "source_url": "https://en.wikipedia.org/wiki/Harry_Crews_(band)"
+            }
+          ]
+        },
+        {
+          "name": "The Immaculate Consumptive",
+          "aliases": [
+            "Immaculate Consumptive"
+          ],
+          "facts": [
+            {
+              "claim": "Lydia Lunch was a member of The Immaculate Consumptive, 1983 (an original member)",
+              "source_url": "https://musicbrainz.org/artist/74f2add6-e8b6-4323-a21b-443600379d16/relationships"
+            },
+            {
+              "claim": "Lydia Lunch was a member of The Immaculate Consumptive.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Immaculate_Consumptive"
+            }
+          ]
+        }
+      ]
+    },
+    "rhodes-acts": {
+      "type": "entity_set",
+      "core": [
+        {
+          "name": "The Clash",
+          "aliases": [
+            "Clash"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed The Clash",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Bernie Rhodes and The Clash: manager 1976-78, and again from 1981",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Rhodes managed the Clash from 1976.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Clash"
+            },
+            {
+              "claim": "Lee 'Scratch' Perry produced the Clash's Complete Control.",
+              "source_url": "https://en.wikipedia.org/wiki/Complete_Control"
+            },
+            {
+              "claim": "Bernie Rhodes was involved with the Clash from 1976.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Clash"
+            },
+            {
+              "claim": "Rhodes steered the Clash toward political subject matter.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Clash"
+            },
+            {
+              "claim": "Complete Control was written after CBS released a Clash single without the band's agreement.",
+              "source_url": "https://en.wikipedia.org/wiki/Complete_Control"
+            },
+            {
+              "claim": "Bernie Rhodes signed the Clash to the major label CBS Records in January 1977.",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            }
+          ]
+        },
+        {
+          "name": "Subway Sect",
+          "aliases": [
+            "Vic Godard & Subway Sect",
+            "Vic Godard and the Subway Sect"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed Subway Sect",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Subway Sect release: What's the Matter Boy (1980), produced by Rhodes",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Bernie Rhodes was already working with the Clash (formed spring 1976) before Subway Sect's first gig in September 1976, and took Subway Sect on as manager after it.",
+              "source_url": "https://en.wikipedia.org/wiki/Subway_Sect"
+            },
+            {
+              "claim": "Vic Godard led Subway Sect.",
+              "source_url": "https://en.wikipedia.org/wiki/Vic_Godard"
+            },
+            {
+              "claim": "Nobody's Scared was Subway Sect's first single.",
+              "source_url": "https://en.wikipedia.org/wiki/Vic_Godard"
+            },
+            {
+              "claim": "Subway Sect played the Clash's White Riot tour in 1977 under Rhodes's management.",
+              "source_url": "https://en.wikipedia.org/wiki/Vic_Godard"
+            },
+            {
+              "claim": "Bernie Rhodes himself sacked every member of Subway Sect except Vic Godard.",
+              "source_url": "https://en.wikipedia.org/wiki/Vic_Godard"
+            },
+            {
+              "claim": "Subway Sect's Ambition was released in 1978.",
+              "source_url": "https://en.wikipedia.org/wiki/Subway_Sect"
+            },
+            {
+              "claim": "Rhodes was working with Subway Sect before the Clash made him famous.",
+              "source_url": "https://en.wikipedia.org/wiki/Subway_Sect"
+            },
+            {
+              "claim": "Rhodes managed Subway Sect from their beginnings.",
+              "source_url": "https://www.punkygibbon.co.uk/bands/s/subwaysect.html"
+            }
+          ]
+        },
+        {
+          "name": "The Specials",
+          "aliases": [
+            "Specials",
+            "The Special AKA"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed The Specials",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "their 'Gangsters' opens 'Bernie Rhodes knows: don't argue!'",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "The Gangsters intro line marked the end of the Specials' management relationship with Rhodes.",
+              "source_url": "https://en.wikipedia.org/wiki/Gangsters_(song)"
+            },
+            {
+              "claim": "Gangsters was the Specials' first single.",
+              "source_url": "https://en.wikipedia.org/wiki/Gangsters_(song)"
+            },
+            {
+              "claim": "The Specials (and 2 Tone) were from Coventry.",
+              "source_url": "https://2-tone.info/the-specials/"
+            },
+            {
+              "claim": "Rhodes was involved with the Specials early in their career.",
+              "source_url": "https://2-tone.info/the-specials/"
+            },
+            {
+              "claim": "Rhodes fell out with the Specials.",
+              "source_url": "https://en.wikipedia.org/wiki/Gangsters_(song)"
+            },
+            {
+              "claim": "Rhodes had been the Specials' manager.",
+              "source_url": "https://en.wikipedia.org/wiki/Gangsters_(song)"
+            },
+            {
+              "claim": "The Specials changed the opening line of Gangsters to 'Bernie Rhodes knows, don't argue' as a dig at Rhodes, their former manager.",
+              "source_url": "https://en.wikipedia.org/wiki/Gangsters_(song)"
+            }
+          ]
+        },
+        {
+          "name": "Dexys Midnight Runners",
+          "aliases": [
+            "Dexys",
+            "Dexy's Midnight Runners"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed Dexys Midnight Runners",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Dexys Midnight Runners release: Dance Stance (1979), on Rhodes's Oddball Productions label",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Dexys Midnight Runners were a Birmingham band.",
+              "source_url": "https://en.wikipedia.org/wiki/Dexys_Midnight_Runners"
+            },
+            {
+              "claim": "Rhodes produced Dexys' Dance Stance.",
+              "source_url": "https://en.wikipedia.org/wiki/Dexys_Midnight_Runners"
+            },
+            {
+              "claim": "Dance Stance was Dexys Midnight Runners' debut single.",
+              "source_url": "https://en.wikipedia.org/wiki/Dance_Stance"
+            },
+            {
+              "claim": "Dexys Midnight Runners' relationship with Rhodes ended.",
+              "source_url": "https://en.wikipedia.org/wiki/Dexys_Midnight_Runners"
+            },
+            {
+              "claim": "By 1980 Rhodes was involved with Dexys Midnight Runners.",
+              "source_url": "https://en.wikipedia.org/wiki/Dexys_Midnight_Runners"
+            }
+          ]
+        }
+      ],
+      "acceptable": [
+        {
+          "name": "The Lous",
+          "aliases": [
+            "The Lou's",
+            "Les Lou's"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed The Lous",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            }
+          ]
+        },
+        {
+          "name": "Twenty Flight Rockers",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed Twenty Flight Rockers",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Twenty Flight Rockers hired Bernie Rhodes as their manager in 1987",
+              "source_url": "https://en.wikipedia.org/wiki/Twenty_Flight_Rockers"
+            },
+            {
+              "claim": "Twenty Flight Rockers released Tower Block Rock in 1985.",
+              "source_url": "https://en.wikipedia.org/wiki/Gary_Twinn"
+            },
+            {
+              "claim": "Gary Twinn fronted Twenty Flight Rockers.",
+              "source_url": "https://en.wikipedia.org/wiki/Gary_Twinn"
+            },
+            {
+              "claim": "Twenty Flight Rockers were a rock and roll revival act.",
+              "source_url": "https://en.wikipedia.org/wiki/Gary_Twinn"
+            }
+          ]
+        },
+        {
+          "name": "Black Arabs",
+          "aliases": [
+            "The Black Arabs"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed Black Arabs",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            }
+          ]
+        },
+        {
+          "name": "Watts",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes nurtured and managed Watts",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Watts: Doug Watts's band in Atlanta (1990); Rhodes rehearsed them, produced Green with Rage and got them a Sony deal",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            }
+          ]
+        },
+        {
+          "name": "JoBoxers",
+          "aliases": [
+            "Jo Boxers"
+          ],
+          "facts": [
+            {
+              "claim": "Bernie Rhodes managed JoBoxers",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "Rhodes gave Sean McLusky a break at Club Left in 1981, then a deal and success for his band JoBoxers",
+              "source_url": "https://en.wikipedia.org/wiki/Bernard_Rhodes"
+            },
+            {
+              "claim": "JoBoxers included Subway Sect's rhythm section.",
+              "source_url": "https://en.wikipedia.org/wiki/Subway_Sect"
+            },
+            {
+              "claim": "After Dexys Midnight Runners dropped Bernie Rhodes (c. 1979-80), he managed Vic Godard & Subway Sect (1980) and returned to the Clash (1981); JoBoxers formed later, in 1982.",
+              "source_url": "https://en.wikipedia.org/wiki/JoBoxers"
+            },
+            {
+              "claim": "JoBoxers' Boxerbeat charted.",
+              "source_url": "https://en.wikipedia.org/wiki/JoBoxers"
+            },
+            {
+              "claim": "JoBoxers formed in London in the early 1980s.",
+              "source_url": "https://en.wikipedia.org/wiki/JoBoxers"
+            },
+            {
+              "claim": "The songs on JoBoxers' Like Gangbusters (1983) are credited to band members, with no writing credit for Bernie Rhodes.",
+              "source_url": "https://en.wikipedia.org/wiki/Like_Gangbusters"
+            },
+            {
+              "claim": "Dig Wayne was JoBoxers' singer.",
+              "source_url": "https://en.wikipedia.org/wiki/JoBoxers"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "dj_producer_set_v1": {
+    "ogilvie-productions": {
+      "type": "entity_set",
+      "core": [],
+      "acceptable": [
+        {
+          "name": "Remission",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Remission by Skinny Puppy (1984)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Remission: Skinny Puppy's label debut EP",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Remission: producers cEvin Key and Dave Ogilvie",
+              "source_url": "https://en.wikipedia.org/wiki/Remission_(EP)"
+            }
+          ]
+        },
+        {
+          "name": "Antichrist Superstar",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Antichrist Superstar by Marilyn Manson (1996), and its engineer",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Antichrist Superstar: producers Sean Beavan, Marilyn Manson, Dave Ogilvie and Trent Reznor",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "Antichrist Superstar was released in 1996.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "Antichrist Superstar was recorded at Nothing Studios.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "Ogilvie co-produced Antichrist Superstar with Trent Reznor.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "'The Beautiful People' is on Antichrist Superstar.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "'The Beautiful People' was the breakthrough track of Antichrist Superstar.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "Antichrist Superstar was recorded in New Orleans.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "Trent Reznor co-produced Antichrist Superstar.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "Ogilvie co-produced Antichrist Superstar.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            },
+            {
+              "claim": "'Irresponsible Hate Anthem' is the opening track of Antichrist Superstar.",
+              "source_url": "https://en.wikipedia.org/wiki/Antichrist_Superstar"
+            }
+          ]
+        },
+        {
+          "name": "Voyeurs",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Voyeurs by Two (1998)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Voyeurs: Rob Halford's band",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Voyeurs: producers Bob Marlette and Dave Ogilvie",
+              "source_url": "https://en.wikipedia.org/wiki/Voyeurs_(album)"
+            }
+          ]
+        },
+        {
+          "name": "The One Voted Most Likely to Succeed",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced The One Voted Most Likely to Succeed by SNFU (1995)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "The One Voted Most Likely to Succeed: producers SNFU and Dave Ogilvie",
+              "source_url": "https://en.wikipedia.org/wiki/The_One_Voted_Most_Likely_to_Succeed"
+            }
+          ]
+        },
+        {
+          "name": "Masterpiece Theatre",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced two tracks on Masterpiece Theatre by Marianas Trench (2009)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Masterpiece Theatre: Dave Ogilvie produced 'Acadia' and 'Celebrity Status', and mixed six tracks",
+              "source_url": "https://en.wikipedia.org/wiki/Masterpiece_Theatre_(Marianas_Trench_album)"
+            }
+          ]
+        },
+        {
+          "name": "Love in the Age of War",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Love in the Age of War by Men Without Hats (2012)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            },
+            {
+              "claim": "Love in the Age of War: producer Dave \"Rave\" Ogilvie",
+              "source_url": "https://en.wikipedia.org/wiki/Love_in_the_Age_of_War"
+            }
+          ]
+        },
+        {
+          "name": "Walking with Strangers",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Walking with Strangers by The Birthday Massacre (2007), with Michael Rainbow and Mike Falcore",
+              "source_url": "https://en.wikipedia.org/wiki/Walking_with_Strangers"
+            },
+            {
+              "claim": "Walking with Strangers: listed among his productions (the article dates it 2017; the album was released 10 September 2007)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            }
+          ]
+        },
+        {
+          "name": "VIVIsectVI",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced VIVIsectVI by Skinny Puppy (1988), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/VIVIsectVI"
+            }
+          ]
+        },
+        {
+          "name": "Rabies",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Rabies by Skinny Puppy (1989), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Rabies_(Skinny_Puppy_album)"
+            },
+            {
+              "claim": "Rabies: producers David Ogilvie, Alien Jourgensen and cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Rabies_(Skinny_Puppy_album)"
+            }
+          ]
+        },
+        {
+          "name": "Too Dark Park",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Too Dark Park by Skinny Puppy (1990), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Too_Dark_Park"
+            },
+            {
+              "claim": "'Spasmolytic' is on Too Dark Park.",
+              "source_url": "https://en.wikipedia.org/wiki/Too_Dark_Park"
+            },
+            {
+              "claim": "Too Dark Park was released in 1990.",
+              "source_url": "https://en.wikipedia.org/wiki/Too_Dark_Park"
+            },
+            {
+              "claim": "Too Dark Park was made in Vancouver.",
+              "source_url": "https://en.wikipedia.org/wiki/Too_Dark_Park"
+            }
+          ]
+        },
+        {
+          "name": "Last Rights",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Last Rights by Skinny Puppy (1992), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Last_Rights_(album)"
+            }
+          ]
+        },
+        {
+          "name": "The Process",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced The Process by Skinny Puppy (1996), with Martin Atkins, Nivek Ogre, cEvin Key and Dwayne Goettel",
+              "source_url": "https://en.wikipedia.org/wiki/The_Process_(Skinny_Puppy_album)"
+            },
+            {
+              "claim": "Ogilvie contributed to all of Skinny Puppy's releases until The Process (1996)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            }
+          ]
+        },
+        {
+          "name": "Bites",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Bites by Skinny Puppy (1985), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Bites_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Mind: The Perpetual Intercourse",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Mind: The Perpetual Intercourse by Skinny Puppy (1986), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Mind:_The_Perpetual_Intercourse"
+            },
+            {
+              "claim": "'Dig It' is on Skinny Puppy's Mind: The Perpetual Intercourse.",
+              "source_url": "https://en.wikipedia.org/wiki/Mind:_The_Perpetual_Intercourse"
+            },
+            {
+              "claim": "Mind: The Perpetual Intercourse was released in 1986.",
+              "source_url": "https://en.wikipedia.org/wiki/Mind:_The_Perpetual_Intercourse"
+            },
+            {
+              "claim": "Dave Ogilvie produced and engineered Skinny Puppy's Mind: The Perpetual Intercourse.",
+              "source_url": "https://en.wikipedia.org/wiki/Mind:_The_Perpetual_Intercourse"
+            }
+          ]
+        },
+        {
+          "name": "Cleanse Fold and Manipulate",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Cleanse Fold and Manipulate by Skinny Puppy (1987), with cEvin Key",
+              "source_url": "https://en.wikipedia.org/wiki/Cleanse_Fold_and_Manipulate"
+            }
+          ]
+        },
+        {
+          "name": "54-40",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced 54-40 by 54-40 (1986), with the band",
+              "source_url": "https://en.wikipedia.org/wiki/54-40_(album)"
+            },
+            {
+              "claim": "Ogilvie's first work as a solo producer was 54-40's self-titled major-label debut (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/Dave_Ogilvie"
+            }
+          ]
+        }
+      ]
+    },
+    "fryer-productions": {
+      "type": "entity_set",
+      "core": [],
+      "acceptable": [
+        {
+          "name": "It'll End in Tears",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced It'll End in Tears by This Mortal Coil (1984), with Ivo Watts-Russell",
+              "source_url": "https://en.wikipedia.org/wiki/It'll_End_in_Tears"
+            },
+            {
+              "claim": "This Mortal Coil's 'Song to the Siren' was released as a single in September 1983, before it was included on It'll End in Tears (1984).",
+              "source_url": "https://en.wikipedia.org/wiki/Song_to_the_Siren"
+            }
+          ]
+        },
+        {
+          "name": "Filigree & Shadow",
+          "aliases": [
+            "Filigree and Shadow"
+          ],
+          "facts": [
+            {
+              "claim": "Co-produced Filigree & Shadow by This Mortal Coil (1986), with Ivo Watts-Russell",
+              "source_url": "https://en.wikipedia.org/wiki/Filigree_%26_Shadow"
+            }
+          ]
+        },
+        {
+          "name": "Blood",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Blood by This Mortal Coil (1991), with Ivo Watts-Russell",
+              "source_url": "https://en.wikipedia.org/wiki/Blood_(This_Mortal_Coil_album)"
+            }
+          ]
+        },
+        {
+          "name": "Fireside Favourites",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Fireside Favourites by Fad Gadget (1980)",
+              "source_url": "https://en.wikipedia.org/wiki/Fireside_Favourites"
+            }
+          ]
+        },
+        {
+          "name": "Incontinent",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Incontinent by Fad Gadget (1981)",
+              "source_url": "https://en.wikipedia.org/wiki/Incontinent_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Under the Flag",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Under the Flag by Fad Gadget (1982), with Frank Tovey",
+              "source_url": "https://en.wikipedia.org/wiki/Under_the_Flag"
+            }
+          ]
+        },
+        {
+          "name": "Medusa",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Medusa by Clan of Xymox (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/Medusa_(Clan_of_Xymox_album)"
+            }
+          ]
+        },
+        {
+          "name": "Love and Rockets",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Love and Rockets by Love and Rockets (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/Love_and_Rockets_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Pretty Hate Machine",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Pretty Hate Machine by Nine Inch Nails (1989), with Trent Reznor, Flood, Keith LeBlanc and Adrian Sherwood",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "John Fryer worked on Nine Inch Nails' Pretty Hate Machine.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "Pretty Hate Machine material was recorded at Blackwing Studios.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "John Fryer co-produced Pretty Hate Machine with Reznor.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "Flood and Keith LeBlanc produced different tracks on Pretty Hate Machine.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "Pretty Hate Machine was released in 1989.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "'Down in It' is on Pretty Hate Machine.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "Pretty Hate Machine is Nine Inch Nails' debut album.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "John Fryer produced and engineered Pretty Hate Machine.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            },
+            {
+              "claim": "'Head Like a Hole' is on Pretty Hate Machine.",
+              "source_url": "https://en.wikipedia.org/wiki/Pretty_Hate_Machine"
+            }
+          ]
+        },
+        {
+          "name": "It's Beginning To And Back Again",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced It's Beginning To And Back Again by Wire (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/It's_Beginning_To_And_Back_Again"
+            }
+          ]
+        },
+        {
+          "name": "Scar",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Scar by Lush (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/Scar_(Lush_album)"
+            }
+          ]
+        },
+        {
+          "name": "The Comforts of Madness",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced The Comforts of Madness by Pale Saints (1990), with Gil Norton",
+              "source_url": "https://en.wikipedia.org/wiki/The_Comforts_of_Madness_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Livonia",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Livonia by His Name Is Alive (1990)",
+              "source_url": "https://en.wikipedia.org/wiki/Livonia_(album)"
+            },
+            {
+              "claim": "His Name Is Alive's Livonia was released in 1990.",
+              "source_url": "https://en.wikipedia.org/wiki/Livonia_(album)"
+            },
+            {
+              "claim": "John Fryer worked on Livonia.",
+              "source_url": "https://en.wikipedia.org/wiki/Livonia_(album)"
+            },
+            {
+              "claim": "Livonia was released on 4AD.",
+              "source_url": "https://en.wikipedia.org/wiki/Livonia_(album)"
+            },
+            {
+              "claim": "Livonia is named after the town of Livonia, Michigan.",
+              "source_url": "https://en.wikipedia.org/wiki/Livonia_(album)"
+            },
+            {
+              "claim": "Warren Defever's recordings for Livonia were made in Livonia, Michigan.",
+              "source_url": "https://en.wikipedia.org/wiki/Livonia_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Ungod",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Ungod by Stabbing Westward (1994)",
+              "source_url": "https://en.wikipedia.org/wiki/Ungod"
+            }
+          ]
+        },
+        {
+          "name": "Wither Blister Burn & Peel",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Wither Blister Burn & Peel by Stabbing Westward (1996)",
+              "source_url": "https://en.wikipedia.org/wiki/Wither_Blister_Burn_%26_Peel"
+            }
+          ]
+        },
+        {
+          "name": "Gravity Kills",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Gravity Kills by Gravity Kills (1996)",
+              "source_url": "https://en.wikipedia.org/wiki/Gravity_Kills_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Razorblade Romance",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Razorblade Romance by HIM (2000)",
+              "source_url": "https://en.wikipedia.org/wiki/Razorblade_Romance"
+            }
+          ]
+        },
+        {
+          "name": "Midian",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Midian by Cradle of Filth (2000)",
+              "source_url": "https://en.wikipedia.org/wiki/Midian_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Believe in Nothing",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Believe in Nothing by Paradise Lost (2001)",
+              "source_url": "https://en.wikipedia.org/wiki/Believe_in_Nothing"
+            }
+          ]
+        }
+      ]
+    },
+    "burgess-productions": {
+      "type": "entity_set",
+      "core": [],
+      "acceptable": [
+        {
+          "name": "Bulldozer",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Bulldozer by Big Black (1983)",
+              "source_url": "https://en.wikipedia.org/wiki/Bulldozer_(EP)"
+            }
+          ]
+        },
+        {
+          "name": "All Rise",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced All Rise by Naked Raygun (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/All_Rise_(Naked_Raygun_album)"
+            },
+            {
+              "claim": "Naked Raygun's All Rise was released in 1986.",
+              "source_url": "https://en.wikipedia.org/wiki/All_Rise_(Naked_Raygun_album)"
+            },
+            {
+              "claim": "Burgess produced Naked Raygun's All Rise.",
+              "source_url": "https://en.wikipedia.org/wiki/All_Rise_(Naked_Raygun_album)"
+            },
+            {
+              "claim": "Pierre Kezdy played bass on Naked Raygun's All Rise; Jeff Pezzati sang on it.",
+              "source_url": "https://en.wikipedia.org/wiki/All_Rise_(Naked_Raygun_album)"
+            },
+            {
+              "claim": "'Rat Patrol' is on Naked Raygun's Throb Throb (1985), not on All Rise.",
+              "source_url": "https://en.wikipedia.org/wiki/Throb_Throb"
+            },
+            {
+              "claim": "'Soldiers Requiem' is on Naked Raygun's Jettison (1988), not on All Rise.",
+              "source_url": "https://en.wikipedia.org/wiki/Jettison_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Jettison",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Jettison by Naked Raygun (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Jettison_(album)"
+            },
+            {
+              "claim": "Jettison was released in 1988.",
+              "source_url": "https://en.wikipedia.org/wiki/Jettison_(album)"
+            },
+            {
+              "claim": "Burgess produced Naked Raygun's Jettison.",
+              "source_url": "https://en.wikipedia.org/wiki/Jettison_(album)"
+            },
+            {
+              "claim": "The track 'Jettison' is on the album Jettison.",
+              "source_url": "https://en.wikipedia.org/wiki/Jettison_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Strong Reaction",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Strong Reaction by Pegboy (1991)",
+              "source_url": "https://en.wikipedia.org/wiki/Strong_Reaction"
+            },
+            {
+              "claim": "Burgess produced Pegboy's Strong Reaction.",
+              "source_url": "https://en.wikipedia.org/wiki/Strong_Reaction"
+            },
+            {
+              "claim": "Strong Reaction was released in 1991.",
+              "source_url": "https://en.wikipedia.org/wiki/Strong_Reaction"
+            }
+          ]
+        },
+        {
+          "name": "Earwig",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Earwig by Pegboy (1994)",
+              "source_url": "https://en.wikipedia.org/wiki/Earwig_(Pegboy_album)"
+            }
+          ]
+        },
+        {
+          "name": "Fizzjob",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Fizzjob by Didjits (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/Fizzjob"
+            }
+          ]
+        },
+        {
+          "name": "Hey Judester",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Hey Judester by Didjits (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Hey_Judester"
+            }
+          ]
+        },
+        {
+          "name": "Hornet Piñata",
+          "aliases": [
+            "Hornet Pinata"
+          ],
+          "facts": [
+            {
+              "claim": "Co-produced Hornet Piñata by Didjits (1990)",
+              "source_url": "https://en.wikipedia.org/wiki/Hornet_Pi%C3%B1ata"
+            }
+          ]
+        },
+        {
+          "name": "The Ice Machine",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced The Ice Machine by Breaking Circus (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/The_Ice_Machine"
+            }
+          ]
+        },
+        {
+          "name": "Swimming with Sharks",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Swimming with Sharks by Get Smart! (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/Swimming_with_Sharks_(Get_Smart!_album)"
+            }
+          ]
+        },
+        {
+          "name": "Novelty",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Novelty by Jawbox (1992)",
+              "source_url": "https://en.wikipedia.org/wiki/Novelty_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Cunning Stunts",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Cunning Stunts by Cows (1992)",
+              "source_url": "https://en.wikipedia.org/wiki/Cunning_Stunts_(Cows_album)"
+            }
+          ]
+        },
+        {
+          "name": "Sexy Pee Story",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Sexy Pee Story by Cows (1993)",
+              "source_url": "https://en.wikipedia.org/wiki/Sexy_Pee_Story"
+            }
+          ]
+        },
+        {
+          "name": "Primo",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Primo by Rifle Sport (1991)",
+              "source_url": "https://en.wikipedia.org/wiki/Primo_(Rifle_Sport_album)"
+            }
+          ]
+        }
+      ]
+    },
+    "gareth-jones-productions": {
+      "type": "entity_set",
+      "core": [],
+      "acceptable": [
+        {
+          "name": "Some Great Reward",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Some Great Reward by Depeche Mode (1984), with Daniel Miller and Depeche Mode",
+              "source_url": "https://en.wikipedia.org/wiki/Some_Great_Reward"
+            },
+            {
+              "claim": "Some Great Reward was released in 1984.",
+              "source_url": "https://en.wikipedia.org/wiki/Some_Great_Reward"
+            },
+            {
+              "claim": "'Master and Servant' is on Some Great Reward.",
+              "source_url": "https://en.wikipedia.org/wiki/Some_Great_Reward"
+            },
+            {
+              "claim": "Gareth Jones was working at Hansa Tonstudio in Berlin for Some Great Reward.",
+              "source_url": "https://en.wikipedia.org/wiki/Some_Great_Reward"
+            }
+          ]
+        },
+        {
+          "name": "Black Celebration",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Black Celebration by Depeche Mode (1986), with Daniel Miller and Depeche Mode",
+              "source_url": "https://en.wikipedia.org/wiki/Black_Celebration"
+            }
+          ]
+        },
+        {
+          "name": "Halber Mensch",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Halber Mensch by Einstürzende Neubauten (1985)",
+              "source_url": "https://en.wikipedia.org/wiki/Halber_Mensch"
+            },
+            {
+              "claim": "Gareth Jones produced Einstürzende Neubauten (Halber Mensch).",
+              "source_url": "https://en.wikipedia.org/wiki/Halber_Mensch"
+            },
+            {
+              "claim": "Halber Mensch was released in 1985.",
+              "source_url": "https://en.wikipedia.org/wiki/Halber_Mensch"
+            },
+            {
+              "claim": "'Halber Mensch' means 'half man'.",
+              "source_url": "https://en.wikipedia.org/wiki/Halber_Mensch"
+            },
+            {
+              "claim": "The title track 'Halber Mensch' has no drum kit.",
+              "source_url": "https://en.wikipedia.org/wiki/Halber_Mensch"
+            }
+          ]
+        },
+        {
+          "name": "Fünf auf der nach oben offenen Richterskala",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Fünf auf der nach oben offenen Richterskala by Einstürzende Neubauten (1987)",
+              "source_url": "https://en.wikipedia.org/wiki/F%C3%BCnf_auf_der_nach_oben_offenen_Richterskala"
+            }
+          ]
+        },
+        {
+          "name": "The Ideal Copy",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced The Ideal Copy by Wire (1987)",
+              "source_url": "https://en.wikipedia.org/wiki/The_Ideal_Copy"
+            },
+            {
+              "claim": "The Ideal Copy was released in 1987.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Ideal_Copy"
+            },
+            {
+              "claim": "'Ahead' is on Wire's The Ideal Copy.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Ideal_Copy"
+            },
+            {
+              "claim": "Gareth Jones produced The Ideal Copy.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Ideal_Copy"
+            }
+          ]
+        },
+        {
+          "name": "A Bell Is a Cup",
+          "aliases": [
+            "A Bell Is a Cup... Until It Is Struck"
+          ],
+          "facts": [
+            {
+              "claim": "Produced A Bell Is a Cup by Wire (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/A_Bell_Is_a_Cup"
+            }
+          ]
+        },
+        {
+          "name": "Gag",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Gag by Fad Gadget (1984), with Frank Tovey",
+              "source_url": "https://en.wikipedia.org/wiki/Gag_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Desire",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Desire by Tuxedomoon (1981)",
+              "source_url": "https://en.wikipedia.org/wiki/Desire_(Tuxedomoon_album)"
+            }
+          ]
+        },
+        {
+          "name": "The Bride Ship",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced The Bride Ship by Crime & the City Solution (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/The_Bride_Ship"
+            }
+          ]
+        },
+        {
+          "name": "Saint of the Pit",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Saint of the Pit by Diamanda Galás (1986)",
+              "source_url": "https://en.wikipedia.org/wiki/Saint_of_the_Pit"
+            }
+          ]
+        },
+        {
+          "name": "You Must Be Certain of the Devil",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced You Must Be Certain of the Devil by Diamanda Galás (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/You_Must_Be_Certain_of_the_Devil"
+            }
+          ]
+        },
+        {
+          "name": "Wild!",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Wild! by Erasure (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/Wild!"
+            },
+            {
+              "claim": "Erasure's Wild! was released in 1989.",
+              "source_url": "https://en.wikipedia.org/wiki/Wild!"
+            },
+            {
+              "claim": "Gareth Jones produced Wild!.",
+              "source_url": "https://en.wikipedia.org/wiki/Wild!"
+            },
+            {
+              "claim": "'Drama!' is on Wild!.",
+              "source_url": "https://en.wikipedia.org/wiki/Wild!"
+            },
+            {
+              "claim": "Gareth Jones co-produced Wild!.",
+              "source_url": "https://en.wikipedia.org/wiki/Wild!"
+            },
+            {
+              "claim": "'Star' is on Wild!.",
+              "source_url": "https://en.wikipedia.org/wiki/Wild!"
+            }
+          ]
+        },
+        {
+          "name": "Erasure",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Erasure by Erasure (1995), with Thomas Fehlmann",
+              "source_url": "https://en.wikipedia.org/wiki/Erasure_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Light at the End of the World",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Light at the End of the World by Erasure (2007)",
+              "source_url": "https://en.wikipedia.org/wiki/Light_at_the_End_of_the_World"
+            }
+          ]
+        },
+        {
+          "name": "Internal Wrangler",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Internal Wrangler by Clinic (2000)",
+              "source_url": "https://en.wikipedia.org/wiki/Internal_Wrangler"
+            }
+          ]
+        },
+        {
+          "name": "Beat Pyramid",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Beat Pyramid by These New Puritans (2008)",
+              "source_url": "https://en.wikipedia.org/wiki/Beat_Pyramid"
+            }
+          ]
+        }
+      ]
+    },
+    "kramer-productions": {
+      "type": "entity_set",
+      "core": [],
+      "acceptable": [
+        {
+          "name": "1990",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced 1990 by Daniel Johnston (1990)",
+              "source_url": "https://en.wikipedia.org/wiki/1990_(Daniel_Johnston_album)"
+            },
+            {
+              "claim": "The album 1990 was titled for its release year.",
+              "source_url": "https://en.wikipedia.org/wiki/1990_(Daniel_Johnston_album)"
+            },
+            {
+              "claim": "Kramer produced Daniel Johnston's 1990 sessions.",
+              "source_url": "https://en.wikipedia.org/wiki/1990_(Daniel_Johnston_album)"
+            },
+            {
+              "claim": "Some Things Last a Long Time is on Daniel Johnston's 1990, from the Kramer sessions.",
+              "source_url": "https://en.wikipedia.org/wiki/1990_(Daniel_Johnston_album)"
+            }
+          ]
+        },
+        {
+          "name": "Artistic Vice",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Artistic Vice by Daniel Johnston (1991)",
+              "source_url": "https://en.wikipedia.org/wiki/Artistic_Vice"
+            }
+          ]
+        },
+        {
+          "name": "On Fire",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced On Fire by Galaxie 500 (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/On_Fire_(Galaxie_500_album)"
+            }
+          ]
+        },
+        {
+          "name": "I Could Live in Hope",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced I Could Live in Hope by Low (1994)",
+              "source_url": "https://en.wikipedia.org/wiki/I_Could_Live_in_Hope"
+            },
+            {
+              "claim": "Low's I Could Live in Hope was recorded in 1993.",
+              "source_url": "https://en.wikipedia.org/wiki/I_Could_Live_in_Hope"
+            },
+            {
+              "claim": "I Could Live in Hope was recorded at Noise New Jersey.",
+              "source_url": "https://en.wikipedia.org/wiki/I_Could_Live_in_Hope"
+            },
+            {
+              "claim": "Lullaby is a track on Low's Kramer-produced I Could Live in Hope.",
+              "source_url": "https://en.wikipedia.org/wiki/I_Could_Live_in_Hope"
+            },
+            {
+              "claim": "I Could Live in Hope is Low's debut album.",
+              "source_url": "https://en.wikipedia.org/wiki/I_Could_Live_in_Hope"
+            }
+          ]
+        },
+        {
+          "name": "Long Division",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Long Division by Low (1995)",
+              "source_url": "https://en.wikipedia.org/wiki/Long_Division_(Low_album)"
+            }
+          ]
+        },
+        {
+          "name": "Malcolm X Park",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Malcolm X Park by Unrest (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Malcolm_X_Park_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Fluting on the Hump",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Fluting on the Hump by King Missile (Dog Fly Religion) (1987)",
+              "source_url": "https://en.wikipedia.org/wiki/Fluting_on_the_Hump"
+            },
+            {
+              "claim": "King Missile's Fluting on the Hump was recorded in 1987.",
+              "source_url": "https://en.wikipedia.org/wiki/King_Missile"
+            },
+            {
+              "claim": "Fluting on the Hump was recorded at Kramer's Noise New York studio.",
+              "source_url": "https://en.wikipedia.org/wiki/King_Missile"
+            },
+            {
+              "claim": "Fluting on the Hump is a mini-LP.",
+              "source_url": "https://api.discogs.com/masters/204064/versions"
+            },
+            {
+              "claim": "Fluting on the Hump was recorded in ten hours.",
+              "source_url": "https://en.wikipedia.org/wiki/King_Missile"
+            },
+            {
+              "claim": "Fluting on the Hump was recorded as a demo.",
+              "source_url": "https://codamusic.me/artists/king-missile"
+            },
+            {
+              "claim": "Kramer released Fluting on the Hump on his newly founded Shimmy-Disc label.",
+              "source_url": "https://en.wikipedia.org/wiki/King_Missile"
+            }
+          ]
+        },
+        {
+          "name": "Mystical Shit",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Mystical Shit by King Missile (1990)",
+              "source_url": "https://en.wikipedia.org/wiki/Mystical_Shit"
+            }
+          ]
+        },
+        {
+          "name": "Happy Hour",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Happy Hour by King Missile (1992), with the band and others",
+              "source_url": "https://en.wikipedia.org/wiki/Happy_Hour_(King_Missile_album)"
+            }
+          ]
+        },
+        {
+          "name": "More Sad Hits",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced More Sad Hits by Damon & Naomi (1992)",
+              "source_url": "https://en.wikipedia.org/wiki/More_Sad_Hits"
+            }
+          ]
+        },
+        {
+          "name": "Psycho-Head Blowout",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Psycho-Head Blowout by White Zombie (1987), with White Zombie",
+              "source_url": "https://en.wikipedia.org/wiki/Psycho-Head_Blowout"
+            }
+          ]
+        },
+        {
+          "name": "Hell-O",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Hell-O by Gwar (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Hell-O"
+            }
+          ]
+        },
+        {
+          "name": "Bozo",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Bozo by Lida Husik (1991), with Lida Husik",
+              "source_url": "https://en.wikipedia.org/wiki/Bozo_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Cyclops Nuclear Submarine Captain",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Cyclops Nuclear Submarine Captain by Dogbowl (1991)",
+              "source_url": "https://en.wikipedia.org/wiki/Cyclops_Nuclear_Submarine_Captain"
+            }
+          ]
+        },
+        {
+          "name": "Flan",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Flan by Dogbowl (1992)",
+              "source_url": "https://en.wikipedia.org/wiki/Flan_(album)"
+            }
+          ]
+        },
+        {
+          "name": "Ancestors",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Ancestors by Edith Frost (1997), with Edith Frost",
+              "source_url": "https://en.wikipedia.org/wiki/Ancestors_(EP)"
+            }
+          ]
+        },
+        {
+          "name": "Good News",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Good News by Withered Hand (2009)",
+              "source_url": "https://en.wikipedia.org/wiki/Good_News_(Withered_Hand_album)"
+            }
+          ]
+        },
+        {
+          "name": "Money Feeds My Music Machine",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Money Feeds My Music Machine by Captain Howdy (1998)",
+              "source_url": "https://en.wikipedia.org/wiki/Money_Feeds_My_Music_Machine"
+            }
+          ]
+        },
+        {
+          "name": "Potted Meat Spread",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Potted Meat Spread by Spongehead (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Potted_Meat_Spread"
+            }
+          ]
+        },
+        {
+          "name": "Let It Breed",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Co-produced Let It Breed by The Honeymoon Killers (1986), with The Honeymoon Killers and Steve McAllister",
+              "source_url": "https://en.wikipedia.org/wiki/Let_It_Breed"
+            }
+          ]
+        },
+        {
+          "name": "Bobby",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Produced Bobby by When People Were Shorter and Lived Near the Water (1989)",
+              "source_url": "https://en.wikipedia.org/wiki/Bobby_(When_People_Were_Shorter_and_Lived_Near_the_Water_album)"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

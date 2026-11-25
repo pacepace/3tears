@@ -1,0 +1,303 @@
+{
+  "dj_career_arc_v1": {
+    "barker-arc": {
+      "type": "entity_set",
+      "core": [
+        {
+          "name": "The Blackouts",
+          "aliases": [
+            "Blackouts"
+          ],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of The Blackouts, 1979-1985",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Paul Barker and The Blackouts: bassist, with Bill Rieflin and his brother Roland Barker",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Ministry",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Ministry, 1986-2003, 2024",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Paul Barker joined Ministry 1986, as touring bassist for the Twitch tour",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Paul Barker left Ministry in 2003, a year after Animositisomina",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Ministry release: The Land of Rape and Honey (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Paul Barker: in March 2024 it was announced he would reunite with Jourgensen to write, perform and produce a Ministry album",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Paul Barker played on Ministry's The Land of Rape and Honey (1988), the first Ministry album to include him.",
+              "source_url": "https://en.wikipedia.org/wiki/The_Land_of_Rape_and_Honey"
+            },
+            {
+              "claim": "Paul Barker was still in Ministry when he made Lead into Gold's 'Idiot' (1988): Lead into Gold was a side project, and he was in Ministry from 1986 until he left in 2003 (announced January 2004).",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Revolting Cocks",
+          "aliases": [
+            "RevCo"
+          ],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Revolting Cocks, 1987-1993, 2016-present",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "'Beers, Steers and Queers' is by Revolting Cocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Beers,_Steers,_and_Queers"
+            },
+            {
+              "claim": "Barker and Jourgensen were in Revolting Cocks at the time of Beers, Steers and Queers (1990).",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Luc Van Acker was in Revolting Cocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            },
+            {
+              "claim": "Chris Connelly was in Revolting Cocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Beers,_Steers,_and_Queers"
+            },
+            {
+              "claim": "Richard 23 co-founded Revolting Cocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Richard_23"
+            },
+            {
+              "claim": "Revolting Cocks were founded in late 1984 or 1985 (origins late 1984, first release 1985).",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            },
+            {
+              "claim": "Richard 23 later left Revolting Cocks.",
+              "source_url": "https://en.wikipedia.org/wiki/Revolting_Cocks"
+            }
+          ]
+        },
+        {
+          "name": "Lard",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Lard, 1988-2000",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        }
+      ],
+      "acceptable": [
+        {
+          "name": "1000 Homo DJs",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of 1000 Homo DJs, 1988, 1990",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Acid Horse",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Acid Horse, 1989",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Pink Anvil",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Pink Anvil, 2001, 2003",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Flowering Blight",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Flowering Blight",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Flowering Blight release: The Perfect Pair (2008-11-19)",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Flowering Blight: his solo project",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Bells into Machines",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Bells into Machines, 2013-2022",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Puscifer",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Puscifer",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Paul Barker and Puscifer: touring bassist, 2015",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Pailhead",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Pailhead",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            },
+            {
+              "claim": "Pailhead release: I Will Refuse / No Bunny (1987, Wax Trax!)",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            },
+            {
+              "claim": "Pailhead: with Al Jourgensen and Ian MacKaye",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            },
+            {
+              "claim": "Paul Barker was a member of Pailhead, 1987-1988",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Al Jourgensen and Paul Barker were in Pailhead.",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            },
+            {
+              "claim": "Ian MacKaye was Pailhead's vocalist.",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            },
+            {
+              "claim": "Pailhead's 'I Will Refuse' was released on Wax Trax!.",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            },
+            {
+              "claim": "Pailhead's 'I Will Refuse' was released in 1987.",
+              "source_url": "https://en.wikipedia.org/wiki/Pailhead"
+            }
+          ]
+        },
+        {
+          "name": "Lead into Gold",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Lead into Gold, 1988-1990, 2015, 2017-present",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "Lead into Gold release: The Eternal Present (2023)",
+              "source_url": "https://en.wikipedia.org/wiki/Lead_into_Gold"
+            },
+            {
+              "claim": "Lead into Gold release: Idiot (1988)",
+              "source_url": "https://en.wikipedia.org/wiki/Lead_into_Gold"
+            },
+            {
+              "claim": "Lead into Gold release: Age of Reason (1990)",
+              "source_url": "https://en.wikipedia.org/wiki/Lead_into_Gold"
+            },
+            {
+              "claim": "Lead into Gold is Barker's current solo project",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "'Idiot' is a Lead Into Gold (Paul Barker) release.",
+              "source_url": "https://en.wikipedia.org/wiki/Lead_into_Gold"
+            },
+            {
+              "claim": "Lead Into Gold's 'Idiot' was released in 1988.",
+              "source_url": "https://en.wikipedia.org/wiki/Lead_into_Gold"
+            }
+          ]
+        },
+        {
+          "name": "U.S.S.A.",
+          "aliases": [
+            "USSA"
+          ],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of U.S.S.A., 2006-present",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "U.S.S.A. release: The Spoils (2007-09-18)",
+              "source_url": "https://en.wikipedia.org/wiki/U.S.S.A."
+            },
+            {
+              "claim": "Paul Barker and U.S.S.A.: bassist, with Duane Denison",
+              "source_url": "https://en.wikipedia.org/wiki/U.S.S.A."
+            },
+            {
+              "claim": "After leaving Ministry, Paul Barker co-founded the band USSA with Duane Denison.",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            },
+            {
+              "claim": "'Dead Voices' is a USSA song.",
+              "source_url": "https://alarm-magazine.com/2007/ussa-the-spoils/"
+            }
+          ]
+        },
+        {
+          "name": "PTP",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of PTP, 1989",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        },
+        {
+          "name": "Pigface",
+          "aliases": [],
+          "facts": [
+            {
+              "claim": "Paul Barker was a member of Pigface, 1990; plays on Gub (1991)",
+              "source_url": "https://en.wikipedia.org/wiki/Paul_Barker"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

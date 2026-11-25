@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
+from threetears.evals.analysis.campaign_readings import AnswerSplit, BarStatus, CampaignReadings, FloorStatus
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.forms import PageForms
@@ -22,7 +22,16 @@ from threetears.evals.analysis.report.model import DisclosureBlock, Report, Repo
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.surface import GuardrailCheck
 
-__all__ = ["bar_warnings", "campaign_warnings", "floor_line", "floor_warnings", "guardrail_warnings", "listed", "where"]
+__all__ = [
+    "answer_split_warnings",
+    "bar_warnings",
+    "campaign_warnings",
+    "floor_line",
+    "floor_warnings",
+    "guardrail_warnings",
+    "listed",
+    "where",
+]
 
 
 def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
@@ -30,11 +39,8 @@ def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[Repo
     or for a measurement, whose bars are its standard, ``solo falls short of the bar on clarity.``
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :return: The lines.
-    :rtype: list[ReportBlock]
     """
     return [DisclosureBlock(section="warnings", source="bar", text=text) for *_, text in _bar_lines(readings, names)]
 
@@ -57,17 +63,11 @@ def guardrail_warnings(
     it.``
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The lines, the breached before the undecided, each arm in the order first met.
-    :rtype: list[ReportBlock]
     """
     labels = readings.arm_labels()
     blocks: list[ReportBlock] = []
@@ -124,17 +124,11 @@ def _undecided_bound(
     beyond the bundle's cap.
 
     :param check: The undecided guardrail check.
-    :ptype check: GuardrailCheck
     :param bundle: The aspect's bundle it was read on.
-    :ptype bundle: AnalysisContextBundle
     :param arm: The arm checked, by name.
-    :ptype arm: str
     :param control: The control, by name.
-    :ptype control: str
     :param forms: The page's forms, which state the margin as declared.
-    :ptype forms: PageForms
     :return: The words, opening with the comma that follows the guardrail's name, or None.
-    :rtype: str | None
     """
     descriptor = bundle.measure_catalog.get(check.name)
     if (
@@ -181,13 +175,9 @@ def floor_warnings(readings: CampaignReadings, *, names: AspectNames, forms: Pag
     table's.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms, which state each margin.
-    :ptype forms: PageForms
     :return: The lines.
-    :rtype: list[ReportBlock]
     """
     return [
         DisclosureBlock(section="warnings", source="floor", text=text)
@@ -195,25 +185,109 @@ def floor_warnings(readings: CampaignReadings, *, names: AspectNames, forms: Pag
     ]
 
 
+def _answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[str]:
+    """One line per arm whose results were answered by more than one candidate model, naming the models and the
+    aspects: ``latest's results on billing were answered by 2 models (m-03 and m-06), so they are read per model: no
+    change, interval or verdict is given for latest there.`` A split control's line says no candidate is read against
+    it there. The per-model readings are each aspect's own contrasts.
+
+    :param readings: What code read off the campaign.
+    :param names: What the page calls each aspect.
+    :return: The lines, in the arms' order as first met; none where no arm is split.
+    """
+    by_arm: dict[str, list[AnswerSplit]] = {}
+    defined: dict[str, list[AnswerSplit]] = {}
+    for split in readings.answer_splits:
+        (by_arm if split.coordinate == "served_model" else defined).setdefault(split.arm, []).append(split)
+    lines: list[str] = []
+    for arm, splits in defined.items():
+        # Kept from one figure by a host measure's definition: the arm's runs were read under more than one, or
+        # under none recorded, or under another than the control's.
+        label = splits[0].arm_label
+        on = where([names(split.aspect) for split in splits], len(readings.aspects))
+        how = (
+            "under no recorded definition of a host measure"
+            if all(split.unrecorded for split in splits)
+            else "under more than one definition of a host measure, or under another than the control's"
+        )
+        scope = "the whole campaign" if len(splits) == len(readings.aspects) else on
+        kept = (
+            f"{scope} is not compared, since no candidate is read against {label} there"
+            if arm == readings.control
+            else f"no change, interval or verdict is given for {label} there"
+        )
+        lines.append(
+            f"{label}'s runs on {on} were read {how}, so their values are not one quantity and {kept}. Its host "
+            "states the definitions those runs ran under (runs_attest, coordinate measure_definition), or re-measures "
+            "them (run_remeasure)."
+        )
+    for arm, splits in by_arm.items():
+        label = splits[0].arm_label
+        models = sorted({model for split in splits for model in split.served_models})
+        unnamed = any(split.unrecorded for split in splits)
+        if models and unnamed:
+            answered = f"{listed(models)}, and a model some responses did not name"
+        elif len(models) > 1:
+            answered = f"{len(models)} models ({listed(models)})"
+        else:
+            answered = "more than one model"
+        on = where([names(split.aspect) for split in splits], len(readings.aspects))
+        if unnamed and not models:
+            # Nothing named a model at all: runs silent alike are read apart, since two silences are no match, and
+            # the remedy is the host's statement.
+            scope = "the whole campaign" if len(splits) == len(readings.aspects) else on
+            kept = (
+                f"{scope} is not compared, since no candidate is read against {label} there"
+                if arm == readings.control
+                else f"no change, interval or verdict is given for {label} there"
+            )
+            lines.append(
+                f"{label}'s responses on {on} named no model in more than one run, so nothing says one model answered "
+                f"them and each such run is read apart: {kept}. Its host states the model that answered them "
+                "(runs_attest, coordinate served_model)."
+            )
+            continue
+        if arm == readings.control:
+            # Every contrast is read against the control, so a control read per model leaves none to read: all of
+            # the campaign where it is split on every aspect.
+            scope = "the whole campaign" if len(splits) == len(readings.aspects) else on
+            lines.append(
+                f"{label} is the control, and its results on {on} were answered by {answered}, so they are read per "
+                f"model: {scope} is not compared, since no candidate is read against {label} there."
+            )
+            continue
+        lines.append(
+            f"{label}'s results on {on} were answered by {answered}, so they are read per model: no change, interval "
+            f"or verdict is given for {label} there."
+        )
+    return lines
+
+
+def answer_split_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
+    """:func:`_answer_split_lines` as the page's warnings, after the guardrails'."""
+    return [
+        DisclosureBlock(section="warnings", source="runs", text=text) for text in _answer_split_lines(readings, names)
+    ]
+
+
 def campaign_warnings(readings: CampaignReadings, names: AspectNames, *, forms: PageForms) -> list[str]:
     """What warns on a campaign's page of its bars and floors, as code words it: each arm missing a bar, then each
-    candidate breaking a floor — never the guardrail lines after.
+    candidate breaking a floor — never the guardrail lines after — then each arm read per answering model
+    (:func:`_answer_split_lines`), which has no row for a listing to quote.
 
     The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
     says, word for word.
 
     :param readings: What code read off the campaign, over the floors frozen with it.
-    :ptype readings: CampaignReadings
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The forms of the surface the lines are printed on, which state each margin: the page's, or an
         off-page surface's (:meth:`~threetears.evals.analysis.report.forms.PageForms.off_page`) for a listing.
-    :ptype forms: PageForms
     :return: The lines, in the page's order; none where no bar is missed and no floor broken.
-    :rtype: list[str]
     """
-    return [text for *_, text in _bar_lines(readings, names)] + [
-        text for *_, text in _floor_lines(readings, names, forms)
+    return [
+        *(text for *_, text in _bar_lines(readings, names)),
+        *(text for *_, text in _floor_lines(readings, names, forms)),
+        *_answer_split_lines(readings, names),
     ]
 
 
@@ -256,15 +330,10 @@ def floor_line(arm: str, margins: Sequence[float | None], where: str, *, forms: 
     (a cost floor has none). Which rate broke it, and the interval it broke on, are the floors table's.
 
     :param arm: The candidate, by name.
-    :ptype arm: str
     :param margins: Each broken floor's margin in points, None for a cost floor; one per floor.
-    :ptype margins: Sequence[float | None]
     :param where: Where the floors are broken, as :func:`where` says it.
-    :ptype where: str
     :param forms: The page's forms, which state the margin as declared.
-    :ptype forms: PageForms
     :return: The line.
-    :rtype: str
     """
     shared = set(margins)
     margin = next(iter(shared)) if len(shared) == 1 else None
@@ -301,11 +370,8 @@ def where(names: Sequence[str], total: int) -> str:
     (``2 of 3 aspects (billing and tone)``).
 
     :param names: The aspects it holds on, as the page calls them, in the page's order.
-    :ptype names: Sequence[str]
     :param total: How many aspects the page holds.
-    :ptype total: int
     :return: Where, as a line says it.
-    :rtype: str
     """
     if len(names) == 1:
         return names[0]
@@ -318,8 +384,6 @@ def listed(items: Sequence[str]) -> str:
     """Items as a sentence or a cell lists them: ``billing``, ``billing and tone``, ``billing, tone and refunds``.
 
     :param items: The items, in order; at least one.
-    :ptype items: Sequence[str]
     :return: The list.
-    :rtype: str
     """
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"

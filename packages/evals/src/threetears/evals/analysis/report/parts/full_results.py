@@ -44,7 +44,7 @@ then says. A figure the input does not hold is a dash.
 reader, which lose the colour, lose nothing.
 
 **The gate matrix reads the gate check.** Each cell is
-:func:`~threetears.evals.analysis.report_gates.gate_check` narrowed to the row's place, over the input with that row's
+:func:`~threetears.evals.analysis.report.gates.gate_check` narrowed to the row's place, over the input with that row's
 one criterion, so a cell's status is the one the options table, the survivors and every gate chart read: the matrix
 is the gate check spelled out, never a second reading of it.
 """
@@ -52,7 +52,7 @@ is the gate check spelled out, never a second reading of it.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
@@ -60,20 +60,21 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
-from threetears.evals.analysis.report.figure_keys import (
+from threetears.evals.analysis.report.keys.reads import (
     aspect_costs_per_thousand,
     cost_basis,
+    cost_in_measure_unit,
     cost_ruler,
-    format_figure,
-    held_figure,
-    resolve,
 )
-from threetears.evals.analysis.report.forms import ColumnMoney, MeasureForm, PageForms
+from threetears.evals.analysis.report.keys.resolve import format_figure, held_figure, resolve
+from threetears.evals.analysis.report.keys.vocabulary import looks_of
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.number_forms.printed import ColumnMoney, MeasureForm
 from threetears.evals.analysis.report.parts.charting import money_words, stat_value
 from threetears.evals.analysis.report.parts.look import GATE_STATUS, PageLook, Quantity
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.tables import pass_rate_cell
-from threetears.evals.analysis.report.words import given_name
+from threetears.evals.analysis.report.words import given_name, label_case
 from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
@@ -89,7 +90,7 @@ from threetears.evals.analysis.report.parts.words import (
     NOT_RECORDED,
     OVERALL,
 )
-from threetears.evals.analysis.report_gates import GateCheck, gate_check
+from threetears.evals.analysis.report.gates import GateCheck, gate_check
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Judged, Measure, ReportInput, Stat
 from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
 from threetears.evals.analysis.style import humanize, lever_reader_name
@@ -231,6 +232,55 @@ def _cost(report_input: ReportInput, arm: str, forms: PageForms) -> TableCell | 
     )
 
 
+def _measure_cell(
+    report_input: ReportInput,
+    forms: PageForms,
+    key: str,
+    stat: Stat | None,
+    *,
+    arm: str,
+    aspect: str | None,
+    costs: Mapping[str, float],
+    others: bool,
+) -> TableCell | ColumnMoney:
+    """One arm's figure on a measure. Where the measure is the one the page reads its cost from and holds none for the
+    arm, the arm's cost is read by the page's one cost rule (``costs``, the cost per 1,000 the options table reads
+    too), in the measure's own unit, so the arm states the cost the options table does, with its priced share beside it
+    where only part of its calls were priced."""
+    cell = _stated(report_input, forms, key, stat, others=others)
+    if _holds(report_input, key, stat) or key != cost_basis(report_input).source or arm not in costs:
+        return cell
+    if key not in report_input.measures or report_input.measures[key].unit not in _DOLLAR_UNITS:
+        return cell
+    fallback = _stated(
+        report_input,
+        forms,
+        key,
+        Stat(mean=cost_in_measure_unit(report_input, key, costs[arm])),
+        others=others,
+    )
+    share = priced_in_part(report_input, arm, aspect)
+    return replace(fallback, flag=share) if isinstance(fallback, ColumnMoney) else fallback
+
+
+#: The units a dollar measure states its means in.
+_DOLLAR_UNITS = frozenset({"usd", "usd_per_1k", "usd_per_1m"})
+
+
+def _read_by_some(report_input: ReportInput, key: str, figures: Iterable[Stat | None]) -> bool:
+    """Whether some arm shows a figure of ``key`` in one place (the page's one aspect, or one aspect of several): the
+    one rule both shapes of Every arm by measure read an arm's dash by (#1117 item 6). Where some arm shows one, an arm
+    with no entry recorded none, ``— (not recorded)``; where none does, the dash is the place's, not read there, and
+    stays bare.
+
+    :param report_input: The report input.
+    :param key: The measure or judged dimension.
+    :param figures: Each arm's entry in that place; None for an arm with none.
+    :return: Whether some arm shows a figure there.
+    """
+    return any(_holds(report_input, key, figure) for figure in figures)
+
+
 def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms) -> list[TableBlock]:
     if len(aspects := _measured_aspects(report_input)) > 1:
         return _arms_by_aspect_and_measure(report_input, look, forms, aspects)
@@ -270,14 +320,27 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook, forms: PageForms
         cells: dict[str, TableCell | ColumnMoney] = {"arm": _chip(look, arm)}
         if passing:
             cells["pass_rate"] = pass_rate_cell(report_input, arm, forms=forms)
-        # Every column is one some arm holds a figure in, so an arm with no entry recorded none.
+        # An arm with no entry recorded none where some arm shows a figure in the column (:func:`_read_by_some`).
         for key in judged:
+            held = report_input.judged[key].per_arm
             cells[f"judged:{key}"] = _stated(
-                report_input, forms, key, report_input.judged[key].per_arm.get(arm), kind="judged", others=True
+                report_input,
+                forms,
+                key,
+                held.get(arm),
+                kind="judged",
+                others=_read_by_some(report_input, key, held.values()),
             )
         for key in measures:
-            cells[f"measure:{key}"] = _stated(
-                report_input, forms, key, report_input.measures[key].per_arm.get(arm), others=True
+            cells[f"measure:{key}"] = _measure_cell(
+                report_input,
+                forms,
+                key,
+                report_input.measures[key].per_arm.get(arm),
+                arm=arm,
+                aspect=None,
+                costs=aspect_costs_per_thousand(report_input, None),
+                others=_read_by_some(report_input, key, report_input.measures[key].per_arm.values()),
             )
         if costed:
             cells["cost_per_1k"] = _cost(report_input, arm, forms)
@@ -317,7 +380,9 @@ def _arms_by_aspect_and_measure(
     passing = {(aspect.id, arm): pass_rate_cell(report_input, arm, aspect.id, forms=forms) for aspect, arm in places}
 
     def held(table: Measure | Judged, key: str) -> bool:
-        return any(_holds(report_input, key, on_aspect(report_input, table, aspect.id).get(arm)) for aspect, arm in places)
+        return any(
+            _holds(report_input, key, on_aspect(report_input, table, aspect.id).get(arm)) for aspect, arm in places
+        )
 
     judged = [key for key, table in report_input.judged.items() if held(table, key)]
     measures = [key for key, table in report_input.measures.items() if held(table, key)]
@@ -345,10 +410,11 @@ def _arms_by_aspect_and_measure(
         ),
     ]
     keys = {column.key for column in columns}
+
     def read_there(table: Measure | Judged, key: str, aspect: Aspect) -> bool:
         """Whether some arm holds the figure on ``aspect``: a dash there is an arm's not recorded, not the aspect's
-        not read."""
-        return any(_holds(report_input, key, figure) for figure in on_aspect(report_input, table, aspect.id).values())
+        not read (:func:`_read_by_some`, the rule the one-aspect table reads too)."""
+        return _read_by_some(report_input, key, on_aspect(report_input, table, aspect.id).values())
 
     rows = []
     for aspect, arm in places:
@@ -370,11 +436,14 @@ def _arms_by_aspect_and_measure(
             )
         for key in measures:
             measure = report_input.measures[key]
-            cells[f"measure:{key}"] = _stated(
+            cells[f"measure:{key}"] = _measure_cell(
                 report_input,
                 forms,
                 key,
                 on_aspect(report_input, measure, aspect.id).get(arm),
+                arm=arm,
+                aspect=aspect.id,
+                costs=costs[aspect.id],
                 others=read_there(measure, key, aspect),
             )
         if costed:
@@ -386,9 +455,7 @@ def _arms_by_aspect_and_measure(
             )
         rows.append(cells)
     return [
-        _table(
-            "arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, forms, reconciles=_beside_a_month(report_input)
-        )
+        _table("arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, forms, reconciles=_beside_a_month(report_input))
     ]
 
 
@@ -433,11 +500,11 @@ def _level(report_input: ReportInput, forms: PageForms, contrast: Contrast) -> s
         None,
     )
     level = contrast.level or (family.level if family is not None else None)
-    return forms.confidence(level, family).text if level else None
+    return forms.confidence(level, family, looks_of(report_input, contrast.aspect)).text if level else None
 
 
 def _verdict(contrast: Contrast) -> TableCell:
-    words = CONTRAST_VERDICT_WORDS.get(contrast.verdict) or humanize("dimension", contrast.verdict).capitalize()
+    words = CONTRAST_VERDICT_WORDS.get(contrast.verdict) or label_case(humanize("dimension", contrast.verdict))
     return TableCell(value=words, status=_VERDICT_STATUS.get(contrast.verdict, "neutral"))
 
 
@@ -641,13 +708,9 @@ def every_table(report_input: ReportInput, look: PageLook, *, forms: PageForms) 
     """Every Full results table the input holds a row of, in this module's order (this module's account).
 
     :param report_input: The report input a report document was written from.
-    :ptype report_input: ReportInput
     :param look: The page's look.
-    :ptype look: PageLook
     :param forms: The page's forms (:meth:`PageForms.of` over the same input), which state every figure.
-    :ptype forms: PageForms
     :return: The tables, each with one row at least.
-    :rtype: list[TableBlock]
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)
@@ -664,9 +727,7 @@ def laid_out(table: TableBlock) -> TableBlock:
     HTML page and the Markdown both lay it out here, so the two read alike.
 
     :param table: A table :func:`every_table` returned.
-    :ptype table: TableBlock
     :return: The table to lay out.
-    :rtype: TableBlock
     """
     if table.name != "arms_by_measure" or not table.rows:
         return table

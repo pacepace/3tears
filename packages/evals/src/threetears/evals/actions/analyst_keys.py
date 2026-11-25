@@ -62,7 +62,6 @@ def analyst_keys_actions() -> tuple[Action, ...]:
     """The ``Investigate: facts`` action that reads a report's keys.
 
     :return: ``figure_keys_check``.
-    :rtype: tuple[Action, ...]
     """
     return (
         Action(

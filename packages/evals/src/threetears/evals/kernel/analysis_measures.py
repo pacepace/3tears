@@ -158,6 +158,17 @@ class MeasureSummary(EvalDocumentModel):
             "statistic. Empty on every other shape."
         ),
     )
+    # The two below are left out of the document when unset, so a summary built before they existed serializes as it did.
+    spread: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The spread of the cell's per-case values, in the measure's units.",
+    )
+    no_variation: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The one value every case took, where the cases did not vary.",
+    )
 
     def bad_tail(self) -> float | None:
         """The percentile at this measure's *worse* end, whichever end that is.
@@ -169,7 +180,6 @@ class MeasureSummary(EvalDocumentModel):
         :return: p05 when higher is better, p95 when lower is better, None for a categorical
             measure, one with no declared direction, or one with too few observations to
             estimate that tail (below 13).
-        :rtype: float | None
         """
         if self.higher_is_better is None:
             return None

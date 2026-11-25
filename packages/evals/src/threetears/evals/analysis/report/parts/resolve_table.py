@@ -12,7 +12,8 @@ measures,       wide: a row per arm, a column per measure holding its figure (it
 judged,         criterion on it reads) with its interval; money stated per 1,000 of what it counts (per 1,000
                 replies for money per reply)
 configs
-scoreboard      the arm, the figure, its value (a count by cause as its total)
+scoreboard      the arm, the figure, its value (a count by cause as its total; the calls answered and
+                unanswered in words, never summed)
 floors          the floor, the arm, its status, the largest drop its interval allows, its margin
 strata, tasks   wide: a row per slice and arm, a column per measure holding its figure with its interval
 examples        the trial, the case, the stratum or task, the arm, the outcome, the reason
@@ -63,7 +64,7 @@ from threetears.evals.analysis.quantities import MONEY, is_money
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
 from threetears.evals.analysis.report.cost_unit import MoneyRuler
-from threetears.evals.analysis.report.forms import ColumnMoney
+from threetears.evals.analysis.report.number_forms.printed import ColumnMoney
 from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
@@ -79,7 +80,8 @@ from threetears.evals.analysis.report.parts.charting import (
     stat_interval,
     stat_value,
 )
-from threetears.evals.analysis.report.figure_keys import cost_basis, held_means, figure_unit
+from threetears.evals.analysis.report.keys.reads import cost_basis, held_means
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import Quantity, in_change_form, quantity, quantity_of
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.resolve_changes import compare_basis, lever_label, narrow_notes
@@ -104,8 +106,10 @@ from threetears.evals.analysis.report_input import (
     Stat,
     Stratum,
     Task,
+    Unanswered,
 )
-from threetears.evals.analysis.report_rows import PriceStep, lever_arms
+from threetears.evals.analysis.report.parts.tables import unanswered_calls_said
+from threetears.evals.analysis.report.rows import PriceStep, lever_arms, query_aspect
 from threetears.evals.analysis.report.parts.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
@@ -357,15 +361,36 @@ def _figures(context: ChartContext, laid: _Laid) -> Iterator[_Row]:
     yield from _wide(context, places, laid, arms)
 
 
+def _board_where(context: ChartContext) -> str:
+    """The figure keys' aspect prefix for the scoreboard the query's rows read
+    (:func:`~threetears.evals.analysis.report.rows.query_rows`): the named aspect's where it holds a scoreboard of its
+    own, else the input's (no prefix)."""
+    aspect = query_aspect(context.query.aspect, context.report_input) if context.query.aspect else None
+    return f"aspects.{aspect.id}." if aspect is not None and aspect.scoreboard is not None else ""
+
+
+def _board_value(context: ChartContext, arm: str, held: object) -> CellValue:
+    """One scoreboard figure's cell value: a count, a count by cause as its total, an arm's calls answered and
+    unanswered in words (#1250: its roles' records hold no one number, so they are never summed), else None."""
+    if isinstance(held, int | float):
+        return held
+    if not isinstance(held, dict):
+        return None
+    counts = list(held.values())
+    whole = [count for count in counts if isinstance(count, int)]
+    if len(whole) == len(counts):
+        return sum(whole)
+    if all(isinstance(count, Unanswered) for count in counts):
+        return unanswered_calls_said(arm, context.report_input, context.forms, _board_where(context))
+    return None
+
+
 def _scoreboard(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     boards = {row.arm: row.item for row in context.rows() if isinstance(row.item, ScoreboardRow)}
     keys = list(context.query.measures) or list(ScoreboardRow.model_fields)
     for arm in context.arm_order(boards):
         for key in keys:
-            held = getattr(boards[arm], key, None)
-            value: CellValue = (
-                sum(held.values()) if isinstance(held, dict) else held if isinstance(held, int | float) else None
-            )
+            value = _board_value(context, arm, getattr(boards[arm], key, None))
             if value is None and not context.query.measures:
                 continue
             # A figure's name is the row's label, so it starts with a capital as every label does.
@@ -688,7 +713,7 @@ def _with_intervals(
         own = f"{column.key}{_INTERVAL_COLUMN}"
         if any(row[column.key].low is not None or own in row for row in rows if column.key in row):
             key = f"{column.key}{_INTERVAL_COLUMN}"
-            laid.append(TableColumn(key=key, header=INTERVAL_HEADER.format(level=level).strip().capitalize()))
+            laid.append(TableColumn(key=key, header=label_case(INTERVAL_HEADER.format(level=level).strip())))
             spelled.append(column.key)
     filled = [
         {

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import Field, ValidationError, field_validator
 
@@ -55,7 +55,9 @@ from threetears.evals.kernel.declaration import (
     DecisionClause,
     Floor,
     Margin,
+    MembershipChange,
     aware_instant,
+    membership_changed,
     resolve_control_arm,
 )
 from threetears.evals.kernel.identity import compute_variant_key
@@ -138,6 +140,10 @@ class CampaignStore(Protocol):
         """The key of every result of one run within a scope, in one read that ships no other field."""
         ...
 
+    def query_eval_result_keys_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> dict[str, list[ResultKey]]:
+        """The key of every result of each of several runs within a scope, in one read that ships no other field."""
+        ...
+
     def load_eval_results(self, result_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
         """The named results within a scope, in one read by id."""
         ...
@@ -148,9 +154,9 @@ class CampaignStore(Protocol):
 #: ``created_by`` is here rather than in the authoring vocabulary because authorship a
 #: caller can type is not authorship: the surface knows who it is talking to and the caller does not have to be
 #: trusted about it, so the surface says. ``declared_at`` and ``declared_by`` are stamped on every write of the
-#: declaration for the same reason; ``call`` is recorded by its own write. The derived ``run_ids`` and
-#: ``exploratory`` are not here: a create naming either is refused, since runs belong to aspects and whether a
-#: campaign is exploratory is said beside the definition, never inside it.
+#: declaration for the same reason; ``call`` is recorded by its own write; ``looks_rule`` is stamped at creation.
+#: The derived ``run_ids`` and ``exploratory`` are not here: a create naming either is refused, since runs belong to
+#: aspects and whether a campaign is exploratory is said beside the definition, never inside it.
 CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
@@ -162,6 +168,7 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "declared_at",
     "declared_by",
     "call",
+    "looks_rule",
 )
 
 #: What an operator may change on a campaign after it exists. Membership and the control have their own write paths
@@ -253,6 +260,20 @@ class AspectDefinition(EvalBaseModel):
         ),
     )
     margin: float | None = Field(default=None, gt=0.0, lt=100.0, allow_inf_nan=False, description=_MARGIN_DESCRIPTION)
+    undo: Literal["hard"] | None = Field(
+        default=None,
+        description=(
+            "`hard` where switching to a candidate would be hard to undo, which raises the evidence the advice switches "
+            "at from moderate to strong (`Aspect.undo`). Omitted, it is easy to undo."
+        ),
+    )
+    undo_ignored: Literal["easy"] | None = Field(
+        default=None,
+        description=(
+            "`easy` where a lowering of `undo` declared after the results was ignored, the earlier `hard` kept "
+            "(`Aspect.undo_ignored`). Omitted, none was."
+        ),
+    )
     design: AspectDesign | None = Field(
         default=None,
         description="What the aspect sets out to vary and hold itself to. Omitted, the aspect is exploratory.",
@@ -367,27 +388,18 @@ def create_campaign(
     declaring nothing is refused without it. An exploratory campaign names no question, arm, floor or margin.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param definition: The campaign, as above.
-    :ptype definition: dict[str, Any]
     :param scope_id: The scope the campaign lives in — the one its member runs live in.
-    :ptype scope_id: str
     :param created_by: Who is creating it, as the calling surface knows them; also who declared what it declares.
-    :ptype created_by: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param exploratory: True to create the campaign with no design, saying so.
-    :ptype exploratory: bool
     :param aspects_from: The campaigns whose aspects this one adopts, in order: each an id, or an
         :class:`AspectSource` (or its fields) relabelling a campaign's one aspect.
-    :ptype aspects_from: Sequence[str | Mapping[str, Any]]
     :param declared_at: When the caller fixed what this create declares (its own aspects, the arms it names, its
         question, a margin or floor it adds), where that was before now: an eval fixes its design and its control in
         the call that launches its arms, then files them once they have run. ISO-8601 with an offset. None dates them
         now. A server-side keyword, never a field of the ``campaign_create`` action.
-    :ptype declared_at: str | None
     :return: The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition fails validation; names no aspect and adopts none; holds a run
         outside the scope, in two aspects, or of two revisions of one template in one aspect; adopts two aspects under
@@ -430,6 +442,13 @@ def create_campaign(
     _refuse_collisions(sources, own)
     # Every write stores each declared axis named: an adopted aspect stored before its host named a lever is named here.
     aspects = _named_axes([*adopted, *own], profile)
+    # Every run joins now, the write's own time and never a time the caller states: an adopted aspect's runs join this
+    # campaign here, whatever they did in the campaign they came from, so its record starts with this write.
+    joined_at = utc_now_iso()
+    aspects = [
+        aspect.model_copy(update={"membership": membership_changed((), joined=aspect.run_ids, at=joined_at)})
+        for aspect in aspects
+    ]
     declared = any(aspect.design is not None for aspect in aspects)
     _refuse_an_unsaid_kind(declared=declared, exploratory=exploratory)
     if not declared and (authored.question or authored.arms or authored.floors or authored.margins):
@@ -475,6 +494,8 @@ def create_campaign(
             floors=floors,
             declared_at=declared_at if declared else None,
             declared_by=declared_by if declared else "",
+            # Created once looks are counted: its looks past its plan, or more than one with none, qualify its report.
+            looks_rule=1,
             created_by=created_by,
         )
     except ValidationError as e:
@@ -525,9 +546,7 @@ def _refuse_an_unsaid_kind(*, declared: bool, exploratory: bool) -> None:
     """Refuse a write that does not say, or contradicts itself about, whether the campaign is declared.
 
     :param declared: Whether any aspect the write leaves declares a design.
-    :ptype declared: bool
     :param exploratory: The caller's assertion that none does.
-    :ptype exploratory: bool
     :raises ValidationFailedError: Neither was said, or both were.
     """
     if declared and exploratory:
@@ -683,6 +702,8 @@ def _declared_aspect(
         short_name=defined.short_name,
         template_id=_aspect_template(storage, scope_id, defined.template_id, defined.run_ids),
         margin=defined.margin,
+        undo=defined.undo,
+        undo_ignored=defined.undo_ignored,
         design=defined.design,
         run_ids=list(dict.fromkeys(defined.run_ids)),
         declared_at=at if declares else None,
@@ -754,13 +775,9 @@ def _hold_relative_terms_to_a_control(
     (:func:`~threetears.evals.analysis.campaign_readings.campaign_readings`). The engine never picks one.
 
     :param has_control: Whether the campaign the write leaves names a control arm.
-    :ptype has_control: bool
     :param declared: The aspects the write declares, whose own margins it states.
-    :ptype declared: Sequence[Aspect]
     :param margins: Where else the write states a margin, as a refusal names each.
-    :ptype margins: Sequence[str]
     :param floors: The keys of the floors the write states.
-    :ptype floors: Sequence[str]
     :raises ValidationFailedError: Naming each margin and floor.
     """
     if not has_control:
@@ -982,11 +999,8 @@ def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], s
     partly-wrong request leaves the campaign as the caller last saw it.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param run_ids: The runs to be held.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The campaign's scope.
-    :ptype scope_id: str
     :raises ValidationFailedError: One or more of ``run_ids`` does not resolve in ``scope_id``.
     """
     if not run_ids:
@@ -1009,14 +1023,10 @@ def _gate_aspect(storage: CampaignStore, campaign: EvalCampaign, aspect: Aspect,
     question and the floors on it, as the one question its design is asked under.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign: The campaign the aspect belongs to: its behavior keys a registered bar, its question and
         floors are what the aspect is asked.
-    :ptype campaign: EvalCampaign
     :param aspect: The declared aspect to check.
-    :ptype aspect: Aspect
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :raises ValidationFailedError: An axis the host will not accept, a bar naming nothing the aspect's results carry,
         looser than the registered incumbent or against its measure's direction, a guardrail margin or a floor on
         nothing the aspect measures, or latency asked about without being under test.
@@ -1057,10 +1067,8 @@ def declarable_axes(profile: HostProfile) -> DeclarableAxes:
     offer drawn from any other registry could promise an axis the gate then refuses.
 
     :param profile: The host whose registry the campaign is declared against.
-    :ptype profile: HostProfile
     :return: The fixed levers, the open families whose members are declarable, and the remedy
         sentence a refused declaration carries.
-    :rtype: DeclarableAxes
     """
     registry = profile.sweepables
     return DeclarableAxes(
@@ -1121,26 +1129,16 @@ def update_campaign(
     and ``clear_control`` clears it. Either needs a declared campaign — as this update leaves it.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: The campaign to amend.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param updates: Partial field map; every key must be updatable.
-    :ptype updates: dict[str, Any]
     :param updated_by: Who is amending it, as the calling surface knows them. Recorded on the declaration when this
         update writes one; it never becomes ``created_by``, since a later editor is not the author.
-    :ptype updated_by: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param exploratory: True to say the campaign this update leaves declares no design.
-    :ptype exploratory: bool
     :param control_from_run_id: One of the campaign's runs whose variant becomes the control arm, or None.
-    :ptype control_from_run_id: str | None
     :param clear_control: True to clear the control arm.
-    :ptype clear_control: bool
     :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, or an aspect names a template the scope lacks.
     :raises ConflictError: The campaign holds a run, and the update writes the declaration, clears its control, or
         names a control where one is already named (:func:`_refuse_frozen_declaration`).
@@ -1400,13 +1398,9 @@ def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> Eva
     """Load a campaign by id.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: The campaign to load.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The campaign.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
@@ -1429,17 +1423,11 @@ def list_campaigns(
     equality filters; all ``None`` returns every campaign.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param scope_id: The scope to list.
-    :ptype scope_id: str
     :param subject_id: Only campaigns over this subject.
-    :ptype subject_id: str | None
     :param behavior: Only campaigns measuring this behavior.
-    :ptype behavior: str | None
     :param archived: Only archived (``True``) or only active (``False``) campaigns.
-    :ptype archived: bool | None
     :return: The matching campaigns, newest first.
-    :rtype: list[EvalCampaign]
     """
     return storage.list_campaigns(
         scope_id,
@@ -1466,17 +1454,11 @@ def add_runs_to_campaign(
     all-or-nothing. Loads, merges and re-saves here, so a failed persist raises ``StorageError``.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: Campaign to attach to.
-    :ptype campaign_id: str
     :param scope_id: The scope the campaign and the runs live in.
-    :ptype scope_id: str
     :param run_ids: Run ids to add; already-attached ids are ignored.
-    :ptype run_ids: list[str]
     :param aspect: The aspect every run joins, by label; None routes each by its template.
-    :ptype aspect: str | None
     :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: The aspect is not the campaign's; a run is outside the scope, held by another
         aspect, or of a template no aspect or several aspects are gathered on; or an aspect would hold two revisions
@@ -1506,12 +1488,18 @@ def add_runs_to_campaign(
         if target is not None
         else _route_by_template(storage, campaign, fresh)
     )
-    aspects = [
-        held.model_copy(
-            update={"run_ids": [*held.run_ids, *(run_id for run_id in fresh if routed[run_id] == held.label)]}
+    # Each join is recorded with the write's time: a run whose results were scored before it joined is a look when it
+    # joins, not when it was scored.
+    joined_at = utc_now_iso()
+    aspects = []
+    for held in campaign.aspects:
+        joining = [run_id for run_id in fresh if routed[run_id] == held.label]
+        aspects.append(
+            held.model_copy(
+                update={"run_ids": [*held.run_ids, *joining]}
+                | ({"membership": membership_changed(held.membership, joined=joining, at=joined_at)} if joining else {})
+            )
         )
-        for held in campaign.aspects
-    ]
     for joined in aspects:
         if any(routed.get(run_id) == joined.label for run_id in fresh):
             _refuse_pooled_revisions(
@@ -1598,6 +1586,44 @@ def _route_by_template(storage: CampaignStore, campaign: EvalCampaign, run_ids: 
     return routed
 
 
+def _departure(storage: CampaignStore, run_id: str, scope_id: str, *, at: str) -> MembershipChange:
+    """A run leaving an aspect at ``at``, holding what its look is counted by once it is gone: when its first result was
+    scored, and the launch group it was launched in (one read of its result keys, one of the run).
+
+    :param storage: The campaign store.
+    :param run_id: The run leaving.
+    :param scope_id: The scope it lives in.
+    :param at: When it leaves.
+    :return: The departure.
+    """
+    run = storage.load_eval_run(run_id, scope_id)
+    scored: list[tuple[datetime, str]] = []
+    unordered: list[str] = []
+    for key in storage.query_eval_result_keys_by_run(run_id, scope_id) if run is not None else ():
+        try:
+            scored.append((aware_instant(key.scored_at, "a result's scored_at"), key.scored_at))
+        except ValueError:
+            unordered.append(key.scored_at)
+    if unordered:
+        # Which result came first is then not known, so the departure records no first result and the aspect's
+        # looks read as the lower bound they are; the operator is told which stored times could not be ordered.
+        log.warning(
+            "eval.membership_departure run=%s scope=%s left with %d result time(s) that cannot be ordered (%s): "
+            "its first result is not recorded, so the aspect's looks are a lower bound",
+            run_id,
+            scope_id,
+            len(unordered),
+            ", ".join(repr(stamp) for stamp in unordered[:3]),
+        )
+    return MembershipChange(
+        run_id=run_id,
+        change="left",
+        at=at,
+        first_result_at=min(scored)[1] if scored and not unordered else None,
+        launch=run.launch_group_id if run is not None else None,
+    )
+
+
 @serialized_campaign_write
 def remove_runs_from_campaign(
     storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str], *, aspect: str | None = None
@@ -1615,17 +1641,11 @@ def remove_runs_from_campaign(
     the same stack the arm is untouched, and where none does the bundle reports the arm as unobserved.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: Campaign to detach from.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param run_ids: Run ids to remove; every one must currently be attached.
-    :ptype run_ids: list[str]
     :param aspect: The aspect holding them, by label, or None for wherever each is held.
-    :ptype aspect: str | None
     :return: The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: The aspect is not the campaign's, or an id is not attached (to it).
     :raises StorageError: The updated campaign failed to persist.
@@ -1644,10 +1664,27 @@ def remove_runs_from_campaign(
             remedy=f"detach only runs it holds: {', '.join(sorted(held)) or 'it holds none'}",
         )
     removing = set(run_ids)
+    # Each departure is recorded with what its look is counted by once the run is gone: its look happened.
+    left_at = utc_now_iso()
     campaign = campaign.model_copy(
         update={
             "aspects": [
-                kept.model_copy(update={"run_ids": [run_id for run_id in kept.run_ids if run_id not in removing]})
+                kept.model_copy(
+                    update={
+                        "run_ids": [run_id for run_id in kept.run_ids if run_id not in removing],
+                        "membership": membership_changed(
+                            kept.membership,
+                            left=[
+                                _departure(storage, run_id, scope_id, at=left_at)
+                                for run_id in kept.run_ids
+                                if run_id in removing
+                            ],
+                            at=left_at,
+                        ),
+                    }
+                )
+                if removing & set(kept.run_ids)
+                else kept
                 for kept in campaign.aspects
             ]
         }
@@ -1683,19 +1720,12 @@ def set_campaign_control(
     Naming the control does not re-date the question: when it was asked is not when its control was addressed.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign_id: Campaign to designate on.
-    :ptype campaign_id: str
     :param scope_id: The scope the campaign and its runs live in.
-    :ptype scope_id: str
     :param run_id: A member run whose variant becomes the control, or None to clear it.
-    :ptype run_id: str | None
     :param set_by: Who is designating, as the calling surface knows them; logged beside the arm.
-    :ptype set_by: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The persisted campaign — or the campaign untouched when CLEARING a control on one that names none.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ConflictError: The campaign holds a run and already names a control (:func:`_refuse_frozen_declaration`).
     :raises ValidationFailedError: A designation on an exploratory campaign, or ``run_id`` is not a member.
@@ -1817,13 +1847,9 @@ def campaign_arms(storage: CampaignStore, campaign: EvalCampaign, *, profile: Ho
     """The campaign's arms as a reader reads them: :func:`campaign_arms_spelled`'s arms, without how each was spelled.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param profile: The host whose variant map a run assembled without the launch is read through.
-    :ptype profile: HostProfile
     :return: The named arms, the control first, then the derived candidates.
-    :rtype: list[CampaignArm]
     :raises LeverCoordinateError: A member run recorded no lever map, and the host's variant map disagrees with its
         own registry.
     """
@@ -1846,7 +1872,7 @@ def campaign_arms_spelled(
     later replaces them whole. An arm spelled from several levers comes with its spelling
     (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), which the
     campaign bundle carries and a page prints the arm by, each lever by its stored name
-    (:func:`~threetears.evals.analysis.report.words.printed_arm_labels`), so renaming a lever moves no label and no
+    (:func:`~threetears.evals.analysis.style.printed_arm_labels`), so renaming a lever moves no label and no
     fingerprint, and no page reads a label's text back.
 
     **A derived label is not an identity.** It is read over the variants the runs carry now, so a variant joining
@@ -1855,27 +1881,21 @@ def campaign_arms_spelled(
     ``variant_key``, never by ``arm``, which is the label it was read under.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param profile: The host whose variant map a run assembled without the launch is read through.
-    :ptype profile: HostProfile
     :return: The named arms, the control first, then the derived candidates; and each derived arm's spelling, where
         code spelled it from several levers, by variant key.
-    :rtype: tuple[list[CampaignArm], dict[str, ArmSpelling]]
     :raises LeverCoordinateError: A member run recorded no lever map, and the host's variant map disagrees with its
         own registry.
     """
     named = list(campaign.arms)
     known = {key for arm in named for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)}
     derived: dict[str, _AddressedArm] = {}
-    for aspect in campaign.aspects:
-        for run_id in aspect.run_ids:
-            if storage.load_eval_run(run_id, campaign.scope_id) is None:
-                continue
-            addressed = _address_arm(storage, campaign.scope_id, run_id, profile=profile)
-            if addressed.key not in known and addressed.key not in derived:
-                derived[addressed.key] = addressed
+    members = dict.fromkeys(run_id for aspect in campaign.aspects for run_id in aspect.run_ids)
+    loaded = [run for run_id in members if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None]
+    for addressed in _address_runs(storage, campaign.scope_id, loaded, profile=profile):
+        if addressed.key not in known and addressed.key not in derived:
+            derived[addressed.key] = addressed
     if not derived:
         return named, {}
     entries = [_index_entry(arm) for arm in [*map(_addressed, named), *derived.values()]]
@@ -1921,13 +1941,9 @@ def _derived_name(
     levels. An arm whose levels are unavailable, or that moved no lever, is named as ``name`` says.
 
     :param entry: The arm's index entry.
-    :ptype entry: VariantIndexEntry
     :param distinguishing: The levers the arms differ on (:func:`~threetears.evals.analysis.arms.distinguishing_axes`).
-    :ptype distinguishing: frozenset[str]
     :param name: Its name as :func:`~threetears.evals.analysis.arms.arm_names` spells it, read only for its digest.
-    :ptype name: str
     :return: The word, and the spelling where several levers spell it.
-    :rtype: tuple[str, ArmSpelling | None]
     """
     shown = next(
         (
@@ -1989,16 +2005,11 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
     arithmetic is the version coupling the map exists to remove.
 
     :param storage: The campaign store.
-    :ptype storage: CampaignStore
     :param scope_id: The campaign's scope, which the run is read in.
-    :ptype scope_id: str
     :param run_id: The run to address; the caller holds it to the campaign's membership.
-    :ptype run_id: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The 64-hex variant key, the lever map it was digested from (None where none reproduces it), and
         the identity version it was computed under.
-    :rtype: _AddressedArm
     :raises ValidationFailedError: The run does not resolve in the campaign's scope.
     :raises LeverCoordinateError: The run recorded no lever map (its host assembled it without the launch),
         and the host's variant map disagrees with its own registry — as assembling a bundle over the
@@ -2010,22 +2021,42 @@ def _address_arm(storage: CampaignStore, scope_id: str, run_id: str, *, profile:
             f"run '{run_id}' does not exist in scope '{scope_id}' — nothing to resolve a variant from",
             remedy=f"name a run of this scope ({FIND_RUN})",
         )
-    identity = resolve_variant_identity(run=run, profile=profile)
-    # The key is the first result's (`variant_key_of_run`), so the run's keys are read and that one result by id: never
-    # the run's results.
-    results = read_results(storage, scope_id, storage.query_eval_result_keys_by_run(run_id, scope_id)[:1])
-    key = variant_key_of_run(results)
-    if key is None:
-        # A run launched a moment ago has no observation yet, and a designation made AT launch
-        # is the common case, not an edge: the operator picks the control while choosing the
-        # arms. Every result such a run writes is stamped by digesting the lever map
-        # `resolve_variant_identity` reads — the runner's own read — so the key its observations
-        # WILL carry is known now, from the same read, not a second derivation.
-        return _AddressedArm(identity.variant_key, identity.levers, identity.identity_version)
-    version = results[0].identity_version
-    reproduces = identity.variant_key == key
-    recorded_under_another = run.variant_levers is not None and version != IDENTITY_VERSION
-    return _AddressedArm(key, identity.levers if reproduces or recorded_under_another else None, version)
+    (addressed,) = _address_runs(storage, scope_id, [run], profile=profile)
+    return addressed
+
+
+def _address_runs(
+    storage: CampaignStore, scope_id: str, runs: Sequence[EvalRun], *, profile: HostProfile
+) -> list[_AddressedArm]:
+    """Each run's arm as :func:`_address_arm` reads it, in the runs' order: each run's identity, then every run's keys
+    in one read, and every run's first result in one read by id.
+
+    :raises LeverCoordinateError: A run recorded no lever map, and the host's variant map disagrees with its own
+        registry; the first such run in order is named.
+    """
+    identities = [resolve_variant_identity(run=run, profile=profile) for run in runs]
+    # The key is the first result's (`variant_key_of_run`), so every run's keys are read in one call and each run's
+    # first result by id: never a run's results, and every run's first result in one read.
+    every = storage.query_eval_result_keys_by_runs([run.id for run in runs], scope_id) if runs else {}
+    firsts = [every.get(run.id, [])[:1] for run in runs]
+    by_id = {result.id: result for result in read_results(storage, scope_id, [key for keys in firsts for key in keys])}
+    addressed: list[_AddressedArm] = []
+    for run, identity, keys in zip(runs, identities, firsts, strict=True):
+        results = [by_id[key.id] for key in keys if key.id in by_id]
+        key = variant_key_of_run(results)
+        if key is None:
+            # A run launched a moment ago has no observation yet, and a designation made AT launch
+            # is the common case, not an edge: the operator picks the control while choosing the
+            # arms. Every result such a run writes is stamped by digesting the lever map
+            # `resolve_variant_identity` reads — the runner's own read — so the key its observations
+            # WILL carry is known now, from the same read, not a second derivation.
+            addressed.append(_AddressedArm(identity.variant_key, identity.levers, identity.identity_version))
+            continue
+        version = results[0].identity_version
+        reproduces = identity.variant_key == key
+        recorded_under_another = run.variant_levers is not None and version != IDENTITY_VERSION
+        addressed.append(_AddressedArm(key, identity.levers if reproduces or recorded_under_another else None, version))
+    return addressed
 
 
 if TYPE_CHECKING:

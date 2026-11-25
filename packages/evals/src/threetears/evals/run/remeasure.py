@@ -1,0 +1,692 @@
+"""Re-measure one stored run: read its results' host measures again, under the host's current definitions.
+
+A run records the definition digest of every measure its host declared when it was launched
+(:attr:`~threetears.evals.schema.models.EvalRun.measure_definitions`), and runs read under two definitions of one
+measure never pool. A host that changes what a measure counts therefore cuts its earlier runs off from its later ones,
+and so does a run stored before runs recorded definitions at all. This is the one door back in: the host's reader
+(:attr:`~threetears.evals.kernel.host.profile.HostProfile.measure_rereader`) reads each stored result again from what
+its cell stored, the new values replace the old on the result beside a record of what they replaced
+(:class:`~threetears.evals.schema.models.MeasureReread`), and the run records the definitions its values now hold and
+that it was re-measured (:class:`~threetears.evals.schema.models.MeasureRemeasure`). From then on its context identity
+is derived from those definitions, so it joins the cell of the runs launched under them.
+
+**Nothing is interpolated.** A stored value of a measure whose definition moved is either read again by the host's
+reader or the whole run is refused, before anything is written: no value read under one definition is ever kept under
+the digest of another, and none is guessed. A measure whose definition moved and of which no result holds a value
+needs no reading: there is nothing to read again, and the run takes the current digest.
+
+**A reading the host derives from a claim criterion is read again by the engine**
+(:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.derived_from`): from the criterion's grade and the cell's
+claim evidence its trace stores, through the host's claim reader
+(:attr:`~threetears.evals.kernel.host.profile.HostProfile.claim_readers`), onto the criterion's tally, never through
+``measure_rereader``. A result whose tally for such a criterion has no stored grade beside it refuses the run, as a
+value nothing can read again does. A cell the reader once could not read (``ClaimTally.derived_unread``) is read
+again the same way, whether or not any definition moved, so a fixed reader recovers every reading from the stored
+grades.
+
+**A run its measure shaped is refused.** A measure that declares
+:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.shapes_run` decided what the run did (a stop rule, a floor the
+world topped up to), so under another definition the run would have done something else, and reading its artifacts
+again cannot say what. Such a run stays in the cell it was measured in; measuring under the current definition takes
+a new run.
+
+It reports first, like :func:`~threetears.evals.run.regrade.regrade`: with ``apply=False`` (the default) it reads and
+checks everything and writes nothing. Applied, it writes in three steps: the run is marked as being re-measured (a
+:class:`~threetears.evals.schema.models.MeasureRemeasure` with no ``completed_at``, which makes the run a cell of its
+own), then each result, conditional on what was read, then the run's definitions and the mark's completion. A pass
+cut short therefore leaves the run pooling with nothing, never in the old cell with some values read under the new
+definition, and a second pass finishes it: a result already read again under the current definition is not read again.
+
+**The other door is a host's statement.** :func:`attest_measure_definitions` stamps a run that recorded no
+definitions with the ones its host says it ran under, touching no result: for a host that knows which revision of
+its reading code was live when the run was made. The run then pools with the runs of those definitions, and can
+later be re-measured into the current ones.
+
+**The served model has the same door.** A run whose candidate responses named no model (a router that echoed a
+requested alias back, a logged output, a host's answer that named none) pools with no other run, since nothing says
+what answered it. :func:`attest_served_model` records its host's statement of the model that did
+(:class:`~threetears.evals.schema.models.ServedModelAttestation`), naming the results it covers, and touches no
+row: a reading that pools by answering model reads those silent rows through the statement, as attested, not
+recorded. It never stands beside a model a response named.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
+
+from pydantic import Field
+
+from threetears.evals.kernel.claims.derived import claim_derivations, derive_claim_readings
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.measures import MeasureRereadRequest
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.kernel.scoring import remeasure_unfinished
+from threetears.evals.run.run_document import update_eval_run
+from threetears.evals.run.runner import refuse_misfit_host_measures
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.reading_states import AttestableCoordinate
+from threetears.evals.schema.models import (
+    NON_TERMINAL_RUN_STATUSES,
+    MeasureAttestation,
+    MeasureRemeasure,
+    MeasureReread,
+    ServedModelAttestation,
+    utc_now_iso,
+)
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.schema.models import ClaimTally, EvalResult, EvalRun, EvalTrace
+
+log = get_logger(__name__)
+
+#: How many results a refusal names before it counts the rest.
+_NAMED_IN_A_REFUSAL = 5
+
+
+class Remeasure(EvalBaseModel):
+    """What re-measuring one stored run found, and whether it was written."""
+
+    run_id: str
+    applied: bool = Field(description="Whether the new values and the run's record were stored.")
+    already_current: bool = Field(
+        default=False,
+        description="The run already records the host's current definitions: nothing was read and nothing written.",
+    )
+    was: dict[str, str] | None = Field(
+        description="The run's measure definitions as read, measure key -> digest. None = it recorded none."
+    )
+    now: dict[str, str] = Field(description="The host's current measure definitions, measure key -> digest.")
+    moved: list[str] = Field(
+        default_factory=list,
+        description="The measures whose definition the run did not record, or recorded otherwise, sorted.",
+    )
+    reread: list[str] = Field(
+        default_factory=list, description="The measures a stored value of which was read again, sorted."
+    )
+    results_reread: int = Field(default=0, description="The results one or more of whose values were read again.")
+    values_changed: int = Field(default=0, description="The stored values the current definition reads otherwise.")
+
+
+@dataclass(frozen=True, slots=True)
+class _Reread:
+    """One result's new values, with the etag its rewrite presents.
+
+    :ivar values: Its host measures read again, by name.
+    :ivar tallies: Its claim tallies whose derived readings were read again, by criterion, as they now stand.
+    :ivar derived: The derived readings read again, by name, each now held or (absent) not carried.
+    :ivar derived_was: What the derived readings read again held before, for each one held.
+    """
+
+    result: EvalResult
+    etag: str | None
+    values: dict[str, bool | float | str]
+    tallies: dict[str, ClaimTally]
+    derived: dict[str, float | None]
+    derived_was: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class _Plan:
+    """Everything a re-measure reads and checks before it writes."""
+
+    run: EvalRun
+    now: dict[str, str]
+    moved: list[str]
+    rereads: list[_Reread]
+
+
+async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bool = False) -> Remeasure:
+    """Read one stored run's host measures again under the host's current definitions, and report what moved.
+
+    :param host: The host: the run's store, its measure registry (``profile.measures``, whose definitions are the
+        current ones) and its reader of a stored result (``profile.measure_rereader``).
+    :param run_id: The stored run to re-measure.
+    :param scope_id: The scope it lives in.
+    :param apply: Store the new values and mark the run re-measured; ``False`` (the default) reads, checks and
+        reports, and writes nothing.
+    :return: What moved and what was read again, and whether it was written.
+    :raises NotFoundError: No such run in the scope.
+    :raises ValidationFailedError: The run is still pending or running; a measure whose definition moved shaped the
+        run (``MetricDescriptor.shapes_run``); a result holds a value of a moved measure and the host wires no
+        reader; the reader left such a value unanswered; or a result's tally of a criterion a moved measure derives
+        from has no stored grade to read it again from. Raised before anything is written.
+    :raises ValueError: The host's reader answered a measure it was not asked, or a value whose type contradicts its
+        measure's declared data type: the host's defect, raised before anything is written.
+    :raises ClaimReaderDefect: The host's claim reader raised, or answered what its measures cannot hold: the host's
+        defect, raised before anything is written.
+    :raises ConflictError: Something else wrote a result, or the run, since it was read. Results written before the
+        conflict stay written, the run is marked as being re-measured (it pools with nothing), and a second pass
+        finishes it.
+    """
+    plan = await run_blocking(host.blocking_executor, _plan, host, run_id, scope_id)
+    run = plan.run
+    report = Remeasure(
+        run_id=run.id,
+        applied=apply,
+        already_current=run.measure_definitions == plan.now and not remeasure_unfinished(run) and not plan.rereads,
+        was=run.measure_definitions,
+        now=plan.now,
+        moved=plan.moved,
+        reread=sorted({name for reread in plan.rereads for name in (*reread.values, *reread.derived)}),
+        results_reread=len(plan.rereads),
+        values_changed=sum(
+            1
+            for reread in plan.rereads
+            for name, value in reread.values.items()
+            if name in reread.result.host_measures and reread.result.host_measures[name] != value
+        )
+        + sum(
+            1
+            for reread in plan.rereads
+            for name, value in reread.derived.items()
+            if name in reread.derived_was and reread.derived_was[name] != value
+        ),
+    )
+    if report.already_current:
+        return report.model_copy(update={"applied": False})
+    if apply:
+        await run_blocking(host.blocking_executor, _write, host, plan, report, scope_id)
+    log.info(
+        "eval.remeasure run=%s applied=%s moved=%s results_reread=%d values_changed=%d",
+        run.id,
+        apply,
+        ",".join(plan.moved) or "-",
+        report.results_reread,
+        report.values_changed,
+    )
+    return report
+
+
+def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
+    """The store reads and every check of :func:`remeasure_run`, and each result's new values.
+
+    :raises NotFoundError: No such run.
+    :raises ValidationFailedError: See :func:`remeasure_run`.
+    :raises ValueError: The host's reader answered what it was not asked, or a mistyped value.
+    """
+    storage, measures, reader = host.storage, host.profile.measures, host.profile.measure_rereader
+    run = storage.load_eval_run(run_id, scope_id)
+    if run is None:
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
+    if run.status in NON_TERMINAL_RUN_STATUSES:
+        raise ValidationFailedError(
+            f"run '{run.id}' is {run.status}: its cells are still being written",
+            remedy=f"re-measure once it has finished (job_poll run:{run.id})",
+        )
+    now, was = measures.definition_digests(), run.measure_definitions
+    # A host deriving readings from claim criteria may hold cells its reader could not read, which a re-measure reads
+    # under unchanged definitions too: its results are read even where nothing moved.
+    if was == now and not remeasure_unfinished(run) and not measures.derived:
+        return _Plan(run=run, now=now, moved=[], rereads=[])
+    moved = sorted(name for name in {*now, *(was or {})} if was is None or was.get(name) != now.get(name))
+    # A measure the host no longer declares has no current definition to read under: its stored values stay as
+    # the cell wrote them, undescribed, and the run's record drops its digest.
+    declared = [name for name in moved if name in now]
+    if shaped := [name for name in declared if _shapes_run(host, name)]:
+        raise ValidationFailedError(
+            f"run '{run.id}' cannot be re-measured: {', '.join(shaped)} shaped what the run did, and its definition "
+            "is not the one the run was measured under"
+            + (" (the run recorded no definitions)" if was is None else "")
+            + ", so the run would have gone otherwise under the current one and its stored cells cannot say how",
+            remedy="run it again under the current definition; the stored run stays in the cell it was measured in",
+        )
+    derived_of = {d.name: d.derived_from for d in measures.derived if d.derived_from is not None}
+    derivations = claim_derivations(host.profile)
+    rereads: list[_Reread] = []
+    unanswered: list[str] = []
+    ungraded: list[str] = []
+    for listed in storage.query_eval_results_by_run(run.id, scope_id):
+        result, etag = storage.load_eval_result_with_etag(listed.id, scope_id)
+        if result is None:
+            raise ValidationFailedError(
+                f"run '{run.id}' cannot be re-measured: its result '{listed.id}' was listed and did not load, so "
+                "whether it holds a value read under another definition cannot be told",
+                remedy="re-measure it again once the result reads; nothing was written",
+            )
+        moved_here = [name for name in declared if not _read_under(result, name, now[name])]
+        # A reading derived from a claim criterion is the engine's to read again, from the stored grade; every other
+        # moved measure is the host's reader's.
+        asked = tuple(name for name in moved_here if name not in derived_of)
+        # A criterion whose reader could not read the cell is read again whole, whether or not its definitions moved.
+        unread = {c for c, tally in result.claim_tallies.items() if tally.derived_unread is not None}
+        derived_asked = sorted(
+            {name for name in moved_here if derived_of.get(name) in result.claim_tallies}
+            | {name for name, criterion in derived_of.items() if criterion in unread}
+        )
+        held = [name for name in asked if name in result.host_measures]
+        loaded: list[EvalTrace | None] = []
+
+        def trace_of(result: EvalResult = result) -> EvalTrace | None:
+            if not loaded:
+                loaded.append(storage.load_eval_trace(result.id, scope_id) if result.has_trace else None)
+            return loaded[0]
+
+        values: dict[str, bool | float | str] = {}
+        if reader is None:
+            if held:
+                raise ValidationFailedError(
+                    f"run '{run.id}' cannot be re-measured: result '{result.id}' holds {', '.join(held)}, read under "
+                    "another definition than the host's current one, and this host wires no reader of a stored "
+                    "result (HostProfile.measure_rereader)",
+                    remedy="wire a measure_rereader on the host's profile, or run it again under the current definition",
+                )
+        elif asked:
+            values = dict(reader(MeasureRereadRequest(run=run, result=result, trace=trace_of(), measures=asked)))
+            if unasked := sorted(set(values) - set(asked)):
+                raise ValueError(
+                    f"the host's measure_rereader answered {', '.join(unasked)} for result '{result.id}', which the "
+                    f"re-measure did not ask (it asked {', '.join(asked)})"
+                )
+            refuse_misfit_host_measures(values, measures)
+            unanswered.extend(f"{result.id} ({name})" for name in held if name not in values)
+        tallies: dict[str, ClaimTally] = {}
+        derived: dict[str, float | None] = {}
+        derived_was: dict[str, float] = {}
+        for criterion in sorted({derived_of[name] for name in derived_asked}):
+            stored = trace_of()
+            grade = None if stored is None else stored.claim_grades.get(criterion)
+            evidence = None if stored is None else stored.claim_evidence
+            if grade is None or evidence is None:
+                ungraded.append(f"{result.id} ({criterion})")
+                continue
+            read = derive_claim_readings(derivations[criterion], grade, evidence)
+            tally = result.claim_tallies[criterion]
+            names = [name for name in derived_asked if derived_of[name] == criterion]
+            derived.update({name: read.get(name) for name in names})
+            derived_was.update({name: tally.derived[name] for name in names if name in tally.derived})
+            kept = {name: value for name, value in tally.derived.items() if name not in names}
+            tallies[criterion] = tally.model_copy(
+                update={
+                    "derived": dict(sorted({**kept, **{n: read[n] for n in names if n in read}}.items())),
+                    "derived_unread": None,
+                }
+            )
+        if values or tallies:
+            rereads.append(
+                _Reread(
+                    result=result, etag=etag, values=values, tallies=tallies, derived=derived, derived_was=derived_was
+                )
+            )
+    if ungraded:
+        named = ", ".join(ungraded[:_NAMED_IN_A_REFUSAL])
+        more = len(ungraded) - _NAMED_IN_A_REFUSAL
+        raise ValidationFailedError(
+            f"run '{run.id}' cannot be re-measured: {len(ungraded)} claim tally(ies) hold readings derived from their "
+            f"criterion and have no stored grade to read them again from ({named}{f', and {more} more' if more > 0 else ''})",
+            remedy="run it again under the current definition; nothing was written",
+        )
+    if unanswered:
+        named = ", ".join(unanswered[:_NAMED_IN_A_REFUSAL])
+        more = len(unanswered) - _NAMED_IN_A_REFUSAL
+        raise ValidationFailedError(
+            f"run '{run.id}' cannot be re-measured: the host's reader left {len(unanswered)} stored value(s) "
+            f"unanswered ({named}{f', and {more} more' if more > 0 else ''}). Each was read under another definition "
+            "and nothing guesses it under the current one",
+            remedy="have the reader answer every measure a result holds, or run it again under the current definition",
+        )
+    return _Plan(run=run, now=now, moved=moved, rereads=rereads)
+
+
+def _shapes_run(host: EvalHost, name: str) -> bool:
+    """Whether the host's current descriptor of ``name`` says the measure shapes a run."""
+    descriptor = host.profile.measures.get(name)
+    return descriptor is not None and descriptor.shapes_run
+
+
+def _read_under(result: EvalResult, name: str, digest: str) -> bool:
+    """Whether the result's latest re-read of ``name`` was under ``digest``: a pass cut short already read it."""
+    for reread in reversed(result.measure_rereads):
+        if name in reread.definitions:
+            return reread.definitions[name] == digest
+    return False
+
+
+def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> None:
+    """Mark the run as being re-measured, store each result's new values, then complete the run's record.
+
+    :raises ConflictError: A result or the run was written since it was read.
+    """
+    storage, run = host.storage, plan.run
+    record = MeasureRemeasure(
+        was=run.measure_definitions, now=plan.now, reread=report.reread, results_reread=report.results_reread
+    )
+
+    def _begin(current: EvalRun) -> dict[str, Any] | None:
+        if current.measure_definitions != run.measure_definitions:
+            # Something else re-measured or attested it since the read.
+            return None
+        data = current.to_dict()
+        # A pass cut short left its own unfinished mark: this pass takes its place.
+        kept = current.measure_remeasures[:-1] if remeasure_unfinished(current) else current.measure_remeasures
+        data["measure_remeasures"] = [*(entry.to_dict() for entry in kept), record.to_dict()]
+        return data
+
+    if (outcome := update_eval_run(storage, run.id, scope_id, _begin)) != "saved":
+        raise ConflictError(
+            f"run '{run.id}' changed while it was being re-measured ({outcome}); nothing was written",
+            remedy="re-measure it again",
+        )
+    for reread in plan.rereads:
+        result = reread.result
+        updated = result.model_copy(
+            update={
+                "host_measures": {**result.host_measures, **reread.values},
+                "claim_tallies": {**result.claim_tallies, **reread.tallies},
+                "measure_rereads": [
+                    *result.measure_rereads,
+                    MeasureReread(
+                        definitions={name: plan.now[name] for name in sorted({*reread.values, *reread.derived})},
+                        was={
+                            **{
+                                name: result.host_measures[name]
+                                for name in sorted(reread.values)
+                                if name in result.host_measures
+                            },
+                            **reread.derived_was,
+                        },
+                    ),
+                ],
+            }
+        )
+        try:
+            storage.replace_eval_result(updated, if_match=reread.etag)
+        except ConflictError as raced:
+            raise ConflictError(
+                f"result '{result.id}' changed while run '{run.id}' was being re-measured; the run is marked as "
+                "being re-measured and pools with nothing until a re-measure finishes it",
+                remedy="re-measure it again: a result already read again is not read twice",
+            ) from raced
+
+    def _complete(current: EvalRun) -> dict[str, Any] | None:
+        if not remeasure_unfinished(current) or current.measure_remeasures[-1].remeasured_at != record.remeasured_at:
+            return None
+        data = current.to_dict()
+        data["measure_definitions"] = dict(plan.now)
+        finished = record.model_copy(update={"completed_at": utc_now_iso()})
+        data["measure_remeasures"] = [
+            *(entry.to_dict() for entry in current.measure_remeasures[:-1]),
+            finished.to_dict(),
+        ]
+        return data
+
+    if (outcome := update_eval_run(storage, run.id, scope_id, _complete)) != "saved":
+        raise ConflictError(
+            f"run '{run.id}' was re-read but its record was not completed ({outcome}); it is marked as being "
+            "re-measured and pools with nothing",
+            remedy="re-measure it again: its results are already read again and are not read twice",
+        )
+
+
+class Attested(EvalBaseModel):
+    """What a host's statement of one coordinate of stored runs wrote: one shape, whichever coordinate."""
+
+    coordinate: AttestableCoordinate = Field(description="The coordinate stated: measure_definition or served_model.")
+    run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
+    already_attested: list[str] = Field(
+        default_factory=list,
+        description="The runs an earlier statement had stamped with the same value, whole: left as they were.",
+    )
+    stated: dict[str, str] = Field(
+        description="What was stated of each run: measure key -> definition digest, or served_model -> the model."
+    )
+    attested_by: str = Field(description="Who stated it.")
+
+
+async def attest_measure_definitions(
+    host: EvalHost,
+    run_ids: Sequence[str],
+    scope_id: str,
+    definitions: Mapping[str, str],
+    *,
+    attested_by: str,
+    note: str | None = None,
+) -> Attested:
+    """Stamp stored runs that recorded no measure definitions with the ones their host says they ran under.
+
+    The host's statement, never the engine's guess: for a host that knows which revision of its reading code was
+    live when each run was made. It computes the digests from the descriptors as they were
+    (``MeasureRegistry(descriptors_then).definition_digests()``, or ``profile.measures.definition_digests()`` for
+    runs made under today's). No result is read or written. Each run's ``measure_definitions`` become the stated
+    map and the run records who stated it and when (``EvalRun.measure_attestation``), so it is never taken for a
+    launch's record; a stamped run pools only with runs whose definitions match, and a page names it as attested.
+
+    Every run is checked before any is written, and each write is one read and one conditional write of the run
+    alone, so hundreds of runs are stamped in one call and a run with no stored result or trace is stamped like any
+    other. Stating again what an earlier attestation stated is no error: the run is left as it was and named in
+    ``already_attested``, so a backfill job may be run twice. Stating OTHER definitions over an attestation is
+    refused: a statement is never replaced, and a host that stated the wrong one corrects the run's document itself.
+
+    :param host: The host whose store holds the runs.
+    :param run_ids: The stored runs to stamp.
+    :param scope_id: The scope they live in.
+    :param definitions: The definitions they ran under, measure key -> definition digest. Not empty.
+    :param attested_by: Who states it, as the host names them: a person or a job.
+    :param note: Why the host knows, in its own words.
+    :return: What was written.
+    :raises NotFoundError: A run is not in the scope.
+    :raises ValidationFailedError: ``definitions`` or ``attested_by`` is empty; a run is still pending or running; or
+        a run already records definitions (its launch's, a re-measure's, or an earlier attestation of other
+        definitions), which a statement never replaces. Raised before anything is written.
+    :raises ConflictError: A run changed between the check and its write; runs written before it stay stamped.
+    """
+    stated = dict(sorted(definitions.items()))
+    if not stated or not attested_by.strip():
+        raise ValidationFailedError(
+            "an attestation states at least one measure's definition and who states it",
+            remedy="pass the definitions the runs ran under (measure key -> digest) and attested_by",
+        )
+
+    def write() -> list[str]:
+        storage = host.storage
+        already: list[str] = []
+        for run_id in run_ids:
+            run = storage.load_eval_run(run_id, scope_id)
+            if run is None:
+                raise NotFoundError("run", run_id, remedy=FIND_RUN)
+            if run.status in NON_TERMINAL_RUN_STATUSES:
+                raise ValidationFailedError(
+                    f"run '{run.id}' is {run.status}: its cells are still being written",
+                    remedy=f"attest once it has finished (job_poll run:{run.id})",
+                )
+            if _attested_as(run, stated):
+                already.append(run.id)
+                continue
+            if run.measure_definitions is not None or run.measure_remeasures:
+                how = (
+                    "a re-measure wrote them"
+                    if run.measure_remeasures
+                    else "its host attested other definitions"
+                    if run.measure_attestation is not None
+                    else "its launch recorded them"
+                )
+                raise ValidationFailedError(
+                    f"run '{run.id}' already records measure definitions ({how}); a statement never replaces a record",
+                    remedy="leave it as recorded; to read it under the current definitions, re-measure it",
+                )
+        record = MeasureAttestation(attested_by=attested_by, definitions=stated, note=note)
+
+        def _stamp(current: EvalRun) -> dict[str, Any] | None:
+            if current.measure_definitions is not None or current.measure_remeasures:
+                # Stamped by something else since the check: read below.
+                return None
+            data = current.to_dict()
+            data["measure_definitions"] = dict(stated)
+            data["measure_attestation"] = record.to_dict()
+            return data
+
+        for run_id in run_ids:
+            if run_id in already:
+                continue
+            if (outcome := update_eval_run(storage, run_id, scope_id, _stamp)) != "saved":
+                raced = storage.load_eval_run(run_id, scope_id)
+                if raced is not None and _attested_as(raced, stated):
+                    already.append(run_id)
+                    continue
+                raise ConflictError(
+                    f"run '{run_id}' changed while its measure definitions were being attested ({outcome}); it was "
+                    "not stamped, and the runs named before it were",
+                    remedy="attest the remaining runs again",
+                )
+        return already
+
+    already = await run_blocking(host.blocking_executor, write)
+    stamped = [run_id for run_id in run_ids if run_id not in already]
+    log.info("eval.attest_measure_definitions runs=%d already=%d by=%s", len(stamped), len(already), attested_by)
+    return Attested(
+        coordinate="measure_definition",
+        run_ids=stamped,
+        already_attested=already,
+        stated=stated,
+        attested_by=attested_by,
+    )
+
+
+def _silent_candidate_rows(result: EvalResult) -> int:
+    """How many of a result's candidate usage rows name no served model: of a call that was answered, since a row
+    holding only unanswered calls (``RoleUsage.answers_nothing``) names none because no model served it, and no
+    statement says what answered it."""
+    return sum(
+        1 for row in result.usage if row.role == "candidate" and not row.served_model and not row.answers_nothing
+    )
+
+
+async def attest_served_model(
+    host: EvalHost,
+    run_ids: Sequence[str],
+    scope_id: str,
+    served_model: str,
+    *,
+    attested_by: str,
+    note: str | None = None,
+) -> Attested:
+    """Record a host's statement of the model that answered stored runs whose candidate responses named none.
+
+    The host's word, never the engine's guess: the id a run asked for is not evidence of what answered it, and
+    nothing else a silent run stores is. Each run records who stated it, when, the model and the results it covers
+    (``EvalRun.served_model_attestation``: those whose candidate rows named no model when it was made). **No row is
+    touched**: the evidence stays as the responses left it, so the identity disclosure stays true and a model a
+    response named is always told from one a host stated. A reading that pools by answering model (a campaign's
+    cells, pass^k, a comparison set's badges) reads those results' silent rows THROUGH the statement
+    (:func:`~threetears.evals.analysis.reporting.pooled_as`), and the bundle carries the fact that it did
+    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). History, a pivot, the frontier's composite
+    and a two-run comparison read them through it the same way
+    (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`).
+
+    Every run is checked before any is written. Stating again what an earlier attestation stated is no error: the
+    run is named in ``already_attested``. Stating ANOTHER model over an attestation is refused, and so is a run none
+    of whose candidate rows is silent: a statement never stands beside a response's word.
+
+    :param host: The host whose store holds the runs.
+    :param run_ids: The stored runs to stamp.
+    :param scope_id: The scope they live in.
+    :param served_model: The model that answered their candidate calls, as a provider's response would name it.
+    :param attested_by: Who states it, as the host names them: a person or a job.
+    :param note: Why the host knows, in its own words.
+    :return: What was written.
+    :raises NotFoundError: A run is not in the scope.
+    :raises ValidationFailedError: ``served_model`` or ``attested_by`` is blank; a run is still pending or running; a
+        run was attested with another model; or none of a run's candidate rows is silent. Raised before anything is
+        written.
+    :raises ConflictError: A run changed between the check and its write; runs written before it stay stamped.
+    """
+    stated = served_model.strip()
+    if not stated or not attested_by.strip():
+        raise ValidationFailedError(
+            "an attestation states the model that answered and who states it",
+            remedy="pass served_model, as a provider's response would name it, and attested_by",
+        )
+
+    def write() -> list[str]:
+        storage = host.storage
+        already: list[str] = []
+        silent_by_run: dict[str, list[str]] = {}
+        for run_id in run_ids:
+            run = storage.load_eval_run(run_id, scope_id)
+            if run is None:
+                raise NotFoundError("run", run_id, remedy=FIND_RUN)
+            if run.status in NON_TERMINAL_RUN_STATUSES:
+                raise ValidationFailedError(
+                    f"run '{run.id}' is {run.status}: its cells are still being written",
+                    remedy=f"attest once it has finished (job_poll run:{run.id})",
+                )
+            before = run.served_model_attestation
+            if before is not None:
+                if before.served_model != stated:
+                    raise ValidationFailedError(
+                        f"run '{run.id}' was already attested as answered by {before.served_model}; a statement is "
+                        "never replaced",
+                        remedy="leave it as stated; a host that stated the wrong model corrects the run's document "
+                        "itself",
+                    )
+                already.append(run.id)
+                continue
+            silent = sorted(
+                result.id
+                for result in storage.query_eval_results_by_run(run.id, scope_id)
+                if _silent_candidate_rows(result)
+            )
+            if not silent:
+                raise ValidationFailedError(
+                    f"run '{run.id}' holds no candidate usage row that names no served model: its responses named "
+                    "what answered, or its candidate made no model call; a statement never replaces a record",
+                    remedy="leave it as recorded",
+                )
+            silent_by_run[run.id] = silent
+
+        def _stamp_with(record: ServedModelAttestation) -> Callable[[EvalRun], dict[str, Any] | None]:
+            def _stamp(current: EvalRun) -> dict[str, Any] | None:
+                if current.served_model_attestation is not None:
+                    # Stamped since the check: by this same statement, or by another model (read below).
+                    return None
+                data = current.to_dict()
+                data["served_model_attestation"] = record.to_dict()
+                return data
+
+            return _stamp
+
+        for run_id, silent in silent_by_run.items():
+            record = ServedModelAttestation(attested_by=attested_by, served_model=stated, result_ids=silent, note=note)
+            outcome = update_eval_run(storage, run_id, scope_id, _stamp_with(record))
+            now = storage.load_eval_run(run_id, scope_id)
+            held = now.served_model_attestation if now is not None else None
+            if held is None or held.served_model != stated:
+                raise ConflictError(
+                    f"run '{run_id}' changed while its served model was being attested ({outcome}); it was not "
+                    "stamped, and the runs named before it were",
+                    remedy="attest the remaining runs again",
+                )
+            if outcome != "saved":
+                already.append(run_id)
+        return already
+
+    already = await run_blocking(host.blocking_executor, write)
+    stamped = [run_id for run_id in run_ids if run_id not in already]
+    log.info("eval.attest_served_model runs=%d already=%d by=%s", len(stamped), len(already), attested_by)
+    return Attested(
+        coordinate="served_model",
+        run_ids=stamped,
+        already_attested=already,
+        stated={"served_model": stated},
+        attested_by=attested_by,
+    )
+
+
+def _attested_as(run: EvalRun, stated: Mapping[str, str]) -> bool:
+    """Whether an attestation already stamped the run with exactly ``stated``, and nothing re-measured it since."""
+    return (
+        run.measure_attestation is not None and not run.measure_remeasures and run.measure_definitions == dict(stated)
+    )
+
+
+__all__ = [
+    "Attested",
+    "Remeasure",
+    "attest_measure_definitions",
+    "attest_served_model",
+    "remeasure_run",
+]

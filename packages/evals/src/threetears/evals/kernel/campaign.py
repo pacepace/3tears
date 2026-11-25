@@ -113,9 +113,7 @@ def evidence_tier_of(rows: list[JudgedEvidenceTier | None]) -> EvidenceTier:
     """The tier a verdict resting on these evidence rows stands on: the weakest among them.
 
     :param rows: Per evidence row, in any order: ``None`` for a measure, the row's judged tier for a judged score.
-    :ptype rows: list[JudgedEvidenceTier | None]
     :return: ``none`` for no rows; the weakest judged tier when any row is judged; otherwise ``mechanical``.
-    :rtype: EvidenceTier
     """
     if not rows:
         return "none"
@@ -230,11 +228,33 @@ class EvalCampaign(DurableDocumentModel):
     declared_by: str = Field(
         default="", description="Who declared the question, as the declaring surface knows them; empty when unrecorded."
     )
+    volume_per_month: float | None = Field(
+        default=None,
+        ge=0,
+        # Written only when stated, so a campaign stating none is stored as it was before the field.
+        exclude_if=lambda value: value is None,
+        description=(
+            "How many of what the subject's cost counts it serves a month (replies, conversations), as its owner "
+            "states it, so a cost per one can be read as a cost per month. None = not stated."
+        ),
+    )
     call: CampaignCall | None = Field(
         default=None,
         description="What a person decided over the campaign's readings. None = no call recorded yet.",
     )
     archived: bool = Field(default=False)
+    # Written only when stamped, so a campaign created before looks were counted is stored as it was.
+    looks_rule: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Internal, never printed: 1 when the campaign was created once each contrast's looks were counted, so its "
+            "design could declare them (`AspectDesign.planned_looks`) and its looks past any plan qualify its report; "
+            "None for a campaign created before, whose stored verdicts do not move and whose looks qualify the method "
+            "only. Stamped by the engine at creation, never taken from a caller."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
     created_by: str = Field(
         min_length=1,
@@ -375,9 +395,7 @@ class EvalCampaign(DurableDocumentModel):
         """The aspect labelled ``label``, or None when the campaign has none.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: The aspect.
-        :rtype: Aspect | None
         """
         return next((aspect for aspect in self.aspects if aspect.label == label), None)
 
@@ -385,9 +403,7 @@ class EvalCampaign(DurableDocumentModel):
         """The aspect holding ``run_id``, or None when no aspect does.
 
         :param run_id: The run.
-        :ptype run_id: str
         :return: The aspect.
-        :rtype: Aspect | None
         """
         return next((aspect for aspect in self.aspects if run_id in aspect.run_ids), None)
 
@@ -401,10 +417,8 @@ def derive_window(run_created_ats: list[str]) -> CampaignWindow | None:
     lexicographic min/max is a chronological one.
 
     :param run_created_ats: The member runs' ``created_at`` values.
-    :ptype run_created_ats: list[str]
     :return: A :class:`CampaignWindow`, or ``None`` when the list is empty — a campaign
         with no (resolvable) runs has no window.
-    :rtype: CampaignWindow | None
     """
     if not run_created_ats:
         return None
@@ -732,7 +746,6 @@ class VariantIndexEntry(EvalDocumentModel):
         every arm of a one-key tool-config sweep reads alike.
 
         :return: Lever name → level, sorted by name.
-        :rtype: dict[str, SweepableValue]
         """
         named = {name: level for name, level in self.levers.items() if name not in self.folded}
         named.update(self.swept)
@@ -756,7 +769,6 @@ class VariantIndexEntry(EvalDocumentModel):
         either way.
 
         :return: The validated entry.
-        :rtype: VariantIndexEntry
         :raises ValueError: The levels digest to some other key, an entry declaring its levels
             unavailable carries levers anyway, or an entry folds a lever it does not carry.
         """
@@ -818,15 +830,19 @@ class CampaignDeclaration(EvalDocumentModel):
     arms: list[CampaignArm] = Field(description="The arms a person named, the control first.")
     aspects: list[Aspect] = Field(min_length=1, description="Every aspect, as declared, in the campaign's order.")
     floors: list[Floor] = Field(description="Every floor, on the aspect it names.")
+    volume_per_month: float | None = Field(
+        default=None,
+        # Left out when unset, so a declaration stating none dumps and fingerprints as it did before the field.
+        exclude_if=lambda value: value is None,
+        description="What the subject serves a month, as the campaign states it (`EvalCampaign.volume_per_month`).",
+    )
 
     @classmethod
     def of(cls, campaign: EvalCampaign) -> CampaignDeclaration:
         """Snapshot what ``campaign`` declares now.
 
         :param campaign: The campaign.
-        :ptype campaign: EvalCampaign
         :return: Its declaration.
-        :rtype: CampaignDeclaration
         """
         return cls(
             question=campaign.question,
@@ -835,6 +851,7 @@ class CampaignDeclaration(EvalDocumentModel):
             arms=list(campaign.arms),
             aspects=list(campaign.aspects),
             floors=list(campaign.floors),
+            volume_per_month=campaign.volume_per_month,
         )
 
 
@@ -1017,9 +1034,7 @@ class EvalAnalysis(EvalDocumentModel):
         """The aspect of this analysis with ``label``.
 
         :param label: The aspect's label.
-        :ptype label: str
         :return: The aspect.
-        :rtype: AspectAnalysis
         :raises KeyError: No aspect of this analysis has that label.
         """
         for aspect in self.aspects:
@@ -1035,7 +1050,6 @@ class EvalAnalysis(EvalDocumentModel):
         A retired memo is held as stored, never read, so nothing in it is checked against its resolutions.
 
         :return: This analysis, unchanged.
-        :rtype: EvalAnalysis
         :raises ValueError: An aspect appears twice, not exactly one of ``document``, ``report_plan_id`` and
             ``report_doc_id`` is set, or an analysis with no memo holds resolutions.
         """
@@ -1057,9 +1071,7 @@ def report_plan_id(analysis_id: str) -> str:
     """The id of the report plan an analysis was written as: one plan per analysis, found from the analysis alone.
 
     :param analysis_id: The analysis.
-    :ptype analysis_id: str
     :return: Its plan's id.
-    :rtype: str
     """
     return f"{analysis_id}:report-plan"
 
@@ -1132,7 +1144,6 @@ class EvalReportPlan(EvalDocumentModel):
         """Refuse a plan whose id is not the one its analysis derives.
 
         :return: This plan, unchanged.
-        :rtype: EvalReportPlan
         :raises ValueError: ``id`` is not ``report_plan_id(analysis_id)``.
         """
         if self.id != report_plan_id(self.analysis_id):
@@ -1285,7 +1296,6 @@ class EvalAnalysisAttempt(CoreDocumentModel):
         """Refuse an attempt whose analysis link or error disagrees with its outcome.
 
         :return: This attempt, unchanged.
-        :rtype: EvalAnalysisAttempt
         :raises ValueError: A stored attempt names no analysis or carries an error, an ended unstored one names an
             analysis or carries no error, a running one names either, or a refused one records no refusal.
         """
@@ -1456,17 +1466,11 @@ def ended_sweep_lifetimes(
     and closes it here. Lifetimes whose last holding has already ended are returned as they are.
 
     :param lifetimes: The sweep's lifetimes.
-    :ptype lifetimes: list[SweepLifetime]
     :param outcome: How it ended.
-    :ptype outcome: SweepOutcome
     :param at: When.
-    :ptype at: str
     :param detail: Why, when it did not complete.
-    :ptype detail: str | None
     :param lost: The loss, when it was lost.
-    :ptype lost: JobLoss | None
     :return: The lifetimes, the last one closed when it was open.
-    :rtype: list[SweepLifetime]
     """
     if not lifetimes or lifetimes[-1].outcome != "running":
         return list(lifetimes)

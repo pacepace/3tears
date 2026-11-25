@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "tally.py"}
+{"tool": "read", "path": "data/dashboard.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from pathlib import Path\n\nfrom threetears.evals import Eval\n\nfrom tally import tally_file\n\ndef figures(case):\n    \"\"\"Our hits and bytes for the day's page, from the day's access log.\"\"\"\n    stats = tally_file(Path(\"data/logs\") / f\"access-{case['day']}.log\").pages.get(case[\"page\"])\n    return {\"hits\": stats.hits if stats else 0, \"bytes\": stats.bytes if stats else 0}\n\n\ndef matches_dashboard(case, out):\n    \"\"\"The hits and bytes are the add-on dashboard's.\"\"\"\n    return (out[\"hits\"], out[\"bytes\"]) == (case[\"hits\"], case[\"bytes\"])\n\ndashboard = Eval(\"data/dashboard.jsonl\", runner=figures, grader=[matches_dashboard], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"matches_dashboard\", \"pass_rate\": 0.6727, \"finished\": true}"}

@@ -35,7 +35,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from threetears.evals.kernel.numbers import CENT, MoneyForm, format_number, group_thousands, money_form
-from threetears.evals.analysis.report_input import Measure, ReportInput
+from threetears.evals.analysis.costs import COUNT_SPELLINGS, REPLIES, per_noun
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
 
 __all__ = [
@@ -51,26 +52,11 @@ __all__ = [
     "priced_in_part",
 ]
 
-#: What money per one trial is per, as the package counts trials: one trial is one reply.
-REPLIES = "replies"
-
 #: What a count reads where the input does not say what a cost counts.
 _UNSTATED = "(unit not stated)"
 
 #: How a count of what a cost is per reads: ``per 1,000 conversations``.
 _PER_TEMPLATE = "per {count} {noun}"
-
-#: Each money unit's count, the one a figure in it is stated per.
-_UNIT_COUNTS: dict[str, int] = {"usd_per_1k": 1_000, "usd_per_1m": 1_000_000}
-
-#: How a label may write each count: as digits (with any thousands separator, or a ``k``/``m`` suffix) or as a word.
-_COUNT_SPELLINGS: dict[int, str] = {
-    1_000: r"1\s?k|1[,.   ]?000|thousand",
-    1_000_000: r"1\s?m|1(?:[,.   ]?000){2}|million",
-}
-
-#: The longest noun a label's count is read with, in words: a count's noun is a word or a short phrase.
-_MOST_WORDS = 4
 
 
 @dataclass(frozen=True)
@@ -90,26 +76,6 @@ class CostBasis:
         return bool(self.noun)
 
 
-def per_noun(measure: Measure) -> str:
-    """What one money measure is per, as a plural noun; empty where it is no money measure or does not say.
-
-    :param measure: The measure.
-    :ptype measure: Measure
-    :return: The noun (``replies`` for money per one thing; the label's noun for money per a count).
-    :rtype: str
-    """
-    if measure.unit == "usd":
-        return REPLIES
-    count = _UNIT_COUNTS.get(measure.unit or "")
-    if count is None or not measure.label:
-        return ""
-    found = re.search(rf"(?<!\w)(?:{_COUNT_SPELLINGS[count]})\s+(?P<noun>[^\d()\[\],;:]+)", measure.label, re.I)
-    if found is None:
-        return ""
-    noun = found.group("noun").strip()
-    return noun if 0 < len(noun.split()) <= _MOST_WORDS else ""
-
-
 #: How many of the calls an arm's cost counts were priced, said beside an amount priced over only part of them: a
 #: smaller total, which no page states bare.
 PRICED_SHARE_TEMPLATE = "{priced} of {calls} calls priced"
@@ -124,14 +90,10 @@ def priced_in_part(report_input: ReportInput, arm: str, aspect: str | None = Non
     does not say.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm, by id.
-    :ptype arm: str
     :param aspect: The aspect whose scoreboard says (:func:`~threetears.evals.analysis.report_margins.aspect_board`);
         None for the lead aspect's, the input's own.
-    :ptype aspect: str | None
     :return: The words, or None.
-    :rtype: str | None
     """
     row = aspect_board(report_input, aspect).get(arm)
     pricing = row.pricing if row is not None else None
@@ -193,13 +155,9 @@ class MoneyRuler:
         calls``, never ``1k``); a label that states no count reads as it is there, as does a total.
 
         :param label: The label as the input or the page writes it.
-        :ptype label: str
         :param noun: What the money counts, as a plural noun.
-        :ptype noun: str
         :param own: The count the money's own unit is per (1 for money per reply, 1,000 for a price per 1,000).
-        :ptype own: int
         :return: The label with the drawn count.
-        :rtype: str
         """
         if not self.counted:
             return label
@@ -208,7 +166,7 @@ class MoneyRuler:
             single = re.search(rf"(?<!\w){re.escape(per_one(noun))}(?!\w)", label, re.I)
             if single is not None:
                 return label[: single.start()] + self.words(noun) + label[single.end() :]
-        spellings = _COUNT_SPELLINGS.get(own)
+        spellings = COUNT_SPELLINGS.get(own)
         if spellings is not None:
             found = (
                 re.search(rf"(?<!\w)(?:per\s+)?(?:{spellings})\s+{re.escape(noun)}(?!\w)", label, re.I)
@@ -227,11 +185,8 @@ class MoneyRuler:
         widest interval: :meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`).
 
         :param changes: The changes, as stored.
-        :ptype changes: Iterable[float | None]
         :param widths: The widths of their intervals, as stored.
-        :ptype widths: Iterable[float | None]
         :return: The changes' ruler.
-        :rtype: MoneyRuler
         """
         form = self.form.for_changes(
             (change * self.scale if change is not None else None for change in changes),
@@ -263,25 +218,17 @@ def money_ruler(
     (:meth:`~threetears.evals.kernel.numbers.MoneyForm.spell_ends`).
 
     :param amounts: Every amount the set holds, as stored.
-    :ptype amounts: Iterable[float | None]
     :param per: How many of what it counts one stored amount is per: 1 for money per reply, 1,000 or 1,000,000 for a
         price per that many; 0 for a total.
-    :ptype per: int
     :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
         unset.
-    :ptype start: int
     :param rate: Whether the set is money per something, which reads in whole dollars from $10; a total, to cents
         whatever its size. Where unset, a set that counts something (``per`` above 0) is a rate. A figure key spelled
         as a bare amount (``per`` 0) says which it is.
-    :ptype rate: bool | None
     :param reconciles: Whether a total computed from each amount is printed beside it (a cost per 1,000 beside its
         month at a declared volume), so an amount two figures round too far takes a third
         (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
-    :ptype reconciles: bool
-    :param intervals: The intervals the set prints, each ``(low, high)`` as stored; none by default.
-    :ptype intervals: Iterable[tuple[float | None, float | None]]
     :return: The ruler.
-    :rtype: MoneyRuler
     """
     held = [amount for amount in amounts if amount is not None]
     counts = per > 0 if rate is None else rate
@@ -300,10 +247,8 @@ def per_one(noun: str) -> str:
     """The words a cost per one of ``noun`` is printed with: ``per reply``, ``per conversation``.
 
     :param noun: What the cost counts, as a plural noun (:func:`per_noun`); empty where the input does not say.
-    :ptype noun: str
     :return: ``per`` and the noun made singular (``replies`` to ``reply``, ``calls`` to ``call``); ``per`` and
         ``(unit not stated)`` where the noun is empty.
-    :rtype: str
     """
     if not noun:
         return f"per {_UNSTATED}"
@@ -319,10 +264,7 @@ def per_count(noun: str, count: int = 1_000) -> str:
     """The words a cost per ``count`` of ``noun`` is printed with: ``per 1,000 conversations``.
 
     :param noun: What one of the count is, as :func:`per_noun` reads it; empty where the input does not say.
-    :ptype noun: str
     :param count: How many of it the cost is per.
-    :ptype count: int
     :return: The phrase; the count with ``(unit not stated)`` where the noun is empty.
-    :rtype: str
     """
     return _PER_TEMPLATE.format(count=group_thousands(format_number(float(count))), noun=noun or _UNSTATED)

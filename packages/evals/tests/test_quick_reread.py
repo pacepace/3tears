@@ -25,7 +25,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, get_campaign
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.schema import EvalRun, MeasureDeclaration
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals import Eval, Result, grader

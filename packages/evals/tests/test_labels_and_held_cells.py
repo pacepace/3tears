@@ -25,7 +25,8 @@ from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixtur
 from packages.evals.tests.report_kit_support import report_of
 from packages.evals.tests.test_quick_comparison import CASES, careful, hasty
 from threetears.evals import Eval
-from threetears.evals.analysis import ChartBlock, OutcomeBar, OutcomeSegment, report_html, report_markdown
+from threetears.evals.analysis import ChartBlock, OutcomeBar, OutcomeSegment, report_html
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import IN_THE_WRITTEN_REPORT, NO_ANALYSIS
 from threetears.evals.analysis.report.html_parts import table_html
 from threetears.evals.analysis.report.md_parts import table_lines

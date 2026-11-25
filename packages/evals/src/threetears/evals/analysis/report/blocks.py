@@ -20,6 +20,7 @@ from pydantic import ConfigDict, Field, JsonValue, ModelWrapValidatorHandler, Va
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.quantities import (
     PERCENT,
+    POINTS,
     is_money,
     number_in,
     render_cell,
@@ -40,6 +41,7 @@ from threetears.evals.analysis.report.charts import (
     Token,
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
+from threetears.evals.analysis.report.number_forms.policy import policy_interval_set, policy_lone_interval
 from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.analysis.report.unit_once import ends_beside, interval_beside
@@ -62,13 +64,9 @@ def reading_anchor(cell: str, measure_id: str, reading: str) -> str:
     row that tests it meet without either reading the other's words.
 
     :param cell: The cell, as a full ``cell_ref`` (``<variant_key>:<apparatus_class_id>``).
-    :ptype cell: str
     :param measure_id: The measure or judged dimension.
-    :ptype measure_id: str
     :param reading: ``measure``, ``judged``, or ``trial`` for the overall pass rate.
-    :ptype reading: str
     :return: The id, ``r-`` and twelve hex digits.
-    :rtype: str
     """
     return "r-" + hashlib.sha256(f"{cell}\0{reading}\0{measure_id}".encode()).hexdigest()[:12]
 
@@ -78,9 +76,7 @@ def fold_ids(labels: Sequence[str]) -> list[str]:
     in lower case, each run of other characters one hyphen, numbered where two would read alike.
 
     :param labels: The aspects' labels, in the campaign's order.
-    :ptype labels: Sequence[str]
     :return: One id per label, in the same order.
-    :rtype: list[str]
     """
     ids: list[str] = []
     for label in labels:
@@ -97,9 +93,7 @@ def fold_anchor(fold_id: str) -> str:
     link to the fold lands on, and the one place that id is spelled.
 
     :param fold_id: The fold's id (:func:`fold_ids`).
-    :ptype fold_id: str
     :return: ``aspect-<fold id>``.
-    :rtype: str
     """
     return f"aspect-{fold_id}"
 
@@ -606,11 +600,8 @@ class TableCell(EvalDocumentModel):
         its value no longer states, and nothing but the page's forms decides the new text.
 
         :param update: The fields to change on the copy.
-        :ptype update: Mapping[str, Any] | None
         :param deep: Whether to copy the cell's values deeply.
-        :ptype deep: bool
         :return: The copy.
-        :rtype: Self
         :raises ValueError: The update changes what a number or its interval is spelled from without its new text.
         """
         if update and "value_text" not in update and not _SPELLED_FROM.isdisjoint(update):
@@ -679,9 +670,7 @@ def bare_columns(columns: Sequence[TableColumn]) -> dict[str, str]:
     """The columns whose head names their cells' unit (:data:`BARE_UNIT_HEADS`), each by the unit it names.
 
     :param columns: A table's columns.
-    :ptype columns: Sequence[TableColumn]
     :return: Each such column's key, by its unit's head.
-    :rtype: dict[str, str]
     """
     return {column.key: unit for column in columns for unit in BARE_UNIT_HEADS if column.header.endswith(unit)}
 
@@ -691,9 +680,7 @@ def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCel
     kept as it is.
 
     :param values: The row's values, or cells, by column key.
-    :ptype values: Mapping[str, CellValue | TableCell]
     :return: The row's cells, by the same keys, in the same order.
-    :rtype: dict[str, TableCell]
     """
     return {key: value if isinstance(value, TableCell) else TableCell(value=value) for key, value in values.items()}
 
@@ -784,7 +771,6 @@ class TableBlock(_Block):
         """The rows shown as their values alone — what a program reads a table for.
 
         :return: One mapping per row, in the stated order, each column key to its cell's value.
-        :rtype: list[dict[str, CellValue]]
         """
         return [{key: cell.value for key, cell in row.items()} for row in self.rows]
 
@@ -817,13 +803,13 @@ ChartKind = Literal[
 _OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
 
 #: The textures a failure cause or a loss cause takes, in order.
-_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
+_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols", "grid")
 
 #: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
 #: state's order. Never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is ink (the kit's
 #: secondary text), solid, so the status green means a status pill alone; every failure cause is the kit's bad, each
-#: under a texture of its own, so a failure never reads as a pass even without colour, and the five failure causes
-#: (``FailCause``) are five looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: under a texture of its own, so a failure never reads as a pass even without colour, and the six failure causes
+#: (``FailCause``) are six looks; a loss cause is a neutral, solid and then textured, so a loss reads as neither. Loss causes past the fourteenth repeat a look; the
 #: legend and the tooltip name every cause in words.
 _OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
     "passed": (("--ink-2", None),),
@@ -1000,6 +986,23 @@ class ChartBlock(_Block):
             "where it states none, and its intervals are in its table alone."
         ),
     )
+    level_head: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What a cost/quality chart's head prints of its level, where its page decides it (#1128): empty for "
+            "nothing, or the head marking a level other than the page's main one; None for the level's own head."
+        ),
+    )
+    rate_heading: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What a cost/quality chart names its rate axis and column: `Answered` where nothing graded can fail a "
+            "trial on its aspects, so no axis calls a share answered a pass rate; None for `Pass rate`."
+        ),
+    )
     data: KitChart | None = Field(
         default=None,
         description=(
@@ -1054,7 +1057,6 @@ class ChartBlock(_Block):
         interval level, and the kit never draws an interval without one, so they read as their table alone.
 
         :return: ``(kind, data)``, or None for a chart the kit does not draw.
-        :rtype: tuple[str, dict[str, JsonValue]] | None
         """
         if self.data is not None:
             return self.chart, self.data.kit_data()
@@ -1205,8 +1207,9 @@ class ChartBlock(_Block):
             x_fmt=f"usd:{decimals}" if decimals is not None else cost_axis_format(x_domain[1], money=False),
             y_fmt="pct",
             x_title=f"Cost {per}{unit}",
-            y_title="Pass rate",
+            y_title=self.rate_heading or "Pass rate",
             level=self.level,
+            level_head=self.level_head,
             legend=legend,
         )
 
@@ -1215,7 +1218,6 @@ class ChartBlock(_Block):
         its chart's text prints it, which its page's forms decided (number rule 5).
 
         :return: ``(headers, rows)``, each row's cells as text.
-        :rtype: tuple[list[str], list[list[str]]]
         """
         return self._values_table()
 
@@ -1245,16 +1247,26 @@ class ChartBlock(_Block):
             def said(amount: float) -> str:
                 return spelled(amount) if money else number_in(amount * scale, self.unit)
 
-            headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
+            headers = [
+                "Arm",
+                f"Cost {per}{cost}",
+                f"Interval{cost}",
+                f"{self.rate_heading or 'Pass rate'} (%)",
+                "Interval (%)",
+            ]
+            # The pass rate is one measure, so its column reads at one precision: its narrowest interval's.
+            rates = policy_interval_set(
+                [(point.pass_rate, point.pass_rate_low, point.pass_rate_high) for point in self.points], rate=True
+            )
             return headers, [
                 [
                     point.arm,
                     said(point.cost),
                     interval_beside(said(point.cost_low), said(point.cost_high)),
-                    point.pass_rate_text or interval_value_text(point.pass_rate, PERCENT),
-                    point.pass_rate_interval_text or interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
+                    point.pass_rate_text or rate,
+                    point.pass_rate_interval_text or ends,
                 ]
-                for point in self.points
+                for point, (rate, ends) in zip(self.points, rates, strict=True)
             ]
         unit = f" ({unit_label(self.unit)})" if self.unit else ""
         headers = [
@@ -1265,13 +1277,13 @@ class ChartBlock(_Block):
             *(["Verdict"] if any(row.verdict for row in self.rows) else []),
         ]
         body = []
-        for row in self.rows:
-            cells = [
-                row.label,
-                interval_value_text(row.value, self.unit),
-                interval_text(row.low, row.high, self.unit),
-                str(row.n_cases),
-            ]
+        # The rows are one measure's, so its column reads at one precision: its narrowest interval's (owner ruling,
+        # 2026-11-14).
+        texts = policy_interval_set(
+            [(row.value, row.low, row.high) for row in self.rows], rate=self.unit in (PERCENT, POINTS)
+        )
+        for row, (value, ends) in zip(self.rows, texts, strict=True):
+            cells = [row.label, value, ends, str(row.n_cases)]
             if len(headers) == 5:
                 cells.append(row.verdict or "—")
             body.append(cells)
@@ -1295,26 +1307,31 @@ def _data_domain(ends: Sequence[float], *, floor: float, ceiling: float | None =
     return (low, min(high, ceiling) if ceiling is not None else high)
 
 
-def interval_value_text(value: float, unit: str = "") -> str:
-    """A charted value as text, by the one number rule, at the precision its unit is read to; the unit itself is
-    the header's."""
-    return number_in(value, unit)
+def interval_value_text(value: float, unit: str = "", *, interval: tuple[float, float] | None = None) -> str:
+    """A charted value as text, at the precision its interval justifies (two significant figures of its width, as
+    :func:`interval_text` reads the interval beside it), so the value and its interval read at one precision; a value
+    with no interval at two significant figures of itself. The unit itself is the header's.
+
+    :param value: The value.
+    :param unit: The unit it is read in: a percent or a point reads to at most one decimal.
+    :param interval: The interval printed beside it, or None.
+    :return: The text.
+    """
+    low, high = interval if interval is not None else (value, value)
+    return policy_lone_interval(low, high, rate=unit in (PERCENT, POINTS), value=value)[0]
 
 
 def interval_text(low: float, high: float, unit: str = "") -> str:
-    """A charted interval as text, in the one form every page prints an interval in: ``low to high``, each end at the
-    precision its unit is read to; the unit itself is the header's.
+    """A charted interval as text, in the one form every page prints an interval in: ``low to high``, both ends at
+    the precision the interval justifies (two significant figures of its width), as the value beside it reads
+    (:func:`interval_value_text`); the unit itself is the header's.
 
     :param low: The low end.
-    :ptype low: float
     :param high: The high end.
-    :ptype high: float
-    :param unit: The unit the ends are read in, which sets their precision.
-    :ptype unit: str
+    :param unit: The unit the ends are read in: a percent or a point reads to at most one decimal.
     :return: The text.
-    :rtype: str
     """
-    return interval_beside(number_in(low, unit), number_in(high, unit))
+    return policy_lone_interval(low, high, rate=unit in (PERCENT, POINTS))[1]
 
 
 class PrintedCheck(EvalDocumentModel):
@@ -1391,13 +1408,14 @@ class TrialBlock(_Block):
 
 #: What kind of verdict the first screen's line is, for a page that sets each kind apart: ``decided`` (a declared
 #: question settled it), ``open`` (too few cases, or no question was declared, so the line offers leads),
-#: ``failed`` (the test setup failed, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
+#: ``failed`` (the test setup failed or a run did not finish, so there is no verdict) and ``summary`` (one arm: a count, nothing to decide).
 _VerdictTone = Literal["decided", "open", "failed", "summary"]
 
 #: Each verdict rule's tone, keyed by :data:`~threetears.evals.analysis.report.verdict.VerdictRule` — by name, so the
 #: model imports nothing from the builder that applies the rules.
 _VERDICT_TONES: dict[str, _VerdictTone] = {
     "setup": "failed",
+    "unfinished": "failed",
     "one_arm": "summary",
     "declared": "decided",
     "too_small": "open",
@@ -1437,9 +1455,7 @@ class DisclosureBlock(_Block):
         """The tone a verdict line is set in, by the rule that wrote it.
 
         :param rule: The rule, as :func:`~threetears.evals.analysis.report.verdict.verdict_line` names it.
-        :ptype rule: str
         :return: The tone.
-        :rtype: Literal['decided', 'open', 'failed', 'summary']
         """
         return _VERDICT_TONES[rule]
 
@@ -1450,11 +1466,8 @@ class DisclosureBlock(_Block):
         refusing the page; a caller's emphasis is held to :meth:`emphasis_pieces`, and refused there instead.
 
         :param text: The line.
-        :ptype text: str
         :param decisions: Each decision the line says, word for word and in its order.
-        :ptype decisions: Sequence[str]
         :return: The decisions to set in bold.
-        :rtype: list[str]
         """
         at = 0
         for decision in decisions:
@@ -1483,7 +1496,6 @@ class DisclosureBlock(_Block):
         in bold: the raw text, so a page escapes each piece itself and never searches its own markup.
 
         :return: The pieces, which join back to ``text``.
-        :rtype: list[tuple[str, bool]]
         :raises ValueError: a phrase is empty, is not said after the one before it, or starts or ends inside a code
             span (between backticks), where bold would cut the span in two.
         """

@@ -6,7 +6,7 @@
 #
 # The same tests `./scripts/ci-unit-tests.sh` runs on GitHub's runners: .testament.toml's unit suite
 # (`default`) selects packages/ and tests/ with -m "not integration and not loop_timing and not docker
-# and not secrets", and the pool spreads them
+# and not secrets and not long_simulation", and the pool spreads them
 # over its runners, so GitHub's job only waits; the loop_timing tests run apart (`-m`, below). docs/testing.md, "CI on the
 # testament pool", lists every difference.
 #

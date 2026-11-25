@@ -18,10 +18,9 @@ import json
 from pathlib import Path
 from typing import Any, Final
 
-from threetears.evals.analysis import Report, TableBlock, build_code_only_report, report_markdown
+from threetears.evals.analysis import Report, TableBlock, build_code_only_report
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
-from threetears.evals.analysis.report.words import declared_arm_names
-from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.campaign import (
@@ -30,8 +29,10 @@ from threetears.evals.kernel.campaign import (
     EvalInsight,
 )
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.storage import EvalStorage, save_document
+from threetears.evals.analysis.style import StyleViolation
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import DocumentStore
+from threetears.evals.analysis.style import declared_arm_names
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
@@ -136,7 +137,7 @@ def stored_plan_document(
     document: dict[str, Any] = dict(_record("plan", campaign)["plan"])
     if plan is not None:
         document["plan"] = plan
-    save_document(store, document)
+    store.upsert(document)
     return document
 
 

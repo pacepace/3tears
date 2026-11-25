@@ -31,7 +31,6 @@ def _reading_settings() -> LaunchSettings:
     host has no kind to launch. Built per call rather than held at module level, so no two hosts share an instance.
 
     :return: The settings.
-    :rtype: LaunchSettings
     """
     return LaunchSettings(
         max_launch_arms=1,
@@ -49,7 +48,7 @@ def _reading_settings() -> LaunchSettings:
 #: host's allowed writers and asking whether its turns can be priced — in seconds. The job starts with no budget of its
 #: own (the writing enters ``AnalysisGeneration.budget_s`` itself), so without this a client that hangs while it is
 #: built or refreshes its prices would leave the attempt ``running`` for as long as its lease kept renewing.
-#: Preparation makes no model call, so the bound is tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose
+#: Preparation makes no model call, so the bound is tight, unlike a launch's, whose
 #: launchers call providers: a hang reads as refused within minutes rather than ``running`` for hours. A host that
 #: wants another bound sets it per call.
 ANALYSIS_PREPARATION_BUDGET_S = 900.0
@@ -155,12 +154,9 @@ class OpsHost:
         (templates, runs, campaigns, reports, gates) works over ``eval_host``'s storage.
 
         :param eval_host: The host whose runs are read, as :func:`~threetears.evals.quick.as_host` builds one.
-        :ptype eval_host: EvalHost
         :param campaign_export_max_bytes: The ``campaign_export`` action's ceiling
             (:attr:`campaign_export_max_bytes`).
-        :ptype campaign_export_max_bytes: int
         :return: The host.
-        :rtype: OpsHost
         """
         # The registry is the host's template checks' ``kinds``, so nothing launches here by emptying it.
         checks = eval_host.template_checks

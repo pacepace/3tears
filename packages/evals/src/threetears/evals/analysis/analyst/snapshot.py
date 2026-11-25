@@ -48,12 +48,10 @@ def analyst_input(bundle: CampaignBundle) -> ReportInput:
     """The report input a snapshot freezes for one campaign bundle: the planner's, with the analyst's example pool.
 
     :param bundle: The campaign's bundle.
-    :ptype bundle: CampaignBundle
     :return: The input, up to :data:`_ANALYST_PER_SLICE` failed trials per aspect, arm and stratum and
         :data:`_ANALYST_EXAMPLES` in all, each excerpt cut around the failure and carrying the start of what its case
         asked; with each slice's failed-trial count and which cases each two aspects share, where the bundle holds
         them whole.
-    :rtype: ReportInput
     """
     return built_input(
         bundle, examples=_ANALYST_EXAMPLES, per_slice=_ANALYST_PER_SLICE, excerpt="failure", counted=True
@@ -74,23 +72,14 @@ def report_snapshot(
     """The snapshot freezing one report input, and the bundle it was built from when there is one.
 
     :param report_input: The report input every tool will read.
-    :ptype report_input: ReportInput
     :param scope_id: The scope the snapshot lives in.
-    :ptype scope_id: str
     :param campaign_id: The campaign, or ``None`` for a bare report input.
-    :ptype campaign_id: str | None
     :param source: Where the input came from: ``campaign``, ``analysis`` or ``report_input``.
-    :ptype source: SnapshotSource
     :param created_by: Who froze it.
-    :ptype created_by: str
     :param bundle: The campaign bundle the input was built from; ``None`` for a bare input.
-    :ptype bundle: CampaignBundle | None
     :param analysis_id: The stored analysis it was taken from, for source ``analysis``.
-    :ptype analysis_id: str | None
     :param assembled_at: When the bundle was assembled (ISO-8601), with a bundle.
-    :ptype assembled_at: str | None
     :return: The snapshot, its id derived from the campaign and the input's digest.
-    :rtype: EvalReportSnapshot
     :raises pydantic.ValidationError: The source contradicts what is given (a bare input with a bundle, a campaign's
         without one, an analysis id on another source).
     """
@@ -135,9 +124,7 @@ def frozen_input(snapshot: EvalReportSnapshot) -> ReportInput:
     snapshot does not hold, before any model reads it.
 
     :param snapshot: The stored snapshot.
-    :ptype snapshot: EvalReportSnapshot
     :return: Its report input.
-    :rtype: ReportInput
     :raises RefusedInput: The input does not digest to the one recorded beside it, or this build's report input model
         does not read it; the remedy is to freeze again.
     """

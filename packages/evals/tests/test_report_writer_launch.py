@@ -28,6 +28,7 @@ from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, wr
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget
@@ -36,6 +37,7 @@ from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, Effo
 from threetears.evals.ops.report_writer.writer_kind import writer_cell_timeout_s
 from threetears.evals.run import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, start_run
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S
+from threetears.evals.schema import ModelListing
 from threetears.evals.schema.models import CaseSetRef, EvalRun
 from threetears.evals.schema.turns import ToolTurnClient, TurnText
 
@@ -87,11 +89,32 @@ def _judges(role: str, model: str | None, *, temperature: float | None = None) -
     return FakeScoringJudge(model or _JUDGE)
 
 
-def _launching(*, skills: dict[str, AnalystSkill] | None = None) -> OpsHost:
+# parity-with: threetears.evals.kernel.host.eval_host.CompletionClients
+class _FakeListingClients:
+    """The host's clients, whose factory also reads a provider's model list: one that no longer names the writer's
+    model, and names every other."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, str | None]] = []
+
+    def __call__(self, role: str, model: str | None, *, temperature: float | None = None) -> FakeScoringJudge:
+        return _judges(role, model, temperature=temperature)
+
+    async def model_listing(self, model: str, *, role: str | None = None) -> ModelListing:
+        self.asked.append((model, role))
+        return ModelListing(provider="the router", listed=model != MODEL, detail="its model list, read now")
+
+
+def _launching(
+    *,
+    skills: dict[str, AnalystSkill] | None = None,
+    clients: Any = _judges,
+    candidate_role: CompletionRole | None = None,
+) -> OpsHost:
     """The toy host with the writer registered, its template scored, its caps unenforced (a scripted turn costs a
     cent)."""
     fixture = writer_host(
-        settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}), clients=_judges
+        settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}), clients=clients
     )
     fixture.host.eval_host.storage.save_template(_SCORED)
     holder: list[OpsHost] = []
@@ -103,6 +126,7 @@ def _launching(*, skills: dict[str, AnalystSkill] | None = None) -> OpsHost:
         request_s=lambda _max_tokens: _REQUEST_S,
         model_family=_FAMILIES.get,
         skills=skills or {},
+        candidate_role=candidate_role,
     )
     host = OpsHost(launch=with_kinds(fixture.host.launch, {WRITER_KIND: entry}))
     holder.append(host)
@@ -206,6 +230,21 @@ async def test_a_launch_the_writer_cannot_honour_is_refused_before_any_run(
     with pytest.raises(ValidationFailedError, match=refused):
         await _launch(host, case_set, **arguments)
 
+    assert off_loop(host.eval_host.storage.query_eval_runs, CALLER.scope_id) == before, "no run was stored"
+
+
+async def test_a_writer_declared_on_the_analyst_role_is_checked_and_refused_for_a_model_its_list_lacks() -> None:
+    # The host's models factory builds the writer on its factory's analyst client, and says so in one line.
+    clients = _FakeListingClients()
+    host = off_loop(_launching, clients=clients, candidate_role="analyst")
+    case_set = await _seeded(host)
+    before = off_loop(host.eval_host.storage.query_eval_runs, CALLER.scope_id)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await _launch(host, case_set)
+
+    assert f"candidate model {MODEL!r} is not on the router's list of the models it serves" in refused.value.message
+    assert (MODEL, "analyst") in clients.asked, "the writer is asked in the role its kind declares"
     assert off_loop(host.eval_host.storage.query_eval_runs, CALLER.scope_id) == before, "no run was stored"
 
 

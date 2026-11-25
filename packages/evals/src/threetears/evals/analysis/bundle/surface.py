@@ -1,7 +1,7 @@
 """The bundle's decision surface: its per-cell facts frozen into what an analysis or a code-only report reads.
 
 Copied, never recomputed: :func:`bundle_decision_surface` freezes the facts assembly already computed
-(:func:`cell_measure_facts`, :func:`cell_dimension_facts`), and :func:`_measure_catalog` names every measure the
+(:func:`cell_measure_facts`, :func:`cell_dimension_facts`), and :func:`measure_catalog` names every measure the
 surface carries.
 """
 
@@ -22,10 +22,10 @@ from threetears.evals.kernel.surface import (
     MeasureFacts,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.bundle.cell_reads import _cell_collections
+from threetears.evals.analysis.bundle.cell_reads import cell_collections
 
 
-def _measure_catalog(
+def measure_catalog(
     bundle: AnalysisContextBundle, *, profile: HostProfile, judge_kind: bool = False
 ) -> dict[str, MetricDescriptor]:
     """Collect the descriptor for every measure name appearing anywhere in the bundle.
@@ -35,18 +35,14 @@ def _measure_catalog(
     summary, and every summary's name is resolvable here.
 
     :param bundle: The assembled bundle, before its catalog is attached.
-    :ptype bundle: AnalysisContextBundle
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param judge_kind: Whether every result is a judge-kind one (``candidate_kind``), whose spend is the subject's own.
-    :ptype judge_kind: bool
     :return: Descriptors keyed by measure name, in name order for a stable fingerprint.
-    :rtype: dict[str, MetricDescriptor]
     """
     collections = [
         bundle.telemetry.measures,
         *(summary.measures for summary in bundle.run_summaries),
-        *(collection for cell in bundle.cell_measures for collection in _cell_collections(cell)),
+        *(collection for cell in bundle.cell_measures for collection in cell_collections(cell)),
         *(cell.measures for cell in _time_axis_cells(bundle)),
     ]
     names = {measure.name for collection in collections for measure in collection.measures}
@@ -71,13 +67,11 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
     was handed for the same name, never a second lookup that could disagree with it.
 
     :param bundle: An assembled bundle.
-    :ptype bundle: AnalysisContextBundle
     :return: One entry per measure name appearing in any cell — the time axis's included — in name order.
-    :rtype: dict[str, MeasureFacts]
     """
     cells = [*bundle.cell_measures, *_time_axis_cells(bundle)]
     names = sorted(
-        {measure.name for cell in cells for collection in _cell_collections(cell) for measure in collection.measures}
+        {measure.name for cell in cells for collection in cell_collections(cell) for measure in collection.measures}
     )
     return {
         name: MeasureFacts(
@@ -102,12 +96,10 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     so the direction a merit claim on a judged score is read in, and the scale a chart draws it on,
     are the ones the generator was handed for the same name. Every dimension a cell carries has an
     entry there by construction: a cell's judged readings are ``judged_measures`` transposed
-    (:func:`_cell_measures`).
+    (:func:`cell_measures`).
 
     :param bundle: An assembled bundle.
-    :ptype bundle: AnalysisContextBundle
     :return: One entry per dimension appearing in any cell, in name order.
-    :rtype: dict[str, JudgedDimensionFacts]
     """
     described = {measure.name: measure for measure in bundle.judged_measures}
     names = sorted({reading.dimension for cell in bundle.cell_measures for reading in cell.judged})
@@ -115,6 +107,7 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
         name: JudgedDimensionFacts(
             higher_is_better=described[name].higher_is_better,
             value_range=described[name].value_range,
+            nonnegative=described[name].nonnegative,
             scale=described[name].scale,
             axis=described[name].axis,
         )
@@ -132,9 +125,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
     here, so the two cannot name different arms.
 
     :param bundle: The evidence set.
-    :ptype bundle: AnalysisContextBundle
     :return: The decision surface.
-    :rtype: DecisionSurface
     """
     return DecisionSurface(
         control_variant_key=bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None,
@@ -167,9 +158,7 @@ def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance
     a chart reads it as untested.
 
     :param frontier: The bundle's frontier lens.
-    :ptype frontier: FrontierResult
     :return: ``{variant_key: dominance}``.
-    :rtype: dict[str, FrontierDominance]
     """
     placed: dict[str, list[FrontierDominance | None]] = {}
     for subject in frontier.subjects:
@@ -184,4 +173,5 @@ __all__ = [
     "bundle_decision_surface",
     "cell_dimension_facts",
     "cell_measure_facts",
+    "measure_catalog",
 ]

@@ -24,9 +24,10 @@ unreleased (the baseline of a release not yet published may be regenerated in pl
 says). The script refuses, naming the directory, when a ``v<N>`` newer than ``CORE_SCHEMA_VERSION`` exists: that
 means the version constant was moved back or the working tree holds a corpus from a later build, and regenerating
 the older directory would overwrite what the newer one was copied from. It also refuses, naming the release, when
-the newest final release tag's tree already holds ``v{CORE_SCHEMA_VERSION}/``: that corpus shipped, so it is frozen,
-and a shape change from it is a core major with a directory of its own. A checkout without the release tags cannot
-tell, and refuses rather than guessing.
+the newest final release tag's tree already holds ``v{CORE_SCHEMA_VERSION}/``: that corpus shipped, so it is frozen.
+An additive shape change from it is a core minor, re-pinned by hand with no fixture written; only a major (a baseline
+reset, which deletes every stored core document of the old version) gets a directory of its own, and this script
+writes it. A checkout without the release tags cannot tell, and refuses rather than guessing.
 
 **Why a run on an unchanged tree changes nothing.** ``stored_sample`` draws UUIDs, and the corpus on disk holds the
 clock readings earlier samples took (a sample now reads a frozen clock), so two samples of one model never agree
@@ -118,10 +119,14 @@ def released_corpus_refusal(version: int, tag: str | None) -> str | None:
         return None
     return (
         f"{tag} shipped {corpus}/, so the v{version} corpus is what a store that release wrote holds: it is frozen, "
-        f"and a released version's corpus is never regenerated. A core shape change from it is a major, a baseline "
-        f"reset with no upgrader: move CORE_SCHEMA_VERSION and CORE_BASELINE_VERSION to {version + 1} with its ledger "
-        f"line, remove v{version}/ (the reset refuses and deletes every v{version} document), and run {REGENERATE} "
-        f"again (it writes v{version + 1}/ only)."
+        f"and a released version's corpus is never regenerated. An additive change (a new optional field with a "
+        f"default, left out of the document while unset) is a MINOR and needs no fixture: bump CORE_SCHEMA_MINOR with "
+        f"its ledger line ending in MINOR_ADDITIVITY_SENTENCE, and re-pin CORE_SHAPE_DIGESTS and "
+        f"PINNED_CORE_SCHEMA_MINOR in tests/test_core_schema_pins.py by hand (core_shape_digest computes each); the "
+        f"frozen corpus must still read. Only a major rebuilds the fixtures, and a major is a baseline reset with no "
+        f"upgrader that deletes every stored v{version} core document: move CORE_SCHEMA_VERSION and "
+        f"CORE_BASELINE_VERSION to {version + 1} with its ledger line, remove v{version}/, and run {REGENERATE} again "
+        f"(it writes v{version + 1}/ only)."
     )
 
 

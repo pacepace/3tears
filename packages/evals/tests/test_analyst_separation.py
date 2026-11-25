@@ -48,7 +48,7 @@ from threetears.evals.analysis.report.figure_keys import (
     resolve,
     separation_wheres,
 )
-from threetears.evals.analysis.report_decision import dominant_options
+from threetears.evals.analysis.report.call import dominant_options
 from threetears.evals.analysis.report_input import ReportInput, Stat
 from threetears.evals.analysis.report_margins import criterion_figures
 from threetears.evals.analysis.separation import (

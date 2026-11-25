@@ -7,7 +7,7 @@ runs every action and watches the completion clients.
 
 **The watch.** A host builds its :class:`~threetears.evals.ops.OpsHost` for the kit with its completion-client
 factory wrapped by the kit's :class:`CompletionGuard` (``EvalHost(..., clients=guard.wrap(my_clients))``). A
-request made through a wrapped client where :func:`~threetears.evals.kernel.running_job` is ``None`` — in a call,
+request made through a wrapped client where :func:`~threetears.evals.kernel.job_context.running_job` is ``None`` — in a call,
 not in a job's work — is counted and refused (:class:`CompletionOutsideJob`); one made in a job is counted and sent.
 Clients a host builds outside that factory are not watched, so a host routes every client its actions use through it.
 
@@ -25,7 +25,7 @@ Clients a host builds outside that factory are not watched, so a host routes eve
 request in its call — the request is the job's — and returns ``JobsStarted``, yet the transport call still waits
 on the model. So while a call runs, every request a job makes waits in the guarded client until the call has
 returned; a call that waits on its own job never returns, and the request gives up after
-``call_return_timeout_s`` (:data:`DEFAULT_CALL_RETURN_TIMEOUT_S`), refused (:class:`JobAwaitedByItsCall`) and
+``call_return_timeout_s`` (10 seconds by default), refused (:class:`JobAwaitedByItsCall`) and
 recorded, and the case fails naming it.
 
 A spend action without a happy path is refused when it is declared (:class:`~threetears.evals.actions.Action`), so a
@@ -51,7 +51,8 @@ from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.actions import Action, ActionCatalogue, Caller, ConformanceSample, ConformanceStage
-from threetears.evals.kernel import EvalServiceError, running_job
+from threetears.evals.kernel import EvalServiceError
+from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.host import CompletionClients
 from threetears.evals.ops import JobsStarted, OpsHost, job_poll
 
@@ -59,8 +60,6 @@ log = get_logger(__name__)
 
 
 __all__ = [
-    "DEFAULT_CALL_RETURN_TIMEOUT_S",
-    "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S",
     "BuildConformanceHost",
     "CompletionGuard",
     "CompletionOutsideJob",
@@ -72,11 +71,11 @@ __all__ = [
 ]
 
 #: How long a happy path's jobs are polled for before the case gives up on them, in seconds.
-DEFAULT_JOB_CONFORMANCE_TIMEOUT_S = 60.0
+_DEFAULT_JOB_CONFORMANCE_TIMEOUT_S = 60.0
 
 #: How long a job's request waits, while the call that started its job runs, for that call to return, in seconds.
 #: A conforming call returns at once; one still running when this passes is waiting on its own job.
-DEFAULT_CALL_RETURN_TIMEOUT_S = 10.0
+_DEFAULT_CALL_RETURN_TIMEOUT_S = 10.0
 
 
 class JobsConformanceFailure(AssertionError):
@@ -173,7 +172,7 @@ class CompletionGuard:
     outside: list[str] = field(default_factory=list)
     inside: int = 0
     awaited_by_call: list[str] = field(default_factory=list)
-    call_return_timeout_s: float = DEFAULT_CALL_RETURN_TIMEOUT_S
+    call_return_timeout_s: float = _DEFAULT_CALL_RETURN_TIMEOUT_S
     _no_call_running: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -192,7 +191,6 @@ class CompletionGuard:
         """Wait, for a job's request, until no call is running — or refuse it when the call does not return.
 
         :param where: The request, described.
-        :ptype where: str
         :raises JobAwaitedByItsCall: The running call did not return within ``call_return_timeout_s``.
         """
         try:
@@ -208,7 +206,6 @@ class CompletionGuard:
         """Count one request (a completion or a turn): refuse it outside a job; inside one, once no call is running.
 
         :param where: The request, described.
-        :ptype where: str
         :raises CompletionOutsideJob: It was made outside any job's work.
         :raises JobAwaitedByItsCall: The running call did not return in time (:meth:`after_the_call`).
         """
@@ -222,9 +219,7 @@ class CompletionGuard:
         """The host's client factory, every client it builds watched.
 
         :param clients: The host's own factory.
-        :ptype clients: CompletionClients
         :return: A factory the host builds its :class:`~threetears.evals.kernel.host.EvalHost` with for the kit.
-        :rtype: CompletionClients
         """
 
         def guarded(role: Any, model: str | None, *, temperature: float | None = None) -> Any:
@@ -383,20 +378,16 @@ def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: fl
 def jobs_conformance_cases(
     catalogue: ActionCatalogue,
     *,
-    job_timeout_s: float = DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
-    call_return_timeout_s: float = DEFAULT_CALL_RETURN_TIMEOUT_S,
+    job_timeout_s: float = _DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
+    call_return_timeout_s: float = _DEFAULT_CALL_RETURN_TIMEOUT_S,
 ) -> tuple[JobsConformanceCase, ...]:
     """Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
 
     :param catalogue: The actions — the engine's and the host's (:func:`~threetears.evals.actions.eval_catalogue`).
-    :ptype catalogue: ActionCatalogue
     :param job_timeout_s: How long a happy path's jobs may run before the case fails.
-    :ptype job_timeout_s: float
     :param call_return_timeout_s: How long a job's request waits for the running call to return before the case
         fails it as a call that waits on its own job.
-    :ptype call_return_timeout_s: float
     :return: The cases, in catalogue order: an action's call case, then, for a spend action, its happy-path case.
-    :rtype: tuple[JobsConformanceCase, ...]
     """
     cases: list[JobsConformanceCase] = []
     for action in catalogue.actions:

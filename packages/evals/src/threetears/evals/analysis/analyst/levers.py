@@ -68,7 +68,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
-from threetears.evals.analysis.report.figure_keys import arm_settings, lever_of
+from threetears.evals.analysis.report.keys.levers import arm_settings, lever_of
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report_input import Judged, Measure, ReportInput, SettingValue
 from threetears.evals.kernel.errors import RefusedInput
@@ -383,11 +383,8 @@ def _one_reading_per_square(
     the other's does not), both are listed, so no reversal is hidden.
 
     :param crossed: Every crossing, in listing order (:func:`_crossed`).
-    :ptype crossed: Sequence[tuple[_Move, _Move, str]]
     :param verdicts: Each crossing's verdict, in the same order.
-    :ptype verdicts: Sequence[LeverVerdict]
     :return: The crossings kept, in listing order.
-    :rtype: list[tuple[_Move, _Move, str]]
     """
     squares: dict[frozenset[str], list[int]] = {}
     for at, (one, two, _across) in enumerate(crossed):
@@ -437,19 +434,12 @@ def lever_effects(
     changes with another setting (this module's account).
 
     :param report_input: The snapshot's frozen report input.
-    :ptype report_input: ReportInput
     :param measure_key: The measure or judged dimension, by key.
-    :ptype measure_key: str
     :param setting_filter: Only this setting's effects and interactions.
-    :ptype setting_filter: str | None
     :param place_filter: The task, stratum or cell (``<row>.<column>``) to read the measure within; None for overall.
-    :ptype place_filter: str | None
     :param limit: The most rows (effects, then interactions) on the page.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :return: The settings, and a page of effects and interactions.
-    :rtype: LeverEffects
     :raises RefusedInput: The measure, place or setting names nothing the snapshot holds; no setting varies; no two
         arms differ in exactly one setting (or in the one named); or no such pair holds the measure there.
     """

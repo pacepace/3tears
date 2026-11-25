@@ -32,7 +32,7 @@ import tomllib
 import types
 import typing
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal
@@ -73,6 +73,28 @@ def one_line(doc: str | None) -> str:
         return ""
     first = paras[0]
     return first if len(first) <= ONE_LINE_LIMIT else first_sentence(first)
+
+
+#: A Sphinx cross-reference in a docstring: ``:class:`~threetears.evals.Eval```.
+_ROLE = re.compile(r":[a-z]+(?::[a-z]+)?:`(?:[^`<]*<)?~?([^`>]+)>?`")
+_DOUBLE_TICK = re.compile(r"``(.+?)``")
+
+
+def _role_target(match: re.Match[str]) -> str:
+    """A Sphinx cross-reference as a code span: the last dotted part when it was ``~``-shortened."""
+    whole = match.group(0)
+    target = match.group(1)
+    if "`~" in whole:
+        target = target.rsplit(".", 1)[-1]
+    return f"`{target}`"
+
+
+def md_text(text: str) -> str:
+    """Docstring reStructuredText as Markdown: roles and double backticks become code spans, ``<`` is escaped."""
+    text = _ROLE.sub(_role_target, text)
+    text = _DOUBLE_TICK.sub(lambda m: f"`{m.group(1)}`", text)
+    parts = re.split(r"(`[^`]*`)", text)
+    return "".join(p if p.startswith("`") else p.replace("<", "&lt;") for p in parts)
 
 
 def stable_repr(value: Any) -> str:
@@ -438,7 +460,8 @@ def public_names() -> Iterator[tuple[str, str, Any]]:
 
 
 #: A public name's stability tier. ``host-contract`` is a name a host binds to (:data:`HOST_CONTRACT`): it moves
-#: only with a ``MIGRATIONS.toml`` record and a deprecation cycle. ``stable`` is the rest of the declared surface
+#: only with a ``MIGRATIONS.toml`` record naming its replacement, as a single cut-over with no shim (owner ruling,
+#: 2026-11-15). ``stable`` is the rest of the declared surface
 #: (:data:`STABLE`): it may move in any release, recorded in ``MIGRATIONS.toml`` and never shimmed. ``provisional`` is
 #: every other name a root exports, most because a declared signature reaches it, so a host can type its code without
 #: reaching below a root: it is promised nothing, ``docs/reference.md`` does not list it, and the snapshot records
@@ -533,8 +556,8 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 # --- tiers: what a host binds to ---------------------------------------------------------------------------------
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
-#: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.70.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
+#: ``MIGRATIONS.toml`` record naming its replacement, a single cut-over with no shim beside it (owner ruling,
+#: 2026-11-15), from 0.70.0 on. :data:`STABLE` holds the rest of the declared surface; every other public name is
 #: ``provisional``.
 #:
 #: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/ladder.md``, the
@@ -544,31 +567,24 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 #: mentions for an optional feature are not: promoting one later is free, and demoting one withdraws a promise, so
 #: ``MIGRATIONS.toml`` records it.
 #:
-#: A name stays declared while something outside the package imports it (another package's ``src``, an example host,
-#: an example, a shipped page's code block, Discodon) or a shipped page teaches it, or a declared signature reaches it,
-#: or it is a port a host implements by shape, a version constant or a one-minor shim. Otherwise it is
-#: ``provisional``.
+#: A name stays declared while production code or a shipped example uses it (admission criterion 2, owner ruling
+#: 2026-11-15; ``tests/test_declared_holdbacks.py`` says what counts as use, and a test or a page's prose never does),
+#: or while its kind needs no caller of its own: a shape a host is handed, a port a host implements, a type a declared
+#: signature names, a class a kept name's signature names. The function behind an action needs a caller like any other
+#: (ruling R-b, 2026-11-15). Otherwise it is demoted.
 HOST_CONTRACT: frozenset[str] = frozenset(
     {
         # The host: the one value every entrypoint takes, and the services it is built from.
         "threetears.evals.kernel.host.EvalHost",
         "threetears.evals.kernel.host.HostProfile",
         "threetears.evals.kernel.host.CompletionClients",
-        # The digest of a profile's declarations, as every bundle records it: a host minting a writer case from its
-        # export declares it, and computes and inverts it with the package's own function rather than a copy.
-        "threetears.evals.analysis.host_declarations_digest",
-        # What a page calls each goal check, and the cap on a declared name: a host finds the checks the namer leaves
-        # bare by running it over its own seeded checks, and declares each a reader name within the cap.
-        "threetears.evals.analysis.check_names",
+        # What a page calls each goal check, and the cap on a declared name: a host declares each check a reader name
+        # within the cap.
         "threetears.evals.analysis.GOAL_CHECK",
         "threetears.evals.analysis.DECLARED_NAME_CHARS",
         # The one seam that gives a stored template its presentation fields (goal_check_names, stratum_names): the seed
         # fills empty slots only, and the template digest leaves those fields out.
         "threetears.evals.run.update_template",
-        # The judge config a recorded judge config id names, and whether it names a built-in prompt: a host exporting a
-        # campaign follows its results to the judge configs they name.
-        "threetears.evals.schema.judge_config_of",
-        "threetears.evals.schema.is_builtin_judge_config_id",
         # A campaign's closure, exported as the three files a writer case is minted from: the engine owns the export
         # for every host, so none re-implements the closure, the judge-identity rule or the digest.
         "threetears.evals.ops.campaign_export",
@@ -611,6 +627,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.KindContract",
         "threetears.evals.kernel.CandidateKind",
         "threetears.evals.kernel.CandidateOutput",
+        # The one routing of a model call that raised, by the owner the host's describer read: what makes an account's
+        # refusal stop a run and a model not served skip the judge and stop its arm, for a host's own kind too.
+        "threetears.evals.kernel.failed_call_output",
         "threetears.evals.kernel.CandidateTelemetry",
         "threetears.evals.kernel.CandidatePreparationFailed",
         "threetears.evals.kernel.CandidateKindDefect",
@@ -697,9 +716,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.load_seed_corpus",
         "threetears.evals.kernel.RunStore",
         "threetears.evals.kernel.ResultStore",
-        "threetears.evals.kernel.RunRecordStore",
-        "threetears.evals.kernel.DefinitionStore",
-        "threetears.evals.kernel.CassetteStore",
         "threetears.evals.kernel.JobStore",
         "threetears.evals.analysis.READ_TIER_ROW_BUDGET",
         "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE",
@@ -734,13 +750,23 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The reader of a completion's optional `sent_settings`: what a host whose client reports what each request
         # carried tests its completion type against, beside the conformance check, and what it and every other reader
         # of a completion's members raise on a completion that breaks the protocol, which a host's suite catches.
-        "threetears.evals.schema.sent_settings_of",
         "threetears.evals.schema.CompletionProtocolDefect",
         # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
         "threetears.evals.testing.RecordedCompletions",
         "threetears.evals.testing.RecordedPrompt",
         # What the recorder raises on a replay miss or a recording it cannot read, which a host's suite catches.
         "threetears.evals.testing.RecordingRefused",
+        # A recording that cannot serve the run (#1162): what a host's own replay raises on a miss so the run fails
+        # naming the call rather than excluding one cell, and the base of RecordingRefused and the cassette misses.
+        "threetears.evals.kernel.host.ReplayMiss",
+        # A store adapter that declares by_doc_type's `after` calls it to refuse a cursor its order cannot honour
+        # (#1145): the host guide tells such a store to, every store the package ships calls it, and Discodon's
+        # production store does (discodon/evals/storage.py), so it is the host's to bind.
+        "threetears.evals.schema.check_after",
+        # What a host-contract kind's LaunchableKind.price_subject_call_floor and price_largest_call return for a call
+        # they cannot price: a provisional type inside a host-contract signature would leave the host's own kind
+        # binding to a name that may move.
+        "threetears.evals.run.UnpricedCall",
         # The request settings a recording is matched on, required by `record` and `replay`, and the judge's own
         # value a host passes for its judge client: a host cannot call the recorder without naming one.
         "threetears.evals.schema.ClientRequestSettings",
@@ -804,7 +830,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.Example",
         "threetears.evals.grader",
         "threetears.evals.World",
-        "threetears.evals.Log",
         "threetears.evals.Model",
         "threetears.evals.Answer",
         "threetears.evals.quick.as_host",
@@ -824,7 +849,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.RequestSettingsReading",
         "threetears.evals.analysis.SentSettingsState",
         "threetears.evals.analysis.SentSettingsShare",
-        "threetears.evals.quick.measure",
         # Reading runs back, as the serving guide and the examples do.
         "threetears.evals.ops.scope_history",
         "threetears.evals.run.list_results",
@@ -893,7 +917,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 
 #: The rest of the declared surface: every public name beyond :data:`HOST_CONTRACT` that a reader is told about, by
 #: ``root.name``. Each moves only with a ``MIGRATIONS.toml`` record, never shimmed. With the host contract it is what
-#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by rung, and it is held under :data:`DECLARED_CEILING`.
+#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by kind and rung, and each name is admitted by the
+#: criteria ``surface_kinds.admission_problems`` checks.
 #:
 #: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or the
 #: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it) or a shipped page
@@ -907,7 +932,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 STABLE: frozenset[str] = frozenset(
     {
         # Rungs 0 and 1: the command line a TOML file or a host's own entry runs through, its exit codes, and the
-        # quick path's seams beside the root's names: a grader, a measure, a world's runner and outcome, a calibration.
+        # quick path's seams beside the root's names: a grader, a world's runner and outcome, a calibration.
         "threetears.evals.quick.EXIT_FAILED",
         "threetears.evals.quick.EXIT_GATE_FAILED",
         "threetears.evals.quick.EXIT_OK",
@@ -917,14 +942,12 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.quick.HostCommand",
         "threetears.evals.quick.HostFactory",
         "threetears.evals.quick.JudgeCalibration",
-        "threetears.evals.quick.Measure",
         "threetears.evals.quick.WorldOutcome",
         "threetears.evals.quick.WorldRunner",
         "threetears.evals.quick.run_cli",
         # What a `Result` hands back when it is read case by case, verdict by verdict, or label by label.
         "threetears.evals.analysis.Verdict",
         # How a report speaks: the prose lint every rendered sentence is held to.
-        "threetears.evals.analysis.lint_prose",
         # Rung 2: judges and calibration. Repeating, re-judging and rating a judge's results, and the agreement, drift,
         # evidence-tier and profile readings over them, as `docs/judges-and-calibration.md` runs them.
         "threetears.evals.analysis.inter_judge_agreement",
@@ -1092,6 +1115,10 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.run_get",
         "threetears.evals.ops.run_launch",
         "threetears.evals.ops.runs_list",
+        # A listing page's default size and its most rows (#1145): a host's own REST routes over runs_list and
+        # campaigns_list state their limit's default and bound from them rather than restating the numbers.
+        "threetears.evals.ops.LIST_PAGE_SIZE",
+        "threetears.evals.ops.LIST_PAGE_MAX",
         "threetears.evals.ops.start_action_job",
         "threetears.evals.ops.start_paid_call",
         "threetears.evals.ops.templates_list",
@@ -1143,9 +1170,9 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.storage.MisplacedDocument",
         "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
         "threetears.evals.storage.RouteChanged",
-        # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, held by
-        # `tests/test_host_imports_are_declared.py`): nothing a host's PRODUCTION code imports is provisional; the names only
-        # its tests import are provisional by its own word (`PROVISIONAL_FOR_HOST_TESTS` in that test).
+        # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, generated by
+        # `scripts/record_host_imports.py` and held by `tests/test_host_imports_are_declared.py`): nothing a host's
+        # PRODUCTION code imports is provisional, and a name only its tests import is on no list.
         "threetears.evals.actions.ConformanceSample",
         "threetears.evals.actions.Refusal",
         "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
@@ -1155,7 +1182,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.BarRegistrationError",
         "threetears.evals.kernel.host.MeasureRegistrationError",
         "threetears.evals.kernel.host.WorldConformanceReport",
-        "threetears.evals.kernel.production_replicating_cost",
         "threetears.evals.ops.CaseSetLine",
         "threetears.evals.ops.CaseSetMint",
         "threetears.evals.ops.JobHandle",
@@ -1169,7 +1195,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.mint_case_set",
         "threetears.evals.schema.CORE_RESET_DOC_TYPES",
         "threetears.evals.schema.CaseSetRef",
-        "threetears.evals.schema.utc_now_iso",
         "threetears.evals.testing.JobsConformanceCase",
         "threetears.evals.transports.fastmcp.CatalogueTool",
         # Promoted for Discodon's 2026-10-22 rescan: the aspect its campaign fixtures construct, the launch quote its
@@ -1197,12 +1222,25 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.schema.TurnMessage",
         "threetears.evals.schema.TurnReply",
         "threetears.evals.schema.TurnToolSpec",
+        # Promoted for Discodon's set grader (#1292): the set-grader group it builds and declares per graded set
+        # (discodon #3458), its own matcher's argument types and exact tier (#3465), and the key as plain text its
+        # hedged-claim grader renders for its own model step. EntityMatcher, SetGrade, FoldingMatcher and the match
+        # and provenance shapes stay provisional: Discodon imports none of them.
+        "threetears.evals.kernel.EXTRACTED_SET_FAMILY",
+        "threetears.evals.kernel.EntityExtractor",
+        "threetears.evals.kernel.NamedEntity",
+        "threetears.evals.kernel.SetGrader",
+        "threetears.evals.kernel.reference_material",
+        "threetears.evals.schema.ReferenceKey",
+        "threetears.evals.schema.fold_name",
+        # Promoted for Discodon's witnessed-run lease (discodon #3591): its story-set grade holds the run it witnesses
+        # under its JobLeases (RUN_JOB names the record's kind) and writes every ending through JobRecorder.save, which
+        # raises JobFenced where the run already ended elsewhere, so an ended run is never overwritten.
+        "threetears.evals.kernel.JobFenced",
+        "threetears.evals.kernel.RUN_JOB",
+        "threetears.evals.run.JobRecorder",
     }
 )
-
-#: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
-#: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 497  # the engine owns campaign export (owner ruling, 2026-11-08: 495 -> 497, campaign_export and CampaignExport join the host contract from threetears.evals.ops, so every host exports a campaign for the mint through the package rather than its own closure). Before: the host's check-name canary (owner-approved, 2026-11-07: the host's check-name canary runs the namer over its seeded checks; 491 -> 495: check_names, GOAL_CHECK and DECLARED_NAME_CHARS join the host contract from threetears.evals.analysis, and update_template, provisional until now, the one seam that gives a stored template its presentation fields). Before: the mint door's host asks (owner-approved 488 -> 491, 2026-11-07: host_declarations_digest, judge_config_of and is_builtin_judge_config_id join the host contract, so a host reads the digest and the judge-config readers without reproducing them). Before: the names only Discodon's tests import demoted (R5, 514 -> 488, 2026-11-06: the 24 discodon-tests-only names of the hold-back ledger and CampaignBundle and testing.ReaderSample, which only their signatures reached, go provisional; Discodon confirmed on 2026-11-06 that a provisional name its tests import may move). Before: the shims removed (R4, 535 -> 514, 2026-11-06: KnownReasoningEffort goes provisional, since only the removed analysis_gen_request_settings_for's signature reached it; the twenty declared names the retired generations and the in-cell cost cap left leave the package; five are host-contract names live in v0.90.0 and v0.91.x, removed with no released deprecation as an exception the owner approved on 2026-11-03, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every import before it re-pins). Before: the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:
@@ -1271,8 +1309,8 @@ def home_root(root: str, name: str) -> str:
 SNAPSHOT_PATH = PACKAGE_ROOT / "api" / "surface.json"
 
 #: The tier map the wheel ships (``threetears.evals.surface_tier`` reads it): every public name and its tier, the
-#: snapshot's tiers alone. Generated beside the snapshot, since ``api/`` is not installed and a host gates its imports
-#: against the build it runs.
+#: snapshot's tiers, and every declared name's kind (``surface_kinds.py``). Generated beside the snapshot, since
+#: ``api/`` is not installed and a host gates its imports against the build it runs.
 TIER_MAP_PATH = PACKAGE_ROOT / "src" / "threetears" / "evals" / "surface_tiers.json"
 
 #: The hand-written record of every name that left a public root: per release, its new home or ``removed``, and why.
@@ -1479,10 +1517,12 @@ def render_snapshot(surface: dict[str, SurfaceEntry]) -> str:
     return json.dumps({"format": SNAPSHOT_FORMAT, "names": names}, indent=2, ensure_ascii=False) + "\n"
 
 
-def render_tier_map(surface: dict[str, SurfaceEntry]) -> str:
-    """The shipped tier map: each ``root.name`` and its tier, in the snapshot's order, one name a line."""
+def render_tier_map(surface: dict[str, SurfaceEntry], kinds: Mapping[str, str]) -> str:
+    """The shipped tier map: each ``root.name`` and its tier, in the snapshot's order, one name a line; then each
+    declared name's kind (``surface_kinds.Kind``), in the same order."""
     tiers = {name: entry.tier for name, entry in surface.items()}
-    return json.dumps({"format": 1, "tiers": tiers}, indent=0, ensure_ascii=False) + "\n"
+    kind_of = {name: kinds[name] for name in surface if name in kinds}
+    return json.dumps({"format": 1, "tiers": tiers, "kinds": kind_of}, indent=0, ensure_ascii=False) + "\n"
 
 
 # --- findings ----------------------------------------------------------------------------------------------------
@@ -1541,8 +1581,8 @@ def snapshot_findings(
             )
         else:
             remedy = (
-                "It is host-contract: it keeps working beside its new home for one minor release before it leaves, "
-                "and the record names both."
+                "It is host-contract: the record's why names what replaces it (Port: ...), since a host cuts over "
+                "once, with no shim beside it."
                 if recorded[name].tier == "host-contract"
                 else "No compatibility shim: a porter reads the release notes."
             )

@@ -5,7 +5,7 @@ Run from the repository root, with no key set (every rung replays its recordings
     uv run python -m packages.evals.tests.fixtures.writer_cases.export_writer_cases
     uv run python -m packages.evals.tests.fixtures.writer_cases.export_writer_cases --refreeze
 
-The eleven cases, each a :class:`~threetears.evals.harness.WriterCaseFile`:
+The eleven cases, each a :class:`~threetears.evals.harness.writer_cases.WriterCaseFile`:
 
 - **the four ladder campaigns**, rungs 1 to 4: each rung's eval run through the quick path into a store of its own
   in memory, replayed from the recordings beside it, its campaign frozen through its own host. The case's name and
@@ -27,7 +27,7 @@ ones). A directory holding a case file this export does not write is refused, na
 before it split into one concept a file (``extract.py``): two prompts, no question, a 5-point margin on ``total`` and
 the ``no_invented_total`` guardrail. No rung-3 file declares that eval now: ``guardrail.py``, which grew from it, asks
 a question and puts no margin on ``total``, so its campaign differs. The case is kept as frozen, because ``--refreeze``
-would strand the $7.53 of rung-5 writer recordings made over it. ``guardrail.py`` is named below only as the nearest
+would strand the $7.18 of rung-5 writer recordings made over it. ``guardrail.py`` is named below only as the nearest
 file, for a case file that is missing; never refreeze this one.
 """
 
@@ -45,7 +45,7 @@ from typing import Final
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.writer_case_support import SEED
-from threetears.evals.harness import WriterCaseFile
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX, writer_case_freeze
 from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.ops import OpsHost

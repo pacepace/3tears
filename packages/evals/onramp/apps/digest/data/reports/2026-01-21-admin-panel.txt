@@ -1,0 +1,1 @@
+The admin panel was unavailable to staff for 15 minutes on Wednesday. A deploy shipped with a broken environment variable. No customers were affected. The deploy was rolled back at 10:22. The pipeline now checks environment variables before a deploy.

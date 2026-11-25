@@ -90,7 +90,16 @@ from typing import Any, Final, Literal, get_args
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.store_port import DocumentStore, GroupMeasure, ResultReadings, StoreClock, StoreConflict
+from threetears.evals.schema.store_port import (
+    DocumentStore,
+    GroupMeasure,
+    ResultReadings,
+    StoreClock,
+    StoreConflict,
+    check_after,
+    grouped_narrowed,
+    page_by_doc_type,
+)
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES
 from threetears.evals.schema.logs import get_logger
 
@@ -133,9 +142,7 @@ class _StoreRefusal(RuntimeError):
         """Hold the fault and the remedy apart.
 
         :param fault: What the router found.
-        :ptype fault: str
         :param remedy: What its operator does about it.
-        :ptype remedy: str
         :raises ValueError: ``remedy`` is blank.
         """
         if not remedy.strip():
@@ -192,9 +199,7 @@ class DocTypeRoute:
         """Resolve the rule over a registry: the store each registered type is kept in.
 
         :param facts: The registry (:data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`).
-        :ptype facts: Mapping[str, DocTypeFacts]
         :return: ``doc_type`` to store name, for every registered type.
-        :rtype: Mapping[str, str]
         :raises ValueError: A tombstone would be kept in another store than the type it suppresses.
         """
         table = {doc_type: self.to[getattr(fact, self.by)] for doc_type, fact in facts.items()}
@@ -249,7 +254,6 @@ def _checked_children(children: Mapping[str, DocumentStore], route: DocTypeRoute
     """Resolve ``route`` over the registry and refuse a route or a set of stores the router cannot run on.
 
     :return: The placement table.
-    :rtype: Mapping[str, str]
     :raises ValueError: No stores, one store passed under two names, or a route naming a store that is not a child.
     """
     if not children:
@@ -271,13 +275,10 @@ class RoutedDocumentStore:
 
     :param children: The stores, by name. A store no type is placed in is still asked by every id-only call, so one
         being drained stays reachable until :meth:`relocate` has emptied it.
-    :ptype children: Mapping[str, DocumentStore]
     :param route: Where each type is kept.
-    :ptype route: DocTypeRoute
     :param routing_scope: The scope this router's placement record is kept in, in every store: one the host owns and
         never uses for documents. A host running one router per partition of shared stores names one per
         partition (the module docstring). Required: it must be the scope :meth:`relocate` was given.
-    :ptype routing_scope: str
     :raises ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`), or the
         routing scope is blank.
     :raises RouteChanged: The stores were written under other placements, or under none.
@@ -470,20 +471,34 @@ class RoutedDocumentStore:
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = None,
+        after: tuple[Any, str] | None = None,
         exclude: Sequence[str] = (),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """Return documents of one type within a scope, from the store the type is kept in."""
-        return self._routed(doc_type).by_doc_type(
-            doc_type,
-            scope_id,
-            order_by=order_by,
-            descending=descending,
-            limit=limit,
-            exclude=exclude,
-            field_in=field_in,
-            **field_eq,
+        """Return documents of one type within a scope, from the store the type is kept in.
+
+        An ordered read goes through :func:`~threetears.evals.schema.store_port.page_by_doc_type`, so a store written
+        before ``after`` is asked for the whole match and the router orders and pages it, ties by ``id``, as the port
+        promises of a store that declares ``after``, which the router does.
+        """
+        routed = self._routed(doc_type)
+        if order_by is not None:
+            return page_by_doc_type(
+                routed,
+                doc_type,
+                scope_id,
+                order_by=order_by,
+                descending=descending,
+                limit=limit,
+                after=after,
+                exclude=exclude,
+                field_in=field_in,
+                **field_eq,
+            )
+        check_after(after, order_by)
+        return routed.by_doc_type(
+            doc_type, scope_id, descending=descending, limit=limit, exclude=exclude, field_in=field_in, **field_eq
         )
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
@@ -526,7 +541,6 @@ class RoutedDocumentStore:
         """Set top-level fields on the one document ``doc_id`` names, in whichever store holds it.
 
         :return: ``True`` when a store held it; ``False`` when none did.
-        :rtype: bool
         :raises MisplacedDocument: Several stores held it (the fields were set in each).
         :raises ValueError: Raised by the stores for empty or locating fields.
         """
@@ -537,7 +551,6 @@ class RoutedDocumentStore:
         """Delete the one document ``doc_id`` names, from whichever store holds it.
 
         :return: ``True`` when a store held it; ``False`` when none did.
-        :rtype: bool
         :raises MisplacedDocument: Several stores held it (each copy was deleted).
         """
         outcomes = [(name, store.delete(doc_id, scope_id)) for name, store in self._children.items()]
@@ -567,13 +580,9 @@ class RoutedDocumentStore:
         here. Whether a record exists is the router's own check when it is built.
 
         :param children: The stores, by name.
-        :ptype children: Mapping[str, DocumentStore]
         :param scope_ids: Every scope documents may be kept in.
-        :ptype scope_ids: Iterable[str]
         :param host_doc_types: The host's own ``doc_type`` values in these stores.
-        :ptype host_doc_types: Iterable[str]
         :return: ``True`` once a document is found; ``False`` when no store holds one in any named scope.
-        :rtype: bool
         """
         known = (set(DOC_TYPE_FACTS) | set(host_doc_types)) - {ROUTING_RECORD_DOC_TYPE}
         for scope_id in scope_ids:
@@ -606,18 +615,12 @@ class RoutedDocumentStore:
         and a type it is not named holds documents it cannot find.
 
         :param children: The stores, by name, as the router will be built over them.
-        :ptype children: Mapping[str, DocumentStore]
         :param route: Where each type is to be kept.
-        :ptype route: DocTypeRoute
         :param scope_ids: Every scope with documents in these stores.
-        :ptype scope_ids: Iterable[str]
         :param routing_scope: The scope the placement record is written in, which the router is then built with.
             Never one of ``scope_ids``.
-        :ptype routing_scope: str
         :param host_doc_types: The host's own ``doc_type`` values in these stores, kept in ``route.unregistered``.
-        :ptype host_doc_types: Sequence[str]
         :return: How many documents were moved, by ``doc_type``.
-        :rtype: dict[str, int]
         :raises ValueError: The route or the stores are refused, the routing scope is blank, or it is among
             ``scope_ids``.
         :raises MisplacedDocument: Two stores hold different documents under one id; which is right is an
@@ -685,19 +688,13 @@ class RoutedDocumentStore:
         Safe to run again after an interruption: the deletes find nothing, and :meth:`relocate` is.
 
         :param children: The stores, by name, as the router will be built over them.
-        :ptype children: Mapping[str, DocumentStore]
         :param route: Where each type is to be kept.
-        :ptype route: DocTypeRoute
         :param scope_ids: Every scope with documents in these stores.
-        :ptype scope_ids: Iterable[str]
         :param routing_scope: The scope the placement record is kept in, which the router is built with. Never one of
             ``scope_ids``.
-        :ptype routing_scope: str
         :param host_doc_types: The host's own ``doc_type`` values in these stores: kept, and placed by
             :meth:`relocate`.
-        :ptype host_doc_types: Sequence[str]
         :return: What was deleted and what moved.
-        :rtype: CoreReset
         :raises ValueError: As :meth:`relocate`, checked before anything is deleted.
         :raises MisplacedDocument: As :meth:`relocate`; the deletes have run, and running again after the operator's
             decision finishes the reset.
@@ -755,7 +752,6 @@ class _ClockedRoutedDocumentStore(RoutedDocumentStore):
         """The clock of the store job records are kept in.
 
         :return: That store's current time.
-        :rtype: datetime
         """
         store = self._routed(_JOB_RECORD_DOC_TYPE)
         if not isinstance(store, StoreClock):
@@ -803,12 +799,22 @@ class _ReadingRoutedDocumentStore(RoutedDocumentStore):
         *,
         by: Sequence[str],
         measures: Mapping[str, GroupMeasure],
+        exclude_in_items: Mapping[str, Sequence[str]] = MappingProxyType({}),
         field_in: Mapping[str, Sequence[Any]] | None = None,
         **field_eq: Any,
     ) -> list[dict[str, Any]]:
-        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`; from the store the type is kept in."""
-        return self._reading(doc_type).grouped(
-            doc_type, scope_id, by=by, measures=measures, field_in=field_in, **field_eq
+        """See :meth:`~threetears.evals.schema.ResultReadings.grouped`; from the store the type is kept in, through
+        :func:`~threetears.evals.schema.store_port.grouped_narrowed`, so a store written before ``exclude_in_items``
+        has its values narrowed after it answers."""
+        return grouped_narrowed(
+            self._reading(doc_type),
+            doc_type,
+            scope_id,
+            by=by,
+            measures=measures,
+            exclude_in_items=exclude_in_items,
+            field_in=field_in,
+            **field_eq,
         )
 
 

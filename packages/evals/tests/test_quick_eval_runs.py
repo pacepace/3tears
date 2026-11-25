@@ -24,15 +24,17 @@ import pydantic
 import pytest
 
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.verdict import verdict_line
 from threetears.evals.analysis.stats import wilson_interval
-from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
+from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell
+from threetears.evals.kernel.metrics import confusion_of
 from threetears.evals.kernel.host import EvalHost, KindContract
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, field_scorer
 from threetears.evals.quick.one_call import CALLABLE_KIND, CALLABLE_KIND_CONTRACT, callable_host
-from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
+from threetears.evals.run import get_result_trace, list_results, list_runs
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.fixtures.courierhost import ON_TIME_RATE, courier_host
 from packages.evals.tests.off_loop import off_loop
@@ -220,16 +222,19 @@ async def test_a_cancelled_run_whose_finished_cells_were_all_declined_stays_canc
 
 @pytest.mark.parametrize(
     ("returned", "said"),
-    [("yes", "'yes'"), (None, "None"), (math.nan, "nan"), (math.inf, "inf")],
+    [("yes", "'yes', a builtins.str,"), (None, "None"), (math.nan, "nan"), (math.inf, "inf")],
     ids=["a string", "None", "nan", "inf"],
 )
-async def test_a_grader_returning_no_finite_number_excludes_the_cell(returned: Any, said: str) -> None:
-    def odd_grade(case: Mapping[str, Any], answer: Any) -> Any:
-        return returned
+async def test_a_grader_returning_no_finite_number_fails_the_run_naming_the_case(returned: Any, said: str) -> None:
+    # Re-pinned deliberately (T1, coordinator ruling): this held that such a cell was excluded, which shrinks the
+    # denominator of every reading over the cells left without saying so. The value is the rig's defect: the run fails at
+    # the first such answer, naming the case and the fix. (It was annotated -> Any, now refused at build: -> float.)
+    def odd_grade(case: Mapping[str, Any], answer: Any) -> float:
+        return returned  # type: ignore[no-any-return]
 
-    summary = (await Eval(CASES[:1], double, [odd_grade], k=1).run(store=MEMORY, scope=SCOPE)).summary
-    assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
-    assert f"the scorer odd_grade returned {said}" in summary.errors[0]
+    result = await Eval(CASES[:1], double, [odd_grade], k=1).run(store=MEMORY, scope=SCOPE)
+    assert (result.summary.status, result.summary.n_scored, result.exit_code()) == ("failed", 0, 1)
+    assert f"the grader odd_grade returned {said} on case 1" in result.summary.errors[-1]
 
 
 async def test_a_raising_grader_excludes_the_cell_and_names_the_grader() -> None:
@@ -238,7 +243,8 @@ async def test_a_raising_grader_excludes_the_cell_and_names_the_grader() -> None
 
     summary = (await Eval(CASES[:1], double, [even, broken], k=1).run(store=MEMORY, scope=SCOPE)).summary
     assert summary.n_excluded == 1
-    assert "the scorer broken raised KeyError" in summary.errors[0]
+    # Re-pinned deliberately (T1, Critic V3-2): the author's own function is named as what they call it, a grader.
+    assert "the grader broken raised KeyError" in summary.errors[0]
 
 
 async def test_a_bool_scores_as_one_or_zero() -> None:
@@ -338,8 +344,8 @@ async def test_a_cancelled_run_settles_its_run_as_cancelled() -> None:
         ([], "needs at least one case"),
         ({"n": 1}, "a list of JSON objects or a file of them"),
         ("n", "reads its cases from a"),
-        ([{"n": 1}, ["n", 1]], r"case\(s\) 1 are not JSON objects"),
-        ([{1: "n"}], "case 0 is not a mapping with string keys"),
+        ([{"n": 1}, ["n", 1]], r"case\(s\) 2 are not JSON objects"),
+        ([{1: "n"}], "case 1 is not a mapping with string keys"),
         ([{"n": {1, 2}}], "every case must be JSON"),
     ],
     ids=["empty", "one mapping", "a string", "a list among them", "a non-string key", "a set value"],
@@ -674,10 +680,10 @@ _ABSENT = object()
 @pytest.mark.parametrize(
     ("label", "said"),
     [
-        (_ABSENT, "case 0: ValueError: the field grader 'expected' reads the case's 'expected', which it lacks"),
-        (None, "case 0: ValueError: the case's 'expected' is None; a field grader's label is a non-blank string"),
-        ("  ", "case 0: ValueError: the case's 'expected' is '  '; a field grader's label is a non-blank string"),
-        (["move"], r"case 0: ValueError: the case's 'expected' is \['move'\]; a field grader's label"),
+        (_ABSENT, "case 1: ValueError: the field grader 'expected' reads the case's 'expected', which it lacks"),
+        (None, "case 1: ValueError: the case's 'expected' is None; a field grader's label is a non-blank string"),
+        ("  ", "case 1: ValueError: the case's 'expected' is '  '; a field grader's label is a non-blank string"),
+        (["move"], r"case 1: ValueError: the case's 'expected' is \['move'\]; a field grader's label"),
         (UNUSABLE_ANSWER, "the label an unusable answer is counted under"),
     ],
     ids=["absent", "None", "blank", "a list", "the unusable label"],

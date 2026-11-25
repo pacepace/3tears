@@ -24,19 +24,132 @@ descriptor's shape.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from threetears.evals.kernel.host.attribution import HostAttributed
 from threetears.evals.kernel.metrics import (
+    CLAIMS_FAMILY,
     ENGINE_FAMILIES,
     METRIC_DESCRIPTORS,
     containment_defects,
+    measure_definition_digests,
     reader_name_defects,
 )
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.metrics import MeasureFamily, MeritAxis, MetricDescriptor
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTrace
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureRereadRequest:
+    """One stored result a re-measure asks the host to read again, and the measures to read.
+
+    :ivar run: The result's run, as stored.
+    :ivar result: The stored result (one trial), holding the values its cell wrote.
+    :ivar trace: What the cell stored beside it (its transcript, call ledger, end state, judge evidence), or ``None``
+        for a result that stored no trace.
+    :ivar measures: The keys of the host measures to read again, sorted: each one the host declares now, and whose
+        definition the run did not record or recorded otherwise.
+    """
+
+    run: EvalRun
+    result: EvalResult
+    trace: EvalTrace | None
+    measures: tuple[str, ...]
+
+
+#: Read a stored result's host measures again, under the host's CURRENT definition of each, from what the cell stored
+#: and nothing else. Host code the engine calls from a re-measure (``threetears.evals.run.remeasure_run``) and never
+#: inspects. It answers ``{measure key: value}`` for each requested measure it read; a requested measure it leaves out
+#: is one this result has no value of under the current definition. A measure the result HOLDS a value of must be
+#: answered: the re-measure refuses the run otherwise, since the stored value was read under another definition and
+#: nothing may guess the new one. Raise to refuse a result outright.
+MeasureRereader = Callable[[MeasureRereadRequest], "Mapping[str, bool | float | str]"]
+
+
+@dataclass(frozen=True, slots=True)
+class ViewedClaim:
+    """PROVISIONAL. One claim a criterion's judge listed in a cell, as a claim reader sees it.
+
+    :ivar text: The proposition, stated on its own.
+    :ivar excerpt: The span of its segment that states it, verbatim.
+    :ivar scope: ``world`` (about the world: graded for truth) or ``session`` (about the output or session itself:
+        graded by no truth step, and what a reader most often reads against the session record).
+    :ivar verdict: Its truth verdict (``supported``, ``contradicted``, ``unverifiable``, ``true_ungrounded``); None for
+        a session claim, which no truth step grades.
+    :ivar specific: Whether it states a name, number, date or rule a source could settle.
+    :ivar hedged: Whether the text marks it as its own uncertain recollection.
+    :ivar attributed: Whether the text reports it without vouching for it.
+    :ivar unit: Its segment's unit, or None for a segment outside every unit.
+    :ivar segment: The position of its segment among the view's ``segments``.
+    """
+
+    text: str
+    excerpt: str
+    scope: Literal["world", "session"]
+    verdict: str | None
+    specific: bool
+    hedged: bool
+    attributed: bool
+    unit: int | None
+    segment: int
+
+
+@dataclass(frozen=True, slots=True)
+class ViewedSegment:
+    """PROVISIONAL. One segment of a cell's output, as a claim reader sees it.
+
+    :ivar text: Its text.
+    :ivar unit: Its unit, or None for a segment outside every unit.
+    :ivar tags: The host's own tags on it, read-only.
+    """
+
+    text: str
+    unit: int | None
+    tags: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimView:
+    """PROVISIONAL. What a claim reader is handed of one cell under one criterion: a frozen copy, never the stored grade
+    or evidence, so nothing a reader does reaches what the engine stores, and the stored shapes may move under it.
+
+    It grows by adding fields, never by exposing the grade. A host whose reader comes to read a field the view gains
+    raises its measures' ``definition_revision``.
+
+    :ivar claims: Every claim the judge listed, in the grade's order.
+    :ivar segments: The output's segments, in order.
+    :ivar session: The run's own record the cell's kind stored (``ClaimEvidence.session``), deep-frozen: every mapping
+        read-only and every list a tuple; None where the kind stored none.
+    """
+
+    claims: tuple[ViewedClaim, ...]
+    segments: tuple[ViewedSegment, ...]
+    session: Mapping[str, object] | None
+
+
+#: PROVISIONAL. Read one cell's grade under a claim criterion into the host's own readings of it: the measures it
+#: declares with ``derived_from`` naming that criterion (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.derived_from`),
+#: by name. Pure and synchronous, and handed a frozen :class:`ClaimView` of the cell: its claims (each one's ``scope``,
+#: excerpt, tags and verdict), its segments with their ``tags``, and the run's own ``session`` record (a play order, a
+#: game state). Host code the engine calls from the claims phase, a re-judge, the settling of a pending row and a
+#: re-measure, and never inspects; launch runs it first on two synthetic views and refuses a reader that fails there.
+#: A reading it leaves out is one the cell does not carry (none of its claims is about what the reading counts), never
+#: a zero. Where it raises, or answers what its measures cannot hold, on a graded cell, the cell keeps its grade and
+#: tally, its derived readings are marked unread with the defect, and a re-measure with a fixed reader reads them.
+ClaimReader = Callable[[ClaimView], "Mapping[str, float | bool]"]
+
+
+class ClaimReaderDefect(RuntimeError):
+    """PROVISIONAL. A host's claim reader (:data:`ClaimReader`) raised, or answered a reading its measures do not hold.
+
+    The host's code, not an outcome of the cell, and never recorded as the criterion's loss or as a value. Where it
+    meets a graded cell, the cell's derived readings are marked unread (``ClaimTally.derived_unread``) and the defect is
+    recorded where an operator sees it; at launch, and in a re-measure, which pay for nothing, it refuses what asked.
+    """
 
 
 class MeasureRegistrationError(ValueError):
@@ -62,11 +175,9 @@ class MeasureRegistry(HostAttributed):
         """Validate and store one host's measure catalogue.
 
         :param descriptors: The measures this host can see.
-        :ptype descriptors: Iterable[MetricDescriptor]
         :param families: The host's own measure families, beyond the engine's
             (:data:`~threetears.evals.kernel.metrics.ENGINE_FAMILIES`). A descriptor may name one of
             these or an engine family, and nothing else.
-        :ptype families: Iterable[MeasureFamily]
         :raises MeasureRegistrationError: The catalogue is unsound. Every defect is reported at once.
         """
         self._init_attribution()
@@ -114,9 +225,31 @@ class MeasureRegistry(HostAttributed):
         )
         seen: set[str] = set()
         known_families = set(ENGINE_FAMILIES) | {family.name for family in self._families}
+        graded_by = {
+            **{name: family.graded_by for name, family in ENGINE_FAMILIES.items()},
+            **{family.name: family.graded_by for family in self._families},
+        }
 
         by_name = {d.name: d for d in self._descriptors}
         for descriptor in self._descriptors:
+            # A check fails its trial, and so moves the ranked pass rate, on its value alone. A judge-graded number
+            # carries no judge identity and no check of the judge behind it here, and nothing ranks on one
+            # (`is_code_graded`), so a check in such a family would rank by the back door. Refused at startup, by
+            # name, rather than filtered out of the pass rule where no host would see it go.
+            # Read off the shape, not `is_check`: that answers False in an engine judged family, the very case named here.
+            check_shaped = descriptor.higher_is_better is not None and (
+                descriptor.data_type == "boolean" or descriptor.pass_fail
+            )
+            if check_shaped and descriptor.family is not None and graded_by.get(descriptor.family) == "judge":
+                shape = "a pass/fail scorer" if descriptor.pass_fail else "a boolean"
+                defects.append(
+                    f"{descriptor.name} is a check ({shape} with a better end) in family {descriptor.family}, which "
+                    "is graded by a judge — a check fails its trial on its value alone, and a judge-graded measure "
+                    "may not decide a pass: declare the family graded_by='code' if code made the number, or drop "
+                    "the measure's better end (higher_is_better=None)"
+                )
+            if descriptor.derived_from is not None:
+                defects.extend(self._derived_defects(descriptor, graded_by))
             if descriptor.name in seen:
                 defects.append(
                     f"{descriptor.name} is declared twice — lookups key by name, so one would shadow the other"
@@ -149,6 +282,70 @@ class MeasureRegistry(HostAttributed):
             defects.extend(f"{descriptor.name} {defect}" for defect in containment_defects(descriptor, by_name))
         return defects
 
+    @staticmethod
+    def _derived_defects(descriptor: MetricDescriptor, graded_by: Mapping[str, str]) -> list[str]:
+        """Name every way a reading derived from a claim criterion contradicts what such a reading is.
+
+        It is a judged reading of the criterion's grade, ranked, withheld and lost with the criterion's own readings, so
+        it sits in a family a judge grades (code made none of its claims), under the criterion's key, and is a number;
+        and it is none of the things a measure a kind lands is (a guardrail held per arm, a merit axis an optimizing
+        surface reads, a definition that shaped the run). Which criterion it names is checked where a template is in
+        hand, since one registry serves every template.
+
+        :param descriptor: A descriptor declaring ``derived_from``.
+        :param graded_by: Who grades each family the engine and this host declare, by name.
+        :return: The defects, each naming the measure.
+        """
+        criterion = descriptor.derived_from
+        name = descriptor.name
+        defects: list[str] = []
+        family = descriptor.family
+        if family is None or graded_by.get(family) != "judge":
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} in "
+                + ("no family" if family is None else f"family {family}, which is graded by code")
+                + " — a reading of a judge's claims is judge-graded: declare family 'claims', or a host family "
+                "graded_by='judge'"
+            )
+        elif family in ENGINE_FAMILIES and family != CLAIMS_FAMILY:
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} in the engine's {family} family, which holds "
+                "the engine's own judged numbers — declare family 'claims', or a host family graded_by='judge'"
+            )
+        if not name.startswith(f"{criterion}_") or name == f"{criterion}_":
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} and is not named under its key — name it "
+                f"{criterion}_<what it reads>, as the criterion's own readings are"
+            )
+        if descriptor.data_type not in ("numeric", "boolean"):
+            defects.append(
+                f"{name} is derived from claim criterion {criterion!r} with data_type {descriptor.data_type!r} — a "
+                "reading of claims is a number, numeric or boolean"
+            )
+        defects.extend(
+            f"{name} is derived from claim criterion {criterion!r} and declares {what} — {why}"
+            for what, held, why in (
+                (
+                    "itself a guardrail",
+                    descriptor.guardrail,
+                    "a claim reading ranks arms and is never held to a margin",
+                ),
+                (
+                    f"merit axis {descriptor.merit_axis}",
+                    descriptor.merit_axis is not None,
+                    "a claim reading ranks on its own, never on an axis an optimizing surface trades",
+                ),
+                ("shapes_run", descriptor.shapes_run, "it is read after the cell is graded, so it shaped nothing"),
+            )
+            if held
+        )
+        return defects
+
+    @property
+    def derived(self) -> tuple[MetricDescriptor, ...]:
+        """The measures this host derives from claim criteria (``derived_from``), in declaration order."""
+        return tuple(d for d in self._descriptors if d.derived_from is not None)
+
     @classmethod
     def from_catalog(
         cls, catalog: Mapping[str, MetricDescriptor], *, families: Iterable[MeasureFamily] = ()
@@ -156,11 +353,8 @@ class MeasureRegistry(HostAttributed):
         """Build a registry from an existing ``{name: descriptor}`` catalogue.
 
         :param catalog: The descriptors, keyed by name.
-        :ptype catalog: Mapping[str, MetricDescriptor]
         :param families: The host's own measure families.
-        :ptype families: Iterable[MeasureFamily]
         :return: A validated registry over the catalogue's values.
-        :rtype: MeasureRegistry
         """
         return cls(catalog.values(), families=families)
 
@@ -182,6 +376,17 @@ class MeasureRegistry(HostAttributed):
         """The descriptor for ``name``, or None when this host cannot see that measure."""
         return self._by_name.get(name)
 
+    def definition_digests(self) -> dict[str, str]:
+        """Each declared measure's definition digest, by its key: what a run records as its ``measure_definitions``.
+
+        :func:`~threetears.evals.kernel.metrics.measure_definition_digests` over this catalogue. The launch stamps it
+        on every run; a host that assembles a run itself (a witnessed one) stamps it the same way, since a run that
+        records none pools with nothing.
+
+        :return: Measure key to digest, sorted; ``{}`` for a host that declares no measure.
+        """
+        return measure_definition_digests(self._descriptors)
+
     def merit_axis(self, name: str) -> MeritAxis | None:
         """Which merit axis ``name`` serves, when its host declared one.
 
@@ -194,9 +399,7 @@ class MeasureRegistry(HostAttributed):
         latency column is what leaving them unassigned produced.
 
         :param name: A declared measure name.
-        :ptype name: str
         :return: The declared axis, or None when the measure serves none.
-        :rtype: MeritAxis | None
         :raises KeyError: This host declared no such measure.
         """
         return self._require(name).merit_axis
@@ -209,4 +412,14 @@ class MeasureRegistry(HostAttributed):
         return descriptor
 
 
-__all__ = ["MeasureRegistrationError", "MeasureRegistry"]
+__all__ = [
+    "ClaimReader",
+    "ClaimReaderDefect",
+    "ClaimView",
+    "ViewedClaim",
+    "ViewedSegment",
+    "MeasureRegistrationError",
+    "MeasureRegistry",
+    "MeasureRereadRequest",
+    "MeasureRereader",
+]

@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "standings.py"}
+{"tool": "read", "path": "data/nights.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom standings import Entry, table\n\ndef night_table(case):\n    \"\"\"Each team's place on the night's table.\"\"\"\n    return {\"places\": {place.team: place.place for place in table([Entry.from_row(e) for e in case[\"entries\"]])}}\n\n\ndef every_team_placed(case, out):\n    \"\"\"Every team is in the place the quizmaster published.\"\"\"\n    return all(out[\"places\"].get(p[\"team\"]) == p[\"place\"] for p in case[\"published\"])\n\nnights = Eval(\"data/nights.jsonl\", runner=night_table, grader=[every_team_placed], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"every_team_placed\", \"pass_rate\": 0.7188, \"finished\": true}"}

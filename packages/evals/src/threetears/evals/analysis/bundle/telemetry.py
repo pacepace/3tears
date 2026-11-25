@@ -1,7 +1,7 @@
 """The descriptive telemetry rollup: per-run summaries, token sums and model versions.
 
-Descriptive only — no scoring statistic lives here. :func:`_run_summary` digests one run and its results,
-:func:`_token_rollup` sums their tokens, and :func:`_telemetry_rollup` assembles both into the bundle's
+Descriptive only — no scoring statistic lives here. :func:`digest_run` digests one run and its results,
+:func:`_token_rollup` sums their tokens, and :func:`telemetry_rollup` assembles both into the bundle's
 :class:`~threetears.evals.analysis.bundle.schema.TelemetryRollup`.
 """
 
@@ -27,11 +27,13 @@ from threetears.evals.analysis.bundle.schema import (
     TokenRollup,
 )
 from threetears.evals.analysis.contention import EXECUTION_MODE
-from threetears.evals.analysis.bundle.config import _effective_config
-from threetears.evals.analysis.bundle.measures import _measure_collection
+from threetears.evals.analysis.bundle.config import effective_config
+from threetears.evals.analysis.bundle.measures import measure_collection
+from threetears.evals.schema.models import run_ending_reason
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
+    from threetears.evals.schema.reading_states import AttestableCoordinate
 
 
 def _token_rollup(results: list[ResultView]) -> TokenRollup | None:
@@ -75,12 +77,14 @@ def _token_count_unreported(row: UsageView) -> bool:
     token-metered too, explicitly: a count it left out then reads the sums as "at least this much", which is true
     whatever the role meters, where reading it as unmetered would claim sums complete that may not be.
 
+    A row holding only unanswered calls
+    (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) left no count out: no call it counts was
+    answered, so no token was spent to report.
+
     :param row: One usage row.
-    :ptype row: UsageView
     :return: ``True`` when the row's prompt or completion count is missing from the sums.
-    :rtype: bool
     """
-    if row.role == "external":
+    if row.role == "external" or row.answers_nothing:
         return False
     # Every other role is token-metered: the roles this build knows, and one a newer build recorded.
     return row.prompt_tokens is None or row.completion_tokens is None
@@ -120,9 +124,7 @@ def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     billed refusal's dollars are no turn's spend, and averaged in they made a refusing configuration cheap.
 
     :param run_results: The run's results.
-    :ptype run_results: list[ResultView]
     :return: One float per turn that measured a production-replicating cost, in input order.
-    :rtype: list[float]
     """
     measured: list[float] = []
     for result in run_results:
@@ -138,27 +140,32 @@ def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     return measured
 
 
-def _run_summary(
+def _attested_coordinates(run: EvalRun) -> list[AttestableCoordinate]:
+    """The coordinates of the run's identity its host stated after the run: attested, not recorded."""
+    stated: list[AttestableCoordinate] = []
+    if run.served_model_attestation is not None:
+        stated.append("served_model")
+    if run.measure_attestation is not None:
+        stated.append("measure_definition")
+    return stated
+
+
+def digest_run(
     run: EvalRun, run_results: list[ResultView], reportable: set[str], *, profile: HostProfile
 ) -> RunSummary:
     """Digest one run + its results into a :class:`RunSummary`.
 
     :param run: The run.
-    :ptype run: EvalRun
     :param run_results: That run's results.
-    :ptype run_results: list[ResultView]
     :param reportable: The levers the campaign's coverage map names — see
         :func:`_reportable_levers`. ``config`` is narrowed to these so the two surfaces
         cannot name different levers for one campaign, and so a contestant property nobody
         swept does not arrive as a config value the generator reads as a departure.
-    :ptype reportable: set[str]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: The summary.
-    :rtype: RunSummary
     """
     effective = {
-        lever: eff for lever, eff in _effective_config(run, run_results, profile=profile).items() if lever in reportable
+        lever: eff for lever, eff in effective_config(run, run_results, profile=profile).items() if lever in reportable
     }
     prod_costs = _measured_prod_costs(run_results)
     return RunSummary(
@@ -181,9 +188,12 @@ def _run_summary(
         production_footing=(
             None if run.elided_payload_paths else profile.sweepables.production_footing(run, run_results)
         ),
-        measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
+        measures=measure_collection(run_results, profile=profile, undeclared="all_observed"),
         judge_shares_candidate_model=self_judging_models(run, run_results),
         apparatus=_run_apparatus(run, run_results),
+        # Why a run that did not finish ended, which its page opens on in place of a verdict.
+        ended_because=run_ending_reason(run) if run.status != "completed" else None,
+        attested_coordinates=_attested_coordinates(run),
     )
 
 
@@ -192,11 +202,8 @@ def _run_apparatus(run: EvalRun, run_results: list[ResultView]) -> RunApparatus 
     None where it recorded nothing past a serial run that pinned and declared nothing (``RunApparatus.recorded``).
 
     :param run: The run.
-    :ptype run: EvalRun
     :param run_results: That run's results.
-    :ptype run_results: list[ResultView]
     :return: The apparatus, or None.
-    :rtype: RunApparatus | None
     """
     modes = Counter(str(mode) for result in run_results if (mode := result.covariates.get(EXECUTION_MODE)) is not None)
     apparatus = RunApparatus(
@@ -214,7 +221,7 @@ def _run_apparatus(run: EvalRun, run_results: list[ResultView]) -> RunApparatus 
     return apparatus if apparatus.recorded else None
 
 
-def _model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str, str]:
+def model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str, str]:
     """Collect distinct models by role — candidate/judge/simulator — as a flat map.
 
     A single value per role reads cleanly; a swept role (e.g. a judge bake-off)
@@ -235,7 +242,7 @@ def _model_versions(runs: list[EvalRun], records: list[ScoreRecord]) -> dict[str
     return versions
 
 
-def _telemetry_rollup(
+def telemetry_rollup(
     runs: list[EvalRun], results: list[ResultView], budget: ProgramBudget, *, profile: HostProfile
 ) -> TelemetryRollup:
     """Compose the campaign-wide telemetry rollup from results + the budget lens."""
@@ -246,9 +253,13 @@ def _telemetry_rollup(
         total_cost_usd=budget.total_cost_usd,
         incomplete_cost_usd=budget.incomplete_cost_usd,
         unattributed_cost_usd=budget.unattributed_cost_usd,
-        measures=_measure_collection(results, profile=profile, undeclared="all_observed"),
+        measures=measure_collection(results, profile=profile, undeclared="all_observed"),
         tokens=_token_rollup(results),
     )
 
 
-__all__: list[str] = []
+__all__ = [
+    "model_versions",
+    "digest_run",
+    "telemetry_rollup",
+]

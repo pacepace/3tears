@@ -222,7 +222,7 @@ add `not-separated,untested`. `--reading` gates only the readings it names. A ca
 | Code | Name | Meaning |
 |---|---|---|
 | `0` | `EXIT_OK` | done |
-| `1` | `EXIT_RUN_DID_NOT_COMPLETE` | a launched run did not complete |
+| `1` | `EXIT_RUN_DID_NOT_COMPLETE` | a launched run did not complete; from an eval file, also an eval no arm of which had an answer graded (its runner raised on every case, or every trial was lost) |
 | `2` | `EXIT_REFUSED` | refused: a host that cannot be loaded, a template that is not there, a launch the engine refuses, a malformed command line |
 | `3` | `EXIT_FAILED` | failed on an error nothing anticipated — a host factory, launcher or host command raising — with its traceback on stderr |
 | `4` | `EXIT_GATE_FAILED` | `gate` read an outcome `--fail-on` names |
@@ -275,7 +275,17 @@ Each job writes its own record, and polling reads it:
 
 A launch is one job, not one per arm: its arms are prepared inside it — where a generating launch
 (`n_variations`) calls its variation writer — and its record names its runs once they start, so an agent polls
-the launch and reads each run with `run_get`. One `job_cancel` of a launch stops every run it started.
+the launch and reads each run with `run_get`. A `job_cancel` of a launch stops every run it started, as the
+[interrupt rule](#a-cancel-drains-then-cuts) says: the first lets the cells running finish, a second cuts them.
+
+<a id="a-cancel-drains-then-cuts"></a>**A cancel drains, then cuts.** The first `job_cancel` of a run, or of the
+launch or sweep holding it, starts no further cell and lets the cells already running finish and record; the run
+then ends `cancelled` where it left a cell unstarted, and `completed` where every cell had started. Each cell is
+bounded by its own deadline (the run's `cell_timeout_s`, 600 s by default), so the job ends within
+one renewal interval plus the longest deadline of a cell in flight: size a cancel's poll, or the wait a UI shows, by
+that, not by the renewal interval alone. A second `job_cancel`, from this process or any other, cuts the cells still
+running at once (each is recorded `cancelled` and a take-up runs it again); so does a second Ctrl+C on a run awaited in
+the foreground. Two cancels of a launch or a sweep landing before its job has heard the first are one cancel.
 
 A job id names the durable record its work writes, so
 every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
@@ -299,9 +309,43 @@ whose remedy names `runs_unreadable`: an answer over the runs that happened to r
 another job whose record this build cannot read (a sweep's, a launch's, an analysis attempt's) refuses with
 `UnreadableRecordError` (status 500), naming the record and why. A launch or a sweep
 written lost settles the runs it names with it. A cancel is written on the record
-too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
+too, so `job_cancel` works from any process: the job hears it within one renewal interval and drains, then ends as
+[a cancel drains, then cuts](#a-cancel-drains-then-cuts) says. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.
+
+**A run your host records itself is held the same way.** A run the engine did not launch, a witnessed session's say,
+is read and written lost by the same rule, so a host that keeps one open while it records its cells holds it under a
+lease too: the run's first write carries one from the host's `JobLeases`, `JobLeases.hold` renews it until the
+ending, and the ending is written through `JobRecorder.save`. A plain `save_eval_run` of the ending would write over a
+run another reader already wrote lost; `JobRecorder.save` raises `JobFenced` instead, and that ending stands.
+
+```python
+import asyncio
+
+from threetears.evals.kernel import RUN_JOB, JobFenced
+from threetears.evals.run import JobRecorder, run_blocking
+
+
+async def record_open_run(host, leases, executor, run, record_cells, ending):
+    lease = await run_blocking(executor, leases.grant)  # reads the store's clock
+    run = run.model_copy(update={"lease": lease})
+    await run_blocking(executor, host.storage.save_eval_run, run)  # the first write carries the lease
+    job = asyncio.current_task()
+    leases.hold(RUN_JOB, run.id, run.scope_id, cancel=lambda reason: job.cancel(), stop=job.cancel)
+    recorder = JobRecorder(host.storage, executor, RUN_JOB, run, leases=leases)
+    try:
+        cells = await record_cells(run)
+        await recorder.save(ending(run, "completed", cells))
+    except JobFenced:
+        raise  # the run ended elsewhere first; nothing is written over that ending
+    finally:
+        leases.release(run.id)
+        leases.forget(run.id)
+```
+
+Write a cancelled or failed ending through the same `recorder.save` where the cells stop early; each raises `JobFenced`
+where the run has already ended.
 
 **The one way back is a resume.** `job_resume` takes a run's, a sweep's or a launch's job up again as the same job,
 under its lease's next **epoch**. Every lease carries an epoch, and every result row records the epoch it was
@@ -327,8 +371,9 @@ included), a variant lever, a judge or simulator pin, the apparatus, or what the
 candidate kind and the deadlines its cells and turns run under (`cell_timeout_s`, `turn_budget_s`) are wired as a
 launch would wire them now: a deadline the launch named is replayed, one it inherited is inherited again. For a
 sweep or a launch, it names every arm's every difference. A different measurement pooled under one run would be two
-measurements reported as one, so this refusal stays. Two things do not refuse, because they change nothing
-measured, and each is disclosed instead:
+measurements reported as one, so this refusal stays. An edit to the template's `variation_axes`, `tools_required`
+or `universal` refuses too, since it changes what the run measures. Three things do not refuse, because they change
+nothing measured, and each is disclosed instead:
 
 - **The host's labels** (`SubjectSnapshot.labels`, the run's own labels): a deploy changes them, and a deploy is
   the usual reason to resume.
@@ -336,11 +381,15 @@ measured, and each is disclosed instead:
   its template's measured content at launch (`EvalRun.template_digest`), and only a moved digest refuses. A run
   stored before that digest existed can't tell the two apart, so it resumes only while its template is unedited
   since the run started.
+- **A change of goal-check proof rules** (`GOAL_CHECK_PROOF_RULES`) that proves the run's own goal checks as its
+  launch did. The resume re-proves them under the rules in force, and only a check proved otherwise refuses. The run
+  then reads as proved under the current rules.
 
 What is disclosed sits on the run's `lifetimes`. The first resume writes the original holding's entry, closed as it
 ended, and opens one per resume: its holder and epoch, when it began and how it ended, the cells stored when it
-ended, the labels it began under, the cost cap it ran under, and `template_edited_at` when the template was edited
-in nothing measured. A run never resumed has no entries; once resumed, `len(lifetimes)` is the number of process
+ended, the labels it began under, the cost cap it ran under, the goal-check proof rules its checks were proved
+under (`goal_check_proof_rules`: the launch's on the first entry, the resume's re-proof on each later one), and
+`template_edited_at` when the template was edited in nothing measured. A run never resumed has no entries; once resumed, `len(lifetimes)` is the number of process
 lifetimes it has spanned. A sweep records its own holdings the same way.
 
 **In the foreground.** A caller that is not a transport — a script, a test, a host's own batch — may await
@@ -358,8 +407,8 @@ also declare `measure_latency`, which every arm's launch takes and which runs th
 another or all at once, each run joins the named campaign as it is created; interleaved, every run joins once all
 the arms are prepared and started. That campaign is created exploratory, since a sweep takes no design, and its readings are leads: to ask a
 question of what it found, `campaign_create` an aspect over the sweep's runs (`run_ids` from `job_poll`) with its arms
-named by `from_run_ids`; its readings read as any others do, and the page names each criterion it sets after the runs' results were stored. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
-the arms in flight and launches none after them. An arm refused at its launch, or whose run ends `failed`, ends
+named by `from_run_ids`; its readings read as any others do, and the page names each criterion it sets after the runs' results were stored. Its one job's progress counts the arms launched and finished, and a `job_cancel` stops
+the arms in flight and launches none after them ([the first drains, a second cuts](#a-cancel-drains-then-cuts)). An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`, except an arm whose run failed because it measured nothing (every cell excluded, as for a model
 no allowed provider serves): that arm fails alone and the sweep goes on to the others. The judge and simulator are the sweep's. Where it names none, the role's default is resolved
 once for every arm (by the one interleaved launch, or from the first arm's run when they launch one by one), so a
@@ -457,7 +506,7 @@ arm) is dated now and named on the page where that is later than its aspect's fi
 | `readings` | code's readings (`CampaignReadings`): the `kind`, `alpha`, the control, and `readings` (a change's rows), `pairs` (a choice's), `measures` (a measurement's), `floors` and `bars`, each row with its interval and reason. Every float is to twelve significant figures (a declared one, like `alpha`, a bar or a margin, has fewer and is unchanged), so one campaign serves the same JSON across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary |
 | `report_doc` | the stored report document, its id, and how it was written (its ending, models and cost), without its session transcripts, when the campaign's analysis is one |
 | `call` | the recorded call (`CampaignCall`), or null |
-| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v2:` and a digest; one with no prefix was recorded before fingerprints rounded floats), `bundle_schema_version` and `late_criteria`: each criterion set after the aspect's readings were visible (`criterion`: `aspect`, `control`, `margin`, `bar` or `floor`; `name`; `set_at`, null with no orderable time), empty where none. Its readings read the same either way; this says when, for a reader to judge |
+| `aspects` | each aspect's `aspect`, `bundle_fingerprint` (`v3:` and a digest of the evidence the bundle was assembled from; `v2:` on an analysis stored before fingerprints read the evidence alone), `bundle_schema_version` and `late_criteria`: each criterion set after the aspect's readings were visible (`criterion`: `aspect`, `control`, `margin`, `bar` or `floor`; `name`; `set_at`, null with no orderable time), empty where none. Its readings read the same either way; this says when, for a reader to judge |
 
 Each aspect's bundle is not inlined: it is written beside the page as `bundle-<aspect>.json` (the label in lower case, hyphenated),
 and the fingerprint names it. Branch on the typed fields, never on a row's `reason`, which is words.
@@ -695,8 +744,8 @@ did.
 
 ## Reporter runs are retired
 
-The analysis reporter kind, its cases and its three actions (`reporter_case_freeze`, `reporter_cases_list`,
-`reporter_case_archive`) are retired with the memo writer and the report planner they measured. The report writer
+The analysis reporter kind, its cases and its three actions (`reporter_case_freeze`, `reporter_cases_list` and
+`reporter_case_archive`, all retired) went with the memo writer and the report planner they measured. The report writer
 is measured by a writer campaign (below, and rung 5, `examples/5-writer/`), judged pairwise
 ([Judges and calibration](judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
 
@@ -792,8 +841,8 @@ What the closure holds:
 - each run's results and traces, calibration ratings, second judge passes, temperature checks and out-of-run spend;
 - the judge configs its runs and results record, a deleted config's tombstone, and each config's rubric dim. A run
   records the bare config id it committed to at launch; a result records the configured judge's identity,
-  `<config id>@<sha12>` (read with the package's `judge_config_of`), the config and a fingerprint of the reply format
-  it was sent. A value in the other type's form refuses the export. A built-in judge's identity, `builtin:<sha12>`, is
+  `<config id>@<sha12>`: the config's id before the `@`, and after it a fingerprint of the reply format it was
+  sent. A value in the other type's form refuses the export. A built-in judge's identity, `builtin:<sha12>`, is
   listed in the manifest's `builtin_judge_config_ids` and names no document;
 - the campaign's analyses, report snapshots, report documents and their sessions and analyst gaps;
 - every insight on the campaign's subject in the scope, whichever campaign minted it;
@@ -851,7 +900,7 @@ the bundle an analysis of this campaign reads, so the export carries it. Nothing
 | Key | What it is |
 |---|---|
 | `built_by` | provenance: the factory, `module:callable`, the exporter says the profile came from. The mint checks it is text and never imports it |
-| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it, computed with `threetears.evals.analysis.host_declarations_digest(profile)`; required, and a declaration without it is refused, naming any key that looks like it |
+| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it (`AnalysisContextBundle.host_declarations_digest`), and as `campaign_export` writes it; required, and a declaration without it is refused, naming any key that looks like it |
 
 The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
 sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built

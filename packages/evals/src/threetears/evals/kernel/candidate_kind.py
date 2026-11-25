@@ -102,6 +102,7 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.models import (
     AsyncDelivery,
     CellTermination,
+    ClaimEvidence,
     ConversationStopCause,
     EvalTestCase,
     GoalStateOutcome,
@@ -114,6 +115,10 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.world_session import WorldSession
 
 __all__ = [
+    "CALLABLE_KIND",
+    "JUDGED_CALLABLE_KIND",
+    "QUICK_PATH_FILER",
+    "QUICK_PATH_KINDS",
     "CandidateKind",
     "CandidateKindDefect",
     "CandidateOutput",
@@ -125,6 +130,24 @@ __all__ = [
     "UnknownCandidateKind",
     "VariantConfig",
 ]
+
+#: The kind :class:`~threetears.evals.quick.contract.Eval` launches, as its template and every result of it name it.
+CALLABLE_KIND = "callable"
+
+#: The kind :class:`~threetears.evals.quick.contract.Eval` launches when it is handed a judge: the callable, its answers
+#: judged as documents.
+JUDGED_CALLABLE_KIND = "callable-judged"
+
+#: The kinds only the quick path launches (its launcher is the one that wires them), so a result of one is a quick-path
+#: result. Held in the kernel because the analysis reads a comparison whose every result is of one of them by the
+#: mixture bet, as the quick path continues it (one comparison, its cases appended and never re-run), and the analysis
+#: may not import the quick path.
+QUICK_PATH_KINDS: frozenset[str] = frozenset({CALLABLE_KIND, JUDGED_CALLABLE_KIND})
+
+#: Who the quick path files its campaigns as (``EvalCampaign.created_by``): with :data:`QUICK_PATH_KINDS`, the origin
+#: the analysis reads a quick-path comparison by, so a host's campaign over the quick path's runs (``campaign_create``,
+#: filed as its caller) reads as every engine campaign does. Held here for the reason the kinds are.
+QUICK_PATH_FILER = "eval"
 
 
 class VariantConfig(EvalBaseModel):
@@ -300,6 +323,32 @@ class CandidateOutput(EvalBaseModel):
     what excludes the cell and what the run's own stop reason quotes.
     """
 
+    model_unserved: bool = False
+    """The candidate's call named a model its provider does not serve — retired, unknown, or not a valid id.
+
+    Set exactly when the host's describer reads the failure as ``unserved``
+    (:attr:`~threetears.evals.schema.ProviderFailure.owner`), alongside the apparatus entry it puts
+    on ``infra_errors``, which names the model's call and the provider's message. The trial is lost
+    to the test setup, never the candidate's to fail: the runner never judges a cell that sets it,
+    whatever ``output`` holds (a conversing kind that went on past the failed call has turns with
+    no reply in it, and judging those would score the setup), and a run whose cells keep meeting
+    it stops, resumable once the model is served (:class:`~threetears.evals.run.ModelUnservedError`).
+
+    Requires an ``infra_errors`` entry, as ``account_refused`` does: the entry is what excludes the
+    cell and what the run's stop reason quotes.
+    """
+
+    code_raised: bool = False
+    """The candidate failed because its own code raised a programming error (a ``KeyError``, a ``TypeError``) while
+    handling the reply, not because a call to a model it runs failed.
+
+    Set by a kind that runs the host's code as the candidate, where the raise is one no model call makes
+    (:data:`~threetears.evals.kernel.result_condition.PROGRAMMING_ERRORS`). The trial still fails, counted against the
+    candidate as any failure to answer is, and a report names the code that raised as the cause and the runner's
+    handling of the reply as what to check: usually a bug, though an empty or malformed reply can set one off.
+    Requires a ``candidate_errors`` entry: it says why that failure happened.
+    """
+
     host_measures: dict[str, bool | float | str] = {}
     """What the host's own grader measured about this cell, by registered measure name.
 
@@ -328,6 +377,16 @@ class CandidateOutput(EvalBaseModel):
     each cell to its kind's declaration. The engine renders no subject, transcript or document
     of its own, so what a judge sees — including facts the candidate's interlocutors never saw —
     is the kind's to decide. Stored on the cell's trace, so a re-judge sends exactly this again.
+    """
+
+    claim_evidence: ClaimEvidence | None = None
+    """What the cell's claims are listed from and graded against, as the kind renders it: the output cut into segments
+    and units, and the documents a claim may be checked against.
+
+    Required with every non-empty ``output`` of a cell whose template declares claim criteria, whatever the kind's
+    ``judged_artifact``: a kind graded by code is claim-graded all the same. Beside ``judge_evidence`` and independent
+    of it, so no rubric dimension reads it. Stored on the cell's trace, so a re-grade reads exactly this again.
+    ``None`` for a kind that renders none, which a template with no claim criteria never asks for.
     """
 
     stop_cause: ConversationStopCause | None = None
@@ -383,6 +442,15 @@ class CandidateOutput(EvalBaseModel):
             raise ValueError(
                 "account_refused is set but infra_errors is empty; an account refusal is an apparatus fault"
             )
+        if self.model_unserved and not self.infra_errors:
+            raise ValueError(
+                "model_unserved is set but infra_errors is empty; a model the provider does not serve is a fault of "
+                "the test setup, recorded there"
+            )
+        if self.code_raised and not self.candidate_errors:
+            raise ValueError(
+                "code_raised is set but candidate_errors is empty; it says why the candidate failed, recorded there"
+            )
         return self
 
 
@@ -408,7 +476,6 @@ class CellSpanWindow(Protocol):
         """Mark everything inside as this cell's work, apparatus included.
 
         :return: The identity scope — a no-op when nothing is watching.
-        :rtype: AbstractContextManager[None]
         """
         ...  # pragma: no cover — protocol
 
@@ -420,7 +487,6 @@ class CellSpanWindow(Protocol):
         is time the candidate is charged for and did not spend.
 
         :return: The collection scope — a no-op when nothing is watching.
-        :rtype: AbstractContextManager[None]
         """
         ...  # pragma: no cover — protocol
 
@@ -465,7 +531,6 @@ class CellSink(Protocol):
         whatever the unwind was doing.
 
         :param pending: The component the next await is waiting for.
-        :ptype pending: CellPending
         """
         ...  # pragma: no cover — protocol
 
@@ -486,7 +551,6 @@ class CellSink(Protocol):
         no response to report, so a kind whose only call is that one has nothing to register.
 
         :param read: The candidate side so far.
-        :ptype read: Callable[[], CandidateOutput]
         """
         ...  # pragma: no cover — protocol
 
@@ -501,10 +565,8 @@ class CellSink(Protocol):
         deadline what :meth:`report_progress` reads.
 
         :param source: Whose spend it is.
-        :ptype source: CellPending
         :param cost_usd: What it cost; ``None`` when part of it could not be priced, which leaves the source
             unpriced for the rest of the cell.
-        :ptype cost_usd: float | None
         :raises ValueError: ``cost_usd`` is negative or not finite.
         """
         ...  # pragma: no cover — protocol
@@ -593,21 +655,16 @@ class CandidateKind(Protocol):
             hashes. ``None`` for a caller that resolved none, which is every ad-hoc
             or fixture run. A kind that needs the subject's substance has it bound
             into its factory by its host, never through this.
-        :ptype subject_snapshot: SubjectSnapshot | None
         :param variant_config: The A/B'd stack this cell runs.
-        :ptype variant_config: VariantConfig
         :param world_seed: The world state the scenario presumes, before any turn.
-        :ptype world_seed: WorldSeed
         :param span_window: This cell's tracing windows, to open around the candidate's own
             work in :meth:`invoke`. Keep it on the returned instance: it is the cell's,
             not the kind's, and a kind wired for a run is reached for every cell.
-        :ptype span_window: CellSpanWindow
         :param cassettes: This cell's handle on the run's cassette lane, or ``None`` for a run with
             cassettes off. Handed one, the kind calls its ``wire`` once with the candidate's
             :class:`~threetears.evals.kernel.cassettes.CassetteSeams` before returning; the
             engine refuses a cell whose kind does not, since its tools would run live under a
             replay. The cell's, like ``span_window``: it already names the corpus and the case.
-        :ptype cassettes: CellCassettes | None
         :param world: This cell's handle on the host's world, or ``None`` for a host that declares none. A
             kind that seeds a world seeds it here (:meth:`~threetears.evals.kernel.world_session.WorldSession.seed`),
             which settles each attached carrier before the first turn — after binding this cell's own
@@ -617,10 +674,8 @@ class CandidateKind(Protocol):
             runner reads the world's end state back through it once ``invoke`` returns and records
             what fired, so a kind that seeds beside it leaves the cell with neither. The cell's, like
             ``span_window``.
-        :ptype world: WorldSession | None
         :return: The kind's own prepared instance, opaque to the engine and handed straight
             back to :meth:`invoke`.
-        :rtype: Any
         :raises CandidatePreparationFailed: The candidate could not be built. Carries the
             termination arm that tells an operator which half of the apparatus to
             look at; the runner records one cleanly-excluded cell and moves on.
@@ -638,17 +693,13 @@ class CandidateKind(Protocol):
         a cell cut off at its deadline is recorded from.
 
         :param instance: Whatever :meth:`prepare` returned.
-        :ptype instance: Any
         :param test_case: The concrete stimulus — variation parameters and, for a kind that
             carries one, its own host payload.
-        :ptype test_case: EvalTestCase
         :param sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
             billed so far, and keeping each paid call in the cell's spend as it is made
             (:meth:`CellSink.add_spend`). The cell's, like
             ``span_window``, not the kind's.
-        :ptype sink: CellSink
         :return: The candidate's output, its judge-free facts and its telemetry.
-        :rtype: CandidateOutput
         :raises ApparatusError: The rig failed under the candidate. One cell excluded under
             ``apparatus_failed``, recorded with what the kind had reported through ``sink``;
             the runner moves on.
@@ -680,13 +731,10 @@ class CandidatePreparationFailed(Exception):
 
         :param error: The message, already prefixed with what kind of fault it was —
             it reaches an operator as ``EvalResult.runner_error`` verbatim.
-        :ptype error: str
         :param termination: Which arm this is.
-        :ptype termination: CellTermination
         :param preconditions: The t=0 outcomes, for the arm that has them. ``None`` for the
             arms that do not, which is not an empty set of assertions but an absence
             of the question.
-        :ptype preconditions: list[PreconditionOutcome] | None
         """
         super().__init__(error)
         self.error = error
@@ -708,11 +756,8 @@ class CandidateKindDefect(ValueError):
         """Name the kind, what it declared, and what its cell carried.
 
         :param name: The template's ``candidate_kind``.
-        :ptype name: str
         :param declared: The kind's ``judged_artifact``.
-        :ptype declared: JudgedArtifact
         :param has_evidence: Whether the cell's output carried ``judge_evidence``.
-        :ptype has_evidence: bool
         """
         carried = "carried judge evidence" if has_evidence else "carried no judge evidence"
         super().__init__(
@@ -737,9 +782,7 @@ class UnknownCandidateKind(ValueError):
         """Name the kind and what this host does have.
 
         :param name: The unresolvable ``template.candidate_kind``.
-        :ptype name: str
         :param known: Every kind name this host can build, for the message.
-        :ptype known: list[str]
         """
         super().__init__(
             f"no candidate kind {name!r} is wired on this host; known kinds: {', '.join(sorted(known)) or '(none)'}"

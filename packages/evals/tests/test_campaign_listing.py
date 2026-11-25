@@ -48,7 +48,7 @@ from packages.evals.tests.ops_support import (
 )
 import pytest
 
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,
@@ -59,7 +59,7 @@ from threetears.evals.analysis.campaign_readings import (
     ShownReading,
 )
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.decision import FloorDecision, FloorStatus
+from threetears.evals.analysis.floors import FloorDecision, FloorStatus
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
@@ -632,12 +632,19 @@ def test_a_listing_puts_each_frozen_bundle_back_together_once_and_a_declared_wri
         built.append(held.id)
         return analysis_campaign_bundle(held)
 
+    holding = host.storage.declared_campaigns_holding
+
     def counted_list(*args: Any, **kwargs: Any) -> Any:
         listed.append("listed")
         return list_campaigns(*args, **kwargs)
 
+    def counted_holding(*args: Any, **kwargs: Any) -> Any:
+        listed.append("holding")
+        return holding(*args, **kwargs)
+
     monkeypatch.setattr(ops_analysis, "analysis_campaign_bundle", counted_bundle)
     monkeypatch.setattr(ops_analysis, "list_campaigns", counted_list)
+    monkeypatch.setattr(host.storage, "declared_campaigns_holding", counted_holding)
 
     campaigns_list(host, TOYHOST_SCOPE)
     assert built == [analysis.id], "one bundle per analysis, whatever the line reads off it"

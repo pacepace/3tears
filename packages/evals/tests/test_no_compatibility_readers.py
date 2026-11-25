@@ -26,13 +26,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from threetears.evals.kernel import (
-    IDENTITY_VERSION,
-    EvalStorage,
-    OutOfRunBudget,
-    resolve_context_identity,
-    resolve_variant_identity,
-)
+from threetears.evals.kernel import IDENTITY_VERSION, EvalStorage, OutOfRunBudget, resolve_variant_identity
+from threetears.evals.kernel.identity import resolve_context_identity
 from threetears.evals.schema import EvalResult, JudgeConfig, RubricDim
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema import SweepableValue

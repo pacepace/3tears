@@ -29,8 +29,12 @@
   nothing;
 - ``refused``: a submission still had faults after its round's bounces; nothing is stored, the faults are returned;
 - ``review_failed``: the editor's answer could not be read twice; nothing is stored;
-- ``failed``: the model refused, a reply stopped short, or the client failed (the provider, after its own retries);
-  nothing is stored. The tally is the caller's and keeps every turn sent.
+- ``failed``: the model refused, a reply stopped short, the client failed (the provider, after its own retries), or
+  the package's own code raised (an internal error: a tool call's handler or parameters, the submission check, the
+  review's reading); nothing is stored. The tally is the caller's and keeps every turn sent, and the sessions are on
+  the outcome. A client's failure is :attr:`WritingOutcome.failure`, described through the host's describer; an
+  internal error is :attr:`WritingOutcome.defect`, which names where it was raised and the last tool call, and is
+  never described as the client's or the provider's.
 
 **The loop reads no environment and chooses nothing by kind.** The model, its sessions' clients, the mounts, the
 skill texts, the checker and every limit come from the caller, and no condition here reads the document's story, a
@@ -75,7 +79,7 @@ from threetears.evals.ops.report_writer.editor import (
     editor_session,
     review_report,
 )
-from threetears.evals.ops.report_writer.session import ToolMount
+from threetears.evals.ops.report_writer.session import PackageDefect, ToolMount
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.turns import ToolTurnClient
@@ -112,7 +116,6 @@ class TurnModel(Protocol):
         freezes or spends anything. It may bring the client's prices up to date first.
 
         :return: ``None``, or the pricing refusal, naming the model and what to do.
-        :rtype: str | None
         :raises ValueError: The model sends no turn at all (its route or settings), which is no pricing refusal.
         """
         ...
@@ -121,11 +124,8 @@ class TurnModel(Protocol):
         """The client one named session's turns go through.
 
         :param name: The session's name (``analyst``, ``editor-1``).
-        :ptype name: str
         :param snapshot: The snapshot the session reads.
-        :ptype snapshot: str
         :return: The client.
-        :rtype: ToolTurnClient
         """
         ...
 
@@ -175,6 +175,9 @@ class WritingOutcome:
     :ivar failure: The client's failure a ``failed`` loop ended on, when one did (the analyst's or a review's), so a
         caller that records it can ask the host what of it is safe to keep: its text, which ``reason`` carries, may
         hold a provider's account. Never stored.
+    :ivar defect: The package's own failure a ``failed`` loop ended on, when one did (the analyst's round, a
+        review's, or the loop's): an internal error, which ``reason`` names (:meth:`PackageDefect.line`), never
+        handed to the host's describer; ``failure`` is then ``None``. Never stored.
     """
 
     ending: WriterEnding
@@ -187,6 +190,7 @@ class WritingOutcome:
     reason: str = ""
     sessions: dict[str, dict[str, Any]] = field(default_factory=dict)  # Any: JSON objects
     failure: Exception | None = field(default=None, compare=False, repr=False)
+    defect: PackageDefect | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -219,31 +223,18 @@ async def write_rounds(
 
     :param model: The model the analyst's session runs on, and every review's unless ``editor_model`` is named; the
         client of each named session it runs.
-    :ptype model: TurnModel
     :param snapshot: The frozen snapshot's id.
-    :ptype snapshot: str
     :param report_input: Its report input, which the editor's page and its facts read.
-    :ptype report_input: ReportInput
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to its host and caller.
-    :ptype analyst_mount: ToolMount
     :param editor_mount: The tool on the editor's cut, bound the same way.
-    :ptype editor_mount: ToolMount
     :param analyst_skill: The analyst's system text.
-    :ptype analyst_skill: SkillText
     :param editor_skill: The editor's system text.
-    :ptype editor_skill: SkillText
     :param check: The invariants' checker on the snapshot, which every submission passes before review.
-    :ptype check: InvariantCheck
     :param tally: The report's tally, which every turn of every session is counted in.
-    :ptype tally: Tally
     :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
-    :ptype budget: ReportBudget
     :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
-    :ptype limits: WriterLimits | None
     :param editor_model: The model every review session runs on, and their client; ``None`` runs them on ``model``.
-    :ptype editor_model: TurnModel | None
     :return: How it ended, and what to store.
-    :rtype: WritingOutcome
     """
     held = limits if limits is not None else WriterLimits()
     editor = editor_model if editor_model is not None else model
@@ -303,10 +294,16 @@ async def write_rounds(
             seen.analyst_rounds += 1
             drafted = await analyst.revise(_revision_request(review))
     except Exception as exc:
-        # A failure the loop reports as its `failed` ending: the client's own (a provider's, after its retries) or
-        # a refused reply, which the engine cannot name by type. The tally, the caller's, keeps every turn sent.
-        contain(exc, log=log, what="the report writing loop failed and ends failed", level="error")
-        return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+        # A failure the loop reports as its `failed` ending, with the sessions, told apart by where it was raised:
+        # the client's own (a provider's, after its retries) or a refused reply, which the engine cannot name by
+        # type, or the package's own defect, which is never described as the client's. The tally, the caller's,
+        # keeps every turn sent.
+        defect = analyst.session.defect(exc)
+        if defect is None:
+            contain(exc, log=log, what="the report writing loop failed and ends failed", level="error")
+            return _outcome("failed", seen, analyst, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+        contain(exc, log=log, what=f"the report writing loop ends failed on {defect.line()}", level="error")
+        return _outcome("failed", seen, analyst, reason=defect.line(), defect=defect)
 
 
 def _kept_if_cleared(ended: WritingOutcome, seen: _Rounds, analyst: AnalystSession) -> WritingOutcome:
@@ -352,7 +349,7 @@ def _not_reviewed(reviewed: EditorOutcome, seen: _Rounds, analyst: AnalystSessio
     if reviewed.ending == "review_failed":
         faults = "; ".join(reviewed.faults)
         return _outcome("review_failed", seen, analyst, reason=f"{reviewed.reason}: {faults}")
-    return _outcome("failed", seen, analyst, reason=reviewed.reason, failure=reviewed.failure)
+    return _outcome("failed", seen, analyst, reason=reviewed.reason, failure=reviewed.failure, defect=reviewed.defect)
 
 
 def _outcome(
@@ -364,6 +361,7 @@ def _outcome(
     faults: tuple[SubmissionFault, ...] = (),
     reason: str = "",
     failure: Exception | None = None,
+    defect: PackageDefect | None = None,
 ) -> WritingOutcome:
     """The outcome, storing (where the ending stores) the last document a review was read for, with its findings."""
     return WritingOutcome(
@@ -377,6 +375,7 @@ def _outcome(
         reason=reason,
         sessions={ANALYST_SESSION: analyst.to_json(), **seen.editors},
         failure=failure,
+        defect=defect,
     )
 
 

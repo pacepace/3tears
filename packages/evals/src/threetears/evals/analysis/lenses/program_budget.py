@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 
 
 class SpendView(Protocol):
-    """A result as the spend views read it: its run, its blended spend, its re-judges' spend and what its spend sums.
+    """A result as the spend views read it: its run, its blended spend, its re-judges' spend (of its dims and of its
+    claim criteria) and what its spend sums.
 
     A stored :class:`~threetears.evals.schema.models.EvalResult` and its compact reading satisfy it, and so does
     :class:`ResultSpend`, the figures alone, which the spend views read off a grouped read of the store.
@@ -35,11 +36,13 @@ class SpendView(Protocol):
     @property
     def judge_rescores(self) -> Sequence[RescoreView]: ...
     @property
+    def claim_rescores(self) -> Sequence[RescoreView]: ...
+    @property
     def cost_roles(self) -> Sequence[str] | None: ...
 
 
 #: The spend fields of a stored result, read off its row by the spend lenses.
-_SPEND_FIELDS = ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles")
+_SPEND_FIELDS = ("eval_run_id", "cost_usd", "judge_rescores", "claim_rescores", "cost_roles")
 
 #: The stored read of a result narrowed to its spend fields: a part of a result's document, with no ``doc_type`` field
 #: of its own (so it is no second stored model of the result's type; the row's ``doc_type`` names it in a refusal),
@@ -65,6 +68,7 @@ class ResultSpend:
     :ivar eval_run_id: The run it belongs to.
     :ivar cost_usd: Its blended spend, or ``None`` where it went unpriced.
     :ivar judge_rescores: Each re-judge's spend.
+    :ivar claim_rescores: Each re-judge of its claim criteria's spend.
     :ivar cost_roles: The roles its blended spend sums, or ``None`` where the row names none.
     """
 
@@ -72,6 +76,7 @@ class ResultSpend:
     cost_usd: float | None
     judge_rescores: tuple[RescoreReading, ...]
     cost_roles: tuple[str, ...] | None
+    claim_rescores: tuple[RescoreReading, ...] = ()
 
     @classmethod
     def of_stored(
@@ -81,6 +86,7 @@ class ResultSpend:
         judge_rescores: Any,
         cost_roles: Any,
         *,
+        claim_rescores: Any = None,
         schema_version: Any = _UNREAD,
         schema_minor: Any = _UNREAD,
     ) -> ResultSpend:
@@ -97,21 +103,16 @@ class ResultSpend:
         writer produces such a row: every result is written by its model's dump, which writes each of them.
 
         :param eval_run_id: The row's ``eval_run_id``.
-        :ptype eval_run_id: Any
         :param cost_usd: The row's ``cost_usd``.
-        :ptype cost_usd: Any
         :param judge_rescores: The row's ``judge_rescores``, each re-judge as stored; only its ``cost_usd`` is kept. An
             absent list is an empty one, as the field's default reads it.
-        :ptype judge_rescores: Any
         :param cost_roles: The row's ``cost_roles``.
-        :ptype cost_roles: Any
+        :param claim_rescores: The row's ``claim_rescores``, each re-judge of its claim criteria as stored; only its
+            ``cost_usd`` is kept. Absent (``None``, as a grouped read reads it), none.
         :param schema_version: The row's ``schema_version``; left unread, the version this build writes.
-        :ptype schema_version: Any
         :param schema_minor: The row's ``schema_minor``; left unread (or absent from the row), the minor this build
             writes.
-        :ptype schema_minor: Any
         :return: The figures.
-        :rtype: ResultSpend
         :raises ValidationError: The figures, or the row's version, are ones a stored result's read refuses.
         """
         space = _StoredSpend.version_space
@@ -126,6 +127,7 @@ class ResultSpend:
             "eval_run_id": eval_run_id,
             "cost_roles": cost_roles,
             "judge_rescores": judge_rescores,
+            "claim_rescores": claim_rescores,
             "schema_minor": None if schema_minor is _UNREAD else schema_minor,
         }
         row.update({name: value for name, value in present.items() if value is not None})
@@ -133,8 +135,9 @@ class ResultSpend:
         return cls(
             eval_run_id=read.eval_run_id,
             cost_usd=read.cost_usd,
-            judge_rescores=tuple(RescoreReading(cost_usd=rescore.cost_usd) for rescore in read.judge_rescores),
+            judge_rescores=tuple(RescoreReading.of(rescore) for rescore in read.judge_rescores),
             cost_roles=tuple(read.cost_roles),
+            claim_rescores=tuple(RescoreReading.of(rescore) for rescore in read.claim_rescores),
         )
 
 
@@ -252,7 +255,7 @@ class ProgramBudget(EvalBaseModel):
     #: composition change, which is a real caveat on any comparison drawn across it.
     cost_compositions: list[list[str]] = []
     #: The part of the total spent re-judging results after their runs finished
-    #: (``EvalResult.judge_rescores``). In the total and in each run's row because it is real
+    #: (``EvalResult.judge_rescores``, and ``claim_rescores`` for its claim criteria). In the total and in each run's row because it is real
     #: program spend on that run's results; kept apart here because it is not in any result's
     #: ``cost_usd``, which measures the cell as it ran.
     rejudge_cost_usd: float = 0.0
@@ -270,21 +273,18 @@ def compute_program_budget(runs: list[EvalRun], results: Sequence[SpendView]) ->
     would under-count the bill — the one thing a budget view must never do. It
     aggregates ``EvalResult.cost_usd`` (the authoritative blended total) directly
     instead, so a subject-less or failed run's dollars are still counted, plus each
-    result's re-judge spend (``judge_rescores``), which that total leaves out.
+    result's re-judge spend (``judge_rescores`` and ``claim_rescores``), which that total leaves out.
 
     :param runs: Every run in the scope, all statuses. Order is irrelevant; the
         rows are emitted in ``created_at`` order for the cumulative series.
-    :ptype runs: list[EvalRun]
     :param results: Every result in the scope. A result's ``cost_usd`` and its
         re-judge spend are attributed to its ``eval_run_id``.
-    :ptype results: Sequence[SpendView]
     :return: A :class:`ProgramBudget` — one :class:`BudgetRun` per listed run (zero
         cost for a run with no results), the cumulative series, and the
         incomplete-spend / unattributed-spend accounting that keeps the total
         honest about what it includes. The incomplete spend is reported both
         whole and split into its in-flight and terminally-incomplete halves,
         each with the statuses it was actually made of.
-    :rtype: ProgramBudget
     """
     costs_by_run: dict[str, list[float]] = {}
     # Each run's results and re-judges whose spend went unpriced: in no dollar figure, so counted.
@@ -297,8 +297,9 @@ def compute_program_budget(runs: list[EvalRun], results: Sequence[SpendView]) ->
     # which the result's own ``cost_usd`` deliberately leaves out.
     rejudge_cost = 0.0
     for result in results:
-        spends = [result.cost_usd, *(rescore.cost_usd for rescore in result.judge_rescores)]
-        result_rejudge = sum(rescore.cost_usd for rescore in result.judge_rescores if rescore.cost_usd is not None)
+        rescores = (*result.judge_rescores, *result.claim_rescores)
+        spends = [result.cost_usd, *(rescore.cost_usd for rescore in rescores)]
+        result_rejudge = sum(rescore.cost_usd for rescore in rescores if rescore.cost_usd is not None)
         rejudge_cost += result_rejudge
         costs_by_run.setdefault(result.eval_run_id, []).append(sum(spend for spend in spends if spend is not None))
         unpriced_by_run[result.eval_run_id] = unpriced_by_run.get(result.eval_run_id, 0) + spends.count(None)

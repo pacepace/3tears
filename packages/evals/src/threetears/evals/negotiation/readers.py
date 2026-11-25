@@ -142,12 +142,9 @@ def read_anthropic_refusal(status: int, body: object) -> SettingRefusal | None:
     credit notice Anthropic also sends as a 400) is ``None``.
 
     :param status: The HTTP status (``anthropic.APIStatusError.status_code``).
-    :ptype status: int
     :param body: The JSON body, parsed or as text (``anthropic.APIStatusError.body``, the whole
         ``{"type": "error", "error": {...}}``).
-    :ptype body: object
     :return: The refusal, or ``None``.
-    :rtype: SettingRefusal | None
     """
     if status != 400:
         return None
@@ -192,12 +189,9 @@ def read_openai_refusal(status: int, body: object) -> SettingRefusal | None:
     that list and that number.
 
     :param status: The HTTP status (``openai.APIStatusError.status_code``).
-    :ptype status: int
     :param body: The JSON body, parsed or as text: ``{"error": {...}}`` as it arrives, or the inner error object an
         SDK keeps (``openai.APIStatusError.body``).
-    :ptype body: object
     :return: The refusal, or ``None``.
-    :rtype: SettingRefusal | None
     """
     if status != 400:
         return None
@@ -233,11 +227,8 @@ def read_router_refusal(status: int, body: object) -> SettingRefusal | None:
     (``param`` and ``code``) or else Anthropic's. Anything else, OpenRouter's own 400s included, is ``None``.
 
     :param status: The HTTP status (``openrouter.errors.OpenRouterError.status_code`` on the SDK).
-    :ptype status: int
     :param body: The JSON body, parsed or as text (``OpenRouterError.body`` on the SDK is the text).
-    :ptype body: object
     :return: The refusal, or ``None``.
-    :rtype: SettingRefusal | None
     """
     error = _error(_parsed(body))
     message = _message(error)

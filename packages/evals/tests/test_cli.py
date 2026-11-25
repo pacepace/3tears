@@ -20,7 +20,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.kernel import default_job_timeout
-from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
+from threetears.evals.analysis import AnalysisContextBundle
+from threetears.evals.analysis.report.aspect.method import NO_ANALYSIS
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
@@ -129,9 +130,17 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     assert title == f"# {campaign.name}"
     lines = out.splitlines()
     assert lines[1:3] == ["Exploratory comparison.", ""] and "planner-lite" in lines[3] and " vs " in lines[3]
-    assert lines[4:6] == ["", "**The evidence cannot tell planner-lite and planner-pro apart.**"]
+    # The courier's planners are graded by numbers alone, so nothing can fail a trial and the page leads on the aspect's
+    # own line, never on a pass rate that would count every trial passed.
+    assert lines[4:6] == [
+        "",
+        "**Exploratory: planner-pro and planner-lite ran 3 cases each; no grader here says pass or fail; too few cases to "
+        "call a difference.**",
+    ]
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
-    assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
+    # The aspect's page in its fold, its methods headed as the aspect's: a campaign graded by numbers alone reads no
+    # pass-rate pair, so the campaign has no comparison of its own to give methods for.
+    assert "**Scoreboard**" in out and "## Cases" in out and "### Aspect methods" in out
 
 
 def test_report_is_the_report_read_actions_report(capsys: pytest.CaptureFixture[str]) -> None:

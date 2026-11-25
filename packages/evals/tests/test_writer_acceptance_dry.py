@@ -56,7 +56,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
 from packages.evals.tests.offline_support import Connect, assert_no_connects, refuse_connects
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.harness import WriterCaseFile
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE

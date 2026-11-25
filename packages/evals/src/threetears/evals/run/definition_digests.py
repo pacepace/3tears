@@ -95,9 +95,7 @@ def measured_template_digest(template: EvalTemplate) -> str:
     an edit that changed the measurement from one that did not.
 
     :param template: The template as a launch grades it.
-    :ptype template: EvalTemplate
     :return: A sha256 hex digest.
-    :rtype: str
     """
     declared = set(type(template).model_fields) - _UNMEASURED_TEMPLATE_FIELDS
     return canonical_digest(
@@ -119,22 +117,18 @@ def case_set_digest(*, name: str, template: str, tracked: bool, cases: Sequence[
     """The digest of a case set's content.
 
     :param name: The set's name.
-    :ptype name: str
     :param template: Its template's name: every revision of the template shares it.
-    :ptype template: str
     :param tracked: Whether it is followed over time.
-    :ptype tracked: bool
     :param cases: The content digest of each case it lists, in order (a stored case's ``content_hash``).
-    :ptype cases: Sequence[str]
     """
     return canonical_digest(
         {"case_set": {"name": name, "template": template, "tracked": tracked, "cases": list(cases)}}
     )
 
 
-#: What a template's own case is, on a corpus case and a stored one alike: what varies, the host's stimulus and the
-#: stratum. Never its name or its template's id.
-TEMPLATE_CASE_FIELDS: frozenset[str] = frozenset({"variation_params", "host_payload", "stratum"})
+#: What a template's own case is, on a corpus case and a stored one alike: what varies, the host's stimulus, its
+#: reference key and the stratum. Never its name or its template's id.
+TEMPLATE_CASE_FIELDS: frozenset[str] = frozenset({"variation_params", "host_payload", "reference", "stratum"})
 
 #: What of a template's own case is its content, so its ``content_hash`` and its id: :data:`TEMPLATE_CASE_FIELDS` but
 #: the stratum, which is metadata about the case and never part of its identity, as for a generated case.
@@ -142,8 +136,14 @@ TEMPLATE_CASE_CONTENT_FIELDS: frozenset[str] = TEMPLATE_CASE_FIELDS - {"stratum"
 
 
 def _case_digest(case: BaseModel, fields: frozenset[str]) -> str:
-    """The digest of ``fields`` of a template's own case, each left out empty."""
-    content = case.model_dump(include=set(fields))
+    """The digest of ``fields`` of a template's own case, each left out empty.
+
+    The reference key is dumped as JSON, its parts in the one order the key keeps them in, and a case with none leaves
+    it out, so every digest of a case without a key is the one it had before keys existed.
+    """
+    content = case.model_dump(include=set(fields) - {"reference"})
+    if "reference" in fields:
+        content |= case.model_dump(mode="json", include={"reference"})
     return canonical_digest(
         {"template_case": {field: value for field, value in content.items() if value not in (None, {})}}
     )
@@ -152,11 +152,11 @@ def _case_digest(case: BaseModel, fields: frozenset[str]) -> str:
 def template_case_digest(case: BaseModel) -> str:
     """The digest of a template's own case as drift reads it: its :data:`TEMPLATE_CASE_FIELDS`, each left out empty.
 
-    The host's stimulus is dumped whole with the other two and digested as written: the engine never reads a key
-    inside it. A relabelled stratum moves it, so a case relabelled in the store reads ``customized``.
+    The host's stimulus is dumped whole with the others and digested as written: the engine never reads a key
+    inside it. A relabelled stratum moves it, so a case relabelled in the store reads ``customized``, and so does an
+    edited reference key.
 
-    :param case: A corpus case or a stored test case, each of which carries the three fields.
-    :ptype case: BaseModel
+    :param case: A corpus case or a stored test case, each of which carries the four fields.
     """
     return _case_digest(case, TEMPLATE_CASE_FIELDS)
 
@@ -168,7 +168,6 @@ def template_case_content_digest(case: BaseModel) -> str:
     :func:`template_case_digest` does.
 
     :param case: A corpus case or a stored test case.
-    :ptype case: BaseModel
     """
     return _case_digest(case, TEMPLATE_CASE_CONTENT_FIELDS)
 

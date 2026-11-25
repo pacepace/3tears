@@ -16,25 +16,26 @@ import types
 
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import JudgeKey, judge_kind_readings
 from threetears.evals.kernel import (
-    JUDGE_CASE_KEY,
     AuthoredJudgeCase,
     JUDGE_KIND,
-    JUDGE_LABEL_AGREEMENT_MEASURE,
-    JUDGE_PARSE_VALID_MEASURE,
     JudgeKindOverlays,
     ValidationFailedError,
     VariantConfig,
     judge_case_of,
-    judge_trial_of,
-    production_replicating_cost,
     withhold_failure_detail,
 )
+from threetears.evals.kernel.judge_cases import JUDGE_CASE_KEY
+from threetears.evals.kernel.judge_cases import JUDGE_LABEL_AGREEMENT_MEASURE
+from threetears.evals.kernel.judge_cases import JUDGE_PARSE_VALID_MEASURE
+from threetears.evals.kernel.judge_cases import judge_trial_of
+from threetears.evals.kernel.usage_capture import production_replicating_cost
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.providers import Provider, ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
@@ -48,6 +49,7 @@ from threetears.evals.run import (
     rate_result,
 )
 from threetears.evals.run.judge_service import builtin_judge_config_ids, judge_config_ids_for
+from threetears.evals.run.runner import cell_execution_order
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     CompletionProtocolDefect,
@@ -58,6 +60,7 @@ from threetears.evals.schema import (
     JudgedArtifact,
     RubricDim,
 )
+from threetears.evals.testing import RecordedCompletions, RecordingRefused
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
@@ -583,6 +586,108 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}
 
 
+class _ResentUntempered(_Untempered):
+    """The judge's replies stripped of ``temperature``, each counting one send that broke before any response began and
+    was sent again, which the provider may have billed too."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await super().generate(system=system, user=user, response_format=response_format)
+        reply.maybe_billed_sends = 1
+        return reply
+
+
+async def test_a_trial_failed_by_a_protocol_defect_counts_its_resent_send_on_its_row() -> None:
+    """A trial whose completion breaks the protocol fails the run with what it was billed. Its first send was dropped
+    and sent again, so its row counts the send the provider may have billed beside the call, as every other row does,
+    and the run's cost cap counts it from there."""
+    campaign = await _campaign()
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    resent = _ResentUntempered(campaign.judge)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: resent,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=withhold_failure_detail,
+    )
+    room = FakeCellSink()
+
+    with pytest.raises(CompletionProtocolDefect) as raised:
+        await kind.invoke(await _prepared(kind), stored, sink=room)
+
+    assert raised.value.maybe_billed_sends == 1
+    assert room.progress is not None
+    [row] = room.progress().telemetry.usage
+    assert row.call_count == 1 and row.maybe_billed_sends == 1
+    assert row.cost_usd is not None and row.cost_usd > 0
+
+
+async def test_a_judge_under_test_whose_replay_misses_on_one_trial_fails_the_run_naming_the_call(
+    tmp_path: Path,
+) -> None:
+    """The judge under test replays a recording made of every trial but the last one the run asks, so the recording
+    serves each of those and cannot serve the last. The trials it serves score; the one it misses once came back graded
+    no_reply and charged to the judge, and then was excluded alone, so the campaign finished on fewer trials in silence.
+    A judge call's miss now fails the run, as a scoring judge's does (owner ruling, #1162): that cell is recorded
+    apparatus_failed naming the call, and the run raises the miss."""
+    campaign = await _campaign()
+    template = _judge_template()
+    run = make_eval_run(
+        id="judge-arm-replay-missed",
+        scope_id=TOYHOST_SCOPE,
+        template_id=template.id,
+        candidate_kind=JUDGE_KIND,
+        candidate_model=TOY_JUDGE_MODEL,
+        k_runs=1,
+        test_case_ids=list(campaign.case_ids),
+    )
+    off_loop(campaign.host.storage.save_eval_run, run)
+    cases = off_loop(campaign.host.storage.load_test_cases_by_ids, list(campaign.case_ids), TOYHOST_SCOPE)
+    order = [case for _, case in cell_execution_order(run, cases)]
+    *held, missed = order
+    assert held, "the campaign holds more than one case, so some trials are served"
+
+    path = tmp_path / "judge.jsonl"
+    async with RecordedCompletions.record(campaign.judge, path, settings=None) as recorder:
+        recording = JudgeKind(
+            clients=lambda role, model, *, temperature=None: recorder,
+            model=TOY_JUDGE_MODEL,
+            failure_describer=describe_failure,
+        )
+        for case in held:
+            await recording.invoke(await _prepared(recording), case, sink=FakeCellSink())
+    replay = RecordedCompletions.replay(path, settings=None)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: replay,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=describe_failure,
+    )
+
+    with pytest.raises(RecordingRefused, match=r"recording .+judge\.jsonl: the prompt .+; re-record "):
+        await execute_run(
+            campaign.host,
+            run=run,
+            template=template,
+            test_cases=cases,
+            judge_service=None,
+            options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
+        )
+
+    results = {
+        result.test_case_id: result
+        for result in off_loop(campaign.host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    }
+    assert set(results) == {case.id for case in order}
+    failed = results.pop(missed.id)
+    assert failed.termination == "apparatus_failed"
+    assert failed.infra_error is not None and failed.infra_error.startswith("apparatus: RecordingRefused: recording ")
+    assert str(path) in failed.infra_error and "re-record" in failed.infra_error
+    assert failed.kind_payload is None, "no trial is graded on a call the rig could not serve"
+    for served in results.values():
+        assert served.termination == "completed"
+        trial = judge_trial_of(served.kind_payload)
+        assert trial is not None and trial.outcome == "scored"
+
+
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
     config = JudgeConfig(
         scope_id=TOYHOST_SCOPE, name="other", rubric_dim_id=FAITHFULNESS_DIM, prompt_template="x", model="other/model"
@@ -597,7 +702,7 @@ def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
 
 
 async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_receipt() -> None:
-    from threetears.evals.actions import engine_actions
+    from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
     from threetears.evals.ops import JudgeCasesFreeze, judge_cases_freeze
 
     host = toyhost_host()
@@ -614,7 +719,7 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     report = off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE)
 
     assert report.case_set is not None and report.case_set.version == 1 and len(report.cases) == len(source)
-    action = next(action for action in engine_actions() if action.name == "judge_cases_freeze")
+    action = next(action for action in engine_actions_in_catalogue() if action.name == "judge_cases_freeze")
     assert action.permission == "write"
     text = action.render(report)
     lines = text.splitlines()
@@ -738,7 +843,7 @@ async def test_a_label_outlives_its_evidence_and_still_calibrates_a_judge_after_
     a reset the freeze reads no run, result or trace, and the judge campaign over its cases still measures the
     judge against what people said, on the very evidence they read.
     """
-    from threetears.evals.analysis import judge_profiles_of
+    from threetears.evals.analysis.judge_profiles import judge_profiles_of
     from threetears.evals.run import delete_run
 
     judge = _ServedJudge()
@@ -909,7 +1014,7 @@ def _hard_cases() -> list[AuthoredJudgeCase]:
 
 
 async def test_authored_cases_are_judged_and_read_out_as_labelled_cases_whose_label_is_the_verdict() -> None:
-    from threetears.evals.analysis import judge_profiles_of
+    from threetears.evals.analysis.judge_profiles import judge_profiles_of
 
     judge = _ServedJudge()
     host = toyhost_host(clients=lambda role, model, *, temperature=None: judge)
@@ -966,6 +1071,89 @@ async def test_authored_cases_are_judged_and_read_out_as_labelled_cases_whose_la
     assert reading.label_agreement is not None and reading.label_agreement.results == 3
     (profile,) = judge_profiles_of(readings, scope_id=TOYHOST_SCOPE).profiles
     assert profile.label_agreement is not None and profile.label_agreement.results == 3
+
+
+async def test_an_operators_freeze_into_a_template_that_holds_cases_writes_its_next_revision() -> None:
+    """Runs before and after the freeze never share a revision whose cases differ: the freeze's cases, and the case
+    set it mints, are the next revision's, which carries the case the template held."""
+    from threetears.evals.ops import JudgeCaseAuthor, JudgeCasesFreeze, judge_case_author, judge_cases_freeze
+    from threetears.evals.run import mint_case_set
+
+    host = dataclasses.replace(toyhost_host(), attests_person=_vouches_for_itself)
+    source = await _judged_source(host)
+    template = _judge_template()
+    off_loop(host.storage.save_template, template)
+    held = off_loop(
+        judge_case_author,
+        host,
+        JudgeCaseAuthor(
+            template_id=template.id,
+            criterion_template_id=toyhost_judged_template().id,
+            criterion=FAITHFULNESS_DIM,
+            output=json.dumps({"invoice_number": "INV-0042"}),
+            case_material=_AUTHORED_INVOICE,
+            expected=1,
+            note="three of four fields missing is not faithful",
+        ),
+        TOYHOST_SCOPE,
+        collected_by=_AUTHOR,
+    )
+    assert (held.template_id, held.revision) == (template.id, None), "a template's first case is written in place"
+    (first,) = held.cases
+    for name in ("faithfulness", "left behind"):
+        off_loop(
+            lambda name=name: mint_case_set(
+                host.storage,
+                scope_id=TOYHOST_SCOPE,
+                name=name,
+                template_id=template.id,
+                test_case_ids=[first.test_case_id],
+            )
+        )
+    freeze = JudgeCasesFreeze(
+        template_id=template.id,
+        judged_run_ids=sorted({result.eval_run_id for result in source}),
+        criteria=[FAITHFULNESS_DIM],
+        into_case_set="faithfulness",
+    )
+
+    def revisions() -> list[tuple[int, bool]]:
+        records = host.storage.query_templates(TOYHOST_SCOPE, archived=None)
+        return sorted((t.revision, t.archived) for t in records if t.name == template.name)
+
+    # A freeze that will be refused writes no revision: every check runs before one is written.
+    with pytest.raises(ValidationFailedError, match="not results of the named runs"):
+        off_loop(
+            judge_cases_freeze,
+            host,
+            freeze.model_copy(update={"judged_result_ids": ["no-such-result"]}),
+            TOYHOST_SCOPE,
+        )
+    assert off_loop(revisions) == [(1, False)]
+
+    report = off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE)
+
+    assert off_loop(revisions) == [(1, True), (2, False)]
+    assert (report.revision, report.superseded_template_id) == (2, template.id)
+    assert report.template_id != template.id and len(report.cases) == len(source)
+    assert list(report.carried) == [first.test_case_id]
+    old = off_loop(host.storage.query_test_cases, TOYHOST_SCOPE, template_id=template.id)
+    assert [case.id for case in old] == [first.test_case_id], "the superseded revision keeps exactly what it held"
+    new = {case.id for case in off_loop(host.storage.query_test_cases, TOYHOST_SCOPE, template_id=report.template_id)}
+    assert new == {report.carried[first.test_case_id], *(case.test_case_id for case in report.cases)}
+    # The set the freeze was asked for lists the new revision's cases; the other still lists the superseded one's.
+    assert report.case_set is not None and (report.case_set.name, report.case_set.version) == ("faithfulness", 2)
+    minted = off_loop(host.storage.query_case_sets, TOYHOST_SCOPE, name="faithfulness")
+    newest = max(minted, key=lambda case_set: case_set.version)
+    assert newest.template_id == report.template_id
+    assert newest.test_case_ids == [case.test_case_id for case in report.cases]
+    assert len(report.stranded_case_sets) == 1 and "left behind" in report.stranded_case_sets[0]
+    # The same freeze into the new revision adds nothing, so it writes no third.
+    again = off_loop(
+        judge_cases_freeze, host, freeze.model_copy(update={"template_id": report.template_id}), TOYHOST_SCOPE
+    )
+    assert (again.revision, again.case_set) == (None, report.case_set)
+    assert off_loop(revisions) == [(1, True), (2, False)]
 
 
 async def test_authored_cases_freeze_beside_stored_ones_into_one_case_set() -> None:
@@ -1037,7 +1225,7 @@ def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | Non
 
 
 async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
-    from threetears.evals.actions import engine_actions
+    from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
     from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 
     # The operation writes only what the host attests: here, each caller authoring as itself.
@@ -1064,7 +1252,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
     case = judge_case_of(stored)
     assert case is not None and case.criterion == subject.rubric[0] and case.intent == subject.intent
     assert case.labels[0].rater == _AUTHOR and frozen.authored_by == _AUTHOR
-    action = next(action for action in engine_actions() if action.name == "judge_case_author")
+    action = next(action for action in engine_actions_in_catalogue() if action.name == "judge_case_author")
     assert action.permission == "write"
     (line,) = [line for line in action.render(report).splitlines() if line.startswith("- test_case_id=")]
     assert f"dim={FAITHFULNESS_DIM}" in line and f"authored_by={_AUTHOR}" in line

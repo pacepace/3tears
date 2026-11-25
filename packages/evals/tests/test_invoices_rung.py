@@ -1,7 +1,7 @@
 """Rung 3, ``examples/3-invoices/``: two prompts compared on 30 invoices, one concept a file, replayed offline.
 
 - 3a ``compare.py``: two arms, a control and a verdict;
-- 3b ``margin.py``: a margin on total, which reads equivalent;
+- 3b ``margin.py``: a margin on total, which 30 invoices cannot yet show equivalent;
 - 3c ``guardrail.py``: a guardrail decided apart from the contrasts, undecided, so the door exits 4;
 - 3d ``ci.py``: the gate in CI, which writes the report and exits by the gate;
 - 3e ``grid.py``: two levers at once, four arms named as ``k=v`` factors, read again against another control.
@@ -24,14 +24,12 @@ import pytest
 
 from threetears.evals import Eval, Result
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, campaign_report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
+from threetears.evals.quick.continuation import UNKEPT_SENTENCE
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.style_support import unlinked
@@ -65,11 +63,15 @@ QUESTION = "Does v2 read the currency an invoice charges in right more often tha
 CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
+#: What to do, said above the result on the print, the aspect's page and the campaign's.
+_ADVICE = "Advice: keep v1. v2 is behind it."
+
 #: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
 #: prints them.
 _LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better."
+    "Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
+    "was right on 90 for v1 and 89 for v2."
 )
 
 
@@ -134,7 +136,7 @@ async def test_3a_offline_it_replays_two_arms_against_the_control_and_leads_on_t
     # guardrail to warn of.
     assert (lines[0], lines[1]) == ("# compare", f'"{QUESTION}"')
     assert lines[3].startswith("v1 (control) vs v2 · ")
-    assert lines[5] == f"**{_LEAD}**"
+    assert lines[5] == f"**{_ADVICE} {_LEAD}**"
     assert page_violations(result.report) == []
 
     assert len(served.calls) == 180
@@ -148,20 +150,23 @@ async def test_3a_offline_it_replays_two_arms_against_the_control_and_leads_on_t
 
 
 async def test_3b_a_margin_lets_total_read_equivalent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """compare.py's runs with a 20-point margin on total: v2's interval there (19 points either side) is inside it."""
+    """compare.py's runs with a 20-point margin on total. The question is decided on its own reading, currency's
+    accuracy, alone; total is a secondary reading, shown with its interval against the margin (13 points either
+    side, at the 90% the question's family reads at) and decided on nothing, so it reads no verdict of equivalence
+    however tight its interval."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("margin.py"), "margin", monkeypatch)
 
     result = await module.within_margin.run(store=":memory:")
     (total,) = result.contrasts("total")
-    assert (total["outcome"], total["interval"]) == ("equivalent", "-19 to +19 pts at 99.2%")
-    # Only the reading with a margin can: the others still cannot tell the arms apart.
+    assert (total["outcome"], total["interval"]) == ("not_separated", "-13 to +13 pts at 90%")
     assert {row["outcome"] for grader in ("accuracy", "number", "due") for row in result.contrasts(grader)} == {
         "not_separated"
     }
     assert (
-        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within "
-        "the measure's margin (margin ±20 pts) | 30 paired |"
+        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -13 to +13 pts | v2 level with v1, undecided (a "
+        "secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of "
+        "±20 pts on Total score, which does not show the true difference is that small | 30 paired |"
     ) in campaign_report_markdown(result.page).splitlines()
 
 
@@ -181,7 +186,7 @@ async def test_3c_offline_it_replays_both_prompts_and_decides_the_guardrail_apar
     assert lines[1] == f'"{QUESTION}"'
     assert lines[3].startswith("v1 (control) vs v2 · ")
     # Never "no difference", never "not separated": the campaign's lead sentence, then what the guardrail means.
-    assert lines[5] == f"**{_LEAD} v2 may do worse than v1 on the No invented total score guardrail.**"
+    assert lines[5] == f"**{_ADVICE} {_LEAD} v2 may do worse than v1 on the No invented total score guardrail.**"
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
     # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost,
     # and its provider routing is said in the methods, not between the result and the scoreboard (owner reading,
@@ -249,7 +254,7 @@ async def test_3c_its_page_leads_on_its_question_s_measure_with_the_guardrail_v2
         "v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point "
         "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
     )
-    assert bold == [f"**{_LEAD}**", f"**{warning}**"]
+    assert bold == [f"**{_ADVICE} {_LEAD}**", f"**{warning}**"]
     html = unlinked(campaign_report_html(result.page))
     assert (
         f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
@@ -361,8 +366,9 @@ async def test_a_model_shared_by_two_evals_refuses_the_second_naming_the_first_a
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Why each file builds its own Model: a replay serves each recorded call once per model. A second eval on
-    compare.py's model is refused every call, the rig's fault (excluded, never scored), and the refusal names the
-    real cause, not a recording to make again."""
+    compare.py's model is refused its calls, the rig's fault (excluded, never scored), and the refusal names the
+    real cause, not a recording to make again. A refused replay is a replay miss, so the run fails at it rather than
+    reading on (owner ruling, 2026-11-14, #1162): no arm reads all 90 trials."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("compare.py"), "compare", monkeypatch)
     again = Eval(
@@ -378,7 +384,8 @@ async def test_a_model_shared_by_two_evals_refuses_the_second_naming_the_first_a
     result = await again.run(store=":memory:")
 
     for summary in result.arms.values():
-        assert (summary.n_results, summary.n_excluded) == (90, 90)
+        assert summary.status == "failed" and summary.n_scored == 0
+        assert 0 < summary.n_excluded == summary.n_results < 90
     errors = [line for line in str(result).splitlines() if line.startswith("  error: ")]
     assert errors and all(
         "every one was already served to another eval's run in this process ('compare')" in line
@@ -407,7 +414,8 @@ async def test_3e_a_factor_arm_reads_by_its_declared_factors_on_the_lead_the_sco
     module = load(Path("grid.py"), "grid", monkeypatch)
     result = await module.grid.run(store=":memory:")
     printed = result.render().splitlines()
-    lead, control = printed[0], _SHOWN[_CELLS[0]]
+    # The proof line, under the advice: the advice names the arm it advises on, the proof every arm.
+    lead, control = printed[1], _SHOWN[_CELLS[0]]
     # The lead names every candidate and the control as the scoreboard below it does.
     assert all(_SHOWN[cell] in lead for cell in _CELLS)
     scoreboard = [line.partition(": ")[0] for line in printed if line.endswith(("scored", "failed by the candidate"))]
@@ -431,7 +439,7 @@ async def test_3e_a_factor_arm_reads_by_its_declared_factors_on_the_lead_the_sco
     # Read against another control, its name and its page's title name that control the same way.
     again = await result.against(_CELLS[2])
     assert again.name == f"grid, against {_SHOWN[_CELLS[2]]}"
-    assert again.render().splitlines()[1] == f"{control}: 90 result(s): 90 scored"
+    assert again.render().splitlines()[2:4] == [UNKEPT_SENTENCE, f"{control}: 90 result(s): 90 scored"]
 
 
 @pytest.mark.parametrize("example", [COMPARE, MARGIN, GUARDRAIL], ids=lambda path: path.name)

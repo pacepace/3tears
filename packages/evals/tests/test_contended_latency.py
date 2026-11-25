@@ -14,7 +14,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   their latency, or the concurrent ones keep it.
 - ``compute_frontier`` / ``compute_history``: dropping the withhold — the frontier ranks a contended latency,
   a latency series steps across one.
-- ``_latency_contended``: the bundle stops naming the cells, or the report stops saying it.
+- ``contended_latency_cells``: the bundle stops naming the cells, or the report stops saying it.
 """
 
 from __future__ import annotations

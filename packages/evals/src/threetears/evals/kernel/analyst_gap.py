@@ -86,11 +86,8 @@ def analyst_gap_id(snapshot_id: str, *parts: str) -> str:
     ``(need, why, kind)`` for any other kind; a notice by its kind and what it records.
 
     :param snapshot_id: The snapshot the gap was noted against.
-    :ptype snapshot_id: str
     :param parts: What else names it, in order.
-    :ptype parts: str
     :return: ``gap:`` and 16 hex digits of the sha256 of the snapshot and the parts, one per line.
-    :rtype: str
     """
     return "gap:" + bytes_digest("\n".join((snapshot_id, *parts)).encode())[:_GAP_DIGITS]
 
@@ -99,15 +96,10 @@ def call_gap_id(snapshot_id: str, kind: str, need: str, why: str) -> str:
     """The id of a model's ``capability_gap`` call (:func:`analyst_gap_id`), the one its acknowledgement names.
 
     :param snapshot_id: The snapshot the analyst was reading.
-    :ptype snapshot_id: str
     :param kind: ``missing`` or ``suspect``.
-    :ptype kind: str
     :param need: What it needed, or what looked wrong.
-    :ptype need: str
     :param why: Why.
-    :ptype why: str
     :return: The id.
-    :rtype: str
     """
     return analyst_gap_id(snapshot_id, need, why) if kind == "missing" else analyst_gap_id(snapshot_id, need, why, kind)
 
@@ -250,7 +242,6 @@ class GapDigest(EvalBaseModel):
         """The digest as text: how many records it read, then each group's title and body, in rank order.
 
         :return: The text.
-        :rtype: str
         """
         window = f"since {self.since}" if self.since is not None else "every record"
         head = f"analyst gaps ({window}): {self.records} records in {len(self.groups)} groups"

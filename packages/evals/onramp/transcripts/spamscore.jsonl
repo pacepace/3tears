@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "score.py"}
+{"tool": "read", "path": "data/rated.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom score import Message, load_contacts, score\n\nCONTACTS = load_contacts(\"data/contacts.txt\")\n\n\ndef rate(case):\n    \"\"\"The spam score the filter gives the message.\"\"\"\n    return {\"score\": score(Message.from_row(case), CONTACTS)}\n\n\ndef agrees_with_moderators(case, out):\n    \"\"\"The score is within 1.5 of the moderators' mean, as the README counts agreement.\"\"\"\n    return abs(out[\"score\"] - case[\"panel\"]) <= 1.5 + 1e-9\n\nmessages = Eval(\"data/rated.jsonl\", runner=rate, grader=[agrees_with_moderators], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"agrees_with_moderators\", \"pass_rate\": 0.6875, \"finished\": true}"}

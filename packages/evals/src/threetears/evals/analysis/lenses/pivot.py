@@ -8,10 +8,11 @@ substitutions and withheld cost beside the table.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, get_args
 
 from pydantic import Field
 
+from threetears.evals.kernel.claims.readings import describe_claim_reading
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
@@ -42,6 +43,12 @@ from threetears.evals.analysis.lenses.aggregation import (
     WEIGHTINGS,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost, PredictedValue
+from threetears.evals.analysis.bundle.observations import split_coordinates
+from threetears.evals.schema.reading_states import Coordinate, StateOf
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.schema.models import EvalRun
 
 
 # A cell's three states, which a renderer must keep visually distinct.
@@ -60,16 +67,17 @@ from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, Planned
 # over — the cell fell to the empty-cell branch and claimed nobody tried a
 # combination that was tried and failed in the harness.
 #: A pivot cell state: observations landed here and carried a value for the measure.
-CELL_MEASURED = "measured"
+_CELL_MEASURED = "measured"
 #: A pivot cell state: no observation landed here — the combination was never run, which is not a zero.
-CELL_NOT_RUN = "not_run"
+_CELL_NOT_RUN = "not_run"
 #: A pivot cell state: observations landed here, but none carried a value for the measure.
 CELL_UNMEASURED = "unmeasured"
 #: A fourth state, and not a kind of the other three: the cell HAS measured observations, and its
-#: mean is withheld because it would pool two quantities that are not one distribution — today a
+#: mean is withheld because it would pool two quantities that are not one distribution — a cell
+#: whose results of one arm are apart on a coordinate of its identity (`PivotCell.split_on`), or a
 #: cost cell pooling replayed results with live ones (#658). `PivotCell.withheld` says why, and
 #: `n` / `n_cases` / `outcomes` still say what the cell held, so withheld never reads as empty.
-CELL_WITHHELD = "withheld"
+_CELL_WITHHELD = "withheld"
 
 
 # Transferability class that may be pooled across subjects.
@@ -165,10 +173,19 @@ class PivotCell(EvalBaseModel):
     #: On a table grouped by contestant (``variant_key`` or ``model`` on an axis), which models the provider's
     #: responses named as having answered the candidate calls of the cell's observations (#684): ``one``,
     #: ``pooled`` — one requested model answered by several, so the cell's number mixes them — or
-    #: ``unrecorded``. Disclosed rather than split, since the contestant is keyed at launch; ``served_model`` is a
-    #: coordinate, so pivoting on it separates them. ``None`` on a table grouped on neither, and on a cell none of
-    #: whose observations' candidate made a call.
+    #: ``unrecorded``. A cell where one arm's results were answered by several is withheld (``split_on``);
+    #: ``served_model`` is a coordinate, so pivoting on it separates them. ``None`` on a table grouped on neither, and
+    #: on a cell none of whose observations' candidate made a call.
     served_models: ServedModelReading | None = None
+    #: The coordinates of its identity one arm's valued observations here are apart on, as a campaign's cells keep
+    #: them apart (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): answered by more than
+    #: one model, or read under more than one definition of a host measure, or with either unrecorded on more than
+    #: one run (an unrecorded coordinate matches nothing); and, for a cell holding more than one arm, the arms read
+    #: under different definitions, or under none recorded. Such a cell is ``withheld``: its mean would pool them.
+    #: Empty, and left out of a dump, otherwise.
+    split_on: list[Coordinate] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: The cell's state where ``split_on`` withholds it: ``withheld``, ``split``, on its first coordinate.
+    state: StateOf | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class SimpsonsFlag(EvalBaseModel):
@@ -262,6 +279,14 @@ class PivotTable(EvalBaseModel):
     unplaced_predicted_models: list[str] = []
 
 
+def _row_scale(record: ScoreRecord) -> str | None:
+    """What a row's value is on, for the pooling rule: its rubric scale, or, for a claim reading, the reading itself
+    (``claim:<reading>``), which no other reading shares; None for a row with neither."""
+    if record.instrument is not None:
+        return f"claim:{record.rubric_dim}"
+    return record.rubric_scale
+
+
 def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: HostProfile) -> bool:
     """Decide where an axis or filter name is read: off the run's levers, or off a declared field.
 
@@ -288,13 +313,9 @@ def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: Host
     :func:`_run_factors`), so the two names are one quantity and the field is read.
 
     :param factor: An axis or filter key a caller sent.
-    :ptype factor: str
     :param records: The rows the pivot reads, for the members a family names only at run time.
-    :ptype records: Sequence[ScoreRecord]
     :param profile: The host whose registry decides.
-    :ptype profile: HostProfile
     :return: True to read ``factors[factor]``, False to read the declared field.
-    :rtype: bool
     :raises PivotError: The open-coordinate or host-measure map itself, a name that is both a lever and a
         declared coordinate, or a name that is neither — the last naming the host's actual levers.
     """
@@ -354,13 +375,9 @@ def _axis_value(record: ScoreRecord, factor: str, *, lever: bool) -> str:
     what a bake-off is asking about.
 
     :param record: The row to read.
-    :ptype record: ScoreRecord
     :param factor: A declared coordinate name or a lever name.
-    :ptype factor: str
     :param lever: What :func:`_reads_a_lever` decided for ``factor``.
-    :ptype lever: bool
     :return: The coordinate's value as a string.
-    :rtype: str
     """
     if lever:
         return record.factors.get(factor) or "—"
@@ -390,15 +407,10 @@ def _simpsons_flags(
     them has no order to contribute.
 
     :param cells: Measured cells keyed by ``(row, column)``.
-    :ptype cells: dict[tuple[str, str], PivotCell]
     :param pooled: Column level -> its value with the row axis collapsed.
-    :ptype pooled: dict[str, float]
     :param rows: Row levels, in display order.
-    :ptype rows: list[str]
     :param columns: Column levels, in display order.
-    :ptype columns: list[str]
     :return: One flag per reversed pair, in column order. Empty when nothing reverses.
-    :rtype: list[SimpsonsFlag]
     """
     flags: list[SimpsonsFlag] = []
     for i, col_a in enumerate(columns):
@@ -448,11 +460,8 @@ def _pooled_identity_versions(records: Sequence[ScoreRecord], keys: Iterable[str
     """The identity versions a cell pools, for each identity key it is grouped or filtered on (#672).
 
     :param records: The cell's observations.
-    :ptype records: Sequence[ScoreRecord]
     :param keys: The identity keys among the table's axes and filters.
-    :ptype keys: Iterable[str]
     :return: Key -> its versions, ascending, only for a key whose observations here carry more than one.
-    :rtype: dict[str, list[int]]
     """
     pooled: dict[str, list[int]] = {}
     for key in keys:
@@ -471,9 +480,7 @@ def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
     The pivot's axes are open, so it does not split; it says which cells pool and how to read them apart.
 
     :param cells: The table's cells.
-    :ptype cells: Sequence[PivotCell]
     :return: The sentence, or ``None`` when no cell pools versions.
-    :rtype: str | None
     """
     pooled = [cell for cell in cells if cell.identity_versions]
     if not pooled:
@@ -503,9 +510,7 @@ def _served_model_disclosure(cells: Sequence[PivotCell]) -> str | None:
     """Name every cell answered by more than one served model, and count those that cannot say (#684).
 
     :param cells: The table's cells.
-    :ptype cells: Sequence[PivotCell]
     :return: The sentence, or ``None`` when every cell that carries a reading names one model.
-    :rtype: str | None
     """
     pooled = [cell for cell in cells if cell.served_models is not None and cell.served_models.state == "pooled"]
     unrecorded = [cell for cell in cells if cell.served_models is not None and cell.served_models.state == "unrecorded"]
@@ -517,8 +522,9 @@ def _served_model_disclosure(cells: Sequence[PivotCell]) -> str | None:
             if cell.served_models is not None
         )
         parts.append(
-            f"{len(pooled)} cell(s) pool observations one requested model was answered by several models — {named} — "
-            "so each such number mixes them; pivot on served_model to read each model alone"
+            f"{len(pooled)} cell(s) hold observations one requested model was answered by several models — {named} — "
+            "and a cell where one arm's were is withheld rather than mixing them; pivot on served_model to read each "
+            "model alone"
         )
     if unrecorded:
         parts.append(
@@ -526,6 +532,23 @@ def _served_model_disclosure(cells: Sequence[PivotCell]) -> str | None:
             "answered them cannot be established"
         )
     return ". ".join(parts) + "." if parts else None
+
+
+#: How each coordinate a pivot cell can be apart on is named in the sentence that withholds it.
+_APART_ON: dict[str, str] = {
+    "served_model": "the model that answered (more than one, or one no response named, on more than one run)",
+    "measure_definition": "the definition of a host measure (more than one, or none recorded, on more than one run)",
+}
+
+
+def _split_withheld(split_on: Sequence[Coordinate]) -> str:
+    """Why a cell whose arm is apart on ``split_on`` is withheld, in one sentence."""
+    apart = "; and ".join(_APART_ON.get(coordinate, coordinate.replace("_", " ")) for coordinate in split_on)
+    return (
+        f"the observations here differ on {apart}, within one arm or, on a host measure's definition, between two "
+        "arms, so their mean would pool what a campaign's cells keep apart; read each run alone, or pivot on "
+        "served_model where it is the model"
+    )
 
 
 def _substitution_disclosure(n_substituted: int, n_valued: int) -> str | None:
@@ -537,11 +560,8 @@ def _substitution_disclosure(n_substituted: int, n_valued: int) -> str | None:
     observation substituted, that the figure describes no live run.
 
     :param n_substituted: Valued observations carrying at least one substituted delivery.
-    :ptype n_substituted: int
     :param n_valued: Valued observations in the cell.
-    :ptype n_valued: int
     :return: The sentence, or ``None`` when nothing was substituted.
-    :rtype: str | None
     """
     if n_substituted == 0:
         return None
@@ -575,9 +595,7 @@ def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
     arm over a seeded template.
 
     :param records: The observations a cost mean would be taken over.
-    :ptype records: Sequence[ScoreRecord]
     :return: The reason, or ``None``.
-    :rtype: str | None
     """
     modes = sorted({record.cassette_mode for record in records if record.cassette_mode is not None})
     if SUBSTITUTING_CASSETTE_MODE in modes and len(modes) > 1:
@@ -603,6 +621,8 @@ def compute_pivot(
     exclusions: ProjectionExclusions | None = None,
     completeness_disclosures: Mapping[str, str] | None = None,
     predicted_cost: CostEstimate | Sequence[PlannedCost] | None = None,
+    runs: Sequence[EvalRun] | None = None,
+    results: Sequence[ResultView] | None = None,
     profile: HostProfile,
 ) -> PivotTable:
     """Aggregate score records over any two factors, disclosing every caveat.
@@ -632,17 +652,17 @@ def compute_pivot(
     **What a cell pools that is not one quantity is said, or its number withheld.** On a cost pivot each
     cell names the role sets its dollars covered (``cost_compositions``) and the table flags when they
     differ (#625); a cost cell pooling replayed results with live ones is ``withheld`` with the reason,
-    since a caveat does not stop a mean being read (#658); the table carries the comparison surfaces' cassette-mode
+    since a caveat does not stop a mean being read (#658); a cell where one arm's observations are apart on a
+    coordinate of its identity (the model that answered, a host measure's definition, or either unrecorded), or
+    where two arms in it were read under different definitions or under none recorded, is
+    ``withheld`` as a campaign's cells keep them apart (``split_on``); the table carries the comparison surfaces' cassette-mode
     sentence when its runs recorded different modes; and a cell grouped or filtered on an identity key that pools more
     than one version of its predicate names them (#672).
 
     :param records: Rows from :func:`project_score_records`.
-    :ptype records: list[ScoreRecord]
     :param row_factor: Coordinate to use as the row axis.
-    :ptype row_factor: str
     :param column_factor: Coordinate to use as the column axis. This is the axis the
         Simpson's guard pools over rows, so put the thing being compared here.
-    :ptype column_factor: str
     :param metric: Which measure to aggregate; rows carrying others are ignored. A
         measure in :data:`PROJECTED_METRICS`, or the registry name of its
         aggregate as ``list_metrics`` publishes it — see
@@ -650,16 +670,12 @@ def compute_pivot(
         relationally rather than as a list: the set has grown once already,
         and an enumeration here is one more place that would not have moved
         with it.
-    :ptype metric: str
     :param weighting: One of :data:`WEIGHTINGS`.
-    :ptype weighting: str
     :param filters: Optional exact-match coordinate filters applied before
         aggregating, e.g. ``{"subject_id": "subj-1"}``.
-    :ptype filters: dict[str, str] | None
     :param exclusions: What the projection dropped before these records existed,
         carried onto the table so the answer discloses what it could not
         see. Omitting it renders an all-excluded corpus as an empty one.
-    :ptype exclusions: ProjectionExclusions | None
     :param completeness_disclosures: ``run_id -> DEGRADED sentence`` from
         :func:`degraded_run_disclosures`, for the runs behind these records.
         Narrowed here to the runs that survived ``filters``, so the table
@@ -667,7 +683,6 @@ def compute_pivot(
         it pools a short run's rows into every rate with nothing saying so**
         — the defect this parameter exists to end, and the reason it is a
         parameter rather than something re-derived per surface.
-    :ptype completeness_disclosures: Mapping[str, str] | None
     :param predicted_cost: The estimate made BEFORE these observations, when the cells were planned
         (:func:`compute_estimate_cost`), or the planned costs of a launch priced by its host's pricer
         (:class:`PlannedCost`, one per priced arm). Each cell at a planned model carries that model's
@@ -675,13 +690,15 @@ def compute_pivot(
         in rather than computed here because a prediction drawn from a history that already
         holds the observations it predicts would be a restatement of them. Only a cost pivot
         with the candidate model on an axis has a cell a planned model's cost describes.
-    :ptype predicted_cost: CostEstimate | Sequence[PlannedCost] | None
+    :param runs: The runs behind ``records``, with ``results``: what a cell's arms are read for a coordinate of their
+        identity by. **Omitting them pools runs answered by different models, or read under different definitions,
+        into one mean with nothing withholding it**, so every read through the package passes them; a caller holding
+        only rows gets the table without that check.
+    :param results: The results behind ``records``, by their ``result_id``.
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`PivotTable` whose every cell carries ``n``, dispersion, and its
         measured/unmeasured/not-run/withheld status, plus the completeness disclosures of
         the short runs its numbers were pooled from and the pooling disclosures above.
-    :rtype: PivotTable
     :raises PivotError: Unknown weighting or metric, an axis or filter that is neither a
         declared coordinate nor a lever of this host (or is both), a cross-subject pooling, or a predicted cost handed
         to a pivot of another metric or one with no model axis. Every one
@@ -742,8 +759,18 @@ def compute_pivot(
     # A per-dimension score's catalogue range spans every scale, since the catalogue cannot know
     # which dimensions a table holds. The table can: when every row was judged on one scale, its
     # measure carries that scale's range, so a 1-5 table does not claim a floor of 0.
-    if len(table_scales := {r.rubric_scale for r in selected if r.rubric_scale is not None}) == 1:
-        measure = measure.model_copy(update={"value_range": SCALES[table_scales.pop()].value_range})
+    if len(table_scales := {scale for r in selected if (scale := _row_scale(r)) is not None}) == 1:
+        scale = table_scales.pop()
+        if scale in SCALES:
+            measure = measure.model_copy(update={"value_range": SCALES[scale].value_range})
+        else:
+            # A table of one claim reading is that reading: its range is the reading's own, a share's 0 to 1 or none
+            # for a per-unit rate, never a rubric scale's.
+            name, criterion = min(
+                (r.rubric_dim or "", r.instrument or "") for r in selected if r.instrument is not None
+            )
+            claimed = describe_claim_reading(name, criterion=criterion, measures=profile.measures)
+            measure = measure.model_copy(update={"value_range": claimed.value_range})
 
     # The no-pooling rule, enforced before any number is computed rather than as a badge after:
     # a table that has already averaged across subjects cannot be un-averaged by
@@ -774,10 +801,13 @@ def compute_pivot(
 
     # A mean of 1-5 levels and 1/0 pass/fail answers is neither a level nor a pass rate, so a cell
     # pooling both is refused before it is computed, like the subject pooling above.
+    # A claim reading is a rate or a share of claims, its own scale: pooled with a dimension, or with another claim
+    # reading, a cell's mean is none of them.
     for (row, column), members in grouped.items():
-        if len(scales := {r.rubric_scale for r in members if r.rubric_scale is not None}) > 1:
+        if len(scales := {scale for r in members if (scale := _row_scale(r)) is not None}) > 1:
             raise PivotError(
-                f"cell ({row}, {column}) pools rubric dimensions judged on different scales ({', '.join(sorted(scales))})",
+                f"cell ({row}, {column}) pools rubric dimensions judged on different scales, or claim readings "
+                f"({', '.join(sorted(scales))})",
                 remedy="put 'rubric_dim' on an axis so each cell holds one dimension",
             )
 
@@ -789,6 +819,29 @@ def compute_pivot(
     )
     # A table grouped by contestant names, per cell, the models that answered it (#684).
     by_contestant = bool({row_factor, column_factor} & _CONTESTANT_FACTORS)
+    runs_by_id = {run.id: run for run in runs or ()}
+    results_by_id = {result.id: result for result in results or ()}
+
+    def split_at(members: Sequence[ScoreRecord]) -> list[Coordinate]:
+        """The coordinates ``members`` are apart on, as a campaign's cells keep them apart: one arm's results on
+        either coordinate, and any two arms' on the definitions of a host measure. Two arms answered by different
+        models are what a cell across arms reads (as a campaign compares a split cell with the control), but two
+        read under different definitions, or under none recorded, are two instruments, which no figure pools."""
+
+        def apart(held: Sequence[ResultView]) -> list[Coordinate]:
+            return split_coordinates(
+                [runs_by_id[run_id] for run_id in {r.eval_run_id for r in held} if run_id in runs_by_id], held
+            )
+
+        by_arm: dict[tuple[str, int | None], dict[str, ResultView]] = {}
+        for record in members:
+            if (result := results_by_id.get(record.result_id)) is not None:
+                arm = (record.variant_key or record.model, record.variant_identity_version)
+                by_arm.setdefault(arm, {})[result.id] = result
+        found = {coordinate for held in by_arm.values() for coordinate in apart(list(held.values()))}
+        if len(by_arm) > 1 and "measure_definition" in apart([r for held in by_arm.values() for r in held.values()]):
+            found.add("measure_definition")
+        return [coordinate for coordinate in get_args(Coordinate) if coordinate in found]
 
     cells: list[PivotCell] = []
     measured: dict[tuple[str, str], PivotCell] = {}
@@ -807,7 +860,7 @@ def compute_pivot(
                 placed.add(plan.label)
             if not at_cell:
                 cells.append(
-                    PivotCell(row=row, column=column, status=CELL_NOT_RUN, predicted=planned, n_unplanned=unplanned)
+                    PivotCell(row=row, column=column, status=_CELL_NOT_RUN, predicted=planned, n_unplanned=unplanned)
                 )
                 continue
 
@@ -853,7 +906,10 @@ def compute_pivot(
                     _substitution_disclosure(n_substituted, len(valued)) if metric == METRIC_COST_USD else None
                 ),
             }
-            withheld = _cost_withheld(valued) if metric == METRIC_COST_USD else None
+            split_on = split_at(valued)
+            withheld = (
+                _split_withheld(split_on) if split_on else _cost_withheld(valued) if metric == METRIC_COST_USD else None
+            )
             if withheld is not None:
                 cells.append(
                     PivotCell(
@@ -861,8 +917,10 @@ def compute_pivot(
                         n_unplanned=unplanned,
                         row=row,
                         column=column,
-                        status=CELL_WITHHELD,
+                        status=_CELL_WITHHELD,
                         withheld=withheld,
+                        split_on=split_on,
+                        state=StateOf(state="withheld", reason="split", coordinate=split_on[0]) if split_on else None,
                         n=n_valued,
                         n_cases=len(values_by_case),
                         n_unmeasured=len(at_cell) - n_valued,
@@ -878,7 +936,7 @@ def compute_pivot(
                 n_unplanned=unplanned,
                 row=row,
                 column=column,
-                status=CELL_MEASURED,
+                status=_CELL_MEASURED,
                 value=value,
                 n=n_valued,
                 n_cases=len(values_by_case),
@@ -903,6 +961,9 @@ def compute_pivot(
             if _axis_value(r, column_factor, lever=reads_lever[column_factor]) == column and r.value is not None
         ]
         if metric == METRIC_COST_USD and _cost_withheld(in_column) is not None:
+            continue
+        # Nor one whose arms are apart on a coordinate the cells would withhold them on.
+        if split_at(in_column):
             continue
         by_case: dict[str, list[float]] = {}
         for record in in_column:
@@ -984,13 +1045,9 @@ def _planned_cost_per_observation(
     One prediction, read two ways.
 
     :param estimate: The estimate, or the planned costs, or None.
-    :ptype estimate: CostEstimate | Sequence[PlannedCost] | None
     :param metric: The pivot's resolved metric.
-    :ptype metric: str
     :param axes: The pivot's row and column factors.
-    :ptype axes: tuple[str, str]
     :return: One plan per priced model and template; empty when no estimate was given.
-    :rtype: list[_Plan]
     :raises PivotError: An estimate was given to a pivot of another metric, or to one with no model axis — a
         planned model's cost describes neither, so its prediction would sit beside a number it does not
         predict — or it plans one model on one template twice, which leaves no answer to which prediction
@@ -1067,10 +1124,7 @@ def _plan_for(
 
 
 __all__ = [
-    "CELL_MEASURED",
-    "CELL_NOT_RUN",
     "CELL_UNMEASURED",
-    "CELL_WITHHELD",
     "compute_pivot",
     "PivotCell",
     "PivotError",

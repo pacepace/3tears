@@ -2,21 +2,30 @@
 
 :func:`compute_comparison_sets` groups runs by context identity and case set, and badges every group whose
 members differ in a way a reader must see (context, case set, roles, tool config, measurement windows,
-cassette mode). :func:`difference_was_declared_at_launch` is the rule beneath a lever-origin disclosure: a
-difference between arms is a swept axis only when each arm's launch declared it.
+cassette mode).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, NamedTuple
+
+from pydantic import Field
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import case_set_fingerprint, resolve_context_identity
+from threetears.evals.kernel.metrics import holds_host_measure
+from threetears.evals.kernel.scoring import definitions_unrecorded, remeasure_unfinished
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.analysis.reporting import _subject_id_of
+from threetears.evals.analysis.reporting import (
+    _subject_id_of,
+    attested_served_models,
+    pooled_as,
+    served_reading,
+    through_attestation,
+)
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 
@@ -59,35 +68,7 @@ class CaseSetIdentity(EvalBaseModel):
 #:
 #: The vocabulary of origins is a host's; what the engine owns is the RULE beneath it, and the
 #: surface that renders a particular lever's sentence lives with that lever's vocabulary, in the host.
-DECLARED_INPUT_ORIGIN = "chosen"
-
-
-def difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool:
-    """Whether every one of these runs got its value from its own launch declaration.
-
-    **The generic half of a lever-origin disclosure, and the part that stayed.** The rule is
-    not about any one lever: a difference between arms is a *swept axis* when each arm's launch
-    declared the value, and a *confound* when any arm inherited it from a tier the comparison
-    never named. Only the vocabulary (``chosen`` / a subject-carried tier / an inherited
-    default) is a host's; the rule is the same one a campaign's declared design will state
-    formally once it declares one, at which point this reads the declaration instead of
-    the origins. A host calls it to write, for example, the sentence about which model its
-    arms delegated background work to.
-
-    Conservative by construction: one arm that inherited its value is enough to make the
-    whole difference undeclared, because the comparison cannot claim to be sweeping an
-    axis one of its arms was never pointed at.
-
-    :param origins: One origin per compared run, as the run recorded it. ``None`` means the
-        run recorded no origin and therefore declared nothing that can be read.
-    :ptype origins: Iterable[str | None]
-    :return: ``True`` when every origin is :data:`DECLARED_INPUT_ORIGIN`. ``False`` for an
-        empty set — nothing declared anything — so a caller can never read silence as a
-        declaration.
-    :rtype: bool
-    """
-    listed = list(origins)
-    return bool(listed) and all(origin == DECLARED_INPUT_ORIGIN for origin in listed)
+_DECLARED_INPUT_ORIGIN = "chosen"
 
 
 class ComparisonSet(EvalBaseModel):
@@ -127,6 +108,18 @@ class ComparisonSet(EvalBaseModel):
     #: two live arms or a replayed arm that never measured the third party at all.
     #: ``None`` whenever the badge is absent — one predicate, so the two cannot disagree.
     cassette_mode_disclosure: str | None = None
+    #: The ``measure_definitions_differ`` badge's substance, and more: the host measures the group's runs recorded
+    #: under two or more definitions and which runs read them together, the runs holding host measures that recorded
+    #: no definitions, the runs whose host attested them, and the runs that were re-measured, each with what is and
+    #: is not kept apart today. Present whenever the badge is; also present without it for a group whose only such
+    #: fact is a silent, an attested or a re-measured run. ``None`` otherwise, and then left out of a dump, so a bundle over such runs serializes
+    #: and fingerprints as it did before the field existed.
+    measure_definition_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: The ``served_model_differs`` badge's substance, and more: which runs that asked for one model were answered by
+    #: another, the runs some of whose responses named no model (``context_incomplete``: nothing says what answered
+    #: them), and the runs whose host stated the model afterwards. ``None`` where the group's every response named its
+    #: model and nothing was stated, and then left out of a dump, so such a group serializes as it did before.
+    served_model_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
     #: The runs that share this group's (subject, template) and that the caller's scope
     #: left out. Empty when unscoped, which is every group's ordinary state.
     #:
@@ -183,6 +176,180 @@ BADGE_MEASUREMENT_WINDOWS_DISJOINT = "measurement_windows_disjoint"
 # ``off``/``capture`` recording difference from a live-versus-replayed substitution, and
 # that distinction is the whole of what a reader needs.
 BADGE_CASSETTE_MODE_DIFFERS = "cassette_mode_differs"
+# The group's runs recorded two or more definitions of one host measure: the host changed what
+# the measure counts and kept its key. ``measure_definitions`` is a context component, so such a
+# pair fires ``context_differs`` too; this names the condition, and its disclosure names the
+# measures. Only RECORDED definitions evidence a difference: a run whose results hold a host
+# measure and that recorded none is ``context_incomplete``'s to carry, and the disclosure says
+# which runs those are.
+_BADGE_MEASURE_DEFINITIONS_DIFFER = "measure_definitions_differ"
+# Runs of the group that asked for one model were answered by different models (a floating alias that moved, a
+# router that sent them elsewhere). Runs that asked for different models are expected to be answered differently,
+# which is the comparison and no caveat. A run some of whose responses named no model is undecidable, and is
+# ``context_incomplete``'s to carry, unless its host stated the model (read through as a campaign's cells read it).
+_BADGE_SERVED_MODEL_DIFFERS = "served_model_differs"
+
+#: How many run ids a disclosure names before it says there are others: a group may hold hundreds of stored runs.
+#: It states no count of the rest, so it decides no number's form; ``run_ids`` on the set holds every id.
+_RUNS_NAMED_IN_A_DISCLOSURE = 5
+
+
+def _listed(run_ids: Iterable[str]) -> str:
+    """Run ids as a sentence lists them, sorted: the first few named, then "and others"."""
+    ordered = sorted(run_ids)
+    named = ", ".join(ordered[:_RUNS_NAMED_IN_A_DISCLOSURE])
+    return f"{named} and others" if len(ordered) > _RUNS_NAMED_IN_A_DISCLOSURE else named
+
+
+class MeasureDefinitionReading(NamedTuple):
+    """What a group's runs recorded about their host measures' definitions."""
+
+    #: Two runs recorded different definitions (``measure_definitions_differ``).
+    differ: bool
+    #: A run's results hold a host measure and the run recorded no definitions (``context_incomplete``).
+    silent: bool
+    #: What a reader is told, or ``None`` when there is nothing to say.
+    disclosure: str | None
+
+
+def measure_definition_disclosure(
+    runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[ResultView]]
+) -> MeasureDefinitionReading:
+    """Whether a group's runs recorded differing definitions of a host measure, and what a reader is told.
+
+    Read off what each run RECORDED (``EvalRun.measure_definitions``), never the host's registry as it is today, and
+    off what its results hold: a run that recorded none is named only when one of its supplied results holds a host
+    measure (:func:`~threetears.evals.kernel.metrics.holds_host_measure`), since a run with no host measure has no
+    value a definition could have moved. A caller that supplies no results therefore hears of no silent run.
+
+    **What it says is kept apart is what is kept apart**: the frontier's pass^k cells, and a campaign's own cells,
+    where a host measure's definition is a dimension of the rig
+    (:data:`~threetears.evals.analysis.cells.MEASURE_DEFINITIONS_DIMENSION`), so such runs share no cell and no
+    contrast; the lenses that read runs outside a campaign's cells keep them apart the same way
+    (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): a history marks a boundary between
+    them, a pivot withholds a cell that would pool them, and the frontier's composite, cost and latency read its
+    headline pass^k cell.
+
+    :param runs: One comparison group's runs.
+    :param results_by_run: Each run's results, by run id; a run absent from it is read as holding no host measure.
+    :return: The reading.
+    """
+    recorded = [run for run in runs if run.measure_definitions]
+    silent = [
+        run.id
+        for run in runs
+        if definitions_unrecorded(
+            run,
+            holds_host_measures=any(
+                holds_host_measure(result.host_measures) for result in results_by_run.get(run.id, ())
+            ),
+        )
+    ]
+    remeasured = [run.id for run in runs if run.measure_remeasures and not remeasure_unfinished(run)]
+    unfinished = [run.id for run in runs if remeasure_unfinished(run)]
+    attested = [run.id for run in runs if run.measure_attestation is not None]
+    names = sorted({name for run in recorded for name in run.measure_definitions or {}})
+    moved = [name for name in names if len({(run.measure_definitions or {}).get(name) for run in recorded}) > 1]
+    sentences: list[str] = []
+    if moved:
+        by_definitions: dict[tuple[str | None, ...], list[str]] = {}
+        for run in recorded:
+            held = tuple((run.measure_definitions or {}).get(name) for name in moved)
+            by_definitions.setdefault(held, []).append(run.id)
+        groups = "; ".join(_listed(run_ids) for _held, run_ids in sorted(by_definitions.items(), key=lambda kv: kv[1]))
+        sentences.append(
+            f"The host defined {', '.join(moved)} in more than one way across these runs "
+            f"(runs read under one definition together: {groups}), so their values are not one quantity. pass^k and "
+            "a campaign's cells keep them apart, and no contrast is read between them; a history marks the change as "
+            "a boundary, a pivot withholds a cell that would pool them, and the frontier reads one definition's runs. "
+            "A re-measure reads a run again under the current definitions."
+        )
+    if silent:
+        sentences.append(
+            f"{_listed(silent)} hold host measures and recorded no measure definitions, so nothing says which "
+            "definition their values were read under. Each is a cell of its own, in pass^k and in a campaign, "
+            "where it is pooled and compared with nothing. Their host states the definitions they ran under "
+            "(runs_attest, coordinate measure_definition), or re-measures them (run_remeasure)."
+        )
+    if attested:
+        sentences.append(
+            f"The measure definitions of {_listed(attested)} were stated by the host after the run, not recorded at "
+            "launch."
+        )
+    if remeasured:
+        sentences.append(
+            f"{_listed(remeasured)} were re-measured: their values were read again from what their cells stored, "
+            "under the definitions they now record."
+        )
+    if unfinished:
+        sentences.append(
+            f"A re-measure of {_listed(unfinished)} began and did not finish, so their results hold values read "
+            "under two definitions and each is a cell of its own, in pass^k and in a campaign, until it is "
+            "re-measured again."
+        )
+    return MeasureDefinitionReading(bool(moved), bool(silent or unfinished), " ".join(sentences) or None)
+
+
+class _ServedModelGroupReading(NamedTuple):
+    """What a group's runs' responses said about the models that answered their candidate calls."""
+
+    #: Runs that asked for one model were answered by two or more (``served_model_differs``).
+    differ: bool
+    #: A run's responses named no model for some call, and its host stated none (``context_incomplete``).
+    silent: bool
+    #: What a reader is told, or ``None`` when there is nothing to say.
+    disclosure: str | None
+
+
+def _served_model_group_reading(
+    runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[ResultView]]
+) -> _ServedModelGroupReading:
+    """Whether a group's runs that asked for one model were answered by different ones, and what a reader is told.
+
+    Read as a campaign's cells read it (:func:`~threetears.evals.analysis.reporting.pooled_as`): off the candidate
+    usage rows, a silence its run's host stated the model of standing for that model. A caller that supplies no
+    results hears of nothing.
+
+    :param runs: One comparison group's runs.
+    :param results_by_run: Each run's results, by run id.
+    :return: The reading.
+    """
+    attested = attested_served_models(runs)
+    by_requested: dict[str, dict[str, set[str]]] = {}
+    silent: set[str] = set()
+    stated: set[str] = set()
+    for run in runs:
+        for result in results_by_run.get(run.id, ()):
+            if (reading := served_reading(result)) is None:
+                continue
+            models, unknown = pooled_as(through_attestation(reading, attested.get(result.id)))
+            if unknown:
+                silent.add(run.id)
+            elif reading.unrecorded:
+                stated.add(run.id)
+            for model in models:
+                by_requested.setdefault(reading.requested, {}).setdefault(model, set()).add(run.id)
+    moved = {requested: answered for requested, answered in by_requested.items() if len(answered) > 1}
+    sentences: list[str] = []
+    for requested, answered in sorted(moved.items()):
+        each = "; ".join(f"{model} ({_listed(run_ids)})" for model, run_ids in sorted(answered.items()))
+        sentences.append(
+            f"The runs that asked for {requested} were answered by more than one model ({each}), so their figures "
+            "are not one model's. A campaign's cells and pass^k keep them apart; a history marks the change as a "
+            "boundary, a pivot withholds a cell that would pool them, and the frontier reads one model's runs."
+        )
+    if silent:
+        sentences.append(
+            f"Some candidate calls of {_listed(silent)} were answered by a response that named no model, so nothing "
+            "says which model answered them. A campaign's cells and pass^k pool them with nothing. Their host "
+            "states the model (runs_attest, coordinate served_model)."
+        )
+    if stated:
+        sentences.append(
+            f"The model that answered the calls of {_listed(stated)} whose response named none was stated by the "
+            "host after the run, not recorded: attested, not recorded."
+        )
+    return _ServedModelGroupReading(bool(moved), bool(silent), " ".join(sentences) or None)
 
 
 class ComparisonSetsResult(EvalBaseModel):
@@ -242,7 +409,6 @@ def compute_comparison_sets(
     :func:`project_score_records`.
 
     :param runs: Runs to group. Order is irrelevant; output is sorted for stability.
-    :ptype runs: list[EvalRun]
     :param results: The results those runs produced, in any order and from any run —
         they are indexed by ``eval_run_id`` here. **A caller that omits them
         asks a narrower question**: the measurement-window badge cannot be
@@ -250,13 +416,11 @@ def compute_comparison_sets(
         reads as sharing a clock when nothing checked. Every production caller
         supplies the scope's results; the default exists for callers whose
         question really is only about the run documents.
-    :ptype results: Sequence[ResultView]
     :param full_windows: List every measurement span rather than summarising above
         :data:`MAX_INLINE_MEASUREMENT_WINDOWS`. Off by default because this
         surface groups a whole scope — the group that most needs the
         disclosure is the one with the most runs, and so the one the listing
         form renders unreadable.
-    :ptype full_windows: bool
     :param scope_run_ids: Narrow every group to these runs before badging — the run
         ids of the set actually under analysis, typically a campaign's members
         resolved by the caller. ``None`` groups and badges every supplied run,
@@ -268,9 +432,7 @@ def compute_comparison_sets(
         not here is logged rather than refused: unlike an unknown run *status*,
         which names nothing that can exist, a member absent from the scope
         is a real and reachable state.
-    :ptype scope_run_ids: Iterable[str] | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`ComparisonSetsResult` — one :class:`ComparisonSet` per
         (subject, template) group, sorted by subject then template, plus the
         count of runs excluded for having no captured subject identity, plus
@@ -281,7 +443,6 @@ def compute_comparison_sets(
         because a group with no in-scope run has nothing to say about the set the
         caller asked about — its members are still named at the result level, so
         the narrowing stays visible rather than becoming a group that vanished.
-    :rtype: ComparisonSetsResult
     """
     results_by_run: dict[str, list[ResultView]] = {}
     for result in results:
@@ -467,6 +628,16 @@ def compute_comparison_sets(
         cassette_disclosure = cassette_mode_disclosure({run.id: run.cassette_mode for run in grouped})
         if cassette_disclosure:
             badges.append(BADGE_CASSETTE_MODE_DIFFERS)
+        definitions = measure_definition_disclosure(grouped, results_by_run)
+        if definitions.differ:
+            badges.append(_BADGE_MEASURE_DEFINITIONS_DIFFER)
+        if definitions.silent and BADGE_CONTEXT_INCOMPLETE not in badges:
+            badges.append(BADGE_CONTEXT_INCOMPLETE)
+        answered = _served_model_group_reading(grouped, results_by_run)
+        if answered.differ:
+            badges.append(_BADGE_SERVED_MODEL_DIFFERS)
+        if answered.silent and BADGE_CONTEXT_INCOMPLETE not in badges:
+            badges.append(BADGE_CONTEXT_INCOMPLETE)
 
         case_sets = [
             CaseSetIdentity(
@@ -490,6 +661,8 @@ def compute_comparison_sets(
                 badges=badges,
                 measurement_window_disclosure=window_disclosure,
                 cassette_mode_disclosure=cassette_disclosure,
+                measure_definition_disclosure=definitions.disclosure,
+                served_model_disclosure=answered.disclosure,
                 out_of_scope_run_ids=sorted(out_of_scope_by_key.get((subject_id, template_id), [])),
             )
         )
@@ -511,6 +684,4 @@ __all__ = [
     "ComparisonSet",
     "ComparisonSetsResult",
     "compute_comparison_sets",
-    "DECLARED_INPUT_ORIGIN",
-    "difference_was_declared_at_launch",
 ]

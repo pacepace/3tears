@@ -13,25 +13,21 @@ from typing import Any
 import pytest
 
 
-from threetears.evals.actions import engine_actions
-from threetears.evals.analysis import (
-    JudgeKey,
-    assemble_context_bundle,
-    judge_kind_readings,
-    judge_profiles_of,
-    judged_criteria,
-)
+from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
+from threetears.evals.analysis import JudgeKey, assemble_context_bundle, judge_kind_readings
+from threetears.evals.analysis.judge_profiles import judge_profiles_of
+from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.kernel import (
     CALIBRATION_MIN_RESULTS,
     JUDGE_KIND,
     EvalJudgeProfile,
     JudgeCaseLabel,
-    JudgeTrial,
     NotFoundError,
     ValidationFailedError,
-    judge_criterion_digest,
 )
+from threetears.evals.kernel.judge_cases import JudgeTrial
+from threetears.evals.kernel.judge_cases import judge_criterion_digest
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import JudgeProfilesRecord, judge_profiles_list, judge_profiles_record
 from threetears.evals.run import rate_result
@@ -263,7 +259,7 @@ def test_a_profile_survives_a_round_trip_through_the_store_and_refuses_an_id_its
 def test_the_actions_record_and_list_profiles_and_render_their_receipts() -> None:
     host = toyhost_host()
     run_id = _judge_campaign(host)
-    actions = {action.name: action for action in engine_actions()}
+    actions = {action.name: action for action in engine_actions_in_catalogue()}
     record, listing = actions["judge_profiles_record"], actions["judge_profiles_list"]
     assert (record.permission, listing.permission) == ("write", "read")
 

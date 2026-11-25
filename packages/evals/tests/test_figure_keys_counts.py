@@ -32,8 +32,8 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report_decision import surviving_options
-from threetears.evals.analysis.report_gates import gate_findings
+from threetears.evals.analysis.report.call import surviving_options
+from threetears.evals.analysis.report.gates import gate_findings
 from threetears.evals.analysis.report_input import Criterion, ReportInput, Stat
 from threetears.evals.analysis.report_margins import surviving_arms
 

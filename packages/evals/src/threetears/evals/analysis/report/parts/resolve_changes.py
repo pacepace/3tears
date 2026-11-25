@@ -125,10 +125,13 @@ from threetears.evals.analysis.report.parts.words import (
     change_words,
 )
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
-from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast, figure_unit
+from threetears.evals.analysis.report.keys.levers import arm_settings
+from threetears.evals.analysis.report.keys.resolve import figure_unit
+from threetears.evals.analysis.report.keys.separation import correction_words, pairing_contrast
+from threetears.evals.analysis.report.keys.vocabulary import looks_of
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
-from threetears.evals.analysis.report_rows import lever_arms, query_aspect
+from threetears.evals.analysis.report.rows import lever_arms, query_aspect, query_rows
 from threetears.evals.analysis.style import lever_reader_name
 
 __all__ = ["RESOLVERS", "higher_is_better"]
@@ -224,15 +227,10 @@ def _in_one_form(
     money is drawn per. Changes of any other unit are returned as they are.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param keys: The measures the changes are on.
-    :ptype keys: Sequence[str]
     :param changes: The changes, drawn at ``drawn``.
-    :ptype changes: list[_Change]
     :param drawn: Their unit's change quantity, as :func:`quantity` makes it.
-    :ptype drawn: Quantity
     :return: The changes and their quantity.
-    :rtype: tuple[list[_Change], Quantity]
     """
     report_input, forms = context.report_input, context.forms
     money = _money_keys(context, keys)
@@ -314,13 +312,9 @@ def higher_is_better(report_input: ReportInput, key: str, *, kind: str | None = 
     dimension up, a measure as it declares, else as the one direction its criteria give; None where nothing says.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :param kind: A contrast's kind, where the key is a contrast's; None otherwise.
-    :ptype kind: str | None
     :return: True where higher is better, False where lower is, None where the input does not say.
-    :rtype: bool | None
     """
     if kind == "trial":
         return True
@@ -387,9 +381,7 @@ def _passes(context: ChartContext, aspect: str | None) -> tuple[str | None, str]
     )
 
 
-def _figure_base(
-    context: ChartContext, key: str, arm: str, aspect: str, keys: Sequence[str]
-) -> tuple[str | None, str]:
+def _figure_base(context: ChartContext, key: str, arm: str, aspect: str, keys: Sequence[str]) -> tuple[str | None, str]:
     """An arm's level on one measure as the input states it, and what it counts (a mean over its cases): what each
     candidate's change on that measure is compared with where the arm is the control."""
     stat = figure_stat(context.report_input, key, arm, aspect)
@@ -1033,9 +1025,7 @@ def narrow_notes(context: ChartContext) -> tuple[str, ...]:
     (:func:`compare_basis`). Empty where no row is marked.
 
     :param context: The chart being resolved, over the compare source.
-    :ptype context: ChartContext
     :return: The note, or none.
-    :rtype: tuple[str, ...]
     """
     nested: dict[str, str] = {}
     stated: dict[str, None] = {}
@@ -1072,13 +1062,9 @@ def compare_basis(context: ChartContext, row: ComparisonRow, key: str) -> str:
     family names a method); the independent reading is the analysis's own words, which name neither.
 
     :param context: The chart being resolved, over the compare source.
-    :ptype context: ChartContext
     :param row: One ``arms_compare`` row.
-    :ptype row: ComparisonRow
     :param key: The measure it reads.
-    :ptype key: str
     :return: The words; empty where the row reads no interval.
-    :rtype: str
     """
     if row.basis is None:
         return ""
@@ -1119,13 +1105,9 @@ def setting_value(context: ChartContext, setting: str, arm: str) -> str | None:
     (``1``, never ``1.0``); None where the arm states none.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param setting: The setting, by id.
-    :ptype setting: str
     :param arm: The arm, by id.
-    :ptype arm: str
     :return: The value as a reader reads it, or None.
-    :rtype: str | None
     """
     report_input = context.report_input
     value = arm_settings(report_input).get(arm, {}).get(setting)
@@ -1146,11 +1128,8 @@ def lever_label(context: ChartContext, row: EffectRow | InteractionRow) -> tuple
     own: two effects differ in where they start or where they end, and two interactions in a move.
 
     :param context: The chart being resolved, over the levers source.
-    :ptype context: ChartContext
     :param row: One ``lever_effects`` row.
-    :ptype row: EffectRow | InteractionRow
     :return: ``(label, short label, group)``.
-    :rtype: tuple[str, str, str]
     """
     arms = lever_arms(row, context.report_input)
     names = context.report_input.lever_names
@@ -1257,8 +1236,8 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
 
 def _family_level(context: ChartContext) -> str:
     """A forest's level as its head prints it (:meth:`~threetears.evals.analysis.report.forms.PageForms.confidence`,
-    which reads :func:`~threetears.evals.analysis.report.forms.interval_level`, the form a table's cell prints it in):
-    where its contrasts are one family's, corrected together at the chart's level, the joint guarantee the family
+    which reads :func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`, the form a table's
+    cell prints it in): where its contrasts are one family's, corrected together at the chart's level, the joint guarantee the family
     holds at, ``95% (adjusted for 16 comparisons)`` (the kit prints ``95% intervals (adjusted for 16 comparisons)``)."""
     aspects = {row.item.aspect for row in context.rows() if isinstance(row.item, Contrast)}
     if context.query.source == "compare":
@@ -1273,7 +1252,38 @@ def _family_level(context: ChartContext) -> str:
         )
         aspects = {contrast.aspect for contrast in paired if contrast is not None}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
-    return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
+    family = families[0] if len(families) == 1 else None
+    looks = looks_of(context.report_input, family.aspect) if family is not None else None
+    return context.forms.confidence(context.level, family, looks).text
+
+
+#: The fewest changes a change chart draws (#1124): one change belongs in a sentence or a table, which state it
+#: with its interval, never in a chart, whose one row compares it with nothing.
+_FEWEST_CHANGES = 2
+
+#: The sources a diverging chart draws that are no change across the campaign or over time, so one row of them is
+#: drawn: two arms compared, and a judge's preference.
+_NOT_CHANGES = frozenset({"compare", "human_pref"})
+
+
+def _refuse_one_change(context: ChartContext, changes: Sequence[_Change]) -> None:
+    """Refuse a change chart that draws a single change (#1124): a structural rule, the count of its rows, so a chart
+    of one row never reaches a page. Only a chart of what changed is refused (owner ruling, 2026-11-14): two arms
+    compared on one measure (``compare``) are one difference by what they are, and a judge's preference is a split
+    around even, which the writer eval's page draws for its one pair (:func:`_preference_changes`); both are drawn.
+
+    The refusal names what the writer can do: the prose, a table, or a ``compare`` chart of the two arms, which draws
+    one difference; and selecting more rows only where the source holds more of the chart's measures than the query
+    selected, over every arm and stratum (a campaign of one candidate holds one contrast of a measure, so there it
+    would be advice no draft can follow)."""
+    if context.query.source not in _NOT_CHANGES and len(changes) < _FEWEST_CHANGES:
+        widened = context.query.model_copy(update={"arms": [], "strata": [], "limit": 0})
+        more = len(query_rows(widened, context.report_input)) >= _FEWEST_CHANGES
+        raise context.refuse(
+            "it draws one change, which a chart compares with nothing: state it in the prose (its key prints the "
+            "change and its interval) or in a table, or draw the two arms as a 'compare' chart, which draws one "
+            "difference" + ("; or select more rows to compare" if more else "")
+        )
 
 
 def _forest(context: ChartContext) -> Drawn:
@@ -1290,6 +1300,7 @@ def _forest(context: ChartContext) -> Drawn:
         raise context.refuse("a forest draws readings or contrasts")
     if not context.level:
         raise context.refuse("a forest draws intervals, and the chart states no level for them")
+    _refuse_one_change(context, changes)
     zero = _zero_label(context, changes)
     changes = _baselined(context, changes)
     reference = reference_line(context, drawn)
@@ -1395,6 +1406,7 @@ def _diverging(context: ChartContext) -> Drawn:
         )
     if not changes:
         raise context.refuse("it selects no change to draw")
+    _refuse_one_change(context, changes)
     zero = _zero_label(context, changes)
     if source not in ("strata", "tasks"):
         # Slices are set beside what they are compared with as their changes are read (:func:`_slice_changes`).

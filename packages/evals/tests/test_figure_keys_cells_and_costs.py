@@ -33,7 +33,6 @@ from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigu
 from threetears.evals.kernel.numbers import spell_multiple
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import (
-    MULTIPLE_UNIT,
     cost_basis,
     figure_filters,
     figure_key_grammar,
@@ -42,6 +41,7 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
+from threetears.evals.analysis.report.keys.prices import MULTIPLE_UNIT
 from threetears.evals.analysis.report_input import ReportInput
 
 

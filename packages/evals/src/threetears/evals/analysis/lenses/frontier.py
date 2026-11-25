@@ -24,7 +24,7 @@ from threetears.evals.analysis.contention import (
     withhold_contended_latency,
 )
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     case_rate_interval,
@@ -52,6 +52,7 @@ from threetears.evals.kernel.result_condition import (
 )
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgeEvidenceTier
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_context_identity
+from threetears.evals.kernel.metrics import holds_host_measure
 from threetears.evals.kernel.scoring import (
     CompositeBasis,
     capability_scores,
@@ -78,9 +79,13 @@ from threetears.evals.analysis.depth import (
     model_pass_hat_k,
     pass_hat_k_over,
 )
+from threetears.evals.analysis.bundle.observations import measure_definition_levels, split_coordinates
 from threetears.evals.analysis.reporting import (
     place_results,
+    attested_served_models,
+    pooled_as,
     served_reading,
+    through_attestation,
     pooled_composite_basis,
     pooled_cost_compositions,
     pooled_served_models,
@@ -159,9 +164,7 @@ def normalize_bar(value: float | str | None) -> float | None:
 
     :param value: Raw bar from the caller. ``None`` or a blank string means the bar
         was not supplied.
-    :ptype value: float | str | None
     :return: The bar as a float, or ``None`` when it was not supplied.
-    :rtype: float | None
     :raises FrontierError: The value is present but not a number.
     """
     if value is None:
@@ -221,11 +224,9 @@ def _template_span_entries(templates_by_run: Mapping[str, str | None]) -> list[s
         ``None`` is a real observed state — an ad-hoc run assembled from explicit
         test-case ids, per :attr:`~threetears.evals.schema.models.EvalRun.template_id` — so it
         counts as its own suite rather than being dropped or merged into a neighbour.
-    :ptype templates_by_run: Mapping[str, str | None]
     :return: One entry per distinct template, ad-hoc last, or an empty list when fewer than two
         runs contributed or every one of them ran the same template — "this point does not
         span", the same predicate the disclosure reports as ``None``.
-    :rtype: list[str]
     """
     if len(templates_by_run) < 2:
         return []
@@ -275,12 +276,10 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
     :param span_entries: This point's suites as :func:`_template_span_entries` renders them.
         Taken rather than re-derived, so the sentence and the per-point list a surface
         may print instead are one predicate over one grouping.
-    :ptype span_entries: Sequence[str]
     :return: The disclosure, rendered verbatim by a surface showing this point ALONE, or
         ``None`` when the point does not span. A surface rendering several marked points
         states this rule once and prints ``span_entries`` per point: the only thing that
         differs between two of these sentences is the parenthetical.
-    :rtype: str | None
     """
     if not span_entries:
         return None
@@ -367,8 +366,8 @@ class PassHatKCellReading(EvalBaseModel):
     headline, never dropped. A headline that is itself a cell of one run, beside other cells kept out, carries the
     reason it pools with nothing (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone`), so the point says
     its pass^k rests on one run whose record is incomplete; a point of one cell keeps nothing out and says nothing of
-    its cells. The point's composite, cost and latency still pool every run of the variant under one
-    rig (:data:`PASS_HAT_K_CELL_READING`).
+    its cells. The point's composite, cost and latency read the headline cell's runs and every other run one cell with
+    them on the served model and the definitions of the host's measures (:data:`PASS_HAT_K_CELL_READING`).
     """
 
     run_ids: list[str]
@@ -388,15 +387,38 @@ class PassHatKCellReading(EvalBaseModel):
     n_cases_at_k: int = 0
 
 
+#: What the frontier's dominance and cost-tie tests do not keep apart yet: they read contestants' headline cells
+#: whatever definitions of the host's measures read each (issue draft 6 of #1187).
+_DOMINANCE_READS_EVERY_DEFINITION = (
+    "Dominance and the cheapest pick are still tested between contestants' headline cells whichever "
+    "definitions of the host's measures read them."
+)
+
 #: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
-#: the report page's run disclosures): only the frontier's pass^k, its interval, its bar and its
-#: verdict leave a kept-out run out; every other figure of the arm still counts it.
+#: the report page's run disclosures): the frontier's pass^k, its interval, its bar and its verdict leave a kept-out
+#: run out, its composite, cost and latency leave it out where it is apart on the served model or a host measure's
+#: definition, and a campaign's cells keep apart what they split on (the served model, and the rig, which holds each
+#: host measure's definition). Its last sentence (:data:`_DOMINANCE_READS_EVERY_DEFINITION`) says what is not kept
+#: apart yet: the dominance and cost-tie tests read contestants' headline cells whatever definitions read them.
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
-    "measurement context, template revision, apparatus provenance and served model, whatever cases each run covered "
+    "measurement context, template revision, definition of each host measure, apparatus provenance and served model, "
+    "whatever cases each run covered "
     "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
-    "that headline only: the arm's tables, cells, composite, cost and latency still count it, pooling every run of the "
-    "variant under one rig."
+    "that headline; the frontier's composite, cost and latency for the arm leave it out too where another model "
+    "answered it or another definition read it, or either went unrecorded, and count it otherwise. A campaign's own cells, "
+    "and the tables and contrasts read from them, each hold one served model and one definition of each host "
+    "measure: there a run answered by another model, or by one no response named, is read in a cell of its own, and "
+    "a run read under another definition, or under none recorded, is under a test setup of its own and is compared "
+    "with nothing. " + _DOMINANCE_READS_EVERY_DEFINITION
+)
+
+#: What a frontier's readers say, once, where its contestants were not all read under one definition of the host's
+#: measures (:attr:`FrontierResult.definitions_apart`) and no cell line already said :data:`PASS_HAT_K_CELL_READING`.
+#: Rendered at read, never stored: rewording it moves no stored bundle and no fingerprint.
+DEFINITIONS_APART_READING = (
+    "Contestants here were read under different definitions of the host's measures, or under none recorded. "
+    + _DOMINANCE_READS_EVERY_DEFINITION
 )
 
 #: Each reason a pass^k cell stands apart, as a reader is told it.
@@ -404,6 +426,8 @@ _REASON_WORDS: dict[str, str] = {
     "changed_context": "another measurement context",
     "no_recorded_template": "no recorded template revision",
     "other_template": "another template or template revision",
+    "no_recorded_measure_definitions": "no recorded measure definitions",
+    "other_measure_definition": "another definition of a host measure",
     "no_recorded_served_model": "no recorded served model",
     "other_served_model": "another served model",
     "no_recorded_context": "no recorded measurement context",
@@ -424,9 +448,7 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[Said]:
     (:meth:`~threetears.evals.analysis.report.forms.PageForms.said`).
 
     :param reading: The cell.
-    :ptype reading: PassHatKCellReading
     :return: The sentences, possibly none, each one line.
-    :rtype: list[Said]
     """
     runs = ", ".join(reading.run_ids)
     if reading.headline and reading.reason is not None:
@@ -581,7 +603,8 @@ class FrontierPoint(EvalBaseModel):
     # pass^k would price a k-attempt streak at one attempt's cost. ``None`` when
     # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
     # not "infinitely expensive"). Both sides read the headline pass^k cell's runs, so its cost can
-    # differ from ``production_replicating_cost``, which pools every run of the variant.
+    # differ from ``production_replicating_cost``, which also reads runs one cell with them on the served model and
+    # the definitions of the host's measures.
     cost_per_acceptable_outcome: float | None = None
     #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
     #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
@@ -656,12 +679,12 @@ class FrontierPoint(EvalBaseModel):
     #: point, so none leaves the counts unsaid.
     pass_hat_k_cells: list[PassHatKCellReading] = []
 
-    #: Which models the provider's responses named as having answered this contestant's candidate calls (#684):
-    #: ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and several models
-    #: answered, so every axis here is a mixture of them — or ``unrecorded``, where some response named none and
-    #: whether one model answered cannot be established. A contestant is keyed at launch, before any response
-    #: names a model, so the mixture is disclosed rather than split. ``None`` when no result's candidate made a
-    #: call.
+    #: Which models the provider's responses named as having answered this contestant's candidate calls across all
+    #: its runs (#684): ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and
+    #: several models answered — or ``unrecorded``, where some response named none and whether one model answered
+    #: cannot be established. No axis here mixes them: every axis reads the headline pass^k cell, or runs one cell
+    #: with it on the served model, and :attr:`pass_hat_k_cells` names what answered each cell. ``None`` when no
+    #: result's candidate made a call.
     served_models: ServedModelReading | None = None
 
     # Domination — a dominated point is grayed, never dropped: silently removing a
@@ -868,6 +891,12 @@ class FrontierResult(EvalDocumentModel):
     #: subjects' results in each judge's evidence tier). ``None`` on a whole-scope read, and then left out of a dump,
     #: so an answer read whole serializes, and digests, as it did before the field existed.
     narrowed_read_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: True where, in some subject, two or more contestants' headline cells were not all read under one definition of
+    #: the host's measures, or one recorded none (as the cells read a rig); dominance and the cheapest pick are still
+    #: tested between them, which a reader says at read (:data:`DEFINITIONS_APART_READING`). False where every
+    #: subject's contestants share one definition, and then left out of a dump, so a frontier read under one
+    #: definition serializes, and digests, as it did before the field existed.
+    definitions_apart: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 def _frontier_point(
@@ -895,18 +924,14 @@ def _frontier_point(
 
     :param results: One contestant's observations (all sharing a model, and a
         ``variant_key`` when captured). Never empty.
-    :ptype results: Sequence[ResultView]
     :param contestant: The :func:`contestant_key` these results were grouped under. Passed
         rather than re-derived off ``results[0]``: the key is what placed them
         together, so reading the identity back out of it makes "no row in this pool
         can disagree" structural instead of a claim a later change to the key could
         silently falsify — the same reason the gate lives IN the group key rather than
         beside it.
-    :ptype contestant: ContestantKey
     :param k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
-    :ptype k: int
     :param rubric_threshold: Pass threshold forwarded to pass^k.
-    :ptype rubric_threshold: int
     :param cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
         run id; narrowed here to the runs these results came from. **Required and
         deliberately without a default**, for the reason
@@ -914,33 +939,26 @@ def _frontier_point(
         the map's absence and a genuinely uniform pool both yield no disclosure, so a
         default would let a caller that never supplied it render a live-versus-replayed
         pool as clean — the single failure this parameter exists to make impossible.
-    :ptype cassette_modes_by_run: Mapping[str, str]
     :param templates_by_run: Every candidate run's ``template_id``, keyed by run id; narrowed
         here to the runs these results came from. **Required and deliberately without a
         default**, for the reason its neighbour above is: an absent map and a genuinely
         single-suite contestant both yield no disclosure, so a default would let a
         caller that never supplied it render a mixed-difficulty pool as clean.
-    :ptype templates_by_run: Mapping[str, str | None]
     :param degraded_by_run: ``run_id -> DEGRADED sentence`` for the candidate runs that
         measured less than their matrix, from :func:`degraded_run_disclosures`;
         narrowed here to the runs these results came from. **Required and without a
         default**, on the rule its two neighbours state: an unsupplied map and a pool
         of genuinely complete runs both yield no disclosure, so a default would let a
         caller that forgot it rank a truncated contestant as if it were whole.
-    :ptype degraded_by_run: Mapping[str, str]
     :param footing_by_run: Each candidate run's production footing (``None`` for a run nobody could check), or
         ``None`` when the frontier was given no host declarations to read one with; narrowed here to the
         runs these results came from.
-    :ptype footing_by_run: Mapping[str, ProductionFooting | None] | None
     :param runs_by_id: Every placed run by id, whose cells this point's pass^k reads.
-    :ptype runs_by_id: Mapping[str, EvalRun]
     :param profile: The host that re-derives each run's context at this build's identity version.
-    :ptype profile: HostProfile | None
     :return: A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
         denominator, and the per-case values each axis averages, which a domination test pairs
         on. Domination and the bar are filled by the caller, which needs the subject's other
         points and the bar to decide them.
-    :rtype: tuple[FrontierPoint, _ContestantCases]
     """
     model = results[0].model
     # Unpacked from the group key, never re-derived off a row.
@@ -987,11 +1005,25 @@ def _frontier_point(
         pass_by_case.setdefault(test_case_id, []).append(estimate)
     pass_interval = case_rate_interval(unit_estimates, max_effective_n=unit_attempts / k) if unit_estimates else None
 
+    # composite, cost and latency read the headline cell's runs and every other run that is one cell with them on
+    # the coordinates a campaign's cells split on (split_coordinates): a run answered by another model, or read under
+    # another definition of a host measure, or with either unrecorded, is kept out of every axis the point is ranked
+    # on, never pooled into one of them, and is named beside it with its own pass^k.
+    axis_ids = headline_ids | {
+        run_id
+        for run_id in {r.eval_run_id for r in results} - headline_ids
+        if not split_coordinates(
+            [runs_by_id[held] for held in headline_ids | {run_id}],
+            [r for r in results if r.eval_run_id in headline_ids or r.eval_run_id == run_id],
+        )
+    }
+    axis_results = [r for r in results if r.eval_run_id in axis_ids]
+    #
     # composite — case-weighted mean of the 0-1 scores, dropping the nulls that
     # mark infra-excluded and no-rubric results (a candidate failure scores 0.0
     # and stays in, depressing the mean rather than vanishing).
     values_by_case: dict[str, list[float]] = {}
-    for result in results:
+    for result in axis_results:
         composite = result_composite(result)
         if composite is not None:
             values_by_case.setdefault(result.test_case_id, []).append(composite)
@@ -1002,14 +1034,9 @@ def _frontier_point(
 
     # cost — production-replicating roles only, meaned over the results that
     # reported one. None when none did; partial when some did and some did not.
-    # Reads the RAW persisted `usage` where the run-summary aggregate reads
-    # `resolve_result_usage`. The resolver returns rows this call cannot distinguish from
-    # the raw field: identical on `captured`, `None` on both sides when nothing was
-    # observed, and an empty list on a cancelled cell, which sums to `None` exactly as the
-    # absent field does. So the two agree here in every case, and reading the raw field is
-    # the shorter way to the same number. Aligning the call sites would be tidying, not a fix.
+    # Reads the persisted `usage`: an empty list on a cancelled cell sums to `None`, exactly as the absent field does.
     #
-    # The substitution disclosure is NOT part of that divergence and is read per result
+    # The substitution disclosure is read per result
     # regardless: a seeded or replayed delivery spent neither inner-agent dollars nor
     # tool credits, so letting it contribute its observed sum here would rank a
     # substituted contestant as cheaper than a live one on a difference in apparatus
@@ -1031,7 +1058,7 @@ def _frontier_point(
                     candidate_kind=r.candidate_kind,
                 ),
             )
-            for r in results
+            for r in axis_results
             if delivered_a_turn(r)
         )
         if c is not None
@@ -1040,13 +1067,13 @@ def _frontier_point(
     observed_costs = [c for _, c in priced]
     n_cost = len(observed_costs)
     prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
-    cost_is_partial = 0 < n_cost < len(results)
+    cost_is_partial = 0 < n_cost < len(axis_results)
     # What that mean is made of. The frontier RANKS on cost, so a contestant whose run
     # priced its search calls against one whose run did not is a comparison of conventions
     # wearing the clothes of a comparison of configs — and nothing else on the point shows
     # it. Disclosed rather than corrected: which of the two is "right" depends on what the
     # operator is deciding, and the numbers are each honest about their own run.
-    cost_compositions = pooled_cost_compositions(results)
+    cost_compositions = pooled_cost_compositions(axis_results)
 
     # latency — total wall-clock ms over the results that harvested a total, MINUS the cells a
     # harness failure produced. The same predicate `compute_pass_hat_k` and `compute_dimension_summary`
@@ -1061,7 +1088,7 @@ def _frontier_point(
     # that long.
     timed = [
         (r.test_case_id, r.latency.total_ms)
-        for r in results
+        for r in axis_results
         if r.latency is not None and r.latency.total_ms is not None and delivered_a_turn(r)
     ]
     totals = [total for _, total in timed]
@@ -1070,7 +1097,7 @@ def _frontier_point(
 
     # cost / pass-probability — undefined when cost is unknown or nothing passed.
     # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field. Both sides read the
-    # headline cell's runs: pass^1 is that cell's, so a cost over every run would divide one set by another.
+    # headline cell's runs: pass^1 is that cell's, so a cost over other runs would divide one set by another.
     headline_costs = [c for run_id, _, c in priced_by_run if run_id in headline_ids]
     headline_cost = math.fsum(headline_costs) / len(headline_costs) if headline_costs else None
     cost_per_acceptable_outcome = (headline_cost / pass_hat_1) if (headline_cost is not None and pass_hat_1) else None
@@ -1130,7 +1157,7 @@ def _frontier_point(
         n_cases_short_of_k=pooled["n_cases_short_of_k"],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
-        composite_basis=pooled_composite_basis(results) if mean_composite is not None else None,
+        composite_basis=pooled_composite_basis(axis_results) if mean_composite is not None else None,
         n_composite_cases=len(values_by_case),
         production_replicating_cost=prod_cost,
         n_cost=n_cost,
@@ -1145,7 +1172,7 @@ def _frontier_point(
         mean_total_ms=mean_total_ms,
         n_latency=n_latency,
         n_no_turn=sum(
-            1 for r in results if classify_result(r) is ResultOutcome.CANDIDATE_FAIL and not delivered_a_turn(r)
+            1 for r in axis_results if classify_result(r) is ResultOutcome.CANDIDATE_FAIL and not delivered_a_turn(r)
         ),
         n_results=len(results),
         n_cases=len({r.test_case_id for r in results}),
@@ -1163,7 +1190,7 @@ class _RunServed(NamedTuple):
     unrecorded: bool
 
 
-def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
+def _served_by_run(results: Sequence[ResultView], attested: Mapping[str, str]) -> dict[str, _RunServed]:
     """The models the provider's responses named for each run's candidate calls, over one contestant's results.
 
     Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
@@ -1171,19 +1198,20 @@ def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
     response named no model marks its run unrecorded, whatever its other calls named.
 
     :param results: One contestant's results.
-    :ptype results: Sequence[ResultView]
+    :param attested: Result id → the model its run's host stated for its silent calls
+        (:func:`~threetears.evals.analysis.reporting.attested_served_models`).
     :return: Run id → what its calls named, for every run of ``results``.
-    :rtype: dict[str, _RunServed]
     """
     served: dict[str, _RunServed] = {}
     for result in results:
         reading = served_reading(result)
         before = served.get(result.eval_run_id, _RunServed(frozenset(), unrecorded=False))
-        served[result.eval_run_id] = (
-            before
-            if reading is None
-            else _RunServed(before.served | reading.served, unrecorded=before.unrecorded or reading.unrecorded)
-        )
+        if reading is None:
+            served[result.eval_run_id] = before
+            continue
+        # Read as the campaign's cells read it: a silence its host stated the model of stands for that model.
+        models, silent = pooled_as(through_attestation(reading, attested.get(result.id)))
+        served[result.eval_run_id] = _RunServed(before.served | models, unrecorded=before.unrecorded or silent)
     return served
 
 
@@ -1205,27 +1233,30 @@ def _pass_hat_k_cells(
     """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
 
     Each run's cell is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell` over the models that answered it for
-    this contestant; a run that froze no template digest, or made a candidate call whose response named no model, is
-    a cell of its own. The headline is chosen in the order :class:`PassHatKCellReading` states. Each other cell's
+    this contestant; a run that froze no template digest, recorded no measure definitions while its results hold a
+    host measure, or made a candidate call whose response named no model, is a cell of its own. The headline is chosen in the order :class:`PassHatKCellReading` states. Each other cell's
     reason is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason` against the headline, so the grouping
     and the reason are one reading; a headline of one run carries why it pools with nothing.
 
     :param results: One contestant's results, never empty.
-    :ptype results: Sequence[ResultView]
     :param runs: Every placed run by id; every run of ``results`` is in it.
-    :ptype runs: Mapping[str, EvalRun]
     :param profile: The host that re-derives a run's context, or ``None``.
-    :ptype profile: HostProfile | None
     :return: Each run's cell, and a reading per cell with no pass^k yet.
-    :rtype: _PointCells
     """
-    served = _served_by_run(results)
+    served = _served_by_run(
+        results, attested_served_models(runs[run_id] for run_id in {result.eval_run_id for result in results})
+    )
     weight: dict[str, int] = {}
     for result in results:
         weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1
+    holding = {result.eval_run_id for result in results if holds_host_measure(result.host_measures)}
     of_run = {
         run_id: pass_hat_k_cell(
-            runs[run_id], profile, served=served[run_id].served, served_unrecorded=served[run_id].unrecorded
+            runs[run_id],
+            profile,
+            served=served[run_id].served,
+            served_unrecorded=served[run_id].unrecorded,
+            holds_host_measures=run_id in holding,
         )
         for run_id in weight
     }
@@ -1311,6 +1342,26 @@ def _other_template_digest(pair: _CellPair) -> str:
     )
 
 
+def _other_measure_definitions(pair: _CellPair) -> str:
+    """A cell of one run that recorded no measure definitions, or a cell whose host defined a measure otherwise."""
+    if pair.cell.definitions_unrecorded:
+        return (
+            "its results hold a host measure and it recorded no definition of its host's measures, so nothing says "
+            "which definition its values were read under; its host states the definitions it ran under "
+            "(attest_measure_definitions), or a re-measure reads it again under the current ones"
+        )
+    own, headline = pair.run.measure_definitions or {}, pair.reference.measure_definitions or {}
+    if not own or not headline:
+        recorded, silent = ("it", "the headline's runs") if own else ("the headline's runs", "it")
+        return f"{recorded} recorded its host's measure definitions and {silent} recorded none"
+    moved = sorted(name for name in {*own, *headline} if own.get(name) != headline.get(name))
+    return (
+        f"its host defined {', '.join(moved)} otherwise than when the headline's runs were read (another definition "
+        "digest), so its values are not the headline's quantity; a re-measure reads it again under the current "
+        "definitions"
+    )
+
+
 def _other_context(pair: _CellPair) -> str:
     """A cell whose context key differs, naming the components that moved where they can be read."""
     moved = _moved_components(pair.run, pair.reference, pair.profile)
@@ -1361,6 +1412,7 @@ _WORDING_OF_CELL_FIELD: dict[str, Callable[[_CellPair], str]] = {
     "unresolved": _unresolved,
     "template_id": _other_template,
     "template_digest": _other_template_digest,
+    "measure_definitions": _other_measure_definitions,
     "context_key": _other_context,
     "identity_version": _other_identity_version,
     "apparatus_provenance": _other_apparatus,
@@ -1369,7 +1421,7 @@ _WORDING_OF_CELL_FIELD: dict[str, Callable[[_CellPair], str]] = {
 
 #: The fields of :class:`PassHatKCell` no reason is read from: they mark a cell of one run, whose reason
 #: :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone` reads off another field.
-_UNWORDED_CELL_FIELDS: frozenset[str] = frozenset({"run_id", "served_unrecorded"})
+_UNWORDED_CELL_FIELDS: frozenset[str] = frozenset({"run_id", "served_unrecorded", "definitions_unrecorded"})
 
 
 def _checked_cell_wordings() -> dict[str, Callable[[_CellPair], str]]:
@@ -1379,7 +1431,6 @@ def _checked_cell_wordings() -> dict[str, Callable[[_CellPair], str]]:
     before a reader can be told a cell stands apart for it in another field's words.
 
     :return: The wordings.
-    :rtype: dict[str, Callable[[_CellPair], str]]
     :raises TypeError: A field of the cell is neither worded nor named unworded, or a wording names no field of it.
     """
     fields = {field.name for field in dataclasses.fields(PassHatKCell)}
@@ -1410,19 +1461,12 @@ def _cell_detail(
     (:class:`PassHatKCellReading`), so the silence read is always ``cell``'s, the headline's own included.
 
     :param field: The field the reason was read from (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason`).
-    :ptype field: str
     :param cell: The cell standing apart, or the headline when it is a cell of one run.
-    :ptype cell: PassHatKCell
     :param headline: The headline cell.
-    :ptype headline: PassHatKCell
     :param run: A run of ``cell``.
-    :ptype run: EvalRun
     :param reference: A run of ``headline``.
-    :ptype reference: EvalRun
     :param profile: The host that re-derives a context, or ``None``.
-    :ptype profile: HostProfile | None
     :return: The sentence.
-    :rtype: str
     """
     return _CELL_WORDINGS[field](_CellPair(cell, headline, run, reference, profile))
 
@@ -1439,7 +1483,6 @@ def _cell_pass_hat_k(
     """One cell's own pass^k at the point's depth, over its own results.
 
     :return: ``{"pass_hat_k", "n_cases_at_k"}`` for :class:`PassHatKCellReading`.
-    :rtype: dict[str, float | int | None]
     """
     own = set(run_ids)
     entry = pool_pass_hat_k(
@@ -1459,13 +1502,9 @@ def _moved_components(run: EvalRun, pooled: EvalRun, profile: HostProfile | None
     one version; otherwise none can be named.
 
     :param run: A run of the cell standing apart.
-    :ptype run: EvalRun
     :param pooled: A run of the headline cell.
-    :ptype pooled: EvalRun
     :param profile: The host that re-derives a context, or ``None``.
-    :ptype profile: HostProfile | None
     :return: The differing component names, in field order; empty when none can be named.
-    :rtype: list[str]
     """
     if profile is not None:
         was = resolve_context_identity(run, profile).context_components
@@ -1572,18 +1611,13 @@ def _dominance_p(
     taken, so no cost or latency to rescue it).
 
     :param a: The candidate dominator.
-    :ptype a: FrontierPoint
     :param a_cases: Its per-case values.
-    :ptype a_cases: _ContestantCases
     :param b: The point tested for being dominated.
-    :ptype b: FrontierPoint
     :param b_cases: Its per-case values.
-    :ptype b_cases: _ContestantCases
     :return: The p: below α only when every axis ``b`` measured separates in ``a``'s favour, and 1.0 when an
         axis was tested and did not — a tie, a separation the other way, or no separation. ``None`` when
         no test could decide: ``b`` measured no axis, ``a`` lacks one ``b`` measured, or an axis has no test
         that can decide (:func:`_axis_p`).
-    :rtype: float | None
     """
     measured = [(axis, higher) for axis, higher in _DOMINATION_AXES if getattr(b, axis) is not None]
     if not measured:
@@ -1625,17 +1659,12 @@ def _axis_p(
     symmetry, not the mean — #597).
 
     :param a_values: ``a``'s per-case values on the axis.
-    :ptype a_values: Mapping[str, Fraction]
     :param b_values: ``b``'s.
-    :ptype b_values: Mapping[str, Fraction]
     :param higher_is_better: Which way is better on the axis.
-    :ptype higher_is_better: bool
     :param value_range: The axis's inclusive bounds, or None where it has none.
-    :ptype value_range: tuple[float, float] | None
     :return: The p — 1.0 where the means do not favour ``a``, or where there is no spread on an axis with no range —
         or ``None`` where no test can decide: fewer than two cases on a side, or a spread that vanishes in floating
         point (:func:`~threetears.evals.analysis.stats.separation_test`).
-    :rtype: float | None
     """
     if len(a_values) < 2 or len(b_values) < 2:
         return None
@@ -1672,9 +1701,7 @@ def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]
     digest — "dominated by itself" — while testing it against the contestants would make it one.
 
     :param points: The subject's points, in display order. Mutated.
-    :ptype points: list[FrontierPoint]
     :param cases: Each point's per-case values, aligned with ``points``.
-    :ptype cases: list[_ContestantCases]
     """
     family: list[tuple[int, int, float]] = []
     tested: set[int] = set()
@@ -1729,15 +1756,10 @@ def _cost_ties(
     "cheapest" named on noise near α.
 
     :param pick: The index of the lowest point cost among the cleared, priced points.
-    :ptype pick: int
     :param rivals: The other cleared, priced points' indices, ordered by point cost.
-    :ptype rivals: Sequence[int]
     :param points: The subject's points.
-    :ptype points: Sequence[FrontierPoint]
     :param cases: Each point's per-case values, aligned with ``points``.
-    :ptype cases: Sequence[_ContestantCases]
     :return: The decision and the rivals left in the set, each with its adjusted p (``None`` where untested).
-    :rtype: tuple[FrontierCostDecision, list[FrontierCostTie]]
     """
     if not rivals:
         return "only_cleared", []
@@ -1820,7 +1842,6 @@ def _decide_boundary_pillar(
     holding them against the control would read the control against itself under another digest.
 
     :return: The subject's boundary dimensions, sorted, and the sentence for :attr:`SubjectFrontier.boundary_pillar`.
-    :rtype: tuple[list[str], str | None]
     """
     scales = _boundary_scales(result for group in members for result in group)
     dimensions = sorted(scales)
@@ -1965,54 +1986,41 @@ def compute_frontier(
     surface that reasoned from ``status`` would pool it by default with nothing said.
 
     :param runs: The runs supplying subject identity. Order is irrelevant.
-    :ptype runs: list[EvalRun]
     :param results: The observations to rank.
-    :ptype results: Sequence[ResultView]
     :param bar: The pass^k threshold the verdict is made against, in ``[0, 1]``.
         ``None`` computes the frontier without a verdict.
-    :ptype bar: float | None
     :param subject_id: When set, restrict to this subject; other subjects' results
         are counted as ``n_filtered_out`` rather than dropped silently.
-    :ptype subject_id: str | None
     :param rubric_threshold: Forwarded to pass^k — a rubric score at or above it
         counts as a passing dimension — and recorded on the answer
         (:attr:`FrontierResult.rubric_threshold`). A campaign's bundle passes its
         behavior's declared threshold.
-    :ptype rubric_threshold: int
     :param known_run_ids: Every run id in the corpus, so a result excluded by the
         caller's own run filter (in ``known_run_ids`` but not ``runs``) is
         counted as filtered-on-request rather than unplaceable. See
         :func:`project_score_records`.
-    :ptype known_run_ids: set[str] | None
     :param archived_run_ids: The corpus run ids the operator has archived, so an
         archival exclusion is counted as ``results_from_archived_runs``
         rather than under the caller's ``status`` filter. See
         :func:`place_results`.
-    :ptype archived_run_ids: set[str] | None
     :param profile: The host whose sweepable declarations each point's cost is read against: with it, every point
         and verdict names what each of its runs set away from the subject's production configuration
         (:attr:`FrontierPoint.production_footing`, #571). Read off the runs as given, so a run handed with its
         host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
-    :ptype profile: HostProfile | None
     :param control_variant_key: The variant every contestant's boundary dimensions are held against — the campaign's
         control arm. ``None`` checks none, and says so.
-    :ptype control_variant_key: str | None
     :param earlier_control: The control's cells under an earlier identity predicate
         (``RealizedDesign.earlier_control``), or None. The point they make up is marked
         (:attr:`FrontierPoint.earlier_control`) and is not a contestant: in no dominance test, never the pick, never a
         cost tie, held against nothing.
-    :ptype earlier_control: EarlierControl | None
     :param guardrail_margins: The margin each boundary dimension is held to, by dimension name
         (``AspectDesign.guardrail_margins``); a dimension absent is held at zero change.
-    :ptype guardrail_margins: Mapping[str, float] | None
     :param tiers: The evidence tiers of the judges behind the results' scores
         (:func:`~threetears.evals.analysis.judge_profiles.judges_tiers`), which a verdict made on a judged pass^k
         names (:attr:`FrontierVerdict.judge_evidence_tier`); a judge with no tier here is ``undetermined``.
-    :ptype tiers: Sequence[JudgeEvidenceTier]
     :return: A :class:`FrontierResult` — one :class:`SubjectFrontier` per subject,
         sorted by subject id, plus the corpus-level exclusion accounting and the
         completeness disclosures of every short run it ranked over.
-    :rtype: FrontierResult
     :raises FrontierError: ``bar`` is outside ``[0, 1]`` — refused here so both
         surfaces refuse identically rather than one clamping it.
     """
@@ -2099,6 +2107,7 @@ def compute_frontier(
     )
 
     subjects: list[SubjectFrontier] = []
+    definitions_apart = False
     for resolved in sorted(by_subject):
         groups = by_subject[resolved]
         subject_k = k_by_subject[resolved]
@@ -2132,6 +2141,7 @@ def compute_frontier(
                 if point.variant_key == earlier_control.variant_key:
                     point.earlier_control = earlier_control_mark(earlier_control)
         _decide_dominance(points, point_cases)
+        definitions_apart = definitions_apart or _definitions_apart(built, placed_runs)
         common = _place_common_depth(points, point_cases)
         if profile is not None and profile.model_pass_hat_k:
             # Opt-in, and after dominance: nothing ranked reads it.
@@ -2267,7 +2277,26 @@ def compute_frontier(
         contended_latency_disclosure=contended_latency_sentence(
             sum(1 for result in considered if result.id in contended), len(considered)
         ),
+        definitions_apart=definitions_apart,
     )
+
+
+def _definitions_apart(
+    built: Sequence[tuple[FrontierPoint, _ContestantCases, Sequence[ResultView]]], runs_by_id: Mapping[str, EvalRun]
+) -> bool:
+    """Whether a subject's contestants (two or more) were not all read under one definition of the host's measures, or
+    one recorded none: read off each contestant's headline cell, the runs dominance and the cost ties test, as the
+    cells read a rig (:func:`~threetears.evals.analysis.bundle.observations.measure_definition_levels`)."""
+    contestants = [(point, members) for point, _, members in built if point.earlier_control is None]
+    if len(contestants) < 2:
+        return False
+    results_by_run: dict[str, list[ResultView]] = {}
+    for point, members in contestants:
+        headline = set(_headline_cell(point.pass_hat_k_cells).run_ids)
+        for result in members:
+            if result.eval_run_id in headline:
+                results_by_run.setdefault(result.eval_run_id, []).append(result)
+    return bool(measure_definition_levels([runs_by_id[run_id] for run_id in results_by_run], results_by_run))
 
 
 def _judged_pass_tier(members: Sequence[ResultView], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:

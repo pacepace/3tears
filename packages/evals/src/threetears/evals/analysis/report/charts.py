@@ -83,7 +83,7 @@ ChartStatus = Literal["good", "warn", "bad", "neutral"]
 
 #: A fill's texture, drawn in its colour over a wash of it, so marks that share a colour (one status, several causes)
 #: read apart by more than colour.
-ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols"]
+ChartPattern = Literal["hatch", "cross", "dots", "rows", "cols", "grid"]
 
 #: How a change chart's ``better`` field is described: ``"right"`` prints "← worse · better →" under the axis, ``"left"``
 #: its mirror, and two words print each under its own end, the left's first ("prefers shipped", "prefers lead-first").
@@ -136,19 +136,13 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
     float's four figures.
 
     :param spec: A kit format (:data:`Fmt`).
-    :ptype spec: str
     :param value: The value, in display units.
-    :ptype value: float
     :param read_at: The unit the block's values are read at, where its format names none; empty for the format's.
-    :ptype read_at: str
     :param finer: Whether money is written to one significant figure more: an interval whose two ends would otherwise
         read alike.
-    :ptype finer: bool
     :param places: The decimals a change in points reads at where its interval needs more than a point's one (an end
         of -0.037 reads ``-0.04``, never a ``0.0`` that hides which side of zero it is on); None for one decimal.
-    :ptype places: int | None
     :return: The value as text.
-    :rtype: str
     :raises ValueError: ``spec`` is not a format the kit names.
     """
     match = _FORMAT_SPEC.fullmatch(spec)
@@ -261,9 +255,7 @@ class _Kind(_KitModel):
         chart, or one panel as drawn (overlaid on its chart's fields). A kind that draws no value comes back as it is.
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`).
-        :ptype read_at: str
         :return: The kind, every value it draws carrying its text.
-        :rtype: Self
         """
         return self
 
@@ -271,7 +263,6 @@ class _Kind(_KitModel):
         """The chart's ``data-chart`` JSON, as the kit's contract names it: unset fields left out.
 
         :return: The JSON object the kit draws.
-        :rtype: dict[str, JsonValue]
         """
         return self.model_dump(mode="json", exclude_none=True, by_alias=True)
 
@@ -328,9 +319,7 @@ class _Drawable(_Kind):
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
             the format's own.
-        :ptype read_at: str
         :return: The chart, every value it draws carrying its text.
-        :rtype: Self
         """
         chart = self.with_texts(read_at)
         panels: list[_PanelText] | None = getattr(chart, "panels", None)
@@ -361,9 +350,7 @@ class _Drawable(_Kind):
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
             the format's own.
-        :ptype read_at: str
         :return: ``(headers, rows)``, each cell text.
-        :rtype: tuple[list[str], list[list[str]]]
         """
         chart = self.spelled(read_at)
         legend: list[LegendItem] = getattr(chart, "legend", None) or []
@@ -447,9 +434,7 @@ def _even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     ``1.235`` stays ``12.35``. A cell no other reads like (a label, words) is left as it is.
 
     :param rows: The table's rows of cells.
-    :ptype rows: Sequence[Sequence[str]]
     :return: The rows, each number padded among the cells that read like its own.
-    :rtype: list[list[str]]
     """
     table = _money_by_column([list(row) for row in rows])
     shaped: dict[str, list[tuple[int, int]]] = {}
@@ -471,9 +456,7 @@ def _money_by_column(table: list[list[str]]) -> list[list[str]]:
     keys write money; a bound (``< $0.000001``) is left as it is.
 
     :param table: The table's rows of cell texts; changed in place.
-    :ptype table: list[list[str]]
     :return: The same rows.
-    :rtype: list[list[str]]
     """
     for row in table:
         for column, cell in enumerate(row):
@@ -651,6 +634,39 @@ def _interval_head(level: str | None) -> str:
     return f"{glossed[1]} interval {glossed[2]}" if glossed else f"{level} interval"
 
 
+#: What a chart's ``level_head`` says, on every kind that states a level.
+_LEVEL_HEAD_WORDS = (
+    "What the chart's head prints of its level, where its page decides it (#1128): empty for nothing, a later chart at "
+    "the page's main level, which the page's first chart at that level states; or the head that marks a level other "
+    'than the main one ("98.3% intervals, not 95%"). None prints the level as the kit\'s head does ("95% intervals").'
+)
+
+
+def level_head(level: str) -> str:
+    """An interval level as a chart's head prints it (the kit's ``kLevelHead``): ``95% intervals``; a glossed level
+    keeps its gloss last, ``99.7% intervals (95% across 16 comparisons)``.
+
+    :param level: The level, as a chart carries it.
+    :return: The head.
+    """
+    glossed = _GLOSSED_LEVEL.fullmatch(level)
+    return f"{glossed[1]} intervals {glossed[2]}" if glossed else f"{level} intervals"
+
+
+def drawn_head(chart: object) -> str:
+    """What a chart's head prints of its level (the kit's ``kHead``): its ``level_head`` where its page set one (empty
+    for nothing), else the level's own head (:func:`level_head`), else nothing.
+
+    :param chart: The chart or the panel as drawn: any kind, a kind carrying no level printing nothing.
+    :return: The head; empty for none.
+    """
+    said: str | None = getattr(chart, "level_head", None)
+    if said is not None:
+        return said
+    level: str | None = getattr(chart, "level", None)
+    return level_head(level) if level else ""
+
+
 def _need_level(level: str | None, intervals: bool) -> None:
     """Refuse intervals drawn without their level: the kit prints "<level> intervals" on every such chart."""
     if intervals and not level:
@@ -752,6 +768,7 @@ class _BarsFields(_Kind):
         "with no interval an open mark, each note at the right edge.",
     )
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
     emphasis: str | None = Field(default=None, description="The id of the one row to bold.")
     label_width: float | None = Field(default=None, description="The label column in px, 480 px wide and over.")
     label_width_narrow: float | None = Field(default=None, description="The label column in px below 480 px.")
@@ -873,6 +890,7 @@ class ForestChart(_Drawable):
     domain: tuple[float, float] = Field(description="The axis range, in value units.")
     fmt: Fmt = Field(description="The values' format.")
     level: str = Field(description='The intervals\' level ("95%").')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
     reference: ChartReference | None = Field(default=None, description="The margin (kind `margin`).")
     zero_label: str | None = Field(
         default=None,
@@ -958,6 +976,7 @@ class LinesChart(_Drawable):
     x_title: str | None = Field(default=None, description="The x axis's title.")
     height: float | None = Field(default=None, description="The plot's height in px.")
     level: str | None = Field(default=None, description='The bands\' level ("95%"); required with bands.')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
 
     def check_drawable(self) -> None:
         super().check_drawable()
@@ -1073,6 +1092,7 @@ class _ScatterFields(_Kind):
     emphasis: str | None = Field(default=None, description="The id of the one point to ring.")
     height: float | None = Field(default=None, description="The plot's height in px.")
     level: str | None = Field(default=None, description='The intervals\' level ("95%"); required with intervals.')
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
 
     def check_drawable(self) -> None:
         super().check_drawable()
@@ -1205,6 +1225,7 @@ class _DotIntervalFields(_Kind):
     level: str | None = Field(
         default=None, description='The intervals\' level ("95%"); required with intervals, unprinted without them.'
     )
+    level_head: str | None = Field(default=None, description=_LEVEL_HEAD_WORDS)
     ticks: list[float] | None = Field(default=None, description="Explicit tick positions.")
     reference: ChartReference | None = Field(default=None, description="The floor.")
     zero_label: str | None = Field(

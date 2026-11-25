@@ -67,7 +67,7 @@ def _names_level(judging: SecondJudgingView, level: _Level, own: _Level) -> bool
     return judge.model == level[0] and configs == level[1] and temperature == level[2] and sent == level[3]
 
 
-def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[ResultView]]) -> JudgeChange:
+def judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[ResultView]]) -> JudgeChange:
     """Each judge the judged member runs recorded, and every drift reading among them that spans two of them."""
     by_level: dict[_Level, list[EvalRun]] = {}
     for run in runs:
@@ -130,4 +130,6 @@ def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence
     return JudgeChange(levels=levels, drift_links=links, sentence=sentence)
 
 
-__all__: list[str] = []
+__all__ = [
+    "judge_change",
+]

@@ -191,3 +191,17 @@ def test_a_narrowed_read_opens_the_store_file_after_a_change_of_directory(
         store.upsert(_doc(1))
         monkeypatch.chdir(tmp_path / "elsewhere")
         assert [row["n"] for row in store.iter_narrowed("t", "s")] == [1]
+
+
+def test_sums_and_values_past_64_bits_are_exact_rather_than_refused(connections: list[_HookedConnection]) -> None:
+    """The port allows a refusal past 64 bits; this store answers exactly, in its one statement."""
+    wide = [2**62, 2**62, 2**62, -(2**63), 2**64 + 1, -(2**70) - 3, 7, None]
+    with SqliteDocumentStore(":memory:") as store:
+        for index, value in enumerate(wide):
+            store.upsert({"id": f"w{index}", "scope_id": "s", "doc_type": "t", "run": "a", "v": value})
+        _HookedConnection.statements.clear()
+        (group,) = store.grouped("t", "s", by=["run"], measures={"total": ("sum_int", "v"), "v": ("values", "v")})
+        assert len(_HookedConnection.statements) == 1
+        assert group["total"] == sum(value for value in wide if value is not None)
+        assert group["v"] == [[f"w{index}", value] for index, value in enumerate(wide)]
+        assert all(type(value) is int for _, value in group["v"][:-1])

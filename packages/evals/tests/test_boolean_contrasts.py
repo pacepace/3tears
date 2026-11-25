@@ -184,7 +184,7 @@ def test_a_directed_boolean_is_contrasted_on_its_rate_per_case_paired_by_case(bu
 def test_a_directed_boolean_is_drawn_on_its_bounded_interval(bundle: AnalysisContextBundle) -> None:
     (comparison,) = [c for c in _family(bundle).comparisons if c.name == "top_up_never"]
 
-    assert comparison.basis == "t", "its p is the t test's"
+    assert comparison.basis == "bounded", "its p is the bounded test's, as every reading on 0 to 1 is"
     assert comparison.interval is not None and comparison.interval == comparison.bounded_interval
     assert comparison.interval_basis == "bounded"
 

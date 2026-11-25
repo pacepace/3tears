@@ -53,6 +53,7 @@ from threetears.evals.kernel.provider import (
     sum_optional_tokens,
 )
 from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.evals.schema.logs import contain, get_logger
 
@@ -77,6 +78,7 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 _FAILED_BECAUSE: dict[FailureOwner, str] = {
     "account": "was refused for the calling account",
     "provider": "was declined by the provider",
+    "unserved": "named a model the provider does not serve",
     "candidate": "failed",
 }
 
@@ -197,11 +199,8 @@ def _ordinal_score(name: str, value: Any) -> int:
     never gave.
 
     :param name: The criterion, for the message.
-    :ptype name: str
     :param value: What the reply carried for it.
-    :ptype value: Any
     :return: The score.
-    :rtype: int
     :raises ValueError: The value is neither one of :data:`ORDINAL_ANSWERS` nor an integer on the scale.
     """
     if isinstance(value, str):
@@ -229,11 +228,8 @@ def _pass_fail_score(name: str, value: Any) -> int:
     pass or a fail: the judge was asked a yes-or-no question, and a 4 is not an answer to it.
 
     :param name: The criterion, for the message.
-    :ptype name: str
     :param value: What the reply carried for it.
-    :ptype value: Any
     :return: 1 for ``"pass"``, 0 for ``"fail"``.
-    :rtype: int
     :raises ValueError: The value is not ``"pass"`` or ``"fail"``.
     """
     if not isinstance(value, str) or value not in PASS_FAIL_SCORES:
@@ -263,11 +259,8 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
 
     :param criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
         ``scale`` (a key of :data:`SCALE_READERS`).
-    :ptype criteria: Sequence[Mapping[str, Any]]
     :param cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`.
-    :ptype cannot_tell_offered: bool
     :return: The directive.
-    :rtype: dict[str, Any]
     """
     answers = {
         str(criterion["name"]): _scale_answers(str(criterion.get("scale", "ordinal")), cannot_tell_offered)
@@ -409,29 +402,21 @@ async def run_judge_llm(
         method returning a :class:`~threetears.evals.schema.completion.CompletionResult`:
         ``content``, ``input_tokens``, ``output_tokens``, ``cost_usd``,
         ``model``, ``served_model``, ``reasoning_tokens`` and the normalized ``stop_reason``.
-    :ptype client: Any
     :param system_prompt: System prompt for the judge.
-    :ptype system_prompt: str
     :param user_prompt: User prompt containing the candidate output / context.
-    :ptype user_prompt: str
     :param criteria_dicts: List of criterion dicts with at least ``name`` +
         ``weight`` keys.
-    :ptype criteria_dicts: list[dict[str, Any]]
     :param label: Human label for log messages (e.g. ``"Judge"``).
-    :ptype label: str
     :param case_id: Test case ID for log context.
-    :ptype case_id: str
     :param cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`. When it did, a
         criterion answered that way is returned in ``criteria_cannot_tell`` rather than
         refused; when it did not, the answer is a reply that broke the protocol.
-    :ptype cannot_tell_offered: bool
     :param failure_describer: The host's reading of what ``client`` raises. When given, a raised call's
         error is its description, and the result carries its ``owner``
         (:data:`~threetears.evals.schema.FailureOwner`): ``account`` when the provider refused the
         call for the calling account, which no retry or other model changes; ``provider`` when it
         declined the call (a rate limit, or the provider overloaded or unavailable). ``None`` — a
         host caller that acts on no account fault — keeps the raised text and carries no owner.
-    :ptype failure_describer: ProviderFailureDescriber | None
     :return: Parsed result dict with ``criteria_scores`` (normalised to 0-1),
         ``criteria_ordinal_scores`` (the stored integers: 1-5, or 1/0 for pass/fail), ``criteria_names``,
         ``reasoning``, ``judge_served_model`` and ``judge_temperature`` (see below), and ``judge_usage``; or
@@ -465,10 +450,13 @@ async def run_judge_llm(
         ``served_model`` and never off ``model``: the host may fill ``model`` from the request,
         and a floating alias in the request would then stand where the concrete scorer belongs,
         making two runs judged by different models compare equal.
-    :rtype: dict[str, Any] | None
     :raises CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`), or
         its optional ``sent_settings`` holds something other than request settings or ``None``, carrying the
         calls made and what they cost.
+    :raises ApparatusError: The rig could not serve the call: a replayed judge's recording holds no answer for it
+        (:class:`~threetears.evals.testing.RecordingRefused`: its prompt changed since it was recorded, or it is asked
+        more often). Never a judging outcome, since dropping the call would move what the replay measures in silence;
+        whatever is judging fails at the miss, which names the call.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -498,10 +486,15 @@ async def run_judge_llm(
     # usage record names a served model only when every attempt named the same one: one record
     # folding attempts answered by different models cannot name either.
     attempt_served: set[str | None] = set()
+    # The upstream provider each attempt's reply named, by the same rule: named only when every attempt named one.
+    attempt_upstream: set[str | None] = set()
     # What each attempt's request was sent with, as its completion reported it (``None`` = unverified). The usage
     # record names one value only when every attempt reported the same one: a fold of unlike or unreported sends
     # reads as unverified, never as one of them.
     attempt_sent: list[ClientRequestSettings | None] = []
+    # Sends the attempts' clients said broke before any response began and were sent again, which the provider may
+    # have billed: summed, ``None`` until an attempt counts one.
+    total_maybe_billed: int | None = None
     attempts_made = 0
     max_attempts = JUDGE_CALL_ATTEMPTS
 
@@ -517,6 +510,7 @@ async def run_judge_llm(
         return CallUsage(
             model=judge_model,
             served_model=next(iter(attempt_served)) if len(attempt_served) == 1 else None,
+            served_provider=next(iter(attempt_upstream)) if len(attempt_upstream) == 1 else None,
             input_tokens=total_input,
             output_tokens=total_output,
             reasoning_tokens=total_reasoning,
@@ -526,24 +520,26 @@ async def run_judge_llm(
             # row must count them all — not just the one that finally parsed.
             calls=attempts_made,
             sent_settings=_agreed_sent_settings(attempt_sent),
+            maybe_billed_sends=total_maybe_billed,
         )
 
     def _thread_spend(defect: CompletionProtocolDefect) -> None:
         """Thread the attempts' spend onto a protocol defect and log it, for the caller to re-raise.
 
         :param defect: The defect a member read raised, given the calls made so far and what they cost.
-        :ptype defect: CompletionProtocolDefect
         """
         spent = _cumulative_usage()
         if spent is not None:
             defect.calls = spent.calls
             defect.model = spent.model
             defect.served_model = spent.served_model
+            defect.served_provider = spent.served_provider
             defect.input_tokens = spent.input_tokens
             defect.output_tokens = spent.output_tokens
             defect.reasoning_tokens = spent.reasoning_tokens
             defect.cost_usd = spent.cost_usd
             defect.price_source = spent.price_source
+            defect.maybe_billed_sends = spent.maybe_billed_sends
         log.error(
             "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
             "protocol",
@@ -558,6 +554,10 @@ async def run_judge_llm(
     for attempt in range(max_attempts):
         try:
             result = await client.generate(system=system_prompt, user=user_prompt, response_format=response_format)
+        except ApparatusError:
+            # The rig could not serve the call (a replay's miss): never the judge's answer. Raised, so a replay whose
+            # page text moved under its recording fails naming the missed call rather than judging on fewer calls.
+            raise
         except Exception as e:  # prawduct:ok-broad-except — LLM/network boundary; SDK can raise many types
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.
@@ -601,6 +601,9 @@ async def run_judge_llm(
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
         attempt_served.add(getattr(result, "served_model", None) or None)
+        billed = CallUsage.billed(result)
+        attempt_upstream.add(billed.served_provider)
+        total_maybe_billed = sum_optional_tokens(total_maybe_billed, billed.maybe_billed_sends)
         # What this attempt's request carried, as its client reports it. Absent is unverified and recorded so; a value
         # of the wrong type is the host's defect, raised like a missing temperature, with the spend threaded on. Read
         # here, before the reply is judged usable, so a cut-short or unparsable attempt's spend row says it too.
@@ -704,21 +707,21 @@ def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
     failed by the defect still sums what it paid for.
 
     :param defect: The defect, as :func:`run_judge_llm` raised it.
-    :ptype defect: CompletionProtocolDefect
     :return: The usage, or ``None`` when no call was counted on it.
-    :rtype: CallUsage | None
     """
     if defect.calls == 0:
         return None
     return CallUsage(
         model=defect.model,
         served_model=defect.served_model,
+        served_provider=defect.served_provider,
         input_tokens=defect.input_tokens,
         output_tokens=defect.output_tokens,
         reasoning_tokens=defect.reasoning_tokens,
         cost_usd=defect.cost_usd,
         price_source=defect.price_source,
         calls=defect.calls,
+        maybe_billed_sends=defect.maybe_billed_sends,
     )
 
 
@@ -729,9 +732,7 @@ def _agreed_sent_settings(attempts: Sequence[ClientRequestSettings | None]) -> C
     none leaves the fold unverified, as one unpriced attempt leaves its dollars unknown.
 
     :param attempts: What each attempt was sent with, in order (``None`` = that attempt's client did not say).
-    :ptype attempts: Sequence[ClientRequestSettings | None]
     :return: The shared value, or ``None``.
-    :rtype: ClientRequestSettings | None
     """
     if not attempts or attempts[0] is None:
         return None
@@ -753,10 +754,8 @@ def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
     holds a host's type to the protocol.
 
     :param completion: The judge call's completion.
-    :ptype completion: CompletionResult
     :return: The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client sent
         none.
-    :rtype: JudgeTemperature
     :raises CompletionProtocolDefect: The completion carries no ``temperature`` — its type does not meet the
         :class:`~threetears.evals.schema.completion.CompletionResult` protocol. The host's defect, which fails
         the run rather than one dimension (a ``TypeError``).

@@ -1,7 +1,7 @@
 """A floor's sentences are read as numbers and spelled in the forms of the page that prints them.
 
 A floor's reasons are read before any page exists, so each figure in them is held as a number
-(:class:`~threetears.evals.analysis.report.said.Said`) and the page states it in its own forms
+(:class:`~threetears.evals.analysis.said.Said`) and the page states it in its own forms
 (:meth:`~threetears.evals.analysis.report.forms.PageForms.said`): how far a pass rate's drop reaches reads at the places
 that page reads the pass rate's changes at, a count as the page states any count, a margin as declared. What the
 campaign's readings freeze keeps its one decimal and its ungrouped counts, since the campaign's fingerprint reads it.
@@ -17,15 +17,9 @@ from typing import Literal
 import pytest
 
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
-from threetears.evals.analysis.report.decision import (
-    FloorReadings,
-    RateReading,
-    floor_readings,
-    floor_subject,
-    read_floor,
-)
+from threetears.evals.analysis.floors import FloorReadings, RateReading, floor_readings, floor_subject, read_floor
 from threetears.evals.analysis.report.forms import MeasureForm, PageForms
-from threetears.evals.analysis.report.said import Said, SaidFigure
+from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.kernel.declaration import Floor, RateDrop
 
 from packages.evals.tests.report_shapes_support import Shape, s1_change

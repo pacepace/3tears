@@ -60,9 +60,7 @@ class SettingRefusal:
         """``facts`` with what this refusal says added.
 
         :param facts: What was known of the model.
-        :ptype facts: SettingFacts
         :return: What is known once the refusal is.
-        :rtype: SettingFacts
         """
         if self.setting == "temperature":
             if self.beside_reasoning:

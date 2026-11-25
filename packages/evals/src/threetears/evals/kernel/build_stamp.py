@@ -37,7 +37,6 @@ def package_version() -> str | None:
     """The installed distribution's version, or None when this build carries no distribution metadata.
 
     :return: The version, as its metadata states it; None with no metadata.
-    :rtype: str | None
     """
     try:
         return distribution(_DISTRIBUTION).version
@@ -53,7 +52,6 @@ def package_rev() -> str | None:
     :return: ``vcs_info.commit_id`` of the distribution's ``direct_url.json`` when it was installed from git; None for
         an install that recorded no commit (a wheel from an index, an editable or local-directory install), a build
         with no distribution metadata, or a ``direct_url.json`` that does not parse, which is logged as a warning.
-    :rtype: str | None
     """
     try:
         recorded = distribution(_DISTRIBUTION).read_text(_DIRECT_URL)

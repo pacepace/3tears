@@ -63,7 +63,7 @@ SLOT_TITLES: Final[dict[str, str]] = {
 SET_APART: Final = frozenset({"recommendation", "our_lean"})
 
 #: The label of each caveat code assigns, by its kind
-#: (:func:`~threetears.evals.analysis.report_decision.every_caveat`). ``{name}`` is what the id names, as a reader is
+#: (:func:`~threetears.evals.analysis.report.call.every_caveat`). ``{name}`` is what the id names, as a reader is
 #: shown it (an aspect's or criterion's reader name, a setting in words), never the id. A kind not listed here is
 #: labelled by its kind in words.
 CAVEAT_LABELS: Final[dict[str, str]] = {
@@ -82,6 +82,13 @@ CAVEAT_LABELS: Final[dict[str, str]] = {
     "point_estimate": "{name} is cleared on a point estimate",
     "borderline": "{name} is cleared on a borderline reading",
     "best_of_n": "The pick is the best of several candidates",
+    "claims_lost": "Some cells lost their {name} claim readings",
+    "claims_pending": "Some {name} claim readings are not yet known",
+    "claims_unread": "The host's {name} claim reader could not read some cells",
+    "claims_silent": "The candidate said nothing on some cells for {name}",
+    "claims_web_skipped": "Some {name} claims went unchecked past the web budget",
+    "claims_web_lost": "Some {name} web checks failed",
+    "claims_web_replayed": "Some {name} web checks read a recording",
 }
 
 #: A late criterion's ``{name}`` where its page holds more than one aspect, or another late criterion of its kind:

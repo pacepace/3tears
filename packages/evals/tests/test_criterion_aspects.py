@@ -28,7 +28,7 @@ from threetears.evals.analysis.analyst.analyses import dominance
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import BarRead, Criterion, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board, aspect_of, criterion_figures
 from threetears.evals.kernel.chart_query import ChartQuery

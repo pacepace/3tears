@@ -31,9 +31,11 @@ import pytest
 from threetears.evals.analysis.stats import (
     DETECTABLE_POWER,
     SIGNIFICANCE_ALPHA,
+    bounded_difference_interval,
     paired_case_variance,
     paired_detectable_difference,
     paired_t_power,
+    separation_p,
     variance_components,
 )
 from threetears.evals.analysis import assemble_context_bundle, reads
@@ -45,7 +47,12 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
 from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
-from threetears.evals.ops.lenses import detectable_effects, estimate_text
+from threetears.evals.ops.lenses import (
+    DETECTABLE_EFFECT_ASSUMPTIONS,
+    detectable_effect_lines,
+    detectable_effects,
+    estimate_text,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
@@ -143,6 +150,66 @@ class TestTheStatedDifferenceIsFoundFourTimesInFive:
         rate = _detection_rate(rng, design, correlation=0.6, readings=1, effect=delta, replicates=self.REPLICATES)
 
         assert rate >= at_least(DETECTABLE_POWER, self.REPLICATES)
+
+
+class TestARatesStatedDifferenceIsTheLeastItCouldDetect:
+    """The figure plans the paired t-test. A family separates a rate only where its bounded interval excludes zero
+    too, and that interval needs more cases, so at the stated Δ a rate is separated less often than the 80% stated.
+    The estimate says so on every rate's line (``DetectableEffect.rate``); this holds the size of the gap.
+
+    Twenty cases at three repeats, a pass rate of 0.5 against 0.5 + Δ, each repeat an independent pass or fail.
+    1,000 replicates: the t-test alone rejects about 79% of the time, the t-test and the bounded interval together
+    about 37%."""
+
+    REPLICATES = 1000
+    CASES, REPEATS, BASE = 20, 3, 0.5
+
+    def test_at_the_stated_difference_the_bounded_interval_separates_under_half_the_time(self) -> None:
+        delta = 0.25
+        for _ in range(50):
+            # The spread of one case's difference of two shares depends on the difference; iterate to the fixed point.
+            spread = math.sqrt(
+                (self.BASE * (1 - self.BASE) + (self.BASE + delta) * (1 - self.BASE - delta)) / self.REPEATS
+            )
+            delta = paired_detectable_difference(self.CASES, spread, alpha=SIGNIFICANCE_ALPHA)
+        rng = random.Random("rate-planned-on-the-t-test")
+
+        def shares(rate: float) -> list[float]:
+            return [sum(rng.random() < rate for _ in range(self.REPEATS)) / self.REPEATS for _ in range(self.CASES)]
+
+        by_t = by_both = 0
+        for _ in range(self.REPLICATES):
+            control, contrast = shares(self.BASE), shares(self.BASE + delta)
+            p = separation_p(control, contrast, paired=True, value_range=(0.0, 1.0))
+            rejected = p is not None and p < SIGNIFICANCE_ALPHA
+            interval = bounded_difference_interval(
+                control, contrast, paired=True, value_range=(0.0, 1.0), confidence=1 - SIGNIFICANCE_ALPHA
+            )
+            by_t += rejected
+            by_both += rejected and interval is not None and interval[0] > 0.0
+
+        assert 0.70 <= by_t / self.REPLICATES <= 0.88, f"the t-test alone found Δ={delta:.3f} {by_t} times"
+        assert by_both / self.REPLICATES < 0.5, f"t-test and bounded interval found Δ={delta:.3f} {by_both} times"
+
+    def test_a_rates_line_says_the_bounded_interval_needs_more_cases(self) -> None:
+        host = _host()
+        _store_history(host.storage, {"m-0": {f"case-{index}": [1.0 + index, 1.5 + index] for index in range(4)}})
+
+        block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=12, k_runs=2, n_arms=2)
+
+        rates = {effect.name: effect.rate for effect in block.effects}
+        assert rates[READING] is False
+        assert [name for name, rate in rates.items() if rate] == ["goal_state:state.shop.cart.length >= 1"]
+        stated = block.effects[0].model_copy(update={"name": "passed", "delta": 0.2, "cannot_estimate": None})
+        lines = detectable_effect_lines(
+            block.model_copy(update={"effects": [stated, stated.model_copy(update={"rate": True})]})
+        )
+        assert "paired t-test" in lines[0]
+        assert "bounded interval" not in lines[1]
+        assert lines[2].endswith(
+            "; a rate: its bounded interval must exclude zero too, so a difference this size needs more cases"
+        )
+        assert "the test planned is the paired t-test alone" in lines[-1]
 
 
 class TestTheComponentsAreRecovered:
@@ -277,6 +344,58 @@ class TestTheEstimateReadsEarlierRuns:
         block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=1, k_runs=3, n_arms=2)
 
         assert block.cannot_estimate == "a paired test needs two cases per arm; the launch plans 1"
+
+
+#: What the block adds to its assumptions where the earlier runs it pools were read under different definitions.
+_DEFINITIONS_POOLED = (
+    "; and its variance pools earlier runs read under different definitions of a host measure, or under none recorded"
+)
+
+
+def _over_definitions(*recorded: dict[str, str] | None) -> DetectableEffects:
+    """The block planned from one earlier run per entry, each recording that definitions map (None: none), each
+    holding the host measure on two cases repeated twice."""
+    host = _host()
+    for index, definitions in enumerate(recorded):
+        run = make_eval_run(
+            id=f"run-{index}",
+            scope_id=SCOPE,
+            template_id=TEMPLATE,
+            candidate_model=f"model-{index}",
+            status="completed",
+            k_runs=2,
+            test_case_ids=["c1", "c2"],
+            measure_definitions=definitions,
+        )
+        host.storage.save_eval_run(run)
+        for case in run.test_case_ids:
+            for repeat in (1, 2):
+                host.storage.save_eval_result(
+                    make_eval_result(
+                        id=f"{run.id}-{case}-{repeat}",
+                        eval_run_id=run.id,
+                        scope_id=SCOPE,
+                        model=run.candidate_model,
+                        test_case_id=case,
+                        k_iteration=repeat,
+                        host_measures={READING: float(repeat)},
+                    )
+                )
+    return detectable_effects(host, SCOPE, TEMPLATE, n_cases=10, k_runs=2, n_arms=2)
+
+
+def test_the_block_says_its_variance_pools_definitions_only_where_the_runs_it_read_were_not_all_read_under_one() -> (
+    None
+):
+    """The planning read pools every earlier run's variance whatever definition read it: where those differ, or one
+    went unrecorded beside another run, the block's assumptions say so; where every run says one thing, they do not,
+    so a block over one definition reads as it always did."""
+    before, after = {READING: "a" * 64}, {READING: "b" * 64}
+
+    for alike in ((before, before), (before,), (None,)):
+        assert _over_definitions(*alike).assumptions == DETECTABLE_EFFECT_ASSUMPTIONS, alike
+    for apart in ((before, after), (before, None), (None, None)):
+        assert _over_definitions(*apart).assumptions == DETECTABLE_EFFECT_ASSUMPTIONS + _DEFINITIONS_POOLED, apart
 
 
 def test_the_launch_estimate_prints_one_line_per_reading() -> None:

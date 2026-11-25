@@ -49,6 +49,7 @@ from threetears.evals.analysis.agreement import (
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
+from threetears.evals.analysis.judge_noise import with_rescore_noise
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.analysis.judge_profiles import judged_ratings, judges_tiers
 from threetears.evals.analysis.arms import arm_names
@@ -58,14 +59,20 @@ from threetears.evals.analysis.contention import (
 )
 from threetears.evals.analysis.cells import (
     pool_observations,
+    MEASURE_DEFINITIONS_DIMENSION,
+    rig_of,
+    split_on_served_model,
     subject_key_instabilities,
 )
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import (
+    attested_served_models,
     model_identity_disclosure,
+    served_attestation_disclosure,
     project_score_records,
     request_settings_disclosure,
     request_settings_readings,
+    served_level,
     unconfirmed_model_identities,
 )
 from threetears.evals.analysis.measurement_windows import measurement_window
@@ -93,81 +100,93 @@ from threetears.evals.schema.models import (
     MeasureDeclaration,
 )
 from threetears.evals.analysis.bundle.caps import (
-    _capped,
-    _MAX_NEXT_EXPERIMENTS,
-    _MAX_REFUSED_MERGES,
+    capped,
+    MAX_NEXT_EXPERIMENTS,
+    MAX_REFUSED_MERGES,
 )
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
+    ClaimCheckReading,
+    ClaimQuestionCheck,
     host_declarations_digest,
 )
+from threetears.evals.analysis.bundle.evidence import ResultsDigest, evidence_manifest
 from threetears.evals.analysis.bundle.insights import (
-    _prior_insights,
+    carried_insights,
     retracted_insights,
 )
-from threetears.evals.analysis.bundle.observations import _apparatus_classes, _observations, variant_key_of_run
+from threetears.evals.analysis.bundle.observations import (
+    classify_apparatus,
+    measure_definition_levels,
+    observations_of,
+    variant_key_of_run,
+)
 from threetears.evals.analysis.bundle.measures import (
-    _failures_as_misses,
+    failures_as_misses,
     goal_check_proofs_of,
-    _measure_walk_memo,
+    negative_values_of,
+    measures_walked_once,
 )
 from threetears.evals.analysis.bundle.design import (
-    _apparatus_levels,
-    _campaign_arms,
-    _campaign_design,
-    _declared_level_names,
-    _lever_levels,
-    _name_arms,
-    _SurfaceFolds,
+    read_apparatus_levels,
+    group_runs_by_arm,
+    campaign_design,
+    declared_level_names,
+    read_lever_levels,
+    name_arms,
+    SurfaceFolds,
 )
-from threetears.evals.analysis.bundle.confounds import _apparatus_confounds, _confound_catalog
+from threetears.evals.analysis.bundle.confounds import apparatus_confounds, confound_catalog
 from threetears.evals.analysis.bundle.mechanisms import (
-    _arm_mechanisms,
-    _arm_production_footings,
-    _arm_served_models,
-    _design_with_mechanism_confounds,
-    _mechanism_observations,
-    _served_models,
+    arm_mechanisms,
+    arm_production_footings,
+    arm_served_models,
+    design_with_mechanism_confounds,
+    mechanism_observations,
+    served_models,
 )
-from threetears.evals.analysis.bundle.config import _declared_axes
-from threetears.evals.analysis.bundle.divergence import _scope_divergences
-from threetears.evals.analysis.bundle.telemetry import _model_versions, _run_summary, _telemetry_rollup
+from threetears.evals.analysis.bundle.config import declared_axis_ids
+from threetears.evals.analysis.bundle.divergence import scope_divergences
+from threetears.evals.analysis.bundle.telemetry import model_versions, digest_run, telemetry_rollup
 from threetears.evals.analysis.bundle.coverage import (
-    _coverage_map,
-    _declared_crossing,
-    _factor_aliasing,
-    _unexercised_factors,
+    coverage_map,
+    declared_crossing,
+    factor_aliasing,
+    unexercised_factors,
 )
 from threetears.evals.analysis.bundle.cell_reads import (
-    _cell_measures,
-    _cell_strata,
-    _judged_measures,
-    _results_by_cell,
-    _arm_exclusions,
-    _differential_exclusions,
+    cell_measures,
+    cell_strata,
+    judged_measures,
+    group_results_by_cell,
+    cell_arm_exclusions,
+    differential_exclusions,
 )
-from threetears.evals.analysis.bundle.bars import _bar_adjudications, _frontier_bar, _verdict_order
+from threetears.evals.analysis.bundle.bars import bar_adjudications, read_frontier_bar, verdict_order
 from threetears.evals.analysis.bundle.cell_notes import (
-    _all_failed,
-    _cost_unmeasured,
-    _held_fixed_reading,
-    _latency_contended,
-    _short_cells,
+    all_failed,
+    cost_unmeasured,
+    held_fixed_reading,
+    contended_latency_cells,
+    short_cells,
 )
 from threetears.evals.analysis.bundle.comparisons import (
-    _multiple_comparisons,
-    _reading_scope,
+    multiple_comparisons,
+    aspect_looks,
+    aspect_tests,
+    reading_scope,
 )
-from threetears.evals.analysis.bundle.judges import _judge_change
-from threetears.evals.analysis.bundle.trials import trials_and_census
-from threetears.evals.analysis.bundle.time_axis import _time_axis
-from threetears.evals.analysis.bundle.surface import _measure_catalog
+from threetears.evals.analysis.bundle.judges import judge_change
+from threetears.evals.analysis.bundle.trials import bet_places, redrawn_cells, taken_up, trials_and_census
+from threetears.evals.analysis.bundle.time_axis import time_axis
+from threetears.evals.analysis.bundle.surface import measure_catalog
 from threetears.evals.kernel.host.measures import MeasureRegistry
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.declaration import AspectDesign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.schema.claim_read import ClaimRead
     from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
 
@@ -176,7 +195,8 @@ log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
-    """The ten reads assembling a campaign's context bundle needs, each a batch.
+    """The reads assembling a campaign's context bundle needs, each a batch: ten, and an eleventh, the claim reads,
+    where a member run's template declares a claim criterion.
 
     **Every read but the results is one store call however large the campaign.** A host's store may open a connection
     per call, so a read per template, per insight or per trial grows with the campaign until it outruns the host's
@@ -286,6 +306,12 @@ class CampaignReadStore(Protocol):
         """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
         ...
 
+    def query_claim_reads(self, scope_id: str, /, *, campaign_id: str | None = None) -> list[ClaimRead]:
+        """The claim reads in a scope drawn over one campaign, oldest first: what a claim criterion's judge was checked
+        against people by (``ClaimRead.report``), one read per campaign, asked only where a member run's template
+        declares a claim criterion."""
+        ...
+
     def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
         """What each named result's judge was handed, by result id, in one read; a result with none is absent.
 
@@ -305,9 +331,7 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     another's shrinks that arm's sample.
 
     :param runs: The resolved member runs.
-    :ptype runs: Collection[EvalRun]
     :return: The sentence, or None where no launch of two or more of them ran its arms concurrently.
-    :rtype: str | None
     """
     # Decided on the members alone: an arm adopted from a concurrent launch whose sibling arms sit in another campaign
     # is not flagged, since the read store reads a campaign's own runs and not its launches. What co-loading costs such
@@ -356,7 +380,7 @@ _NARROW_THE_BUNDLE = (
 
 
 # Every fold below pools the same results, so each result's measure walk is read once per assembly.
-@_measure_walk_memo()
+@measures_walked_once()
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
@@ -387,11 +411,8 @@ def assemble_context_bundle(
     campaign's own fields, so how a campaign holds its aspects is the view's business alone.
 
     :param campaign: The campaign whose runs to summarise.
-    :ptype campaign: EvalCampaign
     :param aspect: The label of the aspect to read; None reads the campaign's only aspect.
-    :ptype aspect: str | None
     :param storage: Eval storage — the read surface for runs, results, and insights.
-    :ptype storage: CampaignReadStore
     :param insights_as_of: Read the subject's prior insights as the ledger stood at this
         instant — only those observed strictly before it. ``None`` reads the whole
         ledger, which is what a generation launched now reads. A re-assembly FOR a stored
@@ -402,11 +423,8 @@ def assemble_context_bundle(
         as. Retraction composes with it rather than being dated by it: of the insights read as of
         this instant, those whose analysis is archived NOW are retracted, because an archive
         says the insight was false when it was read too.
-    :ptype insights_as_of: str | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
-    :rtype: AnalysisContextBundle
     :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
     :raises ValidationFailedError: The runs it reads are estimated past
         :data:`~threetears.evals.analysis.reads.BUNDLE_READ_BUDGET` results by their matrices (refused before any
@@ -471,10 +489,14 @@ def assemble_context_bundle(
     # As readings: every fold below reads figures, never the judge's prose, a world's event log or a kind's payload,
     # which are most of a result's bytes. The trials the bundle keeps are read whole, below, for their prose.
     returned = 0
+    # Each result's evidence is digested as the store returned it, before any lens reads or rewrites it: the bundle's
+    # fingerprint is over what was read, never over what is computed from it (`bundle.evidence`).
+    read = ResultsDigest()
     for result in storage.iter_result_readings(list(every_result), scope_id):
         returned += 1
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
+            read.add(result)
     # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
     # completeness) are not assembled past the budget either.
     hold_to_read_budget(
@@ -496,7 +518,7 @@ def assemble_context_bundle(
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
-    results_by_run = _failures_as_misses(results_by_run)
+    results_by_run = failures_as_misses(results_by_run)
     # Before anything reads them either: latency read under concurrency is left out of every lens, never
     # compared as if it were clean (#701). Which results lost it is kept for the one line that says so.
     contended_ids = {
@@ -520,10 +542,22 @@ def assemble_context_bundle(
     # What the campaign was not tuning, read once and shared by all three surfaces that
     # disclose it — the coverage map (where most findings are formed), the divergences, and
     # the campaign-wide scan that answers even when neither of those exists.
-    apparatus_levels = _apparatus_levels(runs, results_by_run, profile=profile)
+    apparatus_levels = read_apparatus_levels(runs, results_by_run, profile=profile)
+    # What each host measure counted is the instrument's, so where the runs were not all read under one definition it
+    # is a dimension of the rig, read here once for every reader of the rig below: the cells (runs under two
+    # definitions are under two rigs, and a run holding host measures that recorded none is under a rig of its own,
+    # #1187: an unrecorded coordinate matches nothing), the confound scans, the coverage rows, the divergences and the
+    # factor aliasing. Absent where the runs all say one thing, so such a campaign's every id is what it was.
+    if definition_levels := measure_definition_levels(runs, results_by_run):
+        if MEASURE_DEFINITIONS_DIMENSION in apparatus_levels:
+            raise ValueError(
+                f"the host declares an apparatus dimension named {MEASURE_DEFINITIONS_DIMENSION}, the name the "
+                "package reads a run's measure definitions under"
+            )
+        apparatus_levels[MEASURE_DEFINITIONS_DIMENSION] = definition_levels
     # Derived before the lenses, because it decides which runs each of them compares: the keys that name the
     # declared control's arm under this build — the stored key, which cells stamped under its predicate carry
-    # for good, and the key its lever map re-keys to under this one. `_campaign_design` matches them against
+    # for good, and the key its lever map re-keys to under this one. `campaign_design` matches them against
     # the arms and is the only place that does: every lens below reads its answer (`design.control_arm`),
     # never `declared.control`, so no two of them can disagree about which cell is the control.
     # Read only when a declared control might have been curated out, and only over the archived
@@ -539,15 +573,15 @@ def assemble_context_bundle(
     # One answer, shared by every lens, to "did a resolved surface move on its own" — the design's
     # contrasts, the coverage rows and their confounds, and the divergences all ask it over their
     # own cohorts, and two lenses answering it separately could disagree about one surface.
-    folds = _SurfaceFolds(runs, results_by_run, profile=profile)
-    arms = _campaign_arms(runs, results_by_run, profile=profile)
+    folds = SurfaceFolds(runs, results_by_run, profile=profile)
+    arms = group_runs_by_arm(runs, results_by_run, profile=profile)
     # Every mechanism a lens compares across levels, read once so the coverage rows, the divergences
     # and the arm readings report one set of values.
-    mechanisms = _mechanism_observations(results, profile=profile)
+    mechanisms = mechanism_observations(results, profile=profile)
     # Which model answered each result's candidate calls, read once so every lens that names the served
     # model as a confound and the per-arm readings agree about it.
-    served = _served_models(results)
-    design = _campaign_design(
+    served = served_models(results, attested_served_models(runs))
+    design = campaign_design(
         runs,
         declared_control,
         results_by_run=results_by_run,
@@ -555,16 +589,16 @@ def assemble_context_bundle(
         archived_control_variants=archived_control_variants,
         has_unresolved_members=bool(unresolved),
         folds=folds,
-        declared_axes=_declared_axes(declared_design),
+        declared_axes=declared_axis_ids(declared_design),
         profile=profile,
     )
-    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
+    design = design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
     # Built before the run summaries, because `RunSummary.config` names the levers this map
-    # names. Both read `_effective_config`, so without that the two disagreed the moment the
+    # names. Both read `effective_config`, so without that the two disagreed the moment the
     # registry became the vocabulary: a summary would carry every contestant property the host
     # declares — ten content hashes apiece, each stamped `overridden`, telling the design lens
     # that every run departed from ten things it never touched.
-    coverage = _coverage_map(
+    coverage = coverage_map(
         runs,
         projection.records,
         apparatus_levels,
@@ -578,37 +612,45 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
-    axes = _declared_axes(declared_design)
-    aliasing = _factor_aliasing(
-        run_ids, _lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
+    axes = declared_axis_ids(declared_design)
+    aliasing = factor_aliasing(
+        run_ids, read_lever_levels(runs, results_by_run, profile=profile, declared_axes=axes), apparatus_levels
     )
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
     # a control.
-    apparatus_classes = _apparatus_classes(runs, apparatus_levels)
-    observations, variant_index = _observations(
+    apparatus_classes = classify_apparatus(runs, apparatus_levels)
+    observations, variant_index = observations_of(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
-    variant_index = _name_arms(variant_index, observations, folds, run_ids)
+    # One arm's observations under one rig stay one cell only while one candidate model answered them all: a served
+    # model that changed between runs, or that some responses did not name, classes them apart before anything pools
+    # (owner, 2026-10-23: a silent served model never joins a cell, nor another silent run's).
+    observations, classes = split_on_served_model(
+        observations,
+        {c.apparatus_class_id: c for c in apparatus_classes.values()},
+        {result_id: served_level(reading) for result_id, reading in served.items()},
+    )
+    variant_index = name_arms(variant_index, observations, folds, run_ids)
     # Each arm as the host displays its levels, which orders the decision surface's arms below: never by a name the
     # declaration gives a level, which is presentation (LEVEL_PRESENTATION_FIELDS) and so moves no fingerprinted order.
     displayed = arm_names(variant_index)
-    variant_index = _declared_level_names(variant_index, declared_design)
-    cells, refused_merges, next_experiments = pool_observations(
-        observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
-    )
+    variant_index = declared_level_names(variant_index, declared_design)
+    cells, refused_merges, next_experiments = pool_observations(observations, classes)
+    # Each split class's rig, so a cell split on the answering model is still read against the control under its rig.
+    rigs = {cell.apparatus_class_id: rig_of(cell) for cell in cells if cell.rig_class_id is not None}
     # Capped like the divergences, keeping the entries that bear on the most evidence: a refusal by the
     # observations its two cells hold, a recording by the observations it would add.
     held = {(cell.variant_key, cell.apparatus_class_id): cell.n_observations for cell in cells}
-    refused_merges, refused_merges_omitted = _capped(
+    refused_merges, refused_merges_omitted = capped(
         refused_merges,
-        _MAX_REFUSED_MERGES,
+        MAX_REFUSED_MERGES,
         weight=lambda merge: sum(held.get((merge.variant_key, class_id), 0) for class_id in merge.apparatus_class_ids),
     )
-    next_experiments, next_experiments_omitted = _capped(
+    next_experiments, next_experiments_omitted = capped(
         next_experiments,
-        _MAX_NEXT_EXPERIMENTS,
+        MAX_NEXT_EXPERIMENTS,
         weight=lambda entry: entry.n_observations_if_recorded - entry.n_observations_now,
     )
 
@@ -634,12 +676,12 @@ def assemble_context_bundle(
         sorted({insight.source_analysis_id for insight in ledger if insight.source_analysis_id}), scope_id
     )
     retracted = retracted_insights(ledger, standing.get)
-    prior_insights, prior_insights_omitted = _prior_insights(
+    prior_insights, prior_insights_omitted = carried_insights(
         [insight for insight in ledger if insight.id not in retracted]
     )
 
     # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
-    frontier_bar, frontier_bar_withheld = _frontier_bar(view.behavior, declared_design, profile=profile)
+    frontier_bar, frontier_bar_withheld = read_frontier_bar(view.behavior, declared_design, profile=profile)
     # Ratings are read once, because the agreement and the prediction-powered estimates both pair them with the
     # judge (#598): the members' per run, in run order, then any in the scope labelling an output a member's judge
     # scored (#628), so the unpaired list is deterministic for the fingerprint.
@@ -650,7 +692,17 @@ def assemble_context_bundle(
     # decides one (#628); the entry names the profile, so the tier is never presented as the campaign's own, and the
     # profile's identity is in the fingerprint's pre-image with it.
     tiers = judges_tiers(storage, scope_id, runs, results, ratings=ratings, templates=templates)
+    # Each claim criterion's judge check: the latest closed read over the campaign of the criterion its grades were
+    # made under, read once; the reads it stands on are in the fingerprint's pre-image, as a consulted profile is.
+    # Asked only where a member run's template declares a claim criterion: a bundle grading no claims has no judge of
+    # claims to check, and keeps its reads.
+    claim_reads = (
+        _checked_claim_reads(storage.query_claim_reads(scope_id, campaign_id=campaign.id), results)
+        if any(template.claim_criteria for template in templates.values())
+        else []
+    )
     person_scores = person_scores_by_result(ratings, results)
+    paused = taken_up(campaign.created_by, runs, results)
     bundle = AnalysisContextBundle(
         campaign_id=view.campaign_id,
         aspect=view.aspect,
@@ -665,9 +717,9 @@ def assemble_context_bundle(
         run_ids=run_ids,
         unresolved_run_ids=unresolved,
         archived_run_ids=archived,
-        model_versions=_model_versions(runs, projection.records),
+        model_versions=model_versions(runs, projection.records),
         window=derive_window([run.created_at for run in runs]),
-        run_summaries=[_run_summary(run, results_by_run[run.id], reportable, profile=profile) for run in runs],
+        run_summaries=[digest_run(run, results_by_run[run.id], reportable, profile=profile) for run in runs],
         # WITH the results, because the pinned-role badge reads result-level declarations
         # (``judge_config_ids`` is observed ACROSS a run's results, not declared on the run).
         # Called without them, this surface was blind to exactly the difference a judge A/B is
@@ -696,7 +748,7 @@ def assemble_context_bundle(
             ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
-        telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
+        telemetry=telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
         declared=declared,
         design=design,
@@ -704,7 +756,10 @@ def assemble_context_bundle(
         # removes a run, and a cancelled run that nobody archived stays pooled. Naming them
         # here is what lets the writer say a partial arm is partial instead of reading its
         # truncated case count as a real one.
-        incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed"},
+        # A quick-path comparison's launch that stopped is taken up once a later launch has run every cell it never
+        # recorded (:func:`~threetears.evals.analysis.bundle.trials.taken_up`): it is not unfinished, and the reading
+        # opens on the newest launch's ending. What it delivered short of its matrix is still said (``short_runs``).
+        incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed" and run.id not in paused},
         # Status cannot answer how much of the matrix a run delivered: a run that reaches the
         # end of its loop stamps ``completed`` whatever its cells produced, so the shortfall is
         # read off the completeness record instead. Rendered through the shared helper so this
@@ -717,25 +772,33 @@ def assemble_context_bundle(
         # rather than folded into the first — reporting unknown as complete is the same error
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
-        short_cells=_short_cells(cells, declared_design),
-        held_fixed_reading=_held_fixed_reading(runs, declared_design),
+        short_cells=short_cells(cells, declared_design),
+        held_fixed_reading=held_fixed_reading(runs, declared_design),
         # When each run was measured, as data: a fact, never a reason to read runs apart.
         measurement_windows=windows,
         launch_disclosure=_launch_disclosure(runs),
-        model_identity_disclosure=model_identity_disclosure(unconfirmed_model_identities(runs, results)),
+        model_identity_disclosure=" ".join(
+            said
+            for said in (
+                model_identity_disclosure(unconfirmed_model_identities(runs, results)),
+                served_attestation_disclosure(runs),
+            )
+            if said
+        )
+        or None,
         request_settings_disclosure=request_settings_disclosure(request_settings_readings(runs, results)),
         # Scanned over every resolved run, not over a lever's cohort. A campaign that swept
         # nothing has an empty coverage map and no divergences, and both confound-bearing
         # lenses iterate levers — so without this, a campaign whose template changed
         # underneath it reports that fact nowhere at all.
-        apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
+        apparatus_confounds=apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
-        unexercised_factors=_unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
+        unexercised_factors=unexercised_factors(runs, results_by_run, arms, profile=profile, declared_axes=axes),
         factor_pairs=aliasing[1],
-        declared_crossing=_declared_crossing(declared_design, runs, results_by_run, profile=profile),
-        arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
-        arm_served_models=_arm_served_models(arms, results_by_run, served),
-        arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
+        declared_crossing=declared_crossing(declared_design, runs, results_by_run, profile=profile),
+        arm_mechanisms=arm_mechanisms(arms, results_by_run, mechanisms),
+        arm_served_models=arm_served_models(arms, results_by_run, served),
+        arm_production_footings=arm_production_footings(arms, results_by_run, profile=profile),
         cells=cells,
         variant_index=variant_index,
         refused_merges=refused_merges,
@@ -763,15 +826,31 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = tiers
     bundle.inter_judge_agreement = inter_judge_agreement(results)
     bundle.judge_drift = judge_drift(results)
-    bundle.judge_change = _judge_change(runs, results_by_run)
+    bundle.judge_change = judge_change(runs, results_by_run)
     bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
     # enters `measures` or the catalog: judged dimensions stay off the ranking surface, and are
     # carried here so that staying off it is not read as never having been measured.
-    results_by_cell = _results_by_cell(cells, results)
-    bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
-    bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
+    results_by_cell = group_results_by_cell(cells, results)
+    bundle.cost_unmeasured_cells, bundle.cost_unmeasured = cost_unmeasured(results_by_cell)
+    by_arm: dict[str, list[ResultView]] = {}
+    for (variant_key, _), members in results_by_cell.items():
+        by_arm.setdefault(variant_key, []).extend(members)
+    bundle.negative_values = negative_values_of(by_arm, profile=profile)
+    for negative in bundle.negative_values:
+        log.warning(
+            "campaign %s, aspect %s: %d result(s) of arm %s recorded a negative value on %s, a measure declared "
+            "non-negative (a host bug); its intervals are drawn at 0. Result ids%s: %s",
+            bundle.campaign_id,
+            bundle.aspect,
+            negative.n_results,
+            negative.variant_key,
+            negative.measure,
+            f" (first {len(negative.result_ids)})" if negative.n_results > len(negative.result_ids) else "",
+            ", ".join(negative.result_ids),
+        )
+    bundle.latency_contended_cells, bundle.latency_contended = contended_latency_cells(
         results_by_cell,
         contended_ids,
         declared=declared_design is not None and declared_design.measure_latency,
@@ -784,15 +863,18 @@ def assemble_context_bundle(
                 ]
             }
         )
-        for measure in _judged_measures(
+        for measure in judged_measures(
             projection.records,
             results_by_cell,
             declared_design,
             tiers=bundle.judge_evidence_tiers,
             person_scores=person_scores,
+            claim_units=_claim_units(runs, templates),
+            registry=profile.measures,
+            claim_checks={read.criterion: _claim_check(read) for read in claim_reads},
         )
     ]
-    bundle.bar_adjudications = _bar_adjudications(
+    bundle.bar_adjudications = bar_adjudications(
         view.behavior,
         declared_design,
         results_by_cell,
@@ -801,7 +883,7 @@ def assemble_context_bundle(
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, view.aspect, declared)
+    bundle.verdict_order = verdict_order(bundle.bar_adjudications, view.aspect, declared)
     # One rule across the campaign: every aspect names a lever alike, by the first of the campaign's declared axes to
     # store a name for it, in aspect order, else as the host declares it.
     bundle.lever_names = _lever_names(
@@ -816,13 +898,13 @@ def assemble_context_bundle(
     case_facts = storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
     case_strata = {case.id: case.stratum for case in case_facts}
     case_names = {case.id: case.name for case in case_facts if case.name}
-    bundle.cell_measures = _cell_measures(
+    bundle.cell_measures = cell_measures(
         cells,
         results_by_cell,
         bundle.judged_measures,
         # Each cell again per kind of case, over the same grouping, population and tiers — read only for
         # the cases the results name, and only their strata.
-        strata=_cell_strata(
+        strata=cell_strata(
             results_by_cell,
             case_strata,
             projection.records,
@@ -837,14 +919,23 @@ def assemble_context_bundle(
         control=control,
         names=names,
     )
-    bundle.all_failed_cells, bundle.all_failed = _all_failed(bundle.cell_measures)
+    bundle.all_failed_cells, bundle.all_failed = all_failed(
+        bundle.cell_measures,
+        # A cell whose every candidate failure was its own code raising is said so, never as its model's refusal.
+        code_raised={
+            key
+            for key, members in results_by_cell.items()
+            if (failed := [result for result in members if result.candidate_error])
+            and all(result.candidate_code_raised for result in failed)
+        },
+    )
     # The time axis, over the same algebra the decision surface was just read with, and before the catalog
     # for the same reason: its cells are measure collections the catalog has to describe.
-    bundle.time_axis, bundle.time_axis_withheld = _time_axis(
+    bundle.time_axis, bundle.time_axis_withheld = time_axis(
         runs,
         results_by_run,
         observations,
-        {c.apparatus_class_id: c for c in apparatus_classes.values()},
+        classes,
         projection.records,
         declared_design,
         tiers=bundle.judge_evidence_tiers,
@@ -859,19 +950,34 @@ def assemble_context_bundle(
     # spend is the arm's own and not spend on measuring it. Decided from the results' candidate_kind, as the cost
     # measure is; a mixed campaign keeps the measuring-spend label.
     judge_kind = bool(results) and all(result.candidate_kind == JUDGE_KIND for result in results)
-    bundle.measure_catalog = _measure_catalog(bundle, profile=profile, judge_kind=judge_kind)
+    bundle.measure_catalog = measure_catalog(bundle, profile=profile, judge_kind=judge_kind)
     bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
     bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
-    bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = _multiple_comparisons(
+    # How often the aspect's test was looked at, and the plan in force: a plan declared after the first look is none.
+    looks = aspect_looks(
+        runs,
+        results_by_cell,
+        control=control,
+        planned=declared_design.planned_looks if declared_design is not None else None,
+        declared_at=declared.declared_at if declared is not None else None,
+        membership=view.membership,
+        plannable=campaign.looks_rule is not None,
+        unread=bool(unresolved or archived),
+    )
+    planned_looks = (
+        looks.planned if looks is not None else declared_design.planned_looks if declared_design is not None else None
+    )
+    reread_order = bet_places(campaign.created_by, runs, results, planned_looks=planned_looks)
+    bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = multiple_comparisons(
         view.aspect,
         declared,
         design,
         results_by_cell,
         projection.records,
         catalog=bundle.measure_catalog,
-        judged_measures=bundle.judged_measures,
+        measures_judged=bundle.judged_measures,
         observations=mechanisms,
         served=served,
         profile=profile,
@@ -879,19 +985,45 @@ def assemble_context_bundle(
         contended={
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
+        rigs=rigs,
         # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
+        planned_looks=planned_looks,
+        # A quick-path comparison (filed by the quick path over runs of kinds only it launches, no arm observing a case
+        # twice, and no plan of looks) reads its paired contrasts on a range by the mixture bet, over the cases in the
+        # order the comparison observed them, launch by launch: the quick path continues one comparison by running only
+        # the cases no launch reached and those appended, so a case run later is bet on after every case observed
+        # before it, a stopped launch's included. Decided from stored facts alone,
+        # so every reader of a stored comparison reads it alike, and no campaign a host files over the same runs, nor
+        # any declaration, opts an engine campaign in.
+        reread_order=reread_order,
+        # Every family says how many of its cells ran again, the cut ones among them: a cut cell drawn afresh can lean
+        # a reading where a slow answer is a wrong one, whatever reads it.
+        redrawn=redrawn_cells(results),
+        first_result_at=first_result_at,
     )
-    bundle.reading_scope = _reading_scope(
-        declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at
+    # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
+    # paired judged contrast's share of it, filled last so no other section copies them.
+    bundle.judged_measures, bundle.multiple_comparisons = with_rescore_noise(
+        bundle.judged_measures, bundle.multiple_comparisons, results_by_cell, projection.records
+    )
+    # The tests its readings are read by, which a caveat on its looks quotes a measured rate for.
+    if looks is not None:
+        looks = looks.model_copy(
+            update={
+                "tests": aspect_tests(bundle.multiple_comparisons.families, bundle.guardrails, bundle.floor_contrasts)
+            }
+        )
+    bundle.reading_scope = reading_scope(
+        declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at, looks=looks
     ).model_copy(update={"untimed_results": untimed_results})
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then on).
     bundle.design_frozen_at = first_run_at
     bundle.first_result_at = first_result_at
     # Over the same grouping every per-arm read uses, so an arm's exclusions describe the trials its readings lost.
-    bundle.exclusions = _arm_exclusions(results_by_cell)
-    bundle.differential_exclusions = _differential_exclusions(bundle.exclusions)
+    bundle.exclusions = cell_arm_exclusions(results_by_cell)
+    bundle.differential_exclusions = differential_exclusions(bundle.exclusions, rigs=rigs)
     # Every trial and each arm's census of them, after the catalog, which names each check and says which scorers
     # are pass/fail: the countable half of the report, read off the same results every lens above read, each trial
     # lost or not as `trial_exclusion` (the one classification `exclusions` counts) says.
@@ -910,10 +1042,12 @@ def assemble_context_bundle(
         # Without the verbatim fields (a world's event log, a kind's payload), which no trial row shows.
         load_results=lambda result_ids: storage.load_eval_results(result_ids, scope_id, elide=VERBATIM_RESULT_FIELDS),
         rubric_scales={run.id: run.rubric_scales for run in runs},
+        case_lists=[run.test_case_ids for run in runs],
     )
     bundle.scoreboard = census.scoreboard
     bundle.trials = census.trials
     bundle.trials_omitted = census.trials_omitted
+    bundle.case_lists_differ = census.case_lists_differ
     bundle.case_sets = sorted(
         {run.case_set for run in runs if run.case_set is not None}, key=lambda ref: (ref.name, ref.version)
     )
@@ -921,7 +1055,7 @@ def assemble_context_bundle(
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the writer will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
-    bundle.scope_divergences, bundle.whole_swings, bundle.divergences_omitted, divergence_count = _scope_divergences(
+    bundle.scope_divergences, bundle.whole_swings, bundle.divergences_omitted, divergence_count = scope_divergences(
         runs,
         results_by_run,
         bundle.measure_catalog,
@@ -937,8 +1071,75 @@ def assemble_context_bundle(
     # Last, because it reads what both confound-bearing lenses actually emitted rather than
     # what they might have — a catalog built from the declaration would name dimensions no
     # lens reported, and a reader would take that as a claim the campaign made.
-    bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
+    bundle.confound_catalog = confound_catalog(bundle, profile=profile)
+    bundle.claim_checks = [_claim_check(read) for read in claim_reads]
+    # What all of the above was read from, and nothing it computed: the pre-image of the bundle's fingerprint.
+    bundle.evidence = evidence_manifest(
+        view,
+        # As launched (`_as_launched`): the declarations every lens above read.
+        profile=profile,
+        host_declarations=bundle.host_declarations_digest,
+        catalog=bundle.measure_catalog,
+        runs=runs,
+        archived_run_ids=archived,
+        unresolved_run_ids=unresolved,
+        results=read,
+        cases=case_facts,
+        ratings=ratings,
+        tiers=tiers,
+        # Every insight read as of the cutoff, before the cap on how many the bundle carries.
+        insights=ledger,
+        retracted_insights=retracted,
+        claim_reads=claim_reads,
+    )
     return bundle
+
+
+def _checked_claim_reads(reads: Sequence[ClaimRead], results: Sequence[ResultView]) -> list[ClaimRead]:
+    """Each claim criterion's latest closed read, by criterion, among ``reads``, of the definition the campaign's grades
+    of it were made under (a tally's ``criterion_fingerprint``): a read of another definition checked another judge.
+
+    :param reads: The claim reads drawn over the campaign.
+    :param results: The campaign's results.
+    :return: One read per criterion with a closed read of its definition, by criterion.
+    """
+    graded = {
+        (criterion, tally.criterion_fingerprint)
+        for result in results
+        for criterion, tally in result.claim_tallies.items()
+    }
+    latest: dict[str, ClaimRead] = {}
+    for read in reads:
+        if read.report is None or read.closed_at is None or (read.criterion, read.criterion_fingerprint) not in graded:
+            continue
+        held = latest.get(read.criterion)
+        if held is None or (held.closed_at or "") < read.closed_at:
+            latest[read.criterion] = read
+    return [latest[criterion] for criterion in sorted(latest)]
+
+
+def _claim_check(read: ClaimRead) -> ClaimCheckReading:
+    """A closed claim read's check as a bundle carries it: what its check against people decided on each question it
+    checked, and the arms its lean test read no rate on.
+
+    :param read: A closed read.
+    :return: Its check.
+    :raises ValueError: The read is not closed.
+    """
+    if read.report is None or read.closed_at is None:
+        raise ValueError(f"claim read {read.id!r} is not closed, so it has no check to read")
+    return ClaimCheckReading(
+        criterion=read.criterion,
+        read_id=read.id,
+        closed_at=read.closed_at,
+        questions=[
+            ClaimQuestionCheck(
+                question=figures.question, result=figures.check.result, lean_untested=list(figures.lean_untested)
+            )
+            for figures in read.report.questions
+            if figures.check is not None
+        ],
+    )
 
 
 def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
@@ -956,6 +1157,22 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
         for dimension in template.rubric:
             criteria.setdefault(dimension.name, dimension.description)
     return criteria
+
+
+def _claim_units(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
+    """What a page calls one unit of each claim criterion, as the member runs' templates name it
+    (``EvalTemplate.claim_unit_names``), by criterion.
+
+    Presentation only: a claim reading's reader name. A template that no longer resolves names nothing, and a
+    criterion two templates name differently is absent, read as a ``unit``, rather than under a noun one template chose.
+    """
+    given: dict[str, set[str]] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = templates.get(template_id)
+        if template is not None:
+            for criterion, noun in template.claim_unit_names.items():
+                given.setdefault(criterion, set()).add(noun)
+    return {criterion: next(iter(nouns)) for criterion, nouns in given.items() if len(nouns) == 1}
 
 
 def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
@@ -1000,13 +1217,9 @@ def _lever_names(
     (:attr:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.lever_names`).
 
     :param bundle: The bundle, assembled but for its lever names.
-    :ptype bundle: AnalysisContextBundle
     :param designs: Every declared design of the bundle's campaign, in aspect order.
-    :ptype designs: Sequence[AspectDesign]
     :param profile: The host it was assembled under.
-    :ptype profile: HostProfile
     :return: Lever id to reader name, sorted by id.
-    :rtype: dict[str, str]
     """
     levers = {lever for entry in bundle.variant_index for lever in entry.levers}
     levers |= {row.name for row in bundle.coverage}
@@ -1083,12 +1296,9 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
     that is named too. Runs that recorded none (runs their host assembled without a launch) are read on the reader's.
 
     :param runs: The resolved member runs.
-    :ptype runs: Sequence[EvalRun]
     :param profile: The reading host's profile.
-    :ptype profile: HostProfile
     :return: ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
         the reader declares it.
-    :rtype: tuple[HostProfile, list[str]]
     """
     recorded = [run for run in runs if run.declared_measures]
     if not recorded:
@@ -1137,10 +1347,8 @@ def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]
     none, and one sentence says so, naming the measures.
 
     :param runs: The resolved member runs.
-    :ptype runs: Sequence[EvalRun]
     :return: ``(margins, withheld)``: the agreed margins by measure, in name order, and the sentence naming the
         measures whose declared margins disagree, or None.
-    :rtype: tuple[dict[str, float], str | None]
     """
     declared = sorted({name for run in runs for name in run.declared_margins})
     agreed: dict[str, float] = {}

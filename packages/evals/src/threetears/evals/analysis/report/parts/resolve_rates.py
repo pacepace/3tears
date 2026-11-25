@@ -31,13 +31,13 @@ one axis, on which measures drawn alike (a share beside a percent) are each draw
 
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
-a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report_gates.gate_check`, in the task
+a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report.gates.gate_check`, in the task
 a panel draws) is hollow, and its key says so; every point carries its arm's tag, its label where it has no other.
 Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
 caption says. A config takes its first factor's colour, which a legend names
 (:func:`~threetears.evals.analysis.report.parts.charting.factor_token`); a panel of more than eight points labels
-only the stressed and the recommended one
+only the stressed one
 (:func:`~threetears.evals.analysis.report.parts.charting.point_labels`).
 """
 
@@ -90,10 +90,11 @@ from threetears.evals.analysis.report.parts.charting import (
     slice_name,
     stat_interval,
     stat_value,
+    own_fmt,
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.figure_keys import figure_unit
+from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,
@@ -113,7 +114,7 @@ from threetears.evals.analysis.report.parts.words import (
     RANGE_TEMPLATE,
     REFERENCE_TEMPLATE,
 )
-from threetears.evals.analysis.report_gates import gate_check
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report_input import BarRead, FloorRead, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.style import humanize
 
@@ -276,9 +277,7 @@ def _figure_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str,
     reads = {
         place: read for place, stat in figures.items() if (read := stat_value(report_input, place[0], stat)) is not None
     }
-    quantities = unit_quantities(
-        context, {key: [r[0] for (on, _), r in reads.items() if on == key] for key in keys}
-    )
+    quantities = unit_quantities(context, {key: [r[0] for (on, _), r in reads.items() if on == key] for key in keys})
     strips = []
     for key in keys:
         drawn = quantities[key]
@@ -597,7 +596,8 @@ def _dot_interval(context: ChartContext) -> Drawn:
                 rows=[_dot_row(context, dot, strip.line) for dot in strip.dots],
                 reference=strip.line,
                 domain=spans[strip.drawn] if several else None,
-                fmt=strip.drawn.fmt if several else None,
+                # A strip of one measure on a shared axis names that measure's own format (:func:`own_fmt`).
+                fmt=strip.drawn.fmt if several else own_fmt(context, strip.key, strip.drawn),
             )
         )
     # A strip of changes names its zero and which way is better once, for every panel: the diverging chart's own.

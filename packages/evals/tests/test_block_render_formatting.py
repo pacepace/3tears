@@ -42,7 +42,7 @@ from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, 
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.report_gates import task_costs
+from threetears.evals.analysis.report.gates import task_costs
 from threetears.evals.kernel.numbers import money_form
 from threetears.evals.analysis.report.figure_keys import arm_settings
 from threetears.evals.analysis.report.parts.look import quantity

@@ -51,7 +51,7 @@ on `sys.path`, and the door puts a rung's there too.
 
 A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it
 again, live (`RECORD=1 uv run python -m threetears.evals examples/1-triage/triage.py`). A recording holds one model at one
-temperature, and an email the recording does not hold is excluded from the run by name, never sent to a model.
+temperature, and an email the recording does not hold fails the run, naming the call, and is never sent to a model.
 
 ### Rungs 0 and 1: email triage, `1-triage/`
 
@@ -105,39 +105,74 @@ No code can say whether a reply is right, so the grader is a `Judge`: `google/ge
 reply on three pass/fail dimensions, `grounded`, `answers` and `safe`, one call per dimension, reading the policy and
 the email beside the reply (`case_material`). The judge is another family than the runner
 (`deepseek/deepseek-v4-flash`) on purpose: a model tends to rate its own output higher, and judging with the runner's
-own model prints the self-judging warning under the scores, a warning no quiet print drops.
+own model prints the self-judging warning under the scores, a warning no quiet print drops. `grounded` asks whether a
+reply is consistent with the policy, not whether the policy states all of it: a reply fails if it contradicts the
+policy or invents a specific fact (a price, a plan, a deadline, an account state) the policy does not support.
 
-**A judge is a model too, so check that it is right, two ways.** Its four `Example`s are hard negatives in pairs, one
-that must fail and one that looks like it and must pass. The run grades each one twice, through the same call it
-grades the replies with, and the recorded judge gets all four right:
-
-```text
-judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
-```
-
-A miss would print under it, with what the judge gave and what it must get. But the judge also passes all 40 replies
-on all three dimensions, and read a few, you will find claims the policy never makes: telling four written pairs
-apart is not grading the run's replies right. That takes a person's labels on the replies, and the run says they are
-missing in the line it never quiets:
+**A judge is a model too, so check that it is right.** Its four `Example`s are hard negatives in pairs, one that must
+fail and one that looks like it and must pass. The run grades each one twice, through the same call it grades the
+replies with, and the recorded judge gets all four right:
 
 ```text
-judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
+judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00090 over 8 call(s))
 ```
 
-Calibrating it is yours to do; no person's labels ship with the rung.
-1. Run it. The report directory (`.evals/reports/replies/`) holds `to_label.csv`: every judged reply on every
-   dimension, with the case it answered and the judge's verdict withheld. [`to_label.csv`](2-replies/to_label.csv)
-   beside the example is that file, as the recorded run wrote it.
-2. Fill in `label` (`pass` or `fail`), and `rater` with your name, for about 20 rows of each dimension, without
-   opening the report's scores. Save it beside `replies.py` as `labels.csv`.
-3. Run it again. `Judge(labels="labels.csv")` reads your labels back, pairs each with the judge's score of the same
-   reply (by its fingerprint, so a replayed run pairs with the rows the recorded one wrote), and prints, per
-   dimension, how many labels paired, κ with its lower bound, and the evidence tier it earns. Below 20 labels the
-   tier says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
+Telling four written pairs apart is not grading the run's replies right, so the judge is checked against a reference,
+[`labels.csv`](2-replies/labels.csv). Two readers read the 20 replies blind from the page of an earlier draw,
+[`adjudication/blind_read_as_read.html`](2-replies/adjudication/blind_read_as_read.html), under an earlier, exhaustive
+wording of `grounded`: Brooks, a person, and `claude-fable-5-2`, a model. (The
+[`blind_read.html`](2-replies/blind_read.html) beside `replies.py` is what a replay of this run writes: it draws the
+other repeat on 10 of the 20 cases, so it is not the page they read.) Where they disagreed (13 of 60 reply and
+dimension pairs), the person reader ruled, blind to who said what: 9 decided, 4 unclear. On 2026-11-17 the owner re-checked three `grounded` items under the
+new wording and re-ruled two: the locked-out reply is a fail, reversing its pass, and the search-bug reply both readers
+failed is left out as borderline. The reference is 55 labels; the 4 unclear and the borderline one are left out, each
+said on its row. It is adjudicated by the person reader; no independent adjudicator.
+[`adjudication/`](2-replies/adjudication/) holds both reads, the rulings and the re-checks. 9 of the 14 `grounded`
+passes were read only under the earlier wording and are carried to the new one, which is sound because a pass under
+the stricter wording is a pass under the more lenient one; the one reply both readers failed was read again instead.
 
-Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 128 judge calls on
-`google/gemini-2.5-flash-lite` ($0.0159, 8 of them on the examples), the runner's and the judge's in recordings of
-their own (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
+The re-checks were chosen after both judges' verdicts were seen, and two of them, locked-out and annual-late, were put
+to the owner because the stronger judge had failed those replies. One re-ruling, locked-out, moved the reference toward
+both judges, so on those items the reference is not independent of the judges. The `grounded` rows before the
+re-checks, beside those after (`answers` and `safe` were not re-checked):
+
+| Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
+|---|---|---|---|---|
+| `gemini-2.5-flash-lite`, before | grounded | 1 of 16 | 0 of 1 (0 to 97%) | 1 of 15 (0 to 32%) |
+| `gemini-2.5-flash-lite`, after | grounded | 2 of 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| `claude-sonnet-5-5`, before | grounded | 1 of 16 | 1 of 1 (3 to 100%) | 5 of 15 (12 to 62%) |
+| `claude-sonnet-5-5`, after | grounded | 2 of 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
+
+The run prints each judge against the reference as counts, with exact 95% intervals
+([the print](../docs/ladder.md#rung-2-a-judge-checked-against-a-person)). `stronger_eval` judges the same replies on
+the same words with `claude-sonnet-5-5`, one tier up:
+
+| Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
+|---|---|---|---|---|
+| `gemini-2.5-flash-lite` | grounded | 2 of 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| | answers | 1 of 20 | 0 of 1 (0 to 97%) | 0 of 19 (0 to 18%) |
+| | safe | 0 of 19 | no catch rate | 0 of 19 (0 to 18%) |
+| `claude-sonnet-5-5` | grounded | 2 of 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
+| | answers | 1 of 20 | 0 of 1 (0 to 97%) | 3 of 19 (3 to 40%) |
+| | safe | 0 of 19 | no catch rate | 0 of 19 (0 to 18%) |
+
+With at most two reference failures per dimension, no catch rate here says how often either judge catches a bad
+reply, and neither judge is shown to. Both are read on the 20 replies the reference was built from, against one person's
+adjudication. The rubric's wording was not tuned toward either judge, but the reference was revisited after their
+verdicts were read, as said above.
+
+**Your own judge needs your own read.** The reference pairs with these recorded replies and these words only:
+re-record the replies or reword a dimension, and it does not pair. To read your run:
+
+1. Run it. The report directory (`.evals/reports/<name>/`) holds `blind_read.html`, the replies in a random order
+   with no verdict ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
+2. Answer it from the top, press **Download labels.csv**, and save the file where `Judge(labels=...)` names. What you
+   answered from the top is a random sample; read enough that you fail some, or no catch rate exists.
+3. Run it again. The print shows the judge against your read, and against any `reviewer=` model beside it, apart.
+
+Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017); 128 judge calls on `google/gemini-2.5-flash-lite`
+($0.0148, 8 of them on the examples) and 128 on `claude-sonnet-5-5` ($0.6568, at Anthropic's published rates). Each
+model's calls are in a recording of their own under `recordings/`.
 
 ### Rung 3a: two prompts compared, `3-invoices/compare.py`
 
@@ -151,10 +186,12 @@ own `Model`, since a replay serves each recorded call once per model: `grid.py` 
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict.
 `question="Does v2 read the currency an invoice charges in right more often than v1?"` is the one sentence it
 answers, asked before any reading is seen: its measure is the first grader, `currency`, and the page quotes it. What
-the recorded run said: accuracy did not separate v2 from v1, and nothing else did.
+the recorded run said: v2 is a point behind v1 on accuracy, the evidence weak and nothing decided; the other readings
+are shown with their evidence and decide nothing, since the question asked about currency.
 
 ```text
-compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.
+compare: Advice: keep v1. v2 is behind it.
+compare: Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
 ```
 
 One v2 trial failed, its recorded error `the candidate raised ValidationError: 1 validation error for Invoice` on
@@ -169,11 +206,12 @@ which 3b, 3c, 3d and the grid's low-effort cells replay too.
 come out equivalent, the one verdict that says "good enough". The margin comes from the decision, fixed before any
 reading: a person checks every total before it is paid, so a prompt worse on `total` by under 20 points would still
 ship on its other fields. It is never read off the interval the run produced. 30 invoices narrow the interval on
-`total` to 19 points either side, so they can show equivalence only at a margin this wide; a tighter margin needs
-more invoices:
+`total` to 13 points either side, inside this margin; but the question asks about currency, so `total` is a
+secondary reading, shown against its margin and decided on nothing. A margin reads equivalent on the question's own
+reading:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -13 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 ### Rung 3c: a guardrail, `3-invoices/guardrail.py`
@@ -182,7 +220,7 @@ more invoices:
 that fails each trial it fails, with its own held/breached reading against v1 on top, decided apart from the contrasts.
 It grades the fields as compare.py does, with no margin. The guardrail is undecided for v2, so it
 exits 4, its last line saying why in the report's words
-(`exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
+(`exit 4: Accuracy: v2 behind v1, proof pending. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
 it, and reads v2 against v1 in one row
 
@@ -190,7 +228,7 @@ it, and reads v2 against v1 in one row
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
+**Advice: keep v1. v2 is behind it. Accuracy: v2 behind v1, proof pending. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...
@@ -285,7 +323,7 @@ promotion is read. `tests/fixtures/writer_cases/export_writer_cases.py` wrote th
 once, since a rung run again is new evidence with a new snapshot id.
 
 It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages.
-The read is `Undecided`: the judge gave lead-first's pages a share of 61%, its two reading orders agreeing on 6 of 7
+The read is `Undecided`: the judge gave lead-first's pages a share of 68%, its two reading orders agreeing on 5 of 7
 cases, and 7 held-out cases cannot tell that from an even split. [`recordings/README.md`](5-writer/recordings/README.md) says when each recording was made and what it cost, and
 holds the one command that records them again (both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, under the $39 cap).
 [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator) walks it.
@@ -317,8 +355,8 @@ process, so helpers in two rung directories need distinct names.
 
 | Code | Meaning |
 |---|---|
-| 0 | Every run completed |
-| 1 | A run did not complete |
+| 0 | Every run completed and graded an answer |
+| 1 | A run did not complete, or no arm had an answer graded |
 | 2 | Refused before it ran: the file, or what it declares |
 | 3 | An error nothing anticipated, its traceback printed |
 | 4 | A comparison's gate failed, with a line saying why |
@@ -386,7 +424,7 @@ A recording is made once, live, with `OPENROUTER_API_KEY` set, and replaces the 
 ```bash
 RECORD=1 python -m threetears.evals 1-triage/triage.toml   # 1-triage/recordings/triage-toml.jsonl
 RECORD=1 python -m threetears.evals 1-triage/triage.py     # 1-triage/recordings/triage.jsonl
-RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recordings/replies.jsonl and judge.jsonl
+RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recordings/: replies, judge, judge_stronger
 RECORD=1 python -m threetears.evals 3-invoices/compare.py  # 3-invoices/recordings/invoices.jsonl, which 3a to 3e replay
 python -m threetears.evals 3-invoices/grid.py              # 3-invoices/recordings/invoices-high.jsonl, once deleted
 RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recordings/agent.jsonl
@@ -395,6 +433,9 @@ RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recording
 The grid's high-effort recording is made without `RECORD=1`: delete `invoices-high.jsonl` and run `grid.py` with the
 key set, and only the missing file is recorded live while the low-effort cells replay. `RECORD=1` would record
 `invoices.jsonl` afresh too, and pay for it again.
+
+Rung 2's stronger judge is recorded the same way: delete `judge_stronger.jsonl` and run with `ANTHROPIC_API_KEY`
+set. `RECORD=1` records the replies afresh, and the reference in `labels.csv` does not pair with new replies.
 
 Rung 5 records differently: with `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` set, and no `RECORD=1`, it
 records whatever is missing and replays the rest ([`5-writer/recordings/README.md`](5-writer/recordings/README.md)).

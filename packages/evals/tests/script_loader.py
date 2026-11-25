@@ -2,7 +2,7 @@
 
 Run as a script, a dev tool's own directory is first on ``sys.path``, so ``from public_surface import ...`` finds the
 walk over the public roots the tools share. Loaded from a test it is not, and a test tree never changes
-``sys.path``, so this registers that one shared module under its own name instead.
+``sys.path``, so this registers the shared modules under their own names instead.
 """
 
 from __future__ import annotations
@@ -15,24 +15,26 @@ from types import ModuleType
 #: The dev tooling directory beside the package.
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
-#: The scripts' one shared sibling module, which they import as ``from public_surface import ...``.
-SHARED = "public_surface"
+#: The scripts' shared sibling modules, which they import as ``from public_surface import ...``, in the order they
+#: load (``surface_kinds`` imports ``public_surface``).
+SHARED = ("public_surface", "surface_kinds")
 
 
 def load_script(name: str) -> ModuleType:
-    """Execute ``scripts/<name>`` as a module registered under its stem, its ``main`` not run. The shared module is
-    executed once, so every script loaded reads the same one.
+    """Execute ``scripts/<name>`` as a module registered under its stem, its ``main`` not run. The shared modules are
+    executed once, so every script loaded reads the same ones.
 
     :param name: The file's name, ``"generate_reference.py"``.
     :ptype name: str
     :return: The module.
     :rtype: ModuleType
     """
-    if SHARED not in sys.modules:
-        _load(SCRIPTS / f"{SHARED}.py", SHARED)
+    for shared in SHARED:
+        if shared not in sys.modules:
+            _load(SCRIPTS / f"{shared}.py", shared)
     path = SCRIPTS / name
-    if path.stem == SHARED:
-        return sys.modules[SHARED]
+    if path.stem in SHARED:
+        return sys.modules[path.stem]
     return _load(path, path.stem)
 
 

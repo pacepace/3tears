@@ -20,7 +20,7 @@ from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.full_results import every_table
-from threetears.evals.analysis.report_arms import fact_arms
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import Measure, ReportInput
 
 from packages.evals.tests.report_doc_support import snapshot_of
@@ -96,7 +96,7 @@ def test_a_contrast_key_reads_its_change_and_interval_as_the_comparisons_table(k
 def test_a_measure_key_reads_its_mean_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
     figure = resolve("measure.failed_reply_notices.September.mean", kairo)
     tabled = _cell(_table(kairo, "arms_by_measure"), "measure:failed_reply_notices", arm="September")
-    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.002 notices"
+    assert format_figure(figure, forms=PageForms.of(kairo)) == tabled == "0.0022 notices"
     assert PageForms.of(kairo).level("failed_reply_notices", _level(figure)).text == tabled
 
 
@@ -105,8 +105,8 @@ def test_a_measure_s_interval_and_a_bar_s_read_their_ends_at_the_measure_s_level
     both ends whole too."""
     assert _cell(_table(s2, "arms_by_measure"), "measure:total_ms", arm="beta") == "701 ms"
     # The unit written once, after the high end (number policy, rule 3).
-    assert _said("measure.total_ms.beta.ci", s2) == "673 to 729 ms"
-    assert _said("aspects.answers.bar.total_ms.beta.interval", s2) == "673 to 729 ms"
+    assert _said("measure.total_ms.beta.ci", s2) == "673 to 730 ms"
+    assert _said("aspects.answers.bar.total_ms.beta.interval", s2) == "673 to 730 ms"
 
 
 def test_a_judged_key_reads_its_score_as_the_arms_by_measure_table(kairo: ReportInput) -> None:
@@ -237,7 +237,7 @@ def test_a_criterion_s_figure_and_its_interval_s_ends_read_at_its_measure_s_leve
     value, low, high = (resolve(f"{_CRITERION}.{field}", measured_s2) for field in ("value", "low", "high"))
     tabled = _cell(_table(measured_s2, "arms_by_measure"), "measure:total_ms", arm="beta")
     assert format_figure(value, forms=forms) == tabled == "701.4 ms"
-    assert (format_figure(low, forms=forms), format_figure(high, forms=forms)) == ("673.3 ms", "728.7 ms")
+    assert (format_figure(low, forms=forms), format_figure(high, forms=forms)) == ("673.3 ms", "730.4 ms")
     for figure in (value, low, high):
         assert forms.level("total_ms", _level(figure)).text == format_figure(figure, forms=forms), figure.path
 

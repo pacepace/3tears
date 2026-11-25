@@ -25,10 +25,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import (
-    NO_ANALYSIS,
-    SECTION_TITLES,
     AnalysisContextBundle,
-    aspect_view,
     ChartBlock,
     DisclosureBlock,
     IntervalRow,
@@ -36,19 +33,21 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    analysis_report,
     build_code_only_report,
     campaign_report,
     report_html,
-    report_markdown,
     set_campaign_control,
 )
+from threetears.evals.analysis.report.aspect.method import NO_ANALYSIS
+from threetears.evals.analysis.report.blocks import SECTION_TITLES
+from threetears.evals.analysis.aspects import aspect_view
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.run import set_analysis_archived
+from threetears.evals.run.curation import set_analysis_archived
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.report_support import toy_campaign_host, toy_report
 from packages.evals.tests.off_loop import off_loop
@@ -138,11 +137,6 @@ class TestTheToyReportsContent:
         assert {block.fold for block in notes} == {"Disclosures"}
         # The writer is never introduced: the page does not describe itself.
         assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "Written by" in b.text]
-
-    async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
-        host, analysis, _ = toy
-        with pytest.raises(NotFoundError):
-            off_loop(analysis_report, host.storage, "no-such-analysis", analysis.scope_id)
 
 
 # =============================================================================
@@ -309,14 +303,11 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 
 
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
-    """The campaign's newest analysis is its report, through either door: a memo, a retired writer's, is stood in for
-    by code's page naming it (its own page is laid out by its id over what was frozen with it, not over the evidence
-    now), and its aspect's page is code's, over the bundle frozen with it."""
+    """The campaign's newest analysis is its report: a memo, a retired writer's, is stood in for by code's page naming
+    it, and its aspect's page is code's, over the bundle frozen with it."""
     host, analysis, report = toy
     resolved = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
-    stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
     assert (resolved.basis, resolved.unread_analysis_id) == ("code_only", analysis.id)
-    assert (stored.basis, stored.unread_analysis_id) == ("code_only", analysis.id)
     assert report.source.bundle_fingerprint == analysis.aspects[0].bundle_fingerprint
 
 
@@ -328,8 +319,6 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
     report = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     assert report.basis == "code_only" and report.analysis_id is None
     assert report.unread_analysis_id is None, "the campaign has no report standing in for the archived analysis"
-    # The archived analysis is still readable by its id.
-    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).unread_analysis_id == analysis.id
 
 
 async def test_a_lever_no_comparison_exercised_is_said_in_words_never_by_its_path(
@@ -389,7 +378,9 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     assert {row["question"] for row in contrast_rows(report.bundle)} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
     # The campaign's page folds this page, and names each arm by the campaign's label for it.
-    assert by_reading["Field accuracy"] == "1024tok better than control"
+    # Field accuracy, a score on 0 to 1, is read by the bounded test: every document 0.13 higher over twelve cannot show
+    # its mean moved there (p ≈ 0.53), where the t test read the float residue of one shift as a spread (p ≈ 0).
+    assert by_reading["Field accuracy"] == "cannot tell apart"
     assert by_reading["Turn time"] == "1024tok worse than control (lower is better)"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
@@ -423,9 +414,10 @@ def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
         next(column.header for column in comparisons.columns if column.key == "interval")
         == "95% interval (adjusted for 6 comparisons)"
     )
-    # A program's row has no header, so its interval says its level.
+    # A program's row has no header, so its interval says its level: 1 − 0.05/6 as text, which reads to two significant
+    # figures of the chance it misses (owner ruling, 2026-11-14: a text level rounds as a value does by its interval).
     (row,) = [row for row in contrast_rows(report.bundle) if row["reading"] == "Turn time"]
-    assert row["change"] == "+0.50 s (+0.45 to +0.55 s at 99.2%)"
+    assert row["change"] == "+0.50 s (+0.45 to +0.55 s at 99.17%)"
     # A share on 0–1 is stated as a percent, its cell restated onto that ruler, at the tenth its interval sets.
     (accuracy,) = [row for row in statistics.rows if row["reading"].value == "Field accuracy"]
     assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("91.0%", "%")
