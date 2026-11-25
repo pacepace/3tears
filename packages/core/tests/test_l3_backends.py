@@ -4,7 +4,7 @@ Proves the L3 tier is genuinely two-layered and storage-agnostic:
 - ``NatsProxyL3Backend`` and ``SqlL3Backend`` conform to the raw-SQL ``L3Backend``.
 - ``SqlL3Backend`` ALSO conforms to the structured ``DurableStore`` and generates the
   expected parameterized SQL for fetch_one / upsert / delete / scan.
-- a **non-SQL** in-memory ``DurableStore`` (the shape a ``GitL3Backend`` takes) conforms
+- a **non-SQL** in-memory ``DurableStore`` (the shape the git store's ``GitDurableStore`` takes) conforms
   to ``DurableStore`` and round-trips — no SQL anywhere. This is the seam that makes a
   git working tree a first-class L3 backend.
 """
@@ -281,7 +281,7 @@ async def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
 class _InMemoryDurableStore:
     """A NON-SQL ``DurableStore`` — entities live in a plain nested dict, keyed by pk.
 
-    This is the exact shape a ``GitL3Backend`` presents (fetch/upsert/delete/scan a record),
+    This is the shape the git store's ``GitDurableStore`` presents (fetch/upsert/delete/scan a record),
     minus the git I/O. Its mere existence + conformance proves the structured contract is
     satisfiable with zero SQL.
     """

@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
 __all__ = [
+    "FORMAT_FILE",
     "Committed",
     "DirtyFile",
     "GitRepo",
@@ -102,6 +103,9 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the file, relative to the root, that records the layout format the repository's files are written in
+FORMAT_FILE: Final = ".threetears/layout-format"
 
 _T = TypeVar("_T")
 
@@ -486,6 +490,7 @@ class GitRepo:
         if self._opened:
             return
         await asyncio.to_thread(self._ensure_checkout)
+        self._refuse_a_newer_format()
         self._seen_head = await asyncio.to_thread(self._recorded_head)
         self._opened = True
         if self._nats is None:
@@ -739,6 +744,65 @@ class GitRepo:
                 if ahead:
                     await self._push_locked(explicit=False)
         log.info("git_store.takeover: the working tree is current", extra={"extra_data": self._log})
+        await self._migrate_format()
+
+    def _stored_format(self) -> int:
+        """the layout format the working tree records (:data:`FORMAT_FILE`); ``0`` when it records none.
+
+        :return: the version
+        :rtype: int
+        :raises GitStoreError: when the file holds something that is not a version
+        """
+        path = self.config.work_tree / FORMAT_FILE
+        if not path.is_file():
+            return 0
+        text = path.read_text().strip()
+        if not text.isdigit():
+            raise GitStoreError(f"{FORMAT_FILE} in {self.config.key!r} holds {text!r}, not a format version")
+        return int(text)
+
+    def _refuse_a_newer_format(self) -> None:
+        """refuse a working tree written under a newer layout format than this layout's, which it would misread.
+
+        :return: None
+        :rtype: None
+        :raises GitStoreError: when the tree records a newer format
+        """
+        declared = int(getattr(self.layout, "format_version", 0))
+        stored = self._stored_format()
+        if stored > declared:
+            raise GitStoreError(
+                f"repository {self.config.key!r} is at layout format {stored}; this layout reads format {declared}. "
+                f"A newer release wrote it"
+            )
+
+    async def _migrate_format(self) -> None:
+        """on taking the writer's role, bring a repository recorded under an older layout format to this layout's,
+        with its ``migrate_format``, as ONE commit that also records the new version.
+
+        :return: None
+        :rtype: None
+        :raises GitStoreError: when the format is older and the layout has no ``migrate_format``
+        """
+        declared = int(getattr(self.layout, "format_version", 0))
+        stored = await asyncio.to_thread(self._stored_format)
+        if stored >= declared:
+            return
+        migrate = getattr(self.layout, "migrate_format", None)
+        if migrate is None:
+            raise GitStoreError(
+                f"repository {self.config.key!r} is at layout format {stored}; this layout writes format {declared} "
+                f"and has no migrate_format to bring it there"
+            )
+        files = dict(await migrate(self, stored))
+        files[FORMAT_FILE] = f"{declared}\n".encode()
+        result = await self._commit_files_local(
+            files, f"layout format {stored} -> {declared}", self.config.committer, None
+        )
+        log.info(
+            "git_store.format: the repository was migrated to its layout's format",
+            extra={"extra_data": {**self._log, "from": stored, "to": declared, "sha": result.sha}},
+        )
 
     async def _catch_up_with_origin(self) -> None:
         """fetch origin and fast-forward to it when this branch is only behind; never merge or force.

@@ -8,8 +8,8 @@ reaches L3 through the seam ``fetch_from_store`` / ``save_to_store`` / ``delete_
 **SQL-free** contract (``fetch_one`` / ``upsert`` / ``delete``).
 
 This is the base a deploying app subclasses to back a collection with a non-SQL durable
-tier: scriob's git content store (a ``GitL3Backend`` implementing ``DurableStore`` over a
-working tree) drops in here, and the same L1/L2 cache + cross-pod invalidation machinery
+tier: the git store (``GitDurableStore``, implementing ``DurableStore`` over a working
+tree) drops in here, and the same L1/L2 cache + cross-pod invalidation machinery
 runs unchanged. ``l3_pool`` (the raw-SQL transport) is unused and stays ``None``.
 
 Subclasses supply :attr:`table_name`, :attr:`entity_class`, :attr:`primary_key_column`,
@@ -37,8 +37,8 @@ __all__ = ["DurableStoreCollection"]
 class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
     """A :class:`BaseCollection` whose L3 tier is a structured :class:`DurableStore`.
 
-    :param durable_store: the structured durable backend (e.g. a ``SqlL3Backend`` or a
-        ``GitL3Backend``). The collection's L3 CRUD routes through its
+    :param durable_store: the structured durable backend (a ``SqlL3Backend``, a
+        ``SqliteL3Backend`` or a ``GitDurableStore``). The collection's L3 CRUD routes through its
         ``fetch_one`` / ``upsert`` / ``delete``; no SQL string is ever constructed here.
     :ptype durable_store: DurableStore
     """
@@ -117,6 +117,18 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete the entity from L3 via the structured ``DurableStore.delete`` (no SQL)."""
         await self._durable_store.delete(self.table_name, self._pk_mapping(entity_id))
+
+    async def delete_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> None:
+        """Delete the entity from L3 inside the caller's transaction (``conn``), through ``DurableStore.delete``.
+
+        :param entity_id: the key
+        :ptype entity_id: Any
+        :param conn: the caller's connection or change set, with its transaction open
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        """
+        await self._durable_store.delete(self.table_name, self._pk_mapping(entity_id), conn=conn)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Default L2 codec: canonical JSON bytes. Override for a domain codec."""

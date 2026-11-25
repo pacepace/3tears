@@ -12,7 +12,7 @@ so a non-SQL backend (e.g. a git working tree) can be a first-class L3:
 - :class:`DurableStore` — the **high-level structured ops**: ``fetch_one`` / ``upsert``
   / ``delete`` / ``scan``, keyed by table + column dict + pk, **no SQL string**. This
   is the level the standard CRUD lifecycle uses. A SQL backend implements it by
-  *generating* SQL; a ``GitL3Backend`` (scriob) implements it as file read / write /
+  *generating* SQL; the git store (:class:`~threetears.core.backends.git.GitDurableStore`) implements it as file read / write /
   delete + commit. **This is the seam that makes a non-SQL durable backend possible.**
 
 The two are independent: a backend MAY implement only :class:`DurableStore` (a git
@@ -227,7 +227,7 @@ class DurableStore(Protocol):
     """Structured, **SQL-free** durable-tier operations keyed by table + columns + pk.
 
     This is the seam the collection CRUD lifecycle uses and the one a non-SQL backend
-    implements: a SQL backend generates SQL from the table/columns; a ``GitL3Backend``
+    implements: a SQL backend generates SQL from the table/columns; the git store (``GitDurableStore``)
     reads/writes/deletes the entity's file in a working tree and stages it. No method
     takes or returns a SQL string. ``pk`` is a column→value mapping (single- or
     composite-pk); a row is a column→value mapping. Conformance is asserted via
@@ -343,8 +343,8 @@ class RawL3Pool(Protocol):
 
 #: what a registry (:meth:`~threetears.core.collections.registry.CollectionRegistry.configure`,
 #: ``register``, ``bind_table``) and a collection's ``l3_pool`` accept as L3. A :class:`DurableStore`
-#: (a :class:`~threetears.core.backends.sql.SqlL3Backend`, or a non-SQL store such as scriob's
-#: ``GitL3Backend``) is held unchanged; a :class:`RawL3Pool` is wrapped in a ``SqlL3Backend`` (by the
+#: (a :class:`~threetears.core.backends.sql.SqlL3Backend`, or a non-SQL store such as the git store,
+#: ``GitDurableStore``) is held unchanged; a :class:`RawL3Pool` is wrapped in a ``SqlL3Backend`` (by the
 #: registry when configured, by the collection on first use when assigned directly), which gains it
 #: the structured ops. An :class:`L3Backend` that is not also a ``DurableStore`` is a raw pool too.
 type L3PoolLike = L3Backend | DurableStore | RawL3Pool

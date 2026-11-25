@@ -8,7 +8,7 @@ Implements **both** L3-tier protocols:
 - :class:`~threetears.core.backends.protocol.DurableStore` — the structured ops, by
   *generating* parameterized SQL (``fetch_one`` → SELECT, ``upsert`` →
   INSERT…ON CONFLICT, ``delete`` → DELETE, ``scan`` → SELECT…WHERE). This is the
-  reference SQL implementation of the same structured contract a ``GitL3Backend``
+  reference SQL implementation of the same structured contract the git store (``GitDurableStore``)
   satisfies with file read/write/delete + commit.
 
 **Schema awareness.** A :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`

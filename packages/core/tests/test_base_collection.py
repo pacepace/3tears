@@ -1561,7 +1561,7 @@ class TestStorageAgnosticL3Contract:
     A collection reaches L3 only through three methods: ``fetch_from_store`` /
     ``save_to_store`` / ``delete_from_store``. It never assumes SQL. ``StubCollection``
     backs them with a plain in-memory dict; the SQL backend backs them with
-    Postgres; a ``GitL3Backend`` backs them with files in a git working tree —
+    Postgres; the git store (``GitDurableStore``) backs them with files in a git working tree —
     all three are first-class. This pins that contract: a NON-SQL L3 backend
     drives the full three-tier save → evict → pull-through → delete round-trip,
     so a git L3 implementing the same three methods slots in unchanged.
@@ -1573,7 +1573,7 @@ class TestStorageAgnosticL3Contract:
     ) -> None:
         nats = _make_nats_mock()
         # The ENTIRE durable store is a plain dict — no SQL anywhere. This is the
-        # exact shape a GitL3Backend presents (fetch/save/delete a record by pk).
+        # shape the git store's GitDurableStore presents (fetch/save/delete a record by pk).
         l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 

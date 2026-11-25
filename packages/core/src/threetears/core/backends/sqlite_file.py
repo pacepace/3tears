@@ -86,6 +86,10 @@ log = get_logger(__name__)
 #: when that changes in a way a file written before would be misread under
 _SQLITE_STORE_FORMAT: Final = 1
 
+#: the store's own table in the file: the application's schema version, beside its tables
+_META_TABLE: Final = "tt3_store_meta"
+_SCHEMA_VERSION_KEY: Final = "schema_version"
+
 #: the oldest SQLite that reads every statement the Postgres store's generator writes (``IS NOT DISTINCT FROM``)
 _MIN_SQLITE: Final = (3, 39, 0)
 
@@ -305,10 +309,29 @@ class SqliteL3Backend:
 
     :param path: the database file; its directory is made when missing
     :ptype path: Path
+    :param schema_version: the version of the application's own tables this code reads, recorded in the file; ``0``
+        (the default) for an application that has never migrated them. A file recorded under an older version is
+        migrated by ``migrate`` when the store opens; one under a newer version is refused
+    :ptype schema_version: int
+    :param migrate: ``migrate(conn, from_version)`` brings the application's tables from ``from_version`` to
+        ``schema_version`` (an ``ALTER TABLE``, a rewrite of stored values), on a plain ``sqlite3`` connection inside
+        one transaction the store commits with the new version, or rolls back when it raises. Changes a table's
+        registration does not apply itself (a dropped, renamed or retyped column) belong here
+    :ptype migrate: Callable[[sqlite3.Connection, int], None] | None
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        schema_version: int = 0,
+        migrate: Callable[[sqlite3.Connection, int], None] | None = None,
+    ) -> None:
+        if schema_version < 0:
+            raise ValueError(f"schema_version is a count of migrations, at least 0; got {schema_version}")
         self._path = Path(path)
+        self._schema_version = schema_version
+        self._migrate = migrate
         self._schemas: Mapping[str, TableSchema] = MappingProxyType({})
         self._lock_fd: int | None = None
         self._writer: sqlite3.Connection | None = None
@@ -370,6 +393,7 @@ class SqliteL3Backend:
             writer = self._connect()
             writer.execute("PRAGMA journal_mode=WAL")
             self._check_format(writer)
+            self._migrate_schema(writer)
             reader = self._connect()
         except BaseException:  # prawduct:allow prawduct/broad-except -- gives the file back, then re-raises unchanged
             if writer is not None:
@@ -443,6 +467,49 @@ class SqliteL3Backend:
         raise SqliteStoreFormatError(
             f"the SQLite store {self._path} was written under format {found}; this code reads format "
             f"{_SQLITE_STORE_FORMAT}. Migrate the file, or move it aside to start empty",
+        )
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """bring the application's tables to ``schema_version`` with ``migrate``, or refuse a file it cannot read.
+
+        :param conn: the writing connection, outside any transaction
+        :ptype conn: sqlite3.Connection
+        :return: nothing
+        :rtype: None
+        :raises SqliteStoreFormatError: when the file records a newer version, or an older one and there is no
+            ``migrate``
+        """
+        conn.execute(f'CREATE TABLE IF NOT EXISTS "{_META_TABLE}" (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        found = conn.execute(f'SELECT value FROM "{_META_TABLE}" WHERE key = ?', (_SCHEMA_VERSION_KEY,)).fetchone()
+        stored = 0 if found is None else int(found[0])
+        if stored == self._schema_version:
+            return
+        if stored > self._schema_version:
+            raise SqliteStoreFormatError(
+                f"the SQLite store {self._path} holds the application's tables at version {stored}; this code reads "
+                f"version {self._schema_version}. A newer release wrote it",
+            )
+        if self._migrate is None:
+            raise SqliteStoreFormatError(
+                f"the SQLite store {self._path} holds the application's tables at version {stored}; this code reads "
+                f"version {self._schema_version} and was given no migrate to bring them there",
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._migrate(conn, stored)
+            conn.execute(
+                f'INSERT INTO "{_META_TABLE}" (key, value) VALUES (?, ?) '  # noqa: S608 - the store's own table
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (_SCHEMA_VERSION_KEY, str(self._schema_version)),
+            )
+            conn.execute("COMMIT")
+        except BaseException:  # prawduct:allow prawduct/broad-except -- rolls the migration back, then re-raises
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        log.info(
+            "SQLite L3 store: the application's tables were migrated",
+            extra={"extra_data": {"path": str(self._path), "from": stored, "to": self._schema_version}},
         )
 
     # ── running statements ─────────────────────────────────────────────────────────────────────────────────────────

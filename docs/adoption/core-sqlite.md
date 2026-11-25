@@ -59,6 +59,10 @@ the URL.
   required one, is refused with the difference named. Indexes, foreign keys and unique constraints other than the
   primary key are not created. `server_default` is spelled for `now()`, a quoted literal, a number and
   `true`/`false`; another default is refused at registration.
+- **The application's own version.** `SqliteL3Backend(path, schema_version=n, migrate=fn)` records `n` in the file;
+  a file at an older version is migrated by `fn(conn, from_version)` in one transaction when the store opens, and
+  one at a newer version is refused. A change a table's registration does not apply itself (a dropped, renamed or
+  retyped column) belongs there.
 - **Health.** `await store.health()` answers while the file reads and raises when it does not, for a readiness probe.
 
 ## The L1 in front

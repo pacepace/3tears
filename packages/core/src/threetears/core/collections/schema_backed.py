@@ -2890,8 +2890,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         The structured CRUD lifecycle routes through this seam. The resolved
         :attr:`l3_pool` is normally a :class:`~threetears.core.backends.sql.SqlL3Backend`
-        (the registry wraps a raw pool) or another ``DurableStore`` (e.g. scriob's
-        ``GitL3Backend``) — returned as-is. A raw transport assigned directly to
+        (the registry wraps a raw pool) or another ``DurableStore`` (``SqliteL3Backend``, the git
+        store's ``GitDurableStore``) — returned as-is. A raw transport assigned directly to
         ``l3_pool`` (bypassing the registry — e.g. a test harness) is wrapped in a
         schema-registered ``SqlL3Backend`` on demand, cached so the wrapper is stable
         and re-used until the underlying pool changes.
@@ -4725,6 +4725,28 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk_values = self.normalize_pk(entity_id)
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         await store.delete(self.schema.name, pk)
+
+    async def delete_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> None:
+        """delete one row on a caller's open transaction, through the :class:`DurableStore` seam.
+
+        See :meth:`BaseCollection.delete_from_store_in_transaction`.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the collection has no durable store, or a subclass deletes its own way (it
+            overrides :meth:`delete_from_store`, which this cannot know)
+        """
+        self._refuse_unfiled("delete_from_store")
+        store = self._durable_store()
+        if store is None or type(self).delete_from_store is not SchemaBackedCollection.delete_from_store:
+            raise ValueError(f"{type(self).__name__} cannot delete inside a caller's transaction (conn=)")
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        await store.delete(self.schema.name, pk, conn=conn)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize row dict to JSON bytes for L2 storage.

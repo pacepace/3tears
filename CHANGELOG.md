@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: L3 format versions with a migration hook, deletes in a caller's transaction, and current docstrings
+
+**Added:** `TemplateLayout(format_version=, migrate_format=)`: a git store's layout names the format its files are
+written in, recorded in the repository (`.threetears/layout-format`, `threetears.core.backends.git.repo.FORMAT_FILE`).
+The writer, when it takes the repository over, brings one recorded under an older format to the layout's with
+`await migrate_format(repo, from_version)` (the files to write), committed with the new version as ONE commit; a
+repository recorded under a newer format is refused when it opens, and an older one with no migration when the
+writer takes it over. A layout that names no format records nothing and behaves as before.
+
+**Added:** `SqliteL3Backend(path, schema_version=, migrate=)`: the version of the application's own tables, recorded
+in the file. An older file is migrated by `migrate(conn, from_version)` inside one transaction when the store opens
+(rolled back if it raises); a newer one is refused, as is an older one with no `migrate`.
+
+**Added:** `BaseCollection.delete(key, conn=...)` deletes inside a caller's transaction (a
+`CallerTransaction`'s connection, or a git change set), as `save_entity(conn=...)` saves inside one: the key is
+enrolled and every cache drops it when the transaction ends. `delete_from_store_in_transaction` is the extension
+point, implemented by `SchemaBackedCollection` and `DurableStoreCollection`; any other collection refuses `conn`.
+
+**Changed:** docstrings and tests that named a `GitL3Backend` now name the git store's class, `GitDurableStore`.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of

@@ -27,6 +27,10 @@ writing one working tree race each other and every cache goes stale.
   sets to it and get the commit or the same typed refusal back.
 - Pushes are plain, never forced. Clones that are not the writer follow origin on the writer's
   broadcast. A crash mid-change is put back by the next writer.
+- A layout names the format its files are written in (`TemplateLayout(format_version=, migrate_format=)`); the
+  repository records it in `.threetears/layout-format`. The writer, taking the repository over, migrates one
+  recorded under an older format in ONE commit; a repository under a newer format is refused when it opens.
+- `collection.delete(key, conn=change_set)` deletes inside a change set, as a save joins one.
 - `bind_collections` drops every row any commit changed -- hand commits and pulled commits
   included -- from the collections' caches. `GitRepos` / `RoutedGitStore` keep many repositories.
 

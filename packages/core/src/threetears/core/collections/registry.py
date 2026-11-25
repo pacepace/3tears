@@ -188,7 +188,7 @@ def _as_l3_backend(l3_pool: L3PoolLike | None) -> L3Backend | DurableStore | Non
     :class:`~threetears.core.backends.protocol.DurableStore` ops, so the resolved
     ``l3_pool`` must expose them. A backend that already satisfies ``DurableStore``
     (the named :class:`~threetears.core.backends.sql.SqlL3Backend`, or a non-SQL
-    backend such as scriob's ``GitL3Backend``) is returned **unchanged**. A raw
+    backend such as the git store's ``GitDurableStore``) is returned **unchanged**. A raw
     transport that only speaks raw SQL (a bare asyncpg ``Pool`` or the
     ``NatsProxyL3Backend``) is wrapped in a ``SqlL3Backend`` so it gains the
     structured ops (which generate SQL). ``None`` passes through.

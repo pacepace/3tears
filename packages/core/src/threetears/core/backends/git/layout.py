@@ -21,7 +21,7 @@ from __future__ import annotations
 import glob
 import re
 import string
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
@@ -29,7 +29,16 @@ from typing import Any, Protocol, runtime_checkable
 from threetears.core.backends.git.codec import RowCodec
 from threetears.core.frozen_state import frozen
 
-__all__ = ["Layout", "TableLayout", "TemplateLayout", "escape_value", "locate", "same_key", "unescape_value"]
+__all__ = [
+    "FormatMigration",
+    "Layout",
+    "TableLayout",
+    "TemplateLayout",
+    "escape_value",
+    "locate",
+    "same_key",
+    "unescape_value",
+]
 
 
 @runtime_checkable
@@ -256,6 +265,12 @@ class TableLayout:
         return found
 
 
+FormatMigration = Callable[[Any, int], Awaitable[Mapping[str, bytes | None]]]
+"""``await migrate(repo, from_version)``: the files (path -> bytes, ``None`` to remove) that bring a repository from
+``from_version`` to the layout's ``format_version``. ``repo`` is the :class:`~threetears.core.backends.git.GitRepo`,
+for reading what is there (``read_rows``, its working tree)."""
+
+
 class TemplateLayout:
     """a :class:`Layout` built from one :class:`TableLayout` per table.
 
@@ -264,19 +279,39 @@ class TemplateLayout:
     most specific first.
 
     :ivar reads_content: ``False``: the path alone names the row
+    :ivar format_version: the version of the files this layout and its codecs write, recorded in the repository
+        (:data:`~threetears.core.backends.git.repo.FORMAT_FILE`); ``0`` for a layout never migrated
+    :ivar migrate_format: brings a repository written under an older ``format_version`` to this one, or ``None``
     """
 
     reads_content = False
 
-    def __init__(self, tables: Sequence[TableLayout]) -> None:
+    def __init__(
+        self,
+        tables: Sequence[TableLayout],
+        *,
+        format_version: int = 0,
+        migrate_format: FormatMigration | None = None,
+    ) -> None:
         """index the tables.
 
         :param tables: each table's layout
         :ptype tables: Sequence[TableLayout]
+        :param format_version: the version of the files this layout writes; a repository recorded under an older one
+            is migrated by ``migrate_format`` when its writer takes it over, and one under a newer one is refused
+        :ptype format_version: int
+        :param migrate_format: ``await migrate_format(repo, from_version)`` answers the files to write (bytes, or
+            ``None`` to remove one) to bring the repository from ``from_version`` to ``format_version``; the writer
+            commits them, with the new version, as ONE commit
+        :ptype migrate_format: FormatMigration | None
         :return: None
         :rtype: None
-        :raises ValueError: when a table is named twice
+        :raises ValueError: when a table is named twice, or ``format_version`` is negative
         """
+        if format_version < 0:
+            raise ValueError(f"format_version is a count of migrations, at least 0; got {format_version}")
+        self.format_version = format_version
+        self.migrate_format = migrate_format
         named = [layout.table for layout in tables]
         for table in named:
             if named.count(table) > 1:

@@ -55,3 +55,8 @@ class TestTheGitStoreKeepsTheL3Contract(DurableStoreContract):
 
 class TestCollectionsOverTheGitStore(CollectionOverStoreContract):
     """a collection over this store, with no L2 and with L2."""
+
+    def caller_transaction(self, store: Any) -> contextlib.AbstractAsyncContextManager[Any]:  # type: ignore[override]
+        """the git store's caller transaction is a change set, which opens its own ``CallerTransaction``."""
+        change: contextlib.AbstractAsyncContextManager[Any] = store.repo.change("contract: a caller's transaction")
+        return change

@@ -1152,6 +1152,28 @@ class BaseCollection(ABC, Generic[EntityT]):
         del entity_id, conn
         return None
 
+    async def delete_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> None:
+        """delete one entity's row inside a caller's open transaction, to commit or roll back with it.
+
+        Public extension point, paired with :meth:`delete_from_store`, as
+        :meth:`fetch_from_store_in_transaction` is with :meth:`fetch_from_store`: what
+        ``delete(entity_id, conn=conn)`` sends. The default refuses: a collection that cannot write on the caller's
+        connection says so rather than deleting outside the transaction.
+        :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` and
+        :class:`~threetears.core.collections.durable_store.DurableStoreCollection` delete through their durable
+        store on ``conn``.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when this collection cannot delete on a caller's connection
+        """
+        del entity_id, conn
+        raise ValueError(f"{type(self).__name__} cannot delete inside a caller's transaction (conn=)")
+
     async def fetch_from_store_with_tier(self, entity_id: Any) -> tuple[dict[str, Any] | None, ReadTier]:
         """the read a pull-through makes past L2, and the tier that answered it, for the tier counts.
 
@@ -5566,14 +5588,25 @@ class BaseCollection(ABC, Generic[EntityT]):
         return result
 
     @traced()
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         """delete entity from all tiers.
+
+        **Joining a caller's transaction evicts nothing until it ends**, as ``save_entity(conn=...)``: with
+        ``conn``, the row is deleted from L3 inside the caller's transaction
+        (:meth:`delete_from_store_in_transaction`), and the
+        :class:`~threetears.core.collections.caller_transaction.CallerTransaction` that opened it evicts the key
+        from L1 and L2 and broadcasts once the transaction has committed or rolled back.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in
             declared column order (composite-pk)
         :ptype entity_id: Any
+        :param conn: the caller's connection, its transaction opened by ``CallerTransaction``; ``None`` deletes in
+            the collection's own L3 write
+        :ptype conn: Any
         :return: always ``True`` (delete is idempotent across tiers)
         :rtype: bool
+        :raises ValueError: with ``conn``, when its transaction was not opened by ``CallerTransaction``, the
+            collection commits L2-first or defers its L3 writes, or cannot delete on a caller's connection
         :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
             the delete; the row is still there for every other replica
         :raises GenerationUnavailableError: when a switched-on collection
@@ -5582,6 +5615,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             eviction was broadcast
         """
         self._set_span_table()
+        if conn is not None:
+            await self._delete_in_caller_transaction(entity_id, conn)
+            return True
         if self.writes_l2_first:
             return await self._delete_l2_first(entity_id)
         # read before it goes, and only when the message must carry columns of it
@@ -5605,6 +5641,28 @@ class BaseCollection(ABC, Generic[EntityT]):
         if bump.failure is not None:
             raise bump.failure
         return True
+
+    async def _delete_in_caller_transaction(self, entity_id: Any, conn: Any) -> None:
+        """delete a row in a caller's transaction, enrolled so the transaction evicts it from every cache when it ends.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the transaction was not opened by ``CallerTransaction``, the collection commits
+            L2-first or defers its L3 writes, or cannot delete on a caller's connection
+        """
+        if self.writes_l2_first or self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__} commits L2-first or defers its L3 writes, so a delete cannot join a caller's "
+                f"transaction: the row would leave L3 outside it"
+            )
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete")
+        # enrolled before the write, so a delete whose outcome is unknown is settled with the rest
+        transaction.enroll(self, entity_id)
+        await self.delete_from_store_in_transaction(entity_id, conn=conn)
 
     @traced()
     async def l2_cas_mutate(

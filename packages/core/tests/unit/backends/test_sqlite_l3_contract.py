@@ -170,6 +170,61 @@ class TestTheFile:
         await store.health()
 
 
+class TestTheApplicationsSchemaVersion:
+    """the application's own tables carry a version; an older file is migrated on open, a newer one refused."""
+
+    async def test_an_older_file_is_migrated_once(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.sqlite"
+        async with SqliteL3Backend(path) as first:
+            first.register_schema("things", _schema())
+            await first.upsert("things", {"id": "a", "value": "old"})
+        calls: list[int] = []
+
+        def rename(conn: sqlite3.Connection, from_version: int) -> None:
+            calls.append(from_version)
+            conn.execute('ALTER TABLE things RENAME COLUMN "value" TO "text"')
+
+        renamed = TableSchema(
+            name="things",
+            primary_key="id",
+            columns=[Column("id", STRING_TYPE), Column("text", STRING_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
+        )
+        for _ in range(2):
+            async with SqliteL3Backend(path, schema_version=1, migrate=rename) as second:
+                second.register_schema("things", renamed)
+                assert await second.fetch_one("things", {"id": "a"}) == {"id": "a", "text": "old"}
+        assert calls == [0]
+
+    async def test_a_migration_that_raises_changes_nothing(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.sqlite"
+        async with SqliteL3Backend(path) as first:
+            first.register_schema("things", _schema())
+
+        def half(conn: sqlite3.Connection, from_version: int) -> None:
+            conn.execute('ALTER TABLE things RENAME COLUMN "value" TO "text"')
+            raise RuntimeError("half way")
+
+        with pytest.raises(RuntimeError, match="half way"):
+            SqliteL3Backend(path, schema_version=1, migrate=half).open()
+        async with SqliteL3Backend(path) as again:
+            again.register_schema("things", _schema())
+
+    async def test_a_newer_file_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.sqlite"
+        async with SqliteL3Backend(path, schema_version=3, migrate=lambda conn, version: None):
+            pass
+        with pytest.raises(SqliteStoreFormatError, match="version 3"):
+            SqliteL3Backend(path, schema_version=2).open()
+
+    async def test_an_older_file_with_no_migrate_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.sqlite"
+        async with SqliteL3Backend(path):
+            pass
+        with pytest.raises(SqliteStoreFormatError, match="no migrate"):
+            SqliteL3Backend(path, schema_version=1).open()
+
+
 class TestOneWriterProcess:
     """many tasks of the one process writing at once: every write lands, and a transaction is never interleaved."""
 
