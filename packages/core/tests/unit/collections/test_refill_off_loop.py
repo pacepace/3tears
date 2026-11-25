@@ -304,8 +304,11 @@ class TestTheLoopRunsWhileARefillReadsItsRows:
         # a page's rows as read are freed where its coerce runs, and the coerced rows where the refill empties the
         # page once they are put: on a worker thread for a long page (the old refill freed both on the loop)
         l3 = _Paged(6000)
+        # the earlier tests' garbage collected on a thread, then the record cleared: a full collection walks the whole
+        # process's heap, and on the loop it held it 0.86 s in a whole collections run (the loop-stall guard,
+        # markpace-mbp, 2026-11-25). The collection after the refill stays on the loop: what it frees there counts
+        await asyncio.to_thread(gc.collect)
         _Freed.freed.clear()
-        gc.collect()
         _, written = await _refill(l3)
         gc.collect()
         assert written == 6000 and l3.answered[0] == _PAGE_SIZE + 1 and max(l3.answered) > 2000, l3.answered

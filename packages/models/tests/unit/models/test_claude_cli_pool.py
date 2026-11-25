@@ -2090,10 +2090,12 @@ class TestTheLearnedPromptsAreBounded:
         await _call(pool, Options(system_prompt=prompt))
         del prompt
         FakeSession.instances = []
-        gc.collect()
+        # each full collection on a thread: it walks the whole process's heap, which on the loop held it 0.27 s in a
+        # whole models run (the loop-stall guard, brooks-14th-mbp, 2026-11-25)
+        await asyncio.to_thread(gc.collect)
         assert held() is not None, "nothing held the prompt, so its release proves nothing"
         await pool.aclose()
-        gc.collect()
+        await asyncio.to_thread(gc.collect)
         assert held() is None, "a closed pool still holds a caller's prompt"
 
 
