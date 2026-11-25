@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 from typing import Any
 
@@ -24,6 +25,7 @@ import pytest
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core import packed_keys
 from threetears.core.collections.l1_fence import FENCE_ERA_CHANGES, L1Fence
+from threetears.core.collections import flush
 from threetears.core.collections.flush import WriteBuffer
 
 
@@ -235,6 +237,59 @@ class TestTheWriteBuffer:
         held = l1.execute_query("SELECT key FROM write_buffer")
         assert [row["key"] for row in held] == ["t:7"]
         assert [w.data for w in await buffer.drain()] == [{"id": 7, "newer": True}]
+
+    async def test_a_drain_reads_its_durable_rows_on_a_thread_and_claims_them_a_slice_a_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a drain reads its durable rows on the loop's thread, or claims them all in one turn of the loop:
+        33,786 rows' read and their bisections (``packed_keys.find_sorted``) held it 0.30-0.46 s, past the loop-stall
+        guard's limit (brooks-5950x and brooks-nas, 2026-11-25)."""
+        loop_thread = threading.get_ident()
+        reads: list[int] = []
+
+        class _Recording(SQLiteBackend):
+            def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+                if "write_buffer" in sql:
+                    reads.append(threading.get_ident())
+                return super().execute_query(sql, params)
+
+        buffer = WriteBuffer(_Recording(":memory:"))
+        # the buffer's own names, looked up as names: the slice a turn and the run whose bisection is watched
+        private = ("_CLAIMED_PER_TURN", "_Run")
+        per_turn, run_class = (getattr(flush, name) for name in private)
+        count = 4 * per_turn
+        for i in range(count):
+            await buffer.add("t", i, _write(i))
+            if not i % 128:
+                # setup: each add's L1 upsert runs on the loop, 2,048 back to back held it 0.36 s on the pool
+                await asyncio.sleep(0)
+        ticks = 0
+        stop = False
+        # the ticker's count at each claimed row's bisection: the same count throughout means one turn
+        at_find: list[int] = []
+        find = run_class.find
+
+        def recorded(run: Any, text: str) -> int:
+            at_find.append(ticks)
+            return int(find(run, text))
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not stop:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        monkeypatch.setattr(run_class, "find", recorded)
+        task = asyncio.create_task(ticker())
+        try:
+            claimed = await buffer.drain()
+        finally:
+            stop = True
+            await task
+        assert len(claimed) == count
+        assert reads and loop_thread not in reads, "the durable rows were read on the loop's thread"
+        assert len(at_find) == count
+        assert len(set(at_find)) >= 4, "every row was claimed in one turn of the loop"
 
     async def test_a_flush_and_saves_racing_on_the_loop_lose_no_newer_write(self) -> None:
         """Two coroutines: a flush drains and acks write by write, yielding between, while saves rewrite the same keys.

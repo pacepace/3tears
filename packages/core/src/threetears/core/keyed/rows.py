@@ -41,7 +41,7 @@ from typing import Any, Literal, overload
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import L3AnswerCutError
-from threetears.core.keyed.binding import binder_for
+from threetears.core.keyed.binding import binder_for, key_chunks_off_loop
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -68,7 +68,6 @@ from threetears.interfaces.keyed.rows import (
     KeyValues,
     KeyTooWide,
     declared_key,
-    key_chunks,
     keyed_read_statement,
 )
 
@@ -248,7 +247,7 @@ async def read_keyed(
 
     rows: list[Any] = []
     fit = _Fit()
-    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch, binder):
+    for chunk in await key_chunks_off_loop(keys, key_batch_for(conn) if batch is None else batch, binder):
         for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
             if records:
                 rows.extend(answered)
@@ -311,7 +310,7 @@ async def read_keyed_arrow(
 
     tables: list[Any] = []
     fit = _Fit()
-    for chunk in key_chunks(keys, key_batch_for(conn) if batch is None else batch, binder):
+    for chunk in await key_chunks_off_loop(keys, key_batch_for(conn) if batch is None else batch, binder):
         tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit)
     return tables
 

@@ -23,24 +23,27 @@ immutable, so a custom plan holds the array as a constant and plans as it does a
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Any, Final
 
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import ThreadedDuckDB
+from threetears.core.process_workers import ProcessWorkers
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
-from threetears.interfaces.keyed.rows import PLAIN_KEYS, BindKind, KeyBatch, KeyBinder, KeyChunk, SplitText
+from threetears.interfaces.keyed.rows import PLAIN_KEYS, BindKind, KeyBatch, KeyBinder, KeyChunk, SplitText, key_chunks
 
 try:
     import numpy as np
     import pyarrow as pa
     import pyarrow.compute as pc
+    import pyarrow.ipc as pa_ipc
 
     _ARROW = True
 except ImportError:  # NOSILENT: the arrow extra is optional; with no pyarrow a batch binds its plain lists
     _ARROW = False
 
-__all__ = ["binder_for"]
+__all__ = ["binder_for", "key_chunks_off_loop"]
 
 #: each byte's two lowercase hex digits as one 16-bit cell (the two ASCII bytes in memory order): a UUID's 16 bytes
 #: written as its 32 digits in one NumPy take of 16 cells (2,000 UUIDs: 25 us, against 157 taking 32 single bytes)
@@ -196,6 +199,104 @@ def _first_of_each(columns: Sequence[Any]) -> Any:
     return pc.index_in(pc.unique(combined), value_set=combined)
 
 
+def _distinct_columns(columns: Sequence[Any]) -> tuple[Any, ...]:
+    """Arrow key columns' distinct keys, in the order first named, one Arrow array a column.
+
+    :param columns: the key columns, each one Arrow array
+    :ptype columns: Sequence[pyarrow.Array]
+    :return: the distinct keys' columns
+    :rtype: tuple[pyarrow.Array, ...]
+    """
+    if len(columns) == 1:
+        return (_unique(columns[0]),)
+    names = [f"k{index}" for index in range(len(columns))]
+    # An extension column (a UUID) is coded by its storage and made its own type again
+    stored = [column.storage if isinstance(column, pa.ExtensionArray) else column for column in columns]
+    grouped = pa.table(stored, names=names).take(_first_of_each(stored))
+    return tuple(
+        pa.ExtensionArray.from_storage(column.type, grouped.column(name).combine_chunks())
+        if isinstance(column, pa.ExtensionArray)
+        else grouped.column(name).combine_chunks()
+        for name, column in zip(names, columns, strict=True)
+    )
+
+
+#: below this many keys a batch's distinct keys are found on the caller's thread (the event loop), from it on in
+#: :data:`_WORKERS`. Why: a hash pass over every key is CPU that grows with the keys; on the loop a copy's page of
+#: 600,000 text keys held it 0.45 s (``_unique`` under ``read_keyed_arrow``, the loop-stall guard on brooks-5950x and
+#: brooks-nas, 2026-11-25). Measured 2026-11-25 (macOS arm64, Python 3.14, pyarrow 25, load average 23-30 from other
+#: suites; ``key_chunks_off_loop``'s two paths, the loop thread's CPU, median of 7, three runs), one text key column:
+#: on the loop 0.13-0.15 ms at 2,000 keys, 0.52-0.59 ms at 10,000, 2.3-2.6 ms at 50,000, 11-17 ms at 200,000 and
+#: 51-71 ms at 600,000; through the worker 0.39-0.46 ms, 0.39-0.49 ms, 0.47-0.61 ms, 0.63-0.75 ms and 0.94-1.2 ms (the
+#: IPC written on a thread, the answer read back zero-copy). The two cross at about 10,000 keys
+_INLINE_DISTINCT_KEYS: Final = 10_000
+
+#: the worker a batch past :data:`_INLINE_DISTINCT_KEYS` keys is made distinct in: made at its first such batch
+_WORKERS: Final = ProcessWorkers(workers=1, name="keyed reads' distinct keys", process_name="3t-keyed")
+
+
+def _ipc_of(columns: Sequence[Any]) -> bytes:
+    """key columns as one Arrow IPC stream (``k0``, ``k1``, ...), each column combined first: on a thread.
+
+    :param columns: the key columns, Arrow arrays or chunked arrays
+    :ptype columns: Sequence[pyarrow.Array | pyarrow.ChunkedArray]
+    :return: the stream's bytes
+    :rtype: bytes
+    """
+    table = pa.table([_as_arrow(column) for column in columns], names=[f"k{at}" for at in range(len(columns))])
+    sink = pa.BufferOutputStream()
+    with pa_ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return bytes(sink.getvalue())
+
+
+def _columns_of(data: bytes) -> tuple[Any, ...]:
+    """the key columns of :func:`_ipc_of`'s stream, each one array (its buffers the bytes', not copied).
+
+    :param data: the stream's bytes
+    :ptype data: bytes
+    :return: the columns
+    :rtype: tuple[pyarrow.Array, ...]
+    """
+    table = pa_ipc.open_stream(pa.py_buffer(data)).read_all()
+    return tuple(column.combine_chunks() for column in table.columns)
+
+
+def _distinct_job(columns: bytes) -> bytes:
+    """a key batch's distinct keys (:func:`_distinct_columns`): the worker's job.
+
+    :param columns: the key columns, IPC (:func:`_ipc_of`)
+    :ptype columns: bytes
+    :return: the distinct keys' columns, IPC
+    :rtype: bytes
+    """
+    return _ipc_of(_distinct_columns(_columns_of(columns)))
+
+
+async def key_chunks_off_loop(keys: KeyBatch, batch: int, binder: KeyBinder) -> list[KeyChunk]:
+    """:func:`~threetears.interfaces.keyed.rows.key_chunks`, a batch's distinct keys found in a worker process when it
+    binds in Arrow and holds :data:`_INLINE_DISTINCT_KEYS` keys or more; on the loop otherwise, as ``key_chunks``.
+
+    :param keys: the keys
+    :ptype keys: KeyBatch
+    :param batch: the most keys a statement names
+    :ptype batch: int
+    :param binder: how the key columns are read (:func:`binder_for`)
+    :ptype binder: KeyBinder
+    :return: the chunks: the distinct keys, ``batch`` of them a chunk, each a zero-copy slice
+    :rtype: list[KeyChunk]
+    :raises ValueError: when ``batch`` is under one
+    """
+    if not (isinstance(binder, _ArrowKeys) and keys.keys and len(keys.keys[0]) >= _INLINE_DISTINCT_KEYS):
+        return key_chunks(keys, batch, binder)
+    if batch < 1:
+        raise ValueError(f"a keyed read names at least one key a statement, got {batch}")
+    data = await asyncio.to_thread(_ipc_of, keys.keys)
+    unique: KeyChunk = _columns_of(await _WORKERS.run(_distinct_job, data))
+    total = len(unique[0])
+    return [tuple(column[start : start + batch] for column in unique) for start in range(0, total, batch)]
+
+
 class _ArrowKeys:
     """:class:`~threetears.interfaces.keyed.rows.KeyBinder` of Arrow columns: distinct keys by Arrow's hash
     kernels, chunks as zero-copy slices, each column bound as ONE text split back in SQL (:class:`SplitText`; the
@@ -208,19 +309,7 @@ class _ArrowKeys:
 
     def distinct(self, keys: KeyBatch) -> KeyChunk:
         """the batch's distinct keys, in the order first named, one Arrow array a column."""
-        columns = [_as_arrow(column) for column in keys.keys]
-        if len(columns) == 1:
-            return (_unique(columns[0]),)
-        names = [f"k{index}" for index in range(len(columns))]
-        # An extension column (a UUID) is coded by its storage and made its own type again
-        stored = [column.storage if isinstance(column, pa.ExtensionArray) else column for column in columns]
-        grouped = pa.table(stored, names=names).take(_first_of_each(stored))
-        return tuple(
-            pa.ExtensionArray.from_storage(column.type, grouped.column(name).combine_chunks())
-            if isinstance(column, pa.ExtensionArray)
-            else grouped.column(name).combine_chunks()
-            for name, column in zip(names, columns, strict=True)
-        )
+        return _distinct_columns([_as_arrow(column) for column in keys.keys])
 
     def array(self, values: Sequence[Any], cast: str, natively: bool) -> tuple[Any, BindKind]:
         """one key column as ONE bind: its split text, its array's literal, or (in-process DuckDB) its texts."""
