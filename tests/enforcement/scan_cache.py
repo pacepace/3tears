@@ -1,71 +1,31 @@
-"""an on-disk memo for the workspace scans behind the enforcement gates, keyed by what they read.
+"""the gates' side of the enforcement scan cache: the code its whole-workspace scans run, and what each reads.
 
-The scans read every python file in the workspace, and a gate's module-scoped fixture is rebuilt
-in every process that runs one of its tests: each xdist worker, and each batch a test pool cuts
-from the file. A :class:`ScanCache` keeps what a scan computed, so the next process that reads the
-same bytes takes the answer instead of walking the trees again.
-
-**What a value is keyed by.** Each computation declares its inputs as :class:`ScanInputs`: the files
-it reads (hashed by content, never by modification time, which several filesystems cannot tell
-apart across quick rewrites), the directories it may list, the programs it may start and any other
-fact its answer depends on (a git tree id). The key builders for the gates are the public
-functions below, so they are tested as the gates use them. The store's name carries a key of the
-code that computes: the source of every ``threetears`` module in the static import closure of the
-modules the scans call into, read from wherever they are installed (an editable install pointing at
-another checkout included), plus this directory's gate shells and helpers, the lockfile and the
-interpreter's version. The closure is computed from the source, not from what the session happens
-to have imported, so every process computes the same key whatever else it ran.
-
-**What is never stored.** A computed value is stored only when, while it ran, the computation
-opened no file, listed no directory and started no program outside its declared inputs, as the
-interpreter's audit events report them (``open``, ``os.scandir``, ``os.listdir``,
-``subprocess.Popen`` and the ``os`` spawn calls), and when its inputs hash the same afterwards as
-before. A scan that starts reading something its key does not cover is answered and not stored,
-with a :class:`ScanCacheWarning`, so a key list that drifts from its scan costs speed, never a
-stale verdict. What the audit cannot see: a bare ``stat`` (a scan that decides by whether a path
-exists, outside the files and directories it declares); a read on another thread than the one
-computing (recording is per thread, and the scans start none); sockets and other non-file reads; a
-name learned from listing a declared directory, which is not keyed unless the file it names is
-declared; and a C extension reading through ``fopen``, which raises no event. What it leaves out on
-purpose: the import system's own listings and opens, while a module the scan imports is loaded.
-
-**The hook costs nothing until a scan computes.** A Python audit hook runs a Python call for every
-audit event in the process (``id``, ``compile``, ``import``, ...) and cannot be removed once added,
-so it is added on the first computation that records, never at import: a process whose scans
-all come from the store, and every test that never asks for a scan, runs without it.
-
-**Concurrency.** Any number of processes may read and write one directory at once: up to four xdist
-workers in one checkout, a pool's batches in one workspace. A store is written whole to a temporary
-file beside it and renamed over it, so a reader sees an old store or a new one, never a partial
-one. A store carries a checksum of its payload, and one that is truncated, corrupt or of another
-format reads as empty. Writers never wait for each other: the last rename wins, and every store
-holds a complete answer for the keys its writer looked up.
-
-**Nothing here is required.** A missing directory is created; one that cannot be created, read or
-written (a read-only checkout) leaves every lookup a miss, the scan is computed as it would be
-without the cache, and the first failed write warns. The default directory,
-``.cache/enforcement-scans`` under the repo root, is gitignored.
+The cache itself, :class:`ScanCache`, and the per-file walk most gates make, ``file_facts``, live in
+:mod:`threetears.enforcement.common.scan_cache`, whose docstring says what a value is keyed by,
+what is never stored and how concurrent processes share a directory. Here: :func:`gate_scan_cache`,
+the cache the gates' fixture hands out, keyed by the code the scans below run, and the key builders
+for those scans (the private-binding scan, the public API's surfaces and names), public so they are
+tested as the gates use them.
 """
 
 from __future__ import annotations
 
 import ast
-import hashlib
-import importlib.util
-import inspect
 import os
-import pickle
 import subprocess
-import sys
-import tempfile
-import threading
-import warnings
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
 
 from threetears.enforcement.common import clear_parse_cache, find_local_src_roots
+from threetears.enforcement.common.scan_cache import (
+    CACHE_DIRECTORY,
+    ImportIndex,
+    ScanCache,
+    ScanInputs,
+    code_key,
+    installed_module_file,
+    module_closure,
+)
 from threetears.enforcement.release import surface_at, surface_now
 from threetears.enforcement.underscore_access import PrivateBindingScan, scan_private_bindings
 from threetears.observe import BuildOnce
@@ -82,449 +42,41 @@ SCANNER_MODULES = tuple(
                 surface_now,
                 scan_private_bindings,
                 BuildOnce,
+                ScanCache,
             )
         }
     )
 )
 
-#: where :meth:`ScanCache.for_repo` keeps its stores, under the repo root (gitignored)
-CACHE_DIRECTORY = Path(".cache") / "enforcement-scans"
 
-#: the first line of every store; a file without it is not one, and reads as empty
-_MAGIC = b"3tears-enforcement-scan-cache 2\n"
+def gate_scan_cache(repo_root: Path) -> ScanCache:
+    """the cache a gate in this directory uses: under the repo root, keyed by the code its scans run.
 
-#: a temporary file older than this was left by a writer that died before its rename
-_ORPHAN_AGE_S = 3600.0
+    The code key hashes the import closure of the modules the scans below call into
+    (:data:`SCANNER_MODULES`), as installed, so it is the same in every process, with this
+    directory's gate shells and helpers, the lockfile and the interpreter's version. The closure's
+    imports come from an :class:`ImportIndex` beside the stores, so a warm process reads each
+    module of it and parses none.
 
-#: a store written under other code is removed once nothing has rewritten it for this long
-_OTHER_CODE_AGE_S = 86400.0
+    :param repo_root: the repo's root
+    :ptype repo_root: Path
+    :return: the cache
+    :rtype: ScanCache
+    :raises OSError: when a file of the code cannot be read
+    """
+    directory = repo_root / CACHE_DIRECTORY
+    gates = sorted((repo_root / "tests" / "enforcement").glob("*.py"))
+    index = ImportIndex(directory)
+    modules = module_closure(SCANNER_MODULES, installed_module_file, index)
+    index.save()
+    return ScanCache(directory=directory, code=code_key(modules, [*gates, repo_root / "uv.lock"], repo_root))
+
 
 #: directories a workspace walk never enters, as the scans' own file discovery skips them
 _UNSCANNED_DIRECTORIES = frozenset({".venv", "node_modules", ".git", "__pycache__"})
 
 #: config files the private-binding scan reads ruff's per-file ignores from
 _RUFF_CONFIG_NAMES = frozenset({"pyproject.toml", "ruff.toml", ".ruff.toml"})
-
-#: what a computation may open outside its inputs: the interpreter's own code, never data
-_CODE_SUFFIXES = frozenset({".py", ".pyc", ".so"})
-_CODE_ROOTS = tuple(sorted({os.path.realpath(prefix) for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix)}))
-
-#: the audit events a computation's reads and program starts arrive as
-_PROCESS_EVENTS = frozenset({"subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn"})
-_WATCHED_EVENTS = frozenset({"open", "os.scandir", "os.listdir"}) | _PROCESS_EVENTS
-
-#: per thread, the audit events seen while a computation runs; absent while none does
-_RECORDING = threading.local()
-
-
-def _audit(event: str, args: tuple[Any, ...]) -> None:
-    """keep a watched event for the computation running on this thread, if one is.
-
-    an event the import system raises is never kept: loading a module the computation imports for the
-    first time lists each ``sys.path`` directory and opens the module's code, which is the interpreter
-    loading code, not the scan reading an input. Whether it happens depends only on what the process had
-    imported before, so keeping it would refuse a scan in a fresh process and store it in a warm one.
-    """
-    if event in _WATCHED_EVENTS:
-        log = getattr(_RECORDING, "log", None)
-        if log is not None and not _importing():
-            log.append((event, args))
-
-
-def _importing() -> bool:
-    """whether the import system raised the event being audited, so it is the interpreter loading code."""
-    frame = inspect.currentframe()
-    while frame is not None:
-        if frame.f_code.co_filename.startswith("<frozen importlib"):
-            return True
-        frame = frame.f_back
-    return False
-
-
-def _install_audit() -> bool:
-    """add :func:`_audit` to this process's audit hooks; :data:`_AUDIT` makes it once."""
-    sys.addaudithook(_audit)
-    return True
-
-
-#: the hook, added once per process on the first computation that records
-_AUDIT: BuildOnce[str, bool] = BuildOnce()
-
-
-class ScanCacheWarning(UserWarning):
-    """a value was computed and not stored: its scan read outside its key, or the store is unwritable."""
-
-
-def content_key(*parts: str | bytes) -> str:
-    """one key for an ordered sequence of parts, each length-prefixed so no two sequences collide.
-
-    :param parts: the parts, text or bytes
-    :ptype parts: str | bytes
-    :return: a hex digest
-    :rtype: str
-    """
-    digest = hashlib.blake2b(digest_size=32)
-    for part in parts:
-        data = part.encode("utf-8") if isinstance(part, str) else part
-        digest.update(len(data).to_bytes(8, "big"))
-        digest.update(data)
-    return digest.hexdigest()
-
-
-def files_key(paths: Iterable[Path], root: Path) -> str:
-    """one key for a set of files: each one's path relative to *root*, and its content.
-
-    :param paths: the files
-    :ptype paths: Iterable[Path]
-    :param root: what each path is named relative to
-    :ptype root: Path
-    :return: a hex digest that changes when a file is added, removed, renamed or edited
-    :rtype: str
-    :raises OSError: when a file cannot be read
-    """
-    parts: list[str | bytes] = []
-    for path in sorted(set(paths)):
-        parts.append(path.relative_to(root).as_posix())
-        parts.append(path.read_bytes())
-    return content_key(*parts)
-
-
-def installed_module_file(name: str) -> Path | None:
-    """the source file of ``threetears`` module *name* as installed, found without importing it.
-
-    The leaf package (``threetears.core``, ``threetears.agent.memory``) is located through the import
-    system, so an editable install pointing at another checkout answers with that checkout's file;
-    the rest of the dotted name is a path below it.
-
-    :param name: a dotted module name under ``threetears``
-    :ptype name: str
-    :return: its ``.py`` file (a package's ``__init__.py``), or ``None`` when no such module is installed
-    :rtype: Path | None
-    """
-    parts = name.split(".")
-    depth = 3 if len(parts) > 2 and parts[1] == "agent" else 2
-    if parts[0] != "threetears" or len(parts) < depth:
-        return None
-    try:
-        spec = importlib.util.find_spec(".".join(parts[:depth]))
-    except ModuleNotFoundError:
-        return None
-    if spec is None or not spec.submodule_search_locations:
-        return None
-    rest = parts[depth:]
-    for location in spec.submodule_search_locations:
-        base = Path(location).joinpath(*rest)
-        for candidate in (base / "__init__.py", base.with_suffix(".py") if rest else None):
-            if candidate is not None and candidate.is_file():
-                return candidate
-    return None
-
-
-def module_closure(entries: Iterable[str], locate: Callable[[str], Path | None]) -> dict[str, Path]:
-    """every ``threetears`` module the *entries* import at any depth, with each one's source file.
-
-    Read statically from each module's imports, so the answer is the same whatever the process has
-    imported: every ``import`` and ``from ... import`` of a ``threetears`` module (relative ones
-    resolved), each imported name tried as a submodule too, and every package above a module, whose
-    ``__init__`` runs on import. A name *locate* cannot find is not installed, so runs nowhere.
-
-    :param entries: dotted module names to start from
-    :ptype entries: Iterable[str]
-    :param locate: a module's source file, or ``None`` (:func:`installed_module_file`)
-    :ptype locate: Callable[[str], Path | None]
-    :return: module name -> its source file
-    :rtype: dict[str, Path]
-    :raises OSError: when a source file cannot be read
-    :raises SyntaxError: when a source file is not valid python
-    """
-    found: dict[str, Path] = {}
-    pending = list(entries)
-    while pending:
-        name = pending.pop()
-        if name in found:
-            continue
-        path = locate(name)
-        if path is None:
-            continue
-        found[name] = path
-        pending.extend(".".join(name.split(".")[:depth]) for depth in range(2, name.count(".") + 1))
-        package = name if path.name == "__init__.py" else name.rpartition(".")[0]
-        for node in ast.walk(ast.parse(path.read_bytes(), filename=str(path))):
-            if isinstance(node, ast.Import):
-                pending.extend(alias.name for alias in node.names if alias.name.startswith("threetears."))
-            elif isinstance(node, ast.ImportFrom):
-                base = node.module or ""
-                if node.level:
-                    anchor = package.split(".")[: len(package.split(".")) - node.level + 1]
-                    base = ".".join([*anchor, *([node.module] if node.module else [])])
-                if base.startswith("threetears."):
-                    pending.append(base)
-                    pending.extend(f"{base}.{alias.name}" for alias in node.names)
-    return found
-
-
-def code_key(modules: dict[str, Path], files: Iterable[Path], root: Path) -> str:
-    """one key for the code that computes: each module's name and source, and each file's content.
-
-    :param modules: module name -> source file (:func:`module_closure`)
-    :ptype modules: dict[str, Path]
-    :param files: further files, named relative to *root*
-    :ptype files: Iterable[Path]
-    :param root: what each file is named relative to
-    :ptype root: Path
-    :return: a hex digest
-    :rtype: str
-    :raises OSError: when a source file cannot be read
-    """
-    parts: list[str | bytes] = [sys.version]
-    for name in sorted(modules):
-        parts.append(name)
-        parts.append(modules[name].read_bytes())
-    parts.append(files_key(files, root))
-    return content_key(*parts)
-
-
-@dataclass(frozen=True)
-class ScanInputs:
-    """everything one computation reads, declared before it runs.
-
-    :ivar root: what files and directories are named relative to; every one sits under it
-    :ivar files: files it reads, hashed by content
-    :ivar listed: directories it may list, at any depth; whatever it reads from what it finds there
-        must be in ``files``
-    :ivar facts: anything else its value depends on, as text (a git tree id, the root's location)
-    :ivar commands: programs it may start, by name; ``facts`` must pin what they answer
-    """
-
-    root: Path
-    files: tuple[Path, ...] = ()
-    listed: tuple[Path, ...] = ()
-    facts: tuple[str, ...] = ()
-    commands: frozenset[str] = frozenset()
-
-    def key(self) -> str:
-        """the content key: the facts, the files' names and bytes, the directories and the programs.
-
-        :return: a hex digest
-        :rtype: str
-        :raises OSError: when a file cannot be read
-        """
-        listed = [directory.relative_to(self.root).as_posix() for directory in sorted(self.listed)]
-        return content_key(
-            *self.facts, files_key(self.files, self.root), "\n".join(listed), "\n".join(sorted(self.commands))
-        )
-
-    def outside(self, events: Iterable[tuple[str, tuple[Any, ...]]]) -> list[str]:
-        """each recorded read or program start these inputs do not declare.
-
-        :param events: audit events, as ``(event, args)``
-        :ptype events: Iterable[tuple[str, tuple[Any, ...]]]
-        :return: one line per undeclared access, empty when every one was declared
-        :rtype: list[str]
-        """
-        files = {os.path.abspath(path) for path in self.files} | {os.path.realpath(path) for path in self.files}
-        listed = [os.path.abspath(directory) for directory in self.listed]
-        listed += [os.path.realpath(directory) for directory in self.listed]
-
-        def declared(event: str, path: str) -> bool:
-            if event == "open":
-                return path in files or path == os.devnull or _is_code(path)
-            return any(path == directory or path.startswith(directory + os.sep) for directory in listed)
-
-        found: list[str] = []
-        for event, args in events:
-            if event in _PROCESS_EVENTS:
-                program = _program(event, args)
-                if program not in self.commands:
-                    found.append(f"{event} {program}")
-                continue
-            target = args[0] if args else None
-            if isinstance(target, int):
-                continue  # a descriptor already opened, whose open was itself recorded
-            named = os.path.abspath(os.fsdecode(target) if target is not None else os.getcwd())
-            # the name as given first: resolving every path a whole-repo walk lists costs a stat per part
-            if not declared(event, named) and not declared(event, os.path.realpath(named)):
-                found.append(f"{event} {named}")
-        return found
-
-
-def _program(event: str, args: tuple[Any, ...]) -> str:
-    """the name of the program a process event starts."""
-    if event == "subprocess.Popen":
-        executable, argv = args[0], args[1]
-        named = executable or (argv if isinstance(argv, str | bytes | os.PathLike) else argv[0])
-    elif event == "os.system":
-        named = os.fsdecode(args[0]).split()[0]
-    else:
-        named = args[1] if event == "os.spawn" else args[0]
-    return Path(os.fsdecode(named)).name
-
-
-def _is_code(path: str) -> bool:
-    """whether *path* is the interpreter's own code: a module, or its bytecode, under its installation prefix.
-
-    an import's bytecode write goes through a temporary name (``x.cpython-314.pyc.<id>``), so anything
-    in a ``__pycache__`` there counts.
-    """
-    parts = Path(path)
-    in_code = parts.suffix in _CODE_SUFFIXES or "__pycache__" in parts.parts
-    return in_code and any(path.startswith(root + os.sep) for root in _CODE_ROOTS)
-
-
-class _Recorded:
-    """record this thread's watched audit events while the block runs."""
-
-    def __enter__(self) -> list[tuple[str, tuple[Any, ...]]]:
-        _AUDIT.get("audit", _install_audit)
-        self.log: list[tuple[str, tuple[Any, ...]]] = []
-        _RECORDING.log = self.log
-        return self.log
-
-    def __exit__(self, *_: object) -> None:
-        _RECORDING.log = None
-
-
-@dataclass(frozen=True)
-class ScanCache:
-    """a directory of stores, each a mapping of content key to computed value.
-
-    :ivar directory: where the stores live; need not exist, nor be writable
-    :ivar code: a key for the code that computes every value; a store written under another is
-        never read
-    :ivar unstored: why each value this cache computed and did not store was not stored
-    """
-
-    directory: Path
-    code: str
-    unstored: list[str] = field(default_factory=list, compare=False)
-
-    @classmethod
-    def for_repo(cls, repo_root: Path) -> ScanCache:
-        """the cache a gate in this directory uses: under the repo root, keyed by the code its scans run.
-
-        The code key hashes the import closure of the modules the scans below call into
-        (:data:`SCANNER_MODULES`), as installed, so it is the same in every process.
-
-        :param repo_root: the repo's root
-        :ptype repo_root: Path
-        :return: the cache
-        :rtype: ScanCache
-        :raises OSError: when a file of the code cannot be read
-        """
-        gates = sorted((repo_root / "tests" / "enforcement").glob("*.py"))
-        modules = module_closure(SCANNER_MODULES, installed_module_file)
-        code = code_key(modules, [*gates, repo_root / "uv.lock"], repo_root)
-        return cls(directory=repo_root / CACHE_DIRECTORY, code=code)
-
-    def memoised[K, V](
-        self, name: str, items: Iterable[K], inputs: Callable[[K], ScanInputs], compute: Callable[[K], V]
-    ) -> dict[K, V]:
-        """each item's value: the stored one when its inputs were computed from before, else ``compute(item)``.
-
-        A computed value is stored only when the computation read nothing its inputs do not
-        declare and its inputs key the same afterwards: a file edited while it was being read is
-        answered for this call and never stored under the content it no longer has. The store is
-        rewritten when anything was computed, holding exactly the keys this call looked up, so an
-        entry no current input needs is dropped, not kept forever.
-
-        :param name: the store, one per kind of value
-        :ptype name: str
-        :param items: what to look up
-        :ptype items: Iterable[K]
-        :param inputs: an item's declared inputs
-        :ptype inputs: Callable[[K], ScanInputs]
-        :param compute: computes one item's value; it must be picklable
-        :ptype compute: Callable[[K], V]
-        :return: item -> value, for every item
-        :rtype: dict[K, V]
-        """
-        stored = self._load(name)
-        values: dict[K, V] = {}
-        kept: dict[str, Any] = {}
-        computed = False
-        for item in items:
-            declared = inputs(item)
-            before = declared.key()
-            if before in kept:
-                values[item] = kept[before]
-            elif before in stored:
-                values[item] = kept[before] = stored[before]
-            else:
-                computed = True
-                with _Recorded() as events:
-                    values[item] = compute(item)
-                undeclared = declared.outside(events)
-                if undeclared:
-                    self._refuse(f"{name} {item!r} read outside its key: " + "; ".join(sorted(set(undeclared))[:5]))
-                elif inputs(item).key() != before:
-                    self._refuse(f"{name} {item!r}: its inputs changed while it was computed")
-                else:
-                    kept[before] = values[item]
-        if computed or kept.keys() != stored.keys():
-            self._store(name, kept)
-        return values
-
-    def _refuse(self, reason: str) -> None:
-        """record why a value was not stored, and warn on the first."""
-        self.unstored.append(reason)
-        if len(self.unstored) == 1:
-            warnings.warn(f"enforcement scan cache: {reason}", ScanCacheWarning, stacklevel=3)
-
-    def _path(self, name: str) -> Path:
-        return self.directory / f"{name}-{self.code[:24]}.pickle"
-
-    def _load(self, name: str) -> dict[str, Any]:
-        """the store's entries, or none when it is absent, unreadable, partial or corrupt."""
-        try:
-            blob = self._path(name).read_bytes()
-        except OSError:
-            return {}
-        header_end = len(_MAGIC) + 64
-        if not blob.startswith(_MAGIC) or blob[header_end : header_end + 1] != b"\n":
-            return {}
-        checksum, payload = blob[len(_MAGIC) : header_end], blob[header_end + 1 :]
-        if hashlib.blake2b(payload, digest_size=32).hexdigest().encode() != checksum:
-            return {}
-        entries: dict[str, Any] = pickle.loads(payload)  # noqa: S301 -- this checkout's own store, checksummed
-        return entries
-
-    def _store(self, name: str, entries: dict[str, Any]) -> None:
-        """write the store whole, then rename it into place; a directory that refuses it is recorded."""
-        payload = pickle.dumps(entries, protocol=pickle.HIGHEST_PROTOCOL)
-        blob = _MAGIC + hashlib.blake2b(payload, digest_size=32).hexdigest().encode() + b"\n" + payload
-        target = self._path(name)
-        try:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            handle, temporary = tempfile.mkstemp(dir=self.directory, prefix=f".{name}-", suffix=".tmp")
-        except OSError as exc:
-            self._refuse(f"{name}: {self.directory} cannot be written ({exc.strerror or exc})")
-            return
-        try:
-            with os.fdopen(handle, "wb") as out:
-                out.write(blob)
-            os.replace(temporary, target)
-        except OSError as exc:
-            Path(temporary).unlink(missing_ok=True)
-            self._refuse(f"{name}: {target} cannot be written ({exc.strerror or exc})")
-            return
-        self._prune(name, target)
-
-    def _prune(self, name: str, kept: Path) -> None:
-        """drop this store's files from other code no run has used for a day, and dead writers' temporaries.
-
-        ages are measured against the store just written, not the clock: a test runner that caches
-        results treats a clock read as an input it cannot replay.
-        """
-        try:
-            now = kept.stat().st_mtime
-            for path in self.directory.glob(f"{name}-*.pickle"):
-                if path != kept and path.stat().st_mtime < now - _OTHER_CODE_AGE_S:
-                    path.unlink(missing_ok=True)
-            for path in self.directory.glob(f".{name}-*.tmp"):
-                if path.stat().st_mtime < now - _ORPHAN_AGE_S:
-                    path.unlink(missing_ok=True)
-        except OSError:
-            return  # pruning is housekeeping: a file another writer removed first is already gone
 
 
 def workspace_files(repo_root: Path) -> tuple[list[Path], list[Path]]:

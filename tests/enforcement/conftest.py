@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.enforcement.scan_cache import ScanCache
+from tests.enforcement.scan_cache import gate_scan_cache
+from threetears.enforcement.common.scan_cache import ScanCache
 from threetears.enforcement.common import clear_parse_cache
 
 _HERE = Path(__file__).parent
@@ -20,7 +21,7 @@ def scan_cache() -> ScanCache:
     :return: the cache under this checkout's ``.cache/enforcement-scans``
     :rtype: ScanCache
     """
-    return ScanCache.for_repo(_REPO_ROOT)
+    return gate_scan_cache(_REPO_ROOT)
 
 
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
