@@ -58,6 +58,7 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 import threetears.core.arrow_keys as arrow_keys  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+import threetears.core.collections.copy_key_work as copy_key_work  # noqa: E402
 import threetears.core.collections.delta_files as delta_files  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
@@ -125,12 +126,31 @@ _LATER = datetime(2026, 11, 4, 3, 0, tzinfo=UTC)
 _OPENED: list[Callable[[], None]] = []
 
 
+class _CountedWorkers(ProcessWorkers):
+    """the copy's worker process, each job sent to it named: a pass's key work runs there, in another process."""
+
+    def __init__(self) -> None:
+        super().__init__(workers=1, name="test copy follower")
+        self.jobs: list[str] = []
+
+    async def run(self, job: Callable[..., Any], *args: Any, inline: bool = False) -> Any:
+        if not inline:
+            self.jobs.append(job.__name__)
+        return await super().run(job, *args, inline=inline)
+
+
+#: one worker process every follower here shares: made at its first job, joined at the interpreter's exit, never one a
+#: test (a follower makes its own when given none, closed only when its run ends, and these tests never run one)
+_WORKERS = _CountedWorkers()
+
+
 @pytest.fixture(autouse=True)
 def _close_what_the_test_opened() -> Iterator[None]:
     """close every DuckDB the test opened (each runs a worker thread a core; test_copy_follower has the account)."""
     yield
     while _OPENED:
         _OPENED.pop()()
+    _WORKERS.jobs.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -353,6 +373,7 @@ def _world(
         stamp_table="scope_epochs",
         recreate=recreate,
         fulls=fulls,
+        drift_workers=_WORKERS,
     )
     follower.register()
     return l3, log, lock, backend, follower
@@ -992,7 +1013,7 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
     race) works out its keys' scopes on the event loop: the copy's held rows beside the rows read, made distinct and
     matched to the page by Arrow kernels on the loop, held it 12.2 s in one page (``distinct_keys`` under
     ``_stage_keyed``), and the keys heard 24.3 s more (``_heard_batch`` under ``_drained``), in the local burst replay of
-    2026-11-25. No serving work may hold the loop: every one runs on a thread, and no turn holds it past 10 ms."""
+    2026-11-25. CPU belongs in a worker process: each runs in the copy's, and no turn holds the loop past 10 ms."""
     key = ("geo_id", "date_created")
     world = _world(key=key, page_size=_LOOP_ROWS)
     l3, log, lock, backend, follower = world
@@ -1023,8 +1044,8 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
     lock.commit("state:VA")
     loop_thread = threading.get_ident()
     on_loop: list[str] = []
-    # the public kernels the stage's work runs through: distinct_keys (made distinct, matched) and key_text_table (the
-    # keys heard, spelled as text)
+    # the public kernels the key work runs through, wherever it runs: distinct_keys (made distinct, matched) and
+    # key_text_table (the keys heard, spelled as text). Seen here only when called in this process, on the loop
     distinct, texts = arrow_keys.distinct_keys, delta_files.key_text_table
 
     def watched_distinct(rows: Any, columns: Sequence[str]) -> Any:
@@ -1037,12 +1058,15 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
             on_loop.append(f"key_text_table of {rows.num_rows} keys")
         return texts(rows, key, instants)
 
-    monkeypatch.setattr(copy_follower, "distinct_keys", watched_distinct)
-    monkeypatch.setattr(copy_follower, "key_text_table", watched_texts)
+    monkeypatch.setattr(copy_key_work, "distinct_keys", watched_distinct)
+    monkeypatch.setattr(copy_key_work, "key_text_table", watched_texts)
     l3.statements = 0
     with turn_holds() as holds:
         assert await follower.catch_up()
     assert on_loop == [], f"the pass ran its keys' Arrow work on the event loop: {on_loop}"
+    assert {"heard_job", "held_scopes_job", "page_scopes_job"} <= set(_WORKERS.jobs), (
+        f"the key work did not run in the copy's worker process: {_WORKERS.jobs}"
+    )
     longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
     assert _same(backend, l3)
@@ -1062,7 +1086,8 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
 ) -> None:
     """Flips if a table waiting for a commit too big to list hears its file's keys in one turn of the loop once it
     reads (the audit's 337,000 keys, the copy answering nothing else meanwhile), or reads the file's rows on the loop:
-    the reach is read on a thread and the keys heard in runs. The change then applies whole, with no L3 statement."""
+    the reach is read on a thread and the keys spelled in the copy's worker process. The change then applies whole, with
+    no L3 statement."""
     monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
     world = _world()
     l3, log, lock, backend, follower = world
@@ -1084,10 +1109,26 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
     staging.mkdir()
     assert _save_arrow(staging, "big", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"]) == lost
     (_volume / lost).parent.mkdir(exist_ok=True)
+    # the file's keys spelled in this process are seen here (key_text_table, under _heard_batch): on the loop they held
+    # one turn 11.1 ms (past the bar, the pool host brooks-14th-mbp, 2026-11-25); they belong in the worker process
+    loop_thread = threading.get_ident()
+    on_loop: list[int] = []
+    texts = delta_files.key_text_table
+
+    def watched_texts(rows: Any, key: Sequence[str], instants: Any = ()) -> Any:
+        if threading.get_ident() == loop_thread:
+            on_loop.append(rows.num_rows)
+        return texts(rows, key, instants)
+
+    monkeypatch.setattr(copy_key_work, "key_text_table", watched_texts)
     with turn_holds() as holds:
         # the writer's file lands whole under its name, as its rename lands it
         (staging / lost).replace(_volume / lost)
         await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=60)
+    assert on_loop == [], f"the file's keys were spelled on the event loop: {on_loop}"
+    assert "heard_job" in _WORKERS.jobs, (
+        f"the file's keys were not spelled in the copy's worker process: {_WORKERS.jobs}"
+    )
     longest = max(seconds for seconds, _ in holds)
     assert longest < _WAIT_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms hearing the file's keys"
     assert await follower.catch_up()

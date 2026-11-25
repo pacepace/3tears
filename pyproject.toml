@@ -638,6 +638,8 @@ module = [
     "threetears.core.collections.complete_copy",
     # and a copy follower's keyed reads and its checkpoint's parts (Arrow IPC)
     "threetears.core.collections.copy_follower",
+    # and its key work in its worker process (Arrow IPC across)
+    "threetears.core.collections.copy_key_work",
     "threetears.core.collections.copy_checkpoint",
     # and a full's parts on the delta-files volume (Arrow IPC)
     "threetears.core.collections.volume_fulls",
