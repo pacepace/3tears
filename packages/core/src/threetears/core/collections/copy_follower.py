@@ -120,6 +120,7 @@ from threetears.observe.metrics import counter, gauge
 from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
 from threetears.core.cache.duckdb_binds import KEYS, run_joined
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
+from threetears.core.collections.delta_copy_beats import CopyBeats
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
     DeltaTable,
@@ -199,7 +200,6 @@ __all__ = [
     "PartialStamp",
     "PreparesStaged",
     "is_reload_stage",
-    "reload_stage",
     "require_generation_by_trigger",
     "typed_text",
 ]
@@ -1769,11 +1769,11 @@ class _StagesLostError(LookupError):
     """a pass's stages were lost with the worker holding them: forgotten, and the change is read again."""
 
 
-#: the end of the stage a running copy's reload stages its table's full in (:func:`reload_stage`)
+#: the end of the stage a running copy's reload stages its table's full in (:func:`_reload_stage`)
 _RELOAD_STAGE_SUFFIX: Final = "__full"
 
 
-def reload_stage(table: str) -> str:
+def _reload_stage(table: str) -> str:
     """the stage a running copy's reload of ``table`` from the volume's full stages it in: a stage of its own, never
     the table's rows stage a pass stages in, because the reload stages beside the passes, outside the pass lock
     (:meth:`CopyFollower._reload_from_volume`), and no pass's sweep of stages left behind ever drops it
@@ -1789,7 +1789,7 @@ def reload_stage(table: str) -> str:
 
 
 def is_reload_stage(stage: str) -> bool:
-    """whether ``stage`` is a reload's (:func:`reload_stage`): a pass's stages end ``__rows`` or ``__keys``.
+    """whether ``stage`` is a reload's (:func:`_reload_stage`): a pass's stages end ``__rows`` or ``__keys``.
 
     :param stage: the stage's name
     :ptype stage: str
@@ -1811,7 +1811,7 @@ class PreparesStaged(Protocol):
     """
 
     def prepare_staged(self, changes: Sequence[StagedChange]) -> None:
-        """do the heavy work of applying ``changes`` (staged under :func:`reload_stage` names) beside the copy, so
+        """do the heavy work of applying ``changes`` (staged under :func:`_reload_stage` names) beside the copy, so
         their :meth:`FollowerBackend.apply_staged` is a short swap; dropping their stages lets go what it prepared.
         Raises ``LookupError`` when the stages are gone, as the apply does."""
         ...
@@ -1908,6 +1908,12 @@ class CopyFollower:
     :param drift_workers: the worker processes a state's fingerprint is taken in; None makes one worker of the
         follower's own, closed when :meth:`run` ends
     :ptype drift_workers: ProcessWorkers | None
+    :param beats: this copy's beat for a writer whose fold deletes its delta files (``retention="delete"``, decision
+        54): the copy registers ``starting`` before it loads or follows anything and renews it until the start is
+        done, then beats the marks it holds every key of each beat interval and after each change applied (off the
+        pass), runs the recovery of gone copies' beats beside it, and deletes its beat when :meth:`run` ends. None
+        (a writer that keeps its files): no beat, nothing paid
+    :ptype beats: CopyBeats | None
     :raises ValueError: when a table has a scope and ``stamp_table`` is neither given nor derivable, or a table is both
         in ``fulls`` and in ``checkpoints``, or ``fulls`` holds a table the follower does not follow
     """
@@ -1931,6 +1937,7 @@ class CopyFollower:
         file_poll_seconds: float | None = None,
         drift_check_seconds: float | None = None,
         drift_workers: ProcessWorkers | None = None,
+        beats: CopyBeats | None = None,
     ) -> None:
         if pa is None:
             raise ImportError("a copy follower needs pyarrow: install 3tears[snapshot]")
@@ -2032,6 +2039,13 @@ class CopyFollower:
         self._dropping: frozenset[str] = frozenset()
         self._reading: str | None = None
         self._checkpointing: asyncio.Task[Any] | None = None
+        self._beats = beats
+        #: the task that keeps this copy's beat (:meth:`_keep_beating`); None without ``beats`` or before :meth:`start`
+        self._beating: asyncio.Task[None] | None = None
+        #: asks the beat task for a beat now: set after each change applied (marks moved), and when the start is done
+        self._beat_wake = asyncio.Event()
+        #: whether the start is done: until then the beat says ``starting`` (the copy's position is not known yet)
+        self._started = False
         #: when each table was last current in the registry (its mark caught up, nothing behind): a table the registry
         #: falls behind on is resolved from the change notes since then (:meth:`CollectionRegistry
         #: .resolve_behind_from_notes`), never by a warm
@@ -2751,7 +2765,7 @@ class CopyFollower:
         the full: only the changes the full does not hold are kept, to be applied over it.
 
         **Staged outside the pass lock; only the swap holds it** (decision 52 of ``design-pod-delta-files.md``). The
-        parts are read off the volume and staged (:func:`reload_stage`), and a backend that prepares a change
+        parts are read off the volume and staged (:func:`_reload_stage`), and a backend that prepares a change
         (:class:`PreparesStaged`) rewrites the table's parts, with no lock held: every other table's pass keeps
         applying and publishing meanwhile. Why: the reload held the lock through its stage and apply, so every table's
         ready change queued behind it (a local burst replay, 2026-11-24: writer commit to copy publish a median 0.5 s
@@ -2787,7 +2801,7 @@ class CopyFollower:
         # outside the lock: the parts read off the volume and staged, and the backend's heavy work done
         try:
             found = await VolumeFulls(fulls.root, [fulls.tables[table]], poll_seconds=fulls.poll_seconds).stage(
-                self._backend, manifest=manifest, stage_name=reload_stage
+                self._backend, manifest=manifest, stage_name=_reload_stage
             )
         except FileNotFoundError as exc:
             # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
@@ -3305,16 +3319,57 @@ class CopyFollower:
             derive its derived tables again
         :rtype: bool
         """
+        if self._beats is not None and self._beating is None:
+            # before anything is loaded or followed: a fold that deletes keeps every file while this copy is starting
+            await self._beats.register()
+            self._beating = asyncio.create_task(self._keep_beating(self._beats), name="copy beat")
         self.register()
         if self._fulls is not None:
-            return await self._start_from_volume(self._fulls)
-        if self._checkpoints is None:
+            whole = await self._start_from_volume(self._fulls)
+        elif self._checkpoints is None:
             await self.warm()
-            return False
-        staged = await self._checkpoints.stage()
-        async with self._lock:
-            self._drain()
-            return await self._start_from_checkpoint(staged)
+            whole = False
+        else:
+            staged = await self._checkpoints.stage()
+            async with self._lock:
+                self._drain()
+                whole = await self._start_from_checkpoint(staged)
+        self._started = True
+        self._beat_wake.set()
+        return whole
+
+    async def _keep_beating(self, beats: CopyBeats) -> None:
+        """this copy's beat (decision 54), until cancelled: ``starting`` renewed each interval until the start is done,
+        then the marks the copy holds every key of (:attr:`_current_marks`, the conservative ones: a beat behind keeps
+        files longer, never lets one go early), put each interval and, when they moved, after a change applied; and
+        each interval the recovery of gone copies' beats (one replica holds its lease a pass). Off the pass: a beat
+        that fails is contained and the next interval tries again, and a copy whose beat goes stale is a gone copy's
+        to the fold, whose files it then asks the writer for (``covered``: loaded from the full).
+
+        :param beats: the copy's beat
+        :ptype beats: CopyBeats
+        :return: nothing
+        :rtype: None
+        """
+        while True:
+            renew = True
+            try:
+                await asyncio.wait_for(self._beat_wake.wait(), timeout=beats.beat_seconds)
+                renew = False
+            except TimeoutError:  # NOSILENT: the interval ran out with no change: that is the renewal's cue
+                pass
+            self._beat_wake.clear()
+            try:
+                if self._started:
+                    await beats.beat(self._current_marks, renew=renew)
+                else:
+                    await beats.register()
+                if renew:
+                    await beats.recover_pass()
+            except asyncio.CancelledError, KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a beat missed is renewed next interval; never stops the copy
+                contain(exc, log=log, what="a copy's beat failed; the next interval beats again")
 
     async def _start_from_checkpoint(self, staged: Any) -> bool:
         """:meth:`start` from a checkpoint, as the owner (under the pass lock).
@@ -5558,6 +5613,20 @@ class CopyFollower:
                 await drift.stop()
             if self._owns_drift_workers:
                 await self._drift_workers.close()
+            await self._stop_beating()
+
+    async def _stop_beating(self) -> None:
+        """end this copy's beat and delete it (a clean stop: the copy needs no file any more); nothing without one.
+
+        :return: nothing
+        :rtype: None
+        """
+        task, self._beating = self._beating, None
+        if task is None or self._beats is None:
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await self._beats.stop()
 
     async def _passes(self) -> None:
         """:meth:`run`'s passes, until cancelled.
@@ -5579,6 +5648,8 @@ class CopyFollower:
                 await self._poked.wait()
             try:
                 await self.catch_up()
+                if self._beats is not None:
+                    self._beat_wake.set()  # the marks may have moved: the beat task says so, off the pass
             except asyncio.CancelledError, KeyboardInterrupt:
                 raise
             except Exception as exc:  # noqa: BLE001 - one failed pass leaves the copy as it was; the next tries again
@@ -5623,6 +5694,10 @@ class CopyFollower:
         self._removers = ()
         if self._checkpointing is not None:
             self._checkpointing.cancel()
+        if self._beating is not None:
+            # a stop outside :meth:`run` leaves the beat to the recovery, which removes it once stale
+            self._beating.cancel()
+            self._beating = None
         if self._checkpoint_wake is not None:
             self._checkpoint_wake.cancel()
             self._checkpoint_wake = None

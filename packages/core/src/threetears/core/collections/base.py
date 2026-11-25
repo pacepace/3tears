@@ -6389,8 +6389,56 @@ class BaseCollection(ABC, Generic[EntityT]):
             # a copy hears the write's keys once, as Arrow at its epoch; its row messages go to every other cache and
             # the bus only (CollectionRegistry.keys_told: keys are Arrow end to end, never a Python object a key)
             told = self._registry.keys_told(self.table_name, await self._key_batch_off_loop(entity_ids), bump.token)
+        # the L2 deletes and row messages, written here and not in a helper of their own: this method is the write
+        # path's primitive (tests/enforcement/test_epoch_discipline.py), and its L2 deletes are that path's
         with told:
-            await self._settle_invalidations(entity_ids, seen, bump)
+            if self._nats_client is None:
+                self._warn_missing_nats_client_once()
+                if self._registry is not None:
+                    self._registry.drop_local_scans(self.table_name)
+                if self._registry is not None and self._registry.needs_row_messages(self.table_name):
+                    for entity_id, row in zip(entity_ids, seen, strict=True):
+                        self._registry.tell_derived_caches(
+                            self._registry.row_message(
+                                self.table_name,
+                                entity_id,
+                                generation=bump.token,
+                                bump_rows=bump.rows,
+                                columns=self._invalidation_values(row),
+                            )
+                        )
+            elif self._registry.batch_invalidations and self._announces_rows_as_built():
+                # one message for the write's rows: each key's L2 copy deleted first, as one a row does
+                limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
+
+                async def evict(entity_id: Any) -> None:
+                    async with limit:
+                        await self._delete_from_l2(entity_id)
+
+                await asyncio.gather(*(evict(entity_id) for entity_id in entity_ids))
+                await self._registry.publish_invalidations(
+                    self._nats_client,
+                    self.table_name,
+                    [
+                        self._registry.row_message(
+                            self.table_name,
+                            entity_id,
+                            generation=bump.token,
+                            bump_rows=bump.rows,
+                            columns=self._invalidation_values(row),
+                        )
+                        for entity_id, row in zip(entity_ids, seen, strict=True)
+                    ],
+                )
+            else:
+                limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
+
+                async def settle(entity_id: Any, row: dict[str, Any] | None) -> None:
+                    async with limit:
+                        await self._delete_from_l2(entity_id)
+                        await self._announce_row(entity_id, bump=bump, row=row)
+
+                await asyncio.gather(*(settle(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)))
         if bump.failure is not None:
             raise bump.failure
 
@@ -6406,68 +6454,6 @@ class BaseCollection(ABC, Generic[EntityT]):
         if len(entity_ids) < self.L1_EVICT_OFF_LOOP_KEYS:
             return entity_key_batch(entity_ids)
         return await asyncio.to_thread(entity_key_batch, entity_ids)
-
-    async def _settle_invalidations(
-        self, entity_ids: Sequence[Any], seen: Sequence[dict[str, Any] | None], bump: _Bump
-    ) -> None:
-        """:meth:`invalidate_cache_many`'s L2 deletes and row messages, once the generation advanced.
-
-        :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
-        :ptype entity_ids: Sequence[Any]
-        :param seen: the row each write saw, in the order of ``entity_ids``, or ``None`` in a key's place
-        :ptype seen: Sequence[dict[str, Any] | None]
-        :param bump: the advance
-        :ptype bump: _Bump
-        :return: nothing
-        :rtype: None
-        """
-        if self._nats_client is None:
-            self._warn_missing_nats_client_once()
-            if self._registry is not None:
-                self._registry.drop_local_scans(self.table_name)
-            if self._registry is not None and self._registry.needs_row_messages(self.table_name):
-                for entity_id, row in zip(entity_ids, seen, strict=True):
-                    self._registry.tell_derived_caches(
-                        self._registry.row_message(
-                            self.table_name,
-                            entity_id,
-                            generation=bump.token,
-                            bump_rows=bump.rows,
-                            columns=self._invalidation_values(row),
-                        )
-                    )
-        elif self._registry.batch_invalidations and self._announces_rows_as_built():
-            # one message for the write's rows: each key's L2 copy deleted first, as one a row does
-            limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
-
-            async def evict(entity_id: Any) -> None:
-                async with limit:
-                    await self._delete_from_l2(entity_id)
-
-            await asyncio.gather(*(evict(entity_id) for entity_id in entity_ids))
-            await self._registry.publish_invalidations(
-                self._nats_client,
-                self.table_name,
-                [
-                    self._registry.row_message(
-                        self.table_name,
-                        entity_id,
-                        generation=bump.token,
-                        bump_rows=bump.rows,
-                        columns=self._invalidation_values(row),
-                    )
-                    for entity_id, row in zip(entity_ids, seen, strict=True)
-                ],
-            )
-        else:
-            limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
-
-            async def settle(entity_id: Any, row: dict[str, Any] | None) -> None:
-                async with limit:
-                    await self._delete_from_l2(entity_id)
-                    await self._announce_row(entity_id, bump=bump, row=row)
-
-            await asyncio.gather(*(settle(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)))
 
     async def announce_flushed(self, rows: Sequence[dict[str, Any]]) -> None:
         """say that a flush of the write buffer has committed ``rows`` of this table to L3.

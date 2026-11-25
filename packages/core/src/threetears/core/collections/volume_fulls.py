@@ -988,7 +988,7 @@ class VolumeFulls:
         :param manifest: the manifest to load, read already; None reads the current one
         :ptype manifest: FullManifest | None
         :param stage_name: each table's stage name; None stages in the table's rows stage, as a start does. A running
-            copy's reload stages beside its passes, in a stage of its own (``copy_follower.reload_stage``)
+            copy's reload stages beside its passes, in a stage of its own (``copy_follower._reload_stage``)
         :ptype stage_name: Callable[[str], str] | None
         :return: what was staged, or why nothing was
         :rtype: StagedFull | FullAbsent
