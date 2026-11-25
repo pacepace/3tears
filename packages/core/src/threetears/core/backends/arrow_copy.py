@@ -485,20 +485,21 @@ def write_type(arrow_type: Any, *, as_utc: bool = False) -> Any:
     return carried
 
 
-def with_constant_columns(table: Any, values: Mapping[str, datetime]) -> Any:
+def with_constant_columns(table: Any, values: Mapping[str, datetime | int]) -> Any:
     """``table`` with each of ``values`` as a column holding it in every row: replacing a column of that name, else
-    added after the rest. Laid out by Arrow, never a Python value a row. A write's stamps (``date_created``,
-    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``.
+    added after the rest. Laid out by Arrow, never a Python value a row. A write's stamps: its times (``date_created``,
+    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``; its epoch (``epoch``), an int, as ``int64``.
 
     :param table: the rows
     :ptype table: pyarrow.Table
-    :param values: each column's one value, an aware datetime
-    :ptype values: Mapping[str, datetime]
+    :param values: each column's one value, an aware datetime or an int
+    :ptype values: Mapping[str, datetime | int]
     :return: the rows with them
     :rtype: pyarrow.Table
     """
     for name, value in values.items():
-        column = pa.repeat(pa.scalar(value, pa.timestamp("us", tz="UTC")), table.num_rows, memory_pool=_POOL)
+        kind = pa.int64() if isinstance(value, int) else pa.timestamp("us", tz="UTC")
+        column = pa.repeat(pa.scalar(value, kind), table.num_rows, memory_pool=_POOL)
         position = table.schema.get_field_index(name)
         table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)
     return table

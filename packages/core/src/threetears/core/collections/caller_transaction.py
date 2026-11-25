@@ -75,6 +75,7 @@ from threetears.core.collections.delta_files import (
 )
 from threetears.core.collections.delta_save import save_in_worker
 from threetears.core.collections.epoch_change import EVERY_STATE_NAMED, ChangedRow, recordable_scopes
+from threetears.core.ddl.row_epoch import UnstampedWriteError, next_epoch
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.frozen_state import with_chunk
 from threetears.core.loop_turns import LoopTurns, emptied, stepped
@@ -661,6 +662,25 @@ class CallerTransaction:
                 f"files are named by one write's version"
             )
         self._write_version = version
+
+    def row_epoch(self, table: str) -> int:
+        """a fresh epoch for one write statement of ``table`` on this transaction, for a table that declares a row epoch
+        (:mod:`~threetears.core.ddl.row_epoch`): the version its data writes took their turn at
+        (:meth:`note_write_version`) and the process's next sequence, so it sorts newer than every epoch drawn before
+        it, in this transaction or any other of the write.
+
+        :param table: the table written, for the refusal
+        :ptype table: str
+        :return: the epoch
+        :rtype: int
+        :raises UnstampedWriteError: when no write took its turn in this transaction: its rows would carry no version
+        """
+        if self._write_version is None:
+            raise UnstampedWriteError(
+                f"{table} declares a row epoch, so every write carries its write's epoch, and this transaction took no "
+                f"write's turn: call ScopeEpochs.touch(version, ...) on it before writing the table"
+            )
+        return next_epoch(self._write_version)
 
     def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
         """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those

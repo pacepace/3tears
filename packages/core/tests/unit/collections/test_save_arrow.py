@@ -58,6 +58,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, UnstampedWriteError, epoch_version, row_versions
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -579,3 +580,58 @@ async def test_the_arrow_work_runs_off_the_event_loop(monkeypatch: pytest.Monkey
     await _saved(_Hub(write_arrow=True), _table(3))
     assert set(ran) == {"slices", "plan", "stamps", "keys"}
     assert loop_thread not in ran.values()
+
+
+# -- the row epoch: every row of an Arrow write carries its write's epoch ---------------------------------------------
+
+_VERSIONED = TableSchema(
+    name="versioned_results",
+    primary_key=("office_key", "geo_id"),
+    columns=[
+        Column("office_key", STRING_TYPE),
+        Column("geo_id", STRING_TYPE),
+        Column("votes", INT_TYPE, nullable=True),
+        Column("share", NUMERIC_TYPE, nullable=True, precision=12, scale=4),
+        Column("called_at", DATETIMETZ_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+    row_epoch=row_versions("office_key"),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+
+@pytest.mark.parametrize("copy", [False, True])
+async def test_an_arrow_write_of_a_versioned_table_stamps_every_row_with_its_writes_epoch(copy: bool) -> None:
+    hub = _Hub(write_arrow=True)
+    collection = _collection(_VERSIONED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
+        transaction.note_write_version(17)
+        await collection.save_arrow(_table(3), conn=conn, copy=copy)
+        await collection.save_arrow(_table(3), conn=conn, copy=copy)
+    first, second = hub.arrow_requests()
+    epochs = []
+    for envelope, rows, _size in (first, second):
+        assert rows.schema.field(EPOCH_COLUMN).type == pa.int64()
+        [epoch] = set(rows.column(EPOCH_COLUMN).to_pylist())
+        assert epoch_version(epoch) == 17
+        epochs.append(epoch)
+        if not copy:
+            # the conflict is a version of the key, never the key alone
+            assert envelope[CONFLICT_COLUMNS_FIELD] == ["office_key", "geo_id", EPOCH_COLUMN]
+            assert EPOCH_COLUMN not in envelope[UPDATE_COLUMNS_FIELD]
+    # the same keys written twice in one version: the later write sorts newer
+    assert epochs[1] > epochs[0]
+
+
+async def test_an_arrow_write_of_a_versioned_table_on_a_transaction_that_took_no_turn_is_refused() -> None:
+    hub = _Hub(write_arrow=True)
+    collection = _collection(_VERSIONED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    with pytest.raises(UnstampedWriteError, match="took no write's turn"):
+        async with proxy.acquire() as conn, CallerTransaction(conn):
+            await collection.save_arrow(_table(3), conn=conn)
+    assert hub.arrow_requests() == []

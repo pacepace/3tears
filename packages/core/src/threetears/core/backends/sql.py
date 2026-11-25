@@ -31,7 +31,7 @@ import asyncio
 import io
 import json
 import os
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -71,6 +71,7 @@ from threetears.core.ddl.change_notes import (
     prefix_write_restore_sql,
 )
 from threetears.core.ddl.ddl_lock import database_ddl_lock
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, UnstampedWriteError
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyed.point import read_row
@@ -201,6 +202,59 @@ class _BoundConnCM:
 
     async def __aexit__(self, *exc: object) -> None:
         return None
+
+
+def _unstamped(table: str) -> UnstampedWriteError:
+    """the refusal of a write to a table that declares a row epoch, of a row that carries none.
+
+    :param table: the table
+    :ptype table: str
+    :return: the error
+    :rtype: UnstampedWriteError
+    """
+    return UnstampedWriteError(
+        f"{table} declares a row epoch: every row written carries the epoch of its write ({EPOCH_COLUMN!r}), and a row "
+        f"of this write has none. Write it through its collection on a transaction that took its write's turn "
+        f"(ScopeEpochs.touch), which stamps it; a load from files names its write's version (write_version)"
+    )
+
+
+def _refuse_unstamped_rows(schema: Any, table: str, rows: Iterable[Mapping[str, Any]]) -> None:
+    """refuse rows of a table that declares a row epoch when any carries none: before anything is sent, so a write
+    that would leave the newest version of a key unknowable never reaches L3.
+
+    :param schema: the table's registered schema
+    :ptype schema: TableSchema
+    :param table: the table
+    :ptype table: str
+    :param rows: the rows
+    :ptype rows: Iterable[Mapping[str, Any]]
+    :return: nothing
+    :rtype: None
+    :raises UnstampedWriteError: when a row carries no epoch
+    """
+    if getattr(schema, "row_epoch", None) is not None and any(row.get(EPOCH_COLUMN) is None for row in rows):
+        raise _unstamped(table)
+
+
+def _refuse_unstamped_arrow(schema: Any, table: str, rows: Any) -> None:
+    """:func:`_refuse_unstamped_rows` for rows in an Arrow table: its epoch column, read by Arrow's null count, never a
+    Python value a row.
+
+    :param schema: the table's registered schema
+    :ptype schema: TableSchema
+    :param table: the table
+    :ptype table: str
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :return: nothing
+    :rtype: None
+    :raises UnstampedWriteError: when the rows have no epoch column, or a row's is null
+    """
+    if getattr(schema, "row_epoch", None) is None:
+        return
+    if EPOCH_COLUMN not in rows.column_names or rows.column(EPOCH_COLUMN).null_count:
+        raise _unstamped(table)
 
 
 def _quote_ident(name: str) -> str:
@@ -356,14 +410,19 @@ def _bulk_params(
     :return: the columns, and each row's parameters
     :rtype: tuple[list[Any], list[list[Any]]]
     :raises ValueError: when the rows disagree on which columns they supply
+    :raises UnstampedWriteError: when the table declares a row epoch and a row carries none
     """
     columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
     names = [c.name for c in columns]
     params: list[list[Any]] = []
+    # checked here, a row at a time on the building thread, never in a pass of its own on the loop
+    stamped = getattr(schema, "row_epoch", None) is not None
     for row in rows:
         if turns is not None:
             turns.take()
         data = dict(row)
+        if stamped and data.get(EPOCH_COLUMN) is None:
+            raise _unstamped(table)
         if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
             raise ValueError(
                 f"{table}: rows of one bulk {form} must supply the same columns; "
@@ -979,6 +1038,7 @@ class SqlL3Backend:
         """
         schema = self._schemas.get(table)
         if schema is not None:
+            _refuse_unstamped_rows(schema, table, (row,))
             return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
 
         if pk is None:
@@ -1222,7 +1282,8 @@ class SqlL3Backend:
         return ArrowWritePlan(
             kind=kind,
             columns=tuple(sent),
-            conflict_columns=tuple(schema.pk_columns) if kind == "upsert" else (),
+            # the stored key: a versioned table's conflict is a version of the key (its epoch), never the key alone
+            conflict_columns=tuple(schema.stored_key) if kind == "upsert" else (),
             update_columns=tuple(update or ()),
             sort_by=tuple(schema.pk_columns) if kind == "copy" else (),
         )
@@ -1250,6 +1311,8 @@ class SqlL3Backend:
         """
         if not rows.num_rows:
             return 0
+        if plan.kind != "delete":
+            _refuse_unstamped_arrow(self._schemas.get(table), table, rows)
         planned = await asyncio.to_thread(planned_write_table, rows, plan.columns, sort_by=plan.sort_by)
         written: int = await conn.write_arrow_rows(
             table,
@@ -1417,6 +1480,8 @@ class SqlL3Backend:
             raise ValueError(
                 f"{table}: a load must supply every key column; {unkeyed[0]!r} is in no file and no constant"
             )
+        if schema.row_epoch is not None and EPOCH_COLUMN not in columns and constants.get(EPOCH_COLUMN) is None:
+            raise _unstamped(table)
         if isinstance(self._pool, LoadingStore):
             # the checks above are the schema's, so both paths refuse alike; what follows is this
             # path's own: the broker copies parquet with its own codecs (so a column a binary copy

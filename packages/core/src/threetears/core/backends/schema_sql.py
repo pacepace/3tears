@@ -720,7 +720,8 @@ def _with_conflict_clause(
     :return: the INSERT with it
     :rtype: str
     """
-    pk_cols = ", ".join(schema.pk_columns)
+    # the stored key: a versioned table's conflict is a version of the key (its epoch), never the key alone
+    pk_cols = ", ".join(getattr(schema, "stored_key", schema.pk_columns))
     if schema.on_conflict == "raise":
         result = sql
     elif schema.on_conflict == "ignore":

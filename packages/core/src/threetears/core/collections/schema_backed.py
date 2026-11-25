@@ -48,7 +48,10 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, Text
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
+from sqlalchemy.engine import Dialect
+from sqlalchemy.schema import CreateIndex, CreateTable
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.elements import TextClause, UnaryExpression
@@ -126,6 +129,14 @@ from threetears.core.collections.epoch_change import RESET_REASON, EpochChange, 
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.declared import whole_read
+from threetears.core.ddl.row_epoch import (
+    EPOCH_COLUMN,
+    RowEpoch,
+    UnstampedWriteError,
+    next_epoch,
+    scope_epoch_index_name,
+    versioned_primary_key_sql,
+)
 from threetears.core.keyset import keyset_pages
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
@@ -1424,8 +1435,14 @@ class TableSchema:
     delta_scope: Annotated[str | None, DeclaredScope] = None
     # the state each row is of, (column, prefix): a commit's record names every state its file's rows are of (decision 54)
     delta_state_scope: tuple[str, str] | None = None
+    # every row carries the epoch of the write that left it (threetears.core.ddl.row_epoch): row_versions(scope) keeps a
+    # version a write, the epoch the last column of the stored key; ROW_STAMPED keeps one row a key, stamped. The
+    # column is added when not declared; every write of the table stamps it, and a write without it is refused
+    row_epoch: RowEpoch | None = None
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
+    # the key the table stores rows by: the primary key, then the epoch for a versioned table (row_epoch)
+    _stored_key: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
     # each column's fixed database default, for a table that opts in to delta files (TableSchema.delta_file_defaults)
     _delta_defaults: dict[str, Any] = field(init=False, repr=False, compare=False)
@@ -1449,6 +1466,10 @@ class TableSchema:
         if self.l1_eviction is not None:
             # declared where the table is declared: every L1 and the cache metrics read it by the table's name
             declare_l1_table(self.name, self.l1_eviction)
+        if self.row_epoch is not None:
+            # before anything reads the columns or the indexes: the epoch column and the (scope, epoch) index are
+            # the table's own, added where not declared
+            self._declare_row_epoch()
         if self.delta_files:
             # refused where it is declared, not at the first write: a column no file can type would refuse every one
             rail_arrow_types(self.columns)
@@ -1503,10 +1524,11 @@ class TableSchema:
                 f"row uniqueness through the partition",
             )
         by_name = {c.name: c for c in coerced_columns}
-        if len(pk_cols) > MAX_INDEX_COLUMNS:
+        stored_key = (*pk_cols, EPOCH_COLUMN) if self.row_epoch is not None and self.row_epoch.versions else pk_cols
+        if len(stored_key) > MAX_INDEX_COLUMNS:
             raise ValueError(
-                f"TableSchema(name={self.name!r}): primary_key lists {len(pk_cols)} columns; "
-                f"YugabyteDB indexes at most {MAX_INDEX_COLUMNS}",
+                f"TableSchema(name={self.name!r}): primary_key lists {len(stored_key)} columns"
+                f"{' with the epoch' if stored_key != pk_cols else ''}; YugabyteDB indexes at most {MAX_INDEX_COLUMNS}",
             )
         for pk_col in pk_cols:
             if pk_col not in by_name:
@@ -1521,6 +1543,7 @@ class TableSchema:
         # attributes
         object.__setattr__(self, "columns", coerced_columns)
         object.__setattr__(self, "_pk_columns", pk_cols)
+        object.__setattr__(self, "_stored_key", stored_key)
         object.__setattr__(self, "_by_name", by_name)
         object.__setattr__(self, "_partition_column", partition_column)
         # v0.8.0 cross-field validators. placed AFTER ``_by_name`` is
@@ -1571,13 +1594,72 @@ class TableSchema:
             )
         self._validate_cas_null_safe(pk_cols, by_name)
         self._validate_l2_order(pk_cols, by_name)
-        # the keys a keyset read of this table must hold (its order and pins), for the pagers' run-time refusal
-        register_table_keys(self.name, self._declared_keys(pk_cols, partition_column))
+        # the keys a keyset read of this table must hold (its order and pins), for the pagers' run-time refusal. A
+        # versioned table's key alone is not unique (each write keeps a version of it): the key it holds is the stored one
+        register_table_keys(self.name, self._declared_keys(stored_key, partition_column))
         # the indexes a keyed read of it names to YugabyteDB, whose planner prefers the primary key (keys.serving_index)
-        register_table_indexes(self.name, self._declared_indexes(pk_cols))
+        register_table_indexes(self.name, self._declared_indexes(stored_key))
         # the texts its partial indexes' predicates name, which a keyed read pinning them writes as literals, so a
         # generic plan can prove the predicate (keys.register_partial_predicates)
         register_partial_predicates(self.name, (index.where for index in self.indexes if index.where is not None))
+
+    def _declare_row_epoch(self) -> None:
+        """give a table that declares a row epoch its epoch column and, versioned, its ``(scope, epoch)`` index, each
+        where not declared; refuse what cannot hold beside it.
+
+        The column is ``BIGINT NOT NULL`` with no default: a write that bypasses 3tears and leaves it out is refused by
+        the database. On a versioned table it is part of the stored key, so it is immutable (never in an upsert's
+        ``SET``); on a stamped one each write sets it.
+
+        A versioned table keeps a version of a key a write, so the key alone is unique no longer: a unique constraint
+        or a unique index would refuse the second version, a compare-and-swap fence or the L2 order would fence one
+        version against another. Each is refused where it is declared.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the epoch column is declared otherwise than as above, or named in the primary key; or,
+            versioned, the scope column is not declared, or the table declares any of the above
+        """
+        declared = self.row_epoch
+        assert declared is not None  # noqa: S101 -- called only when declared
+        versions = declared.versions
+        pk = self.primary_key
+        if EPOCH_COLUMN in ((pk,) if isinstance(pk, str) else tuple(pk)):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): {EPOCH_COLUMN!r} is not named in primary_key: a versioned table "
+                "stores rows by the key and then the epoch on its own, a stamped one by the key alone"
+            )
+        expected = Column(EPOCH_COLUMN, BIGINT_TYPE, immutable=versions, nullable=False)
+        held = next((column for column in self.columns if column.name == EPOCH_COLUMN), None)
+        if held is None:
+            object.__setattr__(self, "columns", [*self.columns, expected])
+        elif held != expected:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): its {EPOCH_COLUMN!r} column must be {expected!r} (or left out, "
+                f"and it is added so): a BIGINT NOT NULL with no default, so a write that leaves it out is refused, "
+                f"immutable on a versioned table"
+            )
+        if not versions:
+            return
+        scope = declared.scope
+        if scope is None or not any(column.name == scope for column in self.columns):
+            raise ValueError(f"TableSchema(name={self.name!r}): row_versions scope {scope!r} is not one of its columns")
+        refused = [
+            (self.cas_column is not None, f"cas_column={self.cas_column!r}"),
+            (self.cas_null_safe, "cas_null_safe=True"),
+            (any(column.name in L2_ORDER_COLUMNS for column in self.columns), "the L2 order columns"),
+            (bool(self.unique_constraints), "a unique constraint"),
+            (any(index.unique for index in self.indexes), "a unique index"),
+        ]
+        for refuse, what in refused:
+            if refuse:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): row_versions with {what}: each write keeps its own version of "
+                    "a key, so the key alone is unique no longer and one version cannot be fenced against another"
+                )
+        name = scope_epoch_index_name(self.name)
+        if not any(index.name == name for index in self.indexes):
+            object.__setattr__(self, "indexes", (*self.indexes, Index(name, scope, EPOCH_COLUMN)))
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
@@ -1880,6 +1962,57 @@ class TableSchema:
         """
         return self._pk_columns
 
+    @property
+    def stored_key(self) -> KeyColumns:
+        """the columns the table stores rows by, its database primary key: :attr:`pk_columns`, then the epoch for a
+        versioned table (:attr:`row_epoch`), whose key keeps a version a write. What an upsert's ``ON CONFLICT``
+        names; every read and every cache keys rows by :attr:`pk_columns`.
+
+        :return: the columns, in order
+        :rtype: tuple[str, ...]
+        """
+        return self._stored_key
+
+    @property
+    def stamps_epoch(self) -> bool:
+        """whether every write of the table stamps each row with its epoch (:attr:`row_epoch` declared).
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self.row_epoch is not None
+
+    def create_statements(self, *, yugabyte: bool) -> tuple[str, ...]:
+        """the DDL that creates the table in L3 and its indexes, as :meth:`to_sqlalchemy_table` declares them but stored
+        by :attr:`stored_key`, for Postgres or YugabyteDB.
+
+        A versioned table (:attr:`row_epoch`) is stored by its key and then the epoch, newest first: on YugabyteDB its
+        primary key is written out as :func:`~threetears.core.ddl.row_epoch.versioned_primary_key_sql` writes it (the
+        first key column hashed, ``epoch DESC`` the last range column), which SQLAlchemy's primary key cannot say.
+        Every other table, and every table on Postgres, is SQLAlchemy's DDL as it renders it.
+
+        :param yugabyte: whether the database is YugabyteDB
+        :ptype yugabyte: bool
+        :return: the ``CREATE TABLE``, then each ``CREATE INDEX``
+        :rtype: tuple[str, ...]
+        """
+        # typed through Dialect: SQLAlchemy leaves the dialect classes' constructors unannotated
+        dialect_class: type[Dialect] = postgresql.dialect
+        dialect = dialect_class()
+        table = self._sqlalchemy_table(sa.MetaData(), stored=True)
+        create = str(CreateTable(table).compile(dialect=dialect))
+        if yugabyte and self.row_epoch is not None and self.row_epoch.versions:
+            quote = dialect.identifier_preparer.quote
+            rendered = f"PRIMARY KEY ({', '.join(quote(name) for name in self._stored_key)})"
+            if create.count(rendered) != 1:
+                raise ValueError(f"TableSchema(name={self.name!r}): no one {rendered!r} in its DDL to order: {create}")
+            ordered = versioned_primary_key_sql(
+                tuple(quote(name) for name in self._pk_columns), quote(EPOCH_COLUMN), yugabyte=True
+            )
+            create = create.replace(rendered, ordered)
+        indexes = tuple(str(CreateIndex(index).compile(dialect=dialect)) for index in table.indexes)
+        return (create, *indexes)
+
     def keyset_order(self, pinned: Iterable[str] = ()) -> tuple[str, ...]:
         """the columns a keyset read of the rows ``pinned``'s equality filters name pages on, so an index answers
         each page in that order.
@@ -1994,6 +2127,10 @@ class TableSchema:
         passed metadata, returns the existing Table without
         re-registering.
 
+        Its primary key is :attr:`pk_columns`, the key every cache holds one row of: a process's L1 is made from it.
+        A versioned table's L3 table is stored by :attr:`stored_key` (its key, then the epoch), which
+        :meth:`create_statements` renders.
+
         SQLAlchemy + pgvector imports are deferred inside the method
         body so non-Alembic / non-SQLAlchemy consumers of
         :mod:`threetears.core.collections.schema_backed` (e.g. the
@@ -2012,6 +2149,19 @@ class TableSchema:
             column and ``pgvector`` is not installed (mirrors the
             v0.7.5 factory behaviour -- the failure is legible at
             registration time, not at first INSERT)
+        """
+        return self._sqlalchemy_table(metadata, stored=False)
+
+    def _sqlalchemy_table(self, metadata: Any, *, stored: bool) -> Any:
+        """:meth:`to_sqlalchemy_table`, its primary key :attr:`stored_key` when ``stored`` (the L3 table's) and
+        :attr:`pk_columns` otherwise (a cache's).
+
+        :param metadata: SQLAlchemy ``MetaData`` instance to attach the table to
+        :ptype metadata: sqlalchemy.MetaData
+        :param stored: whether the primary key is the stored key
+        :ptype stored: bool
+        :return: the registered :class:`sqlalchemy.Table`
+        :rtype: sqlalchemy.Table
         """
         if self.name in metadata.tables:
             return metadata.tables[self.name]
@@ -2038,7 +2188,10 @@ class TableSchema:
             ),
         }
 
-        pk_set = set(self._pk_columns)
+        # the stored key: a versioned table's epoch is the last column of it, its constraint given in the key's own
+        # order (below) so the epoch is last whatever the columns' order
+        versioned = stored and self.row_epoch is not None and self.row_epoch.versions
+        pk_set = set(self._stored_key if stored else self._pk_columns)
         sa_columns: list[Any] = []
         for col in self.columns:
             if col.column_type not in type_mapping:
@@ -2054,7 +2207,7 @@ class TableSchema:
             # carry through the schema's :attr:`Column.nullable` flag.
             nullable = False if is_pk else col.nullable
             kwargs: dict[str, Any] = {
-                "primary_key": is_pk,
+                "primary_key": is_pk and not versioned,
                 "nullable": nullable,
             }
             if col.server_default is not None:
@@ -2104,6 +2257,7 @@ class TableSchema:
             self.name,
             metadata,
             *sa_columns,
+            *((sa.PrimaryKeyConstraint(*self._stored_key),) if versioned else ()),
             *sa_fk_constraints,
             *sa_unique_constraints,
             info={} if self.l1_eviction is None else {L1_EVICTION_INFO: self.l1_eviction},
@@ -2680,6 +2834,31 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"delete_rows, delete_arrow, save_entity(conn=...))"
             )
 
+    def _epoch_stamp(self, conn: Any, writer: str) -> dict[str, int]:
+        """the epoch column one write statement stamps its rows with, for a table that declares a row epoch: a fresh
+        epoch of the write the caller's transaction took its turn at (:meth:`CallerTransaction.row_epoch`). Empty for
+        any other table.
+
+        :param conn: the connection the write joins, or None
+        :ptype conn: Any
+        :param writer: the call writing, for the refusal
+        :ptype writer: str
+        :return: ``{"epoch": ...}``, or nothing
+        :rtype: dict[str, int]
+        :raises UnstampedWriteError: when the table declares a row epoch and the write joins no transaction that took
+            its write's turn
+        """
+        if not self.schema.stamps_epoch:
+            return {}
+        transaction = None if conn is None else CallerTransaction.enclosing(conn)
+        if transaction is None:
+            raise UnstampedWriteError(
+                f"{type(self).__name__}.{writer}: {self.table_name} declares a row epoch, so every write carries its "
+                f"write's epoch, and this one joins no transaction to take it from: write it on a CallerTransaction "
+                f"that took its write's turn (ScopeEpochs.touch)"
+            )
+        return {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
+
     def _record_one(self, data: dict[str, Any], conn: Any, writer: str, *, fenced: bool = False) -> None:
         """record one row a store write sends, and the columns its statement sets in a row already held
         (:func:`~threetears.core.backends.schema_sql.upsert_set_columns`), for the delta file of a table that opts
@@ -2869,6 +3048,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"l2_order_columns() in its schema and a durable store implementing OrderedDurableStore, "
                 f"got store {type(store).__name__}"
             )
+        data = {**data, **self._epoch_stamp(conn, "save_ordered_to_store")}
         self._record_one(data, conn, "save_ordered_to_store")
         return await store.upsert_ordered(self.schema.name, data, conn=conn)
 
@@ -3130,7 +3310,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"contract (it caches absences, defers its L3 writes, or fences with a null-safe CAS)"
             )
         now = datetime.now(UTC)
-        stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
+        stamps: dict[str, Any] = {
+            name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None
+        }
+        # one epoch for the statement's rows: one call writes a key once (refused below otherwise)
+        stamps.update(self._epoch_stamp(conn, "save_rows"))
         # each row checked, stamped and keyed, and its enrollment made, on a worker thread taking turns with the loop,
         # from the count where a thread costs less than the work: on the loop, 33,786 rows of 179 columns held it 87-103 ms with the
         # collector held (the WD2 bench, 2026-11-16)
@@ -3173,15 +3357,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     def _stamped_rows(
         self,
         rows: Sequence[dict[str, Any]],
-        stamps: Mapping[str, datetime],
+        stamps: Mapping[str, Any],
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> tuple[list[dict[str, Any]], list[Any], list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]]:
         """:meth:`save_rows`' rows checked and stamped, each one's key, and their enrollments; pure, for a thread.
 
         :param rows: the rows, each keyed by column
         :ptype rows: Sequence[dict[str, Any]]
-        :param stamps: the write's stamp columns and their value
-        :ptype stamps: Mapping[str, datetime]
+        :param stamps: the write's stamp columns and their value: its time, and its epoch for a table that declares one
+        :ptype stamps: Mapping[str, Any]
         :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
             or off any loop (a few rows: no turn taken)
         :ptype loop: asyncio.AbstractEventLoop | None
@@ -3274,7 +3458,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if not rows.num_rows:
             return 0
         now = datetime.now(UTC)
-        stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
+        stamps: dict[str, datetime | int] = {
+            name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None
+        }
+        # one epoch for the statement's rows, a constant Arrow column as the times are
+        stamps.update(self._epoch_stamp(conn, "save_arrow"))
         arrow_store = store if isinstance(store, ArrowWritingStore) else None
         plan = None
         stamped = rows
@@ -3556,8 +3744,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             committed raises, and the fold must still hear the ones that did. It must not raise
             (``DeltaFolds.committed`` never does)
         :ptype on_commit: Callable[[Mapping[str, str], Mapping[str, str]], None] | None
-        :param write_version: with a ``delta``, the write's version (``ScopeEpochs.begin``) the load is part of: its delta
-            files are named by it (:func:`~threetears.core.collections.delta_files.versioned_write_id`, decision 53), so a
+        :param write_version: the write's version (``ScopeEpochs.begin``) the load is part of. For a table that declares a
+            row epoch (``TableSchema.row_epoch``) it is required, and every row loaded is stamped with an epoch of it.
+            With a ``delta``, its delta files are named by it (:func:`~threetears.core.collections.delta_files.versioned_write_id`, decision 53), so a
             full's manifest covers them exactly. None names them in the older, unversioned form, which a recovery always
             reads (decision 53's expand step; its contract makes it required)
         :ptype write_version: int | None
@@ -3603,6 +3792,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             await self._delete_replaced(store, delta.replaces, on_commit, write_version=write_version)
         if not files:
             return 0
+        if self.schema.stamps_epoch:
+            if write_version is None:
+                raise UnstampedWriteError(
+                    f"{type(self).__name__}.load_files: {self.table_name} declares a row epoch, so every row loaded "
+                    f"carries its write's epoch: name the write's version (write_version)"
+                )
+            # one epoch for the load's rows: a load inserts only, so it writes a key once
+            constants = {**(constants or {}), EPOCH_COLUMN: next_epoch(write_version)}
         reach = WholeReach(prefixes=tuple(self._load_reach(constants or {}, prefixes)))
         per_transaction = self.LOAD_ROWS_PER_TRANSACTION if rows_per_transaction is None else rows_per_transaction
         bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms
@@ -4703,6 +4900,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             and self.schema.on_conflict == "update"
             and original_timestamp is not None
         )
+        data = {**data, **self._epoch_stamp(conn, "save_to_store")}
         self._record_one(data, conn, "save_to_store", fenced=fenced)
         pk = list(self.schema.pk_columns)
         return await store.upsert(
