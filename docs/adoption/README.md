@@ -163,6 +163,7 @@ at commit time.
 |---|---|
 | [`core`](core.md) | Three-tier entities and collections. `DataStore`, schema, migrations. The foundation everything else sits on. |
 | [`core`: git backend](core-git.md) | `threetears.core.backends.git`: a git working tree as the durable tier: rows as files, change sets as commits, one writer. |
+| [`core`: SQLite L3](core-sqlite.md) | `threetears.core.backends.sqlite_file`: one SQLite file as the durable tier, for one process on one machine with no database server; the same collections as over Postgres, and when to choose each L3. |
 | [`conversations`](conversations.md) | Owns the shared `conversations` table so no single consumer package has to. |
 | [`datasources`](datasources.md) | One canonical model for "what is a datasource," with a swappable driver abstraction. |
 

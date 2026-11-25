@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "3tears"
 version = "0.95.0"
-description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL or a git working tree"
+description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL, a git working tree or a SQLite file"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]

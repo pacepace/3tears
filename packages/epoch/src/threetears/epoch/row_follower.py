@@ -267,6 +267,9 @@ class RowFollower:
         """
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+            # dropped here, not only by _forget: a gather of tasks already done can return without yielding to the
+            # loop (Python 3.14), so the done callbacks that forget them have not run and this would spin for ever
+            self._tasks = frozenset(task for task in self._tasks if not task.done())
 
     def follow(
         self, registry: CollectionRegistry, reader: Any, *, since: Mapping[str, str | None] | None = None

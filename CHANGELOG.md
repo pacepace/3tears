@@ -23,8 +23,13 @@ ordered ones), delete, scans in key pages, many-row writes, truncate, a caller's
 the Postgres store generates (`$N` and `::type` rewritten), so a collection behaves the same on either. The file is
 in WAL mode with every commit synced (a write that returned survives SIGKILL), held by one process (`flock`;
 `SqliteStoreLockedError` for a second), and carries a format version (`SqliteStoreFormatError` for a file of
-another). Registering a schema creates its table, or adds a new nullable or defaulted column to the stored one and
-refuses any other change. `health()` answers a readiness probe. Raw SQL written for Postgres alone fails as SQLite
+another). Registering a schema creates its table -- `NOT NULL` where the schema says so, and its unique indexes and
+unique constraints, so the store admits the rows Postgres admits -- or adds a new nullable or constant-defaulted column to
+the stored one and refuses any other change, naming it (a new column defaulted to `now()` among them: SQLite cannot
+add one in place). A write the constraints refuse
+raises the `asyncpg` exception Postgres raises (`UniqueViolationError` for a duplicate), so a caller's `except`
+holds on either store. A write whose task is cancelled runs its statement to the end before the lock is released,
+so it lands whole or not at all. `health()` answers a readiness probe. Raw SQL written for Postgres alone fails as SQLite
 reports it, so change notes, scope epochs, delta files, Arrow copies and partition loads stay Postgres features.
 
 **Added:** `l3_store(url)`: one setting picks the L3, `sqlite:///<path>` or a `postgresql://` DSN (a pool started the
@@ -33,6 +38,10 @@ platform's way, `init_connection` on each connection), closed when the block end
 **Added:** `SchemaRegisteringStore` (`threetears.core.backends.protocol`): a schema-backed collection registers its
 schema with any store that takes one, not only `SqlL3Backend`.
 
+**Changed:** the rule choosing a schema-registered upsert's statement (fenced update, NULL-safe compare-and-swap
+upsert, or plain insert) is `schema_sql.build_upsert_statement`, which `SqlL3Backend` and `SqliteL3Backend` both
+call, so the two stores cannot drift apart on it.
+
 **Tests:** `packages/core/tests/l3_contract.py` is the behaviour an L3 owes, run unchanged against Postgres (the
 integration suite), SQLite and the git store: every store keeps the first tier (a row written whole, conflict modes,
 compare-and-swap, deletes, composite keys, scans, many rows, a transaction, and a `DurableStoreCollection` over it
@@ -40,6 +49,15 @@ with L2 and without); Postgres and SQLite keep the schema tier on top. Docs: `do
 the three L3s and says when to use each.
 
 **Fixed:** `processes.name_process` returned `Any` where it is declared `bool` (`typecheck.sh core` failed).
+
+**Fixed:** `RowFollower.settled` (epoch) spun for ever on Python 3.14 once its tasks had finished: a gather over tasks
+already done returns without yielding to the loop, so the done callbacks that drop them never ran. It now drops the
+finished tasks itself. `packages/evals/docs/reference.md` is regenerated (it had fallen behind the package).
+
+**Fixed:** `LocalGrantAuthorizer` (mcp) applied each grant change by copying its whole grant cache, twice: one walked
+change cost 2-3 ms over 20,000 grants, ten times the keyed read it makes (its integration speed test failed). The
+cache is now split over 256 read-only shards, so a change copies one shard and leaves the rest shared, and a grant
+read again unchanged rebuilds nothing.
 
 ### core: every process knows every declared collection table
 
