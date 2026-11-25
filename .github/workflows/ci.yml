@@ -335,11 +335,14 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/test-otel-floor.sh -v
 
-      # 3tears 0.75 runs on mcp 1.x as well as the locked 2.x, so consumers can move on their own
-      # schedule; the step above only ever sees 2.x. Goes away when 3tears drops mcp 1.x, which the owner decides; no release is set.
-      - name: Test the MCP packages on mcp 1.x
+      # 3tears-mcp, 3tears-models and 3tears-evals' fastmcp extra declare MCP SDK floors (mcp>=2.0,
+      # fastmcp>=4.0) the unit shards never see: they run the locked versions, so a name a later
+      # release added would pass here and break a consumer that resolves the floor. This runs those
+      # packages' MCP tests at exactly the declared floors.
+      # tests/enforcement/test_mcp_floor.py fails if this step goes away.
+      - name: Test the MCP packages at their declared SDK floors
         if: steps.scope.outputs.needed == 'true'
-        run: ./scripts/test-mcp-v1.sh -q
+        run: ./scripts/test-mcp-floor.sh -q
 
   # The `integration` marker, which nothing ran until 2026-08-18.
   #

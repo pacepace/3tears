@@ -40,11 +40,12 @@ Run everything at the gates: before you open a PR (`./scripts/check-all.sh`, whi
 merges into `develop`. CI runs everything on every PR as well.
 
 `check-all.sh` also runs the two suites CI's `check` job runs beside the unit suite:
-`./scripts/test-mcp-v1.sh` (the MCP packages on mcp 1.x, overlaid on the locked 2.x) and
-`./scripts/test-otel-floor.sh` (observe's OpenTelemetry tests at its declared floors, in an isolated
-environment). Both set their own dependency versions, so they run locally, never on the pool, and
-`test.sh` alone does not cover them: PR #1087 went red in CI on `test-mcp-v1.sh` after every local
-gate was green, because none of them ran it.
+`./scripts/test-mcp-floor.sh` (the MCP tests of 3tears-mcp, 3tears-models and 3tears-evals' fastmcp
+extra on exactly the mcp and fastmcp floors they declare, overlaid on the locked environment; 3tears
+supports MCP SDK 2.x only) and `./scripts/test-otel-floor.sh` (observe's OpenTelemetry tests at its
+declared floors, in an isolated environment). Both set their own dependency versions, so they run
+locally, never on the pool, and `test.sh` alone does not cover them: PR #1087 went red in CI on a
+suite of this kind after every local gate was green, because none of them ran it.
 
 ## The sidecar suite
 
@@ -124,7 +125,7 @@ pool. Testament names the cause:
 On a machine with room for it (not the laptop), a package works the same way.
 
 **Before a PR.** Run `./scripts/check-all.sh`. With the pool down it still runs lint, typecheck,
-the mcp 1.x, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
+the MCP-floor, OpenTelemetry-floor and sidecar suites, then fails at the end with "Unit suite NOT
 run" and "Integration suite NOT run". Those lines are expected only when the testament error above
 them is one of the pool or machine causes listed here; any other exit 2 (a `TESTAMENT=off` with no
 reason, `path_not_found`, a crash in the code under test) is yours to fix. Every other check above
@@ -154,7 +155,7 @@ and variables → Actions → Variables*) and re-run the checks. Delete it when 
   `check-all.sh`'s unit step: one session over every package, the run that OOM-killed four workers
   on 16 GB. On such a machine run the unit suite as CI does instead,
   `TESTAMENT_OFF_REASON="no pool here" ./scripts/ci-unit-tests.sh`, and the rest of `check-all.sh`'s
-  steps by hand (`lint.sh`, `typecheck.sh`, `test-mcp-v1.sh -q`, `test-otel-floor.sh -q`,
+  steps by hand (`lint.sh`, `typecheck.sh`, `test-mcp-floor.sh -q`, `test-otel-floor.sh -q`,
   `test-sidecar.sh`).
 - With testament installed but not enrolled, holding a revoked key, or older than 0.45.1, every
   run exits 2. Run named files with `TESTAMENT=off TESTAMENT_OFF_REASON="..."`, or upgrade (above)
@@ -269,7 +270,7 @@ to `https://testament.rodeo.illuminati.org/`; an Actions variable `TESTAMENT_CON
 **+ New client key**, named `ci-3tears`. Store it as the repo's Actions secret `TESTAMENT_KEY`
 (*Settings → Secrets and variables → Actions*), and revoke it there in the console when CI no
 longer needs it. The pool's address is the Actions variable `TESTAMENT_COORDINATOR`. Integration,
-lint, typecheck, the mcp 1.x and OpenTelemetry-floor suites and the attribution check stay on
+lint, typecheck, the MCP-floor and OpenTelemetry-floor suites and the attribution check stay on
 GitHub either way.
 
 ### Where the unit suite's time goes

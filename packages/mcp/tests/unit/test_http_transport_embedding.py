@@ -100,8 +100,8 @@ def _http(app: Starlette) -> httpx2.AsyncClient:
 async def _session(app: Starlette, url: str) -> AsyncIterator[ClientSession]:
     """an initialized MCP client session at ``url`` through ``app``, its lifespan running."""
     async with app.router.lifespan_context(app), _http(app) as client:
-        async with streamable_http_client(url, http_client=client) as streams:
-            async with ClientSession(streams[0], streams[1]) as session:  # 1.x yields a third value
+        async with streamable_http_client(url, http_client=client) as (read, write):
+            async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
 
@@ -201,9 +201,6 @@ class TestTheLifespanTheHostMustEnter:
             _server().build_http_transport()
 
 
-@pytest.mark.skipif(
-    not hasattr(mcp, "Client"), reason="protocol 2026-07-28 needs mcp 2.x; 1.x speaks the handshake only"
-)
 class TestProtocol20260728:
     """the locked SDK serves the 2026-07-28 single-exchange protocol through the same dispatch."""
 

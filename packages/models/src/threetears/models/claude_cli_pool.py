@@ -99,7 +99,6 @@ from threetears.observe import BuildOnce, cancel_and_wait, contain, contained, g
 _CLAUDE_CLI_IMPORT_ERROR: ImportError | None = None
 try:
     import claude_agent_sdk
-    from mcp.types import CallToolRequest
 except ImportError as _exc:  # NOSILENT: the claude-cli extra is optional; starting a CLI names it
     _CLAUDE_CLI_IMPORT_ERROR = _exc
 
@@ -839,9 +838,11 @@ def _context_bound_server(server: Any, context: contextvars.Context) -> Any:
 
     A shallow copy of the server, with a handler table of its own, rather than a wrapper around
     it: from SDK 0.2.163 the SDK serves the server through its own ``run()``, which reads the
-    server's own ``request_handlers``, and a wrapper forwarding ``run`` reached the original's
-    table and ran the call in the first caller's context again. mcp 1.x and 2.x keep that table
-    differently; both are handled (3tears runs on either until the owner drops 1.x).
+    server's own handler table, and a wrapper forwarding ``run`` reached the original's
+    table and ran the call in the first caller's context again. mcp 2.x keeps that table private
+    behind a public get/add, and a shallow copy shares it, so the copy is given its own before
+    ``add_request_handler``, or the rebinding would land on the original server and every borrower
+    would run in the last one's context.
 
     :param server: an in-process MCP server instance
     :ptype server: Any
@@ -851,31 +852,16 @@ def _context_bound_server(server: Any, context: contextvars.Context) -> Any:
     :rtype: Any
     """
     bound = copy.copy(server)
-    if hasattr(server, "get_request_handler"):
-        # mcp 2.x: handlers are entries keyed by method, each taking (ctx, params), behind a
-        # public get/add -- but the table itself is private, and a shallow copy shares it, so
-        # the copy is given its own before add_request_handler, or the rebinding would land on
-        # the original server and every borrower would run in the last one's context.
-        give_own_request_handlers(bound, server)
-        entry = server.get_request_handler("tools/call")
-        if entry is not None:
-            original_v2 = entry.handler
+    # handlers are entries keyed by method, each taking (ctx, params)
+    give_own_request_handlers(bound, server)
+    entry = server.get_request_handler("tools/call")
+    if entry is not None:
+        original = entry.handler
 
-            async def call_in_borrower_context_v2(ctx: Any, params: Any) -> Any:
-                return await asyncio.create_task(original_v2(ctx, params), context=context.copy())
+        async def call_in_borrower_context(ctx: Any, params: Any) -> Any:
+            return await asyncio.create_task(original(ctx, params), context=context.copy())
 
-            bound.add_request_handler("tools/call", entry.params_type, call_in_borrower_context_v2)
-        return bound
-
-    # mcp 1.x: a public dict keyed by request type, each handler taking the request
-    bound.request_handlers = dict(server.request_handlers)
-    original = bound.request_handlers.get(CallToolRequest)
-    if original is not None:
-
-        async def call_in_borrower_context(request: Any) -> Any:
-            return await asyncio.create_task(original(request), context=context.copy())
-
-        bound.request_handlers[CallToolRequest] = call_in_borrower_context
+        bound.add_request_handler("tools/call", entry.params_type, call_in_borrower_context)
     return bound
 
 

@@ -1601,6 +1601,86 @@ version reaches its shell through the environment rather than being expanded int
 `pull_request_target`, `issue_comment` or `workflow_run`. `zizmor` reports nothing beyond the release unit job's
 Playwright cache, which holds only the test browser and carries an inline ignore saying so.
 
+### mcp: which HTTP transports carry a handler's progress and log entries, and a warning when one cannot
+
+A handler's `CallContext.report_progress` and `CallContext.log` reach the client on the call's own SSE
+stream, before the result, through a transport built with `json_response=False`: in stateless and
+stateful mode, on protocols 2025-11-25 and 2026-07-28. A client that gives up on the call cancels the
+handler and sets `ctx.cancelled`; the SDK client both sends the cancellation and drops the call's
+stream, and the tests do not tell those two apart. The mcp tests now prove each of these with the
+SDK's clients over real connections, the handler waiting after every entry until the client holds it.
+The README says which transport options carry what, and a test pins that over a plain-JSON stateless
+transport a client that stops waiting does not cancel the handler.
+
+**Changed:** `json_response=True` stays the default, and its response is the result alone, so a
+handler's progress or log entry has nowhere to go. The server now logs one warning per server, the
+first time that happens, naming `json_response=False`, in stateless and in stateful mode; before, it
+was dropped without a word.
+
+**Added:** `current_request_streams()` (`threetears.mcp.http_server`) says whether the request being
+served can carry notifications ahead of its result.
+
+### mcp: a tool handler can ask for the call's context
+
+**Added:** `CallContext` (`threetears.mcp`). A handler that declares a parameter annotated `CallContext`
+is passed the call's context in it; the server finds the parameter from the handler's signature when
+the `McpTool` is built. A handler that declares none is called with its arguments only, as before.
+
+- `progress_token`, and `report_progress(progress, total=None, message=None)`, which sends
+  `notifications/progress` for the call when the client sent a token and nothing otherwise. Each value
+  must be finite and greater than the last (the protocol's rule); one that is not raises `ValueError`.
+- `log(level, data, *, logger=None)`, a `notifications/message` entry on the call's own stream. On
+  protocol 2026-07-28 and later it is sent only when the request opted in at that level.
+- `cancelled` and `wait_cancelled()`, set when the call is cancelled, for work the call started outside
+  its own task. The handler itself still sees the cancellation as `CancelledError`.
+- `tool_name` and `request_id`. `McpTool.context_parameter` names the parameter, or is `None`.
+
+**Progress and log entries need `json_response=False`.** They ride the call's SSE stream, and the
+Streamable-HTTP transport's default, `json_response=True` (`McpHttpTransport`, `build_http_app`,
+`serve_http`), answers with one JSON body, so on the default they reach no one. A server whose
+handlers send them builds its transport with `json_response=False`.
+
+The parameter may be annotated `CallContext | None` (or `Optional[CallContext]`); the server passes a
+context either way. A tool whose handler declares two context parameters, a positional-only one, one
+named as an input property, or one that names `CallContext` in any other form is refused with
+`ValueError` when the `McpTool` is built. An annotation that cannot be evaluated (a type imported only
+for type checking) is read by its module's import statements, so an alias of the call context is
+found and `threetears.core`'s own `CallContext` is not taken for it; one that names nothing the module
+imports is logged as a warning, once per tool and parameter. The server does not declare the
+`logging` capability; whether it should is open (see the README's call-context section). A call that
+passes an argument named as the context (a schema allowing extra properties lets it through) is refused
+as an input validation error before the handler runs. The context holds no MCP SDK type.
+
+### mcp, models, evals: 3tears requires MCP SDK 2.x; mcp 1.x support is dropped
+
+**Changed (breaking):** `3tears-mcp` and the `3tears-models` `claude-cli` extra declare `mcp>=2.0,<3`
+(were `>=1.27,<3`), and the `3tears-evals` `fastmcp` extra declares `fastmcp>=4.0,<5` and
+`fastmcp-slim>=4.0,<5` (were `>=3.4.2,<5`; fastmcp 3 needs mcp 1, fastmcp 4 is the first major on mcp
+2). A consumer still on mcp 1.x or fastmcp 3 stays on the release before this one until it moves to
+2.x; the move is mcp's own (see "For a consumer moving to mcp 2.x" under the entry that added 2.x
+support). The new `scripts/test-mcp-floor.sh` runs the MCP tests of all three packages on exactly the
+declared floors (mcp 2.0.0, fastmcp and fastmcp-slim 4.0.0) in CI's `check` job and in
+`check-all.sh`, so a floor cannot fall behind the code unnoticed; the suite also runs on the locked mcp
+2.3 and fastmcp 4.0.
+
+Consumers were checked before the change (2026-11-25). Of the known applications that install
+3tears-mcp, 3tears-models or the evals `fastmcp` extra, three resolve mcp 2.2 or 2.3 (the one on the
+`fastmcp` extra resolves fastmcp 4.1), which this range covers. Four still resolve mcp 1.x: two are
+pinned to old 3tears releases (0.49 and 0.76), and two are on 3tears 0.93 with mcp 1.28. Each moves
+to mcp 2.x before it takes this release or any later one. None resolves fastmcp 3.
+
+- `McpServer` registers its handlers only through 2.x's `Server(on_list_tools=, on_call_tool=)`. The
+  runtime switch on the installed SDK and the 1.x decorator path are gone. What it does on top of the
+  SDK is unchanged: it checks arguments against the tool's `inputSchema`, passes a call with no
+  arguments as `{}`, returns every success as a `CallToolResult`, and a bug that escapes dispatch
+  reaches the client as a JSON-RPC error.
+- The CLI pool (`threetears.models.claude_cli_pool`) gives each borrower's copy of an in-process tool
+  server its own handler table only the 2.x way; the 1.x branch, which rebound the public
+  `request_handlers` dict, is gone. Behaviour on 2.x is unchanged.
+- `scripts/test-mcp-v1.sh` and its CI step are removed: nothing in 3tears runs on mcp 1.x any more.
+  The tests' 1.x shims (reading SDK models by wire name, the fastmcp 3 `initialize_result` fallback,
+  the 1.x handler lookups) are gone, with every assertion kept.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and

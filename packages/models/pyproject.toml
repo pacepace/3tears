@@ -61,7 +61,7 @@ claude-cli = [
     "langchain-claude-code>=0.1.0",
     "claude-agent-sdk>=0.2.163,<0.3",
     "3tears-langgraph>=0.95.0,<0.96.0",
-    "mcp>=1.27,<3",  # CallToolRequest (models.claude_cli_pool); claude-agent-sdk brings it; 1.x or 2.x
+    "mcp>=2.0,<3",  # the in-process tool server's handler table (models.claude_cli_pool); claude-agent-sdk brings it; scripts/test-mcp-floor.sh tests the floor
     "anyio>=4.0",  # the CLI's process and pipes as the SDK's transport takes them (models._claude_cli_spawn)
 ]
 # LLM spans (models.tracking); without it, span emission is off

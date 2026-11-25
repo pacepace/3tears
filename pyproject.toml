@@ -172,7 +172,7 @@ dev-dependencies = [
     "defusedxml>=0.7",
     # the FastMCP transport of 3tears-evals is behind its `fastmcp` extra; installed in dev so the
     # transport's in-process client test runs rather than skipping. Same bounds as the extra.
-    "fastmcp>=3.4.2,<5",
+    "fastmcp>=4.0,<5",
 ]
 
 # The 3tears family is exempt from the cooldown above. That window exists to

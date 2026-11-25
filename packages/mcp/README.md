@@ -9,9 +9,9 @@ pip install 3tears-mcp           # server, tools, identity, PlatformHttpClient
 pip install "3tears-mcp[grants]" # plus the Postgres-backed grant store
 ```
 
-The base depends on the `mcp` SDK, `3tears-observe`, httpx, starlette and uvicorn only. Everything
-below that needs the rest of the family -- `LocalGrantAuthorizer`, `rbac`, `migrations/` -- is the
-`grants` extra. Bring your own `Authorizer` and the base is all you install.
+The base depends on the `mcp` SDK (2.x; 1.x is not supported), `3tears-observe`, httpx, starlette and
+uvicorn only. Everything below that needs the rest of the family -- `LocalGrantAuthorizer`, `rbac`,
+`migrations/` -- is the `grants` extra. Bring your own `Authorizer` and the base is all you install.
 
 ## What's in here
 
@@ -19,6 +19,7 @@ below that needs the rest of the family -- `LocalGrantAuthorizer`, `rbac`, `migr
 |---|---|
 | `server` | `McpServer` -- wraps the official `mcp.server.Server`. Owns tool registration, RBAC gating before handler dispatch, structured error mapping per the MCP spec. `tool_error` builds a tool-execution error a handler returns. |
 | `tool` | `McpTool` dataclass (name, description, input_schema, required_permission, handler, and optional output_schema, title, annotations), `McpToolAnnotations`, `ToolRegistry`, `ToolProvider`, and the `register_tool` decorator. |
+| `context` | `CallContext`, the per-call context a handler asks for by signature: the progress token and reporter, a log channel to the client, and a cancellation signal. |
 | `http_server` | The Streamable-HTTP transport: `McpHttpTransport` for a host app to embed, `build_mcp_http_app` / `serve_mcp_http` to serve standalone, `current_bearer_token` for `BearerTokenIdentityProvider`. |
 | `http_client` | `PlatformHttpClient` -- typed httpx client with JWT login + refresh-on-401. Used by both MCP server tool handlers (calling /api/v1/...) and CLI scripts. One HTTP-client implementation, two transports. |
 | `auth` | `Identity` dataclass + `IdentityProvider` Protocol + `EnvVarIdentityProvider` (stdio impl). `Authorizer` Protocol + `LocalGrantAuthorizer` (default impl backed by `McpToolGrantCollection`). |
@@ -80,6 +81,74 @@ doesn't apply to it. The framework's own refusals (`UNKNOWN_TOOL`, `PERMISSION_D
 are also `isError: true`, but they carry `{"tool_name": ..., "error": {"code": ..., "message": ...}}` in
 a text block and no `structuredContent`. A handler that raises still gets `HANDLER_ERROR`.
 
+## The call context
+
+A handler that wants to talk to the client while it runs declares a parameter annotated
+`CallContext`. The server finds it from the handler's signature when the `McpTool` is built and passes
+the call's context in it. A handler that declares none is called with its arguments only, as before.
+
+```python
+from threetears.mcp import CallContext
+
+async def build(*, target: str, ctx: CallContext) -> dict:
+    await ctx.report_progress(1, 3, "cloning")
+    await ctx.log("info", {"phase": "clone", "target": target})
+    ...
+```
+
+| Member | What it is |
+|---|---|
+| `progress_token` | The token the client sent to ask for progress, or `None`. |
+| `report_progress(progress, total=None, message=None)` | Sends `notifications/progress` for this call. It sends nothing when the client sent no token. Each value must be finite and greater than the last, as the protocol requires; a value that isn't raises `ValueError`. |
+| `log(level, data, *, logger=None)` | Sends a `notifications/message` entry to the client on this call's stream. On protocol 2026-07-28 and later it is sent only when the request opted in at that level or below (the `io.modelcontextprotocol/logLevel` key of its `_meta`). |
+| `cancelled`, `wait_cancelled()` | Set when the call is cancelled: the client sent `notifications/cancelled` or went away. The handler itself sees the cancellation as `CancelledError` at its next `await`. The signal is for work the call started outside its own task, such as a worker thread or a task in a longer-lived group. `wait_cancelled()` returns only on cancellation; a call that ends normally never sets it, so whoever starts such a waiter stops it when the call returns. |
+| `tool_name`, `request_id` | The tool being called and the call's protocol request id. |
+
+The context holds no MCP SDK type, so a handler needs no SDK import to use it. Its parameter is
+passed by keyword, and may be annotated `CallContext | None` (or `Optional[CallContext]`) with a
+default of `None` to keep the handler callable without one; the server passes a context either way. A
+tool whose handler declares two, a positional-only one, one named as an input property, or one that
+names `CallContext` in any other form (`list[CallContext]`, `CallContext | int`) is refused when the
+`McpTool` is built. An annotation that cannot be evaluated (a type imported only for type checking) is
+read by the import statements of the handler's module: a name imported from `threetears.mcp`, an alias
+of it included, or the qualified `threetears.mcp.CallContext`, is the call context, and the
+`CallContext` that `threetears.core` exports is not. One that names nothing the module imports is
+logged as a warning, once per tool and parameter, instead of passing it nothing in silence. An argument with the context's name, admitted by a
+schema that allows extra properties, is refused as an input validation error before the handler runs.
+A test of a handler builds its own `CallContext(tool_name=..., progress_token=..., progress_sender=...,
+log_sender=...)` with senders that record what they are given.
+
+### Progress, logging and cancellation over Streamable HTTP
+
+Progress and log entries ride the call's own response stream, so they reach the client before the
+call's result. Over Streamable HTTP that stream is SSE, which a transport answers with when it is built
+with `json_response=False`. That works in stateless mode as well as stateful, on the handshake-era
+protocol and on 2026-07-28:
+
+```python
+app = server.build_http_app(json_response=False)            # or build_http_transport / serve_http
+```
+
+| | `json_response=False` (SSE) | `json_response=True` (the default, plain JSON) |
+|---|---|---|
+| progress and log entries | sent on the call's stream, before the result | not sent: the response is the result alone. The server logs one warning, the first time a handler's entry is dropped, naming `json_response=False` |
+| the client gives up on the call (cancels it, dropping its stream) | the handler is cancelled, and `ctx.cancelled` is set | in stateless mode the handler is not cancelled; it runs to its end |
+
+`json_response=True` stays the default, so a client that reads a plain JSON body is unaffected. A
+server whose tools report progress builds its transport with `json_response=False`; every MCP client
+handles both, since the protocol requires it. `current_request_streams()` (in
+`threetears.mcp.http_server`) says whether the request being served can carry them.
+
+On the handshake-era protocol every level is sent; on 2026-07-28 the client chooses per request, as
+above.
+
+The server does not declare the `logging` capability and does not serve `logging/setLevel`. That is
+the current state, not a settled choice: it is open for the owner. The SDK declares the capability
+only when a set-level handler is passed, which it deprecates; its own client accepts
+`notifications/message` without the capability. On the handshake-era protocols (up to 2025-11-25) the
+specification has a server that sends log entries declare it, so a stricter client may drop or refuse
+them.
+
 ## A live tool set
 
 `McpServer` takes either a fixed `registry=` or a `tool_provider=`. A provider is a callable that
@@ -138,11 +207,10 @@ Bearer identity works the same way it does under `build_http_app()`. The endpoin
 
 The protocol versions are the SDK's. With the locked `mcp` 2.3.0, the HTTP transport serves the
 handshake-era revisions (up to 2025-11-25) and the 2026-07-28 single-exchange protocol, including
-`server/discover`. A 2.x `mcp.Client` in its default `auto` mode probes `server/discover` and settles
+`server/discover`. An `mcp.Client` in its default `auto` mode probes `server/discover` and settles
 on 2026-07-28, and its calls go through the same dispatch, RBAC gate and bearer identity
-(`tests/unit/test_http_transport_embedding.py` proves it). On mcp 1.x the transport speaks the
-handshake only. 3tears adds nothing per version, so a newer SDK's versions are served once the lock
-moves to it.
+(`tests/unit/test_http_transport_embedding.py` proves it). 3tears adds nothing per version, so a newer
+SDK's versions are served once the lock moves to it.
 
 ## RBAC model
 

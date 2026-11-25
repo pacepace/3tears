@@ -35,14 +35,12 @@ dependencies = [
 [project.optional-dependencies]
 # The FastMCP transport (`threetears.evals.transports.fastmcp`): mounts the action catalogue as tools
 # on a FastMCP server. Optional, so the engine and its catalogue install without an MCP stack. The suite
-# runs against the locked release; the floor is the first release an adopting host is known to run. Nothing
-# gates it: it was checked manually (passed on 2026-10-06) by running the transport's tests against it:
-#   uv run --with "fastmcp==3.4.2" pytest packages/evals/tests/test_fastmcp_transport.py
-# Re-run that when the transport starts using a fastmcp API it did not, and raise the floor if it fails.
-# The cap is the newest major this is tested against: the suite runs on the locked 4.x, and
-# scripts/test-mcp-v1.sh runs the transport's tests on 3.x (fastmcp 3 needs mcp 1, fastmcp 4 mcp 2).
-# fastmcp-slim is named too: since 3.x the `fastmcp` module ships in it, and fastmcp is its wrapper
-fastmcp = ["fastmcp>=3.4.2,<5", "fastmcp-slim>=3.4.2,<5"]
+# runs against the locked release, and scripts/test-mcp-floor.sh runs the transport's tests at the floor
+# declared here (with mcp at its own floor), so the floor cannot fall behind the code unnoticed. fastmcp 4
+# is the first major on mcp 2.x; fastmcp 3 needs mcp 1, which 3tears no longer supports. The cap is the
+# newest major this is tested against. fastmcp-slim is named too: the `fastmcp` module ships in it, and
+# fastmcp is its wrapper
+fastmcp = ["fastmcp>=4.0,<5", "fastmcp-slim>=4.0,<5"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

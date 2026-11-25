@@ -27,6 +27,7 @@ import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import MCPError
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.mcp.auth import BearerTokenIdentityProvider, Identity, LocalGrantAuthorizer
 from threetears.mcp.server import McpServer
@@ -115,8 +116,7 @@ async def _call_tool(server: McpServer, tool_name: str, arguments: dict[str, Any
     client = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
-            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
-                read, write = streams[0], streams[1]  # 1.x yields a third value (the session id), 2.x two
+            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, arguments)
@@ -370,7 +370,7 @@ class TestDispatchErrorPaths:
         """only the Protocol's RuntimeError means "no identity"; any other raise is a bug and propagates.
 
         the dispatch does not answer it, so it reaches the MCP SDK's own catch-all, which answers the
-        request with a JSON-RPC error the client raises, on either SDK major, rather than this server's
+        request with a JSON-RPC error the client raises, rather than this server's
         ``IDENTITY_UNAVAILABLE`` result.
         """
         provider = MagicMock()
@@ -385,7 +385,7 @@ class TestDispatchErrorPaths:
         try:
             result = await _call_tool(server, "probe", {})
         except BaseException as raised:  # noqa: BLE001 -- the client raises the server's JSON-RPC error
-            reported = [str(leaf) for leaf in _leaves(raised) if type(leaf).__name__ in {"MCPError", "McpError"}]
+            reported = [str(leaf) for leaf in _leaves(raised) if isinstance(leaf, MCPError)]
         else:
             pytest.fail(f"a bug escaping the dispatch answered a result, not a JSON-RPC error: {result!r}")
         assert reported == ["a bug in the provider"]
@@ -501,12 +501,9 @@ class TestDispatchErrorPaths:
 # ---------------------------------------------------------------------
 
 
-class TestTheSdkDecoratorsDutiesHoldOnEitherSdk:
-    """what mcp 1.x's ``call_tool`` decorator did for the server, McpServer now does on 2.x too.
-
-    2.x's low-level server dropped the decorator: it neither checks arguments against the tool's
-    ``inputSchema`` nor fills in a missing ``arguments``. 3tears supports both majors until the owner drops 1.x,
-    and each of these holds on both (``scripts/test-mcp-v1.sh`` runs this file on 1.x).
+class TestMcpServerDoesWhatTheLowLevelSdkDoesNot:
+    """the SDK's low-level server neither checks arguments against the tool's ``inputSchema`` nor
+    fills in a missing ``arguments``, so McpServer does both.
     """
 
     @pytest.mark.asyncio

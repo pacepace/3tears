@@ -30,6 +30,7 @@ against any module under ``threetears.mcp`` writing to
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -37,11 +38,19 @@ from typing import TYPE_CHECKING, Any
 import jsonschema
 import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
+from mcp.server.connection import allowed_log_levels
+from mcp.server.context import ServerRequestContext
 from mcp.server.stdio import stdio_server as _stdio_server
 from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
-from threetears.mcp.http_server import McpHttpTransport, build_mcp_http_app, serve_mcp_http
+from threetears.mcp.context import CallContext, LogLevel
+from threetears.mcp.http_server import (
+    McpHttpTransport,
+    build_mcp_http_app,
+    current_request_streams,
+    serve_mcp_http,
+)
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
 
 if TYPE_CHECKING:
@@ -53,11 +62,6 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
-
-#: mcp 1.x registers handlers with ``@server.list_tools()`` / ``@server.call_tool()``; 2.x removed
-#: both and takes ``on_list_tools`` / ``on_call_tool`` in the constructor. 3tears runs on either
-#: (``mcp>=1.27,<3``), so consumers move to 2.x on their own schedule; 1.x is dropped when the owner says.
-_SDK_V1 = hasattr(_SdkServer, "call_tool")
 
 #: what a client is told when the tool provider fails; the provider's own error is logged, not sent
 _TOOLS_UNAVAILABLE_MESSAGE = "the server's tool set could not be read"
@@ -140,6 +144,9 @@ class McpServer:
         # one ERROR per grant-cache outage, not one traceback per refused call: the authorizer
         # already logged the failed reload with its traceback, and an outage refuses every call.
         self._grant_cache_outage_logged = False
+        # one WARNING per server, the first time a handler's progress or log entry is dropped because
+        # the HTTP transport answers in plain JSON: every such call drops them the same way
+        self._undeliverable_notifications_logged = False
         self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
@@ -154,50 +161,23 @@ class McpServer:
     def _build_sdk_server(self, name: str) -> _SdkServer[Any]:
         """build the SDK server with this server's ``tools/list`` + ``tools/call`` handlers.
 
-        each :class:`McpServer` gets its own SDK server (no cross-pollination). mcp 1.x and
-        2.x register handlers differently (see :data:`_SDK_V1`); both answer from the same
-        :meth:`_tools` and :meth:`_dispatch`, so a caller sees one behaviour on either.
+        each :class:`McpServer` gets its own SDK server (no cross-pollination); both handlers
+        answer from :meth:`_tools` and :meth:`_dispatch`.
 
         :param name: advertised server name
         :ptype name: str
         :return: the wired SDK server
         :rtype: mcp.server.Server
         """
-        if _SDK_V1:
-            # typed as Any: the 1.x decorators do not exist in the 2.x stubs mypy checks against
-            server: Any = _SdkServer(name)
-
-            @server.list_tools()  # type: ignore[untyped-decorator]
-            async def _list_tools() -> list[mcp_types.Tool]:
-                return self._tools()
-
-            # the call handler goes straight into request_handlers, which is all the 1.x call_tool
-            # decorator does once its own work is done. _dispatch checks the arguments and answers
-            # every refusal itself. two more things the decorator did are left out on purpose: its
-            # cache of an earlier tools/list goes stale once a live provider changes a schema, and is
-            # refreshed on a miss by calling the provider outside _dispatch, where a failure reached
-            # the client as the exception's own text; and it turned an exception escaping the handler
-            # into an isError result. what escapes _dispatch is a bug, which 2.x answers with a
-            # JSON-RPC error, and 1.x now answers alike
-            async def _call_tool(request: Any) -> Any:
-                params = request.params
-                # Any: 1.x's ServerResult is the model wrapping a result, 2.x's stubs name a union
-                v1_types: Any = mcp_types
-                return v1_types.ServerResult(await self._dispatch(params.name, params.arguments or {}))
-
-            server.request_handlers[mcp_types.CallToolRequest] = _call_tool
-
-            built: _SdkServer[Any] = server
-            return built
 
         async def _on_list_tools(_ctx: Any, _params: Any) -> mcp_types.ListToolsResult:
             return mcp_types.ListToolsResult(tools=self._tools())
 
-        async def _on_call_tool(_ctx: Any, params: Any) -> mcp_types.CallToolResult:
-            # 2.x passes arguments=None for a call that sent none; 1.x passed {}. what escapes
-            # _dispatch is a bug (it answers every refusal itself), so it is not caught here: on
-            # either major the SDK answers the request with a JSON-RPC error
-            return await self._dispatch(params.name, params.arguments or {})
+        async def _on_call_tool(ctx: ServerRequestContext[Any, Any], params: Any) -> mcp_types.CallToolResult:
+            # the SDK passes arguments=None for a call that sent none. what escapes _dispatch is a
+            # bug (it answers every refusal itself), so it is not caught here: the SDK answers the
+            # request with a JSON-RPC error
+            return await self._dispatch(params.name, params.arguments or {}, request=ctx)
 
         return _SdkServer(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
 
@@ -228,7 +208,7 @@ class McpServer:
             tools = self._current_tools()
         except Exception as exc:
             log.exception("MCP tools/list: the tool provider failed")
-            # the SDK puts the exception's text in the JSON-RPC error it answers, on either major:
+            # the SDK puts the exception's text in the JSON-RPC error it answers:
             # a fixed message keeps the provider's internals off the wire, as tools/call's
             # TOOLS_UNAVAILABLE does
             raise RuntimeError(_TOOLS_UNAVAILABLE_MESSAGE) from exc
@@ -238,6 +218,8 @@ class McpServer:
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        *,
+        request: ServerRequestContext[Any, Any],
     ) -> mcp_types.CallToolResult:
         """resolve identity, gate via authorizer, run handler, map errors.
 
@@ -247,7 +229,7 @@ class McpServer:
         handler exception -- returns a :class:`CallToolResult` with
         ``isError=True`` so the MCP client sees the failure at the
         protocol level. the happy path returns one too, with
-        ``isError=False``: 2.x no longer wraps a bare content list.
+        ``isError=False``: the SDK does not wrap a bare content list.
 
         the structured error detail (machine-readable ``code`` field)
         is preserved in the content text as JSON so callers that want
@@ -258,6 +240,9 @@ class McpServer:
         :ptype tool_name: str
         :param arguments: validated input arguments
         :ptype arguments: dict[str, Any]
+        :param request: the SDK's context for the request, from which a handler that asks for one
+            gets its :class:`CallContext`
+        :ptype request: mcp.server.context.ServerRequestContext
         :return: the call's result, failed or not
         :rtype: mcp_types.CallToolResult
         """
@@ -287,13 +272,17 @@ class McpServer:
                 message=f"no tool named {tool_name!r} registered",
             )
 
-        # 1.x's call_tool decorator checked the arguments against the tool's inputSchema before
-        # the handler ran, and 2.x's low-level server does not: checked here, against the tool as
-        # the provider answers it now, in the decorator's words, so both majors refuse alike
+        # the SDK's low-level server does not check arguments against the tool's inputSchema: checked
+        # here, before the handler runs, against the tool as the provider answers it now
         try:
             jsonschema.validate(instance=arguments, schema=tool.input_schema)
         except jsonschema.ValidationError as exc:
             return _plain_error_result(f"Input validation error: {exc.message}")
+        if tool.context_parameter is not None and tool.context_parameter in arguments:
+            # a schema that admits extra properties let through an argument named as the context
+            return _plain_error_result(
+                f"Input validation error: {tool.context_parameter!r} is not an argument of this tool",
+            )
 
         try:
             identity = await self._identity_provider.identify()
@@ -363,8 +352,17 @@ class McpServer:
                 message=(f"identity lacks required permission {tool.required_permission!r}"),
             )
 
+        cancelled = asyncio.Event()
+        kwargs = dict(arguments)
+        if tool.context_parameter is not None:
+            kwargs[tool.context_parameter] = self._call_context(tool_name, request, cancelled)
         try:
-            result = await tool.handler(**arguments)
+            result = await tool.handler(**kwargs)
+        except asyncio.CancelledError:
+            # the client cancelled the call or went away; work the call started outside its own task
+            # sees it through the context
+            cancelled.set()
+            raise
         except Exception as exc:
             contain(
                 exc,
@@ -402,6 +400,88 @@ class McpServer:
                 )
                 return self._error_result(tool_name=tool_name, code="OUTPUT_VALIDATION_ERROR", message=refusal)
         return call_result
+
+    def _call_context(
+        self,
+        tool_name: str,
+        request: ServerRequestContext[Any, Any],
+        cancelled: asyncio.Event,
+    ) -> CallContext:
+        """the :class:`CallContext` for one call, its channels bound to the SDK request it arrived on.
+
+        progress and log messages go out on the request's own channel, so over Streamable HTTP they
+        ride the call's response stream and reach the client before its result. a transport that
+        answers in plain JSON has no such stream: what the handler sends is not sent, and the first
+        time that happens the server logs a warning naming the fix.
+
+        :param tool_name: the tool being called
+        :ptype tool_name: str
+        :param request: the SDK's context for the request
+        :ptype request: mcp.server.context.ServerRequestContext
+        :param cancelled: the event the dispatch sets when the call is cancelled
+        :ptype cancelled: asyncio.Event
+        :return: the call's context
+        :rtype: CallContext
+        """
+        session = request.session
+        request_id = request.request_id
+        meta = request.meta or {}
+        progress_token = meta.get("progress_token")
+        # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request,
+        # at a level; on earlier versions every level may be sent
+        allowed_levels = allowed_log_levels(request.protocol_version, request.meta)
+        streams = current_request_streams()
+
+        async def _send_progress(progress: float, total: float | None, message: str | None) -> None:
+            if not streams:
+                self._note_undeliverable(tool_name, "progress")
+                return
+            await session.report_progress(progress, total, message)
+
+        async def _send_log(level: LogLevel, data: Any, logger: str | None) -> None:
+            if level not in allowed_levels:
+                return
+            if not streams:
+                self._note_undeliverable(tool_name, "log")
+                return
+            # sent as the notification itself rather than through the SDK's send_log_message, which
+            # warns on every call (the logging capability is deprecated in 2026-07-28; the message is
+            # not)
+            await session.send_notification(
+                mcp_types.LoggingMessageNotification(
+                    params=mcp_types.LoggingMessageNotificationParams(level=level, data=data, logger=logger),
+                ),
+                related_request_id=request_id,
+            )
+
+        return CallContext(
+            tool_name=tool_name,
+            request_id=request_id,
+            progress_token=progress_token,
+            progress_sender=_send_progress,
+            log_sender=_send_log,
+            cancelled=cancelled,
+        )
+
+    def _note_undeliverable(self, tool_name: str, kind: str) -> None:
+        """log, once per server, that a handler's notification cannot reach the client.
+
+        :param tool_name: the tool whose handler sent it
+        :ptype tool_name: str
+        :param kind: ``"progress"`` or ``"log"``
+        :ptype kind: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._undeliverable_notifications_logged:
+            return
+        self._undeliverable_notifications_logged = True
+        log.warning(
+            "MCP dispatch: a handler's progress and log notifications are not reaching the client: the HTTP "
+            "transport answers in plain JSON (json_response=True). Build it with json_response=False to send "
+            "them on the call's SSE stream. Logged once per server.",
+            extra={"extra_data": {"tool_name": tool_name, "kind": kind}},
+        )
 
     @staticmethod
     def _error_result(
@@ -512,7 +592,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: Starlette ASGI app serving the Streamable-HTTP transport
         :rtype: starlette.applications.Starlette
@@ -552,7 +633,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: the transport
         :rtype: threetears.mcp.http_server.McpHttpTransport
@@ -597,7 +679,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: nothing
         :rtype: None
@@ -617,11 +700,7 @@ def _call_tool_result(
     is_error: bool,
     structured: dict[str, Any] | None = None,
 ) -> mcp_types.CallToolResult:
-    """build a :class:`CallToolResult` on either SDK major.
-
-    built from the wire names: 1.x's fields are ``isError`` / ``structuredContent`` and 2.x's
-    are ``is_error`` / ``structured_content`` with the wire names as aliases, so a constructor
-    keyword would be wrong on one of them while a validated dict is right on both.
+    """build a :class:`CallToolResult`.
 
     :param content: the content blocks
     :ptype content: list[mcp_types.TextContent]
@@ -632,14 +711,13 @@ def _call_tool_result(
     :return: the result
     :rtype: mcp_types.CallToolResult
     """
-    fields: dict[str, Any] = {"content": content, "isError": is_error}
-    if structured is not None:
-        fields["structuredContent"] = structured
-    return mcp_types.CallToolResult.model_validate(fields)
+    if structured is None:
+        return mcp_types.CallToolResult(content=list(content), is_error=is_error)
+    return mcp_types.CallToolResult(content=list(content), is_error=is_error, structured_content=structured)
 
 
 def _plain_error_result(message: str) -> mcp_types.CallToolResult:
-    """the bare-text error result mcp 1.x's ``call_tool`` decorator answered with.
+    """a bare-text error result, for a call refused before its tool ran (its arguments).
 
     :param message: the error text
     :ptype message: str
@@ -681,16 +759,15 @@ def _listed_tool(tool: McpTool) -> mcp_types.Tool:
     :return: the SDK's tool, with only the optional fields the tool sets
     :rtype: mcp_types.Tool
     """
-    # model_validate with the wire names: 1.x names the fields inputSchema / outputSchema, 2.x
-    # input_schema / output_schema with the wire names as aliases, and the alias is accepted by both
-    listed: dict[str, Any] = {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+    # only the optional fields the tool sets, so the listing leaves the rest unset rather than null
+    optional: dict[str, Any] = {}
     if tool.output_schema is not None:
-        listed["outputSchema"] = tool.output_schema
+        optional["output_schema"] = tool.output_schema
     if tool.title is not None:
-        listed["title"] = tool.title
+        optional["title"] = tool.title
     if tool.annotations is not None:
-        listed["annotations"] = tool.annotations.to_wire()
-    return mcp_types.Tool.model_validate(listed)
+        optional["annotations"] = mcp_types.ToolAnnotations.model_validate(tool.annotations.to_wire())
+    return mcp_types.Tool(name=tool.name, description=tool.description, input_schema=tool.input_schema, **optional)
 
 
 def _as_call_tool_result(result: Any) -> mcp_types.CallToolResult:
@@ -706,8 +783,7 @@ def _as_call_tool_result(result: Any) -> mcp_types.CallToolResult:
     if isinstance(result, mcp_types.CallToolResult):
         return result
 
-    # a plain content result is wrapped here rather than by the SDK: 1.x wrapped a returned list in
-    # CallToolResult(isError=False), 2.x requires the handler to return the result
+    # a plain content result is wrapped here: the SDK requires the handler to return the result
     if isinstance(result, list) and all(isinstance(item, mcp_types.TextContent) for item in result):
         return _call_tool_result(content=result, is_error=False)
     if isinstance(result, mcp_types.TextContent):
@@ -731,8 +807,7 @@ def _output_schema_refusal(wire: dict[str, Any], output_schema: dict[str, Any]) 
     """why a successful result breaks the tool's ``outputSchema``, or ``None`` when it does not.
 
     the spec's server MUST: a tool that declares an output schema returns structured results that
-    conform to it. an error result is exempt. 2.x's low-level server checks nothing; 1.x's
-    decorator checked only results it built itself, never a returned CallToolResult.
+    conform to it. an error result is exempt. the SDK's low-level server checks nothing.
 
     :param wire: the call's result as the JSON the client receives
     :ptype wire: dict[str, Any]

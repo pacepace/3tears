@@ -2,8 +2,7 @@
 
 the provider is called on every ``tools/list`` and every ``tools/call``, so a registry that adds,
 removes or reshapes a tool between two requests of one session is seen by the second. driven by a
-real MCP client over the server's Streamable-HTTP app; ``scripts/test-mcp-v1.sh`` runs this file
-on mcp 1.x, whose ``call_tool`` decorator caches the tools of an earlier ``tools/list``.
+real MCP client over the server's Streamable-HTTP app.
 """
 
 from __future__ import annotations
@@ -20,13 +19,10 @@ import httpx2
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared import exceptions as mcp_exceptions
+from mcp.shared.exceptions import MCPError
 from threetears.mcp.auth import Identity
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
-
-#: the client's JSON-RPC error: McpError on mcp 1.x, MCPError on 2.x
-_JSONRPC_ERROR: type[Exception] = getattr(mcp_exceptions, "MCPError", None) or mcp_exceptions.McpError  # type: ignore[attr-defined]
 
 
 def _tool(name: str, *, input_schema: dict[str, Any] | None = None, returns: str = "ran") -> McpTool:
@@ -61,8 +57,8 @@ async def _session(server: McpServer) -> AsyncIterator[ClientSession]:
     client = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
-            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
-                async with ClientSession(streams[0], streams[1]) as session:  # 1.x yields a third value
+            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write):
+                async with ClientSession(read, write) as session:
                     await session.initialize()
                     yield session
     finally:
@@ -119,7 +115,7 @@ class TestTheProviderIsReadAtEachRequest:
 
     @pytest.mark.asyncio
     async def test_arguments_are_checked_against_the_schema_as_it_stands_now(self) -> None:
-        # mcp 1.x's decorator would check them against its cached copy from the first tools/list
+        # against the tool as the provider answers it now, not a copy from the session's first tools/list
         old = _tool("runners.get", input_schema={"type": "object", "properties": {"id": {"type": "integer"}}})
         new = _tool("runners.get", input_schema={"type": "object", "properties": {"id": {"type": "string"}}})
         live = [old]
@@ -172,20 +168,20 @@ class TestABadProviderAnswer:
 
         async with _session(_server(_breaks_second_time)) as session:
             await session.list_tools()
-            with pytest.raises(_JSONRPC_ERROR):
+            with pytest.raises(MCPError):
                 await session.list_tools()
 
     @pytest.mark.asyncio
     async def test_a_failing_provider_does_not_send_its_own_error_to_the_client(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # the SDK answers with the exception's text on either major, so the server raises a fixed one
+        # the SDK answers with the exception's text, so the server raises a fixed one
         def _broken() -> list[McpTool]:
             raise LookupError("the op registry is reloading from /srv/ops")
 
         with caplog.at_level(logging.ERROR, logger="threetears.mcp"):
             async with _session(_server(_broken)) as session:
-                with pytest.raises(_JSONRPC_ERROR) as refused:
+                with pytest.raises(MCPError) as refused:
                     await session.list_tools()
         assert str(refused.value) == "the server's tool set could not be read"
         logged = [record for record in caplog.records if record.name == "threetears.mcp.server"]
