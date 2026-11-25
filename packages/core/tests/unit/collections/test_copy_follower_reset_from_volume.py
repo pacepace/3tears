@@ -44,6 +44,8 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS  # noqa: E402
+from threetears.core.collections.copy_key_work import INLINE_KEYS  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     CopyFollower,
     FollowedTable,
@@ -130,6 +132,28 @@ def _dict_rows(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
 
 
+def _upsert(db: Any, table: str, rows: Sequence[tuple[str, int, int]], key: Sequence[str]) -> None:
+    """``rows`` (state, geo_id, votes) upserted into ``table`` in one statement, the last row of a key winning."""
+    if not rows:
+        return
+    put = pa.table(
+        {
+            "state": pa.array([r[0] for r in rows], pa.string()),
+            "geo_id": pa.array([r[1] for r in rows], pa.int64()),
+            "votes": pa.array([r[2] for r in rows], pa.int64()),
+            "at__": pa.array(range(len(rows)), pa.int64()),
+        }
+    )
+    db.register("_put", put)
+    try:
+        db.execute(
+            f"INSERT OR REPLACE INTO {table} (state, geo_id, votes) SELECT state, geo_id, votes FROM _put "  # noqa: S608
+            f"QUALIFY row_number() OVER (PARTITION BY {', '.join(key)} ORDER BY at__ DESC) = 1"
+        )
+    finally:
+        db.unregister("_put")
+
+
 class _L3:
     """L3 as a DuckDB answering ``fetch``; counts the statements that read each table."""
 
@@ -143,8 +167,10 @@ class _L3:
         self.statements: dict[str, int] = dict.fromkeys((_RESET, _OTHER, _PLAIN), 0)
 
     def put(self, table: str, rows: list[tuple[str, int, int]]) -> None:
-        for row in rows:
-            self.db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?)", list(row))  # noqa: S608
+        # one statement over the rows as an Arrow table, the last of a key winning as row-by-row upserts left it: a
+        # statement a row binds each value from Python (a failed ``import pandas`` a value, under testament a stat of
+        # every path), which held the loop past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        _upsert(self.db, table, rows, ("state", "geo_id"))
 
     def reset(self, table: str, rows: list[tuple[str, int, int]]) -> None:
         """an operator's reset: the table emptied and loaded again."""
@@ -285,6 +311,7 @@ class _World:
             beats=beats,
             recreate=recreate,
             file_poll_seconds=0.01 if recreate is not None else None,
+            drift_workers=COPY_WORKERS,
         )
         self.writes = 0
 
@@ -1336,7 +1363,7 @@ async def test_a_reset_heard_while_a_pass_takes_its_keys_epochs_reads_nothing_fr
             return await real.sleep(delay, *args)
 
         async def to_thread(self, call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-            if getattr(call, "__name__", "") == "_epoch_plan" and not told:
+            if getattr(call, "__name__", "") == "_plan_ipc" and not told:
                 told.append(_reset_now(world, _AFTER_RESET))
             return await real.to_thread(call, *args, **kwargs)
 
@@ -1479,6 +1506,7 @@ class _Checkpointed(_World):
             stamp_table="scope_epochs",
             checkpoints=self.checkpoints,
             fulls=VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
+            drift_workers=COPY_WORKERS,
         )
 
     def seq(self) -> int:
@@ -1549,3 +1577,83 @@ async def test_with_both_kinds_of_table_only_an_epoch_from_the_notes_on_a_checkp
     assert world.seq() == 2, "plain's epoch a quarter fence old makes the checkpoint due"
     assert world.notes_age() == 0.0
     world.follower.stop()
+
+
+async def test_a_reset_tables_reload_and_its_next_large_pass_judge_their_keys_in_the_worker_process(
+    _volume: Path,
+) -> None:
+    """Flips if a reload's keys heard while the table waited are judged against the full's version (``_past_floor``),
+    or the next large pass of the reloaded table plans its epochs, merges its files, cuts its stage or finds each
+    state's newest epoch, in the serving process: on a thread they took 27 ms, 7.8 ms, 98 ms, 6.3 ms and 51 ms of its
+    CPU at 100,000 keys, and 396 ms, 77 ms, 64 ms and 649 ms at 1,000,000 (the merge 210 ms at 200,000; 2026-11-25).
+    The copy still ends equal to L3, reading none of it from L3."""
+    world = _World(_volume)
+    await world.started()
+    world.l3.reset(_RESET, _AFTER_RESET)
+    reset_at = world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL", "state:TX")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    count = INLINE_KEYS
+    # heard while it waits: past the full, so applied from their files once it is reloaded
+    await asyncio.to_thread(world.write, _RESET, [("VA", 1_000 + i, i) for i in range(count)])
+    assert await world.follower.catch_up()
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, _AFTER_RESET, reset_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    COPY_WORKERS.jobs.clear()
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert await asyncio.to_thread(world.same)
+    assert "past_floor_job" in COPY_WORKERS.jobs, f"judged in the serving process: {COPY_WORKERS.jobs}"
+    COPY_WORKERS.jobs.clear()
+    await asyncio.to_thread(world.write, _RESET, [("IL", 2_000 + i, i) for i in range(count)])
+    assert await world.follower.catch_up()
+    assert await asyncio.to_thread(world.same)
+    assert {"epoch_plan_job", "merged_job", "staged_scopes_job", "newest_by_scope_job"} <= set(COPY_WORKERS.jobs), (
+        f"judged in the serving process: {COPY_WORKERS.jobs}"
+    )
+    assert world.l3.statements[_RESET] == 0
+
+
+async def test_a_reload_of_some_states_judges_the_keys_heard_meanwhile_in_the_worker_process(_volume: Path) -> None:
+    """Flips if a reload of some states (decision 54 (c)) judges the keys heard while the table waited against each
+    state's part in the serving process: on a thread it took 77 ms of its CPU at 100,000 keys, 878 ms at 1,000,000 and
+    3.0 ms at 2,000 with 25 states (a pass over the keys a state, 2026-11-25), so it runs in the worker at any size.
+    Only the commit's state's part is loaded, and the copy ends equal to L3."""
+    world = _World(_volume, recreate=_covered)
+    await _held_past_a_gone_file(world, ["state:VA", EVERY_STATE_NAMED], [])
+    COPY_WORKERS.jobs.clear()
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
+    assert "past_states_job" in COPY_WORKERS.jobs, f"judged in the serving process: {COPY_WORKERS.jobs}"
+    world.follower.stop()
+
+
+async def test_the_scopes_a_waiting_tables_many_keys_heard_name_are_found_in_the_worker_process(
+    _volume: Path,
+) -> None:
+    """Flips if the scopes a table waiting for a delta file holds back, read off its keys heard meanwhile, are found on
+    the event loop past the bound: there they took 8.6-9.3 ms at 100,000 keys heard and 41-91 ms at 1,000,000
+    (2026-11-25). The label still keeps each such scope held, the one the lost file named and the one heard since."""
+    world = _World(_volume)
+    await world.started()
+    world.write(_RESET, [("VA", 0, 900)])
+    lost = world.log.records[(_RESET, f"inc:{world.log.count[_RESET]}")].delta_file
+    assert lost is not None
+    (_volume / lost).unlink()
+    await world.follower.catch_up()
+    assert lost in world.follower.status().waiting_for_file[_RESET]
+    await asyncio.to_thread(world.write, _RESET, [("TX", i, i) for i in range(INLINE_KEYS)])
+    COPY_WORKERS.jobs.clear()
+    await world.follower.catch_up()
+    assert "heard_scopes_job" in COPY_WORKERS.jobs, f"found in the serving process: {COPY_WORKERS.jobs}"
+    stamp = world.follower.status().stamp
+    assert isinstance(stamp, PartialStamp), f"labelled {stamp!r} while a table waits"
+    assert {"state:VA", "state:TX"} <= stamp.held

@@ -668,7 +668,14 @@ class _AnalyzingTableStore(_TableStore):
 
     async def analyze(self, table: str) -> None:
         self.analyzed.append(table)
-        self.askers.append([frame.function for frame in inspect.stack()[1:3]])
+        # the two callers by their frames alone: inspect.stack() reads every frame's source file, which on the loop
+        # held it past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        caller = inspect.currentframe()
+        callers: list[str] = []
+        while caller is not None and len(callers) < 3:
+            callers.append(caller.f_code.co_name)
+            caller = caller.f_back
+        self.askers.append(callers[1:3])
 
 
 async def test_an_incremental_load_of_many_rows_is_never_analysed(bus: FakeNatsClient, source: _CountingSource) -> None:
@@ -736,7 +743,15 @@ async def test_the_store_s_analyze_is_reached_only_from_a_reload(bus: FakeNatsCl
     assert store.analyzed == ["lsf_results"]
     assert [asker[0] for asker in store.askers] == ["load_files"], store.askers
 
-    callers = []
+    callers = await asyncio.to_thread(_callers_of, "analyze")
+    assert sorted(set(callers)) == ["schema_backed.py:load_files"], callers
+
+
+def _callers_of(attr: str) -> list[str]:
+    """``file:function`` of every function in threetears.core's source that calls a method named ``attr``. Run on a
+    thread: parsing the whole source tree on the loop held it past the loop-stall guard's limit
+    (threetears.core.testing.loop_stall)."""
+    callers: list[str] = []
     source_root = Path(threetears.core.__file__).parent
     for path in sorted(source_root.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -745,7 +760,7 @@ async def test_the_store_s_analyze_is_reached_only_from_a_reload(bus: FakeNatsCl
                     if (
                         isinstance(inner, ast.Call)
                         and isinstance(inner.func, ast.Attribute)
-                        and inner.func.attr == "analyze"
+                        and inner.func.attr == attr
                     ):
                         callers.append(f"{path.name}:{node.name}")
-    assert sorted(set(callers)) == ["schema_backed.py:load_files"], callers
+    return callers

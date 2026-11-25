@@ -8,6 +8,7 @@ order when ``order_by`` names the sort.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
@@ -22,28 +23,34 @@ class _Transaction:
         self._db = db
 
     async def start(self) -> None:
-        self._db.execute("BEGIN")
+        await asyncio.to_thread(self._db.execute, "BEGIN")
 
     async def rollback(self) -> None:
-        self._db.execute("ROLLBACK")
+        await asyncio.to_thread(self._db.execute, "ROLLBACK")
+
+
+def _fetched(db: duckdb.DuckDBPyConnection, sql: str, params: list[Any]) -> list[dict[str, Any]]:
+    cursor = db.execute(sql, params)
+    names = [column[0] for column in cursor.description]
+    return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
 
 
 class _Duck:
-    """the asyncpg calls the harness makes, on one DuckDB connection."""
+    """the asyncpg calls the harness makes, on one DuckDB connection. Each statement runs on a thread, as asyncpg's
+    wait on the server is off the loop: the harness seeds every case's rows by ``executemany``, a DuckDB statement a
+    row, which on the loop held it past the loop-stall guard's limit (threetears.core.testing.loop_stall)."""
 
     def __init__(self, db: duckdb.DuckDBPyConnection) -> None:
         self._db = db
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        cursor = self._db.execute(sql, list(params))
-        names = [column[0] for column in cursor.description]
-        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+        return await asyncio.to_thread(_fetched, self._db, sql, list(params))
 
     async def execute(self, sql: str, *params: Any) -> None:
-        self._db.execute(sql, list(params))
+        await asyncio.to_thread(self._db.execute, sql, list(params))
 
     async def executemany(self, sql: str, rows: Sequence[Sequence[Any]]) -> None:
-        self._db.executemany(sql, [list(row) for row in rows])
+        await asyncio.to_thread(lambda: self._db.executemany(sql, [list(row) for row in rows]))
 
     def transaction(self) -> _Transaction:
         return _Transaction(self._db)

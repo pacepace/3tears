@@ -69,9 +69,11 @@ warnings.filterwarnings(
 # clock and fails a test that leaves the clock frozen; ``tests.require_services`` fails an integration
 # test that skips at runtime under THREETEARS_REQUIRE_SERVICES=1 (the pool's integration suite);
 # ``tests.timing_suite`` fails a test that times against the host's quiet without the ``loop_timing``
-# marker that runs it apart; ``pytester`` lets their own tests run a session with them installed.
+# marker that runs it apart; ``threetears.core.testing.loop_stall`` fails a test whose event loop ran one turn past its
+# limit, naming what held it; ``pytester`` lets their own tests run a session with them installed.
 pytest_plugins = [
     "threetears.core.testing.fixtures",
+    "threetears.core.testing.loop_stall",
     "tests.contain_tripwire",
     "tests.clock_isolation",
     "tests.require_services",

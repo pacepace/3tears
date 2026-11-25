@@ -58,6 +58,7 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 import threetears.core.arrow_keys as arrow_keys  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+import threetears.core.collections.copy_key_work as copy_key_work  # noqa: E402
 import threetears.core.collections.delta_files as delta_files  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
@@ -101,6 +102,7 @@ from threetears.core.collections.volume_fulls import (  # noqa: E402
 )
 from threetears.core.collections.registry import WantedFile  # noqa: E402
 from threetears.core.config import DefaultCoreConfig  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS as _WORKERS  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.entities.base import BaseEntity  # noqa: E402
 from threetears.core.testing.l1_tables import TEST_L1_TABLE as _TEST_L1_TABLE  # noqa: E402
@@ -131,6 +133,7 @@ def _close_what_the_test_opened() -> Iterator[None]:
     yield
     while _OPENED:
         _OPENED.pop()()
+    _WORKERS.jobs.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -174,11 +177,32 @@ class _L3:
         self.statements = 0
 
     def insert(self, rows: Sequence[dict[str, Any]]) -> None:
-        for row in rows:
+        # one statement over the rows as an Arrow table, the last of a key winning as row-by-row upserts left it: a
+        # statement a row binds each value from Python (a failed ``import pandas`` a value, under testament a stat of
+        # every path), past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        if not rows:
+            return
+        put = pa.Table.from_pylist(
+            [{**{name: row[name] for name in _NAMES}, "at__": at} for at, row in enumerate(rows)],
+            schema=pa.schema(
+                [
+                    ("state", pa.string()),
+                    ("geo_id", pa.int64()),
+                    ("votes", pa.int64()),
+                    ("note", pa.string()),
+                    ("date_created", pa.timestamp("us", tz="UTC")),
+                    ("at__", pa.int64()),
+                ]
+            ),
+        )
+        self.db.register("_put", put)
+        try:
             self.db.execute(
-                f"INSERT OR REPLACE INTO {_TABLE} VALUES (?, ?, ?, ?, ?)",  # noqa: S608
-                [row[name] for name in _NAMES],
+                f"INSERT OR REPLACE INTO {_TABLE} SELECT {', '.join(_NAMES)} FROM _put "  # noqa: S608
+                "QUALIFY row_number() OVER (PARTITION BY state, geo_id ORDER BY at__ DESC) = 1"
             )
+        finally:
+            self.db.unregister("_put")
 
     def update(self, key: tuple[str, int], **values: Any) -> None:
         # an upsert of a row L3 held: only the columns its write set
@@ -200,8 +224,9 @@ class _L3:
         return sorted(self.db.execute(f"SELECT {', '.join(_NAMES)} FROM {_TABLE}").fetchall())  # noqa: S608
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        await asyncio.sleep(0)
-        rows = run_bound(self.db.cursor(), sql, params, _dict_rows)
+        # on a thread, as the real rail's reply is read off the loop: a whole read's 200,000 rows turned into dicts
+        # held it 0.59 s (the loop-stall guard, 2026-11-25)
+        rows = await asyncio.to_thread(run_bound, self.db.cursor(), sql, params, _dict_rows)
         if not sql.startswith("SELECT version()"):
             self.statements += 1
         return rows
@@ -220,8 +245,13 @@ class _Log:
     def __init__(self) -> None:
         self.count = 0
         self.records: dict[str, EpochChange] = {}
+        #: run once at the next read of the generation, before it answers: a commit landing between a pass's reads
+        self.on_current: Callable[[], None] | None = None
 
     async def current(self, table: str) -> str:
+        if self.on_current is not None:
+            hook, self.on_current = self.on_current, None
+            hook()
         return f"inc:{self.count}"
 
     def commit(self, keys: Sequence[tuple[str, int]], delta_file: str | None = None) -> str:
@@ -333,6 +363,7 @@ def _world(
     registry: CollectionRegistry | None = None,
     fulls: Any = None,
     page_size: int = 50,
+    workers: ProcessWorkers | None = None,
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
@@ -353,9 +384,23 @@ def _world(
         stamp_table="scope_epochs",
         recreate=recreate,
         fulls=fulls,
+        drift_workers=_WORKERS if workers is None else workers,
     )
     follower.register()
     return l3, log, lock, backend, follower
+
+
+class _HereWorkers(ProcessWorkers):
+    """the copy's worker, but every job run here, on the caller's thread, each named: a test then sees inside a job
+    (a file read, a merge) what it cannot see in another process."""
+
+    def __init__(self) -> None:
+        super().__init__(workers=1, name="test copy follower, here")
+        self.jobs: list[str] = []
+
+    async def run(self, job: Callable[..., Any], *args: Any, inline: bool = False) -> Any:
+        self.jobs.append(job.__name__)
+        return await super().run(job, *args, inline=True)
 
 
 def _row(state: str, geo_id: int, votes: int, note: str | None = "first", born: datetime = _BORN) -> dict[str, Any]:
@@ -381,6 +426,12 @@ def _instants(rows: Iterable[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
 
 def _same(backend: DuckDBBackend, l3: _L3) -> bool:
     return _instants(_copy(backend)) == _instants(l3.held())
+
+
+async def _same_now(backend: DuckDBBackend, l3: _L3) -> bool:
+    """:func:`_same`, on a thread: both tables read into Python rows, 200,000 of them a large test's, held the loop
+    0.56 s (the loop-stall guard, 2026-11-25)."""
+    return await asyncio.to_thread(_same, backend, l3)
 
 
 def _save_arrow(volume: Path, write: str, rows: Any, written: Sequence[str]) -> str:
@@ -428,7 +479,7 @@ async def _warmed(world: tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower])
     log.commit([(row["state"], row["geo_id"]) for row in rows])
     await follower.warm()
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     l3.statements = 0
 
 
@@ -447,8 +498,32 @@ async def test_an_opted_in_tables_change_is_applied_from_its_file_with_no_l3_sta
     log.commit([("VA", 1), ("VA", 500), ("VA", 4)], delta_file=name)
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_change_committed_between_a_pass_s_stamp_and_its_generation_read_is_read_from_l3_once(
+    _volume: Path,
+) -> None:
+    """Flips if a change committed while a pass reads (here: before its generation read answers) is read, left out when
+    the stamp is seen to have moved, and read again next pass: two L3 reads of one changed row (reports'
+    test_one_changed_row_reaches_the_other_replica_by_its_key_alone, 3 runs in 13, 2026-11-25). The pass reads each
+    table's generation before its stamp, and a key heard past that generation waits for the next pass: one read."""
+    world = _world(delta_files=False)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+
+    def commits() -> None:
+        l3.update(("VA", 1), votes=77)
+        log.commit([("VA", 1)])
+        lock.commit("state:VA")
+
+    log.on_current = commits
+    for _ in range(3):
+        await follower.catch_up()
+    assert await _same_now(backend, l3)
+    assert l3.statements == 1, f"the changed row was read from L3 {l3.statements} times"
     assert follower.stamp.epochs == lock.epochs
 
 
@@ -464,7 +539,7 @@ async def test_an_upsert_that_left_a_column_out_keeps_the_copys_value_and_date_c
     log.commit([("VA", 2)], delta_file=name)
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     with backend.read_snapshot() as cursor:
         votes, note, born = cursor.execute(
             f"SELECT votes, note, date_created FROM {_TABLE} WHERE state = 'VA' AND geo_id = 2"  # noqa: S608
@@ -485,7 +560,7 @@ async def test_a_delete_marker_deletes_the_key(_volume: Path) -> None:
     lock.commit("state:IL")
     assert await follower.catch_up()
     assert ("IL", 3) not in [row[:2] for row in _copy(backend)]
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -518,7 +593,7 @@ async def test_a_record_naming_a_file_the_volume_lost_reads_nothing_from_l3_and_
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -538,7 +613,7 @@ async def test_a_table_that_does_not_opt_in_reads_l3_as_before(_volume: Path) ->
     log.commit([("VA", 1)])
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 1
     assert {why: _fallbacks(why) for why in before} == before
 
@@ -557,12 +632,12 @@ async def test_a_copy_keyed_by_a_timestamp_reads_its_own_rows_of_a_change_by_the
     log.commit([(str(row["geo_id"]), row["date_created"].isoformat()) for row in rows])
     await follower.warm()
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     l3.update(("VA", 1), votes=88)
     log.commit([("1", "2026-11-03 21:45:00+00")])  # type: ignore[list-item]
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert follower.status().failures == 0
 
 
@@ -579,7 +654,7 @@ async def test_a_copy_keyed_by_a_timestamp_merges_a_files_upsert_onto_the_row_it
     log.commit([(str(row["geo_id"]), row["date_created"].isoformat()) for row in rows])
     await follower.warm()
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     l3.statements = 0
     # the write set votes alone: the copy keeps the row's state and note
     delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
@@ -590,7 +665,7 @@ async def test_a_copy_keyed_by_a_timestamp_merges_a_files_upsert_onto_the_row_it
     log.commit([("1", "2026-11-03T21:45:00.000000+00:00")], delta_file=name)  # type: ignore[list-item]
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -632,7 +707,7 @@ async def test_a_key_left_out_of_a_change_is_staged_again_from_its_files_next_pa
     )
     lock.on_read = None
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     with backend.read_snapshot() as cursor:
         assert cursor.execute(
             f"SELECT votes, note FROM {_TABLE} WHERE state = 'VA' AND geo_id = 1"  # noqa: S608
@@ -668,7 +743,7 @@ async def test_a_commit_too_big_to_list_is_applied_whole_from_its_file_reading_n
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert (l3.statements, notes.asked) == (0, 0)
     assert follower.status().behind == {}
     assert follower.stamp.epochs == lock.epochs
@@ -844,7 +919,8 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
     """Flips if a key heard at two records of one commit (each record of a commit names its one file) has the file
     read, or its changes applied, once per record: the commit would be replayed over itself, a pass's work doubled.
     The file is read once, and each change of it applied once."""
-    world = _world()
+    here = _HereWorkers()
+    world = _world(workers=here)
     l3, log, lock, backend, follower = world
     await _warmed(world)
     name = _save(
@@ -872,12 +948,14 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
             super().__init__(*args, **kwargs)
             merges.append(self)
 
-    monkeypatch.setattr(copy_follower, "read_delta_table", counted_read)
-    monkeypatch.setattr(copy_follower, "HeldDeltaRows", CountedRows)
+    # the merge's own module: it runs in the copy's worker, here on the caller's thread so its reads are seen
+    monkeypatch.setattr(copy_key_work, "read_delta_table", counted_read)
+    monkeypatch.setattr(copy_key_work, "HeldDeltaRows", CountedRows)
 
     assert await follower.catch_up()
+    assert "merged_job" in here.jobs
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert len(reads) == 1
     assert sum(merge.applied for merge in merges) == 3, "VA 1's two changes and VA 2's one, each once"
@@ -944,11 +1022,22 @@ async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(_v
     peak = max(peaks)
     assert peak / _BIG_ROWS < _STAGE_BYTES_PER_ROW, f"the pass allocated {peak / _BIG_ROWS:.0f} bytes of Python a row"
     assert l3.statements == 0
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
 
 
 #: the audit's real size for a loop bound: a 200,000-row commit applied from its file
 _LOOP_ROWS = 200_000
+
+
+def _born(l3: Any, log: Any, keys: Sequence[tuple[Any, ...]]) -> None:
+    """L3's ``_LOOP_ROWS`` rows of VA and the commit naming ``keys``: a test's own setup, run on a thread (on the loop
+    its Python rows and record held one turn past the loop-stall guard's limit on a loaded pool host, 2026-11-25)."""
+    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
+    l3.db.register("born", born)
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
+    l3.db.unregister("born")
+    log.commit(keys)
+
 
 #: the longest one turn of the loop may run (CPU time, turn_holds) while a pass applies a 200,000-row commit from its
 #: file, the collector on (decision 35: a few ms, under the SDK watchdog's 50 ms stall alarm). Measured 2026-11-23
@@ -967,22 +1056,22 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) 
     as one Arrow batch, the follower keeps them so, and the merge runs on a thread."""
     world = _world()
     l3, log, lock, backend, follower = world
-    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
-    l3.db.register("born", born)
-    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
-    l3.db.unregister("born")
-    log.commit([("VA", i) for i in range(_LOOP_ROWS)])
+    await asyncio.to_thread(_born, l3, log, [("VA", i) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
-    name = _save_arrow(_volume, "loop", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"])
-    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
-    log.commit([("VA", i) for i in range(_LOOP_ROWS)], delta_file=name)
+
+    def changed() -> None:
+        name = _save_arrow(_volume, "loop", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"])
+        l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+        log.commit([("VA", i) for i in range(_LOOP_ROWS)], delta_file=name)
+
+    await asyncio.to_thread(changed)
     lock.commit("state:VA")
     with turn_holds() as holds:
         assert await follower.catch_up()
     longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
 
 
 async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_keys_off_the_loop(
@@ -992,39 +1081,39 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
     race) works out its keys' scopes on the event loop: the copy's held rows beside the rows read, made distinct and
     matched to the page by Arrow kernels on the loop, held it 12.2 s in one page (``distinct_keys`` under
     ``_stage_keyed``), and the keys heard 24.3 s more (``_heard_batch`` under ``_drained``), in the local burst replay of
-    2026-11-25. No serving work may hold the loop: every one runs on a thread, and no turn holds it past 10 ms."""
+    2026-11-25. CPU belongs in a worker process: each runs in the copy's, and no turn holds the loop past 10 ms."""
     key = ("geo_id", "date_created")
     world = _world(key=key, page_size=_LOOP_ROWS)
     l3, log, lock, backend, follower = world
-    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
-    l3.db.register("born", born)
-    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
-    l3.db.unregister("born")
     instant = "2026-11-03T21:45:00.000000+00:00"  # the key's instant as a delta file names it
-    log.commit([(str(i), instant) for i in range(_LOOP_ROWS)])  # type: ignore[misc]
+    await asyncio.to_thread(_born, l3, log, [(str(i), instant) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
-    delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
-    delta.arrow(
-        pa.table(
-            {
-                "state": pa.nulls(_LOOP_ROWS, pa.string()),
-                "geo_id": pa.array(range(_LOOP_ROWS), pa.int64()),
-                "votes": pa.array(range(1, _LOOP_ROWS + 1), pa.int64()),
-                "note": pa.nulls(_LOOP_ROWS, pa.string()),
-                "date_created": pa.repeat(pa.scalar(_BORN, _TYPES["date_created"]), _LOOP_ROWS),
-            }
-        ),
-        [*key, "votes"],
-    )
-    name = write_delta_file(_volume, delta, "scoped")
-    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
-    log.commit([(str(i), instant) for i in range(_LOOP_ROWS)], delta_file=name)  # type: ignore[misc]
+
+    def changed() -> None:
+        delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
+        delta.arrow(
+            pa.table(
+                {
+                    "state": pa.nulls(_LOOP_ROWS, pa.string()),
+                    "geo_id": pa.array(range(_LOOP_ROWS), pa.int64()),
+                    "votes": pa.array(range(1, _LOOP_ROWS + 1), pa.int64()),
+                    "note": pa.nulls(_LOOP_ROWS, pa.string()),
+                    "date_created": pa.repeat(pa.scalar(_BORN, _TYPES["date_created"]), _LOOP_ROWS),
+                }
+            ),
+            [*key, "votes"],
+        )
+        name = write_delta_file(_volume, delta, "scoped")
+        l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+        log.commit([(str(i), instant) for i in range(_LOOP_ROWS)], delta_file=name)  # type: ignore[misc]
+
+    await asyncio.to_thread(changed)
     lock.commit("state:VA")
     loop_thread = threading.get_ident()
     on_loop: list[str] = []
-    # the public kernels the stage's work runs through: distinct_keys (made distinct, matched) and key_text_table (the
-    # keys heard, spelled as text)
+    # the public kernels the key work runs through, wherever it runs: distinct_keys (made distinct, matched) and
+    # key_text_table (the keys heard, spelled as text). Seen here only when called in this process, on the loop
     distinct, texts = arrow_keys.distinct_keys, delta_files.key_text_table
 
     def watched_distinct(rows: Any, columns: Sequence[str]) -> Any:
@@ -1037,15 +1126,18 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
             on_loop.append(f"key_text_table of {rows.num_rows} keys")
         return texts(rows, key, instants)
 
-    monkeypatch.setattr(copy_follower, "distinct_keys", watched_distinct)
-    monkeypatch.setattr(copy_follower, "key_text_table", watched_texts)
+    monkeypatch.setattr(copy_key_work, "distinct_keys", watched_distinct)
+    monkeypatch.setattr(copy_key_work, "key_text_table", watched_texts)
     l3.statements = 0
     with turn_holds() as holds:
         assert await follower.catch_up()
     assert on_loop == [], f"the pass ran its keys' Arrow work on the event loop: {on_loop}"
+    assert {"heard_job", "held_scopes_job", "page_scopes_job"} <= set(_WORKERS.jobs), (
+        f"the key work did not run in the copy's worker process: {_WORKERS.jobs}"
+    )
     longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1062,15 +1154,12 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
 ) -> None:
     """Flips if a table waiting for a commit too big to list hears its file's keys in one turn of the loop once it
     reads (the audit's 337,000 keys, the copy answering nothing else meanwhile), or reads the file's rows on the loop:
-    the reach is read on a thread and the keys heard in runs. The change then applies whole, with no L3 statement."""
+    the reach is read on a thread and the keys spelled in the copy's worker process. The change then applies whole, with
+    no L3 statement."""
     monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
     world = _world()
     l3, log, lock, backend, follower = world
-    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
-    l3.db.register("born", born)
-    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
-    l3.db.unregister("born")
-    log.commit([("VA", i) for i in range(_LOOP_ROWS)])
+    await asyncio.to_thread(_born, l3, log, [("VA", i) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
     l3.statements = 0
@@ -1082,16 +1171,35 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
     l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
     staging = _volume / "staging"
     staging.mkdir()
-    assert _save_arrow(staging, "big", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"]) == lost
+    saved = await asyncio.to_thread(
+        _save_arrow, staging, "big", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"]
+    )
+    assert saved == lost
     (_volume / lost).parent.mkdir(exist_ok=True)
+    # the file's keys spelled in this process are seen here (key_text_table, under _heard_batch): on the loop they held
+    # one turn 11.1 ms (past the bar, the pool host brooks-14th-mbp, 2026-11-25); they belong in the worker process
+    loop_thread = threading.get_ident()
+    on_loop: list[int] = []
+    texts = delta_files.key_text_table
+
+    def watched_texts(rows: Any, key: Sequence[str], instants: Any = ()) -> Any:
+        if threading.get_ident() == loop_thread:
+            on_loop.append(rows.num_rows)
+        return texts(rows, key, instants)
+
+    monkeypatch.setattr(copy_key_work, "key_text_table", watched_texts)
     with turn_holds() as holds:
         # the writer's file lands whole under its name, as its rename lands it
         (staging / lost).replace(_volume / lost)
         await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=60)
+    assert on_loop == [], f"the file's keys were spelled on the event loop: {on_loop}"
+    assert "heard_job" in _WORKERS.jobs, (
+        f"the file's keys were not spelled in the copy's worker process: {_WORKERS.jobs}"
+    )
     longest = max(seconds for seconds, _ in holds)
     assert longest < _WAIT_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms hearing the file's keys"
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1110,7 +1218,7 @@ async def test_a_commit_too_big_to_list_whose_record_names_no_file_is_named_from
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert notes.asked == 1
     assert l3.statements == 1
     assert _fallbacks("no_epoch") - before == 2
@@ -1249,7 +1357,7 @@ async def test_a_load_from_files_saves_its_file_before_the_load_and_the_copy_app
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert follower.stamp.epochs == lock.epochs
 
@@ -1302,7 +1410,7 @@ async def test_a_pods_own_load_reaches_its_own_copy_from_the_file_its_broker_nam
     assert await follower.catch_up()
 
     assert _refused_prefixes() == refused, "the pod's own copy refused its own load's prefixes"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1333,7 +1441,7 @@ async def test_a_load_that_replaces_a_prefix_clears_the_copys_rows_under_it_with
     assert await follower.catch_up()
 
     assert sorted(row[:2] for row in _copy(backend) if row[0] == "VA") == [("VA", 1), ("VA", 9)]
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1356,7 +1464,46 @@ async def test_a_key_prefix_delete_deletes_the_copys_rows_under_it_with_no_l3_st
     assert await follower.catch_up()
 
     assert [row for row in _copy(backend) if row[0] == "IL"] == []
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
+    assert l3.statements == 0
+
+
+async def test_a_key_prefix_delete_of_many_rows_reaches_its_keys_in_the_worker_process(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the keys a cleared prefix reaches (the copy's rows under it beside every key heard or staged, matched,
+    made distinct and spelled) are worked out in the serving process past the bound: the match alone took a thread
+    20 ms at 1,000,000 keys heard (2026-11-25). The copy still loses every row under the prefix, reading no L3."""
+    count = copy_key_work.INLINE_KEYS * 2
+    world = _world()
+    l3, log, lock, backend, follower = world
+
+    def born() -> None:
+        rows = [_row("IL", i, i) for i in range(count)] + [_row("VA", i, i) for i in range(5)]
+        l3.insert(rows)
+        log.commit([(row["state"], row["geo_id"]) for row in rows])
+
+    await asyncio.to_thread(born)
+    await follower.warm()
+    assert await follower.catch_up()
+    l3.statements = 0
+    here: list[int] = []
+    reach = copy_key_work.cleared_reach_of
+
+    def watched(key: Any, instants: Any, held: Sequence[Any], known: Any, *rest: Any) -> Any:
+        here.append(sum(rows.num_rows for rows in held) + known.num_rows)
+        return reach(key, instants, held, known, *rest)
+
+    monkeypatch.setattr(copy_follower, "cleared_reach_of", watched)
+    results, store = _writer(l3, log, _volume)
+    async with store.acquire() as conn, CallerTransaction(conn):
+        await results.delete_prefixes([{"state": "IL"}], conn=conn)
+    lock.commit("state:IL")
+    assert await follower.catch_up()
+    assert "cleared_reach_job" in _WORKERS.jobs, f"the prefix's keys were found in the serving process: {_WORKERS.jobs}"
+    assert not [keys for keys in here if keys >= copy_key_work.INLINE_KEYS], f"found here: {here}"
+    assert [row for row in await asyncio.to_thread(_copy, backend) if row[0] == "IL"] == []
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1514,7 +1661,7 @@ async def test_a_copy_lagging_its_writer_applies_every_delta_file_a_published_fu
     assert await follower.catch_up()
 
     assert not follower.status().waiting_for_file, "the lagging copy found every file it applies"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert _fallbacks("file_missing") == missing
 
@@ -1642,7 +1789,7 @@ async def test_a_load_failing_after_a_commit_leaves_copies_waiting_with_no_l3_re
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3), "the copy holds what L3 holds: the first file's row, not the second's"
+    assert await _same_now(backend, l3), "the copy holds what L3 holds: the first file's row, not the second's"
     assert ("VA", 100) in [row[:2] for row in _copy(backend)] and ("VA", 101) not in [row[:2] for row in _copy(backend)]
     assert l3.statements == 0
     assert writer_l3.statements == 1, "the writer read the request's two keys from L3 by key, once"
@@ -1676,7 +1823,7 @@ async def test_a_record_whose_unconfirmed_file_the_writer_has_confirmed_is_appli
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert asked == [] and not follower.status().waiting_for_file
 
@@ -1890,7 +2037,7 @@ async def test_a_hub_crash_after_one_commit_leaves_the_intent_copies_wait_with_n
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3), "the copy holds what L3 holds: the committed row, not the one L3 never took"
+    assert await _same_now(backend, l3), "the copy holds what L3 holds: the committed row, not the one L3 never took"
     assert l3.statements == 0
     assert writer_l3.statements == 1, "the writer read the request's keys from L3 by key, once"
     assert read_delta_file_keys(_volume / file).confirmed
@@ -1926,7 +2073,7 @@ async def test_a_normal_load_writes_the_intent_then_its_confirmed_record_and_is_
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0 and writer_l3.statements == 0
     assert answers[-1] == "superseded"
     said = [(record.getMessage(), getattr(record, "extra_data", {})) for record in caplog.records]
@@ -1963,7 +2110,7 @@ async def test_a_load_the_hub_answered_failed_after_its_intent_is_confirmed_at_t
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0 and writer_l3.statements == 1
     assert folds.told == [(_TABLE, file, stopped)], "confirmed once, at the hub's own record"
     assert "pending" not in answers, "a hub still alive is never waited on once its own record names the file"

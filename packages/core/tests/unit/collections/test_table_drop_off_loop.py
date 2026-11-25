@@ -91,7 +91,7 @@ class TestNoRowIsServedOnceTheDropIsAnnounced:
 class TestTheDropHoldsNoTurnOfTheLoop:
     async def test_dropping_100k_rows_holds_no_turn_long(self) -> None:
         collection, l1 = _cached_collection()
-        _cache(l1, 100_000)
+        await asyncio.to_thread(_cache, l1, 100_000)
         with turn_holds() as holds:
             assert collection.drop_cached_table() is None
             assert await collection.table_drops_settled() == 100_000
@@ -101,7 +101,7 @@ class TestTheDropHoldsNoTurnOfTheLoop:
 
     async def test_with_a_listener_every_key_is_heard_and_no_turn_is_long(self) -> None:
         collection, l1 = _cached_collection()
-        keys = _cache(l1, 100_000)
+        keys = await asyncio.to_thread(_cache, l1, 100_000)
         heard: list[Any] = []
         collection.add_l1_change_listener(heard.append)
         with turn_holds() as holds:
@@ -240,7 +240,7 @@ class TestAPrefixDropHoldsNoTurnOfTheLoop:
         """Flips if a prefix drop reads L1's keys under it, or evicts them, on the event loop (the loop answered
         nothing else for that long), or drops a row outside the prefix."""
         collection, l1 = _prefixed_collection()
-        _cache_states(l1, 100_000)
+        await asyncio.to_thread(_cache_states, l1, 100_000)
         heard: list[Any] = []
         collection.add_l1_change_listener(heard.append)
         with turn_holds() as holds:

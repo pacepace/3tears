@@ -242,6 +242,9 @@ async def best_cpu_seconds(
     best = float("inf")
     for _ in range(runs):
         gc.collect()
+        # a turn a collection: a full one walks the whole heap (90-100 ms a pool runner's test process), and runs whose
+        # operation never yields stacked every collection in one turn of the loop, past the loop-stall guard's limit
+        await asyncio.sleep(0)
         began = clock()
         await operation()
         best = min(best, clock() - began)

@@ -20,10 +20,13 @@ does); L3 is a DuckDB answering the follower's own statements. The contract this
 
 from __future__ import annotations
 
+import bisect
 import asyncio
 import json
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,6 +49,10 @@ from threetears.core.collections.registry import BEHIND_REASONS, CacheInvalidati
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
+import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+from threetears.core.collections.copy_key_work import INLINE_KEYS  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS as _WORKERS  # noqa: E402
+from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     FAILING_AFTER,
     WHOLE_READ_WHYS,
@@ -156,7 +163,18 @@ class _L3:
             self.db.unregister("_put")
 
     def delete(self, keys: Sequence[tuple[str, int]]) -> None:
-        self.db.executemany(f"DELETE FROM {_TABLE} WHERE state = ? AND geo_id = ?", [list(k) for k in keys])
+        # one statement over the keys as a table, as ``put``: a statement a key binds each value from Python (a failed
+        # ``import pandas`` a value), which held the loop past the loop-stall guard's limit
+        gone = pa.table(
+            {"state": pa.array([k[0] for k in keys], pa.string()), "geo_id": pa.array([k[1] for k in keys], pa.int64())}
+        )
+        self.db.register("_gone", gone)
+        try:
+            self.db.execute(
+                f"DELETE FROM {_TABLE} AS t USING _gone AS g WHERE t.state = g.state AND t.geo_id = g.geo_id"  # noqa: S608
+            )
+        finally:
+            self.db.unregister("_gone")
 
     def held(self) -> list[tuple[Any, ...]]:
         return sorted(self.db.execute(f"SELECT state, geo_id, votes FROM {_TABLE}").fetchall())
@@ -235,6 +253,8 @@ def noted_world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollowe
 
 def _world(
     retry_waits: tuple[float, float] = (1.0, 60.0),
+    page_size: int = 50,
+    workers: ProcessWorkers | None = None,
 ) -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
     l3, log, lock = _L3(), _Log(), _Seqlock()
     backend = _backend()
@@ -249,8 +269,9 @@ def _world(
         settled=lock.settled,
         generation=log.current,
         changes=log,
-        page_size=50,
+        page_size=page_size,
         retry_waits=retry_waits,
+        drift_workers=_WORKERS if workers is None else workers,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -546,6 +567,7 @@ def _replica(
         page_size=50,
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     return backend, follower, checkpoints
 
@@ -785,12 +807,15 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
         generation=log.current,
         changes=log,
         page_size=50,
+        drift_workers=_WORKERS,
     )
     follower.register()
     l3.put(_rows("VA", 40))
     await follower.warm()
     assert await follower.catch_up()
-    l3.db.executemany(f"INSERT INTO {_TABLE} VALUES (?, ?, ?, 5)", [["OH", i, 2] for i in range(12)])
+    # one statement with no parameters: a statement a row binds each value from Python (a failed ``import pandas`` a
+    # value), which held the loop past the loop-stall guard's limit
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT 'OH', i, 2, 5 FROM range(12) AS r(i)")  # noqa: S608
     log.count += 1
     log.records[f"inc:{log.count}"] = EpochChange(
         table=_TABLE, token=f"inc:{log.count}", whole_table=True, partition={"ver": "5"}
@@ -810,6 +835,9 @@ class _Notes:
 
     def __init__(self, notes: Sequence[tuple[datetime, tuple[str, ...]]]) -> None:
         self.notes = sorted(notes)
+        #: each note's time, in the notes' order: a page found by bisection, as the broker's index seeks it, not a walk
+        #: of every note a page (tens of thousands of them, which held the loop past the loop-stall guard's limit)
+        self.times = [at for at, _ in self.notes]
         self.pages = 0
 
     async def noted_keys(
@@ -824,10 +852,10 @@ class _Notes:
         self.pages += 1
         since, until = noted_between
         after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
-        found = [note for note in self.notes if after < note[0] <= until]
-        taken, more = found[:limit], len(found) > limit
+        start, end = bisect.bisect_right(self.times, after), bisect.bisect_right(self.times, until)
+        taken, more = self.notes[start : min(end, start + limit)], end - start > limit
         if more:
-            taken = [note for note in taken if note[0] < found[limit][0]]
+            taken = [note for note in taken if note[0] < self.notes[start + limit][0]]
         return NotedKeysPage(
             keys=tuple(keys for _, keys in taken),
             whole_table=False,
@@ -850,25 +878,38 @@ def _too_large(log: _Log, *, keep: bool = True, since: datetime | None = None) -
 _PAST_SIXTEEN_RECORDS = 70_000
 
 
-async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_notes(noted_world: Any) -> None:
-    world, registry = noted_world
-    l3, log, lock, backend, follower = world
-    await _warmed(world, 120)
-    # updates of rows held, inserts past them, and deletes, all in one commit
+def _committed_past_sixteen_records(l3: _L3) -> tuple[list[tuple[str, int, int]], list[tuple[str, int]]]:
+    """one commit's rows put in L3: updates of the 120 rows held, inserts past them, and ten deletes."""
     changed = [("VA", i, 7) for i in range(60, _PAST_SIXTEEN_RECORDS)]
     deleted = [("VA", i) for i in range(10, 20)]
     l3.put(changed)
     l3.delete(deleted)
-    since, _ = _too_large(log)
+    return changed, deleted
+
+
+def _notes_of(since: datetime, changed: Sequence[tuple[str, int, int]], deleted: Sequence[tuple[str, int]]) -> _Notes:
+    """the commit's change notes from ``since``, four keys a microsecond."""
     keys = [(s, str(g)) for s, g, _ in changed] + [(s, str(g)) for s, g in deleted]
-    notes = _Notes([(since + timedelta(microseconds=index // 4), key) for index, key in enumerate(keys)])
+    return _Notes([(since + timedelta(microseconds=index // 4), key) for index, key in enumerate(keys)])
+
+
+async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_notes(noted_world: Any) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 120)
+    # updates of rows held, inserts past them, and deletes, all in one commit: its 70,000 rows and their notes built on
+    # a thread, as setup; on the loop they held it past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+    changed, deleted = await asyncio.to_thread(_committed_past_sixteen_records, l3)
+    since, _ = _too_large(log)
+    notes = await asyncio.to_thread(_notes_of, since, changed, deleted)
     registry.set_noted_keys_reader(notes)
     lock.version += 1
     l3.rows_read = 0
 
     assert await follower.catch_up()
 
-    assert _copy(backend) == l3.held(), "the copy equals L3, row for row"
+    copied, held = await asyncio.to_thread(lambda: (_copy(backend), l3.held()))
+    assert copied == held, "the copy equals L3, row for row"
     assert l3.rows_read == len(changed), "the keys' rows that exist, never the table"
     assert notes.pages > 1
     assert follower.status().behind == {}
@@ -1213,12 +1254,17 @@ class _Scopes:
 
 
 def _scoped_world(
-    lock: _Scopes, *, checkpoint_from: DuckDBBackend | None = None
+    lock: _Scopes,
+    *,
+    checkpoint_from: DuckDBBackend | None = None,
+    page_size: int = 50,
+    workers: ProcessWorkers | None = None,
+    registry: CollectionRegistry | None = None,
 ) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
     l3, log = _L3(), _Log()
     backend = _backend()
     backend.initialize(_metadata())
-    registry = CollectionRegistry()
+    registry = CollectionRegistry() if registry is None else registry
     registry.follow_generation(_TABLE)
     follower = CopyFollower(
         registry,
@@ -1228,8 +1274,9 @@ def _scoped_world(
         settled=lock.settled,
         generation=log.current,
         changes=log,
-        page_size=50,
+        page_size=page_size,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS if workers is None else workers,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1399,6 +1446,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     follower.register()
     bus = FakeNatsClient()
@@ -1442,7 +1490,17 @@ def _stamped(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFol
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
     log = _Log()
-    return CopyFollower(registry, tables, backend, _L3(), settled=settled, generation=log.current, changes=log, **stamp)
+    return CopyFollower(
+        registry,
+        tables,
+        backend,
+        _L3(),
+        settled=settled,
+        generation=log.current,
+        changes=log,
+        **stamp,
+        drift_workers=_WORKERS,
+    )
 
 
 def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construction_raises() -> None:
@@ -1460,7 +1518,14 @@ def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construct
     registry.follow_generation(_TABLE)
     log = _Log()
     derived = CopyFollower(
-        registry, scoped, backend, _L3(), settled=epochs.settled, generation=log.current, changes=log
+        registry,
+        scoped,
+        backend,
+        _L3(),
+        settled=epochs.settled,
+        generation=log.current,
+        changes=log,
+        drift_workers=_WORKERS,
     )
     derived.register()
     assert registry.has_derived_caches("enr_scope_epochs"), "a ScopeEpochs.settled names its own table"
@@ -1475,7 +1540,8 @@ def test_a_follower_none_of_whose_tables_has_a_scope_builds_hearing_no_stamp_tab
 
 async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:
     lock = _Scopes()
-    l3, log, backend, follower = _scoped_world(lock)
+    registry = CollectionRegistry()
+    l3, log, backend, follower = _scoped_world(lock, registry=registry)
     l3.put(_rows("VA", 5))
     log.commit([("VA", i) for i in range(5)])
     await follower.warm()
@@ -1738,6 +1804,7 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1860,6 +1927,7 @@ def _derived_replica(
         page_size=50,
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     return backend, follower
 
@@ -1932,6 +2000,7 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     follower.register()
     l3.put([("VA", 1, 1), ("VA", 2, 1), ("IL", 11, 1), ("IL", 12, 1)])
@@ -2185,6 +2254,7 @@ async def test_a_warm_paged_by_its_order_over_one_shared_lead_value_reads_every_
         generation=log.current,
         changes=log,
         page_size=50,
+        drift_workers=_WORKERS,
     )
     follower.register()
     await _warmed((l3, log, lock, backend, follower), 120)
@@ -2484,3 +2554,302 @@ async def test_a_key_heard_again_at_the_epoch_its_kept_stage_holds_is_not_read_f
     assert await follower.catch_up()
     assert l3.rows_read > read, "a key heard at a newer epoch was not read again"
     assert _copy(backend) == l3.held()
+
+
+# --- a pass's CPU leaves the serving process (copy_key_work) -------------------------------------------------------
+
+
+#: the most keys a pass takes in this process, and the most row messages a turn of the loop drains: the follower's own
+#: measured bounds (copy_follower: the take's on the loop, a drain's run), restated so a test says what it holds them to
+_TAKEN_HERE = 500
+_A_TURN = 2_000
+
+
+@pytest.fixture
+def jobs() -> Iterator[list[str]]:
+    """the jobs the tests' worker process was sent, from the test's start."""
+    _WORKERS.jobs.clear()
+    yield _WORKERS.jobs
+    _WORKERS.jobs.clear()
+
+
+def _here(monkeypatch: pytest.MonkeyPatch, name: str, rows: Callable[..., int]) -> list[int]:
+    """each call of one of ``copy_key_work``'s cores the follower makes in this process (any thread): the rows it was
+    given. A call in the worker process is not seen. Set as the follower names it, so a follower that has no such core
+    (an older one) is seen to make none."""
+    seen: list[int] = []
+    real = getattr(copy_follower, name, None)
+
+    def watched(*args: Any) -> Any:
+        seen.append(rows(*args))
+        assert real is not None
+        return real(*args)
+
+    monkeypatch.setattr(copy_follower, name, watched, raising=False)
+    return seen
+
+
+async def test_a_large_pass_takes_its_keys_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if a pass's take of its keys heard (each key at each epoch once, those of a held scope left, the keys
+    sorted and placed) runs in the serving process past its bound: on a thread it took 84 ms of CPU at 100,000 keys and
+    1.06 s at 1,000,000 (2026-11-25), cores the pod's page serving needs. A small pass takes its keys here."""
+    (l3, log, lock, backend, follower), _registry = _world(workers=_WORKERS)
+    await _warmed((l3, log, lock, backend, follower), 2)
+    taken = _here(monkeypatch, "taken_of", lambda key, scope, files, heard, *rest: heard.num_rows)
+    count = _TAKEN_HERE * 6
+    await asyncio.to_thread(l3.put, _rows("IL", count, votes=3))
+    await asyncio.to_thread(log.commit, [("IL", i) for i in range(count)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert "taken_job" in jobs, f"the pass's {count} keys were not taken in the worker process: {jobs}"
+    assert not [rows for rows in taken if rows > _TAKEN_HERE], f"taken here: {taken}"
+    assert _copy(backend) == l3.held()
+    jobs.clear()
+    l3.put([("IL", 0, 9)])
+    log.commit([("IL", 0)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert "taken_job" not in jobs, "a pass of one key went to the worker process: its round trip costs more"
+    assert _copy(backend) == l3.held()
+
+
+async def test_a_whole_read_and_a_partition_past_the_bound_are_judged_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if a page of a whole read, or of a partition, past the bound has its scopes found and judged in the
+    serving process: on the loop a 200,000-row page took 6.5 ms, 19.7 ms with a scope held (2026-11-25). A first start
+    beside a write holding IL leaves IL's rows out (their flags the worker's), then reads IL once the write commits."""
+    lock = _Scopes()
+    page = INLINE_KEYS * 2
+    l3, log, backend, follower = _scoped_world(lock, page_size=page * 2, workers=_WORKERS)
+    await asyncio.to_thread(l3.put, _rows("VA", page) + _rows("IL", page))
+    await asyncio.to_thread(log.commit, [("VA", i) for i in range(page)] + [("IL", i) for i in range(page)])
+    whole = _here(monkeypatch, "whole_page_of", lambda scope, rows, held: rows.num_rows)
+    parts = _here(monkeypatch, "partition_page_of", lambda key, instants, scope, rows, held: rows.num_rows)
+    lock.held = frozenset({"state:IL"})
+    await follower.warm()
+    assert await follower.catch_up()
+    assert _of(backend, "VA") == _l3_of(l3, "VA") and _of(backend, "IL") == []
+    lock.held = None
+    lock.commit("state:IL")
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert {"whole_page_job", "partition_page_job"} <= set(jobs), f"judged in the serving process: {jobs}"
+    assert not [rows for rows in (*whole, *parts) if rows >= INLINE_KEYS], f"here: {whole}, {parts}"
+
+
+async def test_a_partition_the_copy_holds_many_rows_of_is_judged_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if the copy's own rows of a load's partition, past the bound, have their scopes and keys found in the
+    serving process (the same work as a whole read's page, over a state's rows the copy holds)."""
+    count = INLINE_KEYS * 2
+    (l3, log, lock, backend, follower), _registry = _world(page_size=count, workers=_WORKERS)
+    await asyncio.to_thread(l3.put, _rows("OH", count))
+    await asyncio.to_thread(log.commit, [("OH", i) for i in range(count)])
+    await follower.warm()
+    assert await follower.catch_up()
+    jobs.clear()
+    mine = _here(monkeypatch, "partition_mine_of", lambda key, instants, scope, last, rows, held: rows.num_rows)
+    await asyncio.to_thread(l3.delete, [("OH", i) for i in range(0, count, 2)])
+    await asyncio.to_thread(l3.put, _rows("OH", count // 2, votes=4))
+    log.count += 1
+    token = f"inc:{log.count}"
+    log.records[token] = EpochChange(table=_TABLE, token=token, whole_table=True, partition={"state": "OH"})
+    lock.version += 1
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+    assert {"partition_mine_job", "partition_page_job"} <= set(jobs), f"judged in the serving process: {jobs}"
+    assert not [rows for rows in mine if rows >= INLINE_KEYS], f"the copy's rows judged here: {mine}"
+
+
+async def test_the_keys_an_apply_replaced_are_made_distinct_for_the_checkpoint_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if the keys a table of no scope replaced (what a checkpoint patches its one part by) are made distinct in
+    the serving process past the bound: on the loop they held it 20 ms at 100,000 keys and 286 ms at 1,000,000
+    (2026-11-25). They are made beside the apply, and the checkpoint still gets them."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 10))
+    log.commit([("VA", i) for i in range(10)])
+    backend = _backend()
+    backend.initialize(_metadata())
+    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    checkpoints = CopyCheckpoints(
+        name="votes",
+        tables=tables,
+        backend=backend,
+        store=store,
+        pointers=pointers,
+        retire=store.retire,
+        owner="a",
+        part_rows=40,
+    )
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        tables,
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=INLINE_KEYS * 4,
+        checkpoints=checkpoints,
+        drift_workers=_WORKERS,
+    )
+    assert not await follower.start()
+    assert await follower.catch_up()
+    jobs.clear()
+    touched = _here(monkeypatch, "touched_of", lambda key, keys: keys.num_rows)
+    patched: list[int] = []
+    applied = checkpoints.applied
+
+    def counted(rows: int, touched_scopes: Any, keys: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if keys:
+            patched.append(keys[_TABLE].num_rows)
+        return applied(rows, touched_scopes, keys, *args, **kwargs)
+
+    monkeypatch.setattr(checkpoints, "applied", counted)
+    count = INLINE_KEYS * 2
+    await asyncio.to_thread(l3.put, _rows("IL", count, votes=5))
+    await asyncio.to_thread(log.commit, [("IL", i) for i in range(count)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert "touched_job" in jobs, f"the keys replaced were made distinct in the serving process: {jobs}"
+    assert not [rows for rows in touched if rows >= INLINE_KEYS], f"made distinct here: {touched}"
+    assert patched == [count], "the checkpoint was not told each key the apply replaced, once"
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+
+
+class _ReadMessage(CacheInvalidationMessage):
+    """a row message that says when its table is read: the owner reads each message's once as it drains it."""
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "table" and _READS:
+            _READS[-1] += 1
+        return super().__getattribute__(name)
+
+
+#: while a test watches: the table reads of row messages in each turn of the loop, the newest last; empty otherwise
+_READS: list[int] = []
+
+
+async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_turn() -> None:
+    """Flips if the messages heard while a pass read are drained in one turn of the loop, however many: a run of row
+    messages read into Arrow took the loop 1.24 ms for 2,000, 78 ms for 200,000 (2026-11-25). Every drain of a pass
+    takes them :data:`~threetears.core.collections._A_TURN` at a time, and the next pass reads
+    their keys."""
+    lock = _Scopes()
+    registry = CollectionRegistry()
+    l3, log, backend, follower = _scoped_world(lock, registry=registry)
+    l3.put(_rows("VA", 5))
+    log.commit([("VA", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    count = _A_TURN * 4
+    await asyncio.to_thread(l3.put, _rows("IL", count, votes=6))
+    heard = await asyncio.to_thread(lambda: [_ReadMessage(table=_TABLE, ids=["IL", str(i)]) for i in range(count)])
+    l3.put([("VA", 1, 70)])
+    log.commit([("VA", 1)])
+    lock.commit("state:VA")
+    loop = asyncio.get_running_loop()
+
+    def turned() -> None:
+        # once a turn of the loop: the reads after it are the next turn's
+        if _READS:
+            _READS.append(0)
+            loop.call_soon(turned)
+
+    def tell_all() -> None:
+        # heard while the pass reads the stamp after its stage, before its last drains; its own reads not counted
+        for message in heard:
+            registry.tell_derived_caches(message)
+        _READS.append(0)
+        loop.call_soon(turned)
+
+    lock.on_read = (lock.reads + 2, tell_all)
+    try:
+        assert await follower.catch_up()
+        turns = list(_READS)
+    finally:
+        _READS.clear()
+    assert max(turns) <= _A_TURN, f"a turn drained {max(turns)} messages"
+    assert sum(turns) >= count, f"the messages were not all drained: {sum(turns)} of {count}"
+    lock.commit("state:IL")
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+
+
+async def test_a_large_stage_is_cut_and_a_moved_scope_left_out_of_it_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if a pass's stage past the bound has its keys' scopes found (``staged_of``), or a scope the stamp moved under is
+    found among its keys (``leaving_keys_of``) and taken out of its bookkeeping (``without_keys_of``), in the serving
+    process: on a thread they took 6.3 ms, 14.7 ms and 12.6 ms of its CPU at 100,000 keys and 64 ms, 163 ms and 156 ms
+    at 1,000,000 (2026-11-25). The moved scope's keys still leave the change and the rest applies."""
+    lock = _Scopes()
+    count = INLINE_KEYS
+    l3, log, backend, follower = _scoped_world(lock, page_size=count * 2)
+    await asyncio.to_thread(l3.put, _rows("VA", count) + _rows("IL", count))
+    await asyncio.to_thread(log.commit, [("VA", i) for i in range(count)] + [("IL", i) for i in range(count)])
+    await follower.warm()
+    assert await follower.catch_up()
+    settled_va = await asyncio.to_thread(_of, backend, "VA")
+    jobs.clear()
+    seen = {
+        name: _here(monkeypatch, name, lambda key, *rest: sum(getattr(t, "num_rows", 0) for t in rest))
+        for name in ("staged_of", "leaving_keys_of", "without_keys_of")
+    }
+    await asyncio.to_thread(l3.put, _rows("VA", count, votes=4) + _rows("IL", count, votes=5))
+    await asyncio.to_thread(log.commit, [("VA", i) for i in range(count)] + [("IL", i) for i in range(count)])
+    lock.commit("state:VA", "state:IL")
+
+    def moves() -> None:
+        # between the pass's two reads of the record: another load commits VA
+        l3.put([("VA", 1, 41)])
+        log.commit([("VA", 1)])
+        lock.commit("state:VA")
+
+    lock.on_read = (lock.reads + 2, moves)
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_of, backend, "IL") == await asyncio.to_thread(_l3_of, l3, "IL")
+    assert await asyncio.to_thread(_of, backend, "VA") == settled_va
+    assert {"staged_scopes_job", "leaving_keys_job", "without_keys_job"} <= set(jobs), f"cut here: {jobs}"
+    assert not [name for name, calls in seen.items() if calls], f"cut here: {seen}"
+    lock.on_read = None
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+
+
+async def test_a_checkpoint_opens_and_closes_its_read_of_the_copy_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a checkpoint opens its read of the copy on the event loop: a copy published as shared Arrow maps every
+    file of its version as the read opens (reports' ``SharedArrowBackend.read_snapshot``, ``MappedTables.__init__``),
+    which held one turn 0.27 s under the loop-stall guard (reports' tests/pod/test_retention.py, 2026-11-25). The read
+    is opened and closed on a thread, and the checkpoint is still written."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a")
+    loop_thread = threading.get_ident()
+    on_loop: list[str] = []
+    snapshot = backend.read_snapshot
+
+    @contextmanager
+    def watched() -> Iterator[Any]:
+        if threading.get_ident() == loop_thread:
+            on_loop.append("opened")
+        with snapshot() as cursor:
+            yield cursor
+        if threading.get_ident() == loop_thread:
+            on_loop.append("closed")
+
+    monkeypatch.setattr(backend, "read_snapshot", watched)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert pointers.entries, "no checkpoint was written"
+    assert on_loop == [], f"a read of the copy was opened or closed on the event loop: {on_loop}"

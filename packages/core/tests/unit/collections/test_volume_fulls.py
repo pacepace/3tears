@@ -181,7 +181,7 @@ def test_a_full_s_coverage_round_trips_and_a_manifest_of_an_older_writer_claims_
     assert not again.tables[_TABLE].covers("votes/v1-x.arrow"), "an older writer's manifest claims nothing"
 
 
-async def test_the_highest_term_wins_over_an_older_terms_newer_sequence(tmp_path: Path) -> None:
+def test_the_highest_term_wins_over_an_older_terms_newer_sequence(tmp_path: Path) -> None:
     """Flips if readers order manifests by sequence or by time rather than term first: a stale writer (term 1) that
     publishes after the new writer (term 2) took over would replace its full."""
     _full(tmp_path, 1, VA=1)
