@@ -37,8 +37,18 @@ the `McpTool` is built. A handler that declares none is called with its argument
   its own task. The handler itself still sees the cancellation as `CancelledError`.
 - `tool_name` and `request_id`. `McpTool.context_parameter` names the parameter, or is `None`.
 
-A tool whose handler declares two context parameters, a positional-only one, or one named as an input
-property is refused with `ValueError` when the `McpTool` is built. A call that passes an argument named
+**Progress and log entries need `json_response=False`.** They ride the call's SSE stream, and the
+Streamable-HTTP transport's default, `json_response=True` (`McpHttpTransport`, `build_http_app`,
+`serve_http`), answers with one JSON body, so on the default they reach no one. A server whose
+handlers send them builds its transport with `json_response=False`.
+
+The parameter may be annotated `CallContext | None` (or `Optional[CallContext]`); the server passes a
+context either way. A tool whose handler declares two context parameters, a positional-only one, one
+named as an input property, or one that names `CallContext` in any other form is refused with
+`ValueError` when the `McpTool` is built. An annotation that cannot be evaluated is read as written;
+one that cannot be recognised that way (an alias imported only for type checking) is logged as a
+warning when the tool is built. The server does not declare the `logging` capability; whether it
+should is open (see the README's call-context section). A call that passes an argument named
 as the context (a schema allowing extra properties lets it through) is refused as an input validation
 error before the handler runs. The context holds no MCP SDK type.
 
@@ -46,8 +56,15 @@ error before the handler runs. The context holds no MCP SDK type.
 
 **Changed (breaking):** `3tears-mcp` declares `mcp>=2.0,<3` (was `>=1.27,<3`). A consumer still on mcp
 1.x stays on the release before this one until it moves to 2.x; the move is mcp's own (see "For a
-consumer moving to mcp 2.x" under the entry that added 2.x support). The tests pass on mcp 2.0.0 and
-on the locked 2.3.
+consumer moving to mcp 2.x" under the entry that added 2.x support). The mcp unit tests pass on the
+locked 2.3, and the new `scripts/test-mcp-floor.sh` runs them on exactly the declared floor (2.0.0) in
+CI's `check` job and in `check-all.sh`, so the floor cannot fall behind the code unnoticed.
+
+Consumers were checked before the change (2026-11-25). Of the known applications that install
+3tears-mcp, two resolve mcp 2.2 or 2.3, which this range covers. Three still resolve mcp 1.x: two
+are pinned to old 3tears-mcp releases (0.49 and 0.76), and one is on 3tears-mcp 0.93 with mcp 1.28.
+Each moves to mcp 2.x before it takes this release or any later one. None combines 3tears-mcp with
+fastmcp 3, the combination that can no longer be resolved.
 
 - `McpServer` registers its handlers only through 2.x's `Server(on_list_tools=, on_call_tool=)`. The
   runtime switch on the installed SDK and the 1.x decorator path are gone. What it does on top of the
