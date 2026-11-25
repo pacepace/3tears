@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.core.testing.loop_stall import STALL_LIMIT_SECONDS
+#: the guard's limit (``loop_stall._STALL_LIMIT_SECONDS``); each failure says it, which the first test pins
+STALL_LIMIT_SECONDS = 0.25
 
 _PLUGIN = ("-p", "threetears.core.testing.loop_stall", "-p", "no:cacheprovider", "-o", "asyncio_mode=auto")
 
@@ -67,6 +68,7 @@ def test_a_turn_held_past_the_limit_fails_the_test_naming_the_function_that_held
     assert "FAILED test_subject.py::test_sync_runs_its_own_loop" in out
     assert "held by: test_subject.hold_the_loop_with_cpu" in out
     assert "the event loop was held" in out
+    assert f"the limit is {STALL_LIMIT_SECONDS:.3f} s" in out
 
 
 def test_the_guard_fails_a_stall_on_an_xdist_worker(pytester: pytest.Pytester) -> None:

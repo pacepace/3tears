@@ -1,4 +1,4 @@
-"""pytest plugin: a test fails when one turn of an event loop held the loop past :data:`STALL_LIMIT_SECONDS`.
+"""pytest plugin: a test fails when one turn of an event loop held the loop past :data:`_STALL_LIMIT_SECONDS`.
 
 **Why.** A serving process answers every call on one event loop, so CPU work on the loop (a pyarrow or numpy pass over
 rows, a Python loop a row) holds every other call for as long as it runs. Static rules cannot see it: the same code is
@@ -15,7 +15,7 @@ batches) stretches a turn's wall time past any fixed bound with no fault of the 
 test the code did not earn. What it does not see, so: a turn that blocks without spending CPU (``time.sleep``, a
 synchronous socket read on the loop), and a loop that does not run its callbacks through ``Handle._run`` (uvloop).
 
-**How the culprit is named.** A watcher thread looks at each loop thread every :data:`SAMPLE_EVERY_SECONDS`; a turn
+**How the culprit is named.** A watcher thread looks at each loop thread every :data:`_SAMPLE_EVERY_SECONDS`; a turn
 running longer than that has its thread's stack sampled (``sys._current_frames``, through
 :mod:`~threetears.core.testing._interpreter_internals`) while it runs. When the turn ends
 past the limit, the failure names the innermost frame of the project's own code (not the standard library or an
@@ -24,7 +24,7 @@ under it -- and prints the stack of the last sample that held it. A C call that 
 to end (a pyarrow kernel) lets the watcher run only when it returns, and the sample then shows the Python frame that
 called it: still the culprit. A turn no sample saw names the callback asyncio ran.
 
-**The limit** is :data:`STALL_LIMIT_SECONDS`, one setting for every test of every repo that loads the plugin. A test
+**The limit** is :data:`_STALL_LIMIT_SECONDS`, one setting for every test of every repo that loads the plugin. A test
 whose turn must run longer is a bug in the code under test (move the work off the loop: ``asyncio.to_thread`` for IO
 and work that lets the lock go, a worker process for CPU, data through :mod:`threetears.core.shared_arrow`) or in the
 test (synchronous setup belongs outside the loop, in a sync fixture). There is no exemption list. A test may raise its
@@ -33,7 +33,7 @@ own limit only with ``@pytest.mark.loop_stall_limit(seconds=..., why="...")``: `
 
 **Cost.** Nothing outside a test session: the plugin is loaded only through ``pytest_plugins`` (or ``-p``), and wraps
 asyncio's run from ``pytest_configure`` to ``pytest_unconfigure``. In a session: two clock reads and a thread-local
-look a turn, and a watcher thread that wakes every :data:`SAMPLE_EVERY_SECONDS` and samples only a turn already
+look a turn, and a watcher thread that wakes every :data:`_SAMPLE_EVERY_SECONDS` and samples only a turn already
 running long.
 
 Load it with ``pytest_plugins = ["threetears.core.testing.loop_stall"]`` in the rootdir conftest. It works the same
@@ -57,7 +57,8 @@ import pytest
 from threetears.core.testing._asyncio_internals import timed_handles
 from threetears.core.testing._interpreter_internals import thread_frames
 
-__all__ = ["MARKER", "SAMPLE_EVERY_SECONDS", "STALL_LIMIT_SECONDS", "WHY_MIN_CHARS"]
+#: a pytest plugin: its hooks are its interface, loaded by name (``pytest_plugins``), never imported from
+__all__: list[str] = []
 
 #: the longest one turn of an event loop may hold it in a test, in the loop thread's CPU seconds.
 #:
@@ -69,16 +70,16 @@ __all__ = ["MARKER", "SAMPLE_EVERY_SECONDS", "STALL_LIMIT_SECONDS", "WHY_MIN_CHA
 #: 0.26 s to 62.6 s (median 0.53 s); every one is synchronous work that grows with rows -- test setup building rows on
 #: the loop (most), sqlite/DuckDB ``executemany`` on it, the registry applying a large change record, the copy
 #: follower's keyed staging -- so the limit separates per-row work from a turn's bookkeeping.
-STALL_LIMIT_SECONDS: Final[float] = 0.25
+_STALL_LIMIT_SECONDS: Final[float] = 0.25
 
 #: how often the watcher looks at each loop thread, and how long a turn runs before its stack is sampled
-SAMPLE_EVERY_SECONDS: Final[float] = 0.02
+_SAMPLE_EVERY_SECONDS: Final[float] = 0.02
 
 #: the marker that raises one test's limit, with why
-MARKER: Final[str] = "loop_stall_limit"
+_MARKER: Final[str] = "loop_stall_limit"
 
 #: the shortest ``why`` a raised limit takes: a sentence or an issue link, never a word
-WHY_MIN_CHARS: Final[int] = 20
+_WHY_MIN_CHARS: Final[int] = 20
 
 #: the most frames a failure prints of the culprit's stack (innermost last)
 _FRAMES_SHOWN: Final[int] = 30
@@ -241,7 +242,7 @@ class _Guard:
         samples = turn.samples
         if samples:
             turn.samples = []
-        if seconds <= STALL_LIMIT_SECONDS:
+        if seconds <= _STALL_LIMIT_SECONDS:
             return
         mine = [stack for at, stack in samples if at == seq]
         named = [(culprit, stack) for stack in mine if (culprit := _culprit(stack, self._root)) is not None]
@@ -270,13 +271,13 @@ class _Guard:
         )
 
     def _watch(self) -> None:
-        """sample the stack of every loop thread whose turn has run longer than :data:`SAMPLE_EVERY_SECONDS`."""
-        while not self._stop.wait(SAMPLE_EVERY_SECONDS):
+        """sample the stack of every loop thread whose turn has run longer than :data:`_SAMPLE_EVERY_SECONDS`."""
+        while not self._stop.wait(_SAMPLE_EVERY_SECONDS):
             now = time.perf_counter()
             frames: dict[int, FrameType] | None = None
             for turn in list(self._turns):
                 seq, started = turn.seq, turn.started
-                if not started or now - started < SAMPLE_EVERY_SECONDS:
+                if not started or now - started < _SAMPLE_EVERY_SECONDS:
                     continue
                 if frames is None:
                     frames = thread_frames()
@@ -301,9 +302,9 @@ _GUARD_KEY = pytest.StashKey[_Guard]()
 
 
 def _limit_of(item: pytest.Item) -> float:
-    """the test's limit: :data:`STALL_LIMIT_SECONDS`, or the higher one its marker states."""
-    marker = item.get_closest_marker(MARKER)
-    return STALL_LIMIT_SECONDS if marker is None else float(marker.kwargs["seconds"])
+    """the test's limit: :data:`_STALL_LIMIT_SECONDS`, or the higher one its marker states."""
+    marker = item.get_closest_marker(_MARKER)
+    return _STALL_LIMIT_SECONDS if marker is None else float(marker.kwargs["seconds"])
 
 
 def _marker_fault(marker: pytest.Mark) -> str | None:
@@ -311,10 +312,10 @@ def _marker_fault(marker: pytest.Mark) -> str | None:
     if marker.args or set(marker.kwargs) != {"seconds", "why"}:
         return "takes exactly seconds=<float> and why=<str>, as keywords"
     seconds, why = marker.kwargs["seconds"], marker.kwargs["why"]
-    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= STALL_LIMIT_SECONDS:
-        return f"seconds must be a number above the limit, {STALL_LIMIT_SECONDS} s (it only raises the limit)"
-    if not isinstance(why, str) or len(why.strip()) < WHY_MIN_CHARS:
-        return f"why must say why the turn must run this long (an issue, a reason): {WHY_MIN_CHARS}+ characters"
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= _STALL_LIMIT_SECONDS:
+        return f"seconds must be a number above the limit, {_STALL_LIMIT_SECONDS} s (it only raises the limit)"
+    if not isinstance(why, str) or len(why.strip()) < _WHY_MIN_CHARS:
+        return f"why must say why the turn must run this long (an issue, a reason): {_WHY_MIN_CHARS}+ characters"
     return None
 
 
@@ -328,7 +329,7 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     config.addinivalue_line(
         "markers",
-        f"{MARKER}(seconds, why): raise this test's event-loop stall limit above {STALL_LIMIT_SECONDS} s, saying why "
+        f"{_MARKER}(seconds, why): raise this test's event-loop stall limit above {_STALL_LIMIT_SECONDS} s, saying why "
         "(threetears.core.testing.loop_stall)",
     )
     guard = _Guard(str(config.rootpath))
@@ -362,9 +363,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     :raises pytest.UsageError: naming each test whose marker is wrong, and what is wrong with it
     """
     faults = [
-        f"{item.nodeid}: @pytest.mark.{MARKER} {fault}"
+        f"{item.nodeid}: @pytest.mark.{_MARKER} {fault}"
         for item in items
-        for marker in item.iter_markers(MARKER)
+        for marker in item.iter_markers(_MARKER)
         if (fault := _marker_fault(marker)) is not None
     ]
     if faults:
@@ -394,7 +395,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     told += (
         "\n\nMove the work off the loop (asyncio.to_thread for IO and work that lets the interpreter lock go, a worker "
         "process for CPU), or the synchronous setup out of it (a sync fixture). Only a stated reason raises one "
-        f"test's limit: @pytest.mark.{MARKER}(seconds=..., why=...) (threetears.core.testing.loop_stall)."
+        f"test's limit: @pytest.mark.{_MARKER}(seconds=..., why=...) (threetears.core.testing.loop_stall)."
     )
     if report.passed:
         report.outcome = "failed"
