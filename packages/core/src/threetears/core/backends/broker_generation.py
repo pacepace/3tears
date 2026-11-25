@@ -91,10 +91,12 @@ __all__ = [
     "committed_generations_record",
     "forget_reply_generations",
     "named_changed_rows",
+    "named_commit_generation",
     "named_commit_scopes",
     "named_delta_files",
     "named_unconfirmed_delta_files",
     "naming_changed_rows",
+    "naming_commit_generations",
     "naming_commit_scopes",
     "naming_delta_files",
     "naming_unconfirmed_delta_files",
@@ -167,6 +169,47 @@ def named_delta_files() -> dict[str, str]:
     :rtype: dict[str, str]
     """
     return dict(_DELTA_FILES.get())
+
+
+#: the tokens the broker's reply to the commit being settled in this context named, by table
+#: (:func:`naming_commit_generations`): read-only, replaced whole by each block
+_COMMIT_GENERATIONS: ContextVar[Mapping[str, str]] = ContextVar("threetears_commit_generations", default=EMPTY)
+
+
+@contextmanager
+def naming_commit_generations(tokens: Mapping[str, str]) -> Iterator[None]:
+    """name, while a commit's writes are settled, the token the broker's reply to that commit named for each table it
+    wrote (:func:`reply_generations_since`): a collection that advances no generation itself (a table the broker
+    advances by its trigger alone) stamps the keys it tells a copy, and its row messages, with its table's
+    (:func:`named_commit_generation`). Replaces, never adds to, what an enclosing block named.
+
+    Why: such a table's local write told the copy its keys at no epoch, so the copy read every one of them from L3 by
+    key instead of merging it from the commit's delta file (``copy_follower_delta_file_fallback_keys_total``,
+    ``why="no_epoch"``): 62,800 to 98,200 keys a pass after a reset rewrote every state (the local burst replay,
+    2026-11-25), while the commit's epoch record named the file all along.
+
+    :param tokens: table -> the token the reply named; empty names none (a direct pool's commit, one that did not land)
+    :ptype tokens: Mapping[str, str]
+    :return: a context in which they are named
+    :rtype: Iterator[None]
+    """
+    token = _COMMIT_GENERATIONS.set(frozen(tokens))
+    try:
+        yield
+    finally:
+        _COMMIT_GENERATIONS.reset(token)
+
+
+def named_commit_generation(table_name: str) -> str | None:
+    """the token the broker's reply to the commit being settled in this context named for ``table_name``
+    (:func:`naming_commit_generations`): the epoch whose record names the commit's delta file of the table.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: the token; None outside a settle, or when the reply named none for the table
+    :rtype: str | None
+    """
+    return _COMMIT_GENERATIONS.get().get(table_name)
 
 
 #: the request field naming the scopes a commit's transaction touched (the states, ``state:CA``, as the writer's

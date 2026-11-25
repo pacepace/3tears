@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import tracemalloc
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
@@ -55,6 +56,7 @@ from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
+import threetears.core.arrow_keys as arrow_keys  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 import threetears.core.collections.delta_files as delta_files  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
@@ -330,6 +332,7 @@ def _world(
     key: tuple[str, ...] = _KEY,
     registry: CollectionRegistry | None = None,
     fulls: Any = None,
+    page_size: int = 50,
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
@@ -346,7 +349,7 @@ def _world(
         settled=lock.settled,
         generation=log.current,
         changes=log,
-        page_size=50,
+        page_size=page_size,
         stamp_table="scope_epochs",
         recreate=recreate,
         fulls=fulls,
@@ -980,6 +983,70 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) 
     longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
     assert _same(backend, l3)
+
+
+async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_keys_off_the_loop(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a pass staging a table whose scope is in its rows alone (reports' snapshots and results, keyed by the
+    race) works out its keys' scopes on the event loop: the copy's held rows beside the rows read, made distinct and
+    matched to the page by Arrow kernels on the loop, held it 12.2 s in one page (``distinct_keys`` under
+    ``_stage_keyed``), and the keys heard 24.3 s more (``_heard_batch`` under ``_drained``), in the local burst replay of
+    2026-11-25. No serving work may hold the loop: every one runs on a thread, and no turn holds it past 10 ms."""
+    key = ("geo_id", "date_created")
+    world = _world(key=key, page_size=_LOOP_ROWS)
+    l3, log, lock, backend, follower = world
+    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
+    l3.db.register("born", born)
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
+    l3.db.unregister("born")
+    instant = "2026-11-03T21:45:00.000000+00:00"  # the key's instant as a delta file names it
+    log.commit([(str(i), instant) for i in range(_LOOP_ROWS)])  # type: ignore[misc]
+    await follower.warm()
+    assert await follower.catch_up()
+    delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
+    delta.arrow(
+        pa.table(
+            {
+                "state": pa.nulls(_LOOP_ROWS, pa.string()),
+                "geo_id": pa.array(range(_LOOP_ROWS), pa.int64()),
+                "votes": pa.array(range(1, _LOOP_ROWS + 1), pa.int64()),
+                "note": pa.nulls(_LOOP_ROWS, pa.string()),
+                "date_created": pa.repeat(pa.scalar(_BORN, _TYPES["date_created"]), _LOOP_ROWS),
+            }
+        ),
+        [*key, "votes"],
+    )
+    name = write_delta_file(_volume, delta, "scoped")
+    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+    log.commit([(str(i), instant) for i in range(_LOOP_ROWS)], delta_file=name)  # type: ignore[misc]
+    lock.commit("state:VA")
+    loop_thread = threading.get_ident()
+    on_loop: list[str] = []
+    # the public kernels the stage's work runs through: distinct_keys (made distinct, matched) and key_text_table (the
+    # keys heard, spelled as text)
+    distinct, texts = arrow_keys.distinct_keys, delta_files.key_text_table
+
+    def watched_distinct(rows: Any, columns: Sequence[str]) -> Any:
+        if threading.get_ident() == loop_thread:
+            on_loop.append(f"distinct_keys of {rows.num_rows} rows")
+        return distinct(rows, columns)
+
+    def watched_texts(rows: Any, key: Sequence[str], instants: Any = frozenset()) -> Any:
+        if threading.get_ident() == loop_thread:
+            on_loop.append(f"key_text_table of {rows.num_rows} keys")
+        return texts(rows, key, instants)
+
+    monkeypatch.setattr(copy_follower, "distinct_keys", watched_distinct)
+    monkeypatch.setattr(copy_follower, "key_text_table", watched_texts)
+    l3.statements = 0
+    with turn_holds() as holds:
+        assert await follower.catch_up()
+    assert on_loop == [], f"the pass ran its keys' Arrow work on the event loop: {on_loop}"
+    longest = max(seconds for seconds, _ in holds)
+    assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
+    assert _same(backend, l3)
+    assert l3.statements == 0
 
 
 #: the longest one turn of the loop may run (CPU time) while a table waiting for a 200,000-key commit too big to list

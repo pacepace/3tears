@@ -33,7 +33,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.loop_turns import LoopTurns, called_in_turns, stepped
-from threetears.core.backends.broker_generation import naming_changed_rows
+from threetears.core.backends.broker_generation import named_commit_generation, naming_changed_rows
 from threetears.core.backends.protocol import L3Backend, L3PoolLike
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import NonFiniteNumericError
@@ -6384,11 +6384,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         bump = await self._bump_generation(
             await self._changed_rows_off_loop(entity_ids, seen) if self.advances_write_generation else []
         )
+        # the commit's epoch: the advance's own, or, for a table this collection advances nothing for (the broker
+        # advances it by its trigger alone), the token the broker's reply to the commit named for it. Why: told no
+        # epoch, a copy read every key of such a write from L3 by key (why "no_epoch") instead of merging it from the
+        # commit's delta file, which the epoch's record names: 62,800-98,200 keys a pass after a reset rewrote every
+        # state, the local burst replay of 2026-11-25. Stamped on the keys and row messages only, never counted: the
+        # advance is the broker's, so the messages name no row count (bump_rows) and this registry's mark is unmoved
+        epoch = bump.token
+        if epoch is None and not self.advances_write_generation:
+            epoch = named_commit_generation(self.table_name)
         told: AbstractContextManager[None] = nullcontext()
         if self._registry is not None and self._registry.takes_key_batches(self.table_name):
             # a copy hears the write's keys once, as Arrow at its epoch; its row messages go to every other cache and
             # the bus only (CollectionRegistry.keys_told: keys are Arrow end to end, never a Python object a key)
-            told = self._registry.keys_told(self.table_name, await self._key_batch_off_loop(entity_ids), bump.token)
+            told = self._registry.keys_told(self.table_name, await self._key_batch_off_loop(entity_ids), epoch)
         # the L2 deletes and row messages, written here and not in a helper of their own: this method is the write
         # path's primitive (tests/enforcement/test_epoch_discipline.py), and its L2 deletes are that path's
         with told:
@@ -6402,7 +6411,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                             self._registry.row_message(
                                 self.table_name,
                                 entity_id,
-                                generation=bump.token,
+                                generation=epoch,
                                 bump_rows=bump.rows,
                                 columns=self._invalidation_values(row),
                             )
@@ -6423,7 +6432,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                         self._registry.row_message(
                             self.table_name,
                             entity_id,
-                            generation=bump.token,
+                            generation=epoch,
                             bump_rows=bump.rows,
                             columns=self._invalidation_values(row),
                         )
@@ -6432,11 +6441,14 @@ class BaseCollection(ABC, Generic[EntityT]):
                 )
             else:
                 limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
+                # the broker's epoch rides the row only on this class's own announce: a subclass that overrides it
+                # (or its publish) is called with the arguments it has always been given
+                announced = _Bump(token=epoch) if epoch != bump.token and self._announces_rows_as_built() else bump
 
                 async def settle(entity_id: Any, row: dict[str, Any] | None) -> None:
                     async with limit:
                         await self._delete_from_l2(entity_id)
-                        await self._announce_row(entity_id, bump=bump, row=row)
+                        await self._announce_row(entity_id, bump=announced, row=row)
 
                 await asyncio.gather(*(settle(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)))
         if bump.failure is not None:
