@@ -1213,7 +1213,12 @@ class CollectionRegistry:
         hole: tuple[str, str] | None = None if walk.complete else (walk.first_missing or token, walk.reason)
         reached: str | None = None
         applied_any = False
-        for change in walk.changes:
+        for index, change in enumerate(walk.changes):
+            if index:
+                # a walk of many records yields between them, so the loop answers everything else between: each
+                # record is bounded (256 KiB, about 4,000 keys), a walk of them is not (150 records of a 600,000-key
+                # commit held the loop seconds in one turn, the loop-stall guard, 2026-11-25)
+                await asyncio.sleep(0)
             if change.keys_unknown and not marks.heard_in_full(table_name, change.token):
                 # a commit too large to record names its keys in its delta file when its record names one, which
                 # never expires; else in the change notes, read a page at a time
@@ -1305,7 +1310,18 @@ class CollectionRegistry:
             keys = text_key_batch([row.ids for row in change.rows])
             for registration in batched:
                 registration.on_keys(keys, change.token)  # type: ignore[misc]  # narrowed by _key_batch_takers
-        for row in change.rows:
+        others = len(self._derived_caches.get(change.table, ())) > len(batched)
+        if change.rows and not others and change.table not in self._collections:
+            # no cache here needs a row message (the copy, told the batch, is the table's only one): the scans the
+            # table's rows feed drop, as a row's message would drop them, and none is built. Why: a row message a key
+            # on the loop held it 2.3 s for a commit of 150 records of 4,000 keys (the loop-stall guard, 2026-11-25),
+            # as :meth:`_tell_keys` and :meth:`_tell_noted_page` already avoid for a file's or the notes' keys
+            self.drop_local_scans(change.table)
+            return
+        for index, row in enumerate(change.rows):
+            if index and not index % _NOTED_ROWS_PER_YIELD:
+                # a record of many rows yields between runs of them, so the loop answers everything else between
+                await asyncio.sleep(0)
             # stamped with the epoch, as its broadcast was: a derived cache counts it toward the advance
             await self._apply_row_message(
                 CacheInvalidationMessage(
