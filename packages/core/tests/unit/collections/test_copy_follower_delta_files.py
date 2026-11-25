@@ -194,11 +194,32 @@ class _L3:
         self.statements = 0
 
     def insert(self, rows: Sequence[dict[str, Any]]) -> None:
-        for row in rows:
+        # one statement over the rows as an Arrow table, the last of a key winning as row-by-row upserts left it: a
+        # statement a row binds each value from Python (a failed ``import pandas`` a value, under testament a stat of
+        # every path), past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        if not rows:
+            return
+        put = pa.Table.from_pylist(
+            [{**{name: row[name] for name in _NAMES}, "at__": at} for at, row in enumerate(rows)],
+            schema=pa.schema(
+                [
+                    ("state", pa.string()),
+                    ("geo_id", pa.int64()),
+                    ("votes", pa.int64()),
+                    ("note", pa.string()),
+                    ("date_created", pa.timestamp("us", tz="UTC")),
+                    ("at__", pa.int64()),
+                ]
+            ),
+        )
+        self.db.register("_put", put)
+        try:
             self.db.execute(
-                f"INSERT OR REPLACE INTO {_TABLE} VALUES (?, ?, ?, ?, ?)",  # noqa: S608
-                [row[name] for name in _NAMES],
+                f"INSERT OR REPLACE INTO {_TABLE} SELECT {', '.join(_NAMES)} FROM _put "  # noqa: S608
+                "QUALIFY row_number() OVER (PARTITION BY state, geo_id ORDER BY at__ DESC) = 1"
             )
+        finally:
+            self.db.unregister("_put")
 
     def update(self, key: tuple[str, int], **values: Any) -> None:
         # an upsert of a row L3 held: only the columns its write set
@@ -220,8 +241,9 @@ class _L3:
         return sorted(self.db.execute(f"SELECT {', '.join(_NAMES)} FROM {_TABLE}").fetchall())  # noqa: S608
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        await asyncio.sleep(0)
-        rows = run_bound(self.db.cursor(), sql, params, _dict_rows)
+        # on a thread, as the real rail's reply is read off the loop: a whole read's 200,000 rows turned into dicts
+        # held it 0.59 s (the loop-stall guard, 2026-11-25)
+        rows = await asyncio.to_thread(run_bound, self.db.cursor(), sql, params, _dict_rows)
         if not sql.startswith("SELECT version()"):
             self.statements += 1
         return rows
@@ -404,6 +426,12 @@ def _same(backend: DuckDBBackend, l3: _L3) -> bool:
     return _instants(_copy(backend)) == _instants(l3.held())
 
 
+async def _same_now(backend: DuckDBBackend, l3: _L3) -> bool:
+    """:func:`_same`, on a thread: both tables read into Python rows, 200,000 of them a large test's, held the loop
+    0.56 s (the loop-stall guard, 2026-11-25)."""
+    return await asyncio.to_thread(_same, backend, l3)
+
+
 def _save_arrow(volume: Path, write: str, rows: Any, written: Sequence[str]) -> str:
     """save a commit's delta file of rows already Arrow, as a bulk writer does: no Python row a key."""
     delta = TableDelta(name=_TABLE, types=_TYPES, key=_KEY)
@@ -449,7 +477,7 @@ async def _warmed(world: tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower])
     log.commit([(row["state"], row["geo_id"]) for row in rows])
     await follower.warm()
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     l3.statements = 0
 
 
@@ -468,7 +496,7 @@ async def test_an_opted_in_tables_change_is_applied_from_its_file_with_no_l3_sta
     log.commit([("VA", 1), ("VA", 500), ("VA", 4)], delta_file=name)
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert follower.stamp.epochs == lock.epochs
 
@@ -485,7 +513,7 @@ async def test_an_upsert_that_left_a_column_out_keeps_the_copys_value_and_date_c
     log.commit([("VA", 2)], delta_file=name)
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     with backend.read_snapshot() as cursor:
         votes, note, born = cursor.execute(
             f"SELECT votes, note, date_created FROM {_TABLE} WHERE state = 'VA' AND geo_id = 2"  # noqa: S608
@@ -506,7 +534,7 @@ async def test_a_delete_marker_deletes_the_key(_volume: Path) -> None:
     lock.commit("state:IL")
     assert await follower.catch_up()
     assert ("IL", 3) not in [row[:2] for row in _copy(backend)]
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -539,7 +567,7 @@ async def test_a_record_naming_a_file_the_volume_lost_reads_nothing_from_l3_and_
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -559,7 +587,7 @@ async def test_a_table_that_does_not_opt_in_reads_l3_as_before(_volume: Path) ->
     log.commit([("VA", 1)])
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 1
     assert {why: _fallbacks(why) for why in before} == before
 
@@ -578,12 +606,12 @@ async def test_a_copy_keyed_by_a_timestamp_reads_its_own_rows_of_a_change_by_the
     log.commit([(str(row["geo_id"]), row["date_created"].isoformat()) for row in rows])
     await follower.warm()
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     l3.update(("VA", 1), votes=88)
     log.commit([("1", "2026-11-03 21:45:00+00")])  # type: ignore[list-item]
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert follower.status().failures == 0
 
 
@@ -600,7 +628,7 @@ async def test_a_copy_keyed_by_a_timestamp_merges_a_files_upsert_onto_the_row_it
     log.commit([(str(row["geo_id"]), row["date_created"].isoformat()) for row in rows])
     await follower.warm()
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     l3.statements = 0
     # the write set votes alone: the copy keeps the row's state and note
     delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
@@ -611,7 +639,7 @@ async def test_a_copy_keyed_by_a_timestamp_merges_a_files_upsert_onto_the_row_it
     log.commit([("1", "2026-11-03T21:45:00.000000+00:00")], delta_file=name)  # type: ignore[list-item]
     lock.commit("state:VA")
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -653,7 +681,7 @@ async def test_a_key_left_out_of_a_change_is_staged_again_from_its_files_next_pa
     )
     lock.on_read = None
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     with backend.read_snapshot() as cursor:
         assert cursor.execute(
             f"SELECT votes, note FROM {_TABLE} WHERE state = 'VA' AND geo_id = 1"  # noqa: S608
@@ -689,7 +717,7 @@ async def test_a_commit_too_big_to_list_is_applied_whole_from_its_file_reading_n
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert (l3.statements, notes.asked) == (0, 0)
     assert follower.status().behind == {}
     assert follower.stamp.epochs == lock.epochs
@@ -898,7 +926,7 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert len(reads) == 1
     assert sum(merge.applied for merge in merges) == 3, "VA 1's two changes and VA 2's one, each once"
@@ -965,7 +993,7 @@ async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(_v
     peak = max(peaks)
     assert peak / _BIG_ROWS < _STAGE_BYTES_PER_ROW, f"the pass allocated {peak / _BIG_ROWS:.0f} bytes of Python a row"
     assert l3.statements == 0
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
 
 
 #: the audit's real size for a loop bound: a 200,000-row commit applied from its file
@@ -1003,7 +1031,7 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) 
         assert await follower.catch_up()
     longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
 
 
 async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_keys_off_the_loop(
@@ -1069,7 +1097,7 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
     )
     longest = max(seconds for seconds, _ in holds)
     assert longest < _LOOP_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the pass"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1132,7 +1160,7 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
     longest = max(seconds for seconds, _ in holds)
     assert longest < _WAIT_TURN_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms hearing the file's keys"
     assert await follower.catch_up()
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1151,7 +1179,7 @@ async def test_a_commit_too_big_to_list_whose_record_names_no_file_is_named_from
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert notes.asked == 1
     assert l3.statements == 1
     assert _fallbacks("no_epoch") - before == 2
@@ -1290,7 +1318,7 @@ async def test_a_load_from_files_saves_its_file_before_the_load_and_the_copy_app
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert follower.stamp.epochs == lock.epochs
 
@@ -1343,7 +1371,7 @@ async def test_a_pods_own_load_reaches_its_own_copy_from_the_file_its_broker_nam
     assert await follower.catch_up()
 
     assert _refused_prefixes() == refused, "the pod's own copy refused its own load's prefixes"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1374,7 +1402,7 @@ async def test_a_load_that_replaces_a_prefix_clears_the_copys_rows_under_it_with
     assert await follower.catch_up()
 
     assert sorted(row[:2] for row in _copy(backend) if row[0] == "VA") == [("VA", 1), ("VA", 9)]
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1397,7 +1425,7 @@ async def test_a_key_prefix_delete_deletes_the_copys_rows_under_it_with_no_l3_st
     assert await follower.catch_up()
 
     assert [row for row in _copy(backend) if row[0] == "IL"] == []
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
 
 
@@ -1555,7 +1583,7 @@ async def test_a_copy_lagging_its_writer_applies_every_delta_file_a_published_fu
     assert await follower.catch_up()
 
     assert not follower.status().waiting_for_file, "the lagging copy found every file it applies"
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert _fallbacks("file_missing") == missing
 
@@ -1683,7 +1711,7 @@ async def test_a_load_failing_after_a_commit_leaves_copies_waiting_with_no_l3_re
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3), "the copy holds what L3 holds: the first file's row, not the second's"
+    assert await _same_now(backend, l3), "the copy holds what L3 holds: the first file's row, not the second's"
     assert ("VA", 100) in [row[:2] for row in _copy(backend)] and ("VA", 101) not in [row[:2] for row in _copy(backend)]
     assert l3.statements == 0
     assert writer_l3.statements == 1, "the writer read the request's two keys from L3 by key, once"
@@ -1717,7 +1745,7 @@ async def test_a_record_whose_unconfirmed_file_the_writer_has_confirmed_is_appli
 
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0
     assert asked == [] and not follower.status().waiting_for_file
 
@@ -1931,7 +1959,7 @@ async def test_a_hub_crash_after_one_commit_leaves_the_intent_copies_wait_with_n
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3), "the copy holds what L3 holds: the committed row, not the one L3 never took"
+    assert await _same_now(backend, l3), "the copy holds what L3 holds: the committed row, not the one L3 never took"
     assert l3.statements == 0
     assert writer_l3.statements == 1, "the writer read the request's keys from L3 by key, once"
     assert read_delta_file_keys(_volume / file).confirmed
@@ -1967,7 +1995,7 @@ async def test_a_normal_load_writes_the_intent_then_its_confirmed_record_and_is_
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0 and writer_l3.statements == 0
     assert answers[-1] == "superseded"
     said = [(record.getMessage(), getattr(record, "extra_data", {})) for record in caplog.records]
@@ -2004,7 +2032,7 @@ async def test_a_load_the_hub_answered_failed_after_its_intent_is_confirmed_at_t
     await asyncio.wait_for(_until(lambda: not follower.status().waiting_for_file), timeout=5)
     assert await follower.catch_up()
 
-    assert _same(backend, l3)
+    assert await _same_now(backend, l3)
     assert l3.statements == 0 and writer_l3.statements == 1
     assert folds.told == [(_TABLE, file, stopped)], "confirmed once, at the hub's own record"
     assert "pending" not in answers, "a hub still alive is never waited on once its own record names the file"

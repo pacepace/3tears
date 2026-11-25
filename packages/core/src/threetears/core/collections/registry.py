@@ -1244,6 +1244,8 @@ class CollectionRegistry:
                 marks.applied(table_name, change.token)
             applied_any = True
             _epochs_applied().labels(table=table_name).inc()
+            # a turn a record: a walk of a large commit's records (150 of 4,000 keys each) was one turn of the loop
+            await asyncio.sleep(0)
         if hole is not None:
             if reached is not None:
                 marks.advance_to(table_name, reached)
@@ -1305,6 +1307,13 @@ class CollectionRegistry:
             keys = text_key_batch([row.ids for row in change.rows])
             for registration in batched:
                 registration.on_keys(keys, change.token)  # type: ignore[misc]  # narrowed by _key_batch_takers
+            others = len(self._derived_caches.get(change.table, ())) > len(batched)
+            if not others and change.table not in self._collections:
+                # no cache here needs a row message, as for a delta file's keys (_tell_keys): the table's cached scans
+                # drop once. Why: a pydantic message a row for nobody held the loop 1.38 s over a 600,000-key commit's
+                # records (test_copy_follower_loop_stall, the loop-stall guard, 2026-11-25)
+                self.drop_local_scans(change.table)
+                return
         for row in change.rows:
             # stamped with the epoch, as its broadcast was: a derived cache counts it toward the advance
             await self._apply_row_message(
