@@ -42,7 +42,7 @@ whose ports a host can fill with this data layer or with its own.
 - There is **no daemon, container, sidecar, or API** to deploy for 3tears itself.
 - You `pip install` the packages you need and construct objects **inside your host
   application's process**.
-- It brings **infrastructure dependencies** (PostgreSQL or a git working tree for L3,
+- It brings **infrastructure dependencies** (PostgreSQL, a git working tree or a SQLite file for L3,
   optionally a NATS server), but *those* are services you stand up and own -- 3tears
   just talks to them.
 
@@ -107,7 +107,7 @@ A miss at any tier falls through to the next -- **the stack degrades gracefully*
 |---|---|---|---|---|
 | **L1** | `SQLiteBackend` (`threetears.core.cache.sqlite`) | **Per-process** SQLite: one WAL file of the process on `/dev/shm` (`threetears.core.cache.l1_file`), gone with the process. Fast local cache, **not durable** -- rebuilt from L3 on restart. Every table declares its eviction policy (`EVICTABLE` or `KEEP`, `threetears.core.eviction`); the process holds it under `THREETEARS_L1_BUDGET_BYTES` (`threetears.core.cache.l1_lru`), so a deployment mounts a sized memory-backed `emptyDir` at `/dev/shm`. | No | Practically yes (collections cache through it) |
 | **L2** | `NatsClient` JetStream KV (`threetears.nats`) | **Cross-pod** shared cache + typed cache-coherence pub/sub. Bucket is `{namespace}-collections`, on **memory** storage like every 3tears KV bucket (`ensure_kv_bucket`'s default, enforced by `threetears.enforcement.memory_only_kv`); declare it with `replicas=3` on a clustered broker. A broker restart that loses it leaves it empty; the declarer recreates it and reads refill it from L3 (§12, Step 3). | No | **No** -- only matters with >1 pod |
-| **L3** | an asyncpg-style pool, `NatsProxyL3Backend`, or a git working tree | **Durable storage. The source of truth.** | **Yes** | **Yes, always** |
+| **L3** | an asyncpg-style pool, `NatsProxyL3Backend`, a git working tree, or a SQLite file (`SqliteL3Backend`) | **Durable storage. The source of truth.** | **Yes** | **Yes, always** |
 
 Consequences:
 

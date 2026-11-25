@@ -2,7 +2,8 @@
 
 The same class the SQLite store runs in the unit suite (``tests/unit/backends/test_sqlite_l3_contract.py``): what a
 schema-backed collection may rely on of its L3 is held on both, so a deployment moves between them by configuration.
-The tables are created from the contract's schemas through SQLAlchemy's Postgres DDL, in a schema of the test's own.
+The tables, and their declared indexes, are created from the contract's schemas through SQLAlchemy's Postgres DDL, in
+a schema of the test's own.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import asyncpg
 import pytest
 from sqlalchemy import MetaData
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.schema import CreateTable
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from packages.core.tests.l3_contract import CONTRACT_SCHEMAS, CollectionOverStoreContract, SqlStoreContract
 from threetears.core.backends import SqlL3Backend, l3_store
@@ -28,10 +29,13 @@ async def store(db_container: str) -> AsyncIterator[SqlL3Backend]:
     """a store over a pool whose connections search a fresh schema holding the contract's empty tables."""
     schema_name = f"l3c_{uuid.uuid4().hex[:12]}"
     metadata = MetaData()
-    ddl = [
-        str(CreateTable(schema.to_sqlalchemy_table(metadata)).compile(dialect=cast(Any, postgresql).dialect()))
-        for schema in CONTRACT_SCHEMAS
-    ]
+    dialect = cast(Any, postgresql).dialect()
+    ddl: list[str] = []
+    for schema in CONTRACT_SCHEMAS:
+        table = schema.to_sqlalchemy_table(metadata)
+        ddl.append(str(CreateTable(table).compile(dialect=dialect)))
+        # the declared indexes, unique ones among them, as a migration creates them
+        ddl.extend(str(CreateIndex(index).compile(dialect=dialect)) for index in table.indexes)
 
     admin = await asyncpg.connect(db_container)
     try:
@@ -58,7 +62,7 @@ async def store(db_container: str) -> AsyncIterator[SqlL3Backend]:
 
 
 class TestTheSqlStoreKeepsTheL3Contract(SqlStoreContract):
-    duplicate_error = asyncpg.UniqueViolationError
+    """the schema tier, on Postgres."""
 
 
 class TestCollectionsOverTheSqlStore(CollectionOverStoreContract):

@@ -34,10 +34,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Final, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from threetears.observe import PeriodicTask, cancel_and_wait, contain, get_logger, spawn_background
@@ -51,6 +51,93 @@ try:
     from threetears.epoch import GenerationReader, TableFollower, follow_tables
 except ImportError as _exc:  # NOSILENT: the grants extra is optional; LocalGrantAuthorizer names it
     _GRANTS_IMPORT_ERROR = _exc
+
+#: how many shards a :class:`_Shards` snapshot splits its entries over: a change copies one shard and the tuple of
+#: them, so it costs about ``entries / _SHARDS + _SHARDS`` whatever the cache holds (20,000 grants: ~330 entries)
+_SHARDS: Final = 256
+
+
+class _Shards[K, V](Mapping[K, V]):
+    """a read-only mapping replaced whole on a change, whose change copies one shard of it, not every entry.
+
+    The grant cache holds one entry per grant, thousands of them, and changes one at a time as grants are written: a
+    snapshot rebuilt from every entry on each change made one walked grant change cost milliseconds. Here the entries
+    are split by key hash over :data:`_SHARDS` read-only shards; :meth:`with_entry` and :meth:`without_entry` build
+    the next snapshot from the old one's other shards, unchanged and shared, and one new shard. Nothing is changed in
+    place: a reader holding a snapshot never sees it change under it.
+
+    :param shards: the shards, :data:`_SHARDS` of them
+    :ptype shards: tuple[Mapping[K, V], ...]
+    :param size: how many entries they hold
+    :ptype size: int
+    """
+
+    __slots__ = ("_shards", "_size")
+
+    def __init__(self, shards: tuple[Mapping[K, V], ...], size: int) -> None:
+        self._shards = shards
+        self._size = size
+
+    @classmethod
+    def of(cls, entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> _Shards[K, V]:
+        """a snapshot holding ``entries``.
+
+        :param entries: a mapping, or its (key, value) pairs
+        :ptype entries: Mapping[K, V] | Iterable[tuple[K, V]]
+        :return: the snapshot
+        :rtype: _Shards[K, V]
+        """
+        split: tuple[dict[K, V], ...] = tuple({} for _ in range(_SHARDS))
+        pairs = entries.items() if isinstance(entries, Mapping) else entries
+        for key, value in pairs:
+            split[hash(key) % _SHARDS][key] = value
+        return cls(tuple(MappingProxyType(shard) for shard in split), sum(len(shard) for shard in split))
+
+    def __getitem__(self, key: K) -> V:
+        return self._shards[hash(key) % _SHARDS][key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._shards[hash(key) % _SHARDS]
+
+    def __iter__(self) -> Iterator[K]:
+        for shard in self._shards:
+            yield from shard
+
+    def __len__(self) -> int:
+        return self._size
+
+    def with_entry(self, key: K, value: V) -> _Shards[K, V]:
+        """this snapshot with ``key`` set to ``value``, as a new one.
+
+        :param key: the key
+        :ptype key: K
+        :param value: its value
+        :ptype value: V
+        :return: the new snapshot
+        :rtype: _Shards[K, V]
+        """
+        at = hash(key) % _SHARDS
+        shard = self._shards[at]
+        grown = 0 if key in shard else 1
+        return _Shards(
+            (*self._shards[:at], MappingProxyType({**shard, key: value}), *self._shards[at + 1 :]), self._size + grown
+        )
+
+    def without_entry(self, key: K) -> _Shards[K, V]:
+        """this snapshot without ``key``, as a new one (this one when it holds no ``key``).
+
+        :param key: the key
+        :ptype key: K
+        :return: the new snapshot
+        :rtype: _Shards[K, V]
+        """
+        at = hash(key) % _SHARDS
+        shard = self._shards[at]
+        if key not in shard:
+            return self
+        kept = MappingProxyType({held: value for held, value in shard.items() if held != key})
+        return _Shards((*self._shards[:at], kept, *self._shards[at + 1 :]), self._size - 1)
+
 
 __all__ = [
     "Authorizer",
@@ -536,9 +623,10 @@ class LocalGrantAuthorizer:
         # give each pair: two grants for two tools can give one permission, and revoking one of
         # them must not take the permission away. presence is the grant; absence is default-deny.
         # each a read-only snapshot replaced whole on a change (decision 41; this package does not depend on
-        # threetears.core, so its frozen_state is spelled inline): one entry per grant, tens to hundreds
-        self._grants: Mapping[UUID, tuple[UUID, str]] = MappingProxyType({})
-        self._held: Mapping[tuple[UUID, str], int] = MappingProxyType({})
+        # threetears.core, so its frozen_state is spelled inline): one entry per grant, thousands of them, so a
+        # change copies one shard of each (_Shards), never every grant
+        self._grants: _Shards[UUID, tuple[UUID, str]] = _Shards.of()
+        self._held: _Shards[tuple[UUID, str], int] = _Shards.of()
         # reads (a fill's, a key's) overlap, so each is numbered when it STARTS. a read lands only
         # when nothing that started later has already landed for what it read, and clears what is
         # owed only when it started after the failure that owed it: otherwise a slow read that
@@ -816,20 +904,20 @@ class LocalGrantAuthorizer:
         :return: nothing
         :rtype: None
         """
-        grants = dict(self._grants)
-        counts = dict(self._held)
-        before = grants.pop(grant_id, None)
+        grants, counts = self._grants, self._held
+        before = grants.get(grant_id)
+        if before == held:
+            # read again as it was held: nothing changes, and nothing is rebuilt
+            return
         if before is not None:
+            grants = grants.without_entry(grant_id)
             remaining = counts[before] - 1
-            if remaining:
-                counts[before] = remaining
-            else:
-                del counts[before]
+            counts = counts.with_entry(before, remaining) if remaining else counts.without_entry(before)
         if held is not None:
-            grants[grant_id] = held
-            counts[held] = counts.get(held, 0) + 1
-        self._grants = MappingProxyType(grants)
-        self._held = MappingProxyType(counts)
+            grants = grants.with_entry(grant_id, held)
+            counts = counts.with_entry(held, counts.get(held, 0) + 1)
+        self._grants = grants
+        self._held = counts
 
     async def _apply_grant(self, grant_id: UUID) -> None:
         """read one grant by key and put it in the cache: inserted, updated, or removed when gone.
@@ -902,8 +990,8 @@ class LocalGrantAuthorizer:
         counts: dict[tuple[UUID, str], int] = {}
         for held in filled.values():
             counts[held] = counts.get(held, 0) + 1
-        self._grants = MappingProxyType(filled)
-        self._held = MappingProxyType(counts)
+        self._grants = _Shards.of(filled)
+        self._held = _Shards.of(counts)
         self._key_landed = MappingProxyType({key: at for key, at in self._key_landed.items() if at > generation})
         self._keys_owed = MappingProxyType({key: at for key, at in self._keys_owed.items() if at > generation})
         self._filled_generation = generation

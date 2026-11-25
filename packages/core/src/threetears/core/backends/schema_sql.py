@@ -1539,3 +1539,41 @@ def build_cas_params(
     cas_col = schema.column(schema.cas_column)
     params.append(normalize_write_value(cas_col, original_timestamp))
     return params
+
+
+def build_upsert_statement(
+    schema: TableSchema,
+    data: dict[str, Any],
+    cas: datetime | None,
+) -> tuple[str, list[Any]]:
+    """the statement and parameters a schema-registered upsert writes ``data`` with: the one rule every SQL store uses.
+
+    Three shapes, chosen by the schema and by whether the caller read a version (a non-``None`` ``cas``):
+
+    * ``cas_column`` set, ``on_conflict='update'`` and a non-``None`` ``cas`` -- the fenced
+      ``UPDATE ... WHERE pk AND <cas> = $N`` (:func:`build_cas_update_sql`), on every such schema,
+      ``cas_null_safe`` included. A fence value means the caller read the row as existing, so the write is
+      update-only: a row deleted since that read affects 0 rows. (The NULL-safe upsert used to serve this case
+      too, and a save racing a delete re-created the row the delete had just removed.)
+    * ``cas_null_safe=True`` and ``cas=None`` -- the NULL-safe CAS upsert (:func:`build_cas_upsert_sql`), so two
+      first writers of one derived key do not overwrite each other.
+    * everything else -- the unfenced ``INSERT ... ON CONFLICT`` (:func:`build_insert_sql`).
+
+    ``cas_null_safe`` is read through ``getattr``, as everything here reads the schema duck-typed (the module
+    docstring): a descriptor without the attribute keeps the unfenced insert.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param data: row dict keyed by column name
+    :ptype data: dict[str, Any]
+    :param cas: the fence value the caller read, or ``None``
+    :ptype cas: datetime | None
+    :return: the statement and its parameters
+    :rtype: tuple[str, list[Any]]
+    """
+    cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
+    if cas_declared and cas is not None:
+        return build_cas_update_sql(schema, data), build_cas_params(schema, data, cas)
+    if cas_declared and getattr(schema, "cas_null_safe", False):
+        return build_cas_upsert_sql(schema, data), build_cas_upsert_params(schema, data, cas)
+    return build_insert_sql(schema, data), build_insert_params(schema, data)

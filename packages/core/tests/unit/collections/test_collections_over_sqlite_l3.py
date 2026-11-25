@@ -178,3 +178,17 @@ async def test_the_files_rows_are_scanned_by_their_columns(path: Path) -> None:
             await queue.save_entity(queue.create(row))
         found = await queue.l3_pool.scan("send_queue", {"session": "a"})
         assert sorted(r["id"] for r in found) == sorted(r["id"] for r in rows if r["session"] == "a")
+
+
+async def test_an_operators_reset_empties_the_file_and_the_cache(path: Path) -> None:
+    rows = [_row(), _row()]
+    async with _deployment(path) as queue:
+        for row in rows:
+            await queue.save_entity(queue.create(row))
+        await queue.reset()
+        for row in rows:
+            assert not queue.exists_in_cache_sync(row["id"])
+            assert await queue.get(row["id"]) is None
+        assert await queue.l3_pool.scan("send_queue") == []
+    async with _deployment(path) as queue:
+        assert await queue.l3_pool.scan("send_queue") == []
