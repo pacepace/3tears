@@ -448,8 +448,15 @@ def _pod(
     return cls(registry, broker.proxy())
 
 
-def _messages(bus: FakeNatsClient) -> list[CacheInvalidationMessage]:
+def _broadcasts(bus: FakeNatsClient) -> list[CacheInvalidationMessage]:
+    """the invalidation messages published, as sent: a write of many rows is one message naming them all."""
     return [message for message in bus.published if isinstance(message, CacheInvalidationMessage)]
+
+
+def _messages(bus: FakeNatsClient) -> list[CacheInvalidationMessage]:
+    """each row the published messages name, as its own row message (``CacheInvalidationMessage.each_row``): what a
+    receiver applies, a row at a time."""
+    return [row for message in _broadcasts(bus) for row in message.each_row()]
 
 
 class TestASwitchedOnCollectionOnAPod:

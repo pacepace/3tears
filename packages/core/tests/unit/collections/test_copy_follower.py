@@ -71,6 +71,7 @@ from threetears.nats import Subject  # noqa: E402
 from threetears.nats.errors import NoRespondersError, RequestTimeoutError  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, rail_arrow_types  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
+from threetears.core.collections.invalidation_rows import invalidation_batches  # noqa: E402
 from prometheus_client import REGISTRY  # noqa: E402
 from threetears.core.testing.keyed_statements import as_lists  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
@@ -2556,6 +2557,86 @@ async def test_a_key_heard_again_at_the_epoch_its_kept_stage_holds_is_not_read_f
     assert await follower.catch_up()
     assert l3.rows_read > read, "a key heard at a newer epoch was not read again"
     assert _copy(backend) == l3.held()
+
+
+async def _hear_a_peers_page(
+    batched: bool, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[tuple[Any, ...]], int, int, list[Any]]:
+    """a follower hears a peer's write of a page of 5,000 keys on the bus, as one batched message or as one message a
+    key, and catches up from what it heard: its copy, the rows it read from L3, the messages sent, and the messages the
+    follower was told, through the callbacks it registers with the registry (a key batch, or a row message)."""
+    posted: list[Any] = []
+    real_register = CollectionRegistry.register_derived_cache
+
+    def register(self: CollectionRegistry, table_name: str, **callbacks: Any) -> Any:
+        if table_name == _TABLE:
+            on_row, on_keys = callbacks["on_row"], callbacks.get("on_keys")
+
+            def row(message: CacheInvalidationMessage) -> None:
+                posted.append(message)
+                on_row(message)
+
+            callbacks["on_row"] = row
+            if on_keys is not None:
+
+                def keys(batch: Any, epoch: str | None) -> None:
+                    posted.append(batch)
+                    on_keys(batch, epoch)
+
+                callbacks["on_keys"] = keys
+        return real_register(self, table_name, **callbacks)
+
+    monkeypatch.setattr(CollectionRegistry, "register_derived_cache", register)
+    (l3, log, lock, backend, follower), registry = _world(page_size=1_000)
+    await _warmed((l3, log, lock, backend, follower), 2)
+    bus = FakeNatsClient()
+    writer = CollectionRegistry()
+    await registry.start_invalidation_listener(bus)
+    try:
+        page = [(f"S{n % 50:02d}", n) for n in range(_PAGE)]
+        await asyncio.to_thread(l3.put, [(state, geo, 9) for state, geo in page])
+        # the page's epoch is heard in full from its broadcast: its record is not kept, so the copy has the keys from
+        # the broadcast alone
+        token = log.commit(page, keep=False)
+        keys = [(state, str(geo)) for state, geo in page]
+        posted.clear()
+        if batched:
+            await writer.publish_invalidations(
+                bus, _TABLE, invalidation_batches(keys), generation=token, bump_rows=len(keys)
+            )
+        else:
+            for key in keys:
+                await writer.publish_invalidation(bus, _TABLE, key, generation=token, bump_rows=len(keys))
+        inbox = list(posted)
+        l3.rows_read = 0
+        assert await follower.catch_up()
+        return await asyncio.to_thread(_copy, backend), l3.rows_read, len(bus.published), inbox
+    finally:
+        await registry.stop_invalidation_listener()
+
+
+#: a page of a report's rows, as a writer settles it
+_PAGE = 5_000
+
+
+async def test_a_peers_page_heard_as_one_batched_message_is_one_arrow_batch_and_the_same_keys_as_one_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if a peer's page of keys broadcast as one batched message reaches the follower's owner as anything but
+    one Arrow batch of the page's keys (a message a key was a pydantic message decoded on the loop and turned into
+    Arrow by ``_flush_rows`` a run at a time: ~80 ms of the loop per 200,000 keys, 2026-11-25), or if the copy it
+    catches up to, or the rows it reads from L3 for it, differ from hearing the same page one message a key."""
+    singles = await _hear_a_peers_page(batched=False, monkeypatch=monkeypatch)
+    monkeypatch.undo()
+    batched = await _hear_a_peers_page(batched=True, monkeypatch=monkeypatch)
+    copy, read, sent, inbox = batched
+    assert (singles[2], sent) == (_PAGE, 1)
+    assert len(inbox) == 1 and isinstance(inbox[0], pa.Table), "the page did not reach the copy as one Arrow batch"
+    assert inbox[0].num_rows == _PAGE
+    assert len(singles[3]) == _PAGE and all(isinstance(m, CacheInvalidationMessage) for m in singles[3])
+    assert copy == singles[0], "the batched page left another copy than the page heard a key at a time"
+    assert read == singles[1] == _PAGE, "the batched page read other rows from L3 than the page a key at a time"
+    assert len(copy) == _PAGE + 2
 
 
 # --- a pass's CPU leaves the serving process (copy_key_work) -------------------------------------------------------

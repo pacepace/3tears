@@ -439,7 +439,8 @@ class TestOneCommitIsOneAdvance:
         assert await follower.tick() == 0
         assert reading.exists_in_cache_sync("kept")
 
-    async def test_a_follower_that_missed_one_row_of_the_transaction_applies_its_record(self, bus: _Lossy) -> None:
+    async def test_a_follower_that_missed_the_transactions_broadcast_applies_its_record(self, bus: _Lossy) -> None:
+        # the transaction's rows go as one message naming them all: losing it loses m3's eviction with the rest
         _, writing, follower, reading = await _two_pods(bus)
         await _save(writing, "kept", "ada")
         await _save(writing, "m3", "ada")
@@ -451,8 +452,8 @@ class TestOneCommitIsOneAdvance:
         async def lose_one(
             *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
         ) -> None:
-            if isinstance(message, CacheInvalidationMessage) and message.ids == ["m3"]:
-                lost.append(message.ids[0])
+            if isinstance(message, CacheInvalidationMessage) and ["m3"] in (row.ids for row in message.each_row()):
+                lost.append("m3")
                 return
             await deliver(bus, *args, subject=subject, message=message, reply_to=reply_to)
 

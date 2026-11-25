@@ -29,7 +29,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
@@ -90,13 +90,30 @@ class _CountingNats(FakeNatsClient):
         await super().publish(subject=subject, message=message, reply_to=reply_to)
 
 
-async def test_with_a_bus_every_key_is_broadcast_side_by_side_not_one_after_another() -> None:
+async def test_with_a_bus_every_key_leaves_l2_side_by_side_and_one_broadcast_names_them_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if a write of many keys deletes their L2 copies one after another, or broadcasts them as other than one
+    message naming every key (a message a key was a pydantic message a key decoded on every peer's loop and turned
+    into Arrow one at a time by a copy: ~80 ms of the loop per 200,000 keys, 2026-11-25)."""
     nats = _CountingNats()
     collection = _collection(nats_client=nats)
     keys = [f"k{i}" for i in range(50)]
+    deleting = {"now": 0, "most": 0}
+    real_delete = FakeKvBucket.delete
+
+    async def counted(self: FakeKvBucket, **kwargs: Any) -> bool:
+        deleting["now"] += 1
+        deleting["most"] = max(deleting["most"], deleting["now"])
+        await asyncio.sleep(0)
+        deleting["now"] -= 1
+        return await real_delete(self, **kwargs)
+
+    monkeypatch.setattr(FakeKvBucket, "delete", counted)
     await collection.invalidate_cache_many(keys)
-    assert sorted(m.ids[0] for m in nats.published) == sorted(keys)
-    assert nats.most > 1
+    (message,) = nats.published
+    assert sorted(row.ids[0] for row in message.each_row()) == sorted(keys)
+    assert deleting["most"] > 1
 
 
 async def test_a_transaction_settles_each_collection_s_keys_in_one_call() -> None:
@@ -291,7 +308,8 @@ async def test_a_write_s_keys_reach_a_cache_taking_key_batches_once_as_arrow_nev
     assert batch.equals(pa.table({"k0": pa.array(keys, pa.string())}))
     assert [message.ids for message in caches.rows_to_other] == [[key] for key in keys]
     if nats is not None:
-        assert len(nats.published) == len(keys)
+        (message,) = nats.published
+        assert [row.ids for row in message.each_row()] == [[key] for key in keys], "every row is broadcast, once"
 
 
 def test_a_key_batch_spells_each_value_as_its_row_message_does() -> None:

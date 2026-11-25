@@ -200,8 +200,15 @@ class _Pod:
         self.collection = cls(self.registry, rows, nats_client=nats_client, write_buffer=write_buffer)
 
 
-def _messages(bus: FakeNatsClient) -> list[CacheInvalidationMessage]:
+def _broadcasts(bus: FakeNatsClient) -> list[CacheInvalidationMessage]:
+    """the invalidation messages published, as sent: a write of many rows is one message naming them all."""
     return [message for message in bus.published if isinstance(message, CacheInvalidationMessage)]
+
+
+def _messages(bus: FakeNatsClient) -> list[CacheInvalidationMessage]:
+    """each row the published messages name, as its own row message (``CacheInvalidationMessage.each_row``): what a
+    receiver applies, a row at a time."""
+    return [row for message in _broadcasts(bus) for row in message.each_row()]
 
 
 async def _save(collection: _Members, entity_id: str, member_id: str = "person-1") -> None:
@@ -316,6 +323,7 @@ class TestASwitchedOnCollectionAdvancesOncePerCommit:
         members = _Pod(_SwitchedOnMembers, bus, {}, source=source).collection
         await members.invalidate_cache_many([f"m{i}" for i in range(7)])
         assert source.counts == {_TABLE: 1}
+        assert len(_broadcasts(bus)) == 1, "the keys evicted together go as one message"
         published = _messages(bus)
         assert sorted(message.ids[0] for message in published) == sorted(f"m{i}" for i in range(7))
         assert {(message.generation, message.bump_rows) for message in published} == {("inc:1", 7)}
@@ -336,6 +344,7 @@ class TestASwitchedOnCollectionAdvancesOncePerCommit:
                 await members.save_entity(entity, conn=conn)
             assert source.counts == {}, "nothing advances before the transaction ends"
         assert source.counts == {_TABLE: 1}
+        assert len(_broadcasts(bus)) == 1, "the transaction's rows go as one message"
         published = _messages(bus)
         assert len(published) == 5
         assert {(message.generation, message.bump_rows) for message in published} == {("inc:1", 5)}

@@ -43,6 +43,7 @@ from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
 from threetears.core.collections.delta_files import DeltaFileRefusedError, TableDelta, entity_key_batch
+from threetears.core.collections.invalidation_rows import invalidation_batches
 from threetears.core.collections.epoch_change import (
     EPOCH_CHANGE_MAX_AGE,
     ChangedRow,
@@ -4347,20 +4348,6 @@ class BaseCollection(ABC, Generic[EntityT]):
         else:
             await self._publish_invalidation(entity_id)
 
-    def _announces_rows_as_built(self) -> bool:
-        """whether this class announces a row exactly as :class:`BaseCollection` builds its message: a subclass
-        that overrides :meth:`_announce_row` or :meth:`_publish_invalidation` is announced through its own, one
-        row at a time, never batched past it.
-
-        :return: whether a write's rows may go as one message
-        :rtype: bool
-        """
-        cls = type(self)
-        return (
-            cls._announce_row is BaseCollection._announce_row
-            and cls._publish_invalidation is BaseCollection._publish_invalidation
-        )
-
     async def _publish_invalidation(
         self,
         entity_id: Any,
@@ -6355,8 +6342,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         Every key leaves this process's L1 at once. A collection with no NATS client has no L2 and
         no bus, so nothing more is done for the keys but drop this process's cached scans of the
         table (once, not per key) and tell the caches derived from it. With a bus, each key's L2
-        delete and broadcast still go -- the broadcast's envelope names one entity -- but
-        :attr:`INVALIDATE_CONCURRENCY` of them at a time, not one after another.
+        delete goes, :attr:`INVALIDATE_CONCURRENCY` at a time, and then one broadcast names every key
+        (:meth:`_publish_rows`).
 
         **One advance for the whole call.** On a switched-on collection (:attr:`write_generation`)
         the keys are one commit's rows -- a caller's transaction settling, a
@@ -6398,26 +6385,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             # a copy hears the write's keys once, as Arrow at its epoch; its row messages go to every other cache and
             # the bus only (CollectionRegistry.keys_told: keys are Arrow end to end, never a Python object a key)
             told = self._registry.keys_told(self.table_name, await self._key_batch_off_loop(entity_ids), epoch)
-        # the L2 deletes and row messages, written here and not in a helper of their own: this method is the write
-        # path's primitive (tests/enforcement/test_epoch_discipline.py), and its L2 deletes are that path's
+        # the L2 deletes, written here and not in a helper of their own: this method is the write path's primitive
+        # (tests/enforcement/test_epoch_discipline.py), and its L2 deletes are that path's
         with told:
-            if self._nats_client is None:
-                self._warn_missing_nats_client_once()
-                if self._registry is not None:
-                    self._registry.drop_local_scans(self.table_name)
-                if self._registry is not None and self._registry.needs_row_messages(self.table_name):
-                    for entity_id, row in zip(entity_ids, seen, strict=True):
-                        self._registry.tell_derived_caches(
-                            self._registry.row_message(
-                                self.table_name,
-                                entity_id,
-                                generation=epoch,
-                                bump_rows=bump.rows,
-                                columns=self._invalidation_values(row),
-                            )
-                        )
-            elif self._registry.batch_invalidations and self._announces_rows_as_built():
-                # one message for the write's rows: each key's L2 copy deleted first, as one a row does
+            if self._nats_client is not None:
+                # each key's L2 copy deleted before the broadcast names it
                 limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
 
                 async def evict(entity_id: Any) -> None:
@@ -6425,34 +6397,76 @@ class BaseCollection(ABC, Generic[EntityT]):
                         await self._delete_from_l2(entity_id)
 
                 await asyncio.gather(*(evict(entity_id) for entity_id in entity_ids))
-                await self._registry.publish_invalidations(
-                    self._nats_client,
-                    self.table_name,
-                    [
-                        self._registry.row_message(
-                            self.table_name,
-                            entity_id,
-                            generation=epoch,
-                            bump_rows=bump.rows,
-                            columns=self._invalidation_values(row),
-                        )
-                        for entity_id, row in zip(entity_ids, seen, strict=True)
-                    ],
-                )
-            else:
-                limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
-                # the broker's epoch rides the row only on this class's own announce: a subclass that overrides it
-                # (or its publish) is called with the arguments it has always been given
-                announced = _Bump(token=epoch) if epoch != bump.token and self._announces_rows_as_built() else bump
-
-                async def settle(entity_id: Any, row: dict[str, Any] | None) -> None:
-                    async with limit:
-                        await self._delete_from_l2(entity_id)
-                        await self._announce_row(entity_id, bump=announced, row=row)
-
-                await asyncio.gather(*(settle(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)))
+            await self._publish_rows(entity_ids, seen, generation=epoch, bump_rows=bump.rows)
         if bump.failure is not None:
             raise bump.failure
+
+    async def _publish_rows(
+        self,
+        entity_ids: Sequence[Any],
+        seen: Sequence[dict[str, Any] | None],
+        *,
+        l2_key_current: bool = False,
+        generation: str | None = None,
+        bump_rows: int | None = None,
+    ) -> None:
+        """announce a write of many rows of one advance: this process's scans of the table drop and its derived caches
+        hear each row (within :meth:`CollectionRegistry.keys_told`, only those that take no key batches), and, with a
+        bus, one broadcast names every row (:attr:`CacheInvalidationMessage.rows`; more than one only past
+        :data:`~threetears.core.collections.invalidation_rows._BYTES_A_MESSAGE`). Why one: a broadcast a row was a
+        pydantic message a row decoded on every peer's loop and turned into Arrow one at a time by a copy, ~80 ms of
+        the loop per 200,000 rows (2026-11-25); one message's keys reach a copy as one Arrow batch.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
+        :ptype entity_ids: Sequence[Any]
+        :param seen: the row each write saw, in the order of ``entity_ids`` (``None`` where none was), for the declared
+            invalidation columns
+        :ptype seen: Sequence[dict[str, Any] | None]
+        :param l2_key_current: whether the write left this registry's scoped L2 key of every row holding the newest
+            value
+        :ptype l2_key_current: bool
+        :param generation: the epoch the rows' commit advanced the table to, or ``None``
+        :ptype generation: str | None
+        :param bump_rows: how many rows that advance covers, or ``None``
+        :ptype bump_rows: int | None
+        :return: nothing
+        :rtype: None
+        """
+        registry = self._registry
+        if registry is None:
+            if self._nats_client is None:
+                self._warn_missing_nats_client_once()
+            return
+        registry.drop_local_scans(self.table_name)
+        if registry.needs_row_messages(self.table_name):
+            for entity_id, row in zip(entity_ids, seen, strict=True):
+                registry.tell_derived_caches(
+                    registry.row_message(
+                        self.table_name,
+                        entity_id,
+                        l2_key_current=l2_key_current,
+                        generation=generation,
+                        bump_rows=bump_rows,
+                        columns=self._invalidation_values(row),
+                    )
+                )
+        if self._nats_client is None:
+            self._warn_missing_nats_client_once()
+            return
+        columns = [self._invalidation_values(row) for row in seen] if self.invalidation_columns else None
+        if len(entity_ids) < self.L1_EVICT_OFF_LOOP_KEYS:
+            batches = invalidation_batches(entity_ids, columns)
+        else:
+            # pure: a worker thread packs a write of many rows, as _key_batch_off_loop makes its keys
+            batches = await asyncio.to_thread(invalidation_batches, entity_ids, columns)
+        await registry.publish_invalidations(
+            self._nats_client,
+            self.table_name,
+            batches,
+            l2_key_current=l2_key_current,
+            generation=generation,
+            bump_rows=bump_rows,
+        )
 
     async def _key_batch_off_loop(self, entity_ids: Sequence[Any]) -> Any:
         """the write's keys as one Arrow batch (``delta_files.entity_key_batch``); from :attr:`L1_EVICT_OFF_LOOP_KEYS`
@@ -6495,8 +6509,13 @@ class BaseCollection(ABC, Generic[EntityT]):
                 for key, row in zip(keys, rows, strict=True)
             ]
         )
-        for row, key in zip(rows, keys, strict=True):
-            await self._announce_row(key if len(key) > 1 else key[0], l2_key_current=True, bump=bump, row=row)
+        await self._publish_rows(
+            [key if len(key) > 1 else key[0] for key in keys],
+            rows,
+            l2_key_current=True,
+            generation=bump.token,
+            bump_rows=bump.rows,
+        )
         if bump.failure is not None:
             raise bump.failure
 

@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a write of many rows is one invalidation broadcast, its keys packed as Arrow (one cutover)
+
+**Changed (wire, one cutover: every process on the bus must run this release):** a write of many rows
+(`invalidate_cache_many`: a settled transaction, a `bypassing_write`, a bulk write; and a flush's `announce_flushed`)
+is broadcast as one `CacheInvalidationMessage` naming every row in its new `rows` field (`InvalidatedRows`, in the new
+module `threetears.core.collections.invalidation_rows`), not one message a row. Each key column is packed as Arrow lays
+out a text column (its values' UTF-8 bytes end to end and int32 offsets, base64 in JSON), so a receiver with pyarrow
+hands a copy (`on_keys`) one Arrow batch made from the wire's buffers with no Python object a key, and one without
+pyarrow (an agent pod) reads it with the standard library. A message carries at most 512 KiB of
+packed values: a page of 5,000 keys is one message. A receiver that applies rows one at a time (it holds the table as a
+collection, or a cache of it takes rows) still hears each row, in order, counted as before; one whose only cache of the
+table is a copy builds no message a row. A write of one row is the one-row message it always was. Measured
+(2026-11-25, macOS arm64, Python 3.14): decoding a batched message and handing its keys to the copy takes 0.08 ms for
+2,000 keys, 0.15 ms for 5,000 and 2.8 ms for 200,000 (8 messages), where one message a row cost ~0.8 ms of the loop per
+2,000 and ~80 ms per 200,000 in the copy's conversion alone.
+
+**Removed:** `CollectionRegistry.batch_invalidations` (batching is the only form), `CacheInvalidationMessage.more_rows`
+and `InvalidatedRow` (replaced by `rows` / `InvalidatedRows`), and `BaseCollection._announces_rows_as_built`.
+`CollectionRegistry.publish_invalidations` now takes the batches (`invalidation_batches`) and is the bus half alone;
+`GenerationMarks.hear` takes `rows=` to count a batch's rows at once.
+
 ### observe: the loop watchdog, from the SDK
 
 **Added:** `threetears.observe.loop_watchdog.LoopWatchdog`, moved unchanged from the 14th AI bots SDK

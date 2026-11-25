@@ -492,19 +492,21 @@ class GenerationMarks:
             for (incarnation, count), heard in sorted(mark.heard.items(), key=lambda item: item[0][1])
         )
 
-    def hear(self, table_name: str, token: str, bump_rows: int) -> None:
-        """record one row broadcast of the advance that wrote ``token``.
+    def hear(self, table_name: str, token: str, bump_rows: int, *, rows: int = 1) -> None:
+        """record row broadcasts of the advance that wrote ``token``: one, or a batched message's ``rows``.
 
-        :param table_name: the table the row belongs to
+        :param table_name: the table the rows belong to
         :ptype table_name: str
-        :param token: the generation the row's commit advanced to
+        :param token: the generation the rows' commit advanced to
         :ptype token: str
         :param bump_rows: how many rows that advance covered
         :ptype bump_rows: int
+        :param rows: how many of its rows were heard
+        :ptype rows: int
         :return: nothing
         :rtype: None
         """
-        self._record(table_name, token, rows=1, of=bump_rows)
+        self._record(table_name, token, rows=rows, of=bump_rows)
 
     def account(self, table_name: str, token: str) -> None:
         """record an advance this pod made itself: it needs no broadcast to know every row of it.

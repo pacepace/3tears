@@ -56,7 +56,14 @@ class _Source:
 
 
 def _rows(bus: FakeNatsClient, table: str) -> list[CacheInvalidationMessage]:
-    return [m for m in bus.published if isinstance(m, CacheInvalidationMessage) and m.table == table]
+    """each row the messages published of ``table`` name, as its own row message (a write of many rows is one message
+    naming them all)."""
+    return [
+        row
+        for m in bus.published
+        if isinstance(m, CacheInvalidationMessage) and m.table == table
+        for row in m.each_row()
+    ]
 
 
 async def test_the_cascaded_rows_are_announced_under_one_advance_per_table() -> None:
