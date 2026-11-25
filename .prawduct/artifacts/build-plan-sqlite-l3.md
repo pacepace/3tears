@@ -3,6 +3,7 @@ artifact: build-plan
 version: 1
 scope: sqlite-l3
 branch: feat/sqlite-l3
+working-branches: [feat/l3-format-and-cleanups]
 depends_on: []
 partition: "serial -- one store, its contract and its docs; the contract and the store interlock"
 last_validated: 2026-11-25
@@ -80,7 +81,7 @@ added to a stored table, a table change inside an open transaction).
   review, the two tests failing on this base (`RowFollower.settled` spinning on Python 3.14, and the evals reference
   page out of date), and the mcp grant cache copying every grant per change (its integration speed test).
 
-## Chunk 01 (the only one)
+## Chunk 01 (the SQLite L3)
 
 - `packages/core/src/threetears/core/backends/sqlite_file.py` (`SqliteL3Backend`),
   `packages/core/src/threetears/core/backends/l3_url.py` (`l3_store`), `SchemaRegisteringStore`,
@@ -137,3 +138,38 @@ adopt-row hook an application that uses the git store works around. Built on `fe
 
 Done when: the hooks tests, the enforcement tests the seams touch, `typecheck.sh core` and the suites pass; Critic
 run.
+
+## Chunk 02 (`feat/l3-format-and-cleanups`): the git L3's format version and deletes in a caller's transaction
+
+Owner ruling 2026-11-25 ("finish the git L3 follow-ups with the SQLite L3"): the git store gets a format version, and
+deletes join a caller's transaction. Other applications that use the git store adopt these changes themselves when
+3tears releases (standing ruling); nothing here audits them.
+
+- [DECISION: the format version is the git layout's only (`TemplateLayout(format_version=, migrate_format=)`, any
+  `FormatVersioned` layout); the SQLite store gets no migration hook | the ruling asks for a git format version, and
+  the SQLite store keeps the additive-only decision above. A hook built on this branch at first (`schema_version=`,
+  `migrate=`, the file's `application_id`) was removed at its review for overturning that decision unasked]
+- [DECISION: the migration runs while the writer takes the repository over, under takeover's lock, with no writer
+  check | the lease is held and nothing is served yet, so no change is written under the old format beside it; the
+  process counts as the writer only once takeover returns, so the ordinary commit path's writer check would refuse
+  it]
+- [DECISION: a repository holding no row and recording no format is new: stamped with the layout's format, never
+  migrated | nothing in it was written under format 0, and a migration written for real old data would fail on it]
+- [DECISION: one format gate, run on opening, after every HEAD move this process notices, and before a migration; a
+  newer format refuses (`NewerLayoutFormatError`), and a follower that met one refuses every read | a rolling deploy
+  or a rollback otherwise lets an older release misread, or write old-format files into, a migrated repository]
+- [DECISION: `delete(key, conn=)` refuses a collection that declares delete cascades, caches absences, commits L2
+  first or defers its L3 writes, or overrides `delete_from_store`; `SchemaBackedCollection` sends one key through
+  `delete_rows(conn=)` | each refused case is a direct delete's obligation a caller's transaction cannot keep (a
+  cascade is announced after the delete's own commit; an absence advance belongs to the write; an overridden
+  `delete_from_store` does what this path cannot know); one path for one key and many keeps the delta marker, the
+  `delta_scope` check and the row read for invalidation columns in one place]
+- [DECISION: `BaseCollection.delete`'s new `conn` keyword is listed as a breaking change for overriders, with the
+  migration | an override without it fails mypy `[override]` and raises `TypeError` for a caller passing `conn=`]
+
+Deliverables: `packages/core/src/threetears/core/backends/git/{layout,repo,errors,__init__}.py`,
+`packages/core/src/threetears/core/collections/{base,schema_backed,durable_store}.py`, the overriders in
+`packages/agent/acl`, `packages/channels`, `packages/registry`; tests in
+`packages/core/tests/backends_git/test_layout_format.py`, `packages/core/tests/integration/test_git_writer_live.py`,
+`packages/core/tests/unit/collections/test_delete_in_a_callers_transaction.py`, `packages/core/tests/l3_contract.py`
+and the three packages' refusal tests; `docs/adoption/core-git.md`, `docs/migrating-to-l3-store-seam.md`, CHANGELOG.

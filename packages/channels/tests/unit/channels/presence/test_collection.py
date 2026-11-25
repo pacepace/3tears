@@ -393,3 +393,10 @@ class TestAPresenceWriteL2RefusedRaises:
 
         with pytest.raises(KvError, match="was not saved"):
             await state.join("cust:story:main:scene.md", "conn-1", "user-1", "cust")
+
+
+async def test_a_presence_delete_refuses_a_callers_transaction() -> None:
+    """presence rows live in L1 and L2 only: there is no L3 transaction for a delete to join."""
+    presence, _registry = make_pod(None)
+    with pytest.raises(ValueError, match="cannot delete inside a caller's transaction"):
+        await presence.connections.delete("conn-1", conn=object())

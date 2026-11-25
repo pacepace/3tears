@@ -44,6 +44,17 @@ writing one working tree race each other and every cache goes stale.
   file written and staged for its own crash recovery) makes every cache say what L3 holds with
   `collection.adopt_stored_row(row)`: L1, L2 and every peer drop the row (it is never put, so an older row cannot
   land over a newer save) and the next read takes it from L3; a switched-on collection advances its generation.
+- A layout names the format its files are written in (`TemplateLayout(format_version=, migrate_format=)`, or any
+  layout that is a `FormatVersioned`); the repository records it in `.threetears/layout-format`. The writer, taking
+  the repository over, migrates one recorded under an older format in ONE commit, while it takes over and before it
+  serves a change; a new repository (no format recorded, no row) is stamped with the layout's format and not
+  migrated. A repository under a newer format than the layout reads -- a newer release migrated it -- is refused
+  (`NewerLayoutFormatError`) wherever this process meets it: on opening, on a takeover (the lease is let go), and
+  on a clone that follows origin onto it, which then refuses every read until a release that reads it runs.
+- `collection.delete(key, conn=change_set)` deletes inside a change set, as a save joins one. A collection whose
+  direct delete does what a caller's transaction cannot (announce delete cascades after its commit, cache
+  absences, commit L2 first or defer its L3 write, delete its own way through an overridden `delete_from_store`)
+  refuses `conn` with `ValueError`.
 - `bind_collections` drops every row any commit changed -- hand commits and pulled commits
   included -- from the collections' caches. `GitRepos` / `RoutedGitStore` keep many repositories. A table maps to
   one collection and a changed row does not name its repository, so `store_table` collections (one per story over

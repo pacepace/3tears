@@ -58,6 +58,41 @@ or `l2_first`) is refused (`ValueError`): dropping its key would read as the row
 through private members. A table maps to one collection in `bind_collections`, so `store_table` collections (one per
 repository over one layout table) are each bound on their own repository.
 
+### core: a git layout format version, deletes in a caller's transaction, and current docstrings
+
+**Added:** `TemplateLayout(format_version=, migrate_format=)`, and the `FormatVersioned` protocol a product's own
+layout satisfies to do the same: a git store's layout names the format its files are written in, recorded in the
+repository (`.threetears/layout-format`). The writer, while it takes the repository over (the lease held, before it
+serves a change), brings one recorded under an older format to the layout's with `await migrate_format(repo,
+from_version)` (the files to write), committed with the new version as ONE commit. A new repository -- no format
+recorded and no row -- is stamped with the layout's format and not migrated. A layout that names no format records
+nothing and behaves as before.
+
+**Added:** `NewerLayoutFormatError` (a `GitStoreError`): a repository recorded under a newer format than the layout
+reads is refused wherever a process meets it -- on opening, on a writer's takeover (the lease is let go), and after a
+clone follows origin onto it (a pull, a sync, a hand commit noticed), after which that clone refuses every read until
+the repository is back at a format it reads. An older repository with no `migrate_format` is refused at takeover.
+
+**Added:** `BaseCollection.delete(key, conn=...)` deletes inside a caller's transaction (a `CallerTransaction`'s
+connection, or a git change set), as `save_entity(conn=...)` saves inside one: the key is enrolled and every cache
+drops it when the transaction ends. `delete_from_store_in_transaction` is the extension point.
+`SchemaBackedCollection` sends a single key through `delete_rows(conn=)`, so it keeps what the bulk delete keeps (the
+row read before it goes for `invalidation_columns`, the delta file's delete marker and its `delta_scope` check);
+`DurableStoreCollection` joins, enrolls with the row before it goes and deletes through its store. A collection whose
+direct delete does what a caller's transaction cannot -- it declares delete cascades, caches absences, commits L2
+first or defers its L3 writes, or deletes its own way (an overridden `delete_from_store`) -- refuses `conn` with
+`ValueError`, as does any collection with no transactional delete.
+
+**Changed (breaking for a subclass that overrides `delete`):** `BaseCollection.delete` is now
+`delete(self, entity_id, *, conn=None)`. An override must take the keyword too, or mypy reports `[override]` and a
+caller passing `conn=` gets a `TypeError`. The migration: accept `*, conn: Any = None`, and either refuse it
+(`if conn is not None: raise ValueError(...)`, as the acl `GroupCollection`, the channels presence collections and
+the registry `HeartbeatCollection` do) or pass it on to `super().delete(entity_id, conn=conn)` to join the
+transaction.
+
+**Changed:** docstrings, tests and the L3-seam migration guide that named a `GitL3Backend` now name the git store's
+class, `GitDurableStore`.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of

@@ -230,7 +230,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         # broadcast may drop the key at any time.
         entity.hold_row(data)
 
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         """remove heartbeat row from L1 and L2.
 
         overrides the three-tier delete path. the base-class
@@ -241,11 +241,18 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
 
         :param entity_id: pod id
         :ptype entity_id: Any
+        :param conn: a caller's transaction; refused, this collection cannot join one
+        :ptype conn: Any
         :return: ``True`` -- deletes are idempotent
         :rtype: bool
         :raises L2WriteRefusedError: when a KV bucket is configured and L2 refused the delete; the
             row is still there for every other replica
+        :raises ValueError: when ``conn`` is given
         """
+        if conn is not None:
+            raise ValueError(
+                f"{type(self).__name__} cannot delete inside a caller's transaction: its rows live in L1 and L2 only, with no L3 transaction to join"
+            )
         if self._l1 is not None:
             self._l1.delete_by_id(
                 self.table_name,

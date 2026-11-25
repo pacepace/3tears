@@ -1,7 +1,7 @@
 """DurableStoreCollection: a NON-SQL DurableStore drives the full three-tier CRUD.
 
 The capability proof for collections-task-06: a collection backed by a structured,
-SQL-free ``DurableStore`` (here an in-memory dict; the exact shape scriob's ``GitL3Backend``
+SQL-free ``DurableStore`` (here an in-memory dict; the shape the git store's ``GitDurableStore``
 takes) runs the standard ``save_entity`` → evict → ``get`` (pull-through from L3) →
 ``delete`` lifecycle through the same L1/L2 machinery as a SQL-backed collection. No SQL.
 """
@@ -46,7 +46,7 @@ class _SceneEntity(BaseEntity):
 
 
 class _InMemoryDurableStore:
-    """A non-SQL DurableStore — the GitL3Backend shape, minus the git I/O."""
+    """A non-SQL DurableStore — the GitDurableStore shape, minus the git I/O."""
 
     def __init__(self) -> None:
         self.tables: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = {}

@@ -2890,8 +2890,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         The structured CRUD lifecycle routes through this seam. The resolved
         :attr:`l3_pool` is normally a :class:`~threetears.core.backends.sql.SqlL3Backend`
-        (the registry wraps a raw pool) or another ``DurableStore`` (e.g. scriob's
-        ``GitL3Backend``) — returned as-is. A raw transport assigned directly to
+        (the registry wraps a raw pool) or another ``DurableStore`` (``SqliteL3Backend``, the git
+        store's ``GitDurableStore``) — returned as-is. A raw transport assigned directly to
         ``l3_pool`` (bypassing the registry — e.g. a test harness) is wrapped in a
         schema-registered ``SqlL3Backend`` on demand, cached so the wrapper is stable
         and re-used until the underlying pool changes.
@@ -4725,6 +4725,33 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk_values = self.normalize_pk(entity_id)
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         await store.delete(self.schema.name, pk)
+
+    async def delete_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> None:
+        """delete one row on a caller's open transaction: :meth:`delete_rows` with its one key.
+
+        See :meth:`BaseCollection.delete_from_store_in_transaction`. One path for a single key and many: the join,
+        the delta file's delete marker (and its ``delta_scope`` check: a table whose markers carry a state is refused
+        here, as :meth:`delete_rows` without one is), the row read before it goes for :attr:`invalidation_columns`,
+        the enrollment and the L1 eviction.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the collection has no durable store, a subclass deletes its own way (it
+            overrides :meth:`delete_from_store`, which this cannot know), or no ``CallerTransaction`` is open on
+            ``conn``
+        :raises DeltaFileRefusedError: when the table's delete markers carry a state (``delta_scope``)
+        """
+        self._refuse_unfiled("delete_from_store")
+        if type(self).delete_from_store is not SchemaBackedCollection.delete_from_store:
+            raise ValueError(
+                f"{type(self).__name__} deletes its own way (it overrides delete_from_store), so a delete cannot "
+                f"join a caller's transaction (conn=)"
+            )
+        await self.delete_rows([self.normalize_pk(entity_id)], conn=conn)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize row dict to JSON bytes for L2 storage.

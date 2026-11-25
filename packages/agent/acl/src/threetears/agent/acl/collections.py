@@ -388,16 +388,23 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             }
         return super().create(data)
 
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         """delete one group, then announce every membership and assignment its cascade removed.
 
         :param entity_id: the group's primary key, ``(row_scope, group_id)``
         :ptype entity_id: Any
+        :param conn: a caller's transaction; refused, this collection cannot join one
+        :ptype conn: Any
         :return: what the framework's own ``delete`` returns
         :rtype: bool
         :raises GenerationUnavailableError: when a cascaded table's write generation could not be
             advanced; every row was still evicted and broadcast
+        :raises ValueError: when ``conn`` is given
         """
+        if conn is not None:
+            raise ValueError(
+                f"{type(self).__name__} cannot delete inside a caller's transaction: a group's delete announces its cascade after its own commit, which a caller's transaction would defer"
+            )
         group_id = UUID(f"{self.normalize_pk(entity_id)[self.primary_key_columns.index('group_id')]}")
         cascade = await self.read_cascade(group_id)
         deletion_failure: GenerationUnavailableError | None = None

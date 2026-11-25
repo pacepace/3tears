@@ -30,7 +30,7 @@ import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any, ClassVar
 
 import asyncpg
@@ -39,6 +39,7 @@ from sqlalchemy import MetaData
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import NO_L2
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -388,6 +389,37 @@ class CollectionOverStoreContract:
         await docs.save_entity(docs.create(row))
         await docs.delete(row["id"])
         assert await self._fresh(docs, row["id"]) is None
+
+    @contextlib.asynccontextmanager
+    async def caller_transaction(self, store: Any) -> AsyncIterator[Any]:
+        """a caller's transaction a collection's write joins (``conn=``): an acquired connection under
+        ``CallerTransaction``, as an application opens one over a database store.
+
+        :param store: the store
+        :ptype store: Any
+        :return: the connection the writes are handed
+        :rtype: AsyncIterator[Any]
+        """
+        async with store.acquire() as conn, CallerTransaction(conn):
+            yield conn
+
+    async def test_a_delete_in_a_callers_transaction_commits_with_it(self, docs: _DocCollection, store: Any) -> None:
+        row = _doc()
+        await docs.save_entity(docs.create(row))
+        async with self.caller_transaction(store) as conn:
+            await docs.delete(row["id"], conn=conn)
+        assert await self._fresh(docs, row["id"]) is None
+
+    async def test_a_delete_in_a_callers_transaction_that_raises_deletes_nothing(
+        self, docs: _DocCollection, store: Any
+    ) -> None:
+        row = _doc()
+        await docs.save_entity(docs.create(row))
+        with pytest.raises(RuntimeError, match="abandoned"):
+            async with self.caller_transaction(store) as conn:
+                await docs.delete(row["id"], conn=conn)
+                raise RuntimeError("abandoned")
+        assert await self._fresh(docs, row["id"]) is not None
 
     async def test_a_list_reads_the_rows_its_filters_match(self, docs: _DocCollection) -> None:
         rows = [_doc(name="a"), _doc(name="b"), _doc(name="a")]

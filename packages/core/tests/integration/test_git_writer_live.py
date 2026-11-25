@@ -40,9 +40,11 @@ from threetears.core.backends.git import (
     ForwardTooLargeError,
     GitStoreError,
     HandEditPendingError,
+    JsonCodec,
     NotTheWriterError,
     OpLogTail,
     RowChange,
+    TableLayout,
     TemplateLayout,
     committed_seq_from,
     new_signing_seed,
@@ -623,3 +625,59 @@ async def test_a_change_set_over_the_brokers_payload_is_refused_unsent_and_a_flu
     assert _commits(writer) == before + 6, "written per row, each its own forwarded commit"
     assert not [r for r in caplog.records if "Atomic batch flush failed" in r.getMessage()]
     assert [r for r in caplog.records if "Batch too large for one transaction" in r.getMessage()]
+
+
+def _fast_config(**settings: Any) -> GitRepoConfig:
+    """a repository's settings with the quick timings.
+
+    :param settings: the rest of its settings
+    :ptype settings: Any
+    :return: the config
+    :rtype: GitRepoConfig
+    """
+    merged: dict[str, Any] = {**FAST, **settings}
+    return GitRepoConfig(**merged)
+
+
+async def test_a_writer_holding_the_lease_migrates_an_older_layout_format_on_taking_over(
+    tmp_path: Path, origin: Path, connect: Any
+) -> None:
+    """the migration commits while takeover runs, before the process counts as the writer: the lease is held."""
+    tables = [
+        TableLayout("keepers", "{character}/keepers/{batch}/{tile}.json", ("character", "batch", "tile"), JsonCodec())
+    ]
+    layout = TemplateLayout(tables)
+    old = GitRepo(
+        _fast_config(key="characters", work_tree=tmp_path / "old", remote_url=str(origin)),
+        layout,
+        nats=await connect("old"),
+    )
+    await old.open()
+    try:
+        assert await GitDurableStore(old).upsert("keepers", keeper("1", verdict="keep")) == 1
+    finally:
+        await old.aclose()  # gives the lease up
+
+    async def verdict_to_decision(repo: Any, from_version: int) -> dict[str, bytes | None]:
+        files: dict[str, bytes | None] = {}
+        for path in sorted(repo.config.work_tree.glob("*/keepers/*/*.json")):
+            data = json.loads(path.read_text())
+            data["decision"] = data.pop("verdict")
+            files[str(path.relative_to(repo.config.work_tree))] = (json.dumps(data, indent=2) + "\n").encode()
+        return files
+
+    newer_layout = TemplateLayout(tables, format_version=1, migrate_format=verdict_to_decision)
+    newer = GitRepo(
+        _fast_config(key="characters", work_tree=tmp_path / "newer", remote_url=str(origin), clone="own"),
+        newer_layout,
+        nats=await connect("newer"),
+    )
+    await newer.open()
+    try:
+        await eventually(lambda: newer.is_writer)
+        assert (tmp_path / "newer/.threetears/layout-format").read_text().strip() == "1"
+        row = await GitDurableStore(newer).fetch_one("keepers", key("1"))
+        assert row is not None and row.get("decision") == "keep" and "verdict" not in row
+        assert origin_head(origin) == newer.git.head()  # the migration was pushed
+    finally:
+        await newer.aclose()

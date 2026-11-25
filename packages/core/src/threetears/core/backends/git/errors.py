@@ -18,6 +18,7 @@ __all__ = [
     "ForwardTooLargeError",
     "GitStoreError",
     "HandEditPendingError",
+    "NewerLayoutFormatError",
     "NotTheWriterError",
 ]
 
@@ -175,6 +176,38 @@ class ForwardTooLargeError(GitStoreError, TransactionTooLargeError):
         super().__init__(
             f"a change forwarded to the writer of {lease_key} is {size} bytes, over the broker's max_payload of "
             f"{limit}; nothing was sent or committed"
+        )
+
+
+class NewerLayoutFormatError(GitStoreError):
+    """the repository records a newer layout format than this process's layout reads.
+
+    A newer release migrated it. This process neither reads nor writes it under its older layout: opening refuses,
+    a writer's takeover refuses (the lease is let go), and a clone that followed origin onto it refuses every read
+    and every change (``commit``, ``commit_files``, a change set; none is forwarded to the writer either) until it
+    runs a release that reads that format.
+
+    :ivar stored: the format the repository records
+    :ivar declared: the format this layout reads
+    """
+
+    def __init__(self, key: str, stored: int, declared: int) -> None:
+        """name the two formats.
+
+        :param key: the repository's key
+        :ptype key: str
+        :param stored: the format the repository records
+        :ptype stored: int
+        :param declared: the format this layout reads
+        :ptype declared: int
+        :return: None
+        :rtype: None
+        """
+        self.stored = stored
+        self.declared = declared
+        super().__init__(
+            f"repository {key!r} is at layout format {stored}; this layout reads format {declared}. A newer release "
+            "wrote it: run a release that reads it"
         )
 
 
