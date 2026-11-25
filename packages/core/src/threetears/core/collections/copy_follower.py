@@ -108,7 +108,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING, runtime_checkable
@@ -4318,9 +4318,24 @@ class CopyFollower:
             self._checkpoint_wake = asyncio.get_running_loop().call_later(wait, self._checkpoint_if_due)
 
     async def _write_checkpoint(self) -> None:
+        """write a checkpoint beside the follower, its read opened on a thread (:meth:`_open_marked`).
+
+        Why on a thread: a read's opening is IO (a copy published as shared Arrow maps every file of its version and
+        reads each file's schema; DuckDB begins a transaction and reads its catalog), and opened inside the checkpoint's
+        write, on the loop, it held one turn 0.27 s (reports' ``SharedArrowBackend.read_snapshot`` mapping a version,
+        ``MappedTables.__init__``, the loop-stall guard in reports' tests/pod/test_retention.py, 2026-11-25). It is
+        opened ahead and closed after, each on a thread; the checkpoint's own read only hands it over
+        (:meth:`_marked_read`), so the read still begins where the write counts what it holds, with no await between.
+
+        :return: nothing
+        :rtype: None
+        """
         assert self._checkpoints is not None  # noqa: S101 -- narrowed by the caller
+        opened: tuple[ExitStack, Any, int | None] | None = None
         try:
-            written = await self._checkpoints.write(self.reading_marked)
+            opened = await asyncio.to_thread(self._open_marked)
+            stack, cursor, mark = opened
+            written = await self._checkpoints.write(lambda: self._marked_read(cursor, mark))
         except asyncio.CancelledError, KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - a checkpoint is a start's shortcut; the copy is unaffected
@@ -4330,6 +4345,9 @@ class CopyFollower:
                 what="a copy checkpoint could not be written; the next change that makes one due tries again",
             )
             return
+        finally:
+            if opened is not None:
+                await asyncio.to_thread(opened[0].close)
         if written is not None:
             # a change applied while it was written stays counted: asked again once this write is done, so an epoch
             # applied from the notes meanwhile is not left waiting for a change that may not come
@@ -6520,6 +6538,42 @@ class CopyFollower:
             mark = self._backend.staged_mark(cursor)
             stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})
             yield cursor, stamp, marks
+
+    def _open_marked(self) -> tuple[ExitStack, Any, int | None]:
+        """open a read of the copy and read the mark of the change it holds. Blocking (IO): run it on a thread; close
+        the stack the same way.
+
+        :return: the stack holding the read open, its cursor, and its change's mark (None before the first change)
+        :rtype: tuple[ExitStack, duckdb.DuckDBPyConnection, int | None]
+        """
+        stack = ExitStack()
+        try:
+            cursor = stack.enter_context(self._backend.read_snapshot())
+            return stack, cursor, self._backend.staged_mark(cursor)
+        except BaseException:
+            stack.close()
+            raise
+
+    @contextmanager
+    def _marked_read(self, cursor: Any, mark: int | None) -> Iterator[tuple[Any, Any, Mapping[str, str | None]]]:
+        """:meth:`reading_marked` over a read opened ahead (:meth:`_open_marked`), as a checkpoint opens it: the stamp
+        and marks of its change. A read opened before the last change applied (an apply landed while the checkpoint
+        claimed its lock) misses a change the checkpoint counts as held, so a fresh read is opened here instead, on the
+        loop as before: rare, and never wrong. A change is counted toward a checkpoint only once its mark is applied.
+
+        :param cursor: the read opened ahead
+        :ptype cursor: duckdb.DuckDBPyConnection
+        :param mark: its change's mark
+        :ptype mark: int | None
+        :return: ``(cursor, stamp, marks)``
+        :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any, Mapping[str, str | None]]]
+        """
+        if self._applied_mark is not None and (mark is None or mark < self._applied_mark):
+            with self.reading_marked() as fresh:
+                yield fresh
+            return
+        stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})
+        yield cursor, stamp, marks
 
     def take_rows_since_mark(self) -> int:
         """the rows applied since the last call, and start counting again: what a checkpoint's trigger weighs.

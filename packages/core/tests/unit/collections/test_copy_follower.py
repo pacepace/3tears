@@ -23,8 +23,10 @@ from __future__ import annotations
 import bisect
 import asyncio
 import json
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -2821,3 +2823,33 @@ async def test_a_large_stage_is_cut_and_a_moved_scope_left_out_of_it_in_the_work
     lock.on_read = None
     assert await follower.catch_up()
     assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+
+
+async def test_a_checkpoint_opens_and_closes_its_read_of_the_copy_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a checkpoint opens its read of the copy on the event loop: a copy published as shared Arrow maps every
+    file of its version as the read opens (reports' ``SharedArrowBackend.read_snapshot``, ``MappedTables.__init__``),
+    which held one turn 0.27 s under the loop-stall guard (reports' tests/pod/test_retention.py, 2026-11-25). The read
+    is opened and closed on a thread, and the checkpoint is still written."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a")
+    loop_thread = threading.get_ident()
+    on_loop: list[str] = []
+    snapshot = backend.read_snapshot
+
+    @contextmanager
+    def watched() -> Iterator[Any]:
+        if threading.get_ident() == loop_thread:
+            on_loop.append("opened")
+        with snapshot() as cursor:
+            yield cursor
+        if threading.get_ident() == loop_thread:
+            on_loop.append("closed")
+
+    monkeypatch.setattr(backend, "read_snapshot", watched)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert pointers.entries, "no checkpoint was written"
+    assert on_loop == [], f"a read of the copy was opened or closed on the event loop: {on_loop}"
