@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the copy's keyed lookups, and a dead query worker costs its own query alone
+
+**Added:** `CopyQueries.lookup(table, keys, key)`, step 3T-6 of `design-copy-worker-backend.md`: a table's rows by key
+in Arrow's hash kernels (`arrow_keys.rows_named`), never DuckDB, no Python object a key. A lookup of fewer than
+`INLINE_LOOKUP_KEYS` keys is answered in the serving process (on a thread: the version leased, its parts mapped and
+probed together), else in a query worker, its keys handed as shared Arrow. `INLINE_LOOKUP_KEYS` is 1, measured
+(`scripts/measure-copy-lookup-cutoff.py`): a probe reads every row of the table whatever the keys, and mapping its
+parts per lookup cost more than a worker's round trip at every size and key count measured.
+
+**Fixed:** each query worker is a pool of its own, so a worker's death fails only the query it ran; one process pool
+of N workers failed every query its siblings were running too.
+
 ### core: queries over the copy run in query worker processes, answered in shared Arrow
 
 **Added:** `threetears.core.collections.copy_queries.CopyQueries`, step 3T-5 of `design-copy-worker-backend.md`

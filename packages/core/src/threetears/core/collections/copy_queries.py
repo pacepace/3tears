@@ -33,13 +33,19 @@ worker maps from its start. The worker running it watches the board on a thread 
 (``DuckDBPyConnection.interrupt``); one not yet started refuses it at its start. Either way the worker is free for the
 next query within milliseconds, never held by an answer nobody will read.
 
-**A dead worker** (killed, out of memory) fails the queries it and its pool's other workers were running with
-:class:`QueryWorkerDied`, and the pool is replaced for the next query (``SharedArrowPool``'s own replacement). A query
-is never given again: its caller decides, since a query that killed one worker would kill the next.
+**A dead worker costs its own query alone.** Each worker is a ``SharedArrowPool`` of one process: a process pool
+marks itself broken when any of its processes dies and fails every job it was running, so a pool of N workers lost N
+queries to one crash. Here a death fails only the query that worker ran (:class:`QueryWorkerDied`), and that worker
+alone is replaced for its next query; the queries its siblings run answer as if nothing happened. A query is never
+given again: its caller decides, since a query that killed one worker would kill the next.
 
-**Not yet here** (later chunks of the design): the inline keyed lookup below a measured cut-off (3T-6,
-``INLINE_LOOKUP_KEYS``); the follower's reads (3T-7) and reports' tool reads (R-3) moving onto this; the engine slots'
-removal (3T-8).
+**Keyed lookups** (:meth:`CopyQueries.lookup`) find a table's rows by key in Arrow's hash kernels
+(``arrow_keys.rows_named``), never DuckDB, never a Python object a key: below :data:`INLINE_LOOKUP_KEYS` keys in the
+serving process (on a thread: the version's part files are mapped there, and the probe costs less than a worker's
+round trip), at and above it in a query worker like any query.
+
+**Not yet here** (later chunks of the design): the follower's reads (3T-7) and reports' tool reads (R-3) moving onto
+this; the engine slots' removal (3T-8).
 """
 
 from __future__ import annotations
@@ -59,14 +65,24 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import pyarrow as pa
+import pyarrow.ipc as ipc
 
+from threetears.core.arrow_keys import rows_named
 from threetears.core.collections.shared_copy import LOCATED_PREFIX
 from threetears.core.frozen_state import EMPTY, frozen
-from threetears.core.shared_arrow import JobContext, MappedSegment, SharedArrowPool, SharedArrowStore, SharedLease
+from threetears.core.shared_arrow import (
+    JobContext,
+    MappedSegment,
+    SharedArrowPool,
+    SharedArrowStore,
+    SharedLease,
+    version_files,
+)
 from threetears.core.utils.cpu_quota import bound_native_threads, effective_cpu_count
 from threetears.observe import contain, get_logger
 
 __all__ = [
+    "INLINE_LOOKUP_KEYS",
     "CopyQueries",
     "QueryAnswer",
     "QueryPoolFull",
@@ -127,6 +143,22 @@ _ANSWER: Final = "answer-"
 #: the most scalar binds a query takes: a query's own values (a state, a race, an instant). Keys by the hundred are
 #: rows, handed as a table (``tables=``) so they cross as Arrow, never pickled
 _MAX_BINDS: Final = 64
+
+#: a keyed lookup of fewer keys than this is answered in the serving process, else in a query worker. 1: only a lookup
+#: naming no key is answered here. Measured 2026-11-25 (``scripts/measure-copy-lookup-cutoff.py``, the method of
+#: ``copy_key_work.INLINE_KEYS``, inventory section 4) on macOS arm64, 10 cores, Python 3.14, under a load average of
+#: 270-460 (other builders' suites and a VM), so every figure is inflated about 10x, the ratios not: a table in 51
+#: state parts, 1 to 100k keys, medians of 9 runs of CPU ms. Inline: 18.5 / 24.9 / 55.4 at 1 key for 20k / 200k / 2M
+#: rows, growing with the keys (171 / 217 / 262 at 10k). The worker's round trip cost the serving process 8.6 / 9.2 /
+#: 11.3 at 1 key and 9.9 / 11.2 / 13.4 at 10k: flat in the keys, as ``INLINE_KEYS``' 0.6-0.8 ms is. Inline lost at every
+#: count and size. Why (one key, CPU ms): mapping the 51 part files is 6.3 (20k rows) to 13.2 (2M rows) and a probe of
+#: every part 8.8 to 32.8 (one probe over the parts side by side: 1.0 to 30.9, which this takes); a probe reads every
+#: row of the table whatever the keys, so the cost is the table's, not the lookup's. A lookup could win here only over
+#: a small table whose files the serving process keeps mapped between lookups: not built (a design question, decision 4)
+INLINE_LOOKUP_KEYS: Final = 1
+
+#: the name a lookup's keys are handed to its worker under
+_KEYS: Final = "__lookup_keys"
 
 #: the bind values a query takes: scalars DuckDB binds as they are
 _SCALARS: Final = (
@@ -262,12 +294,14 @@ class _Query:
     :ivar declared: the declared query's function; None for SQL
     :ivar binds: the scalar binds
     :ivar prepare: the copy's prepare hook; None for none
+    :ivar lookup: a keyed lookup's table and key columns (its keys handed as :data:`_KEYS`); None for a query
     """
 
     sql: str | None
     declared: Callable[[Any, Sequence[Any]], Any] | None
     binds: tuple[Any, ...]
     prepare: Callable[[Any], object] | None
+    lookup: tuple[str, tuple[str, ...]] | None = None
 
 
 def _connected(context: JobContext, threads: int, prepare: Callable[[Any], object] | None) -> Any:
@@ -359,6 +393,44 @@ def _write_answer(context: JobContext, batches: pa.RecordBatchReader) -> int:
     return rows
 
 
+def _found(rows: pa.Table, keys: pa.Table, key: Sequence[str]) -> pa.Table:
+    """the rows of ``rows`` whose key ``keys`` names, in their order in ``rows`` (Arrow's hash kernels, no Python
+    object a key).
+
+    :param rows: the rows looked in
+    :ptype rows: pa.Table
+    :param keys: the keys looked for
+    :ptype keys: pa.Table
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :return: the rows found
+    :rtype: pa.Table
+    """
+    return rows.take(pa.array(rows_named(rows, keys, key)))
+
+
+def _lookup_in_worker(context: JobContext, table: str, key: Sequence[str]) -> int:
+    """a keyed lookup in its worker: the version's table probed by the handed keys, the rows found written as the
+    answer.
+
+    :param context: the job's context
+    :ptype context: JobContext
+    :param table: the table
+    :ptype table: str
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :return: the rows found
+    :rtype: int
+    :raises LookupError: when the version holds no such table
+    """
+    if context.version is None or context.tables is None:
+        raise ValueError("a copy lookup reads a version and is handed its keys")
+    rows = context.version.tables.get(table)
+    if rows is None:
+        raise LookupError(f"the copy's version {context.version.name} holds no table {table!r}")
+    return _write_answer(context, _batches(_found(rows, context.tables.tables[_KEYS], key)))
+
+
 def query_job(context: JobContext, ticket: int, query: _Query) -> tuple[int, int]:
     """a query in its worker: DuckDB over the leased version, the answer written into the result slot as Arrow.
 
@@ -377,6 +449,8 @@ def query_job(context: JobContext, ticket: int, query: _Query) -> tuple[int, int
         raise RuntimeError("a copy query runs in a CopyQueries worker")
     if _cancelled(setup.board, ticket):
         raise _QueryStopped("the query was stopped before it started: its caller cancelled it or its timeout passed")
+    if query.lookup is not None:
+        return _lookup_in_worker(context, *query.lookup), os.getpid()
     connection = _connected(context, setup.threads, query.prepare)
     done = threading.Event()
     watcher = threading.Thread(
@@ -401,6 +475,46 @@ def query_job(context: JobContext, ticket: int, query: _Query) -> tuple[int, int
     return rows, os.getpid()
 
 
+def _inline_lookup(
+    store: SharedArrowStore, version: str | None, table: str, keys: pa.Table, key: Sequence[str]
+) -> tuple[pa.Table, str]:
+    """a keyed lookup in the serving process, on a thread: the version leased, its table's files mapped (its pages
+    the store's) and probed together, the rows found copied out, the files and the lease let go.
+
+    :param store: the store
+    :ptype store: SharedArrowStore
+    :param version: the version; None for the current one
+    :ptype version: str | None
+    :param table: the table
+    :ptype table: str
+    :param keys: the keys
+    :ptype keys: pa.Table
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :return: the rows found, and the version read
+    :rtype: tuple[pa.Table, str]
+    :raises LookupError: when nothing is published, the version named is gone, or it holds no such table
+    """
+    with store.lease(version) as leased:
+        whole = f"{table}.arrow"
+        prefix = f"{table}@"
+        paths = sorted(
+            held.path
+            for name, held in version_files(store.root, leased.name).items()
+            if name == whole or (name.startswith(prefix) and name.endswith(".arrow"))
+        )
+        if not paths:
+            raise LookupError(f"the copy's version {leased.name} holds no table {table!r}")
+        mapped: list[pa.Table] = []
+        for path in paths:
+            with pa.memory_map(str(path), "r") as source:
+                mapped.append(ipc.open_file(source).read_all())
+        # one probe over the parts side by side (no buffer copied): 1.0 ms against 8.8 ms for a probe a part, 51 parts
+        # of 20k rows (INLINE_LOOKUP_KEYS' measure). take copies the rows found out of the mapped pages, so nothing
+        # here outlives the lease
+        return _found(pa.concat_tables(mapped), keys, key).combine_chunks(), leased.name
+
+
 class QueryAnswer:
     """a query's answer: its rows mapped from the shared result the worker wrote, zero-copy, until :meth:`close`.
 
@@ -412,7 +526,7 @@ class QueryAnswer:
     :ivar worker: the pid of the worker that answered
     """
 
-    def __init__(self, table: pa.Table, version: str, worker: int, segment: MappedSegment) -> None:
+    def __init__(self, table: pa.Table, version: str, worker: int, segment: MappedSegment | None) -> None:
         self.table = table
         self.version = version
         self.worker = worker
@@ -425,7 +539,8 @@ class QueryAnswer:
         :return: nothing
         :rtype: None
         """
-        self._segment.close()
+        if self._segment is not None:
+            self._segment.close()
 
     async def aclose(self) -> None:
         """:meth:`close`, on a thread.
@@ -433,7 +548,8 @@ class QueryAnswer:
         :return: nothing
         :rtype: None
         """
-        await asyncio.to_thread(self._segment.close)
+        if self._segment is not None:
+            await asyncio.to_thread(self._segment.close)
 
     async def __aenter__(self) -> QueryAnswer:
         return self
@@ -575,6 +691,8 @@ class CopyQueries:
     :ptype threads: int
     :param preload: modules the workers hold from their start (the prepare hook's and the declared queries')
     :ptype preload: Sequence[str]
+    :param inline_keys: a lookup of fewer keys runs in the serving process (:data:`INLINE_LOOKUP_KEYS`)
+    :ptype inline_keys: int
     :raises ValueError: for a prepare hook or a declared query that is not a module-level function, or a bound past the
         cancel board's slots
     """
@@ -591,6 +709,7 @@ class CopyQueries:
         private_bytes: int = _QUERY_PRIVATE_BYTES,
         threads: int = _QUERY_THREADS,
         preload: Sequence[str] = (),
+        inline_keys: int = INLINE_LOOKUP_KEYS,
     ) -> None:
         count = query_workers() if workers is None else workers
         if count < 1 or max_waiting < 0 or count + max_waiting >= _BOARD_SLOTS:
@@ -606,16 +725,23 @@ class CopyQueries:
         self._timeout = timeout
         #: the cancel board, shared with every worker the pool forks (its initializer's argument)
         self._board = multiprocessing.RawArray(ctypes.c_int64, _BOARD_SLOTS)
-        self._pool = SharedArrowPool(
-            store,
-            workers=count,
-            private_bytes=private_bytes,
-            name="copy query",
-            initializer=_worker_start,
-            initargs=(self._board, threads),
-            preload=(__name__, *preload),
-            process_name=_QUERY_PROCESS_NAME,
+        #: one pool a worker: a process pool fails every job it runs when one of its processes dies, so one pool of
+        #: N workers lost N queries to one crash; a pool of one loses only its own
+        self._pools = tuple(
+            SharedArrowPool(
+                store,
+                workers=1,
+                private_bytes=private_bytes,
+                name=f"copy query {index}",
+                initializer=_worker_start,
+                initargs=(self._board, threads),
+                preload=(__name__, *preload),
+                process_name=_QUERY_PROCESS_NAME,
+            )
+            for index in range(count)
         )
+        self._free = _FreeWorkers(count)
+        self._inline_keys = inline_keys
         #: the queries admitted at once; its waiters are served in the order they came
         self._room = asyncio.Semaphore(count + max_waiting)
         #: the last caller's baton: the next caller asks for a worker once it is passed (:meth:`_answer`)
@@ -765,19 +891,25 @@ class CopyQueries:
                 try:
                     if before is not None:
                         await asyncio.shield(before)
-                    # passed before the ask, which the pool's run makes before it first waits: the next caller wakes
-                    # only after this one has asked for its worker
+                    # asked for in this caller's turn, then the turn passed: the next caller wakes only after this
+                    # one has asked for its worker
+                    taking = self._free.take(reader)
                     _pass_on(baton)
                     asked = True
-                    answered = await self._pool.run(
-                        query_job,
-                        ticket,
-                        query,
-                        read=lease.version.name,
-                        tables=tables,
-                        result_pieces=_ANSWER_PIECE_BYTES,
-                        reader=reader,
-                    )
+                    worker = await self._taken(taking)
+                    try:
+                        answered = await self._pools[worker].run(
+                            query_job,
+                            ticket,
+                            query,
+                            read=lease.version.name,
+                            tables=tables,
+                            result_pieces=_ANSWER_PIECE_BYTES,
+                        )
+                    finally:
+                        # a stopped query's worker is interrupted within milliseconds: the next query given it waits
+                        # in its pool for that
+                        self._free.give(worker)
                 finally:
                     _released(lease)
         except TimeoutError as exc:
@@ -878,10 +1010,118 @@ class CopyQueries:
             leasing.add_done_callback(_release_when_leased)
             raise
 
+    async def _taken(self, taking: asyncio.Future[int]) -> int:
+        """the worker given to a query; one given as its caller stopped waiting goes back.
+
+        :param taking: the worker asked for
+        :ptype taking: asyncio.Future[int]
+        :return: the worker's index
+        :rtype: int
+        """
+        try:
+            return await taking
+        except asyncio.CancelledError:
+            if taking.done() and not taking.cancelled():
+                self._free.give(taking.result())
+            raise
+
+    async def lookup(
+        self,
+        table: str,
+        keys: pa.Table,
+        key: Sequence[str],
+        *,
+        version: str | None = None,
+        timeout: float | None = None,
+        reader: bool = True,
+    ) -> QueryAnswer:
+        """the rows of ``table`` whose key ``keys`` names, by Arrow's hash kernels: in the serving process below
+        :data:`INLINE_LOOKUP_KEYS` keys (on a thread), in a query worker at and above it.
+
+        :param table: the table
+        :ptype table: str
+        :param keys: the keys (``key``'s columns; others are not read)
+        :ptype keys: pa.Table
+        :param key: the key's columns
+        :ptype key: Sequence[str]
+        :param version: the version read; None for the one current now
+        :ptype version: str | None
+        :param timeout: as :meth:`run`, for a lookup in a worker
+        :ptype timeout: float | None
+        :param reader: as :meth:`run`
+        :ptype reader: bool
+        :return: the rows found, in their order in each part; the caller closes it
+        :rtype: QueryAnswer
+        :raises LookupError: when nothing is published, the version named is gone, or it holds no such table
+        :raises KeyError: for a key column ``keys`` lacks
+        """
+        missing = sorted(set(key) - set(keys.column_names))
+        if missing:
+            raise KeyError(f"a lookup's keys lack its key columns: {missing}")
+        named = keys.select(list(key))
+        if named.num_rows < self._inline_keys:
+            found, read = await asyncio.to_thread(_inline_lookup, self._store, version, table, named, tuple(key))
+            return QueryAnswer(found, read, os.getpid(), None)
+        query = _Query(sql=None, declared=None, binds=(), prepare=None, lookup=(table, tuple(key)))
+        return await self._answer(query, {_KEYS: named}, version, timeout, reader, True)
+
     async def close(self) -> None:
         """shut the workers down, waiting for them.
 
         :return: nothing
         :rtype: None
         """
-        await self._pool.close()
+        await asyncio.gather(*(pool.close() for pool in self._pools))
+
+
+class _FreeWorkers:
+    """the query workers free now, and the queries waiting for one: a client's query (``reader``) ahead of every
+    background one waiting, first come first served within each. On the event loop alone; each tuple replaced whole.
+
+    :param count: the workers
+    :ptype count: int
+    """
+
+    def __init__(self, count: int) -> None:
+        self._free = tuple(range(count))
+        self._readers: tuple[asyncio.Future[int], ...] = ()
+        self._background: tuple[asyncio.Future[int], ...] = ()
+
+    def take(self, reader: bool) -> asyncio.Future[int]:
+        """a worker for a query: given now when one is free, else when one is given back.
+
+        :param reader: whether a client waits on the query
+        :ptype reader: bool
+        :return: the worker's index, once given
+        :rtype: asyncio.Future[int]
+        """
+        taking: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        if self._free:
+            taking.set_result(self._free[0])
+            self._free = self._free[1:]
+        elif reader:
+            self._readers = (*self._readers, taking)
+        else:
+            self._background = (*self._background, taking)
+        return taking
+
+    def give(self, worker: int) -> None:
+        """a worker done with its query: to the first query waiting (a reader's first), else free. A query whose
+        caller stopped waiting is passed over.
+
+        :param worker: the worker's index
+        :ptype worker: int
+        :return: nothing
+        :rtype: None
+        """
+        while self._readers:
+            waiting, self._readers = self._readers[0], self._readers[1:]
+            if not waiting.done():
+                waiting.set_result(worker)
+                return
+        while self._background:
+            waiting, self._background = self._background[0], self._background[1:]
+            if not waiting.done():
+                waiting.set_result(worker)
+                return
+        self._free = (*self._free, worker)

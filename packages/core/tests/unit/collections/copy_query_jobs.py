@@ -42,6 +42,22 @@ def gated(connection: Any, binds: Sequence[Any]) -> Any:
     return connection.execute(sql, list(binds[2:]))
 
 
+def held(connection: Any, binds: Sequence[Any]) -> Any:
+    """say it started (a file made), wait until another file exists (60 s at most), then run SQL: a query a test knows
+    is running in its worker.
+
+    :param connection: the query's connection
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param binds: the file it makes, the file it waits for, the SQL, then the SQL's binds
+    :ptype binds: Sequence[Any]
+    :return: the SQL's answer
+    :rtype: duckdb.DuckDBPyConnection
+    """
+    with open(binds[0], "w"):
+        pass
+    return gated(connection, binds[1:])
+
+
 def touch(connection: Any, binds: Sequence[Any]) -> Any:
     """make a file, then answer one row: a query that says it ran.
 

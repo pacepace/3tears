@@ -7,6 +7,7 @@ never as Python objects a row."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import sys
 import threading
@@ -24,6 +25,7 @@ import pytest
 
 from packages.core.tests.unit.collections import copy_query_jobs
 from threetears.core.collections.copy_queries import (
+    INLINE_LOOKUP_KEYS,
     CopyQueries,
     QueryAnswer,
     QueryPoolFull,
@@ -39,7 +41,12 @@ _STATES = pa.array(["AZ", "GA", "NC", "PA", "VA"], pa.string())
 #: a query that runs for minutes on one thread: 10^10 rows hashed
 _ENDLESS = "SELECT sum(hash(a.range * b.range)) AS h FROM range(100000) a, range(100000) b"
 
-_DECLARED = {"gated": copy_query_jobs.gated, "touch": copy_query_jobs.touch, "dies": copy_query_jobs.dies}
+_DECLARED = {
+    "gated": copy_query_jobs.gated,
+    "held": copy_query_jobs.held,
+    "touch": copy_query_jobs.touch,
+    "dies": copy_query_jobs.dies,
+}
 
 
 def _rows(count: int, seed: int) -> pa.Table:
@@ -232,6 +239,10 @@ class TestAQueryReadsItsVersion:
             await one_worker.run("SELECT 1", version="c-99")
 
 
+def _said_done(answered: list[int], n: int, _: object) -> None:
+    answered.append(n)
+
+
 class TestQueueing:
     async def test_queueing_is_bounded_and_in_the_order_callers_came(
         self, one_worker: CopyQueries, tmp_path: Path
@@ -243,7 +254,7 @@ class TestQueueing:
         tasks = []
         for n in range(1, 7):
             task = asyncio.create_task(one_worker.run("SELECT ? AS n", [n]))
-            task.add_done_callback(lambda _, n=n: answered.append(n))
+            task.add_done_callback(functools.partial(_said_done, answered, n))
             tasks.append(task)
             await asyncio.sleep(0.02)
         # one running and two waiting are admitted; the other four callers wait for room, holding no lease
@@ -305,6 +316,29 @@ class TestADeadWorker:
         assert replaced not in (worker, os.getpid())
         assert one_worker.status().died == 1
 
+    async def test_a_dead_worker_fails_its_own_query_alone(self, store: SharedArrowStore, tmp_path: Path) -> None:
+        sql = "SELECT state, sum(votes) AS v FROM results WHERE state = ? GROUP BY state"
+        gate = tmp_path / "gate"
+        queries = CopyQueries(store, workers=3, max_waiting=0, declared=_DECLARED)
+        try:
+            # two queries running in two workers, then the third worker dies under its own query
+            started = [tmp_path / "a", tmp_path / "b"]
+            running = [
+                asyncio.create_task(queries.run_named("held", [str(mark), str(gate), sql, state]))
+                for mark, state in zip(started, ("AZ", "GA"), strict=True)
+            ]
+            await _until(lambda: all(mark.exists() for mark in started))
+            with pytest.raises(QueryWorkerDied):
+                await queries.run_named("dies")
+            gate.touch()
+            for task, state in zip(running, ("AZ", "GA"), strict=True):
+                answer = await task
+                assert (await _answer(answer)).equals(_in_process(store, "c-0", sql, [state]))
+            assert queries.status().died == 1
+            assert queries.status().answered == 2
+        finally:
+            await queries.close()
+
 
 class TestArrowEndToEnd:
     async def test_an_answer_crosses_as_arrow_never_python_objects_a_row(
@@ -326,6 +360,110 @@ class TestArrowEndToEnd:
         assert rows.nbytes > 10 << 20
         assert peak < 1 << 20, f"{peak} bytes of Python objects for {rows.nbytes} bytes of rows"
         assert pa.total_allocated_bytes() - allocated < rows.nbytes // 10
+        await answer.aclose()
+
+
+_KEY = ["state", "office_key", "candidate_id"]
+
+
+class _RowsNamed:
+    """every call this process makes, on any thread, to the lookup's probe (``rows_named``) or to ``duckdb.connect``."""
+
+    def __init__(self) -> None:
+        self.probes = 0
+        self.connects = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, frame: FrameType, event: str, arg: Any) -> None:
+        if event == "call" and frame.f_code.co_name == "rows_named":
+            with self._lock:
+                self.probes += 1
+        elif event == "c_call" and arg is duckdb.connect:
+            with self._lock:
+                self.connects += 1
+
+    def __enter__(self) -> _RowsNamed:
+        sys.setprofile(self)
+        threading.setprofile_all_threads(self)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        threading.setprofile_all_threads(None)
+        sys.setprofile(None)
+
+
+def _keys(count: int) -> pa.Table:
+    """``count`` keys: the held rows' keys, each named as often as it takes, and one key no row holds."""
+    held = _rows(20_000, 1).select(_KEY)
+    if count == 0:
+        return held.slice(0, 0)
+    named = held.take(pa.array(np.arange(count - 1) % held.num_rows))
+    absent = pa.table({"state": ["AZ"], "office_key": ["none"], "candidate_id": pa.array([-1], pa.int64())})
+    return pa.concat_tables([named, absent])
+
+
+def _held_rows_of(store: SharedArrowStore, keys: pa.Table) -> pa.Table:
+    sql = (
+        "SELECT r.* FROM results r SEMI JOIN keys k ON r.state = k.state AND r.office_key = k.office_key "
+        "AND r.candidate_id = k.candidate_id ORDER BY r.candidate_id"
+    )
+    return _in_process(store, "c-0", sql, [], keys=keys)
+
+
+class TestKeyedLookups:
+    async def test_a_lookup_below_the_bound_runs_in_the_serving_process(
+        self, queries: CopyQueries, store: SharedArrowStore
+    ) -> None:
+        keys = _keys(INLINE_LOOKUP_KEYS - 1)
+        with _RowsNamed() as calls:
+            answer = await queries.lookup("results", keys, _KEY)
+        assert answer.worker == os.getpid()
+        assert calls.probes > 0 and calls.connects == 0
+        found = (await _answer(answer)).sort_by("candidate_id")
+        assert found.equals(_held_rows_of(store, keys))
+
+    @pytest.mark.parametrize("over", [0, 1, INLINE_LOOKUP_KEYS])
+    async def test_a_lookup_at_and_above_the_bound_runs_in_a_worker(
+        self, queries: CopyQueries, store: SharedArrowStore, over: int
+    ) -> None:
+        await _worker_pid(queries)
+        keys = _keys(INLINE_LOOKUP_KEYS + over)
+        with _RowsNamed() as calls:
+            answer = await queries.lookup("results", keys, _KEY)
+        assert answer.worker != os.getpid()
+        assert calls.probes == 0 and calls.connects == 0
+        found = (await _answer(answer)).sort_by("candidate_id")
+        assert found.equals(_held_rows_of(store, keys))
+
+    async def test_a_lookup_reads_the_version_it_names(self, queries: CopyQueries, store: SharedArrowStore) -> None:
+        keys = _keys(10)
+        lease = await asyncio.to_thread(store.lease, "c-0")
+        try:
+            await _publish(store, "c-1", _rows(5, 9))
+            answer = await queries.lookup("results", keys, _KEY, version="c-0")
+            assert answer.version == "c-0"
+            assert (await _answer(answer)).sort_by("candidate_id").equals(_held_rows_of(store, keys))
+        finally:
+            await asyncio.to_thread(lease.release)
+
+    @pytest.mark.parametrize("count", [1, INLINE_LOOKUP_KEYS])
+    async def test_a_lookup_of_a_table_the_copy_lacks_is_refused(self, queries: CopyQueries, count: int) -> None:
+        with pytest.raises(LookupError, match="no table"):
+            await queries.lookup("absent", _keys(count), _KEY)
+        with pytest.raises(KeyError):
+            await queries.lookup("results", _keys(count).select(["state"]), _KEY)
+
+    async def test_a_lookup_in_a_worker_crosses_as_arrow(self, queries: CopyQueries) -> None:
+        await _worker_pid(queries)
+        keys = _keys(max(INLINE_LOOKUP_KEYS, 20_001))
+        tracemalloc.start()
+        try:
+            answer = await queries.lookup("results", keys, _KEY)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert answer.table.num_rows == 20_000
+        assert peak < 1 << 20, f"{peak} bytes of Python objects for {keys.num_rows} keys"
         await answer.aclose()
 
 
