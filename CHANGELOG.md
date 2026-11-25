@@ -14,9 +14,14 @@ key by `table_name`; `fetch_one`, `upsert`, `delete` and `scan` go to `store_tab
 under a name of its own, can stand over one store table (a git layout's bare `scenes`). `None` keeps `table_name`.
 
 **Added:** `BaseCollection.adopt_stored_row(row)`: a row the durable tier already holds, written outside the
-collection, taken into every cache as a committed save is -- this process's L1 (fenced as a row this process
-decided), L2, the write generation of a switched-on collection, and the broadcast that drops every peer's copy. L3
-is not touched. It replaces writing L1, L2 and the broadcast through private members.
+collection (an application that uses the git store writes and stages its own files): every cache drops its copy --
+this process's L1 (fenced, so a read in flight does not cache an older row) and its absent-marker, L2, and every
+peer's L1 by the broadcast -- and the next read takes the row from L3; a switched-on collection advances its write
+generation. The row is never put: a save of the same key may have committed after the caller's write, and an older
+row put over it would stay with nothing to evict it. L3 is not touched. A collection whose record is L2 (its store,
+or `l2_first`) is refused (`ValueError`): dropping its key would read as the row gone. It replaces writing L1, L2 and the broadcast
+through private members. A table maps to one collection in `bind_collections`, so `store_table` collections (one per
+repository over one layout table) are each bound on their own repository.
 
 ### core: SQLite as an L3, and one L3 contract every store keeps
 

@@ -96,3 +96,19 @@ added to a stored table, a table change inside an open transaction).
 
 Done when: lint, `typecheck.sh core`, `test.sh core`, the enforcement suite, the contract on Postgres
 (`test-integration.sh core`) and the unit suite pass; Critic run.
+
+## Follow-up: the durable-store seams (`feat/durable-store-hooks`)
+
+Owner ruling 2026-11-25, "Finish the git L3 follow-ups with the SQLite L3": the table/store mapping and the public
+adopt-row hook an application that uses the git store works around. Built on `feat/sqlite-l3`.
+
+- `DurableStoreCollection(..., store_table=)`: the caches key by `table_name`, the store by `store_table`.
+- `BaseCollection.adopt_stored_row(row)`: every cache drops the row and a switched-on collection advances; never a
+  put. [DECISION: drop, not put | the call comes after the caller's L3 write, so it has no L2 revision read before
+  it to fence a put by; a newer save may already be cached, and a miss is always correct]
+- [DECISION: `store_table` collections are bound per repository, not routed by `bind_collections` | a table maps to
+  one collection and a changed row names no repository; documented in `bind_collections` and core-git.md, and pinned
+  by a test with two repositories]
+
+Done when: the hooks tests, the enforcement tests the seams touch, `typecheck.sh core` and the suites pass; Critic
+run.

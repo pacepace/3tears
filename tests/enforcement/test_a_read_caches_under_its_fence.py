@@ -23,10 +23,6 @@ _NOT_A_READ = {
         "packages/agent/tools/src/threetears/agent/tools/collections.py",
         "_upsert_keyed",
     ): "caches the row its own upsert committed, not a row a read returned",
-    (
-        "packages/core/src/threetears/core/collections/base.py",
-        "adopt_stored_row",
-    ): "caches a row its caller committed to L3 itself, as a committed save does, not a row a read returned",
 }
 
 

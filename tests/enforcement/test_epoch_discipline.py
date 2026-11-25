@@ -73,7 +73,7 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             # the collection write path: every save, delete and L2 put the rule routes writes into, method by
             # method, so a raw write added anywhere else in BaseCollection is a finding
             f"{_CORE}/collections/base.py::BaseCollection.save_entity",
-            # a row L3 already holds, taken into the caches as a committed save is: it advances and announces
+            # a row L3 already holds, written outside the collection: every cache drops it, and it advances and announces
             f"{_CORE}/collections/base.py::BaseCollection.adopt_stored_row",
             f"{_CORE}/collections/base.py::BaseCollection.delete",
             f"{_CORE}/collections/base.py::BaseCollection._write_l2_at",
