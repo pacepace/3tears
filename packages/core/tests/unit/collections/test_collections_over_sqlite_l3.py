@@ -1,6 +1,6 @@
 """a schema-backed collection over the SQLite L3, with no L2 and the ordinary L1 cache in front.
 
-What a single-machine deployment builds (aidc's local mode): ``registry.configure(l1_backend=SQLiteBackend(...),
+What a single-machine deployment builds: ``registry.configure(l1_backend=SQLiteBackend(...),
 l3_pool=SqliteL3Backend(path))`` and each collection with ``nats_client=NO_L2``. The collection's own paths -- save,
 read through, the optimistic-lock fence, delete, a caller's transaction -- reach the file through the store, and an
 L1 eviction (by its LRU budget, or by hand) costs a read, never a row. Durability across a killed process is
@@ -57,7 +57,7 @@ QueueCollection = collection_for_schema(QUEUE)
 
 @pytest.fixture
 def path(tmp_path: Path) -> Path:
-    return tmp_path / "state" / "aidc.sqlite"
+    return tmp_path / "state" / "app.sqlite"
 
 
 @asynccontextmanager
