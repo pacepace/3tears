@@ -9,7 +9,9 @@ is, not a gap.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import anyio
-import httpx
+import httpx2
 import mcp
 import mcp.types as mcp_types
 import pytest
@@ -102,7 +102,7 @@ def _phased_handler(client: _Client) -> Any:
 @contextlib.asynccontextmanager
 async def _session(url: str, client: _Client, *, modern: bool) -> AsyncIterator[Any]:
     """an MCP client on ``url``: ``mcp.Client`` (2026-07-28) when ``modern``, else ``ClientSession``."""
-    async with httpx.AsyncClient() as http:
+    async with httpx2.AsyncClient() as http:
         if modern:
             async with mcp.Client(
                 streamable_http_client(url, http_client=http), logging_callback=client.on_log

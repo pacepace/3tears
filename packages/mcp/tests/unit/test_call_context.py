@@ -15,12 +15,12 @@ import logging
 import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Optional  # noqa: F401 -- Annotated and Optional are evaluated from annotation text
+from typing import Annotated, Any, Optional, cast  # noqa: F401 -- Annotated and Optional are evaluated from annotation text
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import anyio
-import httpx
+import httpx2
 import mcp
 import mcp.types as mcp_types
 import pytest
@@ -95,7 +95,7 @@ async def _client(server: McpServer, **app_options: Any) -> AsyncIterator[Client
     """an initialized MCP client session on ``server``'s Streamable-HTTP app, served in-process."""
     await server.start()
     app: Starlette = server.build_http_app(**app_options)
-    http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+    http = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), http:
             async with streamable_http_client("http://mcp.test/mcp", http_client=http) as (read, write):
@@ -112,7 +112,7 @@ def _text(result: mcp_types.CallToolResult) -> str:
     return block.text
 
 
-async def _ignore_progress(_progress: float, _total: float | None, _message: str | None) -> None:
+async def _ignore_progress(progress: float, total: float | None, message: str | None) -> None:
     """a progress callback whose only job is to make the client send a progress token."""
 
 
@@ -471,7 +471,7 @@ class TestOverTheWire:
         server = _server(_tool(handler))
         await server.start()
         app = server.build_http_app(json_response=False)
-        http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+        http = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
         try:
             async with app.router.lifespan_context(app), http:
                 async with streamable_http_client("http://mcp.test/mcp", http_client=http) as (read, write):
@@ -511,14 +511,19 @@ class TestOverTheWire:
         server = _server(_tool(handler))
         await server.start()
         app = server.build_http_app(json_response=False)
-        http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+        http = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://mcp.test")
         try:
             async with app.router.lifespan_context(app), http:
                 async with mcp.Client(
                     streamable_http_client("http://mcp.test/mcp", http_client=http), logging_callback=on_log
                 ) as client:
                     assert client.protocol_version == "2026-07-28"
-                    meta = {mcp_types.LOG_LEVEL_META_KEY: opt_in} if opt_in is not None else None
+                    # the key is a plain str constant, which a TypedDict literal does not take as one of its keys
+                    meta = (
+                        None
+                        if opt_in is None
+                        else cast("mcp_types.RequestParamsMeta", {mcp_types.LOG_LEVEL_META_KEY: opt_in})
+                    )
                     result = await client.call_tool("probe", {}, meta=meta)
         finally:
             await server.stop()
@@ -550,7 +555,7 @@ class TestOverTheWire:
             woke.append(True)
 
         async with loopback_mcp(_server(_tool(handler)), json_response=False) as url:
-            async with anyio.create_task_group() as watchers, httpx.AsyncClient() as http:
+            async with anyio.create_task_group() as watchers, httpx2.AsyncClient() as http:
                 watchers.start_soon(watch)
                 async with streamable_http_client(url, http_client=http) as (read, write):
                     async with ClientSession(read, write) as session:
