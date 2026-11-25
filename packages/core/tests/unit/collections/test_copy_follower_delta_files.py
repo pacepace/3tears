@@ -363,6 +363,7 @@ def _world(
     registry: CollectionRegistry | None = None,
     fulls: Any = None,
     page_size: int = 50,
+    workers: ProcessWorkers | None = None,
 ) -> tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]:
     l3, log, lock = _L3(), _Log(), _Scopes()
     backend = DuckDBBackend()
@@ -383,10 +384,23 @@ def _world(
         stamp_table="scope_epochs",
         recreate=recreate,
         fulls=fulls,
-        drift_workers=_WORKERS,
+        drift_workers=_WORKERS if workers is None else workers,
     )
     follower.register()
     return l3, log, lock, backend, follower
+
+
+class _HereWorkers(ProcessWorkers):
+    """the copy's worker, but every job run here, on the caller's thread, each named: a test then sees inside a job
+    (a file read, a merge) what it cannot see in another process."""
+
+    def __init__(self) -> None:
+        super().__init__(workers=1, name="test copy follower, here")
+        self.jobs: list[str] = []
+
+    async def run(self, job: Callable[..., Any], *args: Any, inline: bool = False) -> Any:
+        self.jobs.append(job.__name__)
+        return await super().run(job, *args, inline=True)
 
 
 def _row(state: str, geo_id: int, votes: int, note: str | None = "first", born: datetime = _BORN) -> dict[str, Any]:
@@ -905,7 +919,8 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
     """Flips if a key heard at two records of one commit (each record of a commit names its one file) has the file
     read, or its changes applied, once per record: the commit would be replayed over itself, a pass's work doubled.
     The file is read once, and each change of it applied once."""
-    world = _world()
+    here = _HereWorkers()
+    world = _world(workers=here)
     l3, log, lock, backend, follower = world
     await _warmed(world)
     name = _save(
@@ -933,10 +948,12 @@ async def test_a_commit_of_several_records_naming_one_file_is_applied_once(
             super().__init__(*args, **kwargs)
             merges.append(self)
 
-    monkeypatch.setattr(copy_follower, "read_delta_table", counted_read)
-    monkeypatch.setattr(copy_follower, "HeldDeltaRows", CountedRows)
+    # the merge's own module: it runs in the copy's worker, here on the caller's thread so its reads are seen
+    monkeypatch.setattr(copy_key_work, "read_delta_table", counted_read)
+    monkeypatch.setattr(copy_key_work, "HeldDeltaRows", CountedRows)
 
     assert await follower.catch_up()
+    assert "merged_job" in here.jobs
 
     assert await _same_now(backend, l3)
     assert l3.statements == 0
