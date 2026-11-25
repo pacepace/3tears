@@ -1321,6 +1321,14 @@ class TableSchema:
         column, and the fold files the delete under that state's part (``design-pod-delta-files.md``, decision 27). A
         delete naming no state is refused before it reaches L3. None: the key names the state, or the table is not cut
         per state
+    :cvar delta_state_scope: for a table that opts in to delta files, the state each row is of as the writer's seqlock
+        names it, ``(column, prefix)`` (the form of a copy's
+        :attr:`~threetears.core.collections.copy_follower.FollowedTable.scope`, ``("join_state_code", "state:")``):
+        its column a key column, or :attr:`delta_scope` (so every delete marker carries it too). Declared, each commit
+        reads the states it wrote off its delta file's rows and its record names every one of them, marked complete
+        (:data:`~threetears.core.collections.epoch_change.EVERY_STATE_NAMED`), so a copy that finds the file gone
+        reloads only those states from the full (``design-pod-delta-files.md``, decision 54 (c)). None: a record's
+        states are never known complete, and a copy reloads the whole table
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
         which leaves every existing schema's emitted SQL untouched.
@@ -1414,6 +1422,8 @@ class TableSchema:
     # the row column a delete marker carries the row's state in, for a table whose key does not name it (decision 27):
     # the table's declared state column (DeclaredScope), the one a local copy's state read is pinned by
     delta_scope: Annotated[str | None, DeclaredScope] = None
+    # the state each row is of, (column, prefix): a commit's record names every state its file's rows are of (decision 54)
+    delta_state_scope: tuple[str, str] | None = None
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -1447,6 +1457,8 @@ class TableSchema:
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
         if self.delta_scope is not None:
             self._check_delta_scope(pk_cols)
+        if self.delta_state_scope is not None:
+            self._check_delta_state_scope(pk_cols)
         # coerce partition columns to immutable so callers do not have
         # to declare both flags. partition columns identify the slot a
         # row belongs to; mutating the value would corrupt the partition
@@ -1715,6 +1727,32 @@ class TableSchema:
             raise ValueError(
                 f"TableSchema(name={self.name!r}): delta_scope={name!r} is a key column: the key names it already, "
                 f"so every delete marker carries it"
+            )
+
+    def _check_delta_state_scope(self, pk_cols: tuple[str, ...]) -> None:
+        """refuse a :attr:`delta_state_scope` whose state a delete marker would not carry: then a file's markers could
+        not say their states, and a record would name its states complete without them.
+
+        :param pk_cols: the key columns
+        :ptype pk_cols: tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table does not opt in to delta files, the prefix is empty, or the column is
+            neither a key column nor :attr:`delta_scope`
+        """
+        assert self.delta_state_scope is not None  # noqa: S101 -- the caller's condition
+        column, prefix = self.delta_state_scope
+        if not self.delta_files:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): delta_state_scope={self.delta_state_scope!r} names the states a "
+                f"delta file's rows are of; only a table that opts in to delta files writes one (delta_files=True)"
+            )
+        if not prefix:
+            raise ValueError(f"TableSchema(name={self.name!r}): delta_state_scope needs a scope prefix (\"state:\")")
+        if column not in pk_cols and column != self.delta_scope:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): delta_state_scope's column {column!r} is neither a key column nor "
+                f"delta_scope, so a delete marker would not carry its state"
             )
 
     def _refuse_undecided(self) -> dict[str, Any]:
@@ -2623,6 +2661,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             key=self.schema.pk_columns,
             defaults=self.schema.delta_file_defaults,
             scope_column=self.schema.delta_scope,
+            state_scope=self.schema.delta_state_scope,
         )
 
     def _refuse_unfiled(self, writer: str) -> None:

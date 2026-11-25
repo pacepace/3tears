@@ -373,6 +373,9 @@ class TableDelta:
     :ivar scope_column: the row column a delete marker carries its row's state in, for a table whose key does not name
         it (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_scope`, decision 27); None when the key
         names it
+    :ivar state_scope: the state each row and delete marker is of, as the writer's seqlock names it,
+        ``(column, prefix)`` (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_state_scope`): what
+        :meth:`named_states` reads off the delta; None when the table declares none
     """
 
     name: str
@@ -383,6 +386,47 @@ class TableDelta:
     defaults: Mapping[str, Any] = field(default_factory=dict)
     prefixes: tuple[dict[str, str], ...] = ()
     scope_column: str | None = None
+    state_scope: tuple[str, str] | None = None
+
+    def named_states(self) -> frozenset[str] | None:
+        """every state the delta's rows and delete markers are of, as scopes (``prefix + str(value)``, the form a
+        copy's :attr:`~threetears.core.collections.copy_follower.FollowedTable.scope` reads a row's scope in); None
+        when they cannot all be told: the table declares no :attr:`state_scope`, a row holds no state, a load's
+        rows (read where its file is made), or prefixes cleared (a clear's rows are not named). Blocking, for a thread
+        on a large delta.
+
+        Why from the rows (decision 54 (c)): a commit's record that names its states must name every one it wrote, or
+        a copy reloading only those states from the full keeps the old rows of one it missed. The scopes the write
+        touched (``ScopeEpochs.touch``) are the writer's word for it; the delta is what it wrote. Arrow parts are read
+        by ``pyarrow.compute.unique``; rows handed as dicts are read a value each, as the dicts are already held.
+
+        :return: the states, or None
+        :rtype: frozenset[str] | None
+        """
+        if self.state_scope is None or self.prefixes:
+            return None
+        column, prefix = self.state_scope
+        at = self.key.index(column) if column in self.key else None
+        values: set[Any] = set()
+        for kind, part, *rest in chain.from_iterable(self.parts):
+            if kind == "rows":
+                values.update(row.get(column) for row in part)
+            elif kind == "arrow":
+                if column not in part.column_names:
+                    return None
+                values.update(pc.unique(part.column(column)).to_pylist())
+            elif kind == "deletes":
+                if at is None:
+                    values.add(rest[1])  # the state the delete named, which every marker carries (decision 27)
+                elif isinstance(part, pa.Table):
+                    values.update(pc.unique(part.column(at)).to_pylist())
+                else:
+                    values.update(key[at] for key in part)
+            else:
+                return None  # a load's rows are read where its file is made
+        if None in values:
+            return None
+        return frozenset(f"{prefix}{value}" for value in values)
 
     def clears(self, prefixes: Sequence[Mapping[str, Any]]) -> None:
         """add key prefixes the write cleared: every row under each left L3 before the rows the delta holds went in.
