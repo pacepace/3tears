@@ -196,3 +196,5 @@ packages/core/src/threetears/core/testing/_asyncio_internals.py:timed_handles#0:
 packages/core/src/threetears/core/testing/_asyncio_internals.py:timed_handles#1:_run
 # rationale: asyncio events.Handle._run: timed_handles puts asyncio's own run back as the block ends, whatever it ended by, so no turn after it is wrapped (test_turn_holds.py::test_asyncio_runs_its_callbacks_as_before_after_the_block)
 packages/core/src/threetears/core/testing/_asyncio_internals.py:timed_handles#2:_run
+# rationale: sys._current_frames (documented, CPython 3.14): Python has no public way to read another thread's current frame; the loop-stall guard's watcher samples the loop thread's stack with it while a long turn runs, to name what held the loop. this module is the one owner, and packages/core/tests/unit/testing/test_loop_stall.py pins it
+packages/core/src/threetears/core/testing/_interpreter_internals.py:thread_frames#0:_current_frames

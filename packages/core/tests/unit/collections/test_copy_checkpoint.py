@@ -18,6 +18,7 @@ The contract this pins (:mod:`threetears.core.collections.copy_checkpoint`):
 
 from __future__ import annotations
 
+import asyncio
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -943,6 +944,19 @@ def _reference_patch(cursor: Any, table: FollowedTable, old: Any, keys: Sequence
     return pa.concat_tables([kept, fresh.cast(kept.schema)])
 
 
+def _patched_and_reference(
+    copy: _Copy, store: _Store, table: FollowedTable, old_name: str, new_name: str, keys: Sequence[Sequence[str]]
+) -> tuple[Any, Any]:
+    """the part the checkpoint wrote and the hand-written ANTI JOIN's over the same old part and keys. Run on a thread:
+    DuckDB binds the keys' lists value by value (a failed ``import pandas`` each, testament's import recorder statting
+    every path), which on the loop held it past the loop-stall guard's limit (threetears.core.testing.loop_stall)."""
+    old = ipc.open_stream(store.objects[old_name]).read_all()
+    got = ipc.open_stream(store.objects[new_name]).read_all()
+    with copy.backend.read_snapshot() as cursor:
+        want = _reference_patch(cursor, table, old, [[key[i] for key in keys] for i in range(len(table.key))])
+    return got, want
+
+
 def _changed_world(seed: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, set[tuple[str, ...]]]]:
     """two tables with no scope, votes (a two-column key, text and bigint) and races (one bigint key): each one's rows
     before and after a change, and the keys the change touched: rows changed, added and dropped, keys no row holds on
@@ -989,7 +1003,7 @@ async def test_a_patched_part_holds_what_the_hand_written_anti_join_held(seed: i
     keyed.semi for keyed.anti, or a key column left out of the match, turns every seed red. (The keys left as text
     stay green: DuckDB casts a text to the bigint it is compared with, so that cast is the statement's type, not its
     rows.)"""
-    before, after, touched = _changed_world(seed)
+    before, after, touched = await asyncio.to_thread(_changed_world, seed)
     votes = FollowedTable(name=_VOTES, key=_VOTES_KEY, columns=_tables()[0].columns)
     tables = [votes, _tables()[1]]
     store, pointers = _Store(), _Pointers()
@@ -1019,11 +1033,9 @@ async def test_a_patched_part_holds_what_the_hand_written_anti_join_held(seed: i
     assert second is not None
     for table in tables:
         [(old_name, _, _)], [(new_name, _, _)] = first.tables[table.name].parts, second.tables[table.name].parts
-        old = ipc.open_stream(store.objects[old_name]).read_all()
-        got = ipc.open_stream(store.objects[new_name]).read_all()
-        keys = sorted(touched[table.name])
-        with copy.backend.read_snapshot() as cursor:
-            want = _reference_patch(cursor, table, old, [[key[i] for key in keys] for i in range(len(table.key))])
+        got, want = await asyncio.to_thread(
+            _patched_and_reference, copy, store, table, old_name, new_name, sorted(touched[table.name])
+        )
         assert got.schema == want.schema, (table.name, got.schema, want.schema)
         assert sorted(zip(*got.to_pydict().values(), strict=True), key=repr) == sorted(
             zip(*want.to_pydict().values(), strict=True), key=repr

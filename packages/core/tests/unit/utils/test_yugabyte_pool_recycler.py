@@ -66,7 +66,7 @@ class _Clock:
         return self.now
 
 
-def _connection(pid: int = 4242) -> Any:
+def _connection_built(pid: int = 4242) -> Any:
     """an autospecced asyncpg connection that keeps the query logger it is given.
 
     :param pid: backend pid the connection reports
@@ -81,13 +81,34 @@ def _connection(pid: int = 4242) -> Any:
     return conn
 
 
-def _pool() -> Any:
+def _pool_built() -> Any:
     """an autospecced asyncpg pool.
 
     :return: pool double whose ``expire_connections`` is awaitable
     :rtype: Any
     """
     return create_autospec(asyncpg.Pool, instance=True)
+
+
+async def _connection(pid: int = 4242) -> Any:
+    """:func:`_connection_built`, built on a thread: autospeccing asyncpg's connection walks its every method, which
+    on the loop held it past the loop-stall guard's limit (threetears.core.testing.loop_stall).
+
+    :param pid: backend pid the connection reports
+    :ptype pid: int
+    :return: connection double; ``loggers`` holds every logger registered on it
+    :rtype: Any
+    """
+    return await asyncio.to_thread(_connection_built, pid)
+
+
+async def _pool() -> Any:
+    """:func:`_pool_built`, built on a thread, as :func:`_connection`.
+
+    :return: pool double whose ``expire_connections`` is awaitable
+    :rtype: Any
+    """
+    return await asyncio.to_thread(_pool_built)
 
 
 def _record(exception: BaseException | None) -> LoggedQuery:
@@ -229,15 +250,15 @@ class TestTriggers:
             YugabytePoolRecycler(pool_name="p", triggers=())
 
     async def test_one_logger_per_connection_for_every_trigger(self) -> None:
-        conn = _connection()
+        conn = await _connection()
         YugabytePoolRecycler(pool_name="hub_l3").watch(conn)
         assert len(conn.loggers) == 1
 
     async def test_the_rpc_timeout_alone_ignores_the_stale_shape_error(self) -> None:
         recycler = YugabytePoolRecycler(pool_name="hub_l3", triggers=(YUGABYTE_RPC_TIMEOUT,))
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        logger = await _watched(recycler, _connection())
+        logger = await _watched(recycler, await _connection())
 
         await logger(_record(_STALE_SHAPE))
 
@@ -245,9 +266,9 @@ class TestTriggers:
 
     async def test_the_stale_shape_alone_ignores_the_rpc_timeout(self) -> None:
         recycler = YugabytePoolRecycler(pool_name="hub_l3", triggers=(YUGABYTE_STALE_TABLE_SHAPE,))
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        logger = await _watched(recycler, _connection())
+        logger = await _watched(recycler, await _connection())
 
         await logger(_record(_WEDGE))
 
@@ -262,9 +283,9 @@ class TestTriggers:
             persistent_cause="the test",
         )
         recycler = YugabytePoolRecycler(pool_name="custom_pool", triggers=(trigger,))
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        logger = await _watched(recycler, _connection())
+        logger = await _watched(recycler, await _connection())
 
         await logger(_record(_WEDGE))
         pool.expire_connections.assert_not_awaited()
@@ -284,10 +305,10 @@ class TestTheDefaultSetSharesOnePoolRecord:
         # connection answering the OTHER trigger changes nothing.
         clock = _Clock()
         recycler = YugabytePoolRecycler(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        first = await _watched(recycler, _connection(pid=1))
-        second = await _watched(recycler, _connection(pid=2))
+        first = await _watched(recycler, await _connection(pid=1))
+        second = await _watched(recycler, await _connection(pid=2))
 
         clock.now += 1.0
         await first(_record(_WEDGE))
@@ -302,14 +323,14 @@ class TestTheDefaultSetSharesOnePoolRecord:
         # persisting, so the wedge's floor does not hold it off.
         clock = _Clock()
         recycler = YugabytePoolRecycler(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        old = await _watched(recycler, _connection(pid=1))
+        old = await _watched(recycler, await _connection(pid=1))
         clock.now += 1.0
         await old(_record(_WEDGE))
 
         clock.now += 1.0
-        fresh = await _watched(recycler, _connection(pid=2))
+        fresh = await _watched(recycler, await _connection(pid=2))
         clock.now += 1.0
         await fresh(_record(_STALE_SHAPE))
 
@@ -318,14 +339,14 @@ class TestTheDefaultSetSharesOnePoolRecord:
     async def test_the_same_cause_inside_its_own_floor_is_held_off(self) -> None:
         clock = _Clock()
         recycler = YugabytePoolRecycler(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        old = await _watched(recycler, _connection(pid=1))
+        old = await _watched(recycler, await _connection(pid=1))
         clock.now += 1.0
         await old(_record(_STALE_SHAPE))
 
         clock.now += 1.0
-        fresh = await _watched(recycler, _connection(pid=2))
+        fresh = await _watched(recycler, await _connection(pid=2))
         clock.now += 1.0
         await fresh(_record(_STALE_SHAPE))
 
@@ -338,7 +359,7 @@ class TestRecyclerWatchesEveryConnection:
     @pytest.mark.parametrize("case", _CASES)
     async def test_init_registers_the_codecs_then_watches(self, case: _Case) -> None:
         recycler = case.build(pool_name="hub_l3")
-        conn = _connection()
+        conn = await _connection()
 
         await recycler.init(conn)
 
@@ -354,9 +375,9 @@ class TestRecyclerExpiresThePool:
     async def test_the_error_expires_the_pool(self, case: _Case, caplog: pytest.LogCaptureFixture) -> None:
         clock = _Clock()
         recycler = case.build(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        logger = await _watched(recycler, _connection(pid=4242))
+        logger = await _watched(recycler, await _connection(pid=4242))
         clock.now += 3600.0
 
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
@@ -381,9 +402,9 @@ class TestRecyclerExpiresThePool:
     )
     async def test_anything_else_leaves_the_pool_alone(self, case: _Case, exception: BaseException | None) -> None:
         recycler = case.build(pool_name="hub_l3")
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        logger = await _watched(recycler, _connection())
+        logger = await _watched(recycler, await _connection())
 
         await logger(_record(exception))
 
@@ -393,10 +414,10 @@ class TestRecyclerExpiresThePool:
         """every connection from before the cause answers the error once; one expiry retires them all."""
         clock = _Clock()
         recycler = case.build(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        first = await _watched(recycler, _connection(pid=1))
-        second = await _watched(recycler, _connection(pid=2))
+        first = await _watched(recycler, await _connection(pid=1))
+        second = await _watched(recycler, await _connection(pid=2))
 
         clock.now += 1.0
         await first(_record(case.matching))
@@ -409,14 +430,14 @@ class TestRecyclerExpiresThePool:
         """a fresh connection answering the error is a new cause, and the pool is expired again."""
         clock = _Clock()
         recycler = case.build(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        old = await _watched(recycler, _connection(pid=1))
+        old = await _watched(recycler, await _connection(pid=1))
         clock.now += 1.0
         await old(_record(case.matching))
 
         clock.now += 1.0
-        fresh = await _watched(recycler, _connection(pid=2))
+        fresh = await _watched(recycler, await _connection(pid=2))
         clock.now += DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES
         await fresh(_record(case.matching))
 
@@ -426,14 +447,14 @@ class TestRecyclerExpiresThePool:
         """a cause that new connections answer too is not met with a reconnect storm."""
         clock = _Clock()
         recycler = case.build(pool_name="hub_l3", clock=clock)
-        pool = _pool()
+        pool = await _pool()
         recycler.bind(pool)
-        old = await _watched(recycler, _connection(pid=1))
+        old = await _watched(recycler, await _connection(pid=1))
         clock.now += 1.0
         await old(_record(case.matching))
 
         clock.now += 1.0
-        fresh = await _watched(recycler, _connection(pid=2))
+        fresh = await _watched(recycler, await _connection(pid=2))
         clock.now += 1.0
         await fresh(_record(case.matching))
 
@@ -442,7 +463,7 @@ class TestRecyclerExpiresThePool:
     async def test_an_unbound_recycler_says_so_at_error(self, case: _Case, caplog: pytest.LogCaptureFixture) -> None:
         """a recycler never bound to its pool cannot recover it, and the log names the missing bind."""
         recycler = case.build(pool_name="gateway_l3")
-        logger = await _watched(recycler, _connection())
+        logger = await _watched(recycler, await _connection())
 
         with caplog.at_level(logging.ERROR, logger=_LOGGER):
             await logger(_record(case.matching))
@@ -453,10 +474,10 @@ class TestRecyclerExpiresThePool:
     def test_binding_a_second_pool_is_refused(self, case: _Case) -> None:
         """one recycler watches one pool: a second bind would expire the wrong pool's connections."""
         recycler = case.build(pool_name="hub_l3")
-        recycler.bind(_pool())
+        recycler.bind(_pool_built())
 
         with pytest.raises(RuntimeError, match="hub_l3"):
-            recycler.bind(_pool())
+            recycler.bind(_pool_built())
 
     def test_the_floor_must_be_positive(self, case: _Case) -> None:
         with pytest.raises(ValueError, match="min_seconds_between_expiries"):

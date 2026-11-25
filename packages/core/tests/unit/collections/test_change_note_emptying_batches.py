@@ -10,6 +10,7 @@ never the same; a finished band is never deleted again; and a slow statement shr
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any, cast
 
 from asyncpg.exceptions import QueryCanceledError
@@ -113,7 +114,7 @@ def _keeper(pool: Any, batch: int) -> change_note_keeper.ChangeNoteKeeper:
         notes_schema="ring",
         log=cast(Any, object()),
         empty_batch=batch,
-        empty_pause=change_note_keeper.timedelta(0),
+        empty_pause=timedelta(0),
     )
 
 

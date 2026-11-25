@@ -4,6 +4,7 @@ way in."""
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import tracemalloc
@@ -250,14 +251,16 @@ async def _read_both(
     tables = await read_keyed_arrow(
         reader, "r", keys=KeyBatch(("state", "geo", "id"), as_arrow, casts), types={"v": pa.int64()}
     )
-    return _sorted(rows), _sorted(by_id), sum(table.num_rows for table in tables)
+    # 50,000 rows a side sorted as tuples, on a thread: on the loop, with the writes below, it held it past the
+    # loop-stall guard's limit (threetears.core.testing.loop_stall)
+    return await asyncio.to_thread(lambda: (_sorted(rows), _sorted(by_id), sum(table.num_rows for table in tables)))
 
 
 class TestArrowModeReadsWhatPlainModeReads:
     async def test_real_size_reads_and_writes_name_the_same_rows(self, real: duckdb.DuckDBPyConnection) -> None:
         """Flips if Arrow mode reads, or writes, other rows than the plain lists name for 50,000 keys (a repeat among
         them, composite and UUID-keyed), on DuckDB in process."""
-        composite, ids = _picks(real)
+        composite, ids = await asyncio.to_thread(_picks, real)
         arrow_read = await _read_both(real, composite, ids, arrow=True)
         # plain lists bind as plain lists whether or not pyarrow imports (binder_for)
         plain_read = await _read_both(real, composite, ids, arrow=False)
@@ -266,9 +269,12 @@ class TestArrowModeReadsWhatPlainModeReads:
         reader = InlineDuckDB(real)
         columns = [pa.array(composite[0]), pa.array(composite[1]), pa.array(composite[2], pa.int64())]
         keys = KeyBatch(("state", "geo", "id"), columns, ("text", "text", "bigint"))
-        written = run_inline(update_keyed(reader, "r", values={"v": Increment(1)}, keys=keys, batch=10_000))
+        # run_inline drives a helper with no event loop, as a worker thread does: here on one, not on the test's loop
+        written = await asyncio.to_thread(
+            run_inline, update_keyed(reader, "r", values={"v": Increment(1)}, keys=keys, batch=10_000)
+        )
         assert written.count == _REAL_KEYS
-        deleted = run_inline(delete_keyed(reader, "r", keys=keys, batch=10_000))
+        deleted = await asyncio.to_thread(run_inline, delete_keyed(reader, "r", keys=keys, batch=10_000))
         assert deleted.count == _REAL_KEYS
         assert real.execute("SELECT count(*) FROM r").fetchone() == (_STATES * _GEOS * _IDS - _REAL_KEYS,)
 

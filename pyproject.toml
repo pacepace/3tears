@@ -328,6 +328,11 @@ ignore = ["N818", "N811"]
 # (``asyncpg.connect_utils._parse_connect_dsn_and_args``) and keeps every other error's. this
 # module is the one owner of that name. paired entry in tests/enforcement/_underscore_exemptions.txt.
 "packages/core/src/threetears/core/utils/_asyncpg_internals.py" = ["SLF001"]
+
+# Python has no public way to read another thread's current frame; the loop-stall guard's watcher samples the loop
+# thread's stack through ``sys._current_frames``. this module is the one owner of that name. paired entry in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/core/src/threetears/core/testing/_interpreter_internals.py" = ["SLF001"]
 # asyncio has no public hook around a callback's run: the loop timing's turn_holds wraps Handle._run, the method
 # BaseEventLoop._run_once runs every ready callback through. this module is the one owner of that name. paired
 # entries in tests/enforcement/_underscore_exemptions.txt.

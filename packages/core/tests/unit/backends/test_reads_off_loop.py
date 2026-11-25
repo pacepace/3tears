@@ -226,7 +226,7 @@ class TestALongReplyIsReadOffTheLoopAsAShortOneIsOnIt:
             await _Answering(reply).proxy().fetch("SELECT * FROM candidates")
 
     async def test_a_keyed_read_answers_every_row_in_key_order(self) -> None:
-        hub = _Hub(5000, cap=1024 * 1024)
+        hub = await asyncio.to_thread(_Hub, 5000, cap=1024 * 1024)
         read = await _keyed_read(hub.proxy())
         assert [tuple(row[name] for name in _KEY) for row in read.rows] == [_key(row) for row in range(5000)]
         assert read.rows[-1] == deserialize_row(hub.rows[-1])
@@ -237,7 +237,7 @@ class TestTheLoopRunsWhileAKeyedReadReadsItsRows:
     async def test_the_loop_runs_between_stretches_of_33786_rows_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # what the timing budget below bounds by the clock, counted: the loop's other work runs while a reply's rows
         # are read, not once they all are (the old reads read each reply's rows in one stretch: five stretches)
-        hub = _Hub()
+        hub = await asyncio.to_thread(_Hub)
         turns = 0
         seen: list[int] = []
         original = deserialize_row
@@ -305,7 +305,7 @@ async def _read_ticks(hub: _Hub, kept: list[Any]) -> tuple[list[Tick], list[Tick
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileARealSizeKeyedReadIsRead:
     async def test_a_ticker_is_never_held_while_33786_rows_are_read_at_the_production_cap(self) -> None:
-        hub = _Hub()
+        hub = await asyncio.to_thread(_Hub)
         kept: list[Any] = []
         # the hub's replies built once, outside any window
         await _keyed_read(hub.proxy())

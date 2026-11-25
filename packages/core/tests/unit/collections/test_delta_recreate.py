@@ -149,11 +149,29 @@ class _Db:
             )
 
     def insert(self, table: str, rows: Sequence[dict[str, Any]]) -> None:
-        for row in rows:
+        # one statement over the rows as an Arrow table, the last of a key winning as row-by-row upserts left it: a
+        # statement a row binds each value from Python (a failed ``import pandas`` a value, under testament a stat of
+        # every path), which held the loop past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        if not rows:
+            return
+        put = pa.table(
+            {
+                "state": pa.array([row["state"] for row in rows], pa.string()),
+                "geo_id": pa.array([row["geo_id"] for row in rows], pa.int64()),
+                "votes": pa.array([row["votes"] for row in rows], pa.int64()),
+                "note": pa.array([row["note"] for row in rows], pa.string()),
+                "date_created": pa.array([row["date_created"] for row in rows], pa.timestamp("us", tz="UTC")),
+                "at__": pa.array(range(len(rows)), pa.int64()),
+            }
+        )
+        self.db.register("_put", put)
+        try:
             self.db.execute(
-                f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?)",  # noqa: S608
-                [row[name] for name in _NAMES],
+                f"INSERT OR REPLACE INTO {table} ({', '.join(_NAMES)}) SELECT {', '.join(_NAMES)} FROM _put "  # noqa: S608
+                "QUALIFY row_number() OVER (PARTITION BY state, geo_id ORDER BY at__ DESC) = 1"
             )
+        finally:
+            self.db.unregister("_put")
 
     def delete(self, table: str, key: tuple[str, int]) -> None:
         self.db.execute(f"DELETE FROM {table} WHERE state = ? AND geo_id = ?", list(key))  # noqa: S608
