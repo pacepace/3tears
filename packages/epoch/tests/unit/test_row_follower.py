@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 
 import pytest
@@ -41,6 +42,25 @@ async def test_a_changed_row_is_read_by_its_key() -> None:
     await follower.settled()
     assert sorted(read) == [("models", "m1"), ("providers", "p1")]
     assert dropped == []
+    await follower.stop()
+
+
+@pytest.mark.timeout(10)
+async def test_settled_returns_when_a_read_finished_but_its_done_callback_has_not_run() -> None:
+    """Flips (hangs: the loop spins without a turn, so only the timeout ends it) if settled() re-gathers a finished
+    read still listed: gather over finished tasks completes without yielding, so the done-callback that unlists the
+    read never runs."""
+    read: list[str] = []
+
+    async def models(key: str) -> None:
+        read.append(key)
+
+    follower = RowFollower({"models": models}, lambda: None, name="test", partition_reads={"models": _no_slice})
+    follower.on_row("models", _message("models", "m1"))
+    # one turn: the read runs to its end, and its done-callback is queued behind this task's resumption
+    await asyncio.sleep(0)
+    assert read == ["m1"]
+    await follower.settled()
     await follower.stop()
 
 

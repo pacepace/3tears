@@ -265,8 +265,11 @@ class RowFollower:
         :return: nothing
         :rtype: None
         """
-        while self._tasks:
-            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+        # only the unfinished ones: a finished task leaves _tasks in a done-callback the loop runs on a later turn, and
+        # gather over finished tasks completes without yielding that turn (CPython 3.14 completes it eagerly), so
+        # re-gathering them spins the loop forever. A finished task already spawned whatever it started.
+        while pending := tuple(task for task in self._tasks if not task.done()):
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def follow(
         self, registry: CollectionRegistry, reader: Any, *, since: Mapping[str, str | None] | None = None
