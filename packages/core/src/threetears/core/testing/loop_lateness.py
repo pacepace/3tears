@@ -45,7 +45,9 @@ from __future__ import annotations
 
 import array
 import asyncio
+import bisect
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -230,7 +232,13 @@ def added_lateness(ticks: list[Tick], host: list[Tick], *, every: float = _HOST_
     :rtype: float
     :raises AssertionError: when a tick falls outside the host loop's ticking (no baseline at that moment)
     """
+    # the host's late spans, in order and apart (each inside its own tick, the ticks one after another): a tick's shared
+    # lateness is the spans it overlaps, found by bisection and summed by prefix, never a walk of every span a tick (a
+    # walk each held the loop 0.8 s over a let-go's ticks: the loop-stall guard)
     late_spans = [(asked + _HOST_TICK_SECONDS, woke) for asked, woke in host if woke - asked > _HOST_TICK_SECONDS]
+    begins = [begin for begin, _ in late_spans]
+    ends = [end for _, end in late_spans]
+    summed = list(itertools.accumulate((end - begin for begin, end in late_spans), initial=0.0))
     worst = 0.0
     for asked, woke in ticks:
         assert host and host[0][0] <= asked and woke <= host[-1][1], (
@@ -240,7 +248,11 @@ def added_lateness(ticks: list[Tick], host: list[Tick], *, every: float = _HOST_
         start = asked + every
         if woke <= start:
             continue
-        shared = sum(max(0.0, min(woke, end) - max(start, begin)) for begin, end in late_spans)
+        # the spans ending after the tick's lateness starts and beginning before it ends
+        first, last = bisect.bisect_right(ends, start), bisect.bisect_left(begins, woke)
+        shared = 0.0
+        if first < last:
+            shared = summed[last] - summed[first] - max(0.0, start - begins[first]) - max(0.0, ends[last - 1] - woke)
         worst = max(worst, woke - start - shared)
     return worst
 
