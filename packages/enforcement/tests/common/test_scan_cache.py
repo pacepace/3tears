@@ -531,6 +531,21 @@ def test_an_unparsable_file_raises_or_is_noted_on_every_call_warm_or_cold(
         parse_python_path(bad)  # the error parse_python_path raises, so a converted gate fails as it did
 
 
+def test_a_file_is_read_as_parse_python_path_reads_it(tmp_path: Path) -> None:
+    """carriage returns become newlines, so a gate converted to the cache sees the string constants it saw before."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    path = root / "crlf.py"
+    path.write_bytes(b'TEXT = """one\r\ntwo\rthree"""\r\n')
+
+    def constant(_: Path, tree: ast.Module) -> object:
+        return next(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant))
+
+    assert ScanCache(tmp_path / "cache", "code").per_file("facts", constant, [path], root=root) == {
+        path: constant(path, parse_python_path(path))
+    }
+
+
 def test_an_extractor_that_reads_another_file_is_answered_and_not_stored(tmp_path: Path) -> None:
     root, (a,) = _modules(tmp_path, a="def f(): pass\n")
     (root / "ledger.txt").write_text("unkeyed")

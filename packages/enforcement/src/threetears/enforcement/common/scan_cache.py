@@ -730,7 +730,10 @@ def _extract_recorded[V](
     outcome: _Outcome
     with _Recorded() as events:
         try:
-            tree = ast.parse(source.decode("utf-8"), filename=str(path))
+            # decoded as parse_python_path reads it (read_text: strict utf-8, universal newlines), so the
+            # tree, its line numbers and its string constants are the ones that parse would give
+            text = source.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            tree = ast.parse(text, filename=str(path))
         except (SyntaxError, UnicodeDecodeError) as exc:
             outcome = (False, exc)
         else:
