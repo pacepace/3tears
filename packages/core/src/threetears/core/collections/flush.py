@@ -488,6 +488,8 @@ class WriteBuffer:
             states = bytearray(run.states)
             claimed: list[PendingWrite] = []
             recovered: list[str] = []
+            # function-local: the durable rows this drain claims, decoded once the claim is made (below)
+            taken: list[dict[str, Any]] = []
             if self._l1 is not None:
                 rows = whole_read(
                     self._l1.execute_query("SELECT * FROM write_buffer"),
@@ -496,29 +498,12 @@ class WriteBuffer:
                     ruling="Pace 2026-11-12: a drain of a process-local buffer reads it whole (declared kind drain)",
                     proof="packages/core/tests/unit/collections/test_write_buffer_typed_recovery.py::test_drain_reads_only_the_process_local_write_buffer",
                 )
-                for index, row in enumerate(rows):
-                    if index and not index % _DRAINED_PER_TURN:
-                        # the loop answers everything else between slices; every change to the buffer waits on the
-                        # lock held here, so the runs and states read above stay this drain's
-                        await asyncio.sleep(0)
+                for row in rows:
                     text = _buffer_text(self._key(row["table_name"], row["entity_id"]))
                     at = run.find(text)
                     if at >= 0 and states[at] in (_CLAIMED, _RECOVERED):
                         continue
-                    raw_data = row["data"]
-                    parsed_data = (
-                        _decoded_row(row["table_name"], row["entity_id"], raw_data, decode)
-                        if isinstance(raw_data, str)
-                        else raw_data
-                    )
-                    claimed.append(
-                        PendingWrite(
-                            table_name=row["table_name"],
-                            entity_id=row["entity_id"],
-                            data=parsed_data,
-                            retries=row["retries"],
-                        )
-                    )
+                    taken.append(row)
                     if at < 0 or states[at] == _GONE:
                         recovered.append(text)
                     else:
@@ -540,7 +525,26 @@ class WriteBuffer:
             for text in recovered:
                 self._append(text, _RECOVERED, None, self._next_first)
                 self._next_first += 1
-            return claimed
+        # the claim is made whole above, in one turn; the claimed rows' text is decoded after it, a slice a turn, so
+        # the loop answers everything else between slices: the decode touches nothing of the buffer's
+        for index, row in enumerate(taken):
+            if index and not index % _DRAINED_PER_TURN:
+                await asyncio.sleep(0)
+            raw_data = row["data"]
+            parsed_data = (
+                _decoded_row(row["table_name"], row["entity_id"], raw_data, decode)
+                if isinstance(raw_data, str)
+                else raw_data
+            )
+            claimed.append(
+                PendingWrite(
+                    table_name=row["table_name"],
+                    entity_id=row["entity_id"],
+                    data=parsed_data,
+                    retries=row["retries"],
+                )
+            )
+        return claimed
 
     async def ack(self, table_name: str, entity_id: Any) -> None:
         """Evict a durably-persisted write once its L3 write is acked.
