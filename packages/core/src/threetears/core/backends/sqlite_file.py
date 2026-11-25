@@ -1,7 +1,7 @@
 """``SqliteL3Backend``: an L3 durable tier in one SQLite file, for a deployment of one process on one machine.
 
-**What it is for.** An application that runs on one machine with no Postgres, no NATS and no hub -- aidc's local
-mode, whose send queues, delivery ledgers, watches and dead letters must survive a restart -- keeps its rows in
+**What it is for.** An application that runs on one machine with no Postgres, no NATS and no hub -- a local tool
+whose send queues, delivery ledgers, watches and dead letters must survive a restart -- keeps its rows in
 3tears collections over this store, built with ``NO_L2``. The L1 in front of it is the ordinary SQLite cache
 (:mod:`~threetears.core.cache.sqlite`), evictions and LRU included: an evicted row is read back from here, so no
 eviction loses one. Moving such a deployment onto Postgres (and adding L2 on a mesh) is configuration: the same
@@ -300,7 +300,7 @@ class SqliteL3Backend:
 
         store = SqliteL3Backend(state_dir / "state.sqlite")
         store.open()
-        registry.configure(l1_backend=SQLiteBackend("aidc"), l3_pool=store)
+        registry.configure(l1_backend=SQLiteBackend("app"), l3_pool=store)
         queue = collection_for_schema(QUEUE_SCHEMA)(registry, config, NO_L2)
 
     :param path: the database file; its directory is made when missing
