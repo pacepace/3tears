@@ -357,7 +357,8 @@ class TestTheLoopRunsWhileARealSizeRefillIsRead:
         kept: list[int] = []
         # the hub's replies built once, outside any window
         await _refill(hub.proxy())
-        one_pass, statements = _coerce_steps(hub)
+        # the old steps timed off the loop: the measurement is the test's own work, not the refill's
+        one_pass, statements = await asyncio.to_thread(_coerce_steps, hub)
         # the old refill coerced each page (about 10,000 rows) in one stretch on the loop, and freed its rows there:
         # held 70-75 ms a turn (a 10-core Apple host, 2026-11-16). Whatever a page's size, the refill holds the loop no
         # longer than a GIL switch interval, 5 ms
