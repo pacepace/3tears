@@ -10,7 +10,7 @@ Running an app on more than one pod scatters its state: caches drift, and keepin
 
 - **L1** is SQLite, in the process: reads are local and synchronous.
 - **L2** is NATS KV, shared by every pod: it keeps the pods' caches coherent.
-- **L3** is PostgreSQL, or a git working tree: the durable source of truth.
+- **L3** is PostgreSQL, a git working tree, or one SQLite file (one process on one machine): the durable source of truth.
 
 The agent packages (memory, tools, RBAC, identity, skills and more) build on the same tiers, so an agent spread across pods is built the same way as one on a laptop. Each package installs on its own: take the whole family, or one package and only what it depends on.
 
@@ -27,7 +27,7 @@ pip install 3tears                 # the core: three-tier entities and collectio
 pip install 3tears-agent-memory    # or any package from the tables below
 ```
 
-The core needs an L3: PostgreSQL, or a git working tree. On one pod with PostgreSQL, NATS (L2) is optional. More than one pod, or a git L3, needs NATS and `pip install "3tears[nats]"`.
+The core needs an L3: PostgreSQL, a git working tree, or one SQLite file ([when to choose each](docs/adoption/core-sqlite.md#choosing-an-l3); a SQLite L3 runs one process with no NATS). On one pod with PostgreSQL, NATS (L2) is optional. More than one pod, or a git L3, needs NATS and `pip install "3tears[nats]"`.
 
 ## Quick start
 
@@ -54,7 +54,7 @@ Browser/frontend packages live in [`web/`](web/): JavaScript, published to npm a
 
 | Package | Import | What it does |
 |---|---|---|
-| [`3tears`](packages/core/) | `threetears.core` | Three-tier entities and collections (L1 SQLite, L2 NATS KV, L3 PostgreSQL or a git working tree), `DataStore` for dynamic tables, and `MigrationRunner` for versioned schema migrations |
+| [`3tears`](packages/core/) | `threetears.core` | Three-tier entities and collections (L1 SQLite, L2 NATS KV, L3 PostgreSQL, a git working tree or a SQLite file), `DataStore` for dynamic tables, and `MigrationRunner` for versioned schema migrations |
 
 ### Agent framework
 

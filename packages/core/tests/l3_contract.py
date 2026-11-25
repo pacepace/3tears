@@ -19,7 +19,9 @@ open store holding the contract's tables, empty. Where the stores run it: ``test
 test_sqlite_l3_contract.py`` (SQLite), ``tests/backends_git/test_git_store_l3_contract.py`` (git) and
 ``tests/integration/test_sql_l3_contract_live.py`` (Postgres). A behaviour the stores of one tier differ on is a
 failure of one of them, never a branch here; per store are only the exception a duplicate insert raises
-(:attr:`DurableStoreContract.duplicate_error`) and how a transaction is opened (:meth:`DurableStoreContract.begin`).
+(:attr:`DurableStoreContract.duplicate_error`, one type for every store of the schema tier: the ``asyncpg`` one, so
+a caller's ``except asyncpg.UniqueViolationError`` holds on either) and how a transaction is opened
+(:meth:`DurableStoreContract.begin`).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from decimal import Decimal
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
+import asyncpg
 import pytest
 from sqlalchemy import MetaData
 
@@ -53,7 +56,9 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index,
     TableSchema,
+    UniqueConstraintDef,
     l2_order_columns,
 )
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
@@ -125,8 +130,23 @@ NULL_SAFE = TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
-#: every table the contract writes, registered by the ``store`` fixture over empty tables
-CONTRACT_SCHEMAS: tuple[TableSchema, ...] = (DOCS, ITEMS, IGNORING, RAISING, COMPOSITE, ORDERED, NULL_SAFE)
+UNIQUE = TableSchema(
+    name="l3c_unique",
+    primary_key="id",
+    columns=[
+        Column("id", STRING_TYPE),
+        Column("email", STRING_TYPE),
+        Column("tenant", STRING_TYPE),
+        Column("handle", STRING_TYPE, nullable=True),
+    ],
+    indexes=(Index("l3c_unique_tenant_handle", "tenant", "handle", unique=True, where="handle IS NOT NULL"),),
+    unique_constraints=(UniqueConstraintDef("l3c_unique_email", ("email",)),),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: every table the contract writes, registered by the ``store`` fixture over empty tables (a store whose tables are
+#: made by its own DDL creates their unique indexes and constraints too)
+CONTRACT_SCHEMAS: tuple[TableSchema, ...] = (DOCS, ITEMS, IGNORING, RAISING, COMPOSITE, ORDERED, NULL_SAFE, UNIQUE)
 
 _T0 = datetime(2026, 11, 25, 9, 30, 0, 123456, tzinfo=UTC)
 
@@ -379,6 +399,29 @@ class CollectionOverStoreContract:
 
 class SqlStoreContract(DurableStoreContract):
     """the tier the schema-registering stores keep on top (Postgres, SQLite)."""
+
+    duplicate_error = asyncpg.UniqueViolationError
+
+    # ── what the table admits ──────────────────────────────────────────────────────────────────────────────────────
+    async def test_a_unique_constraint_refuses_a_second_row_holding_its_value(self, store: Any) -> None:
+        await store.upsert("l3c_unique", {"id": "a", "email": "x@example.org", "tenant": "t", "handle": None})
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await store.upsert("l3c_unique", {"id": "b", "email": "x@example.org", "tenant": "t", "handle": None})
+        assert [row["id"] for row in await store.scan("l3c_unique")] == ["a"]
+
+    async def test_a_partial_unique_index_refuses_only_rows_its_where_covers(self, store: Any) -> None:
+        await store.upsert("l3c_unique", {"id": "a", "email": "a@example.org", "tenant": "t", "handle": None})
+        # outside the index's WHERE: another row with no handle is admitted
+        await store.upsert("l3c_unique", {"id": "b", "email": "b@example.org", "tenant": "t", "handle": None})
+        await store.upsert("l3c_unique", {"id": "c", "email": "c@example.org", "tenant": "t", "handle": "h"})
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await store.upsert("l3c_unique", {"id": "d", "email": "d@example.org", "tenant": "t", "handle": "h"})
+        assert sorted(row["id"] for row in await store.scan("l3c_unique")) == ["a", "b", "c"]
+
+    async def test_a_required_column_refuses_null(self, store: Any) -> None:
+        with pytest.raises(asyncpg.NotNullViolationError):
+            await store.upsert("l3c_raising", {"id": "n", "value": None})
+        assert await store.fetch_one("l3c_raising", {"id": "n"}) is None
 
     # ── reads and plain writes ─────────────────────────────────────────────────────────────────────────────────────
     async def test_a_row_reads_back_with_the_types_it_was_written_with(self, store: Any) -> None:
