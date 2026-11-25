@@ -45,12 +45,10 @@ import pydantic_core
 from threetears.core.backends.arrow_reply import ReplyNotArrowError
 from threetears.core.frozen_state import with_chunk
 
-# pyarrow ships no py.typed marker; ignored here rather than in the root pyproject's per-module list (which this
-# change leaves alone), with the same effect
 try:
-    import pyarrow as pa  # type: ignore[import-untyped]
-    import pyarrow.compute as pc  # type: ignore[import-untyped]
-    import pyarrow.json as pa_json  # type: ignore[import-untyped]
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.json as pa_json
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the export extra is optional; an Arrow read says so without it

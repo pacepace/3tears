@@ -676,6 +676,8 @@ module = [
     "threetears.datasources.partitioned_export",
     # and a datasource read's rows as Arrow (its catalogue types, its pages joined)
     "threetears.datasources.arrow_rows",
+    # and a datasource read's rows built into its reply's Arrow table from the driver's values
+    "threetears.datasources.reply_arrow",
     # and Arrow's memory pool in a serving process (the system allocator, release_unused)
     "threetears.core.arrow_pool",
     # and the CPU-quota helper, which sizes pyarrow's thread pools
@@ -731,12 +733,14 @@ module = [
     "packages.core.tests.unit.test_keyed_null_safe",
     "packages.core.tests.integration.test_keyed_null_safe_live",
     "packages.datasources.tests.integration.test_warehouse_arrow_types_live",
+    "packages.datasources.tests.unit.test_asyncpg_driver",
     "packages.datasources.tests.unit.test_counted_partitioned_export",
     "packages.datasources.tests.unit.test_export_read",
     "packages.datasources.tests.unit.test_pagers_under_a_byte_cap",
     "packages.datasources.tests.unit.test_partitioned_export",
     "packages.datasources.tests.unit.test_query_arrow",
     "packages.datasources.tests.unit.test_query_client",
+    "packages.datasources.tests.unit.test_reply_arrow",
     "packages.epoch.tests.integration.test_change_notes_live",
     # geo: a tile build's rows, its feature cache's chunks and its bounds are Arrow tables
     "threetears.geo.features",
