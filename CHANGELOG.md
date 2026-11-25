@@ -13,9 +13,14 @@ packages (bumped in lock-step).
 compare-and-swap on save, and wrote over the edit. The writer now gives every adopted row edit a new version: now,
 or one microsecond past the version HEAD holds when that is later (an edit pasted from an old copy can move it
 back). `commit_files`, which adopts edits made in another tree and sent as bytes, does the same for the row files
-it is sent (a moved file keeps its version). A file that is not a row, a removal, and a row of a table with no
-version column are committed as they are; the file keeps its mode. A commit made with git itself, outside the
-store, keeps the version it wrote; `docs/adoption/core-git.md` says so.
+it is sent (a moved file keeps its version and its bytes). Stamping the version decodes the row and encodes it
+again through the layout's codec, so an adopted row file is written in the codec's formatting (a JSON file's
+indentation and spacing; in the person's own working tree for `commit_paths`, in the committed bytes for
+`commit_files`); its content is kept. A row file the codec cannot read (bad JSON, a version that is not an instant,
+or one with no zone at HEAD) refuses the whole call with a `GitStoreError` naming the file, and nothing is committed.
+A file that is not a row, a removal, and a row of a table with no version column are committed as they are; the
+file keeps its mode. A commit made with git itself, outside the store, keeps the version it wrote;
+`docs/adoption/core-git.md` says so.
 
 ### core: SQLite as an L3, and one L3 contract every store keeps
 

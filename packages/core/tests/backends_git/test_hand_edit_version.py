@@ -10,10 +10,13 @@ now stamps every adopted row edit with a version newer than any it held -- edits
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from threetears.core.backends.git import GitDurableStore
+import pytest
+
+from threetears.core.backends.git import GitDurableStore, GitStoreError
 
 T0 = datetime(2026, 11, 25, 9, 0, 0, tzinfo=UTC)
 
@@ -114,3 +117,105 @@ async def test_a_file_that_is_not_a_row_and_a_removed_row_are_committed_as_they_
     assert result.sha is not None
     assert await store.fetch_one("keepers", _key("t4")) is None
     assert (repo.config.work_tree / "README.txt").read_text() == "not a row\n"
+
+
+async def test_a_moved_row_file_keeps_its_bytes_and_its_version(make_repo: Any) -> None:
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    await store.upsert("keepers", _keeper("t5"))
+    root = repo.config.work_tree
+    before = (root / "aria/keepers/V3/t5.json").read_bytes()
+
+    await repo.commit_files({}, "t5 becomes t6", moves={"aria/keepers/V3/t5.json": "aria/keepers/V3/t6.json"})
+
+    assert not (root / "aria/keepers/V3/t5.json").exists()
+    assert (root / "aria/keepers/V3/t6.json").read_bytes() == before
+    moved = await store.fetch_one("keepers", _key("t6"))
+    assert moved is not None
+    assert moved["date_updated"] == T0
+
+
+async def test_an_adopted_row_is_written_back_in_the_codecs_formatting(make_repo: Any) -> None:
+    """the person's content stays; the bytes are the codec's (here, JSON indented by four comes back as the codec
+    writes it), since stamping the version decodes and encodes the row."""
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    await store.upsert("keepers", _keeper("t7"))
+    path = repo.config.work_tree / "aria/keepers/V3/t7.json"
+    data = json.loads(path.read_text())
+    data["verdict"] = "reject"
+    hand = json.dumps(data, indent=4) + "\n"
+    path.write_text(hand)
+
+    await repo.commit_paths(None, "a person rejects t7, indenting by four")
+
+    written = path.read_text()
+    assert written != hand
+    adopted = json.loads(written)
+    assert adopted["verdict"] == "reject"
+    stored = await store.fetch_one("keepers", _key("t7"))
+    assert stored is not None
+    assert stored["date_updated"] > T0
+
+
+async def test_an_adopted_row_file_keeps_its_mode(make_repo: Any) -> None:
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    await store.upsert("keepers", _keeper("t8"))
+    path = repo.config.work_tree / "aria/keepers/V3/t8.json"
+    _edit(path, verdict="reject")
+    path.chmod(0o600)
+
+    await repo.commit_paths(None, "a private edit")
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    stored = await store.fetch_one("keepers", _key("t8"))
+    assert stored is not None
+    assert stored["date_updated"] > T0
+
+
+@pytest.mark.parametrize(
+    "edited",
+    [
+        pytest.param("{ not json", id="bad-json"),
+        pytest.param(None, id="bad-version"),
+    ],
+)
+async def test_a_row_file_its_codec_cannot_read_refuses_the_call_naming_it(make_repo: Any, edited: str | None) -> None:
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    await store.upsert("keepers", _keeper("t9"))
+    await store.upsert("keepers", _keeper("t10"))
+    root = repo.config.work_tree
+    bad = root / "aria/keepers/V3/t9.json"
+    if edited is None:
+        _edit(bad, date_updated="not an instant")
+    else:
+        bad.write_text(edited)
+    _edit(root / "aria/keepers/V3/t10.json", verdict="reject")
+    head = repo.git.head()
+
+    with pytest.raises(GitStoreError, match="aria/keepers/V3/t9.json"):
+        await repo.commit_paths(None, "one good edit and one broken file")
+    with pytest.raises(GitStoreError, match="aria/keepers/V3/t9.json"):
+        await repo.commit_files({"aria/keepers/V3/t9.json": bad.read_bytes()}, "the broken file sent")
+
+    assert repo.git.head() == head, "nothing was committed"
+
+
+async def test_a_naive_version_at_head_refuses_the_edit_naming_it(make_repo: Any) -> None:
+    """a commit made with git itself can leave a version with no zone; adopting an edit over it is refused, named."""
+    repo = await make_repo()
+    store = GitDurableStore(repo)
+    await store.upsert("keepers", _keeper("t11"))
+    path = repo.config.work_tree / "aria/keepers/V3/t11.json"
+    _edit(path, date_updated="2026-11-25T09:00:00")
+    # committed with git itself, outside the store, as a person might
+    for args in (["add", "-A"], ["-c", "user.name=p", "-c", "user.email=p@example.org", "commit", "-qm", "naive"]):
+        subprocess.run(["git", *args], cwd=repo.config.work_tree, check=True)
+    edited = json.loads(path.read_text())
+    edited["verdict"] = "reject"
+    head = repo.git.head()
+    with pytest.raises(GitStoreError, match="aria/keepers/V3/t11.json"):
+        await repo.commit_files({"aria/keepers/V3/t11.json": (json.dumps(edited) + "\n").encode()}, "over a naive one")
+    assert repo.git.head() == head

@@ -24,7 +24,9 @@ writing one working tree race each other and every cache goes stale.
   a row changed since refuses the whole set (`ChangeConflictError`). A hand edit in the way is never
   written over (`HandEditPendingError`); `commit_paths` adopts hand edits, and `commit_files` adopts edits sent
   as bytes from another tree. An adopted row gets a new version (`date_updated`: now, or just past the version the
-  store held), so a copy loaded before the edit fails its compare-and-swap instead of saving over it. A commit made
+  store held), so a copy loaded before the edit fails its compare-and-swap instead of saving over it. Stamping it
+  rewrites the file through the layout's codec: the content stays, the formatting becomes the codec's. A row file
+  the codec cannot read refuses the commit, naming the file. A commit made
   with git itself, outside the store (a person's `git commit`, a pulled commit), keeps the version it wrote: such
   an edit is only safe from stale copies when it changes `date_updated` too.
 - One writer per repository holds a NATS lease (`KVLease.hold`); other processes forward change

@@ -1177,6 +1177,13 @@ class GitRepo:
     ) -> CommitResult:
         """commit files someone edited by hand, so the change counts and every cache drops the old rows.
 
+        Each adopted row file of a table with a version column gets a new version (now, or just past the one HEAD
+        holds), so a copy loaded before the edit fails its compare-and-swap. The file is decoded and written again
+        through the layout's codec to stamp it, in the working tree, before the commit: what the person wrote is
+        kept, its formatting is the codec's (a JSON row comes back in the codec's indentation and spacing). Should
+        the commit then fail, the rewritten file stays, uncommitted; the next ``commit_paths`` versions it again. A
+        row file the codec cannot read refuses the whole call, naming the file, and nothing is committed.
+
         :param paths: the files, relative to the root; ``None`` for every changed file
         :ptype paths: Sequence[str] | None
         :param message: the commit message
@@ -1186,6 +1193,7 @@ class GitRepo:
         :return: the commit; ``sha`` is ``None`` when none of the files differed from HEAD
         :rtype: CommitResult
         :raises ValueError: for a path outside the working tree
+        :raises GitStoreError: when a hand-edited row file cannot be read by its layout's codec (named)
         :raises NotTheWriterError: when no writer could take it
         """
         checked = None if paths is None else tuple(_checked_paths(paths))
@@ -1202,11 +1210,16 @@ class GitRepo:
         base: str | None = None,
         moves: Mapping[str, str] | None = None,
     ) -> CommitResult:
-        """write these files' bytes (``None`` removes one) and commit them as one commit, on the writer.
+        """write these files (``None`` removes one) and commit them as one commit, on the writer.
 
         For files that aren't rows (a log, a note) and for a hand edit made on a clone of its own: that
         clone can't commit for itself (its commit would race the writer's pushes), so it sends the bytes.
         Rows among the files are reported like any commit's, so every cache drops them.
+
+        A file that isn't a row is committed with the bytes sent. A row file of a table with a version column is a
+        hand edit adopted: it gets a new version (now, or just past the one HEAD holds) and is written through the
+        layout's codec, so the committed bytes are the codec's encoding of the row sent, not the bytes sent. A moved
+        file keeps its version and its bytes. A row file the codec cannot read refuses the whole call, naming it.
 
         ``moves`` renames files in the same commit: each new path gets the old one's bytes as the writer's tree
         holds them, saved edits of a pending tail included (they ride along, with the tail's trailer), and the old
@@ -1226,7 +1239,8 @@ class GitRepo:
         :return: the commit; ``sha`` is ``None`` when every file already had those bytes
         :rtype: CommitResult
         :raises ValueError: for a path outside the working tree, or a move that also appears in ``files``
-        :raises GitStoreError: for a move from a file that isn't there, or onto one that is
+        :raises GitStoreError: for a move from a file that isn't there, or onto one that is, or a row file its
+            layout's codec cannot read (named); nothing was written
         :raises FileConflictError: when a file changed since ``base``; nothing was written
         :raises HandEditPendingError: when the writer's tree has an uncommitted edit of one of them
         :raises NotTheWriterError: when no writer could take it
@@ -1897,11 +1911,10 @@ class GitRepo:
             full = _with_trailers(message, trailers)
             targets = sorted({*hand, *taken})
             root = self.config.work_tree
-            head_now = await asyncio.to_thread(self.git.head)
-            await asyncio.to_thread(self._version_hand_edits_in_tree, hand, head_now)
+            head_before = await asyncio.to_thread(self.git.head)
+            await asyncio.to_thread(self._version_hand_edits_in_tree, hand, head_before)
             written = [path for path in targets if (root / path).exists()]
             removed = [path for path in targets if not (root / path).exists()]
-            head_before = await asyncio.to_thread(self.git.head)
             committer = self.config.committer
 
             async def stage_and_commit() -> str:
@@ -1996,8 +2009,10 @@ class GitRepo:
             writes = await asyncio.to_thread(differing)
             if not writes:
                 return CommitResult(sha=None)
-            # the files sent are hand edits made in another tree; a moved file keeps the version it had
-            sent = {path: data for path, data in writes.items() if path in files and path not in (moves or {})}
+            # the files sent are hand edits made in another tree; a moved file (its destination: the source is a
+            # removal) keeps the version and the bytes it had
+            moved_to = set((moves or {}).values())
+            sent = {path: data for path, data in writes.items() if path in files and path not in moved_to}
             writes = {**writes, **await asyncio.to_thread(self._versioned_hand_edits, sent, head_before)}
             sha, taken = await self._uninterrupted(
                 self._write_and_commit(
@@ -2095,6 +2110,8 @@ class GitRepo:
         :ptype head: str | None
         :return: the files whose bytes changed, with their new bytes
         :rtype: dict[str, bytes | None]
+        :raises GitStoreError: when a row file, as edited or as HEAD holds it, is one the layout's codec cannot read
+            (bad JSON, a version that is not an instant, an instant without a zone), naming the file
         """
         layout = self.layout
         now = datetime.now(UTC)
@@ -2108,13 +2125,19 @@ class GitRepo:
             if found is None or column is None:
                 continue
             table = found[0]
-            row = layout.decode(table, where, data)
-            version = now
-            held = None if head is None else self.git.show(head, path)
-            if held is not None:
-                before = layout.decode(table, where, held).get(column)
-                if isinstance(before, datetime) and before >= version:
-                    version = before + timedelta(microseconds=1)
+            try:
+                row = layout.decode(table, where, data)
+                version = now
+                held = None if head is None else self.git.show(head, path)
+                if held is not None:
+                    before = layout.decode(table, where, held).get(column)
+                    if isinstance(before, datetime) and before >= version:
+                        version = before + timedelta(microseconds=1)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise GitStoreError(
+                    f"cannot adopt the hand edit of {path}: its layout cannot read it as a {table!r} row "
+                    f"({type(exc).__name__}: {exc}); fix the file and commit again",
+                ) from exc
             row[column] = version
             versioned[path] = layout.encode(table, row)
         return versioned
