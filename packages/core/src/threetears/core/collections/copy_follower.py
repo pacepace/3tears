@@ -2648,8 +2648,10 @@ class CopyFollower:
             if waiting.token is not None and after.token is not None:
                 have, new = split_generation_token(waiting.token), split_generation_token(after.token)
                 if have is not None and new is not None and have[0] == new[0] and have[1] >= new[1]:
-                    # the full it waits for already holds the newer epoch: the bar is never lowered
-                    after = replace(waiting, scopes=reach)
+                    # the full it waits for already holds the newer epoch: the bar is never lowered. Its why is the
+                    # newest heard (a lost file the writer then answered covered waits as ``file_covered``): the status
+                    # says it ahead of every look's text (:meth:`_say_short_of_full`)
+                    after = replace(waiting, why=why, scopes=reach)
         log.warning(
             "a followed table that opts in to delta files was reset or recreated: it is reloaded from the writer's "
             "full on the volume once published, never read from L3; the copy serves it as it held it meanwhile",
@@ -2808,7 +2810,7 @@ class CopyFollower:
                 await self._drained()
                 if table not in self._full_after:
                     return True
-                self._say_waiting_for_full(table, short)
+                self._say_short_of_full(table, short)
             return False
 
         # the platform's never-give-up loop (threetears.observe), at the volume's own pace: a look every poll_seconds
@@ -2851,7 +2853,7 @@ class CopyFollower:
                 return True
             short = after.short_of(table, manifest)
             if short is not None:
-                self._say_waiting_for_full(table, short)
+                self._say_short_of_full(table, short)
                 return False
             await self._forget_tables([])  # the stage the reset forgot, among any others
         # the states a covered or lost file's commit wrote, named complete: only their parts are loaded (decision 54
@@ -2880,13 +2882,13 @@ class CopyFollower:
         except FileNotFoundError as exc:
             # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
             async with self._lock:
-                self._say_waiting_for_full(
+                self._say_short_of_full(
                     table, f"a part of the current full is not on the volume ({exc.filename}); looking again"
                 )
             return False
         if isinstance(found, FullAbsent):
             async with self._lock:
-                self._say_waiting_for_full(table, found.reason)
+                self._say_short_of_full(table, found.reason)
             return False
         swapped = False
         try:
@@ -3093,7 +3095,7 @@ class CopyFollower:
                 extra={"extra_data": {"table": table, "manifest": found.manifest, "states": len(states)}},
             )
             self._set_full_after(table, replace(after, scopes=None))
-            self._say_waiting_for_full(table, "a prefix heard cleared names no state: the whole table's full is loaded")
+            self._say_short_of_full(table, "a prefix heard cleared names no state: the whole table's full is loaded")
             return False, False
         self._mark += 1
         mark = self._mark
@@ -3157,7 +3159,7 @@ class CopyFollower:
             extra={"extra_data": {"table": table, "manifest": found.manifest}},
         )
         if table not in self._status.waiting_for_full:
-            self._say_waiting_for_full(table, "the table was reset again while its full loaded")
+            self._say_short_of_full(table, "the table was reset again while its full loaded")
         return False, table not in self._full_after
 
     def _wait_for_file(
@@ -3244,6 +3246,26 @@ class CopyFollower:
         self._status.waiting_for_full = (
             without_entry(waiting, table) if why is None else with_entry(waiting, table, why)
         )
+
+    def _say_short_of_full(self, table: str, short: str) -> None:
+        """say in the status that ``table`` still waits for a full, and why the last look found none, after what it
+        waits for (its :attr:`_FullAfter.why`: ``reset``, ``file_covered``, ``file_lost``, ...).
+
+        Why the wait's own why leads every look's text: the status is a level, read at any moment, not an edge. The
+        look replaced the wait's why with its own (``no full on the volume``) one poll after the wait began, so an
+        owner (and a test) reading it a poll late never learned the table waits for a covered file, only that no full
+        was there (test_lost_files_of_commits_too_big_to_list_carry_their_states_to_the_full_the_table_waits_for: 8
+        of 54 runs on the pool, 2026-11-25, each a read past the 10 ms poll under load).
+
+        :param table: the table
+        :ptype table: str
+        :param short: why the last look found no full it could reload from
+        :ptype short: str
+        :return: nothing
+        :rtype: None
+        """
+        after = self._full_after.get(table)
+        self._say_waiting_for_full(table, short if after is None else f"{after.why}: {short}")
 
     def _stamp(self, mark: int, label: Any, marks: Mapping[str, str | None]) -> None:
         """record the stamp and epoch marks of the change at ``mark``, keeping the newest :data:`_STAMPS_KEPT`.
