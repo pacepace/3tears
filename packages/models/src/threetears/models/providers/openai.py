@@ -39,9 +39,12 @@ from typing import TYPE_CHECKING, Any
 # the OpenAI SDK's resource modules, loaded here at import rather than by the first client built, which a server
 # builds on its event loop. openai 2.x's ``openai.resources`` imports every resource eagerly (~475 modules, 0.22 s
 # measured 2026-11-25 on 2.45.0; 0.30 s on the hub's loop at its first OpenAI model, which the loop-stall guard
-# failed); 3.x made it lazy, and its client then imports the chat and embeddings modules named here at first use.
+# failed); 3.x made it lazy, and its client then imports the chat and embeddings modules named here at first use,
+# and ``openai.resources.beta`` at a structured-output stream's (langchain_openai streams a ``response_format`` through
+# ``client.beta.chat.completions.stream``: 656 modules, 0.59 s of a pool host's loop on 3.26.1, 2026-11-25).
 # imported for that side effect only, so nothing below names them.
 import openai.resources  # noqa: F401
+import openai.resources.beta.beta  # noqa: F401
 import openai.resources.chat.chat  # noqa: F401
 import openai.resources.chat.completions.completions  # noqa: F401
 import openai.resources.chat.completions.messages  # noqa: F401
