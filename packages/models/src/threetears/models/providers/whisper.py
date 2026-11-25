@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.capabilities import ModelCapabilities, register_capabilities_batch
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 
 __all__ = [
@@ -210,5 +210,4 @@ _WHISPER_CAPABILITIES: dict[str, ModelCapabilities] = {
 }
 
 
-for _model_id, _caps in _WHISPER_CAPABILITIES.items():
-    register_capabilities(_model_id, _caps)
+register_capabilities_batch(_WHISPER_CAPABILITIES)

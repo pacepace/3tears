@@ -8,6 +8,9 @@ mapping -- see :class:`TestAZeroCostSurvivesTheMapping`.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from decimal import Decimal
 
 import pytest
@@ -227,3 +230,57 @@ class TestRequestSettingsKeys:
         """
         with pytest.raises(ValidationError):
             register_model_capabilities_bulk([{"model_name": "test-request-settings-bad", "reasoning_efforts": "low"}])
+
+
+#: a fresh interpreter, so its 1,500 rows never reach this process's registry; counts the read-only snapshots
+#: (each a copy of a registry layer) the registry module builds while the loader runs.
+_LOADER_PROBE = """
+import json
+
+import threetears.models.capabilities as capabilities
+from threetears.models.registry_loader import register_model_capabilities_bulk
+
+built = capabilities.MappingProxyType
+copies = []
+
+
+def counting(mapping):
+    copies.append(len(mapping))
+    return built(mapping)
+
+
+capabilities.MappingProxyType = counting
+count = register_model_capabilities_bulk([{"model_name": f"loader-probe-{index}"} for index in range(1500)])
+capabilities.MappingProxyType = built
+print(json.dumps({"count": count, "copies": len(copies)}))
+"""
+
+
+class TestACatalogueIsOneRegistryCopy:
+    """the loader registers its rows as one batch: a copy of the registry a row made a catalogue quadratic."""
+
+    def test_1500_rows_copy_the_registry_once(self) -> None:
+        """1,500 rows, one copy (it was 1,500, one a row).
+
+        :return: nothing
+        :rtype: None
+        """
+        result = subprocess.run([sys.executable, "-c", _LOADER_PROBE], capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stderr
+        probe = json.loads(result.stdout.strip().splitlines()[-1])
+        assert probe == {"count": 1500, "copies": 1}
+
+    def test_the_rows_before_a_bad_one_still_register(self) -> None:
+        """a row that raises stops the load, as it did a row at a time; the rows before it are registered.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            register_model_capabilities_bulk(
+                [
+                    {"model_name": "test-loader-before-bad"},
+                    {"model_name": "test-loader-bad", "reasoning_efforts": "low"},
+                ]
+            )
+        assert get_capabilities("test-loader-before-bad") is not None

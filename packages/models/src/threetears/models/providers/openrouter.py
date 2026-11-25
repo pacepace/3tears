@@ -70,7 +70,7 @@ from langchain_openrouter import ChatOpenRouter
 from pydantic import BaseModel, PrivateAttr, model_validator
 from pydantic.fields import FieldInfo
 
-from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.capabilities import ModelCapabilities, register_capabilities_batch
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
@@ -914,5 +914,4 @@ _OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
 }
 
 
-for _model_id, _caps in _OPENROUTER_CAPABILITIES.items():
-    register_capabilities(_model_id, _caps)
+register_capabilities_batch(_OPENROUTER_CAPABILITIES)

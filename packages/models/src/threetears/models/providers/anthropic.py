@@ -36,7 +36,7 @@ from anthropic import transform_schema
 from langchain_anthropic import ChatAnthropic
 from pydantic import PrivateAttr
 
-from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.capabilities import ModelCapabilities, register_capabilities_batch
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import StructuredOutputSchemaError
@@ -456,5 +456,4 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
 }
 
 
-for _model_id, _caps in _ANTHROPIC_CAPABILITIES.items():
-    register_capabilities(_model_id, _caps)
+register_capabilities_batch(_ANTHROPIC_CAPABILITIES)

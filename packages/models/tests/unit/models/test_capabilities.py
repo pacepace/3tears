@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from collections.abc import Iterator
 from decimal import Decimal
-
 from uuid import uuid4
 
 import pytest
@@ -26,6 +28,7 @@ from threetears.models.capabilities import (
     get_registered_capabilities,
     list_capabilities,
     register_capabilities,
+    register_capabilities_batch,
     register_capability_override,
     register_published_capabilities,
     unregister_capability_override,
@@ -843,3 +846,104 @@ class TestPublishedLayer:
             assert model_id not in list_capabilities()
         finally:
             unregister_published_capabilities(model_id)
+
+
+#: run in a fresh interpreter, so its 1,500 entries never reach this process's registry. it counts the
+#: read-only snapshots the registry module builds (each one a copy of a layer) while the batch registers.
+_BATCH_PROBE = """
+import json
+
+import threetears.models.capabilities as capabilities
+from threetears.models.enums import ModelTier, ModelType
+
+entries = {
+    f"batch-probe-{index}": capabilities.ModelCapabilities(
+        model_name=f"batch-probe-{index}", model_type=ModelType.CHAT, model_tier=ModelTier.SMALL
+    )
+    for index in range(1500)
+}
+built = capabilities.MappingProxyType
+copies = []
+
+
+def counting(mapping):
+    copies.append(len(mapping))
+    return built(mapping)
+
+
+capabilities.MappingProxyType = counting
+capabilities.register_capabilities_batch(entries)
+capabilities.MappingProxyType = built
+print(json.dumps({"copies": copies, "registered": sum(1 for key in entries if capabilities.get_capabilities(key))}))
+"""
+
+
+class TestRegisterCapabilitiesBatch:
+    """a batch replaces each layer once, whatever its size; the per-model calls stay as they were."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_overrides(self) -> Iterator[None]:
+        """no override from one test reaches the next.
+
+        :return: nothing
+        :rtype: Iterator[None]
+        """
+        clear_capability_overrides()
+        yield
+        clear_capability_overrides()
+
+    def test_a_batch_of_1500_is_one_snapshot_copy(self) -> None:
+        """1,500 models register through one copy of the registry, not one a model (0.19 s at 1,504 a model at a time).
+
+        :return: nothing
+        :rtype: None
+        """
+        result = subprocess.run([sys.executable, "-c", _BATCH_PROBE], capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stderr
+        probe = json.loads(result.stdout.strip().splitlines()[-1])
+        assert probe["registered"] == 1500
+        assert len(probe["copies"]) == 1, f"{len(probe['copies'])} snapshot copies for one batch"
+
+    def test_a_batch_sets_and_drops_overrides_with_the_entries(self) -> None:
+        """an override set in the batch layers on; ``None`` drops the old one; an id not named keeps its own.
+
+        :return: nothing
+        :rtype: None
+        """
+        kept, replaced, dropped = "test-batch-kept", "test-batch-replaced", "test-batch-dropped"
+        caps = {
+            model_id: ModelCapabilities(
+                model_name=model_id, model_type=ModelType.CHAT, model_tier=ModelTier.SMALL, context_window=1_000
+            )
+            for model_id in (kept, replaced, dropped)
+        }
+        register_capabilities_batch(caps)
+        for model_id in (kept, replaced, dropped):
+            register_capability_override(model_id, CapabilityOverride(context_window=2_000))
+
+        register_capabilities_batch(
+            {replaced: caps[replaced], dropped: caps[dropped]},
+            {replaced: CapabilityOverride(context_window=3_000), dropped: None},
+        )
+
+        assert [get_capabilities(model_id).context_window for model_id in (kept, replaced, dropped)] == [  # type: ignore[union-attr]
+            2_000,
+            3_000,
+            1_000,
+        ]
+        assert get_capability_override(dropped) is None
+
+    def test_the_single_calls_still_register_one_model(self) -> None:
+        """``register_capabilities`` and ``register_capability_override`` keep working beside the batch.
+
+        :return: nothing
+        :rtype: None
+        """
+        model_id = "test-single-call"
+        register_capabilities(
+            model_id, ModelCapabilities(model_name=model_id, model_type=ModelType.CHAT, model_tier=ModelTier.SMALL)
+        )
+        register_capability_override(model_id, CapabilityOverride(context_window=5))
+        layered = get_capabilities(model_id)
+        assert layered is not None
+        assert layered.context_window == 5

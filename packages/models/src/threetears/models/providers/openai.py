@@ -36,12 +36,22 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+# the OpenAI SDK's resource modules, loaded here at import rather than by the first client built, which a server
+# builds on its event loop. openai 2.x's ``openai.resources`` imports every resource eagerly (~475 modules, 0.22 s
+# measured 2026-11-25 on 2.45.0; 0.30 s on the hub's loop at its first OpenAI model, which the loop-stall guard
+# failed); 3.x made it lazy, and its client then imports the chat and embeddings modules named here at first use.
+# imported for that side effect only, so nothing below names them.
+import openai.resources  # noqa: F401
+import openai.resources.chat.chat  # noqa: F401
+import openai.resources.chat.completions.completions  # noqa: F401
+import openai.resources.chat.completions.messages  # noqa: F401
+import openai.resources.embeddings  # noqa: F401
 from langchain_core.messages import BaseMessage, convert_to_messages
 from langchain_core.prompt_values import PromptValue
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import PrivateAttr
 
-from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.capabilities import ModelCapabilities, register_capabilities_batch
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
@@ -482,5 +492,4 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
 }
 
 
-for _model_id, _caps in _OPENAI_CAPABILITIES.items():
-    register_capabilities(_model_id, _caps)
+register_capabilities_batch(_OPENAI_CAPABILITIES)

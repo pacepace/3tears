@@ -53,6 +53,7 @@ __all__ = [
     "get_registered_capabilities",
     "list_capabilities",
     "register_capabilities",
+    "register_capabilities_batch",
     "register_capability_override",
     "register_published_capabilities",
     "unregister_capability_override",
@@ -392,6 +393,43 @@ def register_capability_override(model_id: str, override: CapabilityOverride) ->
     global _OVERRIDES
     with _REGISTRY_LOCK:
         _OVERRIDES = MappingProxyType({**_OVERRIDES, model_id: override})
+
+
+def register_capabilities_batch(
+    capabilities: Mapping[str, ModelCapabilities],
+    overrides: Mapping[str, CapabilityOverride | None] | None = None,
+) -> None:
+    """register many models' capabilities -- and, optionally, their overrides -- in one step.
+
+    the same as calling :func:`register_capabilities` for each entry of ``capabilities`` and then,
+    for each entry of ``overrides``, :func:`register_capability_override` (or, for ``None``,
+    :func:`unregister_capability_override`); but each layer is copied and replaced once for the
+    whole batch, not once a model. the per-model calls copy the whole layer each time, so
+    registering a catalogue through them is quadratic in its size: 0.19 s of CPU for 1,504 models
+    (the hub gateway's configured catalogue, measured 2026-11-25 by the loop-stall guard), where
+    one batch is one copy. both layers are replaced under one hold of the registry lock, so a
+    reader never sees a model's new entry beside the override the batch replaces.
+
+    :param capabilities: model id to its capability metadata; each overwrites any existing entry
+    :ptype capabilities: Mapping[str, ModelCapabilities]
+    :param overrides: model id to the override that replaces its current one, or to ``None`` to
+        drop its override (a no-op when it has none); ``None`` (the default) leaves every override
+        as it is
+    :ptype overrides: Mapping[str, CapabilityOverride | None] | None
+    """
+    global _REGISTRY, _OVERRIDES
+    with _REGISTRY_LOCK:
+        if capabilities:
+            _REGISTRY = MappingProxyType({**_REGISTRY, **capabilities})
+        if overrides:
+            # function-local: built whole here, then published read-only
+            merged: dict[str, CapabilityOverride] = {**_OVERRIDES}
+            for model_id, override in overrides.items():
+                if override is None:
+                    merged.pop(model_id, None)
+                else:
+                    merged[model_id] = override
+            _OVERRIDES = MappingProxyType(merged)
 
 
 def unregister_capability_override(model_id: str) -> None:
