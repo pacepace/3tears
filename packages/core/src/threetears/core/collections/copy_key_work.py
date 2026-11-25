@@ -19,7 +19,6 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from typing import Any, Final
 
-from threetears.core.arrow_keys import distinct_keys
 from threetears.core.collections.delta_files import joined_key_texts, key_text_table
 from threetears.core.utils.cpu_quota import bound_native_threads
 
@@ -28,13 +27,14 @@ try:
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
+
+    # Arrow's own key kernels: a module of the Arrow extra, so imported with it
+    from threetears.core.arrow_keys import distinct_keys
 except ImportError:  # NOSILENT: the snapshot extra is optional; a copy follower says so when built
     pa = None
 
 __all__ = [
-    "EPOCH",
     "INLINE_KEYS",
-    "SCOPE",
     "flags_in",
     "from_ipc",
     "heard_job",
@@ -53,14 +53,16 @@ __all__ = [
 ]
 
 #: a heard batch's epoch column
-EPOCH: Final = "__epoch"
+_EPOCH: Final = "__epoch"
 
 #: a key's scope column, beside its key columns
-SCOPE: Final = "__scope"
+_SCOPE: Final = "__scope"
 
 #: below this many keys the work runs on the caller's thread: the worker's round trip (the IPC written, pickled through
-#: the pool's pipe and read back) costs more than the work. Measured 2026-11-25 (macOS arm64, Python 3.14): see
-#: ``tests/unit/collections/test_copy_key_work.py``'s measurement notes
+#: the pool's pipe and read back) costs more than the work. Measured 2026-11-25 (macOS arm64, Python 3.14, a loaded
+#: host): a 200,000-key page's heard batch took 3-8 ms on a thread and 25-144 ms through the worker (12-30 ms of it the
+#: serving process's CPU); its page scopes 196-290 ms on a thread (all of it the serving process's CPU) and 342-656 ms
+#: through the worker (43-74 ms of it the serving process's CPU)
 INLINE_KEYS: Final = 2_000
 
 
@@ -169,7 +171,7 @@ def heard_of(key: Sequence[str], instants: Collection[str], keys: Any, epoch: st
     texts = key_text_table(named, key, instants)
     columns = [texts.column(column).combine_chunks() for column in key]
     epochs = pa.nulls(count, pa.string()) if epoch is None else pa.repeat(pa.scalar(epoch, pa.string()), count)
-    schema = pa.schema([(column, pa.string()) for column in key] + [(EPOCH, pa.string())])
+    schema = pa.schema([(column, pa.string()) for column in key] + [(_EPOCH, pa.string())])
     return pa.Table.from_arrays([*columns, epochs], schema=schema)
 
 
@@ -261,10 +263,10 @@ def held_scopes_of(
         every one is)
     :rtype: tuple[pyarrow.Table, numpy.ndarray | None]
     """
-    mine = key_text_table(held, key, instants).append_column(SCOPE, scope_texts(scope[1], held.column(scope[0])))
+    mine = key_text_table(held, key, instants).append_column(_SCOPE, scope_texts(scope[1], held.column(scope[0])))
     if scopes is None or not mine.num_rows:
         return mine, None
-    late = mine.filter(pa.array(flags_in(mine.column(SCOPE), scopes)))
+    late = mine.filter(pa.array(flags_in(mine.column(_SCOPE), scopes)))
     if not late.num_rows:
         return mine, None
     return mine, ~flags_in(joined_key_texts(page, list(key)), joined_key_texts(late, list(key)))
@@ -344,13 +346,13 @@ def page_scopes_of(
     """
     columns = list(key)
     found_texts = key_text_table(found, columns, instants)
-    found_scoped = found_texts.append_column(SCOPE, scope_texts(scope[1], found.column(scope[0])))
-    both = distinct_keys(pa.concat_tables([mine, found_scoped]), [*columns, SCOPE])
+    found_scoped = found_texts.append_column(_SCOPE, scope_texts(scope[1], found.column(scope[0])))
+    both = distinct_keys(pa.concat_tables([mine, found_scoped]), [*columns, _SCOPE])
     chunk_texts = joined_key_texts(chunk, columns)
     both = both.filter(pa.array(flags_in(joined_key_texts(both, columns), chunk_texts)))
     if scopes is None:
         return both, None, None
-    left = both.filter(pa.array(flags_in(both.column(SCOPE), scopes)))
+    left = both.filter(pa.array(flags_in(both.column(_SCOPE), scopes)))
     if not left.num_rows:
         return both, None, None
     left_texts = joined_key_texts(left, columns)
