@@ -121,6 +121,7 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
 from threetears.core.cache.duckdb_binds import KEYS, run_joined
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.copy_key_work import (
+    HEARD_INLINE_TEXT_KEYS,
     INLINE_KEYS,
     flags_in,
     from_ipc,
@@ -597,6 +598,39 @@ def _ipcs(tables: Sequence[Any]) -> tuple[bytes, ...]:
     return tuple(ipc_bytes(table) for table in tables)
 
 
+#: no table's generation read: no key is held back for being newer than the stamp
+_NO_BARS: Final[Mapping[str, str | None]] = frozen()
+
+
+def _later_than(rows: Any, key: Sequence[str], bar: str | None) -> Any:
+    """per row of keys heard at their epochs, whether its key was heard at an epoch past ``bar`` (the table's generation
+    as read before the pass's stamp): every row of such a key, so a key waits whole. One judgment a distinct epoch (a
+    commit), never one a key; an epoch of another incarnation, or none, is never past it (nothing orders them).
+
+    :param rows: the keys at their epochs (key columns as text, ``__epoch``)
+    :ptype rows: pyarrow.Table
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :param bar: the generation read before the stamp; None for none
+    :ptype bar: str | None
+    :return: the flags, or None when no row is past it
+    :rtype: numpy.ndarray | None
+    """
+    split = split_generation_token(bar) if bar is not None else None
+    if split is None or not rows.num_rows:
+        return None
+    epochs = rows.column(_EPOCH)
+    later = []
+    for epoch in pc.unique(pc.drop_null(epochs)).to_pylist():  # one a distinct epoch (a commit), never one a key
+        parsed = split_generation_token(epoch)
+        if parsed is not None and parsed[0] == split[0] and parsed[1] > split[1]:
+            later.append(epoch)
+    if not later:
+        return None
+    newer = rows.filter(pa.array(_in(epochs, pa.array(later, pa.string()))))
+    return _in(joined_key_texts(rows, list(key)), joined_key_texts(newer, list(key)))
+
+
 def _joined(batches: Sequence[Any], schema: Any) -> Any:
     """some batches as one table (their chunks, not copied); the schema's empty table when there are none.
 
@@ -741,6 +775,7 @@ class _Take:
     :ivar left: the keys at their epochs a write in progress holds the scope of (their key names it): left pending;
         None when none is
     :ivar left_keys: how many keys ``left`` holds
+    :ivar later: whether some of them were heard past the generation read before the pass's stamp (:func:`_later_than`)
     """
 
     keys: Any
@@ -748,9 +783,16 @@ class _Take:
     at: Any
     left: Any
     left_keys: int
+    later: bool = False
 
 
-def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], held: frozenset[str]) -> _Take:
+def _taken(
+    table: FollowedTable,
+    batches: Sequence[Any],
+    staged: Sequence[Any],
+    held: frozenset[str],
+    bar: str | None = None,
+) -> _Take:
     """a pass's keys of one table from the batches heard: each key at each epoch once, those of a scope a write holds
     left pending (when the key names its scope), and for a table that opts in to delta files, every epoch a key was
     staged from by an earlier pass beside the new ones, so its row is merged again from every change not yet applied.
@@ -779,6 +821,15 @@ def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], 
         rows = rows.filter(pc.invert(hold))
         left_keys = _distinct(left, key).num_rows
         left = left if left.num_rows else None
+    later = _later_than(rows, key, bar)
+    held_later = later is not None and bool(later.any())
+    if held_later:
+        # a key heard at an epoch past the generation read before the pass's stamp: its commit may be newer than the
+        # stamp, so every epoch of it waits for the next pass, whose stamp holds it (one read, never read and redone)
+        late = rows.filter(pa.array(later))
+        rows = rows.filter(pa.array(~later))
+        left_keys += _distinct(late, key).num_rows
+        left = late if left is None else pa.concat_tables([left, late])
     if staged and rows.num_rows:
         before = _joined(staged, schema)
         # a key heard again at an epoch an earlier pass staged it at (its row broadcast and its epoch's record, one
@@ -798,7 +849,7 @@ def _taken(table: FollowedTable, batches: Sequence[Any], staged: Sequence[Any], 
     positions = pc.index_in(joined_key_texts(rows, key), value_set=joined_key_texts(keys, key)).cast(pa.int64())
     pairs = rows.append_column(_AT, positions).sort_by([(_AT, "ascending")])
     at_positions = np.asarray(pairs.column(_AT).to_numpy(), dtype=np.int64)
-    return _Take(keys=keys, pairs=pairs, at=at_positions, left=left, left_keys=left_keys)
+    return _Take(keys=keys, pairs=pairs, at=at_positions, left=left, left_keys=left_keys, later=held_later)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4034,18 +4085,15 @@ class CopyFollower:
             began = time.monotonic()
             self._poked.clear()
             await self._drained()
-            first = await self._settled()
-            scoped = _scoped(first)
-            writing = isinstance(first, Unsettled)
-            if writing and scoped is None:
-                self._say(FollowerPhase.WAITING, f"a write is in progress: {first.reason}")
-                return False
-            held = scoped[1] if scoped is not None else frozenset()
             # taken before any generation is read: every epoch at or below a mark read after it is in the copy's reach
             now = datetime.now(UTC)
             behind: dict[str, str] = {}
+            # function-local: each table's generation as read before the stamp (below): a key heard at a later epoch
+            # was committed after it, so the stamp may not hold its commit, and it waits for the next pass (_taken)
+            bars: dict[str, str | None] = {}
             for name in self._tables:
                 token = await self._generation(name)
+                bars[name] = token
                 await self._registry.catch_up_generation(name, token, changes=self._changes)
                 # what the catch-up told, applied before the table is judged (a recovery keeps what was heard)
                 await self._drained()
@@ -4077,6 +4125,17 @@ class CopyFollower:
             if behind:
                 self._say(FollowerPhase.BEHIND, f"behind on {sorted(behind)}; serving the copy at {self._status.stamp}")
                 return False
+            # the stamp read after every table's generation: each commit at or before a generation read is one the
+            # stamp holds (a write's scopes settle in its own commit). Read first, a record committed after it reached
+            # the pass, was read, then left out when the stamp moved, and read again: two L3 reads of one changed row
+            # (reports' test_one_changed_row_reaches_the_other_replica_by_its_key_alone, 3 runs in 13, 2026-11-25)
+            first = await self._settled()
+            scoped = _scoped(first)
+            writing = isinstance(first, Unsettled)
+            if writing and scoped is None:
+                self._say(FollowerPhase.WAITING, f"a write is in progress: {first.reason}")
+                return False
+            held = scoped[1] if scoped is not None else frozenset()
             # a stage holding a scope the write now holds (or a table of no scope, while any write is) is read again;
             # a keyed stage loses only that scope's keys, once this pass has read (_still)
             await self._forget_tables(
@@ -4104,7 +4163,7 @@ class CopyFollower:
             self._staging_marks = self.marks()
             pending, whole, partitions = self._take(held, writing=writing)
             try:
-                await self._stage(pending, whole, held)
+                await self._stage(pending, whole, held, bars)
                 await self._stage_partitions(partitions, held)
             except LookupError as exc:
                 # the worker holding the stages died while this pass staged: what it had not staged is put back, and
@@ -4837,7 +4896,13 @@ class CopyFollower:
         reading, self._reading = self._reading, None
         await self._forget_tables([reading] if reading is not None else [])
 
-    async def _stage(self, pending: dict[str, tuple[Any, ...]], whole: dict[str, str], held: frozenset[str]) -> None:
+    async def _stage(
+        self,
+        pending: dict[str, tuple[Any, ...]],
+        whole: dict[str, str],
+        held: frozenset[str],
+        bars: Mapping[str, str | None] = _NO_BARS,
+    ) -> None:
         """stage each table's change beside the copy, a page at a time, onto what earlier passes staged. Each table's
         entry leaves ``pending`` or ``whole`` once its stage is complete.
 
@@ -4923,7 +4988,7 @@ class CopyFollower:
                 # every table's: a key heard again at an epoch staged already is not read again (_taken); a table
                 # that opts in to delta files also merges each such key again from every epoch staged
                 staged_before = self._staged_heard.get(name, ())
-                take = await asyncio.to_thread(_taken, table, batches, staged_before, held)
+                take = await asyncio.to_thread(_taken, table, batches, staged_before, held, bars.get(name))
                 staged = await self._stage_keyed(table, take, keys_stage, rows_stage, held)
             except _FileWaitError as wait:
                 # nothing of the table is applied while it waits: its keys are put back, its stage (this pass's pages
@@ -4938,6 +5003,10 @@ class CopyFollower:
                 continue
             # the keys a write holds the scope of stay pending, as one new batch
             self._put_back(name, take.left, take.left_keys)
+            if take.later:
+                # a key past the generation read before the stamp is read by the next pass, whose stamp holds its
+                # commit: poked now, since the commit may have nothing more to tell this copy
+                self._poked.set()
             self._put_back(name, staged.late, staged.late_keys)
             if staged.pairs.num_rows:
                 was = self._staged.get(name)
@@ -5162,7 +5231,9 @@ class CopyFollower:
 
     async def _heard_batches(self, table: FollowedTable, batches: Sequence[tuple[Any, str | None]]) -> list[Any]:
         """each batch of keys at its epoch as the batch heard (:func:`_heard_batch`), spelled in the copy's worker
-        process (:mod:`~threetears.core.collections.copy_key_work`); under :data:`INLINE_KEYS` keys here.
+        process (:mod:`~threetears.core.collections.copy_key_work`); text keys up to
+        :data:`~threetears.core.collections.copy_key_work.HEARD_INLINE_TEXT_KEYS` (a timestamp key's under
+        :data:`INLINE_KEYS`) here, on the loop.
 
         :param table: the table
         :ptype table: FollowedTable
@@ -5171,7 +5242,9 @@ class CopyFollower:
         :return: the heard batches, in order
         :rtype: list[pyarrow.Table]
         """
-        if sum(keys.num_rows for keys, _ in batches) < INLINE_KEYS:
+        # text keys inline on the loop up to their measured bound; a timestamp key's, past the general one (copy_key_work)
+        bound = INLINE_KEYS if table.instant_keys else HEARD_INLINE_TEXT_KEYS
+        if sum(keys.num_rows for keys, _ in batches) <= bound:
             return [_heard_batch(table, keys, epoch) for keys, epoch in batches]
         blobs = await asyncio.to_thread(_ipcs, [keys for keys, _ in batches])
         answer = await self._workers.run(

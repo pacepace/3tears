@@ -262,8 +262,13 @@ class _Log:
     def __init__(self) -> None:
         self.count = 0
         self.records: dict[str, EpochChange] = {}
+        #: run once at the next read of the generation, before it answers: a commit landing between a pass's reads
+        self.on_current: Callable[[], None] | None = None
 
     async def current(self, table: str) -> str:
+        if self.on_current is not None:
+            hook, self.on_current = self.on_current, None
+            hook()
         return f"inc:{self.count}"
 
     def commit(self, keys: Sequence[tuple[str, int]], delta_file: str | None = None) -> str:
@@ -498,6 +503,30 @@ async def test_an_opted_in_tables_change_is_applied_from_its_file_with_no_l3_sta
     assert await follower.catch_up()
     assert await _same_now(backend, l3)
     assert l3.statements == 0
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_change_committed_between_a_pass_s_stamp_and_its_generation_read_is_read_from_l3_once(
+    _volume: Path,
+) -> None:
+    """Flips if a change committed while a pass reads (here: before its generation read answers) is read, left out when
+    the stamp is seen to have moved, and read again next pass: two L3 reads of one changed row (reports'
+    test_one_changed_row_reaches_the_other_replica_by_its_key_alone, 3 runs in 13, 2026-11-25). The pass reads each
+    table's generation before its stamp, and a key heard past that generation waits for the next pass: one read."""
+    world = _world(delta_files=False)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+
+    def commits() -> None:
+        l3.update(("VA", 1), votes=77)
+        log.commit([("VA", 1)])
+        lock.commit("state:VA")
+
+    log.on_current = commits
+    for _ in range(3):
+        await follower.catch_up()
+    assert await _same_now(backend, l3)
+    assert l3.statements == 1, f"the changed row was read from L3 {l3.statements} times"
     assert follower.stamp.epochs == lock.epochs
 
 

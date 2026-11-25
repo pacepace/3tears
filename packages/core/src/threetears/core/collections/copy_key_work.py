@@ -34,6 +34,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a copy follower
     pa = None
 
 __all__ = [
+    "HEARD_INLINE_TEXT_KEYS",
     "INLINE_KEYS",
     "flags_in",
     "from_ipc",
@@ -64,6 +65,15 @@ _SCOPE: Final = "__scope"
 #: serving process's CPU); its page scopes 196-290 ms on a thread (all of it the serving process's CPU) and 342-656 ms
 #: through the worker (43-74 ms of it the serving process's CPU)
 INLINE_KEYS: Final = 2_000
+
+#: a heard batch of text keys (no timestamp key column) is spelled inline on the loop up to this many keys, in the worker
+#: past it. Why: its work is a cast that keeps text as it is and one column of the epoch, about 6 ns a key of the loop's
+#: CPU (2026-11-25, macOS arm64, Python 3.14, 4 text key columns: 0.33 ms at 50,000 keys, 0.79 ms at 100,000, 1.24 ms
+#: at 200,000), while the worker's round trip cost the serving process 12-30 ms of CPU at 200,000 (the IPC written and
+#: the answer read back). Past 100,000 keys (under 1 ms) the turn would grow toward the tests' 10 ms bar on slower pool
+#: hosts, so a larger batch still goes to the worker. A timestamp key column is spelled a distinct value at a time in
+#: Python (key_text), so such a batch goes to the worker past :data:`INLINE_KEYS`
+HEARD_INLINE_TEXT_KEYS: Final = 100_000
 
 
 def _one_cpu() -> bool:
