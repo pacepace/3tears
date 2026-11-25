@@ -388,6 +388,12 @@ _NOTED_KEYS_ASSUMED_PAYLOAD: Final = 1024 * 1024
 #: how long past the statement's own bound a noted-keys page waits for its reply, in seconds
 _NOTED_KEYS_GRACE_SECONDS: Final = 1.0
 
+#: how long past a transaction's own deadline (``conn.transaction(timeout_ms=...)``) the pod waits for each of its
+#: ``l3.tx.*`` replies: the two seconds every request waits past the backend's ``timeout_ms``
+#: (:meth:`NatsProxyL3Backend.nats_request_bytes`), so the hub's answer -- a refusal of a request that queued past the
+#: deadline included -- arrives while the pod still waits for it
+_TX_REPLY_GRACE_SECONDS: Final = 2.0
+
 
 def _noted_keys_answer(response: Mapping[str, Any], table: str) -> NotedKeysPage | str:
     """an ``l3.noted_keys`` reply as a page, or as why the notes cannot say.
@@ -2271,10 +2277,45 @@ class _ProxyConnection:
         #: WRITE_ARROW_FIELD`): an Arrow table upserted, copied or deleted as it is (:meth:`write_arrow_rows`); set at
         #: each begin
         self.write_arrow = False
+        #: the open transaction's deadline, in milliseconds, as its ``tx.begin`` asked it (its statements' timeout,
+        #: and how long the hub lets each of its requests wait for a slot); None for the backend's ``timeout_ms``.
+        #: Set at each begin
+        self.tx_timeout_ms: int | None = None
+
+    #: a transaction on this connection takes a deadline of its own (``transaction(timeout_ms=...)``), which
+    #: :class:`~threetears.core.collections.caller_transaction.CallerTransaction` hands only a connection that says so
+    takes_transaction_timeout: Final = True
+
+    def _tx_wait_s(self) -> float | None:
+        """how long to wait for one ``l3.tx.*`` reply of the open transaction: its deadline and
+        :data:`_TX_REPLY_GRACE_SECONDS`; None for the backend's own wait.
+
+        :return: seconds, or None
+        :rtype: float | None
+        """
+        return None if self.tx_timeout_ms is None else self.tx_timeout_ms / 1000 + _TX_REPLY_GRACE_SECONDS
+
+    async def tx_request(self, subject: str, payload: dict[str, Any], **options: Any) -> dict[str, Any]:
+        """send one request of the open transaction, waiting for its reply as long as the transaction's deadline
+        allows (:meth:`_tx_wait_s`).
+
+        :param subject: the ``l3.tx.*`` subject
+        :ptype subject: str
+        :param payload: the request
+        :ptype payload: dict[str, Any]
+        :param options: passed to :meth:`NatsProxyL3Backend.nats_request`
+        :ptype options: Any
+        :return: the parsed reply
+        :rtype: dict[str, Any]
+        :raises DataLayerUnavailableError: as :meth:`NatsProxyL3Backend.nats_request` raises
+        """
+        return await self._backend.nats_request(subject, payload, timeout_s=self._tx_wait_s(), **options)
 
     def transaction(
         self,
         namespace: str | None = None,
+        *,
+        timeout_ms: int | None = None,
     ) -> "_ProxyTransaction":
         """return a ``conn.transaction()``-shaped context manager.
 
@@ -2297,10 +2338,20 @@ class _ProxyConnection:
         :param namespace: logical namespace name the session binds to;
             ``None`` means use the caller's default agent namespace
         :ptype namespace: str | None
+        :param timeout_ms: the transaction's deadline: its ``tx.begin`` asks it as the session's statement timeout,
+            which the hub also holds each of its requests to while it waits for a broker slot, and the pod waits for
+            each reply that long and :data:`_TX_REPLY_GRACE_SECONDS`. For a write sized to its work: a page that
+            queued behind others past the backend's ``timeout_ms`` (five seconds, sized for a serving read) was
+            refused ``QUERY_TIMEOUT`` and its load failed (the 2026-11-24 replay). None for the backend's
+            ``timeout_ms``
+        :ptype timeout_ms: int | None
         :return: transaction context manager
         :rtype: _ProxyTransaction
+        :raises ValueError: when ``timeout_ms`` is under one
         """
-        return _ProxyTransaction(self, self._backend, namespace)
+        if timeout_ms is not None and timeout_ms < 1:
+            raise ValueError(f"a transaction's timeout_ms must be at least 1, got {timeout_ms}")
+        return _ProxyTransaction(self, self._backend, namespace, timeout_ms=timeout_ms)
 
     def _note_changed_rows(self) -> None:
         """keep the rows this statement is named as changing for the transaction's commit. On the loop, before the
@@ -2410,7 +2461,7 @@ class _ProxyConnection:
             else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("execute", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
+        response = await self.tx_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
@@ -2445,7 +2496,7 @@ class _ProxyConnection:
             "prefixes": [{column: transport_param(value) for column, value in prefix.items()} for prefix in prefixes],
         }
         subject = Subjects.l3_tx("delete_prefixes", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload)
+        response = await self.tx_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.delete_prefixes")
         return int(response.get("row_count") or 0)
@@ -2493,7 +2544,7 @@ class _ProxyConnection:
             else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("fetchrow", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
+        response = await self.tx_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetchrow")
         row = response.get("row")
@@ -2588,7 +2639,9 @@ class _ProxyConnection:
             else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
-        reply = await self._backend.nats_request_bytes(subject, payload, offload_encode=offload)
+        reply = await self._backend.nats_request_bytes(
+            subject, payload, timeout_s=self._tx_wait_s(), offload_encode=offload
+        )
         response, rows = await _read_rows_reply(subject, reply)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
@@ -2757,10 +2810,10 @@ class _ProxyConnection:
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
         if rows is None:
             payload = await _on_copy_thread(self._copy_payload, table_name, columns, records)
-            response = await self._backend.nats_request(subject, payload, offload_encode="copy")
+            response = await self.tx_request(subject, payload, offload_encode="copy")
         else:
             envelope = self._copy_envelope(table_name, columns, rows)
-            response = await self._backend.nats_request(subject, envelope, offload_encode="copy", rows_ipc=rows.ipc)
+            response = await self.tx_request(subject, envelope, offload_encode="copy", rows_ipc=rows.ipc)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.copy")
         row_count = response.get("row_count")
@@ -2843,7 +2896,7 @@ class _ProxyConnection:
         while start < total:
             sent, count = await _on_copy_thread(write_request_rows, rows, start, min(count, cap), limit, loop)
             envelope = {**self._copy_envelope(table_name, rows.column_names, sent), **fields}
-            response = await self._backend.nats_request(subject, envelope, offload_encode="copy", rows_ipc=sent.ipc)
+            response = await self.tx_request(subject, envelope, offload_encode="copy", rows_ipc=sent.ipc)
             if not response.get("success", False):
                 self._backend.raise_for_failed_reply(response, "tx.copy")
             row_count = response.get("row_count")
@@ -2877,7 +2930,7 @@ class _ProxyConnection:
         # nothing the session wrote landed, so no collection settling it may be handed a token
         forget_reply_generations("its transaction was rolled back")
         try:
-            await self._backend.nats_request(subject, payload)
+            await self.tx_request(subject, payload)
         finally:
             # clear the tx_id even on network failure so subsequent
             # ops on this connection route through the outside-tx
@@ -2913,6 +2966,8 @@ class _ProxyTransaction:
         connection: "_ProxyConnection",
         backend: "NatsProxyL3Backend",
         namespace: str | None = None,
+        *,
+        timeout_ms: int | None = None,
     ) -> None:
         """capture the owning connection and backend.
 
@@ -2923,12 +2978,16 @@ class _ProxyTransaction:
         :param namespace: logical namespace the session binds to, or
             ``None`` for the backend default
         :ptype namespace: str | None
+        :param timeout_ms: the transaction's deadline (:meth:`_ProxyConnection.transaction`); None for the backend's
+            ``timeout_ms``
+        :ptype timeout_ms: int | None
         :return: None
         :rtype: None
         """
         self._connection = connection
         self._backend = backend
         self._namespace = namespace
+        self._timeout_ms = timeout_ms
 
     async def __aenter__(self) -> "_ProxyTransaction":
         """send ``l3.tx.begin`` and pin the returned tx_id on the connection.
@@ -2954,14 +3013,16 @@ class _ProxyTransaction:
             "correlation_id": str(uuid7()),
             "identity_token": self._backend.forwarded_identity_token(),
             "namespace": effective_namespace,
-            "statement_timeout_ms": self._backend.timeout_ms,
+            "statement_timeout_ms": self._backend.timeout_ms if self._timeout_ms is None else self._timeout_ms,
         }
+        # every request of the session, its begin first, waits as long as its deadline allows
+        self._connection.tx_timeout_ms = self._timeout_ms
         subject = Subjects.l3_tx("begin", namespace=self._backend.ns).path
         # the begin is shielded: a caller cancelled while it waits for the answer (a sibling task's failure, a
         # shutdown) leaves the hub holding a session no one ends, its connection taken from the hub's pool until the
         # idle sweep rolls it back. The election replay of 2026-11-21 left one a minute so, each begun as a failed
         # load cancelled its other states. So the begin runs to its answer, and a session it opened is rolled back.
-        begin = asyncio.ensure_future(self._backend.nats_request(subject, payload))
+        begin = asyncio.ensure_future(self._connection.tx_request(subject, payload))
         try:
             response = await asyncio.shield(begin)
         except asyncio.CancelledError:
@@ -3017,7 +3078,7 @@ class _ProxyTransaction:
             "tx_id": tx_id,
         }
         try:
-            await self._backend.nats_request(Subjects.l3_tx("rollback", namespace=self._backend.ns).path, payload)
+            await self._connection.tx_request(Subjects.l3_tx("rollback", namespace=self._backend.ns).path, payload)
         except (
             Exception
         ) as exc:  # prawduct:allow prawduct/broad-except -- logged; the hub's idle sweep rolls the session back
@@ -3083,7 +3144,7 @@ class _ProxyTransaction:
             forget_reply_generations("its transaction was rolled back")
         try:
             try:
-                response = await self._backend.nats_request(subject, payload)
+                response = await self._connection.tx_request(subject, payload)
             except DataLayerUnavailableError as exc:
                 # no reply, so the commit's outcome is unknown: hand out no earlier commit's token
                 forget_reply_generations(f"its {action} got no reply")
