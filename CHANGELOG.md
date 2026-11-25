@@ -22,6 +22,9 @@ committed by the writer: the flush writes its rows again one by one, which chang
 on a `raise` table, has each landed row refused as present, retried and dropped with an error logged (the row is
 stored).
 
+**Tests:** `test_row_hash_live.py` names its table `hashed_results`: the process-wide key registry is by table name,
+and other modules declare a `results` table with other keys, so the test failed whenever one ran first in its worker.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of

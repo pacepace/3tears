@@ -15,6 +15,7 @@ __all__ = [
     "ConflictedRow",
     "DivergedError",
     "FileConflictError",
+    "ForwardTooLargeError",
     "GitStoreError",
     "HandEditPendingError",
     "NotTheWriterError",

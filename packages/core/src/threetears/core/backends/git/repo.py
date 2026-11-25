@@ -1167,6 +1167,8 @@ class GitRepo:
         :raises ChangeConflictError: when a row changed since it was read; nothing was written
         :raises HandEditPendingError: when a file to write has an uncommitted hand edit
         :raises NotTheWriterError: when no writer could take the change
+        :raises ForwardTooLargeError: on a process that is not the writer, when the changes are over the broker's
+            ``max_payload`` as one request; nothing was sent
         """
         full = _message_with_trailers(message, trailers)
         request = ForwardedRequest(op="commit", changes=tuple(changes), message=full, author=author, date=date)
@@ -1328,6 +1330,7 @@ class GitRepo:
         :return: the result
         :rtype: CommitResult
         :raises NotTheWriterError: when no process is the writer and this one could not become it
+        :raises ForwardTooLargeError: when the request is over the broker's ``max_payload``; nothing was sent
         """
         if self.is_writer:
             return await local()
