@@ -20,6 +20,7 @@ does); L3 is a DuckDB answering the follower's own statements. The contract this
 
 from __future__ import annotations
 
+import bisect
 import asyncio
 import json
 import time
@@ -156,7 +157,18 @@ class _L3:
             self.db.unregister("_put")
 
     def delete(self, keys: Sequence[tuple[str, int]]) -> None:
-        self.db.executemany(f"DELETE FROM {_TABLE} WHERE state = ? AND geo_id = ?", [list(k) for k in keys])
+        # one statement over the keys as a table, as ``put``: a statement a key binds each value from Python (a failed
+        # ``import pandas`` a value), which held the loop past the loop-stall guard's limit
+        gone = pa.table(
+            {"state": pa.array([k[0] for k in keys], pa.string()), "geo_id": pa.array([k[1] for k in keys], pa.int64())}
+        )
+        self.db.register("_gone", gone)
+        try:
+            self.db.execute(
+                f"DELETE FROM {_TABLE} AS t USING _gone AS g WHERE t.state = g.state AND t.geo_id = g.geo_id"  # noqa: S608
+            )
+        finally:
+            self.db.unregister("_gone")
 
     def held(self) -> list[tuple[Any, ...]]:
         return sorted(self.db.execute(f"SELECT state, geo_id, votes FROM {_TABLE}").fetchall())
@@ -790,7 +802,9 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
     l3.put(_rows("VA", 40))
     await follower.warm()
     assert await follower.catch_up()
-    l3.db.executemany(f"INSERT INTO {_TABLE} VALUES (?, ?, ?, 5)", [["OH", i, 2] for i in range(12)])
+    # one statement with no parameters: a statement a row binds each value from Python (a failed ``import pandas`` a
+    # value), which held the loop past the loop-stall guard's limit
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT 'OH', i, 2, 5 FROM range(12) AS r(i)")  # noqa: S608
     log.count += 1
     log.records[f"inc:{log.count}"] = EpochChange(
         table=_TABLE, token=f"inc:{log.count}", whole_table=True, partition={"ver": "5"}
@@ -810,6 +824,9 @@ class _Notes:
 
     def __init__(self, notes: Sequence[tuple[datetime, tuple[str, ...]]]) -> None:
         self.notes = sorted(notes)
+        #: each note's time, in the notes' order: a page found by bisection, as the broker's index seeks it, not a walk
+        #: of every note a page (tens of thousands of them, which held the loop past the loop-stall guard's limit)
+        self.times = [at for at, _ in self.notes]
         self.pages = 0
 
     async def noted_keys(
@@ -824,10 +841,10 @@ class _Notes:
         self.pages += 1
         since, until = noted_between
         after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
-        found = [note for note in self.notes if after < note[0] <= until]
-        taken, more = found[:limit], len(found) > limit
+        start, end = bisect.bisect_right(self.times, after), bisect.bisect_right(self.times, until)
+        taken, more = self.notes[start : min(end, start + limit)], end - start > limit
         if more:
-            taken = [note for note in taken if note[0] < found[limit][0]]
+            taken = [note for note in taken if note[0] < self.notes[start + limit][0]]
         return NotedKeysPage(
             keys=tuple(keys for _, keys in taken),
             whole_table=False,
@@ -850,25 +867,38 @@ def _too_large(log: _Log, *, keep: bool = True, since: datetime | None = None) -
 _PAST_SIXTEEN_RECORDS = 70_000
 
 
-async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_notes(noted_world: Any) -> None:
-    world, registry = noted_world
-    l3, log, lock, backend, follower = world
-    await _warmed(world, 120)
-    # updates of rows held, inserts past them, and deletes, all in one commit
+def _committed_past_sixteen_records(l3: _L3) -> tuple[list[tuple[str, int, int]], list[tuple[str, int]]]:
+    """one commit's rows put in L3: updates of the 120 rows held, inserts past them, and ten deletes."""
     changed = [("VA", i, 7) for i in range(60, _PAST_SIXTEEN_RECORDS)]
     deleted = [("VA", i) for i in range(10, 20)]
     l3.put(changed)
     l3.delete(deleted)
-    since, _ = _too_large(log)
+    return changed, deleted
+
+
+def _notes_of(since: datetime, changed: Sequence[tuple[str, int, int]], deleted: Sequence[tuple[str, int]]) -> _Notes:
+    """the commit's change notes from ``since``, four keys a microsecond."""
     keys = [(s, str(g)) for s, g, _ in changed] + [(s, str(g)) for s, g in deleted]
-    notes = _Notes([(since + timedelta(microseconds=index // 4), key) for index, key in enumerate(keys)])
+    return _Notes([(since + timedelta(microseconds=index // 4), key) for index, key in enumerate(keys)])
+
+
+async def test_a_commit_too_large_to_record_reaches_the_copy_exactly_from_its_notes(noted_world: Any) -> None:
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 120)
+    # updates of rows held, inserts past them, and deletes, all in one commit: its 70,000 rows and their notes built on
+    # a thread, as setup; on the loop they held it past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+    changed, deleted = await asyncio.to_thread(_committed_past_sixteen_records, l3)
+    since, _ = _too_large(log)
+    notes = await asyncio.to_thread(_notes_of, since, changed, deleted)
     registry.set_noted_keys_reader(notes)
     lock.version += 1
     l3.rows_read = 0
 
     assert await follower.catch_up()
 
-    assert _copy(backend) == l3.held(), "the copy equals L3, row for row"
+    copied, held = await asyncio.to_thread(lambda: (_copy(backend), l3.held()))
+    assert copied == held, "the copy equals L3, row for row"
     assert l3.rows_read == len(changed), "the keys' rows that exist, never the table"
     assert notes.pages > 1
     assert follower.status().behind == {}

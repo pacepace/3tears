@@ -15,6 +15,7 @@ What these hold:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -121,8 +122,10 @@ class _WholeCatalogue(_Catalogue):
 
 async def _announced(triggered: set[tuple[str, str]], table: str = _TABLE) -> list[str | None]:
     """a lost write's window of ``table`` announced with no change-note ring, the switched tables read off the
-    catalogue as a recovery reads them: a rowless record a tenant. The startup loader has run, as in every hub."""
-    load_declared_collections()
+    catalogue as a recovery reads them: a rowless record a tenant. The startup loader has run, as in every hub, here on
+    a thread: its first run imports every declared module, seconds that on the loop held it past the loop-stall guard's
+    limit (threetears.core.testing.loop_stall)."""
+    await asyncio.to_thread(load_declared_collections)
     source = _Recorder()
     now = datetime.now(UTC)
     await announce_window(

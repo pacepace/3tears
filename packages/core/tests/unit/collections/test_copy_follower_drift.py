@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -124,10 +124,33 @@ def _dict_rows(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
 
 
+def _upsert(db: Any, table: str, rows: Sequence[tuple[str, int, int]], key: Sequence[str]) -> None:
+    """``rows`` (state, geo_id, votes) upserted into ``table`` in one statement, the last row of a key winning."""
+    if not rows:
+        return
+    put = pa.table(
+        {
+            "state": pa.array([r[0] for r in rows], pa.string()),
+            "geo_id": pa.array([r[1] for r in rows], pa.int64()),
+            "votes": pa.array([r[2] for r in rows], pa.int64()),
+            "at__": pa.array(range(len(rows)), pa.int64()),
+        }
+    )
+    db.register("_put", put)
+    try:
+        db.execute(
+            f"INSERT OR REPLACE INTO {table} (state, geo_id, votes) SELECT state, geo_id, votes FROM _put "  # noqa: S608
+            f"QUALIFY row_number() OVER (PARTITION BY {', '.join(key)} ORDER BY at__ DESC) = 1"
+        )
+    finally:
+        db.unregister("_put")
+
+
 class _L3:
     """L3 as a DuckDB answering ``fetch``; counts every statement it answers."""
 
     def __init__(self, key: tuple[str, ...]) -> None:
+        self.key = key
         self.db = duckdb.connect(":memory:")
         _OPENED.append(self.db.close)
         for name in _OPTED:
@@ -137,8 +160,10 @@ class _L3:
         self.statements = 0
 
     def put(self, table: str, rows: list[tuple[str, int, int]]) -> None:
-        for row in rows:
-            self.db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?)", list(row))  # noqa: S608
+        # one statement over the rows as an Arrow table, the last of a key winning as row-by-row upserts left it: a
+        # statement a row binds each value from Python (a failed ``import pandas`` a value, under testament a stat of
+        # every path), which held the loop past the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        _upsert(self.db, table, rows, self.key)
 
     def held(self, table: str) -> list[tuple[Any, ...]]:
         return sorted(self.db.execute(f"SELECT {', '.join(_NAMES)} FROM {table}").fetchall())  # noqa: S608

@@ -448,18 +448,7 @@ async def test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset(
     assert len(calls) == 1 and calls[0][:2] == ["_truncate_l3", "reset"], calls
     assert store.reasons == ["reset"]
 
-    callers = []
-    source_root = Path(threetears.core.__file__).parent
-    for path in sorted(source_root.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for inner in ast.walk(node):
-                    if (
-                        isinstance(inner, ast.Call)
-                        and isinstance(inner.func, ast.Attribute)
-                        and inner.func.attr == "truncate"
-                    ):
-                        callers.append(f"{path.name}:{node.name}")
+    callers = await asyncio.to_thread(_callers_of, "truncate")
     assert sorted(set(callers)) == ["schema_backed.py:_truncate_l3", "sql.py:truncate"], callers
 
 
@@ -491,3 +480,22 @@ async def test_a_follower_hears_a_reset_as_a_reset_never_as_an_older_writers_who
     await writer.results.reset()
     await follower.registry.catch_up_generation("lsf_results", await source.current("lsf_results"), changes=source)
     assert heard == ["reset"]
+
+
+def _callers_of(attr: str) -> list[str]:
+    """``file:function`` of every function in threetears.core's source that calls a method named ``attr``. Run on a
+    thread: parsing the whole source tree on the loop held it past the loop-stall guard's limit
+    (threetears.core.testing.loop_stall)."""
+    callers: list[str] = []
+    source_root = Path(threetears.core.__file__).parent
+    for path in sorted(source_root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == attr
+                    ):
+                        callers.append(f"{path.name}:{node.name}")
+    return callers

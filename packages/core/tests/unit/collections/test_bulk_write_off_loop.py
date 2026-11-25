@@ -469,8 +469,8 @@ class TestADeleteReturningItsRowsLeavesTheLoop:
     async def test_every_key_is_settled_with_the_row_its_delete_returned_in_order(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rows = _rows_of(2500)
-        hub = _ReturningHub(rows)
+        rows = await asyncio.to_thread(_rows_of, 2500)
+        hub = await asyncio.to_thread(_ReturningHub, rows)
         backend = hub.proxy()
         collection = _Kept(CollectionRegistry(), DefaultCoreConfig(), None)
         collection.l3_pool = backend
@@ -508,8 +508,8 @@ class TestADeleteReturningItsRowsLeavesTheLoop:
         # what the timing budget below bounds by the clock, counted: the loop's other work runs while the returned
         # rows are read and restated, not once they all are (the old delete read each statement's 1,000 rows and
         # restated all 33,786 in stretches the ticker never ran inside)
-        rows = _rows()
-        hub = _ReturningHub(rows)
+        rows = await asyncio.to_thread(_rows)
+        hub = await asyncio.to_thread(_ReturningHub, rows)
         backend = hub.proxy()
         collection = _Kept(CollectionRegistry(), DefaultCoreConfig(), None)
         collection.l3_pool = backend
@@ -527,7 +527,7 @@ class TestADeleteReturningItsRowsLeavesTheLoop:
                 turns += 1
                 await asyncio.sleep(0)
 
-        keys = [_key(index) for index in range(_REAL)]
+        keys = await asyncio.to_thread(lambda: [_key(index) for index in range(_REAL)])
         ticking = asyncio.get_running_loop().create_task(ticker())
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(schema_sql, "coerce_row", counting)
@@ -576,8 +576,8 @@ class TestAListenerHearsEveryKeyOnTheLoop:
     async def test_the_loop_runs_between_stretches_of_33786_keys_heard(self) -> None:
         # what the timing budget below bounds by the clock, counted: the loop's other work runs while the keys are
         # heard, not once they all are (the old write heard every key of a pass in one stretch: two stretches)
-        rows = _rows()
-        table = _table(rows)
+        rows = await asyncio.to_thread(_rows)
+        table = await asyncio.to_thread(_table, rows)
         backend = _Hub(door=True).proxy()
         collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
         collection.l3_pool = backend
@@ -611,8 +611,8 @@ class TestAListenerHearsEveryKeyOnTheLoop:
 class TestTheLoopRunsWhileARealSizeWriteIsSaved:
     @pytest.mark.parametrize("how", ["save_arrow", "save_rows"])
     async def test_a_ticker_is_never_held_while_33786_rows_are_written(self, how: str) -> None:
-        rows = _rows()
-        table = _table(rows)
+        rows = await asyncio.to_thread(_rows)
+        table = await asyncio.to_thread(_table, rows)
         one_pass = _loop_steps(rows, stamped=how == "save_rows")
         # the old write ran these steps, and more, in one stretch on the loop (save_arrow 10-11 ms held against 5 ms
         # of them, save_rows 43-46 ms against 17-20 ms, a 10-core Apple host, 2026-11-16); a stretch of half of them is a
@@ -637,7 +637,7 @@ class TestTheLoopRunsWhileARealSizeWriteIsSaved:
         )
 
     async def test_a_ticker_is_never_held_while_33786_keys_are_deleted(self) -> None:
-        rows = _rows()
+        rows = await asyncio.to_thread(_rows)
         keys = [_key(row) for row in range(_REAL)]
         one_pass = _delete_steps(rows)
         # the old delete ran these steps, and more (each key's values bound, the keys grouped into statements a JSON
@@ -657,8 +657,8 @@ class TestTheLoopRunsWhileARealSizeWriteIsSaved:
         )
 
     async def test_a_ticker_is_never_held_while_a_listened_collection_writes_33786_rows(self) -> None:
-        rows = _rows()
-        table = _table(rows)
+        rows = await asyncio.to_thread(_rows)
+        table = await asyncio.to_thread(_table, rows)
         one_pass = _heard_keys(_REAL)
         # the old write called the listeners a key at a time on the loop, every key in one stretch, as the write
         # evicted it and again as the commit settled it; 5 ms at the least, a GIL switch interval
@@ -684,7 +684,7 @@ class TestTheLoopRunsWhileARealSizeWriteIsSaved:
         )
 
     async def test_a_ticker_is_never_held_while_33786_keys_are_deleted_returning_their_rows(self) -> None:
-        rows = _rows()
+        rows = await asyncio.to_thread(_rows)
         keys = [_key(row) for row in range(_REAL)]
         one_pass = _returned_steps(rows)
         # the old delete ran these steps on the loop, each statement's 1,000 rows (its reply decoded, its rows read) in

@@ -200,7 +200,7 @@ class TestARefillPutsEveryRowAsRead:
     @pytest.mark.parametrize("count", [50, 5000])
     async def test_every_row_is_put_read_coerced_in_key_order(self, count: int) -> None:
         # 50 rows are one page coerced on the loop; 5,000 at a 1 MiB cap are pages of about 800, on a thread
-        hub = _Hub(count, cap=1024 * 1024)
+        hub = await asyncio.to_thread(_Hub, count, cap=1024 * 1024)
         bus = FakeNatsClient()
         collection, written = await _refill(hub.proxy(), bus)
         assert written == count
@@ -248,8 +248,11 @@ class _Paged:
         end = min(self.count, start + int(match.group(1)))
         self.answered.append(end - start)
         # 1,200 bytes a row of a 12 MiB cap: the next page asks for about as many rows as the cap holds
+        # the page's rows built on a thread, as a reply is read off the network: built on the loop they held it past
+        # the loop-stall guard's limit (threetears.core.testing.loop_stall)
+        rows = await asyncio.to_thread(lambda: [self._row(row) for row in range(start, end)])
         return L3Page(
-            rows=[self._row(row) for row in range(start, end)],
+            rows=rows,
             truncated=False,
             reply_bytes=1200 * (end - start),
             reply_cap=_CAP,
@@ -264,7 +267,7 @@ class TestTheLoopRunsWhileARefillReadsItsRows:
     async def test_the_loop_runs_between_stretches_of_33786_rows_coerced(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # what the timing budget below bounds by the clock, counted: the loop's other work runs while a page's rows are
         # coerced, not once they all are (the old refill coerced each page's rows in one stretch on the loop)
-        hub = _Hub()
+        hub = await asyncio.to_thread(_Hub)
         turns = 0
         seen: list[tuple[int, int]] = []
         original = schema_sql.normalize_read_value
@@ -353,7 +356,7 @@ async def _refill_ticks(hub: _Hub, kept: list[int]) -> tuple[list[Tick], list[Ti
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileARealSizeRefillIsRead:
     async def test_a_ticker_is_never_held_while_33786_rows_are_refilled_at_the_production_cap(self) -> None:
-        hub = _Hub()
+        hub = await asyncio.to_thread(_Hub)
         kept: list[int] = []
         # the hub's replies built once, outside any window
         await _refill(hub.proxy())
