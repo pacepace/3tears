@@ -656,6 +656,8 @@ module = [
     "threetears.core.collections.delta_fold",
     # and a table's delta files (Arrow IPC) and the rail's Arrow types its columns are typed by
     "threetears.core.collections.delta_files",
+    # and a batched invalidation's keys, packed and read as Arrow text columns
+    "threetears.core.collections.invalidation_rows",
     # and a recreate's check of a file's keys against its record's, matched in Arrow
     "threetears.core.collections.delta_recreate",
     # and a write's delta files built and saved in a worker process (Arrow IPC across)

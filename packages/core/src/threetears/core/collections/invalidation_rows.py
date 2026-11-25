@@ -25,7 +25,7 @@ from threetears.core.collections.delta_files import entity_key_batch
 from threetears.core.collections.epoch_change import key_text
 
 try:
-    import pyarrow as pa  # type: ignore[import-untyped]  # no py.typed; not in pyproject's Arrow module list (left unedited)
+    import pyarrow as pa
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; the wire is read with the standard library without it
