@@ -1,0 +1,77 @@
+# Build plan: 3tears-mcp call context, progress and client logging
+
+Branches, stacked: `feat/mcp-call-context` (chunk 01, off `feat/mcp-drop-sdk1`) and
+`feat/mcp-progress-logging` (chunk 02, off chunk 01). One PR each into develop, area mcp, merged in
+that order after `feat/mcp-drop-sdk1`.
+Critic mode: one review per chunk (each branch is reviewed and merged on its own).
+
+## Goals
+
+A 3tears-mcp tool handler is called as `handler(**arguments)` and sees nothing of the request, so it
+can neither report progress nor notice that the client gave up. aidc 2.0 serves its tools through
+3tears-mcp (aidc design-13, items 1 and 2; aidc requirements TRS-03, TRS-04, TRS-09), and its long
+tools (`session_create`, `session_invoke`) must send real `notifications/progress` for each phase,
+each phase also as a log message, before the result, and must stop their work when the call is
+cancelled.
+
+Success:
+
+- chunk 01: a handler that declares a `CallContext` parameter gets the progress token, a progress
+  reporter, a client log channel and a cancellation signal; a handler that does not is called as
+  before; both tested over a real MCP client.
+- chunk 02: a real SDK client over Streamable HTTP receives `notifications/progress` and
+  `notifications/message` before the call's result, in stateless and stateful modes, on the
+  handshake-era protocol and on 2026-07-28; a transport that cannot carry them (plain-JSON
+  responses) says so to the operator instead of dropping them silently.
+
+Out of scope: `TearsTool`'s own progress (aidc U13, gated on an owner question), the stateful-mode
+work of aidc U06 (re-resolving the bearer identity per message, `tools/list_changed`), and the error
+model (U04).
+
+## Decisions taken (inferred; flag at the boundary)
+
+- [DECISION: the context is found by the parameter's annotation, `CallContext`, not by a parameter
+  name | design-13 says "detected by signature"; a fixed name would collide with tool arguments. An
+  annotation that cannot be evaluated (a type imported only for type checking) is matched as written,
+  `CallContext` or a dotted name ending in it]
+- [DECISION: the context is a 3tears class with no SDK type in its surface; its senders are plain
+  callables | TRS-03 forbids consumer code importing an SDK type to get these, and a handler's own
+  test builds a context with recording senders]
+- [DECISION: the cancellation signal is an `asyncio.Event` the dispatch sets when the handler's call is
+  cancelled; the handler itself sees `CancelledError` as before | the SDK cancels the handler's scope
+  on `notifications/cancelled` and on a dropped SSE stream, and does not expose its own
+  `cancel_requested` event to a low-level handler. asyncio rather than anyio: the owner's ruling of
+  2026-10-17 limits 3tears-mcp's hard dependencies, and 3tears runs on asyncio]
+- [DECISION: `report_progress` refuses a value that is not finite or does not exceed the last |
+  the protocol requires progress to increase; a handler bug surfaces in its own tests]
+- [DECISION: log entries are sent as `notifications/message` through `send_notification`, gated by the
+  SDK's own `allowed_log_levels` | the SDK's `send_log_message` warns (a `UserWarning`) on every call,
+  since 2026-07-28 deprecates the logging capability, while the message itself remains; the gate keeps
+  the 2026-07-28 per-request opt-in]
+- [DECISION: the server does not declare the `logging` capability nor serve `logging/setLevel` | the
+  SDK declares it only when an `on_set_logging_level` handler is passed, which it deprecates with a
+  warning; the SDK client accepts `notifications/message` without it. Owner to confirm]
+
+## Chunk 01: the call context (`feat/mcp-call-context`)
+
+- `context.py`: `CallContext`, `LogLevel`.
+- `tool.py`: `McpTool.context_parameter`, found at construction; refusals for two, positional-only, or
+  an input property's name.
+- `server.py`: the dispatch builds the context from the SDK's request context, refuses an argument
+  named as the context, and sets the cancellation event when the call is cancelled.
+- `tests/unit/test_call_context.py`, `tests/unit/conftest.py` (`loopback_mcp`, a real socket for the
+  cancellation test); README section; CHANGELOG.
+
+Done when: lint, `typecheck.sh mcp`, `test.sh mcp`, the enforcement suite pass; Critic run.
+
+## Chunk 02: progress and logging over Streamable HTTP (`feat/mcp-progress-logging`)
+
+- Wire tests with the SDK's client: progress and log entries arrive before the result, in stateless
+  and stateful modes, on 2025-11-25 and 2026-07-28 (with and without the log opt-in), through
+  `build_http_app` and an embedded `McpHttpTransport`.
+- A transport built with `json_response=True` cannot carry them: the server logs one warning per
+  server naming the fix the first time a handler's progress or log entry is dropped that way.
+- README: which transport options deliver progress, logging and cancellation; CHANGELOG.
+
+Done when: lint, `typecheck.sh mcp`, `test.sh mcp`, the enforcement suite and the unit suite pass;
+Critic run.
