@@ -1028,6 +1028,17 @@ async def test_a_large_files_pass_builds_no_python_row_and_applies_it_exactly(_v
 #: the audit's real size for a loop bound: a 200,000-row commit applied from its file
 _LOOP_ROWS = 200_000
 
+
+def _born(l3: Any, log: Any, keys: Sequence[tuple[Any, ...]]) -> None:
+    """L3's ``_LOOP_ROWS`` rows of VA and the commit naming ``keys``: a test's own setup, run on a thread (on the loop
+    its Python rows and record held one turn past the loop-stall guard's limit on a loaded pool host, 2026-11-25)."""
+    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
+    l3.db.register("born", born)
+    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
+    l3.db.unregister("born")
+    log.commit(keys)
+
+
 #: the longest one turn of the loop may run (CPU time, turn_holds) while a pass applies a 200,000-row commit from its
 #: file, the collector on (decision 35: a few ms, under the SDK watchdog's 50 ms stall alarm). Measured 2026-11-23
 #: (macOS arm64, Python 3.14), the stage alone: with the file's changes grouped and each key merged on the loop, 125.6
@@ -1045,16 +1056,16 @@ async def test_a_large_files_pass_holds_no_turn_of_the_loop_long(_volume: Path) 
     as one Arrow batch, the follower keeps them so, and the merge runs on a thread."""
     world = _world()
     l3, log, lock, backend, follower = world
-    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
-    l3.db.register("born", born)
-    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
-    l3.db.unregister("born")
-    log.commit([("VA", i) for i in range(_LOOP_ROWS)])
+    await asyncio.to_thread(_born, l3, log, [("VA", i) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
-    name = _save_arrow(_volume, "loop", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"])
-    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
-    log.commit([("VA", i) for i in range(_LOOP_ROWS)], delta_file=name)
+
+    def changed() -> None:
+        name = _save_arrow(_volume, "loop", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"])
+        l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+        log.commit([("VA", i) for i in range(_LOOP_ROWS)], delta_file=name)
+
+    await asyncio.to_thread(changed)
     lock.commit("state:VA")
     with turn_holds() as holds:
         assert await follower.catch_up()
@@ -1074,30 +1085,30 @@ async def test_a_large_pass_of_a_table_whose_scope_is_in_its_rows_stages_its_key
     key = ("geo_id", "date_created")
     world = _world(key=key, page_size=_LOOP_ROWS)
     l3, log, lock, backend, follower = world
-    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
-    l3.db.register("born", born)
-    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
-    l3.db.unregister("born")
     instant = "2026-11-03T21:45:00.000000+00:00"  # the key's instant as a delta file names it
-    log.commit([(str(i), instant) for i in range(_LOOP_ROWS)])  # type: ignore[misc]
+    await asyncio.to_thread(_born, l3, log, [(str(i), instant) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
-    delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
-    delta.arrow(
-        pa.table(
-            {
-                "state": pa.nulls(_LOOP_ROWS, pa.string()),
-                "geo_id": pa.array(range(_LOOP_ROWS), pa.int64()),
-                "votes": pa.array(range(1, _LOOP_ROWS + 1), pa.int64()),
-                "note": pa.nulls(_LOOP_ROWS, pa.string()),
-                "date_created": pa.repeat(pa.scalar(_BORN, _TYPES["date_created"]), _LOOP_ROWS),
-            }
-        ),
-        [*key, "votes"],
-    )
-    name = write_delta_file(_volume, delta, "scoped")
-    l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
-    log.commit([(str(i), instant) for i in range(_LOOP_ROWS)], delta_file=name)  # type: ignore[misc]
+
+    def changed() -> None:
+        delta = TableDelta(name=_TABLE, types=_TYPES, key=key)
+        delta.arrow(
+            pa.table(
+                {
+                    "state": pa.nulls(_LOOP_ROWS, pa.string()),
+                    "geo_id": pa.array(range(_LOOP_ROWS), pa.int64()),
+                    "votes": pa.array(range(1, _LOOP_ROWS + 1), pa.int64()),
+                    "note": pa.nulls(_LOOP_ROWS, pa.string()),
+                    "date_created": pa.repeat(pa.scalar(_BORN, _TYPES["date_created"]), _LOOP_ROWS),
+                }
+            ),
+            [*key, "votes"],
+        )
+        name = write_delta_file(_volume, delta, "scoped")
+        l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
+        log.commit([(str(i), instant) for i in range(_LOOP_ROWS)], delta_file=name)  # type: ignore[misc]
+
+    await asyncio.to_thread(changed)
     lock.commit("state:VA")
     loop_thread = threading.get_ident()
     on_loop: list[str] = []
@@ -1148,11 +1159,7 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
     monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
     world = _world()
     l3, log, lock, backend, follower = world
-    born = pa.table({"state": ["VA"] * _LOOP_ROWS, "geo_id": list(range(_LOOP_ROWS))})
-    l3.db.register("born", born)
-    l3.db.execute(f"INSERT INTO {_TABLE} SELECT state, geo_id, geo_id, 'first', ? FROM born", [_BORN])  # noqa: S608
-    l3.db.unregister("born")
-    log.commit([("VA", i) for i in range(_LOOP_ROWS)])
+    await asyncio.to_thread(_born, l3, log, [("VA", i) for i in range(_LOOP_ROWS)])
     await follower.warm()
     assert await follower.catch_up()
     l3.statements = 0
@@ -1164,7 +1171,10 @@ async def test_a_waited_for_commit_too_big_to_list_hears_its_keys_in_short_turns
     l3.db.execute(f"UPDATE {_TABLE} SET votes = geo_id + 1")  # noqa: S608
     staging = _volume / "staging"
     staging.mkdir()
-    assert _save_arrow(staging, "big", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"]) == lost
+    saved = await asyncio.to_thread(
+        _save_arrow, staging, "big", _votes_plus_one(_LOOP_ROWS), ["state", "geo_id", "votes"]
+    )
+    assert saved == lost
     (_volume / lost).parent.mkdir(exist_ok=True)
     # the file's keys spelled in this process are seen here (key_text_table, under _heard_batch): on the loop they held
     # one turn 11.1 ms (past the bar, the pool host brooks-14th-mbp, 2026-11-25); they belong in the worker process
@@ -1454,6 +1464,45 @@ async def test_a_key_prefix_delete_deletes_the_copys_rows_under_it_with_no_l3_st
     assert await follower.catch_up()
 
     assert [row for row in _copy(backend) if row[0] == "IL"] == []
+    assert await _same_now(backend, l3)
+    assert l3.statements == 0
+
+
+async def test_a_key_prefix_delete_of_many_rows_reaches_its_keys_in_the_worker_process(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if the keys a cleared prefix reaches (the copy's rows under it beside every key heard or staged, matched,
+    made distinct and spelled) are worked out in the serving process past the bound: the match alone took a thread
+    20 ms at 1,000,000 keys heard (2026-11-25). The copy still loses every row under the prefix, reading no L3."""
+    count = copy_key_work.INLINE_KEYS * 2
+    world = _world()
+    l3, log, lock, backend, follower = world
+
+    def born() -> None:
+        rows = [_row("IL", i, i) for i in range(count)] + [_row("VA", i, i) for i in range(5)]
+        l3.insert(rows)
+        log.commit([(row["state"], row["geo_id"]) for row in rows])
+
+    await asyncio.to_thread(born)
+    await follower.warm()
+    assert await follower.catch_up()
+    l3.statements = 0
+    here: list[int] = []
+    reach = copy_key_work.cleared_reach_of
+
+    def watched(key: Any, instants: Any, held: Sequence[Any], known: Any, *rest: Any) -> Any:
+        here.append(sum(rows.num_rows for rows in held) + known.num_rows)
+        return reach(key, instants, held, known, *rest)
+
+    monkeypatch.setattr(copy_follower, "cleared_reach_of", watched)
+    results, store = _writer(l3, log, _volume)
+    async with store.acquire() as conn, CallerTransaction(conn):
+        await results.delete_prefixes([{"state": "IL"}], conn=conn)
+    lock.commit("state:IL")
+    assert await follower.catch_up()
+    assert "cleared_reach_job" in _WORKERS.jobs, f"the prefix's keys were found in the serving process: {_WORKERS.jobs}"
+    assert not [keys for keys in here if keys >= copy_key_work.INLINE_KEYS], f"found here: {here}"
+    assert [row for row in await asyncio.to_thread(_copy, backend) if row[0] == "IL"] == []
     assert await _same_now(backend, l3)
     assert l3.statements == 0
 

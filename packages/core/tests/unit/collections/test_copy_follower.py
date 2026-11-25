@@ -47,6 +47,9 @@ from threetears.core.collections.registry import BEHIND_REASONS, CacheInvalidati
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
+import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
+from threetears.core.collections.copy_key_work import INLINE_KEYS  # noqa: E402
+from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     FAILING_AFTER,
     WHOLE_READ_WHYS,
@@ -247,6 +250,8 @@ def noted_world() -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollowe
 
 def _world(
     retry_waits: tuple[float, float] = (1.0, 60.0),
+    page_size: int = 50,
+    workers: ProcessWorkers | None = None,
 ) -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
     l3, log, lock = _L3(), _Log(), _Seqlock()
     backend = _backend()
@@ -261,8 +266,9 @@ def _world(
         settled=lock.settled,
         generation=log.current,
         changes=log,
-        page_size=50,
+        page_size=page_size,
         retry_waits=retry_waits,
+        drift_workers=workers,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -1243,12 +1249,17 @@ class _Scopes:
 
 
 def _scoped_world(
-    lock: _Scopes, *, checkpoint_from: DuckDBBackend | None = None
+    lock: _Scopes,
+    *,
+    checkpoint_from: DuckDBBackend | None = None,
+    page_size: int = 50,
+    workers: ProcessWorkers | None = None,
+    registry: CollectionRegistry | None = None,
 ) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
     l3, log = _L3(), _Log()
     backend = _backend()
     backend.initialize(_metadata())
-    registry = CollectionRegistry()
+    registry = CollectionRegistry() if registry is None else registry
     registry.follow_generation(_TABLE)
     follower = CopyFollower(
         registry,
@@ -1258,8 +1269,9 @@ def _scoped_world(
         settled=lock.settled,
         generation=log.current,
         changes=log,
-        page_size=50,
+        page_size=page_size,
         stamp_table="scope_epochs",
+        drift_workers=workers,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1505,7 +1517,8 @@ def test_a_follower_none_of_whose_tables_has_a_scope_builds_hearing_no_stamp_tab
 
 async def test_a_scope_the_write_takes_while_a_pass_reads_is_never_applied_from_that_pass() -> None:
     lock = _Scopes()
-    l3, log, backend, follower = _scoped_world(lock)
+    registry = CollectionRegistry()
+    l3, log, backend, follower = _scoped_world(lock, registry=registry)
     l3.put(_rows("VA", 5))
     log.commit([("VA", i) for i in range(5)])
     await follower.warm()
@@ -2514,3 +2527,235 @@ async def test_a_key_heard_again_at_the_epoch_its_kept_stage_holds_is_not_read_f
     assert await follower.catch_up()
     assert l3.rows_read > read, "a key heard at a newer epoch was not read again"
     assert _copy(backend) == l3.held()
+
+
+# --- a pass's CPU leaves the serving process (copy_key_work) -------------------------------------------------------
+
+
+class _CountedWorkers(ProcessWorkers):
+    """the copy's worker process, each job sent to it named: a pass's key work runs there, in another process."""
+
+    def __init__(self) -> None:
+        super().__init__(workers=1, name="test copy follower")
+        self.jobs: list[str] = []
+
+    async def run(self, job: Callable[..., Any], *args: Any, inline: bool = False) -> Any:
+        if not inline:
+            self.jobs.append(job.__name__)
+        return await super().run(job, *args, inline=inline)
+
+
+#: one worker process the tests below share: made at its first job, joined at the interpreter's exit, never one a test
+_WORKERS = _CountedWorkers()
+
+
+@pytest.fixture(autouse=True)
+def _one_worker_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """every follower here given none shares :data:`_WORKERS`: one worker process a test process, never a second
+    beside the process's own (each a whole interpreter: a pool host running many test processes ran short of them)."""
+    monkeypatch.setattr(copy_follower, "_COPY_WORKERS", _WORKERS)
+
+
+@pytest.fixture
+def jobs() -> Iterator[list[str]]:
+    """the jobs the tests' worker process was sent, from the test's start."""
+    _WORKERS.jobs.clear()
+    yield _WORKERS.jobs
+    _WORKERS.jobs.clear()
+
+
+def _here(monkeypatch: pytest.MonkeyPatch, name: str, rows: Callable[..., int]) -> list[int]:
+    """each call of one of ``copy_key_work``'s cores the follower makes in this process (any thread): the rows it was
+    given. A call in the worker process is not seen. Set as the follower names it, so a follower that has no such core
+    (an older one) is seen to make none."""
+    seen: list[int] = []
+    real = getattr(copy_follower, name, None)
+
+    def watched(*args: Any) -> Any:
+        seen.append(rows(*args))
+        assert real is not None
+        return real(*args)
+
+    monkeypatch.setattr(copy_follower, name, watched, raising=False)
+    return seen
+
+
+async def test_a_large_pass_takes_its_keys_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if a pass's take of its keys heard (each key at each epoch once, those of a held scope left, the keys
+    sorted and placed) runs in the serving process past its bound: on a thread it took 84 ms of CPU at 100,000 keys and
+    1.06 s at 1,000,000 (2026-11-25), cores the pod's page serving needs. A small pass takes its keys here."""
+    (l3, log, lock, backend, follower), _registry = _world(workers=_WORKERS)
+    await _warmed((l3, log, lock, backend, follower), 2)
+    taken = _here(monkeypatch, "taken_of", lambda key, scope, files, heard, *rest: heard.num_rows)
+    count = copy_follower.TAKEN_INLINE_KEYS * 6
+    await asyncio.to_thread(l3.put, _rows("IL", count, votes=3))
+    await asyncio.to_thread(log.commit, [("IL", i) for i in range(count)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert "taken_job" in jobs, f"the pass's {count} keys were not taken in the worker process: {jobs}"
+    assert not [rows for rows in taken if rows > copy_follower.TAKEN_INLINE_KEYS], f"taken here: {taken}"
+    assert _copy(backend) == l3.held()
+    jobs.clear()
+    l3.put([("IL", 0, 9)])
+    log.commit([("IL", 0)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert "taken_job" not in jobs, "a pass of one key went to the worker process: its round trip costs more"
+    assert _copy(backend) == l3.held()
+
+
+async def test_a_whole_read_and_a_partition_past_the_bound_are_judged_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if a page of a whole read, or of a partition, past the bound has its scopes found and judged in the
+    serving process: on the loop a 200,000-row page took 6.5 ms, 19.7 ms with a scope held (2026-11-25). A first start
+    beside a write holding IL leaves IL's rows out (their flags the worker's), then reads IL once the write commits."""
+    lock = _Scopes()
+    page = INLINE_KEYS * 2
+    l3, log, backend, follower = _scoped_world(lock, page_size=page * 2, workers=_WORKERS)
+    await asyncio.to_thread(l3.put, _rows("VA", page) + _rows("IL", page))
+    await asyncio.to_thread(log.commit, [("VA", i) for i in range(page)] + [("IL", i) for i in range(page)])
+    whole = _here(monkeypatch, "whole_page_of", lambda scope, rows, held: rows.num_rows)
+    parts = _here(monkeypatch, "partition_page_of", lambda key, instants, scope, rows, held: rows.num_rows)
+    lock.held = frozenset({"state:IL"})
+    await follower.warm()
+    assert await follower.catch_up()
+    assert _of(backend, "VA") == _l3_of(l3, "VA") and _of(backend, "IL") == []
+    lock.held = None
+    lock.commit("state:IL")
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert {"whole_page_job", "partition_page_job"} <= set(jobs), f"judged in the serving process: {jobs}"
+    assert not [rows for rows in (*whole, *parts) if rows >= INLINE_KEYS], f"here: {whole}, {parts}"
+
+
+async def test_a_partition_the_copy_holds_many_rows_of_is_judged_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if the copy's own rows of a load's partition, past the bound, have their scopes and keys found in the
+    serving process (the same work as a whole read's page, over a state's rows the copy holds)."""
+    count = INLINE_KEYS * 2
+    (l3, log, lock, backend, follower), _registry = _world(page_size=count, workers=_WORKERS)
+    await asyncio.to_thread(l3.put, _rows("OH", count))
+    await asyncio.to_thread(log.commit, [("OH", i) for i in range(count)])
+    await follower.warm()
+    assert await follower.catch_up()
+    jobs.clear()
+    mine = _here(monkeypatch, "partition_mine_of", lambda key, instants, scope, last, rows, held: rows.num_rows)
+    await asyncio.to_thread(l3.delete, [("OH", i) for i in range(0, count, 2)])
+    await asyncio.to_thread(l3.put, _rows("OH", count // 2, votes=4))
+    log.count += 1
+    token = f"inc:{log.count}"
+    log.records[token] = EpochChange(table=_TABLE, token=token, whole_table=True, partition={"state": "OH"})
+    lock.version += 1
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+    assert {"partition_mine_job", "partition_page_job"} <= set(jobs), f"judged in the serving process: {jobs}"
+    assert not [rows for rows in mine if rows >= INLINE_KEYS], f"the copy's rows judged here: {mine}"
+
+
+async def test_the_keys_an_apply_replaced_are_made_distinct_for_the_checkpoint_in_the_worker_process(
+    monkeypatch: pytest.MonkeyPatch, jobs: list[str]
+) -> None:
+    """Flips if the keys a table of no scope replaced (what a checkpoint patches its one part by) are made distinct in
+    the serving process past the bound: on the loop they held it 20 ms at 100,000 keys and 286 ms at 1,000,000
+    (2026-11-25). They are made beside the apply, and the checkpoint still gets them."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 10))
+    log.commit([("VA", i) for i in range(10)])
+    backend = _backend()
+    backend.initialize(_metadata())
+    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    checkpoints = CopyCheckpoints(
+        name="votes",
+        tables=tables,
+        backend=backend,
+        store=store,
+        pointers=pointers,
+        retire=store.retire,
+        owner="a",
+        part_rows=40,
+    )
+    registry = CollectionRegistry()
+    registry.follow_generation(_TABLE)
+    follower = CopyFollower(
+        registry,
+        tables,
+        backend,
+        l3,
+        settled=lock.settled,
+        generation=log.current,
+        changes=log,
+        page_size=INLINE_KEYS * 4,
+        checkpoints=checkpoints,
+        drift_workers=_WORKERS,
+    )
+    assert not await follower.start()
+    assert await follower.catch_up()
+    jobs.clear()
+    touched = _here(monkeypatch, "touched_of", lambda key, keys: keys.num_rows)
+    patched: list[int] = []
+    applied = checkpoints.applied
+
+    def counted(rows: int, touched_scopes: Any, keys: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if keys:
+            patched.append(keys[_TABLE].num_rows)
+        return applied(rows, touched_scopes, keys, *args, **kwargs)
+
+    monkeypatch.setattr(checkpoints, "applied", counted)
+    count = INLINE_KEYS * 2
+    await asyncio.to_thread(l3.put, _rows("IL", count, votes=5))
+    await asyncio.to_thread(log.commit, [("IL", i) for i in range(count)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert "touched_job" in jobs, f"the keys replaced were made distinct in the serving process: {jobs}"
+    assert not [rows for rows in touched if rows >= INLINE_KEYS], f"made distinct here: {touched}"
+    assert patched == [count], "the checkpoint was not told each key the apply replaced, once"
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
+
+
+async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if the messages heard while a pass read are drained in one turn of the loop, however many: a run of row
+    messages read into Arrow took the loop 1.24 ms for 2,000, 78 ms for 200,000 (2026-11-25). Every drain of a pass
+    takes them :data:`~threetears.core.collections.copy_follower.MESSAGES_PER_TURN` at a time, and the next pass reads
+    their keys."""
+    lock = _Scopes()
+    registry = CollectionRegistry()
+    l3, log, backend, follower = _scoped_world(lock, registry=registry)
+    l3.put(_rows("VA", 5))
+    log.commit([("VA", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    count = copy_follower.MESSAGES_PER_TURN * 4
+    await asyncio.to_thread(l3.put, _rows("IL", count, votes=6))
+    heard = await asyncio.to_thread(
+        lambda: [CacheInvalidationMessage(table=_TABLE, ids=["IL", str(i)]) for i in range(count)]
+    )
+    runs: list[int] = []
+    apply = getattr(CopyFollower, "_apply_messages")  # the owner's drain of a run of messages, watched
+
+    def counted(self: CopyFollower, messages: tuple[Any, ...], start: int, stop: int) -> None:
+        runs.append(stop - start)
+        apply(self, messages, start, stop)
+
+    monkeypatch.setattr(CopyFollower, "_apply_messages", counted)
+    l3.put([("VA", 1, 70)])
+    log.commit([("VA", 1)])
+    lock.commit("state:VA")
+
+    # heard while the pass reads: told as the pass reads the stamp after its stage, before its last drains
+    def tell_all() -> None:
+        for message in heard:
+            registry.tell_derived_caches(message)
+
+    lock.on_read = (lock.reads + 2, tell_all)
+    assert await follower.catch_up()
+    assert max(runs) <= copy_follower.MESSAGES_PER_TURN, f"a turn drained {max(runs)} messages"
+    assert sum(runs) >= count
+    lock.commit("state:IL")
+    assert await follower.catch_up()
+    assert await asyncio.to_thread(_copy, backend) == await asyncio.to_thread(l3.held)
