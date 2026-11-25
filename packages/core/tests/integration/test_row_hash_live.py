@@ -78,7 +78,7 @@ _ROWS: Sequence[tuple[Any, ...]] = (
 )
 
 _DDL = (
-    "CREATE TABLE results (id BIGINT PRIMARY KEY, name VARCHAR, votes BIGINT, share DECIMAL(12, 4), "
+    "CREATE TABLE hashed_results (id BIGINT PRIMARY KEY, name VARCHAR, votes BIGINT, share DECIMAL(12, 4), "
     "called BOOLEAN, day DATE, stamp TIMESTAMP)"
 )
 
@@ -91,7 +91,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         await connection.execute(f'CREATE SCHEMA "{schema}"')
         await connection.execute(f'SET search_path TO "{schema}"')
         await connection.execute(_DDL)
-        await connection.executemany("INSERT INTO results VALUES ($1, $2, $3, $4, $5, $6, $7)", list(_ROWS))
+        await connection.executemany("INSERT INTO hashed_results VALUES ($1, $2, $3, $4, $5, $6, $7)", list(_ROWS))
         yield connection
     finally:
         await connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
@@ -105,12 +105,14 @@ async def test_a_row_hashes_alike_on_the_database_and_on_duckdb(conn: asyncpg.Co
     assert dialect in {Dialect.POSTGRES, Dialect.YUGABYTE}
     live = {
         row["id"]: row["h"]
-        for row in await conn.fetch(f"SELECT id, {row_hash_sql(_HASHED, dialect)} AS h FROM results AS t")
+        for row in await conn.fetch(f"SELECT id, {row_hash_sql(_HASHED, dialect)} AS h FROM hashed_results AS t")
     }
     duck = duckdb.connect()
     duck.execute(_DDL)
-    duck.executemany("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?)", [list(row) for row in _ROWS])
-    local = dict(duck.execute(f"SELECT id, {row_hash_sql(_HASHED, Dialect.DUCKDB)} AS h FROM results AS t").fetchall())
+    duck.executemany("INSERT INTO hashed_results VALUES (?, ?, ?, ?, ?, ?, ?)", [list(row) for row in _ROWS])
+    local = dict(
+        duck.execute(f"SELECT id, {row_hash_sql(_HASHED, Dialect.DUCKDB)} AS h FROM hashed_results AS t").fetchall()
+    )
     duck.close()
     assert live == local
     assert len(set(live.values())) == len(_ROWS)
@@ -122,19 +124,19 @@ async def test_only_changed_rows_are_read_again_on_the_database(conn: asyncpg.Co
     hashed = row_hash_selected(_HASHED, await dialect_of(conn))
     stored = await read_keyed(
         conn,
-        "results",
+        "hashed_results",
         keys=KeyBatch(("id",), [[row[0] for row in _ROWS]], casts=("bigint",)),
         columns=["id", hashed],
     )
     held: dict[tuple[Any, ...], str | None] = {(row["id"],): row[ROW_HASH_COLUMN] for row in stored}
     held[(2,)] = None
-    await conn.execute("UPDATE results SET votes = votes + 1 WHERE id = 1")
-    await conn.execute("UPDATE results SET name = 'x' WHERE id = 3")
-    await conn.execute("DELETE FROM results WHERE id = 6")
-    await conn.execute("INSERT INTO results (id) VALUES (7)")
+    await conn.execute("UPDATE hashed_results SET votes = votes + 1 WHERE id = 1")
+    await conn.execute("UPDATE hashed_results SET name = 'x' WHERE id = 3")
+    await conn.execute("DELETE FROM hashed_results WHERE id = 6")
+    await conn.execute("INSERT INTO hashed_results (id) VALUES (7)")
     changed = await read_changed(
         conn,
-        "results",
+        "hashed_results",
         key=[Sort("id", cast="bigint")],
         columns=["id", "name", "votes"],
         held=held,
@@ -174,15 +176,15 @@ async def test_a_hash_is_the_same_unpadded_base64_on_the_database_duckdb_python_
     live = {
         row["id"]: (row["text"], row["h"])
         for row in await conn.fetch(
-            f"SELECT id, {text} AS text, {row_hash_sql(_HASHED, dialect)} AS h FROM results AS t"
+            f"SELECT id, {text} AS text, {row_hash_sql(_HASHED, dialect)} AS h FROM hashed_results AS t"
         )
     }
     duck = duckdb.connect()
     try:
         duck.execute(_DDL)
-        duck.executemany("INSERT INTO results VALUES (?, ?, ?, ?, ?, ?, ?)", [list(row) for row in _ROWS])
+        duck.executemany("INSERT INTO hashed_results VALUES (?, ?, ?, ?, ?, ?, ?)", [list(row) for row in _ROWS])
         local = dict(
-            duck.execute(f"SELECT id, {row_hash_sql(_HASHED, Dialect.DUCKDB)} AS h FROM results AS t").fetchall()
+            duck.execute(f"SELECT id, {row_hash_sql(_HASHED, Dialect.DUCKDB)} AS h FROM hashed_results AS t").fetchall()
         )
         for found, (canonical, hashed) in live.items():
             spelled = base64.b64encode(hashlib.md5(canonical.encode()).digest()).decode().rstrip("=")  # noqa: S324

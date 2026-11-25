@@ -20,7 +20,13 @@ writing one working tree race each other and every cache goes stale.
   in front, unchanged.
 - A product brings a `RowCodec` (`JsonCodec` ships) and a `Layout` (`TemplateLayout` places rows by
   path templates; a product can write its own).
-- `GitRepo.change()` gathers collection saves into ONE commit. A save carries the version it read;
+- `GitRepo.change()` gathers collection saves into ONE commit; `GitDurableStore.transaction()` opens the same
+  change set the way a database store opens a transaction, so a write-buffered flush (`flush_pending`) is one
+  commit, not one per row. On a process that is not the writer the set is forwarded as one NATS request, which the
+  broker's `max_payload` caps (1 MB untuned): a larger set is refused before it is sent (`ForwardTooLargeError`)
+  and the flush writes its rows one by one. A forwarded set whose reply times out may already be committed; a flush
+  then writes its rows again one by one (no change on an `update` table; on a `raise` table each landed row is
+  refused as present, retried and dropped with an error logged, the row itself stored). A save carries the version it read;
   a row changed since refuses the whole set (`ChangeConflictError`). A hand edit in the way is never
   written over (`HandEditPendingError`); `commit_paths` adopts hand edits, and `commit_files` adopts edits sent
   as bytes from another tree. An adopted row gets a new version (`date_updated`: now, or just past the version the

@@ -15,6 +15,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import os
 import subprocess
 import uuid
@@ -36,6 +37,7 @@ from threetears.core.backends.git import (
     GitRepo,
     GitRepoConfig,
     FileConflictError,
+    ForwardTooLargeError,
     GitStoreError,
     HandEditPendingError,
     NotTheWriterError,
@@ -45,6 +47,11 @@ from threetears.core.backends.git import (
     committed_seq_from,
     new_signing_seed,
 )
+from threetears.core.collections.durable_store import DurableStoreCollection
+from threetears.core.collections.flush import WriteBuffer, flush_pending
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
+from threetears.core.entities.base import BaseEntity
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.forward import ForwardedHandlerError
 from threetears.nats.kv import KvTimings
@@ -547,3 +554,72 @@ async def test_the_writer_checks_what_it_is_sent_and_runs_only_operations_it_has
             decode_reply(await send(ForwardedRequest(op=op, message="m\n", files={} if op == "commit_files" else None)))
         except GitStoreError as exc:
             assert "does not run" not in str(exc), op
+
+
+class _Recipe(BaseEntity):
+    primary_key_field = "character"
+
+
+class _Recipes(DurableStoreCollection[_Recipe]):
+    primary_key_column = "character"
+
+    @property
+    def table_name(self) -> str:
+        return "recipes"
+
+    @property
+    def entity_class(self) -> type[_Recipe]:
+        return _Recipe
+
+
+def _commits(repo: GitRepo) -> int:
+    return len(repo.git.log(limit=1000))
+
+
+async def _flush_through(repo: GitRepo, rows: Sequence[dict[str, Any]]) -> int:
+    """buffer ``rows`` for the recipes table over ``repo``'s store and flush them; the rows flushed."""
+    store = GitDurableStore(repo)
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=store)
+    _Recipes(registry, DefaultCoreConfig(), store, nats_client=None)
+    buffer = WriteBuffer()
+    for row in rows:
+        await buffer.add("recipes", row["character"], row)
+    return await flush_pending(buffer, registry)
+
+
+async def test_a_flush_from_a_clone_that_is_not_the_writer_is_one_forwarded_commit(
+    tmp_path: Path, origin: Path, connect: Any, opened: Any
+) -> None:
+    writer = await opened(await connect("writer"), work_tree=tmp_path / "a", remote_url=str(origin), clone="own")
+    other = await opened(await connect("other"), work_tree=tmp_path / "b", remote_url=str(origin), clone="own")
+    assert writer.is_writer and not other.is_writer
+    before = _commits(writer)
+    rows = [{"character": name, "steps": 3, "date_updated": T0} for name in ("aria", "bran", "cora")]
+    assert await _flush_through(other, rows) == 3
+    assert _commits(writer) == before + 1
+    for name in ("aria", "bran", "cora"):
+        assert (tmp_path / f"a/{name}/recipe.json").is_file()
+
+
+async def test_a_change_set_over_the_brokers_payload_is_refused_unsent_and_a_flush_writes_it_per_row(
+    tmp_path: Path, origin: Path, connect: Any, opened: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    writer = await opened(await connect("writer"), work_tree=tmp_path / "a", remote_url=str(origin), clone="own")
+    other = await opened(await connect("other"), work_tree=tmp_path / "b", remote_url=str(origin), clone="own")
+    # six rows of 250 KB: each forwards alone, together they are over an untuned broker's 1 MB
+    rows = [{"character": f"c{n}", "notes": "x" * 250_000, "date_updated": T0} for n in range(6)]
+    before = _commits(writer)
+    store = GitDurableStore(other)
+    with pytest.raises(ForwardTooLargeError) as raised:
+        async with store.transaction() as change_set:
+            for row in rows:
+                await store.upsert("recipes", row, conn=change_set)
+    assert raised.value.size > raised.value.limit
+    assert _commits(writer) == before, "nothing was sent, so nothing was committed"
+
+    caplog.set_level(logging.INFO)
+    assert await _flush_through(other, rows) == 6
+    assert _commits(writer) == before + 6, "written per row, each its own forwarded commit"
+    assert not [r for r in caplog.records if "Atomic batch flush failed" in r.getMessage()]
+    assert [r for r in caplog.records if "Batch too large for one transaction" in r.getMessage()]

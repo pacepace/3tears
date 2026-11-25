@@ -76,11 +76,11 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         implements ``transaction()`` needs the handle to know which batch a write belongs to.
 
         This used to be discarded on the reasoning that a structured ``DurableStore`` owns its
-        own atomicity and a git backend has no connection to bind to. That holds for git, which
-        does not implement ``transaction()`` and is served by the per-entity degrade. It does
-        not hold for a backend whose ``transaction()`` is a batch accumulator — dropping the
-        handle left the accumulator empty, every write executed on its own, and the batch path
-        silently produced per-entity durable writes. ``DurableStore.upsert`` declares ``conn``
+        own atomicity. It does not hold for a backend whose ``transaction()`` is a batch
+        accumulator, which the git store's is: its ``transaction()`` is a change set, and the
+        handle is how each write joins it. Dropping the handle left the accumulator empty, every
+        write executed on its own (on git, one commit per row), and the batch path silently
+        produced per-entity durable writes. ``DurableStore.upsert`` declares ``conn``
         precisely so the structured layer can participate; a backend that has no use for it
         ignores it, which is what the protocol already asks of a non-transactional store.
         """

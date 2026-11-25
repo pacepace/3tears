@@ -22,6 +22,25 @@ A file that is not a row, a removal, and a row of a table with no version column
 file keeps its mode. A commit made with git itself, outside the store, keeps the version it wrote;
 `docs/adoption/core-git.md` says so.
 
+### core (git store): a write-buffered flush is one commit
+
+**Added:** `GitDurableStore.transaction(message=...)`, a change set over the repository opened the way a database
+store opens a transaction. `flush_pending` takes its batch path for a git-backed table now: every row a flush writes
+lands in one commit, where it was one commit per row. A row changed since it was read, or a hand edit waiting on one
+row's file, refuses the whole set, and the flush falls back to its per-entity path, as for a database transaction
+that failed: the other rows land and the refused one is re-enqueued.
+
+**Added:** a change set a process that is not the writer would forward as one NATS request larger than the broker's
+`max_payload` (1 MB untuned) is refused before it is sent, with `ForwardTooLargeError`, a
+`TransactionTooLargeError` (`threetears.core.backends.protocol`). `flush_pending` answers that error by writing the
+batch per entity, logged at info, not as a failed batch. A forwarded set whose reply times out may already be
+committed by the writer: the flush writes its rows again one by one, which changes nothing on an `update` table and,
+on a `raise` table, has each landed row refused as present, retried and dropped with an error logged (the row is
+stored).
+
+**Tests:** `test_row_hash_live.py` names its table `hashed_results`: the process-wide key registry is by table name,
+and other modules declare a `results` table with other keys, so the test failed whenever one ran first in its worker.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of
