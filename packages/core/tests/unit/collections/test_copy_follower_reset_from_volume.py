@@ -55,7 +55,9 @@ from threetears.core.collections.delta_copy_beats import CopyBeats  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.coordination.lease import KVLease  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
+import threetears.core.collections.volume_fulls as volume_fulls  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
+    EVERY_STATE_NAMED,
     RESET_REASON,
     ChangedRow,
     EpochChange,
@@ -64,6 +66,7 @@ from threetears.core.collections.epoch_change import (  # noqa: E402
 )
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, rail_arrow_types  # noqa: E402
 from threetears.core.collections.volume_fulls import (  # noqa: E402
+    FullPart,
     FullTable,
     VolumeFulls,
     publish_full_manifest,
@@ -252,7 +255,14 @@ def _entry(volume: Path, table: str, rows: list[tuple[str, int, int]], version: 
 
 
 class _World:
-    def __init__(self, volume: Path, *, beats: CopyBeats | None = None, fulls: VolumeFulls | None = None) -> None:
+    def __init__(
+        self,
+        volume: Path,
+        *,
+        beats: CopyBeats | None = None,
+        fulls: VolumeFulls | None = None,
+        recreate: Any = None,
+    ) -> None:
         self.volume = volume
         self.l3, self.log, self.lock = _L3(), _Log(), _Scopes()
         self.backend = DuckDBBackend()
@@ -273,6 +283,8 @@ class _World:
             stamp_table="scope_epochs",
             fulls=fulls or VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
             beats=beats,
+            recreate=recreate,
+            file_poll_seconds=0.01 if recreate is not None else None,
         )
         self.writes = 0
 
@@ -326,6 +338,225 @@ class _World:
                 return
             await asyncio.sleep(0.01)
         raise AssertionError(f"{table} was never reloaded: {self.follower.status().waiting_for_full}")
+
+
+def _too_big(
+    world: _World, table: str, rows: list[tuple[str, int, int]], gone: list[tuple[str, int]], scopes: Any
+) -> str:
+    """a commit too big to list (decision 21): L3 changed, its record keys unknown naming its delta file, which is not
+    on the volume (a fold that deletes took it, or it was lost), and the scopes its writer named; its epoch."""
+    world.l3.put(table, rows)
+    for key in gone:
+        world.l3.db.execute(f"DELETE FROM {table} WHERE state = ? AND geo_id = ?", list(key))  # noqa: S608
+    world.log.count[table] += 1
+    token = f"{world.log.incarnation[table]}:{world.log.count[table]}"
+    world.log.records[(table, token)] = EpochChange(
+        table=table,
+        token=token,
+        keys_unknown=True,
+        noted_between=(datetime.now(UTC), datetime.now(UTC)),
+        delta_file=f"{table}/gone{world.log.count[table]}.arrow",
+        scopes=scopes,
+    )
+    world.lock.commit(*{f"state:{row[0]}" for row in rows}, *{f"state:{key[0]}" for key in gone})
+    return token
+
+
+def _parts_read(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """the state of every full's part a reload or start reads off the volume, in order."""
+    read: list[str | None] = []
+    real = volume_fulls.read_full_part
+
+    def reading(root: Path, part: FullPart) -> Any:
+        read.append(part.scope)
+        return real(root, part)
+
+    monkeypatch.setattr(volume_fulls, "read_full_part", reading)
+    return read
+
+
+async def _covered(table: str, file: str, epoch: str) -> str:
+    """the writer's answer for a file a fold that deletes took: the current full covers it (decision 54)."""
+    return "covered"
+
+
+async def _held_past_a_gone_file(
+    world: _World, scopes: Any, read: list[str | None]
+) -> tuple[str, list[tuple[str, int, int]]]:
+    """the copy started; a commit too big to list changes VA and IL keeps, its file gone; then, while the table waits,
+    a VA write the full will hold, an IL write and a VA write it will not. The writer's full at the first VA write:
+    VA as L3 held it then, IL as at the start (its later write is not in it), every part at that version. Returns the
+    lost commit's epoch and the full's VA rows. ``read`` (:func:`_parts_read`) is emptied once the copy started."""
+    await world.started()
+    read.clear()
+    epoch = _too_big(world, _RESET, [("VA", 0, 300), ("VA", 1, 301), ("VA", 9, 309)], [("VA", 3)], scopes)
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    world.write(_RESET, [("VA", 2, 302)])
+    assert await world.follower.catch_up()
+    covered_at = f"inc:{world.log.count[_RESET]}"
+    va = [row for row in world.l3.held(_RESET) if row[0] == "VA"]
+    il = [row for row in world.l3.held(_RESET) if row[0] == "IL"]
+    world.write(_RESET, [("IL", 2, 402)])
+    world.write(_RESET, [("VA", 1, 501)])
+    assert await world.follower.catch_up()
+    parts = tuple(
+        write_full_part(world.volume, _RESET, f"state:{state}", _part_rows(rows), covered_at)
+        for state, rows in (("IL", il), ("VA", va))
+    )
+    publish_full_manifest(
+        world.volume,
+        term=2,
+        tables={
+            _RESET: FullTable(version=covered_at, parts=parts),
+            _OTHER: _entry(world.volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    return epoch, va
+
+
+async def test_a_gone_covered_file_reloads_only_its_commits_states_from_the_full_and_reads_no_l3(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy finding a covered delta file gone (the writer answers ``covered``: a fold that deletes took it,
+    decision 54) reloads the whole table from the full, reads L3, or stops serving: its commit's record named every
+    state it wrote (VA, marked complete), so only VA's part is loaded (decision 54 (c)). VA's rows the copy held and
+    the full does not leave; the VA change heard while it waited that the part holds is not applied over it, while
+    the later VA change and the IL change apply from their files, ending equal to L3 with no file still waited for."""
+    world = _World(_volume, recreate=_covered)
+    read = _parts_read(monkeypatch)
+    await _held_past_a_gone_file(world, ["state:VA", EVERY_STATE_NAMED], read)
+
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+
+    assert read == ["state:VA"], "only the commit's state's part is read off the volume"
+    assert world.same()
+    assert world.l3.statements[_RESET] == 0
+    status = world.follower.status()
+    assert _RESET not in status.waiting_for_file and _RESET not in status.waiting_for_full
+    assert status.full_reach == {}
+    world.follower.stop()
+
+
+async def test_a_lost_file_of_a_commit_too_big_to_list_reloads_only_its_named_states_from_the_recovered_full(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy whose commit too big to list lost its file (the writer recovers it, decision 28) reloads the
+    whole table from the writer's full: the record named VA complete, so VA's part alone is loaded."""
+    world = _World(_volume)
+    read = _parts_read(monkeypatch)
+    await _held_past_a_gone_file(world, ["state:VA", EVERY_STATE_NAMED], read)
+
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+
+    assert read == ["state:VA"]
+    assert world.same()
+    assert world.l3.statements[_RESET] == 0
+    assert _RESET not in world.follower.status().waiting_for_file
+    world.follower.stop()
+
+
+async def test_a_gone_files_record_whose_states_are_not_known_complete_reloads_the_whole_table(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy reloads only the states a record names when the record does not mark them every state its
+    commit wrote: such a record (an older writer's, a table declaring no state scope) may name a strict subset, and
+    the copy would keep the old rows of a state it missed. Every part is loaded, and the copy ends equal to L3."""
+    world = _World(_volume, recreate=_covered)
+    read = _parts_read(monkeypatch)
+    await _held_past_a_gone_file(world, ["state:VA"], read)
+
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+
+    assert sorted(read, key=str) == ["state:IL", "state:VA"]
+    assert world.same()
+    assert world.l3.statements[_RESET] == 0
+    world.follower.stop()
+
+
+async def test_a_failed_swap_of_some_states_leaves_the_copy_as_it_was_and_drops_both_its_stages(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a reload of some states whose swap fails changes the copy, or leaves either of its stages behind: the
+    keys it staged (the copy's keys of the states, which leave) as well as its rows (once only the rows were dropped).
+    Looked for again, the reload then applies."""
+    world = _World(_volume, recreate=_covered)
+    await _held_past_a_gone_file(world, ["state:VA", EVERY_STATE_NAMED], [])
+    held = world.copy(_RESET)
+    real_apply, real_drop = world.backend.apply_staged, world.backend.drop_stage
+    failed: list[Any] = []
+    dropped: list[str] = []
+    release = threading.Event()
+
+    def apply(changes: Any, **kwargs: Any) -> int:
+        if any(is_reload_stage(change.rows) for change in changes):
+            if not failed:
+                failed.append(list(changes))
+                raise RuntimeError("the swap failed")
+            release.wait(5)
+        return real_apply(changes, **kwargs)
+
+    def drop(*stages: str) -> None:
+        if failed and not dropped:
+            # the first drop after the failed swap: its own, before the reload is looked for again
+            dropped.extend(stages)
+        real_drop(*stages)
+
+    monkeypatch.setattr(world.backend, "apply_staged", apply)
+    monkeypatch.setattr(world.backend, "drop_stage", drop)
+    for _ in range(500):
+        if failed and dropped:
+            break
+        await asyncio.sleep(0.01)
+    try:
+        assert failed, "the reload never swapped"
+        change = failed[0][0]
+        assert change.keys is not None and not change.whole, "a reload of some states stages the keys that leave"
+        assert {change.keys, change.rows} <= set(dropped), "both of the failed swap's stages are dropped"
+        assert world.copy(_RESET) == held
+        assert _RESET in world.follower.status().waiting_for_full
+    finally:
+        release.set()
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+    assert world.same()
+    world.follower.stop()
+
+
+async def test_a_table_whose_full_is_not_split_by_state_is_reloaded_whole(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a copy whose wait names a covered file's states complete fails, or loads nothing, when the full holds
+    the table as one part of no state (StatesNotSplitError): it reloads the table whole, as before, and ends equal to
+    L3."""
+    world = _World(_volume, recreate=_covered)
+    await world.started()
+    _too_big(world, _RESET, [("VA", 0, 300)], [], ["state:VA", EVERY_STATE_NAMED])
+    await world.follower.catch_up()
+    version = f"inc:{world.log.count[_RESET]}"
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: FullTable(
+                version=version,
+                parts=(write_full_part(_volume, _RESET, None, _part_rows(world.l3.held(_RESET)), version),),
+            ),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    read = _parts_read(monkeypatch)
+
+    await world.reloaded(_RESET)
+    assert await world.follower.catch_up()
+
+    assert read == [None]
+    assert world.same()
+    assert _RESET not in world.follower.status().waiting_for_file
+    world.follower.stop()
 
 
 class _BeatSeenFulls(VolumeFulls):

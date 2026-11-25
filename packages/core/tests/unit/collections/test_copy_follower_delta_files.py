@@ -61,7 +61,13 @@ from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, PartialStamp  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, read_delta_file_keys, write_delta_file  # noqa: E402
 from threetears.core.collections.delta_recreate import DeltaRecreator  # noqa: E402
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
+from threetears.core.collections.epoch_change import (  # noqa: E402
+    EVERY_STATE_NAMED,
+    ChangedRow,
+    EpochChange,
+    EpochWalk,
+    walk_by_count,
+)
 from threetears.core.backends.broker_generation import (  # noqa: E402
     GENERATIONS_REPLY_FIELD,
     named_delta_files,
@@ -716,7 +722,7 @@ async def test_a_lost_file_of_a_commit_too_big_to_list_reaches_the_copy_with_the
     l3, log, lock, backend, follower = world
     await _warmed(world)
     lost = f"{_TABLE}/lost-big.arrow"
-    log.too_large(lost, scopes=["state:IL", "state:VA"])
+    log.too_large(lost, scopes=["state:IL", "state:VA", EVERY_STATE_NAMED])
     lock.commit("state:VA", "state:IL")
 
     await follower.catch_up()
@@ -724,6 +730,29 @@ async def test_a_lost_file_of_a_commit_too_big_to_list_reaches_the_copy_with_the
     assert [(file.file, file.keys_unknown, file.scopes) for file in told] == [(lost, True, ("state:IL", "state:VA"))]
     assert "its commit touched state:IL, state:VA" in follower.status().waiting_for_file[_TABLE]
     assert l3.statements == 0
+    follower.stop()
+
+
+async def test_a_lost_files_states_not_marked_complete_reach_the_copy_as_none(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a record naming its states without the mark that they are every state its commit wrote
+    (EVERY_STATE_NAMED, read off its file's rows) is told to the copy with them: such a record (an older writer's, a
+    table declaring no state scope) may name a strict subset, and a copy reloading only those states from the full
+    would keep the old rows of the rest (decision 54 (c)). It is told with none, so the copy reloads the whole table."""
+    monkeypatch.setattr(copy_follower, "FILE_POLL_SECONDS", 0.01, raising=False)
+    registry, told = _told_wanted()
+    world = _world(notes=_Notes(), registry=registry)
+    l3, log, lock, backend, follower = world
+    await _warmed(world)
+    lost = f"{_TABLE}/lost-unmarked.arrow"
+    log.too_large(lost, scopes=["state:VA"])
+    lock.commit("state:VA", "state:IL")
+
+    await follower.catch_up()
+
+    assert [(file.file, file.keys_unknown, file.scopes) for file in told] == [(lost, True, None)]
+    assert "touched" not in follower.status().waiting_for_file[_TABLE]
     follower.stop()
 
 
@@ -781,7 +810,7 @@ async def test_lost_files_of_commits_too_big_to_list_carry_their_states_to_the_f
     l3, log, lock, backend, follower = world
     await _warmed(world)
     try:
-        log.too_large(f"{_TABLE}/a.arrow", scopes=["state:VA"])
+        log.too_large(f"{_TABLE}/a.arrow", scopes=["state:VA", EVERY_STATE_NAMED])
         lock.commit("state:VA")
         await follower.catch_up()
         assert follower.status().full_reach == {_TABLE: ("state:VA",)}
@@ -791,7 +820,7 @@ async def test_lost_files_of_commits_too_big_to_list_carry_their_states_to_the_f
         )
         assert follower.status().full_reach == {_TABLE: ("state:VA",)}, "the writer's covered answer keeps them"
 
-        log.too_large(f"{_TABLE}/b.arrow", scopes=["state:IL"])
+        log.too_large(f"{_TABLE}/b.arrow", scopes=["state:IL", EVERY_STATE_NAMED])
         lock.commit("state:IL")
         await follower.catch_up()
         assert follower.status().full_reach == {_TABLE: ("state:IL", "state:VA")}

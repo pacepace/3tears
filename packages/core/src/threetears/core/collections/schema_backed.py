@@ -1748,7 +1748,7 @@ class TableSchema:
                 f"delta file's rows are of; only a table that opts in to delta files writes one (delta_files=True)"
             )
         if not prefix:
-            raise ValueError(f"TableSchema(name={self.name!r}): delta_state_scope needs a scope prefix (\"state:\")")
+            raise ValueError(f'TableSchema(name={self.name!r}): delta_state_scope needs a scope prefix ("state:")')
         if column not in pk_cols and column != self.delta_scope:
             raise ValueError(
                 f"TableSchema(name={self.name!r}): delta_state_scope's column {column!r} is neither a key column nor "
