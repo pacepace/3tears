@@ -58,6 +58,9 @@ _ARROW_MODULES: dict[str, str] = {
     "threetears.core.arrow_keys": (
         "Arrow rows matched by a key in Arrow's hash kernels (never Acero): Arrow tables in, NumPy row numbers out"
     ),
+    "threetears.core.collections.copy_parts": (
+        "a copied table's parts: its rows split by its scope column in Arrow, its locator an Arrow table"
+    ),
 }
 
 #: a requirement line of ``uv export``: ``name==version`` (with a marker), or ``-e ./packages/<dir>``

@@ -27,6 +27,19 @@ and `InvalidatedRow` (replaced by `rows` / `InvalidatedRows`), and `BaseCollecti
 `CollectionRegistry.publish_invalidations` now takes the batches (`invalidation_batches`) and is the bus half alone;
 `GenerationMarks.hear` takes `rows=` to count a batch's rows at once.
 
+### core: a copied table's parts follow its declared scope, above a measured size floor
+
+**Added:** `threetears.core.collections.copy_parts`, the part rule of the copy's worker backend
+(`design-copy-worker-backend.md`, decision 2). `part_rules(tables, sizes, locators=, held=)` cuts a table a part per
+value of its declared scope column (`FollowedTable.scope`) once it holds `SPLIT_FLOOR_BYTES` (16 MiB), and holds it as
+one part (`WHOLE_PART`) below that or when it declares no scope; a table split stays split down to half the floor, so
+a table near it does not flip shape. `split_parts` cuts rows into their parts in Arrow (one stable sort, one run-end
+encoding, each part a slice). A table keyed without its scope column names a locator (a key column naming one scope
+value): `Locator` holds each value's part as an Arrow table, newest wins, and `parts_of_keys` finds each key's part
+through it. The floor's numbers (1k to 1M rows: a change's rebuild whole against one part of 51, and a read's cost of
+51 chunks against one) are at the constant, from `scripts/measure-copy-part-floor.py`. Not wired in yet: the
+follower's apply and reports adopt it in later steps of the same design.
+
 ### observe: the loop watchdog, from the SDK
 
 **Added:** `threetears.observe.loop_watchdog.LoopWatchdog`, moved unchanged from the 14th AI bots SDK
