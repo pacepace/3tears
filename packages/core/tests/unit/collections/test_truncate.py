@@ -430,7 +430,16 @@ async def test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset(
     truncate = store.truncate
 
     async def recorded(table: str, *, reason: str | None = None) -> None:
-        calls.append([frame.function for frame in inspect.stack()[1:6]])
+        # the five callers' names, read off the frame chain: inspect.stack() would also read every frame's source
+        # file from disk, which held the loop past the loop-stall guard's limit on a busy pool
+        names: list[str] = []
+        frame = inspect.currentframe()
+        caller = frame.f_back if frame is not None else None
+        while caller is not None and len(names) < 5:
+            names.append(caller.f_code.co_name)
+            caller = caller.f_back
+        del frame, caller
+        calls.append(names)
         await truncate(table, reason=reason)
 
     store.truncate = recorded  # type: ignore[method-assign]
