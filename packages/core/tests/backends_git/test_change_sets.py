@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -210,8 +211,13 @@ async def test_adding_rows_in_batches_is_never_quadratic(make_repo: Any, monkeyp
     monkeypatch.setattr(change_module, "change_chunk", counting)
     rows, batch = 100_000, 1_000
     change_set = ChangeSet(await make_repo(), "m")
-    for start in range(0, rows, batch):
-        change_set.add_many([_row(n) for n in range(start, start + batch)])
+
+    def in_batches() -> None:
+        for start in range(0, rows, batch):
+            change_set.add_many([_row(n) for n in range(start, start + batch)])
+
+    # the cost check's 100k rows are the test's own work, a loop of writes no await splits: run off the loop
+    await asyncio.to_thread(in_batches)
 
     assert len(change_set.changes) == rows
     assert change_set.pending("t", {"id": 0}) is not None and change_set.pending("t", {"id": rows - 1}) is not None
@@ -219,8 +225,12 @@ async def test_adding_rows_in_batches_is_never_quadratic(make_repo: Any, monkeyp
 
     built[0] = 0
     one_by_one = ChangeSet(await make_repo(), "m")
-    for n in range(rows):
-        one_by_one.add(_row(n))
+
+    def one_at_a_time() -> None:
+        for n in range(rows):
+            one_by_one.add(_row(n))
+
+    await asyncio.to_thread(one_at_a_time)
     assert built[0] <= rows * 19, f"{built[0]} rows built for {rows} single writes: log2(rows) + 2 copies each"
 
 
