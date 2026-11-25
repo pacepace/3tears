@@ -38,7 +38,14 @@ class RowChangeSource(Protocol):
 def bind_collections(source: RowChangeSource, collections: Mapping[str, BaseCollection[Any]]) -> None:
     """drop every row a commit changes from the cache of the collection serving its table.
 
-    :param source: the repository, or the set of repositories
+    A table maps to ONE collection, and a changed row names its table and key, not its repository. So collections
+    that stand over one layout table, each for one repository (``DurableStoreCollection(..., store_table="scenes")``
+    per story, cached as ``story_1_scenes``, ``story_2_scenes``), are each bound on their OWN repository --
+    ``bind_collections(story_repo, {"scenes": story_collection})`` -- never once over :class:`GitRepos` or a
+    :class:`RoutedGitStore`, whose changes from every repository would reach the one collection bound under the
+    table's name and leave every other story's cache stale.
+
+    :param source: the repository, or the set of repositories (when one collection serves the table in all of them)
     :ptype source: RowChangeSource
     :param collections: the collection serving each table, by table name as the layout names it
     :ptype collections: Mapping[str, BaseCollection[Any]]

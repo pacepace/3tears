@@ -39,8 +39,16 @@ writing one working tree race each other and every cache goes stale.
   sets to it and get the commit or the same typed refusal back.
 - Pushes are plain, never forced. Clones that are not the writer follow origin on the writer's
   broadcast. A crash mid-change is put back by the next writer.
+- A `DurableStoreCollection` cached under a name of its own reads and writes the store's table by
+  `store_table=` (many story-scoped collections over one layout table), and a writer that owns its L3 write (a
+  file written and staged for its own crash recovery) makes every cache say what L3 holds with
+  `collection.adopt_stored_row(row)`: L1, L2 and every peer drop the row (it is never put, so an older row cannot
+  land over a newer save) and the next read takes it from L3; a switched-on collection advances its generation.
 - `bind_collections` drops every row any commit changed -- hand commits and pulled commits
-  included -- from the collections' caches. `GitRepos` / `RoutedGitStore` keep many repositories.
+  included -- from the collections' caches. `GitRepos` / `RoutedGitStore` keep many repositories. A table maps to
+  one collection and a changed row does not name its repository, so `store_table` collections (one per story over
+  one layout table) are each bound on their own repository (`bind_collections(story_repo, {"scenes": ...})`), not
+  once over `GitRepos`.
 
 ## Use
 

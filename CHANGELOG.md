@@ -41,6 +41,23 @@ stored).
 **Tests:** `test_row_hash_live.py` names its table `hashed_results`: the process-wide key registry is by table name,
 and other modules declare a `results` table with other keys, so the test failed whenever one ran first in its worker.
 
+### core: a durable-store collection names its store table, and adopts a row L3 already holds
+
+**Added:** `DurableStoreCollection(..., store_table=...)` and its `store_table` property: the name the durable store
+knows the table by, when it is not the collection's `table_name`. The caches (L1, L2, the cross-pod invalidation)
+key by `table_name`; `fetch_one`, `upsert`, `delete` and `scan` go to `store_table`. Many collections, each cached
+under a name of its own, can stand over one store table (a git layout's bare `scenes`). `None` keeps `table_name`.
+
+**Added:** `BaseCollection.adopt_stored_row(row)`: a row the durable tier already holds, written outside the
+collection (an application that uses the git store writes and stages its own files): every cache drops its copy --
+this process's L1 (fenced, so a read in flight does not cache an older row) and its absent-marker, L2, and every
+peer's L1 by the broadcast -- and the next read takes the row from L3; a switched-on collection advances its write
+generation. The row is never put: a save of the same key may have committed after the caller's write, and an older
+row put over it would stay with nothing to evict it. L3 is not touched. A collection whose record is L2 (its store,
+or `l2_first`) is refused (`ValueError`): dropping its key would read as the row gone. It replaces writing L1, L2 and the broadcast
+through private members. A table maps to one collection in `bind_collections`, so `store_table` collections (one per
+repository over one layout table) are each bound on their own repository.
+
 ### core: SQLite as an L3, and one L3 contract every store keeps
 
 **Added:** `SqliteL3Backend` (`threetears.core.backends`), an L3 durable store in one SQLite file, for a deployment of

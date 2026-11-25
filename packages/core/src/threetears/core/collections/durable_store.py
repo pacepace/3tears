@@ -41,6 +41,11 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         ``GitL3Backend``). The collection's L3 CRUD routes through its
         ``fetch_one`` / ``upsert`` / ``delete``; no SQL string is ever constructed here.
     :ptype durable_store: DurableStore
+    :param store_table: the name the store knows the table by, when it is not :attr:`table_name`: the caches
+        (L1, L2, the cross-pod invalidation) key by :attr:`table_name`, the store by this. A store laid out by a
+        bare name (a git layout's ``scenes``) behind many collections each cached under a name of its own
+        (``story_1_scenes``, ``story_2_scenes``) takes this; ``None`` (the default) is :attr:`table_name`
+    :ptype store_table: str | None
     """
 
     #: Conflict policy for the L3 upsert; subclasses may override (``"update"`` / ``"ignore"`` / ``"raise"``).
@@ -53,9 +58,24 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         durable_store: DurableStore,
         nats_client: Any = NATS_CLIENT_FROM_REGISTRY,
         write_buffer: Any = None,
+        *,
+        store_table: str | None = None,
     ) -> None:
+        if store_table == "":
+            raise ValueError("store_table must name a table; leave it None for the collection's own table_name")
         self._durable_store = durable_store
+        self._store_table = store_table
         super().__init__(registry, config, nats_client, write_buffer)
+
+    @property
+    def store_table(self) -> str:
+        """the name the durable store knows this collection's table by: ``store_table`` as given, else
+        :attr:`table_name`.
+
+        :return: the store's table name
+        :rtype: str
+        """
+        return self._store_table if self._store_table is not None else self.table_name
 
     def _pk_mapping(self, entity_id: Any) -> dict[str, Any]:
         """The pk as a column→value mapping, normalised for single- or composite-pk."""
@@ -63,7 +83,7 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """Read the entity from L3 via the structured ``DurableStore.fetch_one`` (no SQL)."""
-        return await self._durable_store.fetch_one(self.table_name, self._pk_mapping(entity_id))
+        return await self._durable_store.fetch_one(self.store_table, self._pk_mapping(entity_id))
 
     async def save_to_store(
         self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
@@ -85,7 +105,7 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         ignores it, which is what the protocol already asks of a non-transactional store.
         """
         return await self._durable_store.upsert(
-            self.table_name,
+            self.store_table,
             data,
             pk=self.primary_key_columns,
             on_conflict=self.on_conflict,
@@ -107,7 +127,7 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: list[EntityT]
         """
         ticket = self.scan_ticket()
-        rows = await self._durable_store.scan(self.table_name, dict(filters or {}))
+        rows = await self._durable_store.scan(self.store_table, dict(filters or {}))
         entities: builtins.list[EntityT] = []
         for row in rows:
             self.write_to_cache_sync(row, read_since=ticket)
@@ -116,7 +136,7 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete the entity from L3 via the structured ``DurableStore.delete`` (no SQL)."""
-        await self._durable_store.delete(self.table_name, self._pk_mapping(entity_id))
+        await self._durable_store.delete(self.store_table, self._pk_mapping(entity_id))
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Default L2 codec: canonical JSON bytes. Override for a domain codec."""

@@ -6455,6 +6455,52 @@ class BaseCollection(ABC, Generic[EntityT]):
             return entity_key_batch(entity_ids)
         return await asyncio.to_thread(entity_key_batch, entity_ids)
 
+    async def adopt_stored_row(self, row: Mapping[str, Any]) -> None:
+        """make every cache answer what the durable tier holds for a row written there outside this collection.
+
+        For a writer that owns its L3 write itself -- a coordinator that materialises a file, renames it into place
+        and stages it, for its own crash recovery -- and then must make the caches say what L3 now holds. Every cache
+        drops its copy and the next read takes the row from L3: this process's L1 (fenced, so a read in flight does
+        not cache what it read before), its absent-marker, L2, and every peer's L1 by the broadcast; a switched-on
+        collection advances its write generation. L3 is not touched.
+
+        The row is dropped, never put: a save of the same key may have committed after the caller's L3 write and
+        cached a newer row, and a put of this one after it would leave the older row in L1 or L2 with nothing left to
+        evict it. A committed save fences its L2 write by the revision it read before writing L3; this call comes
+        after that write, so it has no such revision, and a miss is always correct.
+
+        :param row: the row as L3 holds it, every key column included (its columns go out on the broadcast)
+        :ptype row: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises KeyError: when the row lacks a key column
+        :raises ValueError: when L2 is this collection's record -- its store, or an ``l2_first`` collection whose
+            reads never fall through to L3
+        :raises GenerationUnavailableError: when a switched-on collection could not advance its generation; the
+            caches still dropped the row and the peers were told
+        """
+        self._set_span_table()
+        data = dict(row)
+        columns = self.primary_key_columns
+        missing = [column for column in columns if column not in data]
+        if missing:
+            raise KeyError(f"{self.table_name}.adopt_stored_row: the row lacks the key column {missing[0]!r}")
+        if self.l2_is_the_store or self.reads_l2_first:
+            # L2 is the record (or reads treat it as complete): dropping its key would read as the row gone, and no
+            # read would fall through to the L3 row this call is about
+            raise ValueError(
+                f"{self.table_name}.adopt_stored_row: L2 is this collection's record (its store, or read first and "
+                "never past), so a row written to L3 outside it cannot be adopted by dropping caches"
+            )
+        entity_id: Any = data[columns[0]] if len(columns) == 1 else tuple(data[column] for column in columns)
+        bump = await self._bump_after_commit([self.changed_row(entity_id, data)])
+        self._clear_l1_marker(entity_id)
+        self._evict_l1(entity_id)
+        await self._delete_from_l2(entity_id)
+        await self._announce_row(entity_id, bump=bump, row=data)
+        if bump.failure is not None:
+            raise bump.failure
+
     async def announce_flushed(self, rows: Sequence[dict[str, Any]]) -> None:
         """say that a flush of the write buffer has committed ``rows`` of this table to L3.
 
