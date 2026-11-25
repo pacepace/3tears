@@ -149,11 +149,14 @@ class _Db:
             )
 
     def insert(self, table: str, rows: Sequence[dict[str, Any]]) -> None:
-        for row in rows:
-            self.db.execute(
-                f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?)",  # noqa: S608
-                [row[name] for name in _NAMES],
-            )
+        """the rows written in one statement over them as one Arrow table (a key named twice: its last row), where a
+        statement a row bound each value through DuckDB's Python layer (seconds of the loop for a large file's)."""
+        last = list({(row["state"], row["geo_id"]): row for row in rows}.values())
+        self.db.register("_inserted_rows", pa.Table.from_pylist(last, schema=pa.schema(list(_TYPES.items()))))
+        try:
+            self.db.execute(f"INSERT OR REPLACE INTO {table} SELECT {', '.join(_NAMES)} FROM _inserted_rows")  # noqa: S608
+        finally:
+            self.db.unregister("_inserted_rows")
 
     def delete(self, table: str, key: tuple[str, int]) -> None:
         self.db.execute(f"DELETE FROM {table} WHERE state = ? AND geo_id = ?", list(key))  # noqa: S608

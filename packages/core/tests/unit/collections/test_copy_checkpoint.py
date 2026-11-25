@@ -18,6 +18,7 @@ The contract this pins (:mod:`threetears.core.collections.copy_checkpoint`):
 
 from __future__ import annotations
 
+import asyncio
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -34,6 +35,7 @@ ipc = pytest.importorskip("pyarrow.ipc")
 from prometheus_client import REGISTRY  # noqa: E402
 
 from threetears.core.cache.duckdb import STAGE_PREFIX, DuckDBBackend, StagedChange  # noqa: E402
+from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import copy_checkpoint  # noqa: E402
 from threetears.core.collections.copy_checkpoint import (  # noqa: E402
     COLD_START,
@@ -926,18 +928,23 @@ async def test_a_table_read_whole_names_why_and_is_written_by_that_situations_re
 
 def _reference_patch(cursor: Any, table: FollowedTable, old: Any, keys: Sequence[Sequence[str]]) -> Any:
     """a table with no scope's part patched as it was written before keyed.anti (15b4ee732's parent): the copy's rows
-    of the touched keys, and the old part's rows by an ANTI JOIN to the keys unnested from parameters."""
+    of the touched keys, and the old part's rows by an ANTI JOIN to the keys unnested from parameters. The key lists
+    are bound through run_bound (one Arrow variable, the same rows as binding them), never a Python value at a time."""
     pk_unnest, pk_join = unnest_key_join(table.key, [table.key_cast(column) for column in table.key])
-    fresh = cursor.execute(
+    fresh = run_bound(
+        cursor,
         f"SELECT t.* FROM {quote_identifier(table.name)} AS t JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
         list(keys),
-    ).fetch_arrow_table()
+        lambda result: result.fetch_arrow_table(),
+    )
     cursor.register("reference_part__", old)
     try:
-        kept = cursor.execute(
+        kept = run_bound(
+            cursor,
             f"SELECT t.* FROM reference_part__ AS t ANTI JOIN (SELECT {pk_unnest}) AS k ON {pk_join}",  # noqa: S608
             list(keys),
-        ).fetch_arrow_table()
+            lambda result: result.fetch_arrow_table(),
+        )
     finally:
         cursor.unregister("reference_part__")
     return pa.concat_tables([kept, fresh.cast(kept.schema)])
@@ -1023,7 +1030,9 @@ async def test_a_patched_part_holds_what_the_hand_written_anti_join_held(seed: i
         got = ipc.open_stream(store.objects[new_name]).read_all()
         keys = sorted(touched[table.name])
         with copy.backend.read_snapshot() as cursor:
-            want = _reference_patch(cursor, table, old, [[key[i] for key in keys] for i in range(len(table.key))])
+            columns = [[key[i] for key in keys] for i in range(len(table.key))]
+            # DuckDB's work on a thread, the loop only awaits it
+            want = await asyncio.to_thread(_reference_patch, cursor, table, old, columns)
         assert got.schema == want.schema, (table.name, got.schema, want.schema)
         assert sorted(zip(*got.to_pydict().values(), strict=True), key=repr) == sorted(
             zip(*want.to_pydict().values(), strict=True), key=repr
