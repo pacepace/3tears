@@ -30,6 +30,9 @@ dependencies = [
     "jsonschema>=4.26",
     "langchain-anthropic>=1.4",
     "langchain-openai>=1.1",
+    # imported directly: providers/openai.py loads the SDK's resource modules at import (see there). 2.45 is the
+    # oldest the consumers run, and the oldest whose module paths were checked
+    "openai>=2.45",
     # 0.2.9 is the floor that requires openrouter>=0.9.2,<1.0, the SDK whose ChatResult /
     # ChatStreamChunk the openrouter factory extends with the served `provider` field.
     "langchain-openrouter>=0.2.9",

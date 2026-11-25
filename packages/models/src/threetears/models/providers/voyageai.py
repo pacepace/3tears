@@ -12,7 +12,7 @@ from __future__ import annotations
 from importlib.util import find_spec
 from typing import Any
 
-from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.capabilities import ModelCapabilities, register_capabilities_batch
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
@@ -128,5 +128,4 @@ _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
 }
 
 
-for _model_id, _caps in _VOYAGEAI_CAPABILITIES.items():
-    register_capabilities(_model_id, _caps)
+register_capabilities_batch(_VOYAGEAI_CAPABILITIES)

@@ -371,6 +371,9 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "langchain-openai",
             "langchain-openrouter",
             "openrouter",
+            # 2026-11-25: providers/openai.py imports the SDK's resource modules at import, off the event loop;
+            # adds no weight, since langchain-openai already requires it
+            "openai",
             "uuid-utils",
         ),
     ),

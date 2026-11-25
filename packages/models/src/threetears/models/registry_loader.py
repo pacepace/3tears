@@ -13,7 +13,7 @@ registered for the model_name the factory is invoked with.
 This module lets every product feed its rows into the registry with a
 single call instead of each one writing its own dict-to-Pydantic
 conversion.  Stable kwarg shape across products -- pre-existing
-callers (the per-provider ``register_capabilities()`` calls done at
+callers (the per-provider ``register_capabilities_batch()`` calls done at
 import time by the LangChain provider modules) keep working
 unchanged.
 
@@ -48,7 +48,7 @@ from typing import Any, Iterable, Mapping
 
 from threetears.models.capabilities import (
     ModelCapabilities,
-    register_capabilities,
+    register_capabilities_batch,
 )
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 
@@ -200,55 +200,87 @@ def register_model_capabilities_bulk(
     :return: count of rows registered
     :rtype: int
     """
+    # gathered here and registered as one batch at the end: one registry copy a row made a catalogue's load
+    # quadratic in its size (see register_capabilities_batch). in ``finally``, so the rows before one that raises
+    # still register, as they did one at a time. function-local, never shared.
+    gathered: dict[str, ModelCapabilities] = {}
     count = 0
-    for row in rows:
-        # Resolve canonical model name -- the registry key.  Try the
-        # legacy column name first, then alternates, so the same
-        # helper works for every product without a
-        # per-product adapter.
-        name_value = row.get("model_name") or row.get("name_api") or row.get("model_id")
-        if not name_value:
-            continue
-        model_name = str(name_value)
-
-        caps = ModelCapabilities(
-            model_name=model_name,
-            model_type=_resolve_enum(
-                row.get("model_type"),
-                ModelType,
-                default_model_type,
-            ),
-            model_tier=_resolve_enum(
-                row.get("model_tier"),
-                ModelTier,
-                default_model_tier,
-            ),
-            model_status=_resolve_enum(
-                row.get("model_status"),
-                ModelStatus,
-                default_model_status,
-            ),
-            provider_name=row.get("provider_name"),
-            context_window=_first_present(row, "context_window", "context_window_tokens"),
-            max_output_tokens=row.get("max_output_tokens"),
-            supports_streaming=row.get("supports_streaming"),
-            supports_tools=row.get("supports_tools"),
-            supports_vision=row.get("supports_vision"),
-            accepts_temperature=row.get("accepts_temperature"),
-            reasoning_efforts=row.get("reasoning_efforts"),
-            reasoning_budget=row.get("reasoning_budget"),
-            adaptive_reasoning=row.get("adaptive_reasoning"),
-            reasoning_disable=row.get("reasoning_disable"),
-            structured_output=row.get("structured_output"),
-            cost_per_input_token=_per_token(
-                _first_present(row, "cost_per_1m_input_tokens", "cost_per_1m_prompt_tokens"),
-            ),
-            cost_per_output_token=_per_token(
-                _first_present(row, "cost_per_1m_output_tokens", "cost_per_1m_completion_tokens"),
-            ),
-            cost_per_cache_read_token=_per_token(row.get("cost_per_1m_cache_read_tokens")),
-            cost_per_cache_write_token=_per_token(row.get("cost_per_1m_cache_write_tokens")),
-        )
-        register_capabilities(model_name, caps)
-        count += 1
+    try:
+        for row in rows:
+            count += _gather_row(row, gathered, default_model_type, default_model_tier, default_model_status)
+    finally:
+        register_capabilities_batch(gathered)
     return count
+
+
+def _gather_row(
+    row: Mapping[str, Any],
+    gathered: dict[str, ModelCapabilities],
+    default_model_type: ModelType,
+    default_model_tier: ModelTier,
+    default_model_status: ModelStatus,
+) -> int:
+    """build one row's capabilities into ``gathered`` (the caller's function-local batch).
+
+    :param row: the row (see :func:`register_model_capabilities_bulk` for its keys)
+    :ptype row: Mapping[str, Any]
+    :param gathered: the batch being built, keyed by model name; a later row for the same name wins
+    :ptype gathered: dict[str, ModelCapabilities]
+    :param default_model_type: applied when the row omits ``model_type``
+    :ptype default_model_type: ModelType
+    :param default_model_tier: applied when the row omits ``model_tier``
+    :ptype default_model_tier: ModelTier
+    :param default_model_status: applied when the row omits ``model_status``
+    :ptype default_model_status: ModelStatus
+    :return: 1 when the row was gathered, 0 when it names no model
+    :rtype: int
+    """
+    # Resolve canonical model name -- the registry key.  Try the
+    # legacy column name first, then alternates, so the same
+    # helper works for every product without a
+    # per-product adapter.
+    name_value = row.get("model_name") or row.get("name_api") or row.get("model_id")
+    if not name_value:
+        return 0
+    model_name = str(name_value)
+
+    caps = ModelCapabilities(
+        model_name=model_name,
+        model_type=_resolve_enum(
+            row.get("model_type"),
+            ModelType,
+            default_model_type,
+        ),
+        model_tier=_resolve_enum(
+            row.get("model_tier"),
+            ModelTier,
+            default_model_tier,
+        ),
+        model_status=_resolve_enum(
+            row.get("model_status"),
+            ModelStatus,
+            default_model_status,
+        ),
+        provider_name=row.get("provider_name"),
+        context_window=_first_present(row, "context_window", "context_window_tokens"),
+        max_output_tokens=row.get("max_output_tokens"),
+        supports_streaming=row.get("supports_streaming"),
+        supports_tools=row.get("supports_tools"),
+        supports_vision=row.get("supports_vision"),
+        accepts_temperature=row.get("accepts_temperature"),
+        reasoning_efforts=row.get("reasoning_efforts"),
+        reasoning_budget=row.get("reasoning_budget"),
+        adaptive_reasoning=row.get("adaptive_reasoning"),
+        reasoning_disable=row.get("reasoning_disable"),
+        structured_output=row.get("structured_output"),
+        cost_per_input_token=_per_token(
+            _first_present(row, "cost_per_1m_input_tokens", "cost_per_1m_prompt_tokens"),
+        ),
+        cost_per_output_token=_per_token(
+            _first_present(row, "cost_per_1m_output_tokens", "cost_per_1m_completion_tokens"),
+        ),
+        cost_per_cache_read_token=_per_token(row.get("cost_per_1m_cache_read_tokens")),
+        cost_per_cache_write_token=_per_token(row.get("cost_per_1m_cache_write_tokens")),
+    )
+    gathered[model_name] = caps
+    return 1
