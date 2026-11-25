@@ -30,6 +30,7 @@ against any module under ``threetears.mcp`` writing to
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -37,10 +38,13 @@ from typing import TYPE_CHECKING, Any
 import jsonschema
 import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
+from mcp.server.connection import allowed_log_levels
+from mcp.server.context import ServerRequestContext
 from mcp.server.stdio import stdio_server as _stdio_server
 from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
+from threetears.mcp.context import CallContext, LogLevel
 from threetears.mcp.http_server import McpHttpTransport, build_mcp_http_app, serve_mcp_http
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
 
@@ -161,11 +165,11 @@ class McpServer:
         async def _on_list_tools(_ctx: Any, _params: Any) -> mcp_types.ListToolsResult:
             return mcp_types.ListToolsResult(tools=self._tools())
 
-        async def _on_call_tool(_ctx: Any, params: Any) -> mcp_types.CallToolResult:
+        async def _on_call_tool(ctx: ServerRequestContext[Any, Any], params: Any) -> mcp_types.CallToolResult:
             # the SDK passes arguments=None for a call that sent none. what escapes _dispatch is a
             # bug (it answers every refusal itself), so it is not caught here: the SDK answers the
             # request with a JSON-RPC error
-            return await self._dispatch(params.name, params.arguments or {})
+            return await self._dispatch(params.name, params.arguments or {}, request=ctx)
 
         return _SdkServer(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
 
@@ -206,6 +210,8 @@ class McpServer:
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        *,
+        request: ServerRequestContext[Any, Any],
     ) -> mcp_types.CallToolResult:
         """resolve identity, gate via authorizer, run handler, map errors.
 
@@ -226,6 +232,9 @@ class McpServer:
         :ptype tool_name: str
         :param arguments: validated input arguments
         :ptype arguments: dict[str, Any]
+        :param request: the SDK's context for the request, from which a handler that asks for one
+            gets its :class:`CallContext`
+        :ptype request: mcp.server.context.ServerRequestContext
         :return: the call's result, failed or not
         :rtype: mcp_types.CallToolResult
         """
@@ -261,6 +270,11 @@ class McpServer:
             jsonschema.validate(instance=arguments, schema=tool.input_schema)
         except jsonschema.ValidationError as exc:
             return _plain_error_result(f"Input validation error: {exc.message}")
+        if tool.context_parameter is not None and tool.context_parameter in arguments:
+            # a schema that admits extra properties let through an argument named as the context
+            return _plain_error_result(
+                f"Input validation error: {tool.context_parameter!r} is not an argument of this tool",
+            )
 
         try:
             identity = await self._identity_provider.identify()
@@ -330,8 +344,17 @@ class McpServer:
                 message=(f"identity lacks required permission {tool.required_permission!r}"),
             )
 
+        cancelled = asyncio.Event()
+        kwargs = dict(arguments)
+        if tool.context_parameter is not None:
+            kwargs[tool.context_parameter] = _call_context(tool_name, request, cancelled)
         try:
-            result = await tool.handler(**arguments)
+            result = await tool.handler(**kwargs)
+        except asyncio.CancelledError:
+            # the client cancelled the call or went away; work the call started outside its own task
+            # sees it through the context
+            cancelled.set()
+            raise
         except Exception as exc:
             contain(
                 exc,
@@ -576,6 +599,58 @@ class McpServer:
             json_response=json_response,
         )
         await serve_mcp_http(app, host=host, port=port)
+
+
+def _call_context(
+    tool_name: str,
+    request: ServerRequestContext[Any, Any],
+    cancelled: asyncio.Event,
+) -> CallContext:
+    """the :class:`CallContext` for one call, its channels bound to the SDK request it arrived on.
+
+    progress and log messages go out on the request's own channel, so over Streamable HTTP they
+    ride the call's response stream and reach the client before its result.
+
+    :param tool_name: the tool being called
+    :ptype tool_name: str
+    :param request: the SDK's context for the request
+    :ptype request: mcp.server.context.ServerRequestContext
+    :param cancelled: the event the dispatch sets when the call is cancelled
+    :ptype cancelled: asyncio.Event
+    :return: the call's context
+    :rtype: CallContext
+    """
+    session = request.session
+    request_id = request.request_id
+    meta = request.meta or {}
+    progress_token = meta.get("progress_token")
+    # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request,
+    # at a level; on earlier versions every level may be sent
+    allowed_levels = allowed_log_levels(request.protocol_version, request.meta)
+
+    async def _send_progress(progress: float, total: float | None, message: str | None) -> None:
+        await session.report_progress(progress, total, message)
+
+    async def _send_log(level: LogLevel, data: Any, logger: str | None) -> None:
+        if level not in allowed_levels:
+            return
+        # sent as the notification itself rather than through the SDK's send_log_message, which
+        # warns on every call (the logging capability is deprecated in 2026-07-28; the message is not)
+        await session.send_notification(
+            mcp_types.LoggingMessageNotification(
+                params=mcp_types.LoggingMessageNotificationParams(level=level, data=data, logger=logger),
+            ),
+            related_request_id=request_id,
+        )
+
+    return CallContext(
+        tool_name=tool_name,
+        request_id=request_id,
+        progress_token=progress_token,
+        progress_sender=_send_progress,
+        log_sender=_send_log,
+        cancelled=cancelled,
+    )
 
 
 def _call_tool_result(

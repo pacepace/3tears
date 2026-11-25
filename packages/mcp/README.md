@@ -19,6 +19,7 @@ uvicorn only. Everything below that needs the rest of the family -- `LocalGrantA
 |---|---|
 | `server` | `McpServer` -- wraps the official `mcp.server.Server`. Owns tool registration, RBAC gating before handler dispatch, structured error mapping per the MCP spec. `tool_error` builds a tool-execution error a handler returns. |
 | `tool` | `McpTool` dataclass (name, description, input_schema, required_permission, handler, and optional output_schema, title, annotations), `McpToolAnnotations`, `ToolRegistry`, `ToolProvider`, and the `register_tool` decorator. |
+| `context` | `CallContext`, the per-call context a handler asks for by signature: the progress token and reporter, a log channel to the client, and a cancellation signal. |
 | `http_server` | The Streamable-HTTP transport: `McpHttpTransport` for a host app to embed, `build_mcp_http_app` / `serve_mcp_http` to serve standalone, `current_bearer_token` for `BearerTokenIdentityProvider`. |
 | `http_client` | `PlatformHttpClient` -- typed httpx client with JWT login + refresh-on-401. Used by both MCP server tool handlers (calling /api/v1/...) and CLI scripts. One HTTP-client implementation, two transports. |
 | `auth` | `Identity` dataclass + `IdentityProvider` Protocol + `EnvVarIdentityProvider` (stdio impl). `Authorizer` Protocol + `LocalGrantAuthorizer` (default impl backed by `McpToolGrantCollection`). |
@@ -79,6 +80,39 @@ doesn't apply to it. The framework's own refusals (`UNKNOWN_TOOL`, `PERMISSION_D
 `IDENTITY_UNAVAILABLE`, `AUTHZ_ERROR`, `HANDLER_ERROR`, `OUTPUT_VALIDATION_ERROR`, `TOOLS_UNAVAILABLE`)
 are also `isError: true`, but they carry `{"tool_name": ..., "error": {"code": ..., "message": ...}}` in
 a text block and no `structuredContent`. A handler that raises still gets `HANDLER_ERROR`.
+
+## The call context
+
+A handler that wants to talk to the client while it runs declares a parameter annotated
+`CallContext`. The server finds it from the handler's signature when the `McpTool` is built and passes
+the call's context in it. A handler that declares none is called with its arguments only, as before.
+
+```python
+from threetears.mcp import CallContext
+
+async def build(*, target: str, ctx: CallContext) -> dict:
+    await ctx.report_progress(1, 3, "cloning")
+    await ctx.log("info", {"phase": "clone", "target": target})
+    ...
+```
+
+| Member | What it is |
+|---|---|
+| `progress_token` | The token the client sent to ask for progress, or `None`. |
+| `report_progress(progress, total=None, message=None)` | Sends `notifications/progress` for this call. It sends nothing when the client sent no token. Each value must be finite and greater than the last, as the protocol requires; a value that isn't raises `ValueError`. |
+| `log(level, data, *, logger=None)` | Sends a `notifications/message` entry to the client on this call's stream. On protocol 2026-07-28 and later it is sent only when the request opted in at that level or below (the `io.modelcontextprotocol/logLevel` key of its `_meta`). |
+| `cancelled`, `wait_cancelled()` | Set when the call is cancelled: the client sent `notifications/cancelled` or went away. The handler itself sees the cancellation as `CancelledError` at its next `await`. The signal is for work the call started outside its own task, such as a worker thread or a task in a longer-lived group. |
+| `tool_name`, `request_id` | The tool being called and the call's protocol request id. |
+
+The context holds no MCP SDK type, so a handler needs no SDK import to use it. Its parameter is
+passed by keyword. A tool whose handler declares two, a positional-only one, or one named as an input
+property is refused when the `McpTool` is built. An argument with the context's name, admitted by a
+schema that allows extra properties, is refused as an input validation error before the handler runs.
+A test of a handler builds its own `CallContext(tool_name=..., progress_token=..., progress_sender=...,
+log_sender=...)` with senders that record what they are given.
+
+Progress and log entries ride the call's own response stream. Over Streamable HTTP that is an SSE
+stream, which a transport built with `json_response=False` answers with.
 
 ## A live tool set
 

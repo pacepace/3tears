@@ -13,6 +13,8 @@ modules:
   (:class:`McpHttpTransport`, :func:`build_mcp_http_app`, :func:`serve_mcp_http`,
   :func:`current_bearer_token`) running the SAME wired SDK server over
   HTTP
+- :mod:`threetears.mcp.context` -- :class:`CallContext`, the per-call context a
+  handler asks for by signature (progress, a client log channel, cancellation)
 - :mod:`threetears.mcp.tool` -- :class:`McpTool`, :class:`McpToolAnnotations`,
   :class:`ToolRegistry`, :data:`ToolProvider`, :func:`register_tool` decorator
 - :mod:`threetears.mcp.http_client` -- :class:`PlatformHttpClient`
@@ -64,6 +66,7 @@ from threetears.mcp.auth import (
     PrincipalType,
     TokenSource,
 )
+from threetears.mcp.context import CallContext, LogLevel
 from threetears.mcp.http_client import PlatformHttpClient, PlatformHttpError
 from threetears.mcp.http_server import (
     McpHttpTransport,
@@ -99,10 +102,12 @@ __all__ = [
     "Authorizer",
     "BearerTokenIdentityProvider",
     "BearerTokenResolver",
+    "CallContext",
     "EnvVarIdentityProvider",
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
+    "LogLevel",
     "McpHttpTransport",
     "McpServer",
     "McpTool",

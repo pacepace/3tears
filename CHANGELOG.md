@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: a tool handler can ask for the call's context
+
+**Added:** `CallContext` (`threetears.mcp`). A handler that declares a parameter annotated `CallContext`
+is passed the call's context in it; the server finds the parameter from the handler's signature when
+the `McpTool` is built. A handler that declares none is called with its arguments only, as before.
+
+- `progress_token`, and `report_progress(progress, total=None, message=None)`, which sends
+  `notifications/progress` for the call when the client sent a token and nothing otherwise. Each value
+  must be finite and greater than the last (the protocol's rule); one that is not raises `ValueError`.
+- `log(level, data, *, logger=None)`, a `notifications/message` entry on the call's own stream. On
+  protocol 2026-07-28 and later it is sent only when the request opted in at that level.
+- `cancelled` and `wait_cancelled()`, set when the call is cancelled, for work the call started outside
+  its own task. The handler itself still sees the cancellation as `CancelledError`.
+- `tool_name` and `request_id`. `McpTool.context_parameter` names the parameter, or is `None`.
+
+A tool whose handler declares two context parameters, a positional-only one, or one named as an input
+property is refused with `ValueError` when the `McpTool` is built. A call that passes an argument named
+as the context (a schema allowing extra properties lets it through) is refused as an input validation
+error before the handler runs. The context holds no MCP SDK type.
+
 ### mcp: 3tears-mcp requires mcp 2.x; mcp 1.x support is dropped
 
 **Changed (breaking):** `3tears-mcp` declares `mcp>=2.0,<3` (was `>=1.27,<3`). A consumer still on mcp

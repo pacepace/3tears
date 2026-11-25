@@ -16,11 +16,14 @@ enforcement test forbids ``required_permission=None`` in production
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jsonschema
+
+from threetears.mcp.context import CallContext
 
 __all__ = [
     "McpTool",
@@ -37,7 +40,9 @@ ToolHandler = Callable[..., Awaitable[Any]]
 
 invoked with the validated input kwargs; returns whatever the tool
 produces. the framework formats the return value into the MCP
-response envelope (typically ``TextContent`` for v1).
+response envelope (typically ``TextContent``). a handler that declares
+a parameter annotated :class:`~threetears.mcp.context.CallContext` is
+also passed the call's context in it (see :attr:`McpTool.context_parameter`).
 """
 
 
@@ -108,6 +113,11 @@ class McpTool:
     :ivar title: human-readable display name, listed as ``title``;
         ``name`` stays the identifier the client calls
     :ivar annotations: behaviour hints, listed as ``annotations``
+    :ivar context_parameter: the name of the handler's parameter annotated
+        :class:`~threetears.mcp.context.CallContext`, found from the handler's
+        signature at construction; the server passes the call's context in it.
+        ``None`` when the handler declares none, and it is called with its
+        arguments only
     """
 
     name: str
@@ -118,13 +128,16 @@ class McpTool:
     output_schema: dict[str, Any] | None = None
     title: str | None = None
     annotations: McpToolAnnotations | None = None
+    context_parameter: str | None = field(init=False, default=None, compare=False)
 
     def __post_init__(self) -> None:
-        """validate non-empty fields and the output schema at construction.
+        """validate non-empty fields and the output schema, and find the context parameter, at construction.
 
         :raises ValueError: ``name``, ``required_permission`` or
-            ``title`` is an empty string, or ``output_schema`` is not
-            a valid JSON Schema whose ``type`` is ``"object"``. silent
+            ``title`` is an empty string, ``output_schema`` is not
+            a valid JSON Schema whose ``type`` is ``"object"``, or the
+            handler's context parameter cannot be passed (see
+            :func:`_context_parameter`). silent
             empty-permission default-deny is the kind of bug that
             doesn't surface until a real user is denied for an
             unexplained reason; a bad output schema would otherwise
@@ -152,6 +165,72 @@ class McpTool:
                 raise ValueError(
                     f"McpTool {self.name!r}: output_schema is not a valid JSON Schema: {exc.message}"
                 ) from exc
+        # frozen: the derived field is set once, here, through object's own setter
+        object.__setattr__(self, "context_parameter", _context_parameter(self.name, self.handler, self.input_schema))
+
+
+def _is_call_context(annotation: Any) -> bool:
+    """whether ``annotation`` names :class:`CallContext`.
+
+    an annotation that could not be evaluated stays a string (a module that imports the type only
+    under ``TYPE_CHECKING``); that string names it when it is the class's bare or qualified name.
+
+    :param annotation: a parameter's annotation
+    :ptype annotation: Any
+    :return: ``True`` when it is the call context
+    :rtype: bool
+    """
+    if annotation is CallContext:
+        return True
+    if isinstance(annotation, str):
+        return annotation == "CallContext" or annotation.endswith(".CallContext")
+    return False
+
+
+def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[str, Any]) -> str | None:
+    """the name of ``handler``'s parameter annotated :class:`CallContext`, or ``None``.
+
+    :param tool_name: the tool's name, for the error message
+    :ptype tool_name: str
+    :param handler: the tool's handler
+    :ptype handler: ToolHandler
+    :param input_schema: the tool's input schema
+    :ptype input_schema: dict[str, Any]
+    :return: the parameter's name, or ``None`` when the handler declares none
+    :rtype: str | None
+    :raises ValueError: the handler declares more than one, declares it positional-only (it is
+        passed by keyword), or names it as one of the tool's input properties (an argument would
+        then collide with the context)
+    """
+    try:
+        signature = inspect.signature(handler, eval_str=True)
+    except NameError, AttributeError:
+        # an annotation names a type only imported for type checking: read the annotations as written
+        signature = inspect.signature(handler)
+    except TypeError, ValueError:
+        # NOSILENT: a callable with no inspectable signature (some builtins) declares no context
+        return None
+    found = [parameter for parameter in signature.parameters.values() if _is_call_context(parameter.annotation)]
+    if not found:
+        return None
+    if len(found) > 1:
+        raise ValueError(
+            f"McpTool {tool_name!r}: the handler declares more than one CallContext parameter "
+            f"({', '.join(parameter.name for parameter in found)}); declare one",
+        )
+    parameter = found[0]
+    if parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+        raise ValueError(
+            f"McpTool {tool_name!r}: the handler's CallContext parameter {parameter.name!r} must be passable "
+            "by keyword",
+        )
+    properties = input_schema.get("properties")
+    if isinstance(properties, dict) and parameter.name in properties:
+        raise ValueError(
+            f"McpTool {tool_name!r}: the handler's CallContext parameter {parameter.name!r} is also an input "
+            "property; rename one",
+        )
+    return parameter.name
 
 
 ToolProvider = Callable[[], Iterable[McpTool]]
