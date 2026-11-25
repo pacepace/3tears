@@ -73,6 +73,7 @@ from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.eviction import Declared, Policy
 from threetears.core.utils.change_note_slot import ChangeNoteSlot
 from threetears.core.utils.session_settings import session_settings_connection_class
 from threetears.core.utils.write_ledger import write_ledger_connection_class
@@ -114,6 +115,7 @@ def _schema_for(variant: str) -> TableSchema:
             SchemaColumn("payload", STRING_TYPE, nullable=True),
         ],
         on_conflict="update",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
 

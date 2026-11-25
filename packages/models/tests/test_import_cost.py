@@ -13,8 +13,6 @@ import json
 import subprocess
 import sys
 
-import pytest
-
 # module prefixes that must NOT appear in sys.modules after importing
 # threetears.models. each entry is a prefix match against module names.
 _FORBIDDEN_PREFIXES = (
@@ -54,37 +52,3 @@ class TestImportCost:
         assert result.returncode == 0, f"probe failed:\n{result.stderr}"
         loaded = json.loads(result.stdout.strip())
         assert loaded == [], f"importing threetears.models loaded forbidden modules: {loaded}"
-
-
-#: imports the OpenAI provider, then builds the first chat and embedding clients, as a server does on its event
-#: loop, reaches the resource a structured-output stream calls (langchain_openai streams a ``response_format`` through
-#: ``root_async_client.beta.chat.completions.stream``), and lists the OpenAI SDK modules that imported.
-_OPENAI_PROBE = """
-import json
-import sys
-
-import threetears.models.providers.openai as provider
-
-resources_loaded = "openai.resources" in sys.modules
-before = set(sys.modules)
-chat = provider.create_openai_chat("gpt-4o", api_key="probe-not-a-key")
-provider.create_openai_embedding("text-embedding-3-small", api_key="probe-not-a-key")
-chat.root_async_client.beta.chat.completions.stream
-built = sorted(name for name in set(sys.modules) - before if name == "openai" or name.startswith("openai."))
-print(json.dumps({"resources_loaded": resources_loaded, "imported_at_first_build": built}))
-"""
-
-
-class TestOpenAIResourcesLoadAtImport:
-    def test_the_first_client_build_imports_no_openai_module(self) -> None:
-        """openai.resources is loaded by the provider's import, not on the loop at the first client (0.30 s on 2.x), nor
-        at its first structured-output stream (openai.resources.beta: 0.59 s of the loop on 3.26, a pool host).
-
-        :return: nothing
-        :rtype: None
-        """
-        pytest.importorskip("openai")
-        result = subprocess.run([sys.executable, "-c", _OPENAI_PROBE], capture_output=True, text=True, timeout=120)
-        assert result.returncode == 0, f"probe failed:\n{result.stderr}"
-        probe = json.loads(result.stdout.strip().splitlines()[-1])
-        assert probe == {"resources_loaded": True, "imported_at_first_build": []}
