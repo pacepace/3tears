@@ -91,7 +91,6 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
 __all__ = [
-    "FORMAT_FILE",
     "Committed",
     "DirtyFile",
     "GitRepo",
@@ -105,7 +104,7 @@ __all__ = [
 log = get_logger(__name__)
 
 #: the file, relative to the root, that records the layout format the repository's files are written in
-FORMAT_FILE: Final = ".threetears/layout-format"
+_FORMAT_FILE: Final = ".threetears/layout-format"
 
 _T = TypeVar("_T")
 
@@ -747,18 +746,18 @@ class GitRepo:
         await self._migrate_format()
 
     def _stored_format(self) -> int:
-        """the layout format the working tree records (:data:`FORMAT_FILE`); ``0`` when it records none.
+        """the layout format the working tree records (``.threetears/layout-format``); ``0`` when it records none.
 
         :return: the version
         :rtype: int
         :raises GitStoreError: when the file holds something that is not a version
         """
-        path = self.config.work_tree / FORMAT_FILE
+        path = self.config.work_tree / _FORMAT_FILE
         if not path.is_file():
             return 0
         text = path.read_text().strip()
         if not text.isdigit():
-            raise GitStoreError(f"{FORMAT_FILE} in {self.config.key!r} holds {text!r}, not a format version")
+            raise GitStoreError(f"{_FORMAT_FILE} in {self.config.key!r} holds {text!r}, not a format version")
         return int(text)
 
     def _refuse_a_newer_format(self) -> None:
@@ -795,7 +794,7 @@ class GitRepo:
                 f"and has no migrate_format to bring it there"
             )
         files = dict(await migrate(self, stored))
-        files[FORMAT_FILE] = f"{declared}\n".encode()
+        files[_FORMAT_FILE] = f"{declared}\n".encode()
         result = await self._commit_files_local(
             files, f"layout format {stored} -> {declared}", self.config.committer, None
         )

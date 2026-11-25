@@ -9,14 +9,14 @@ packages (bumped in lock-step).
 ### core: L3 format versions with a migration hook, deletes in a caller's transaction, and current docstrings
 
 **Added:** `TemplateLayout(format_version=, migrate_format=)`: a git store's layout names the format its files are
-written in, recorded in the repository (`.threetears/layout-format`, `threetears.core.backends.git.repo.FORMAT_FILE`).
+written in, recorded in the repository (`.threetears/layout-format`).
 The writer, when it takes the repository over, brings one recorded under an older format to the layout's with
 `await migrate_format(repo, from_version)` (the files to write), committed with the new version as ONE commit; a
 repository recorded under a newer format is refused when it opens, and an older one with no migration when the
 writer takes it over. A layout that names no format records nothing and behaves as before.
 
 **Added:** `SqliteL3Backend(path, schema_version=, migrate=)`: the version of the application's own tables, recorded
-in the file. An older file is migrated by `migrate(conn, from_version)` inside one transaction when the store opens
+in the file's header (`application_id`). An older file is migrated by `migrate(conn, from_version)` inside one transaction when the store opens
 (rolled back if it raises); a newer one is refused, as is an older one with no `migrate`.
 
 **Added:** `BaseCollection.delete(key, conn=...)` deletes inside a caller's transaction (a

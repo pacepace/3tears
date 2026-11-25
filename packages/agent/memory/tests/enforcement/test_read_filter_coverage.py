@@ -129,6 +129,7 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "persist_to_store": "the write-buffer flush of entities callers already saved",
     "delete": "a delete by key must reach the row whether or not this task may read it",
     "delete_from_store": "the L3 leg of delete; must reach the row whatever the filter says",
+    "delete_from_store_in_transaction": "delete_from_store on a caller's transaction; must reach the row whatever the filter says",
     "delete_rows": "a bulk delete by key; must reach every named row whatever the filter says",
     "delete_arrow": "delete_rows for keys the caller supplies as an Arrow table; must reach every named row",
     "truncate": "empties the whole table, as an operator's clear; reads and returns no row",

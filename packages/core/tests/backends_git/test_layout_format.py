@@ -15,11 +15,12 @@ from typing import Any
 import pytest
 
 from threetears.core.backends.git import GitDurableStore, GitStoreError, JsonCodec, TableLayout, TemplateLayout
-from threetears.core.backends.git.repo import FORMAT_FILE
 
 from .conftest import MakeRepo
 
 T0 = datetime(2026, 11, 25, 9, 0, 0, tzinfo=UTC)
+#: where a repository records its layout format
+FORMAT_FILE = ".threetears/layout-format"
 _TABLES = [TableLayout("keepers", "{character}/keepers/{tile}.json", ("character", "tile"), JsonCodec())]
 
 
