@@ -51,14 +51,9 @@ else
     fi
 fi
 
-# CI's check job runs this; it stays local because it overlays mcp 1.x on the locked environment.
+# CI's check job runs this; it stays local because it overlays the MCP SDK floors on the locked environment.
 echo ""
-echo "=== Tests (models and evals on mcp 1.x) ==="
-"$REPO_ROOT/scripts/test-mcp-v1.sh" -q
-
-# CI's check job runs this; it stays local because it overlays 3tears-mcp's mcp floor on the locked environment.
-echo ""
-echo "=== Tests (3tears-mcp at its mcp floor) ==="
+echo "=== Tests (the MCP packages at their SDK floors) ==="
 "$REPO_ROOT/scripts/test-mcp-floor.sh" -q
 
 # CI's check job runs this; it stays local because it pins observe's OpenTelemetry floors in an isolated env.
