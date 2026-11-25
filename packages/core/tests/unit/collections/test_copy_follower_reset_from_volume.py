@@ -50,9 +50,11 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     PartialStamp,
     PreparesStaged,
     is_reload_stage,
-    reload_stage,
 )
+from threetears.core.collections.delta_copy_beats import CopyBeats  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
+from threetears.core.coordination.lease import KVLease  # noqa: E402
+from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
     RESET_REASON,
     ChangedRow,
@@ -250,7 +252,7 @@ def _entry(volume: Path, table: str, rows: list[tuple[str, int, int]], version: 
 
 
 class _World:
-    def __init__(self, volume: Path) -> None:
+    def __init__(self, volume: Path, *, beats: CopyBeats | None = None, fulls: VolumeFulls | None = None) -> None:
         self.volume = volume
         self.l3, self.log, self.lock = _L3(), _Log(), _Scopes()
         self.backend = DuckDBBackend()
@@ -269,7 +271,8 @@ class _World:
             changes=self.log,
             page_size=50,
             stamp_table="scope_epochs",
-            fulls=VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
+            fulls=fulls or VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
+            beats=beats,
         )
         self.writes = 0
 
@@ -323,6 +326,52 @@ class _World:
                 return
             await asyncio.sleep(0.01)
         raise AssertionError(f"{table} was never reloaded: {self.follower.status().waiting_for_full}")
+
+
+class _BeatSeenFulls(VolumeFulls):
+    """the volume's fulls, reading the copies' beats as the copy stages its first: what the fold sees while it loads."""
+
+    def __init__(self, volume: Path, reader: CopyBeats) -> None:
+        super().__init__(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01)
+        self.reader = reader
+        self.seen: list[str] = []
+
+    async def stage(self, *args: Any, **kwargs: Any) -> Any:
+        if not self.seen:
+            self.seen.append((await self.reader.positions()).judge(_OTHER, "inc:1"))
+        return await super().stage(*args, **kwargs)
+
+
+async def test_a_copy_with_a_beat_says_starting_while_it_loads_then_beats_its_marks_and_deletes_it_when_it_ends(
+    _volume: Path,
+) -> None:
+    """Flips if a copy given a beat (a writer whose fold deletes its delta files, decision 54) loads anything before it
+    registers ``starting`` (the fold would delete files the loading copy needs), does not beat the marks it holds once
+    started and again after a change it applies, or leaves its beat behind when its run ends (the fold would keep
+    every file until the recovery's stale time)."""
+    nats = FakeNatsClient()
+    reader = CopyBeats(KVLease(nats, pod_id="reports"))
+    fulls = _BeatSeenFulls(_volume, reader)
+    world = _World(_volume, beats=CopyBeats(KVLease(nats, pod_id="reports"), copy_id="copy-a"), fulls=fulls)
+
+    async def beat_of(table: str, epoch: str) -> None:
+        for _ in range(500):
+            beats = (await reader.positions()).beats
+            if beats and not beats[0].starting and beats[0].epochs.get(table) == epoch:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"no beat of {table} at {epoch}: {(await reader.positions()).beats}")
+
+    await world.started()
+    assert fulls.seen == ["starting"], "the copy loaded its full before its starting beat was put"
+    await beat_of(_OTHER, "inc:1")
+    run = asyncio.create_task(world.follower.run())
+    world.write(_OTHER, [("VA", 0, 77)])
+    world.follower.poke()
+    await beat_of(_OTHER, f"inc:{world.log.count[_OTHER]}")
+    run.cancel()
+    await asyncio.gather(run, return_exceptions=True)
+    assert (await reader.positions()).beats == (), "a copy's run ended and its beat is still there"
 
 
 _AFTER_RESET = [("VA", i, 100 + i) for i in range(3)] + [("TX", 1, 500)]
@@ -918,8 +967,9 @@ async def test_a_backend_that_prepares_a_reload_does_it_outside_the_pass_lock_on
                 break
             await asyncio.sleep(0.01)
         assert entered.is_set(), "the backend was never asked to prepare the reload"
-        assert prepared == [[reload_stage(_RESET)]]
-        assert is_reload_stage(reload_stage(_RESET))
+        assert len(prepared) == 1 and len(prepared[0]) == 1, "one reload, one stage"
+        (stage,) = prepared[0]
+        assert stage is not None and is_reload_stage(stage) and _RESET in stage
         world.write(_OTHER, [("VA", 3, 3131)])
         assert await asyncio.wait_for(world.follower.catch_up(), timeout=5.0)
         assert world.same(_OTHER)

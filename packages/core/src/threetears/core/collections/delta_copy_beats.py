@@ -305,8 +305,17 @@ class CopyBeats(CopyPositionsReader):
         :return: nothing
         :rtype: None
         """
-        bucket = await self._lease.bucket()
-        await bucket.delete(key=self._key(self._own()))
+        try:
+            bucket = await self._lease.bucket()
+            await bucket.delete(key=self._key(self._own()))
+        except KvError as exc:
+            # a beat left behind goes stale and the recovery removes it as a gone copy's (recover_pass)
+            degrade_l2(
+                exc,
+                table=_COPY_BEAT_SCOPE,
+                op="delete_beat",
+                what="a stopping copy's beat could not be deleted: the recovery removes it once stale",
+            )
         self._last = None
 
     async def positions(self) -> CopyPositions:
