@@ -44,6 +44,7 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysPage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     CopyFollower,
     FollowedTable,
@@ -309,6 +310,7 @@ class _World:
             beats=beats,
             recreate=recreate,
             file_poll_seconds=0.01 if recreate is not None else None,
+            drift_workers=COPY_WORKERS,
         )
         self.writes = 0
 
@@ -1503,6 +1505,7 @@ class _Checkpointed(_World):
             stamp_table="scope_epochs",
             checkpoints=self.checkpoints,
             fulls=VolumeFulls(volume, [_followed(_RESET), _followed(_OTHER)], poll_seconds=0.01),
+            drift_workers=COPY_WORKERS,
         )
 
     def seq(self) -> int:

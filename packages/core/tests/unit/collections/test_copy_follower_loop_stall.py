@@ -28,6 +28,7 @@ duckdb = pytest.importorskip("duckdb")
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
@@ -162,6 +163,7 @@ def world() -> Iterator[tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower]]:
         changes=log,
         page_size=_KEYS,
         stamp_table="scope_epochs",
+        drift_workers=COPY_WORKERS,
     )
     follower.register()
     try:

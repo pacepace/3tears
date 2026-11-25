@@ -102,6 +102,7 @@ from threetears.core.collections.volume_fulls import (  # noqa: E402
 )
 from threetears.core.collections.registry import WantedFile  # noqa: E402
 from threetears.core.config import DefaultCoreConfig  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS as _WORKERS  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.entities.base import BaseEntity  # noqa: E402
 from threetears.core.testing.l1_tables import TEST_L1_TABLE as _TEST_L1_TABLE  # noqa: E402
@@ -124,24 +125,6 @@ _BORN = datetime(2026, 11, 3, 21, 45, tzinfo=UTC)
 _LATER = datetime(2026, 11, 4, 3, 0, tzinfo=UTC)
 
 _OPENED: list[Callable[[], None]] = []
-
-
-class _CountedWorkers(ProcessWorkers):
-    """the copy's worker process, each job sent to it named: a pass's key work runs there, in another process."""
-
-    def __init__(self) -> None:
-        super().__init__(workers=1, name="test copy follower")
-        self.jobs: list[str] = []
-
-    async def run(self, job: Callable[..., Any], *args: Any, inline: bool = False) -> Any:
-        if not inline:
-            self.jobs.append(job.__name__)
-        return await super().run(job, *args, inline=inline)
-
-
-#: one worker process every follower here shares: made at its first job, joined at the interpreter's exit, never one a
-#: test (a follower makes its own when given none, closed only when its run ends, and these tests never run one)
-_WORKERS = _CountedWorkers()
 
 
 @pytest.fixture(autouse=True)

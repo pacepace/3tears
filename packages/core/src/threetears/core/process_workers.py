@@ -38,12 +38,12 @@ from typing import Any
 from threetears.core.processes import exit_with_parent, name_process, start_worker_server
 from threetears.observe import get_logger
 
-__all__ = ["BLAS_THREADS", "ProcessWorkers"]
+__all__ = ["ProcessWorkers"]
 
 log = get_logger(__name__)
 
 #: the variable that bounds the threads numpy's OpenBLAS starts as it loads: a worker sets it to one (:func:`_below_the_server`)
-BLAS_THREADS = "OPENBLAS_NUM_THREADS"
+_BLAS_THREADS = "OPENBLAS_NUM_THREADS"
 
 #: the scalar types that cross as they are
 _PLAIN_SCALARS = (bytes, str, int, float, bool, type(None))
@@ -115,7 +115,7 @@ def _below_the_server(serving: int, process_name: str | None = None) -> None:
     # with this, 2026-11-25), each counted against the pod's thread limit, and no job here runs BLAS. A copy's worker
     # on a many-core pool host so took the threads its test processes needed ("can't start new thread", monad-1,
     # 2026-11-25). An operator's own setting is kept
-    os.environ.setdefault(BLAS_THREADS, "1")
+    os.environ.setdefault(_BLAS_THREADS, "1")
     if process_name is not None:
         name_process(process_name)
     try:

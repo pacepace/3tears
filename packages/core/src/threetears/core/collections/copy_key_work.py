@@ -50,7 +50,6 @@ __all__ = [
     "ipc_bytes",
     "joined",
     "joined_ipc",
-    "later_than",
     "page_scopes_answer",
     "page_scopes_job",
     "page_scopes_of",
@@ -58,7 +57,6 @@ __all__ = [
     "partition_mine_of",
     "partition_page_job",
     "partition_page_of",
-    "reached_of",
     "scope_texts",
     "taken_answer",
     "taken_job",
@@ -232,7 +230,7 @@ def heard_job(
     )
 
 
-def reached_of(key: Sequence[str], instants: Collection[str], held: Sequence[Any], known: Any, epoch: str) -> Any:
+def _reached_of(key: Sequence[str], instants: Collection[str], held: Sequence[Any], known: Any, epoch: str) -> Any:
     """the keys a cleared prefix reaches, each once, as the batch heard at the clearing epoch: the keys of the copy's
     rows under it, and those heard or staged under it.
 
@@ -462,7 +460,7 @@ def joined_ipc(batches: Sequence[Any], schema: Any) -> bytes:
     return ipc_bytes(joined(batches, schema))
 
 
-def later_than(rows: Any, key: Sequence[str], bar: str | None) -> Any:
+def _later_than(rows: Any, key: Sequence[str], bar: str | None) -> Any:
     """per row of keys heard at their epochs, whether its key was heard at an epoch past ``bar`` (the table's generation
     as read before the pass's stamp): every row of such a key, so a key waits whole. One judgment a distinct epoch (a
     commit), never one a key; an epoch of another incarnation, or none, is never past it (nothing orders them).
@@ -534,7 +532,7 @@ def taken_of(
         rows = rows.filter(pc.invert(hold))
         left_keys = distinct_keys(left, key).num_rows
         left = left if left.num_rows else None
-    later = later_than(rows, key, bar)
+    later = _later_than(rows, key, bar)
     held_later = later is not None and bool(later.any())
     if held_later:
         # a key heard at an epoch past the generation read before the pass's stamp: its commit may be newer than the
@@ -643,7 +641,7 @@ def cleared_reach_of(
     epoch: str,
 ) -> Any:
     """the keys cleared prefixes reach, each once, as the batch heard at the clearing epoch: the keys of the copy's rows
-    under them, and those heard or staged under them (:func:`under_of`, :func:`reached_of`).
+    under them, and those heard or staged under them (:func:`under_of`, :func:`_reached_of`).
 
     :param key: the table's key columns
     :ptype key: Sequence[str]
@@ -660,7 +658,7 @@ def cleared_reach_of(
     :return: the batch
     :rtype: pyarrow.Table
     """
-    return reached_of(key, instants, held, under_of(key, known, prefixes), epoch)
+    return _reached_of(key, instants, held, under_of(key, known, prefixes), epoch)
 
 
 def cleared_reach_job(

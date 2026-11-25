@@ -49,6 +49,7 @@ from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # 
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.copy_key_work import INLINE_KEYS  # noqa: E402
+from packages.core.tests.copy_workers_support import COPY_WORKERS as _WORKERS  # noqa: E402
 from threetears.core.process_workers import ProcessWorkers  # noqa: E402
 from threetears.core.collections.copy_follower import (  # noqa: E402
     FAILING_AFTER,
@@ -268,7 +269,7 @@ def _world(
         changes=log,
         page_size=page_size,
         retry_waits=retry_waits,
-        drift_workers=workers,
+        drift_workers=_WORKERS if workers is None else workers,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
@@ -564,6 +565,7 @@ def _replica(
         page_size=50,
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     return backend, follower, checkpoints
 
@@ -803,6 +805,7 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
         generation=log.current,
         changes=log,
         page_size=50,
+        drift_workers=_WORKERS,
     )
     follower.register()
     l3.put(_rows("VA", 40))
@@ -1271,7 +1274,7 @@ def _scoped_world(
         changes=log,
         page_size=page_size,
         stamp_table="scope_epochs",
-        drift_workers=workers,
+        drift_workers=_WORKERS if workers is None else workers,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1441,6 +1444,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     follower.register()
     bus = FakeNatsClient()
@@ -1484,7 +1488,17 @@ def _stamped(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFol
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
     log = _Log()
-    return CopyFollower(registry, tables, backend, _L3(), settled=settled, generation=log.current, changes=log, **stamp)
+    return CopyFollower(
+        registry,
+        tables,
+        backend,
+        _L3(),
+        settled=settled,
+        generation=log.current,
+        changes=log,
+        **stamp,
+        drift_workers=_WORKERS,
+    )
 
 
 def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construction_raises() -> None:
@@ -1502,7 +1516,14 @@ def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construct
     registry.follow_generation(_TABLE)
     log = _Log()
     derived = CopyFollower(
-        registry, scoped, backend, _L3(), settled=epochs.settled, generation=log.current, changes=log
+        registry,
+        scoped,
+        backend,
+        _L3(),
+        settled=epochs.settled,
+        generation=log.current,
+        changes=log,
+        drift_workers=_WORKERS,
     )
     derived.register()
     assert registry.has_derived_caches("enr_scope_epochs"), "a ScopeEpochs.settled names its own table"
@@ -1781,6 +1802,7 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1903,6 +1925,7 @@ def _derived_replica(
         page_size=50,
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     return backend, follower
 
@@ -1975,6 +1998,7 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
         changes=log,
         page_size=50,
         stamp_table="scope_epochs",
+        drift_workers=_WORKERS,
     )
     follower.register()
     l3.put([("VA", 1, 1), ("VA", 2, 1), ("IL", 11, 1), ("IL", 12, 1)])
@@ -2228,6 +2252,7 @@ async def test_a_warm_paged_by_its_order_over_one_shared_lead_value_reads_every_
         generation=log.current,
         changes=log,
         page_size=50,
+        drift_workers=_WORKERS,
     )
     follower.register()
     await _warmed((l3, log, lock, backend, follower), 120)
@@ -2532,28 +2557,10 @@ async def test_a_key_heard_again_at_the_epoch_its_kept_stage_holds_is_not_read_f
 # --- a pass's CPU leaves the serving process (copy_key_work) -------------------------------------------------------
 
 
-class _CountedWorkers(ProcessWorkers):
-    """the copy's worker process, each job sent to it named: a pass's key work runs there, in another process."""
-
-    def __init__(self) -> None:
-        super().__init__(workers=1, name="test copy follower")
-        self.jobs: list[str] = []
-
-    async def run(self, job: Callable[..., Any], *args: Any, inline: bool = False) -> Any:
-        if not inline:
-            self.jobs.append(job.__name__)
-        return await super().run(job, *args, inline=inline)
-
-
-#: one worker process the tests below share: made at its first job, joined at the interpreter's exit, never one a test
-_WORKERS = _CountedWorkers()
-
-
-@pytest.fixture(autouse=True)
-def _one_worker_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """every follower here given none shares :data:`_WORKERS`: one worker process a test process, never a second
-    beside the process's own (each a whole interpreter: a pool host running many test processes ran short of them)."""
-    monkeypatch.setattr(copy_follower, "_COPY_WORKERS", _WORKERS)
+#: the most keys a pass takes in this process, and the most row messages a turn of the loop drains: the follower's own
+#: measured bounds (copy_follower: the take's on the loop, a drain's run), restated so a test says what it holds them to
+_TAKEN_HERE = 500
+_A_TURN = 2_000
 
 
 @pytest.fixture
@@ -2589,13 +2596,13 @@ async def test_a_large_pass_takes_its_keys_in_the_worker_process(
     (l3, log, lock, backend, follower), _registry = _world(workers=_WORKERS)
     await _warmed((l3, log, lock, backend, follower), 2)
     taken = _here(monkeypatch, "taken_of", lambda key, scope, files, heard, *rest: heard.num_rows)
-    count = copy_follower.TAKEN_INLINE_KEYS * 6
+    count = _TAKEN_HERE * 6
     await asyncio.to_thread(l3.put, _rows("IL", count, votes=3))
     await asyncio.to_thread(log.commit, [("IL", i) for i in range(count)])
     lock.version += 1
     assert await follower.catch_up()
     assert "taken_job" in jobs, f"the pass's {count} keys were not taken in the worker process: {jobs}"
-    assert not [rows for rows in taken if rows > copy_follower.TAKEN_INLINE_KEYS], f"taken here: {taken}"
+    assert not [rows for rows in taken if rows > _TAKEN_HERE], f"taken here: {taken}"
     assert _copy(backend) == l3.held()
     jobs.clear()
     l3.put([("IL", 0, 9)])
@@ -2732,7 +2739,7 @@ _READS: list[int] = []
 async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_turn() -> None:
     """Flips if the messages heard while a pass read are drained in one turn of the loop, however many: a run of row
     messages read into Arrow took the loop 1.24 ms for 2,000, 78 ms for 200,000 (2026-11-25). Every drain of a pass
-    takes them :data:`~threetears.core.collections.copy_follower.MESSAGES_PER_TURN` at a time, and the next pass reads
+    takes them :data:`~threetears.core.collections._A_TURN` at a time, and the next pass reads
     their keys."""
     lock = _Scopes()
     registry = CollectionRegistry()
@@ -2741,7 +2748,7 @@ async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_tur
     log.commit([("VA", i) for i in range(5)])
     await follower.warm()
     assert await follower.catch_up()
-    count = copy_follower.MESSAGES_PER_TURN * 4
+    count = _A_TURN * 4
     await asyncio.to_thread(l3.put, _rows("IL", count, votes=6))
     heard = await asyncio.to_thread(lambda: [_ReadMessage(table=_TABLE, ids=["IL", str(i)]) for i in range(count)])
     l3.put([("VA", 1, 70)])
@@ -2768,7 +2775,7 @@ async def test_messages_heard_while_a_pass_reads_are_drained_a_bounded_run_a_tur
         turns = list(_READS)
     finally:
         _READS.clear()
-    assert max(turns) <= copy_follower.MESSAGES_PER_TURN, f"a turn drained {max(turns)} messages"
+    assert max(turns) <= _A_TURN, f"a turn drained {max(turns)} messages"
     assert sum(turns) >= count, f"the messages were not all drained: {sum(turns)} of {count}"
     lock.commit("state:IL")
     assert await follower.catch_up()

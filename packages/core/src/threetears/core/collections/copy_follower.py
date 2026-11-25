@@ -228,8 +228,6 @@ __all__ = [
     "WHOLE_READ_WHYS",
     "CopyFollower",
     "HubCapabilityMissingError",
-    "MESSAGES_PER_TURN",
-    "TAKEN_INLINE_KEYS",
     "FollowedTable",
     "FollowerBackend",
     "FollowerPhase",
@@ -546,14 +544,14 @@ _NO_SCOPE: Final = "\x00no scope"
 #: pickled, the very object-a-key cost. Why 2,000: their Arrow build took 1.24 ms of the loop's CPU for 2,000, 8.9 ms
 #: for 20,000 and 78 ms for 200,000 (2026-11-25, macOS arm64, Python 3.14), so a turn stays near a millisecond, and
 #: every drain in an async step drains through :meth:`CopyFollower._drained`, never a run of every message waiting
-MESSAGES_PER_TURN: Final = 2000
+_MESSAGES_PER_TURN: Final = 2000
 
 #: a pass's keys of a table are taken (:func:`_taken`) on the loop up to this many keys heard and staged, in the
 #: copy's worker process past it. Why so low: the take is some twenty Arrow kernels, each with a fixed cost. Measured
 #: 2026-11-25 (macOS arm64, Python 3.14, two text key columns): here 0.32 ms at 250 keys, 0.75 ms at 500, 0.70 ms at
 #: 1,000, 1.56 ms at 2,000, 73 ms at 100,000 and 948 ms at 1,000,000; through the worker 0.67-0.78 ms of the serving
 #: process's CPU up to 2,000 keys (0.26-0.32 ms of it the loop's), 3.5 ms at 100,000 and 37 ms at 1,000,000
-TAKEN_INLINE_KEYS: Final = 500
+_TAKEN_INLINE_KEYS: Final = 500
 
 
 #: the one worker process every copy follower of this process shares (a pod has one copy): its drift checks and its
@@ -824,7 +822,7 @@ def _taken(
     bar: str | None = None,
 ) -> _Take:
     """a pass's keys of one table from the batches heard (:func:`~threetears.core.collections.copy_key_work.taken_of`)
-    in this process: on the loop, for a pass under :data:`TAKEN_INLINE_KEYS` keys (:meth:`CopyFollower._taken_now`
+    in this process: on the loop, for a pass under :data:`_TAKEN_INLINE_KEYS` keys (:meth:`CopyFollower._taken_now`
     sends a larger one to the copy's worker process).
 
     :param table: the table
@@ -2414,7 +2412,7 @@ class CopyFollower:
         self._apply_messages(messages, 0, len(messages))
 
     async def _drained(self) -> None:
-        """:meth:`_drain` a run of :data:`MESSAGES_PER_TURN` at a time, letting the loop run between, until the inbox
+        """:meth:`_drain` a run of :data:`_MESSAGES_PER_TURN` at a time, letting the loop run between, until the inbox
         is short; the rest is drained with no await after it, so a caller's next step, with no await of its own, judges
         every message heard. Every drain of an async step is this one: a plain :meth:`_drain` of all that waited (the
         messages heard while a pass staged) held the loop 78 ms for 200,000 row messages (2026-11-25).
@@ -2441,11 +2439,11 @@ class CopyFollower:
                 for at, batch in zip(ats, batches, strict=True):
                     built[at] = replace(messages[at], batch=batch)
             messages = tuple(built)
-        runs = max(0, (len(messages) - 1) // MESSAGES_PER_TURN)
+        runs = max(0, (len(messages) - 1) // _MESSAGES_PER_TURN)
         for run in range(runs):
-            self._apply_messages(messages, run * MESSAGES_PER_TURN, (run + 1) * MESSAGES_PER_TURN)
+            self._apply_messages(messages, run * _MESSAGES_PER_TURN, (run + 1) * _MESSAGES_PER_TURN)
             await asyncio.sleep(0)
-        left = messages[runs * MESSAGES_PER_TURN :]
+        left = messages[runs * _MESSAGES_PER_TURN :]
         if left:
             # ahead of what was posted meanwhile, drained with it and no await
             self._inbox = (left, *self._inbox)
@@ -5301,7 +5299,7 @@ class CopyFollower:
         bar: str | None,
     ) -> _Take:
         """a pass's keys of one table from the batches heard (:func:`copy_key_work.taken_of`), in the copy's worker
-        process; under :data:`TAKEN_INLINE_KEYS` keys here, on the loop.
+        process; under :data:`_TAKEN_INLINE_KEYS` keys here, on the loop.
 
         Why the worker: on a thread it took 84 ms of CPU at 100,000 keys, 167 ms at 200,000 and 1.06 s at 1,000,000
         (2026-11-25, macOS arm64, Python 3.14): the serving process's cores, taken from page serving. The hand-off is
@@ -5320,7 +5318,7 @@ class CopyFollower:
         :return: the take
         :rtype: _Take
         """
-        if sum(batch.num_rows for batch in (*batches, *staged)) <= TAKEN_INLINE_KEYS:
+        if sum(batch.num_rows for batch in (*batches, *staged)) <= _TAKEN_INLINE_KEYS:
             return _taken(table, batches, staged, held, bar)
         schema = _heard_schema(table.key)
         heard_ipc, staged_ipc = await asyncio.to_thread(
