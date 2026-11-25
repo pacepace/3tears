@@ -667,6 +667,9 @@ class DeltaFolds:
         self.published = 0
         #: the tables a rebuild or a recovery published during the :meth:`start` running, in order; None outside one
         self._starting: tuple[str, ...] | None = None
+        #: what a rebuild from L3 is reading now, ``rebuilding <table> (n of m)`` or ``publishing ...``, for a copy's
+        #: ask (:attr:`rebuilding`); None while none runs. A str replaced whole by the round, its one writer
+        self._rebuilding: str | None = None
         #: the commands callers posted that the round has not applied yet, in order: the one thing a caller adds to
         self._inbox: tuple[_Command, ...] = ()
         #: the starts applied whose walk of the epoch log the round runs next (:meth:`_relearn`)
@@ -1173,6 +1176,20 @@ class DeltaFolds:
         )
 
     @property
+    def rebuilding(self) -> str | None:
+        """what a rebuild of a missing full is doing now, for a copy waiting for it: ``rebuilding <table> (n of m)``
+        while it reads a table from L3, ``publishing the rebuilt full (m tables)`` while its worker writes the parts;
+        None while no rebuild runs.
+
+        Why: a cold rebuild of ~20M rows read for 532 s with no line between its start and its publish (local stack,
+        2026-11-24), and a copy waiting on it could not tell slow from stalled.
+
+        :return: the step, or None
+        :rtype: str | None
+        """
+        return self._rebuilding
+
+    @property
     def started(self) -> bool:
         """whether a writer's :meth:`start` has run or been posted: only then does the fold know how to read L3 and at
         what term to publish, so only then can it rebuild a full on its own.
@@ -1660,8 +1677,13 @@ class DeltaFolds:
         asked: dict[str, int] = {}
         # a rebuild's rows left by a writer that died mid-read: only the writer holding the lease writes there
         await asyncio.to_thread(_cleared, self.root / _REBUILD_DIR)
+        log.info(
+            "rebuilding fulls from L3: each table read whole once, one after another, then one full published",
+            extra={"extra_data": {"tables": sorted(owed), "count": len(owed), "term": term}},
+        )
         try:
-            for name, why in sorted(owed.items()):
+            for index, (name, why) in enumerate(sorted(owed.items()), start=1):
+                self._rebuilding = f"rebuilding {name} ({index} of {len(owed)})"
                 # what was posted before the generation is read is judged covered by it; what comes after, not
                 self._drain()
                 known[name] = frozenset(file for table_name, file, _ in self._queued if table_name == name) | {
@@ -1705,10 +1727,29 @@ class DeltaFolds:
                         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_rebuild_speed_at_real_size",
                     )
+                read_began = time.monotonic()
                 file, rows = await self._written_beside(table, pages)
+                seconds = time.monotonic() - read_began
+                # each table's read said as it ends: a rebuild of millions of rows runs minutes, and a stall is told
+                # from slow only by these lines (2026-11-24: 532 s, silent between its start and its publish)
+                log.info(
+                    "a table read from L3 for its full's rebuild",
+                    extra={
+                        "extra_data": {
+                            "table": name,
+                            "why": why,
+                            "rows": rows,
+                            "seconds": round(seconds, 3),
+                            "rows_per_second": round(rows / seconds) if seconds > 0 else None,
+                            "of": f"{index} of {len(owed)}",
+                        }
+                    },
+                )
                 staged.append((name, file, token, rows))
             if not staged:
+                self._rebuilding = None
                 return
+            self._rebuilding = f"publishing the rebuilt full ({len(staged)} tables)"
             # every ask posted while the rows were read applied first: a file told meanwhile is open, never claimed
             self._drain()
             answer = await self._workers.run(
@@ -1724,6 +1765,7 @@ class DeltaFolds:
                 self.retention,
             )
         except BaseException as error:  # prawduct:allow prawduct/broad-except -- a rebuild never fails a write: logged, counted, retried before the next round
+            self._rebuilding = None
             self._recheck = True
             await asyncio.to_thread(_unlink_all, self.root, [file for _, file, _, _ in staged])
             if isinstance(error, asyncio.CancelledError):
@@ -1736,6 +1778,7 @@ class DeltaFolds:
                 exc_info=error,
             )
             return
+        self._rebuilding = None
         outcome, manifest, rebuilt, deleted, full_bytes, covered = answer
         self._measured_fulls(full_bytes)
         self._doom(covered, {})

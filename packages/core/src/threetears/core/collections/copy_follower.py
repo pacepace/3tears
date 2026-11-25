@@ -1185,8 +1185,9 @@ class _FullRecreate(Protocol):
 
         :param table: the table
         :ptype table: str
-        :return: ``present``, ``recovering`` (the writer's fold publishes it), ``no_writer`` or ``failed`` (asked
-            again at the next look)
+        :return: ``present``, ``recovering`` (the writer's fold publishes it; ``recovering: <its step>`` when the
+            writer says which table its rebuild reads, ``rebuilding <table> (n of m)``, said in the copy's waiting
+            status), ``no_writer`` or ``failed`` (asked again at the next look)
         :rtype: str
         """
         ...
@@ -3478,7 +3479,8 @@ class CopyFollower:
         :rtype: str
         """
         answer = await asks.full(table)
-        _FULL_ASKS.labels(table=table, outcome=answer).inc()
+        # counted by the outcome word alone: the rebuild's step after it is for the status, never a label
+        _FULL_ASKS.labels(table=table, outcome=answer.partition(":")[0]).inc()
         return answer
 
     async def _warm_tables(self, whys: Mapping[str, str]) -> None:
