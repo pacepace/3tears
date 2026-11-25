@@ -25,7 +25,7 @@ in ``_FIXTURES``, carries ``@pytest.mark.secrets``: on itself, on its class, or 
 fixture not named in ``_FIXTURES``, escapes the walk. ``redshift_config`` (``packages/datasources/tests/integration/
 conftest.py``) resolves ``OTS_REDSHIFT_PASSWORD`` that way; add any new one beside it.
 
-AST-based and side-effect-free.
+AST-based; each file's findings are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -178,11 +178,31 @@ def _unmarked_secret_tests(tree: ast.Module) -> list[str]:
     return offenders
 
 
+def _secret_readers(path: Path, tree: ast.Module) -> tuple[tuple[str, ...], bool]:
+    """One test file's unmarked credential readers, and whether it would have any with every secrets mark stripped.
+
+    The second half strips the marks from this extraction's own tree, which no other caller sees.
+    """
+    unmarked = tuple(_unmarked_secret_tests(tree))
+    # strip every secrets mark, then ask the walker what would be unmarked
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            node.decorator_list = [d for d in node.decorator_list if not _secrets_mark(d)]
+        if isinstance(node, (ast.Module, ast.ClassDef)):
+            node.body = [s for s in node.body if not (isinstance(s, ast.Assign) and _secrets_mark(s.value))]
+    return unmarked, bool(_unmarked_secret_tests(tree))
+
+
+def _readers_by_file() -> dict[Path, tuple[tuple[str, ...], bool]]:
+    """Each test file's :func:`_secret_readers`, kept on disk by the file's bytes."""
+    return file_facts(_secret_readers, _test_files(), root=_REPO_ROOT)
+
+
 def test_tests_that_read_a_credential_carry_the_secrets_marker() -> None:
     """A test reading a credential from the environment must be marked ``secrets``."""
     offenders: list[str] = []
-    for path in _test_files():
-        for name in _unmarked_secret_tests(parse_python_path(path)):
+    for path, (unmarked, _) in _readers_by_file().items():
+        for name in unmarked:
             offenders.append(f"{path.relative_to(_REPO_ROOT)}::{name}")
     if offenders:
         listing = "\n".join(f"  - {o}" for o in offenders)
@@ -270,15 +290,9 @@ def test_the_walker_sees_the_known_credentialed_tests() -> None:
         "packages/models/tests/live/test_claude_cli_structured_output_live.py",
         "packages/search/tests/test_embedded_smoke.py",
     }
-    seen: set[str] = set()
-    for path in _test_files():
-        tree = parse_python_path(path)
-        # strip every secrets mark, then ask the walker what would be unmarked
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                node.decorator_list = [d for d in node.decorator_list if not _secrets_mark(d)]
-            if isinstance(node, (ast.Module, ast.ClassDef)):
-                node.body = [s for s in node.body if not (isinstance(s, ast.Assign) and _secrets_mark(s.value))]
-        if _unmarked_secret_tests(tree):
-            seen.add(str(path.relative_to(_REPO_ROOT)))
+    seen = {
+        str(path.relative_to(_REPO_ROOT))
+        for path, (_, unmarked_when_stripped) in _readers_by_file().items()
+        if unmarked_when_stripped
+    }
     assert known <= seen, known - seen

@@ -16,6 +16,8 @@ import ast
 import re
 from pathlib import Path
 
+from threetears.enforcement.common.scan_cache import file_facts
+
 WORKSPACE = Path(__file__).resolve().parents[2]
 SOURCES = sorted(p for p in (WORKSPACE / "packages").rglob("src") if p.is_dir() and "/tests/" not in str(p))
 
@@ -92,8 +94,12 @@ def _tool_functions(tree: ast.AST) -> list[ast.AsyncFunctionDef | ast.FunctionDe
 
 
 def _plain_refusals(source: str, where: str) -> list[str]:
+    return _tree_refusals(ast.parse(source), where)
+
+
+def _tree_refusals(tree: ast.Module, where: str) -> list[str]:
     hits = []
-    for fn in _tool_functions(ast.parse(source)):
+    for fn in _tool_functions(tree):
         for node in ast.walk(fn):
             if not isinstance(node, ast.Return):
                 continue
@@ -106,11 +112,15 @@ def _plain_refusals(source: str, where: str) -> list[str]:
     return hits
 
 
+def _file_refusals(path: Path, tree: ast.Module) -> tuple[str, ...]:
+    """One source file's plain refusals, kept in the scan cache by the file's bytes."""
+    return tuple(_tree_refusals(tree, str(path.relative_to(WORKSPACE))))
+
+
 def test_every_refusal_a_tool_returns_is_a_tool_error() -> None:
-    hits = []
-    for root in SOURCES:
-        for path in sorted(root.rglob("*.py")):
-            hits += _plain_refusals(path.read_text(), str(path.relative_to(WORKSPACE)))
+    paths = [path for root in SOURCES for path in sorted(root.rglob("*.py"))]
+    found = file_facts(_file_refusals, paths, root=WORKSPACE)
+    hits = [hit for path in paths for hit in found[path]]
     assert not hits, (
         "these return a refusal as plain text, which the turn records as done: start it with [TOOL ERROR], "
         "or add it to ANSWERS with why it is an answer:\n" + "\n".join(hits)

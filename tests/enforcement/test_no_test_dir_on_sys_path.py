@@ -25,7 +25,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -75,16 +75,25 @@ def _mutates_sys_path(node: ast.AST) -> bool:
     return result
 
 
+def _sys_path_lines(path: Path, tree: ast.Module) -> tuple[int, ...]:
+    """the line of each ``sys.path`` change in one file, in walk order.
+
+    :param path: the file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the lines
+    :rtype: tuple[int, ...]
+    """
+    return tuple(node.lineno for node in ast.walk(tree) if _mutates_sys_path(node))
+
+
 def test_no_test_tree_puts_a_directory_on_sys_path() -> None:
     sources = _test_tree_sources()
     assert len(sources) > 100, "found too few test sources; the walk is not seeing the test trees"
 
-    offenders = [
-        f"{path}:{node.lineno}"
-        for path in sources
-        for node in ast.walk(parse_python_path(_REPO_ROOT / path))
-        if _mutates_sys_path(node)
-    ]
+    lines = file_facts(_sys_path_lines, [_REPO_ROOT / path for path in sources], root=_REPO_ROOT)
+    offenders = [f"{path}:{line}" for path in sources for line in lines[_REPO_ROOT / path]]
 
     assert offenders == [], (
         "these test files change sys.path, which makes a test directory's children top-level names "

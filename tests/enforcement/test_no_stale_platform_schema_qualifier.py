@@ -47,7 +47,9 @@ to migrate against, and their assertions pin SQL strings by exact text, so the
 qualifier there is describing the fixture rather than misdescribing production.
 
 Static parsing only -- no imports executed, no network -- consistent with the
-rest of ``tests/enforcement``.
+rest of ``tests/enforcement``. Each module's docstrings are kept in the gitignored
+scan cache by its bytes (``file_facts``); its comments, which no tree holds, are
+tokenized on every run.
 """
 
 from __future__ import annotations
@@ -57,6 +59,8 @@ import io
 import re
 import tokenize
 from pathlib import Path
+
+from threetears.enforcement.common.scan_cache import file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -136,22 +140,37 @@ def _hits(text: str, first_line: int) -> list[tuple[int, str]]:
     return found
 
 
-def _prose_blocks(source: str) -> list[tuple[int, str]]:
-    """Return every comment and docstring in a python module, as ``(line number, text)``.
-
-    Executable code and non-docstring string literals are never returned -- that
-    is what excludes false-positive classes 2 and 3 structurally.
+def _comment_blocks(source: str) -> list[tuple[int, str]]:
+    """Return every comment in a python module, as ``(line number, text)``.
 
     :param source: python source text
     :ptype source: str
-    :return: prose blocks with their starting line numbers
+    :return: comments with their line numbers
     :rtype: list[tuple[int, str]]
     """
     blocks: list[tuple[int, str]] = []
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type == tokenize.COMMENT:
             blocks.append((token.start[0], token.string))
-    for node in ast.walk(ast.parse(source)):
+    return blocks
+
+
+def _docstring_blocks(path: Path, tree: ast.Module) -> tuple[tuple[int, str], ...]:
+    """Return every docstring in a python module, as ``(line number, text)``.
+
+    Together with :func:`_comment_blocks` this is all of a module's prose. Executable
+    code and non-docstring string literals are never returned -- that is what excludes
+    false-positive classes 2 and 3 structurally.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: docstrings with their starting line numbers
+    :rtype: tuple[tuple[int, str], ...]
+    """
+    blocks: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         doc = ast.get_docstring(node, clean=False)
@@ -160,7 +179,7 @@ def _prose_blocks(source: str) -> list[tuple[int, str]]:
         constant = node.body[0]
         assert isinstance(constant, ast.Expr)
         blocks.append((constant.lineno, doc))
-    return blocks
+    return tuple(blocks)
 
 
 def _scanned_files() -> list[Path]:
@@ -212,13 +231,13 @@ def test_no_prose_qualifies_a_hub_table_with_the_platform_schema() -> None:
     :rtype: None
     :raises AssertionError: if a stale ``platform.<table>`` qualifier reached shipped prose
     """
+    scanned = [path for path in _scanned_files() if path.relative_to(_REPO_ROOT).as_posix() not in _ALLOWED]
+    docstrings = file_facts(_docstring_blocks, [path for path in scanned if path.suffix != ".md"], root=_REPO_ROOT)
     violations: list[str] = []
-    for path in _scanned_files():
+    for path in scanned:
         relative = path.relative_to(_REPO_ROOT).as_posix()
-        if relative in _ALLOWED:
-            continue
         text = path.read_text(encoding="utf-8")
-        blocks = [(1, text)] if path.suffix == ".md" else _prose_blocks(text)
+        blocks = [(1, text)] if path.suffix == ".md" else [*_comment_blocks(text), *docstrings[path]]
         for first_line, block in blocks:
             violations.extend(f"{relative}:{line}: {token}" for line, token in _hits(block, first_line))
 

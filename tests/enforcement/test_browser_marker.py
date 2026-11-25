@@ -17,7 +17,7 @@ when it names it, or names a function of the same file that reaches one (followe
 through a fixture defined in a conftest, escapes the walk. Neither happens today; if one appears, extend
 ``_HELPERS`` or the detector.
 
-AST-based and side-effect-free.
+AST-based; each file's findings are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -118,11 +118,27 @@ def _unmarked_browser_tests(tree: ast.Module) -> list[str]:
     return offenders
 
 
+def _browser_use(path: Path, tree: ast.Module) -> tuple[tuple[str, ...], bool, int]:
+    """One test module's unmarked Chromium tests, whether it imports a Chromium helper, and how many tests it marks
+    ``browser`` by decorator."""
+    marked = sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, _Function) and any(_browser_mark(d) for d in node.decorator_list)
+    )
+    return tuple(_unmarked_browser_tests(tree)), bool(_imported_helpers(tree)), marked
+
+
+def _browser_use_by_file() -> dict[Path, tuple[tuple[str, ...], bool, int]]:
+    """Each test file's :func:`_browser_use`, kept on disk by the file's bytes."""
+    return file_facts(_browser_use, _test_files(), root=_REPO_ROOT)
+
+
 def test_tests_that_drive_chromium_carry_the_browser_marker() -> None:
     """A test reaching a Chromium helper must be marked ``browser``."""
     offenders: list[str] = []
-    for path in _test_files():
-        for name in _unmarked_browser_tests(parse_python_path(path)):
+    for path, (unmarked, _, _) in _browser_use_by_file().items():
+        for name in unmarked:
             offenders.append(f"{path.relative_to(_REPO_ROOT)}::{name}")
     if offenders:
         listing = "\n".join(f"  - {o}" for o in offenders)
@@ -180,15 +196,10 @@ def test_a_module_pytestmark_marks_every_test_in_it() -> None:
 def test_the_walker_sees_the_render_tests() -> None:
     """The control on the tree: the evals render tests are found and every one of them is marked."""
     tests = files = 0
-    for path in _test_files():
-        tree = parse_python_path(path)
-        if _imported_helpers(tree):
+    for _, imports_a_helper, marked in _browser_use_by_file().values():
+        if imports_a_helper:
             files += 1
-            tests += sum(
-                1
-                for node in ast.walk(tree)
-                if isinstance(node, _Function) and any(_browser_mark(d) for d in node.decorator_list)
-            )
+            tests += marked
     assert files >= 11 and tests >= 41, (files, tests)
 
 
@@ -197,7 +208,7 @@ def test_every_browser_test_lives_in_packages_evals() -> None:
     elsewhere would run there without it. Move the install with it before moving one out."""
     outside = [
         str(path.relative_to(_REPO_ROOT))
-        for path in _test_files()
-        if _imported_helpers(parse_python_path(path)) and not path.is_relative_to(_REPO_ROOT / "packages" / "evals")
+        for path, (_, imports_a_helper, _) in _browser_use_by_file().items()
+        if imports_a_helper and not path.is_relative_to(_REPO_ROOT / "packages" / "evals")
     ]
     assert outside == [], outside
