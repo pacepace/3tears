@@ -153,7 +153,7 @@ def name_process(name: str) -> bool:
     named = False
     if sys.platform.startswith("linux"):
         libc = ctypes.CDLL(None, use_errno=True)
-        named = libc.prctl(_PR_SET_NAME, name.encode()[:_PROCESS_NAME_LENGTH], 0, 0, 0) == 0
+        named = int(libc.prctl(_PR_SET_NAME, name.encode()[:_PROCESS_NAME_LENGTH], 0, 0, 0)) == 0
         if not named:
             log.warning(
                 "a worker process could not name itself",
