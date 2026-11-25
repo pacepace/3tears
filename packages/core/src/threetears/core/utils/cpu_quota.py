@@ -9,8 +9,8 @@ cores).
 
 :func:`effective_cpu_count` reads the quota -- cgroup v2 ``cpu.max`` (``"<quota> <period>"``, or
 ``"max <period>"`` for none), else cgroup v1 ``cpu.cfs_quota_us`` / ``cpu.cfs_period_us`` (``-1``
-for none) -- rounded up to a whole CPU and never more than the machine's cores; with no quota, the
-machine's cores. :func:`bound_native_threads` sizes pyarrow's thread pools to it, and
+for none) -- rounded up to a whole CPU and never more than the cores the process may run on (its affinity: a
+container's cpuset); with no quota, those cores. :func:`bound_native_threads` sizes pyarrow's thread pools to it, and
 :func:`default_executor_workers` the asyncio default executor, as a tool pod's boot does.
 """
 
@@ -32,6 +32,7 @@ except ImportError:  # NOSILENT: pyarrow is optional (the snapshot extra); witho
     _HAS_PYARROW = False
 
 __all__ = [
+    "arrow_io_threads",
     "bound_native_threads",
     "default_executor_workers",
     "effective_cpu_count",
@@ -44,6 +45,11 @@ _CGROUP_ROOT: Final = Path("/sys/fs/cgroup")
 
 #: the most threads pyarrow's I/O pool runs: its own default, kept whatever the quota
 _MAX_ARROW_IO_THREADS: Final = 8
+
+#: the cores this process may run on: its CPU affinity (a container's cpuset), never the machine's whole count where
+#: Python can say (3.13+). A pool host's container ran on 32 of its 64 cores (cpuset 16-31,48-63, monad-1, 2026-11-25):
+#: sized from all 64, each DuckDB L1 connection started 63 threads against the container's pid limit
+_process_cores: Callable[[], int | None] = getattr(os, "process_cpu_count", os.cpu_count)
 
 #: the cgroup v1 directories the CPU controller is mounted under, in the order they are tried
 _V1_CPU_DIRS: Final = ("cpu", "cpu,cpuacct", "cpuacct,cpu")
@@ -123,14 +129,14 @@ def _quota(root: Path) -> float | None:
     return quota
 
 
-def effective_cpu_count(root: Path = _CGROUP_ROOT, *, cpu_count: Callable[[], int | None] = os.cpu_count) -> int:
-    """the CPUs this process may use: its cgroup's quota rounded up, else the machine's cores.
+def effective_cpu_count(root: Path = _CGROUP_ROOT, *, cpu_count: Callable[[], int | None] = _process_cores) -> int:
+    """the CPUs this process may use: its cgroup's quota rounded up, else the cores it may run on (its affinity).
 
     :param root: the cgroup filesystem's root (a test's stand-in)
     :ptype root: Path
-    :param cpu_count: the machine's cores (a test's stand-in)
+    :param cpu_count: the cores this process may run on (a test's stand-in)
     :ptype cpu_count: Callable[[], int | None]
-    :return: at least 1, and never more than the machine's cores
+    :return: at least 1, and never more than the cores it may run on
     :rtype: int
     """
     cores = max(1, cpu_count() or 1)
@@ -152,7 +158,7 @@ def default_executor_workers(cpus: int) -> int:
     return min(32, max(1, cpus) + 4)
 
 
-def _arrow_io_threads(cpus: int) -> int:
+def arrow_io_threads(cpus: int) -> int:
     """the size of pyarrow's I/O pool for ``cpus``: twice the CPUs, at least 2, at most :data:`_MAX_ARROW_IO_THREADS`.
 
     I/O threads mostly wait on the network, so they may outnumber the CPUs; pyarrow's own default
@@ -167,7 +173,7 @@ def _arrow_io_threads(cpus: int) -> int:
 
 
 def bound_native_threads(cpus: int) -> bool:
-    """size pyarrow's CPU pool to ``cpus`` and its I/O pool to :func:`_arrow_io_threads`, when pyarrow is installed.
+    """size pyarrow's CPU pool to ``cpus`` and its I/O pool to :func:`arrow_io_threads`, when pyarrow is installed.
 
     pyarrow sizes its CPU pool from the machine's cores, so on a 32-core node a 4-CPU pod runs 32
     compute threads and is throttled for most of every period.
@@ -179,5 +185,5 @@ def bound_native_threads(cpus: int) -> bool:
     """
     if _HAS_PYARROW:
         pyarrow.set_cpu_count(max(1, cpus))
-        pyarrow.set_io_thread_count(_arrow_io_threads(cpus))
+        pyarrow.set_io_thread_count(arrow_io_threads(cpus))
     return _HAS_PYARROW

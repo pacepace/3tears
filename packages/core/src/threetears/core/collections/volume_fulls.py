@@ -89,6 +89,10 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a full refuses 
 try:
     import duckdb
 
+    from threetears.core.utils.duckdb_module import release_default_threads
+
+    release_default_threads()
+
     _DUCKDB = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; a fingerprint needs it (the rows are hashed in DuckDB)
     _DUCKDB = False

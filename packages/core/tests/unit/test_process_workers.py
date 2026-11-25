@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from threetears.core.process_workers import ProcessWorkers, require_plain
+from threetears.core.utils.cpu_quota import arrow_io_threads, effective_cpu_count
 
 
 def _pid_and(value: bytes) -> tuple[int, bytes]:
@@ -123,6 +124,95 @@ async def test_a_worker_s_blas_starts_one_thread_not_one_a_core(
     "can't start new thread", 2026-11-25)."""
     monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
     assert await workers.run(_blas_threads) == "1"
+
+
+#: a serving process sizing one worker: prints the worker's Arrow CPU and I/O pool sizes
+_SIZED = """
+import asyncio, pyarrow
+from threetears.core.process_workers import ProcessWorkers
+async def main():
+    workers = ProcessWorkers(workers=1, name="sized")
+    print(await workers.run(pyarrow.cpu_count), await workers.run(pyarrow.io_thread_count), flush=True)
+    await workers.close()
+asyncio.run(main())
+"""
+
+#: a serving process whose one job aborts in its worker: prints the error its caller gets
+_ABORTED = """
+import asyncio, os
+from concurrent.futures.process import BrokenProcessPool
+from threetears.core.process_workers import ProcessWorkers
+async def main():
+    workers = ProcessWorkers(workers=1, name="aborting")
+    try:
+        await workers.run(os.abort)
+    except BrokenProcessPool as error:
+        print(error, flush=True)
+asyncio.run(main())
+"""
+
+
+#: the variables native pools size themselves by: a serving process of a test's starts without them (the pool's
+#: environment sets them for its test processes), so its workers' own bounds are what is measured
+_NATIVE_POOL_VARIABLES = ("OMP_NUM_THREADS", "ARROW_IO_THREADS", "OPENBLAS_NUM_THREADS")
+
+
+def _serving(script: str, *, env: dict[str, str], one_cpu: bool = False) -> subprocess.CompletedProcess[str]:
+    """run ``script`` as a serving process of its own, its workers started by its own fork server.
+
+    :param script: the serving process's code
+    :ptype script: str
+    :param env: variables set over this process's environment, with the native pools' own variables removed
+    :ptype env: dict[str, str]
+    :param one_cpu: run it on one CPU (Linux's affinity), as a pod's quota of one would
+    :ptype one_cpu: bool
+    :return: the finished process, its output read
+    :rtype: subprocess.CompletedProcess[str]
+    """
+    base = {k: v for k, v in os.environ.items() if k not in _NATIVE_POOL_VARIABLES}
+    if one_cpu and hasattr(os, "sched_getaffinity"):
+        script = f"import os; os.sched_setaffinity(0, {{{min(os.sched_getaffinity(0))}}})\n{script}"
+    return subprocess.run(
+        [sys.executable, "-c", script], env={**base, **env}, capture_output=True, text=True, timeout=60
+    )
+
+
+class TestTheWorkersNativePools:
+    def test_a_worker_s_arrow_pools_are_bounded_by_the_cpus_whatever_the_environment_asks(self) -> None:
+        """Flips if a worker's Arrow pools take a size above the CPUs its process may use (Arrow's own sizing reads
+        ``OMP_NUM_THREADS`` and ``ARROW_IO_THREADS`` as given): every worker of a container on a many-core host so ran
+        its pid limit out (monad-1, 4096, "can't start new thread" and SIGABRT in Arrow, 2026-11-25)."""
+        done = _serving(_SIZED, env={"OMP_NUM_THREADS": "999", "ARROW_IO_THREADS": "999"})
+
+        cpus = effective_cpu_count()
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == [str(cpus), str(arrow_io_threads(cpus))]
+
+    def test_a_worker_s_arrow_pools_keep_the_environment_s_lower_bound(self) -> None:
+        """Flips if a worker raises a bound the environment set lower (a test pool's, an operator's)."""
+        done = _serving(_SIZED, env={"OMP_NUM_THREADS": "1", "ARROW_IO_THREADS": "1"})
+
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == ["1", "1"]
+
+    @pytest.mark.skipif(not hasattr(os, "sched_setaffinity"), reason="CPU affinity is Linux's")
+    def test_a_worker_s_arrow_pools_are_sized_to_the_cpus_it_may_use_not_the_machine_s(self) -> None:
+        """Flips if a worker's Arrow I/O pool keeps Arrow's own 8 threads while its process may use one CPU (a pod's
+        quota, a container's cpuset): Arrow sizes its CPU pool by the affinity, never by a quota, and its I/O pool by
+        neither."""
+        done = _serving(_SIZED, env={}, one_cpu=True)
+
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == ["1", "2"]
+
+    def test_a_worker_aborting_in_native_code_fails_its_caller_naming_the_pool_and_leaves_its_traceback(self) -> None:
+        """Flips if a worker that aborts (a native library's ``abort``, as Arrow's failing thread start does) leaves its
+        caller an error that names no pool or job, or leaves nothing on its stderr to find the cause by."""
+        done = _serving(_ABORTED, env={})
+
+        assert done.returncode == 0, done.stderr
+        assert "'aborting' pool died running abort" in done.stdout
+        assert "Fatal Python error: Aborted" in done.stderr
 
 
 class TestPlainData:

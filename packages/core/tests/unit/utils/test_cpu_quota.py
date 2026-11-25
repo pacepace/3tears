@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -75,6 +78,21 @@ class TestNoCgroup:
 
     def test_the_default_root_answers_at_least_one(self) -> None:
         assert effective_cpu_count() >= 1
+
+    @pytest.mark.skipif(not hasattr(os, "sched_setaffinity"), reason="CPU affinity is Linux's")
+    def test_a_process_on_one_cpu_of_many_counts_one(self) -> None:
+        """Flips if the count falls back to the machine's cores while the process may run on fewer (a container's
+        cpuset: 32 of monad-1's 64, its DuckDB connections sized to 64, 2026-11-25)."""
+        if hasattr(os, "sched_getaffinity"):
+            cpu = min(os.sched_getaffinity(0))
+            script = (
+                f"import os; os.sched_setaffinity(0, {{{cpu}}})\n"
+                "from threetears.core.utils.cpu_quota import effective_cpu_count\n"
+                "print(effective_cpu_count())"
+            )
+            done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
+            assert done.returncode == 0, done.stderr
+            assert done.stdout.split() == ["1"]
 
 
 class TestPoolSizes:

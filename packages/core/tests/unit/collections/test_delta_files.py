@@ -3,6 +3,7 @@ is refused; an orphan of a commit that never happened is swept; a file being wri
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -132,6 +133,23 @@ def _collection(name: str = "results", *, opted_in: bool = True, on_conflict: _O
     return collection
 
 
+def _large_rows(count: int) -> Any:
+    """``count`` rows of one office, each with a 60-character ``geo_id``.
+
+    :param count: the rows
+    :ptype count: int
+    :return: the rows
+    :rtype: pyarrow.Table
+    """
+    return pa.table(
+        {
+            "office_key": pa.array(["sn_NC1"] * count),
+            "geo_id": pa.array([f"{i:060d}" for i in range(count)]),
+            "votes": pa.array(range(count), pa.int32()),
+        }
+    )
+
+
 def _rows(count: int) -> list[dict[str, Any]]:
     return [{"office_key": "sn_NC1", "geo_id": f"{i:05d}", "votes": i} for i in range(count)]
 
@@ -211,20 +229,15 @@ async def test_a_write_s_delta_files_are_built_and_saved_in_a_worker_process(
         await collection.save_rows(_rows(3), conn=conn)
     small = read_delta_file(root / transaction.delta_files["results"], table="results")
     assert [change.row["geo_id"] for change in small.changes] == ["00000", "00001", "00002"]
-    # a load's rows past the inline bound: 200,000 rows of a 60-character text, about 13 MiB
+    # a load's rows past the inline bound: 200,000 rows of a 60-character text, about 13 MiB, built and read back on
+    # a thread: a quarter second of the test's own Python held the loop past its bound (markpace-mbp, 2026-11-25)
     count = 200_000
-    rows = pa.table(
-        {
-            "office_key": pa.array(["sn_NC1"] * count),
-            "geo_id": pa.array([f"{i:060d}" for i in range(count)]),
-            "votes": pa.array(range(count), pa.int32()),
-        }
-    )
+    rows = await asyncio.to_thread(_large_rows, count)
     assert rows.nbytes > 8 << 20, "past the inline bound (8 MiB)"
     load = collection.table_delta()
     load.load([rows], [count], {})
     files = await save_delta_files({"results": load}, version=None)
-    held = read_volume_file(root / files["results"])
+    held = await asyncio.to_thread(read_volume_file, root / files["results"])
     assert held.num_rows == count and held.column("geo_id")[count - 1].as_py() == f"{count - 1:060d}"
     assert _saves("worker") == before + 2
     # each save's seconds observed as it completes (delta_file_save_seconds{where="worker"})

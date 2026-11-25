@@ -137,6 +137,10 @@ except ImportError as exc:  # NOSILENT: the snapshot extra is optional; using sh
 try:
     import duckdb
 
+    from threetears.core.utils.duckdb_module import release_default_threads
+
+    release_default_threads()
+
     # DuckDB scans a registered Arrow table through pyarrow.dataset's Scanner, importing the module (and what it
     # imports) at the first scan in the process, 25-70 ms inside a serving thread's read; imported here, at boot
     import pyarrow.dataset  # noqa: F401
