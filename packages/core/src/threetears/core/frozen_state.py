@@ -154,36 +154,51 @@ def with_chunk[T](chunks: tuple[tuple[T, ...], ...], chunk: tuple[T, ...]) -> tu
     return (*chunks, chunk)
 
 
-#: a key a newer chunk of a :class:`LoggedMap` removed
-_GONE: Final = object()
+#: the largest chunk of a :class:`LoggedMap` merged into another: one this large stays as it is, so no change copies
+#: more than about twice this many keys in one step. Merged without a bound, the change that made a map of 32,768 keys
+#: one chunk copied every key (4.6 ms, two maps a fake bucket's write: the event loop held 9 ms by one write); with it a
+#: lookup reads a chunk a 4,096 keys past the first, a dict lookup each
+_MERGED_MAX: Final = 4096
+
+#: the value of a key a newer chunk of a :class:`LoggedMap` removed
+_REMOVED: Final = object()
 
 
 @dataclass(frozen=True, slots=True)
 class _Slot:
-    """a key's value in one chunk of a :class:`LoggedMap`, and whether it was set while the map held no such key (it
-    then takes the last place, as a dict re-adding a removed key does)."""
+    """a key in one chunk of a :class:`LoggedMap`: its value (:data:`_REMOVED` once removed), whether it was set while
+    the map held no such key (it then takes the last place, as a dict re-adding a removed key does), and whether a
+    chunk older than the one it was written to may hold the key (a removal is kept only while one may)."""
 
     value: Any
     reborn: bool
+    deep: bool
 
 
-def _merged(older: Mapping[Any, Any], newer: Mapping[Any, Any], *, bottom: bool) -> Mapping[Any, Any]:
+def _merged(older: Mapping[Any, _Slot], newer: Mapping[Any, _Slot], *, bottom: bool) -> Mapping[Any, _Slot]:
     """two adjacent chunks of a :class:`LoggedMap` as one, in a dict's order: a key set again keeps its place, a key
-    re-added after a removal takes the last. At the bottom (no older chunk) a removal is dropped, and nothing is
-    re-added past anything."""
-    merged: dict[Any, Any] = {}
-    for key, slot in older.items():
-        if key in newer:
-            newest = newer[key]
-            if newest is _GONE or newest.reborn:
-                continue  # removed, or re-added: placed from the newer chunk below
-            slot = newest if slot is _GONE else _Slot(newest.value, slot.reborn)
-        merged[key] = slot
-    for key, slot in newer.items():
-        if key not in merged:
-            merged[key] = slot
-    if bottom:
-        merged = {key: _Slot(slot.value, False) for key, slot in merged.items() if slot is not _GONE}
+    re-added after a removal takes the last. A removal is dropped once no older chunk may hold the key.
+
+    Both chunks are merged by the dict's own operations (C, no Python step a key); only the keys both hold are walked
+    (a removal kept is of a key an older chunk holds): a merge into a chunk of 16,384 keys took 31 ms walking every
+    key, as a refill's writes are each a new key."""
+    both = older.keys() & newer.keys()
+    moved = frozenset(key for key in both if newer[key].value is _REMOVED or newer[key].reborn)
+    if moved:
+        # a key removed or re-added in the newer chunk leaves its older place
+        merged = {key: slot for key, slot in older.items() if key not in moved}
+        merged.update(newer)
+    else:
+        merged = {**older, **newer}
+    for key in both:
+        slot, was = newer[key], older[key]
+        if slot.value is _REMOVED and (bottom or not was.deep):
+            # nothing older may hold the key any more: the removal has nothing left to hide
+            del merged[key]
+        elif slot.deep != was.deep or (not slot.reborn and was.reborn):
+            # what is under the key, and (set again in place) its place and whether it was re-added there, are the
+            # older chunk's
+            merged[key] = _Slot(slot.value, slot.reborn or was.reborn, was.deep)
     return MappingProxyType(merged)
 
 
@@ -202,42 +217,42 @@ class LoggedMap[K, V](Mapping[K, V]):
     """
 
     #: the chunks, oldest first: each about half the size of the one before or less
-    chunks: tuple[Mapping[K, Any], ...] = ()
+    chunks: tuple[Mapping[K, _Slot], ...] = ()
     _size: int = 0
 
-    def _slot(self, key: object) -> Any:
+    def _slot(self, key: object) -> _Slot | None:
         for chunk in reversed(self.chunks):
-            slot = chunk.get(key)
+            slot = chunk.get(key)  # type: ignore[arg-type]
             if slot is not None:
                 return slot
         return None
 
     def __getitem__(self, key: K) -> V:
         slot = self._slot(key)
-        if slot is None or slot is _GONE:
+        if slot is None or slot.value is _REMOVED:
             raise KeyError(key)
         value: V = slot.value
         return value
 
     def __contains__(self, key: object) -> bool:
         slot = self._slot(key)
-        return slot is not None and slot is not _GONE
+        return slot is not None and slot.value is not _REMOVED
 
     def __iter__(self) -> Iterator[K]:
         if len(self.chunks) == 1:
             return iter(self.chunks[0])
-        whole: Mapping[K, Any] = MappingProxyType({})
+        whole: Mapping[K, _Slot] = MappingProxyType({})
         for chunk in self.chunks:
-            whole = _merged(whole, chunk, bottom=False)
-        return iter([key for key, slot in whole.items() if slot is not _GONE])
+            whole = _merged(whole, chunk, bottom=not whole)
+        return iter([key for key, slot in whole.items() if slot.value is not _REMOVED])
 
     def __len__(self) -> int:
         return self._size
 
-    def _with(self, key: K, slot: Any, size: int) -> LoggedMap[K, V]:
+    def _with(self, key: K, slot: _Slot, size: int) -> LoggedMap[K, V]:
         chunks = self.chunks
-        chunk: Mapping[K, Any] = MappingProxyType({key: slot})
-        while chunks and len(chunks[-1]) <= len(chunk):
+        chunk: Mapping[K, _Slot] = MappingProxyType({key: slot})
+        while chunks and len(chunks[-1]) <= len(chunk) and len(chunk) < _MERGED_MAX:
             chunk = _merged(chunks[-1], chunk, bottom=len(chunks) == 1)
             chunks = chunks[:-1]
         return LoggedMap((*chunks, chunk), size)
@@ -252,8 +267,9 @@ class LoggedMap[K, V](Mapping[K, V]):
         :return: the new snapshot
         :rtype: LoggedMap
         """
-        held = key in self
-        return self._with(key, _Slot(value, not held), self._size if held else self._size + 1)
+        found = self._slot(key)
+        held = found is not None and found.value is not _REMOVED
+        return self._with(key, _Slot(value, not held, found is not None), self._size if held else self._size + 1)
 
     def unset(self, key: K) -> LoggedMap[K, V]:
         """this map without ``key`` (the same one when it holds no ``key``).
@@ -265,7 +281,7 @@ class LoggedMap[K, V](Mapping[K, V]):
         """
         if key not in self:
             return self
-        return self._with(key, _GONE, self._size - 1)
+        return self._with(key, _Slot(_REMOVED, False, True), self._size - 1)
 
 
 def logged[K, V](entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> LoggedMap[K, V]:
@@ -279,4 +295,4 @@ def logged[K, V](entries: Mapping[K, V] | Iterable[tuple[K, V]] = ()) -> LoggedM
     whole = dict(entries)
     if not whole:
         return LoggedMap()
-    return LoggedMap((MappingProxyType({key: _Slot(value, False) for key, value in whole.items()}),), len(whole))
+    return LoggedMap((MappingProxyType({key: _Slot(value, False, False) for key, value in whole.items()}),), len(whole))
