@@ -90,7 +90,7 @@ from uuid import uuid7
 
 from pydantic import BaseModel
 
-from threetears.core.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, logged, with_entry, without_entry
 from threetears.nats.change_log import ChangeLogEntry, ChangeLogState
 from threetears.nats.errors import (
     KvBucketNotFoundError,
@@ -230,17 +230,19 @@ class FakeKvBucket:
         self._direct = direct
         self._max_bytes = max_bytes
         # every map below is a read-only snapshot replaced whole: a fake that changed one in place could hide the very
-        # races (a reader holding it across an await) it exists to catch
-        self._entries: Mapping[str, _Entry] = frozen()
+        # races (a reader holding it across an await) it exists to catch. The ones that grow with keys are logged
+        # (LoggedMap): a write copies a key about log2(n) times, never the whole map (a 33,786-row refill held the loop
+        # 15 ms a write when each copied every key)
+        self._entries: Mapping[str, _Entry] = logged()
         # the stored size of each key's latest message (its value or its deletion marker), and their
         # total: what a bounded bucket counts against ``max_bytes``
-        self._sizes: Mapping[str, int] = frozen()
+        self._sizes: Mapping[str, int] = logged()
         self._stored_bytes = 0
         # the revision of each deleted key's marker: its latest message once its value is gone.
-        self._markers: Mapping[str, int] = frozen()
+        self._markers: Mapping[str, int] = logged()
         # the bucket-clock time the server removes a marker given a lifetime (``delete``'s
         # ``marker_ttl``), by key; a marker absent here lives as long as the bucket.
-        self._marker_expiry: Mapping[str, timedelta] = frozen()
+        self._marker_expiry: Mapping[str, timedelta] = logged()
         self._revision = 0
         self._date_created = datetime.now(UTC)
         # set by vanish(): the stream is gone until the next operation recreates it.
@@ -281,8 +283,8 @@ class FakeKvBucket:
             self._vanished = False
             self._date_created = datetime.now(UTC)
             self._revision = 0
-            self._markers = frozen()
-            self._marker_expiry = frozen()
+            self._markers = logged()
+            self._marker_expiry = logged()
 
     def advance_clock(self, delta: timedelta) -> None:
         """move this bucket's clock forward, lapsing any per-entry TTL it passes.
@@ -589,10 +591,10 @@ class FakeKvBucket:
         """
         if date_created is not None and date_created.tzinfo is None:
             raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
-        self._entries = frozen()
-        self._markers = frozen()
-        self._marker_expiry = frozen()
-        self._sizes = frozen()
+        self._entries = logged()
+        self._markers = logged()
+        self._marker_expiry = logged()
+        self._sizes = logged()
         self._stored_bytes = 0
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
         self._vanished = False
@@ -614,10 +616,10 @@ class FakeKvBucket:
         :return: None
         :rtype: None
         """
-        self._entries = frozen()
-        self._markers = frozen()
-        self._marker_expiry = frozen()
-        self._sizes = frozen()
+        self._entries = logged()
+        self._markers = logged()
+        self._marker_expiry = logged()
+        self._sizes = logged()
         self._stored_bytes = 0
         self._vanished = True
 
