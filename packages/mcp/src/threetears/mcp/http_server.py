@@ -44,6 +44,7 @@ __all__ = [
     "McpHttpTransport",
     "build_mcp_http_app",
     "current_bearer_token",
+    "current_request_streams",
     "serve_mcp_http",
 ]
 
@@ -60,6 +61,29 @@ private to this module: the transport layer is the only writer, and
 :func:`current_bearer_token` is the public reader. exposing the raw
 contextvar would let callers bind to an implementation detail.
 """
+
+
+_STREAMS_CONTEXT: ContextVar[bool] = ContextVar("threetears_mcp_request_streams", default=True)
+"""whether the current request's response can carry messages ahead of its result.
+
+set by :class:`_BearerTokenAsgiEndpoint` for each request from its transport's ``json_response``;
+the default, ``True``, is every transport that is not this one (stdio sends each message as it goes).
+:func:`current_request_streams` is the public reader.
+"""
+
+
+def current_request_streams() -> bool:
+    """whether the current request's response can carry notifications ahead of its result.
+
+    ``False`` for a request served by a Streamable-HTTP transport built with ``json_response=True``:
+    its response is one JSON body, the result, so a progress or log notification sent while the call
+    runs has nowhere to go and the SDK drops it. ``True`` for an SSE-answering transport
+    (``json_response=False``), for stdio, and outside a request.
+
+    :return: whether notifications can reach the client before the result
+    :rtype: bool
+    """
+    return _STREAMS_CONTEXT.get()
 
 
 def current_bearer_token() -> str | None:
@@ -115,17 +139,23 @@ class _BearerTokenAsgiEndpoint:
     :param session_manager: SDK Streamable-HTTP session manager wrapping
         the wired MCP server
     :ptype session_manager: StreamableHTTPSessionManager
+    :param json_response: whether the session manager answers in plain JSON, so a request's
+        notifications cannot reach the client (:func:`current_request_streams`)
+    :ptype json_response: bool
     """
 
-    def __init__(self, session_manager: StreamableHTTPSessionManager) -> None:
-        """capture the session manager.
+    def __init__(self, session_manager: StreamableHTTPSessionManager, *, json_response: bool) -> None:
+        """capture the session manager and how it answers.
 
         :param session_manager: SDK Streamable-HTTP session manager
         :ptype session_manager: StreamableHTTPSessionManager
+        :param json_response: whether it answers in plain JSON
+        :ptype json_response: bool
         :return: nothing
         :rtype: None
         """
         self._session_manager = session_manager
+        self._json_response = json_response
         # set by McpHttpTransport.lifespan while the session manager runs
         self.running = False
 
@@ -161,9 +191,11 @@ class _BearerTokenAsgiEndpoint:
             return
         token = _extract_bearer_token(scope) if scope.get("type") == "http" else None
         reset = _BEARER_TOKEN_CONTEXT.set(token)
+        reset_streams = _STREAMS_CONTEXT.set(not self._json_response)
         try:
             await self._session_manager.handle_request(scope, receive, send)
         finally:
+            _STREAMS_CONTEXT.reset(reset_streams)
             _BEARER_TOKEN_CONTEXT.reset(reset)
 
 
@@ -195,7 +227,8 @@ class McpHttpTransport:
     :param stateless: run the transport statelessly (fresh transport + server task per request);
         required for correct per-request bearer identity
     :ptype stateless: bool
-    :param json_response: return plain JSON responses instead of SSE streams
+    :param json_response: return plain JSON responses instead of SSE streams; a call's progress
+        and log notifications then cannot reach the client (they need an SSE stream)
     :ptype json_response: bool
     """
 
@@ -215,7 +248,8 @@ class McpHttpTransport:
         :ptype path: str
         :param stateless: run the transport statelessly
         :ptype stateless: bool
-        :param json_response: return plain JSON responses instead of SSE streams
+        :param json_response: return plain JSON responses instead of SSE streams; a call's
+            progress and log notifications then cannot reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: nothing
         :rtype: None
@@ -227,7 +261,7 @@ class McpHttpTransport:
             stateless=stateless,
             json_response=json_response,
         )
-        self._endpoint = _BearerTokenAsgiEndpoint(self._session_manager)
+        self._endpoint = _BearerTokenAsgiEndpoint(self._session_manager, json_response=json_response)
 
     @property
     def endpoint(self) -> Any:
@@ -298,7 +332,8 @@ def build_mcp_http_app(
         bearer identity
     :ptype stateless: bool
     :param json_response: return plain JSON responses instead of SSE
-        streams
+        streams; a call's progress and log notifications then cannot
+        reach the client (they need an SSE stream)
     :ptype json_response: bool
     :return: Starlette ASGI app serving the MCP Streamable-HTTP transport
     :rtype: starlette.applications.Starlette

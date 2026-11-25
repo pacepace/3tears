@@ -111,8 +111,30 @@ schema that allows extra properties, is refused as an input validation error bef
 A test of a handler builds its own `CallContext(tool_name=..., progress_token=..., progress_sender=...,
 log_sender=...)` with senders that record what they are given.
 
-Progress and log entries ride the call's own response stream. Over Streamable HTTP that is an SSE
-stream, which a transport built with `json_response=False` answers with.
+### Progress, logging and cancellation over Streamable HTTP
+
+Progress and log entries ride the call's own response stream, so they reach the client before the
+call's result. Over Streamable HTTP that stream is SSE, which a transport answers with when it is built
+with `json_response=False`. That works in stateless mode as well as stateful, on the handshake-era
+protocol and on 2026-07-28:
+
+```python
+app = server.build_http_app(json_response=False)            # or build_http_transport / serve_http
+```
+
+| | `json_response=False` (SSE) | `json_response=True` (the default, plain JSON) |
+|---|---|---|
+| progress and log entries | sent on the call's stream, before the result | not sent: the response is the result alone. The server logs one warning, the first time a handler's entry is dropped, naming `json_response=False` |
+| the client cancels the call or closes the connection | the handler is cancelled, and `ctx.cancelled` is set | in stateless mode the handler is not cancelled |
+
+`json_response=True` stays the default, so a client that reads a plain JSON body is unaffected. A
+server whose tools report progress builds its transport with `json_response=False`; every MCP client
+handles both, since the protocol requires it. `current_request_streams()` (in
+`threetears.mcp.http_server`) says whether the request being served can carry them.
+
+The server does not declare the `logging` capability or serve `logging/setLevel`: the SDK declares
+the capability only for an `on_set_logging_level` handler, which protocol 2026-07-28 deprecates. On the
+handshake-era protocol every level is sent; on 2026-07-28 the client chooses per request, as above.
 
 ## A live tool set
 

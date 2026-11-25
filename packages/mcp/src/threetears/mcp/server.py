@@ -45,7 +45,12 @@ from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
 from threetears.mcp.context import CallContext, LogLevel
-from threetears.mcp.http_server import McpHttpTransport, build_mcp_http_app, serve_mcp_http
+from threetears.mcp.http_server import (
+    McpHttpTransport,
+    build_mcp_http_app,
+    current_request_streams,
+    serve_mcp_http,
+)
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
 
 if TYPE_CHECKING:
@@ -139,6 +144,9 @@ class McpServer:
         # one ERROR per grant-cache outage, not one traceback per refused call: the authorizer
         # already logged the failed reload with its traceback, and an outage refuses every call.
         self._grant_cache_outage_logged = False
+        # one WARNING per server, the first time a handler's progress or log entry is dropped because
+        # the HTTP transport answers in plain JSON: every such call drops them the same way
+        self._undeliverable_notifications_logged = False
         self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
@@ -347,7 +355,7 @@ class McpServer:
         cancelled = asyncio.Event()
         kwargs = dict(arguments)
         if tool.context_parameter is not None:
-            kwargs[tool.context_parameter] = _call_context(tool_name, request, cancelled)
+            kwargs[tool.context_parameter] = self._call_context(tool_name, request, cancelled)
         try:
             result = await tool.handler(**kwargs)
         except asyncio.CancelledError:
@@ -392,6 +400,88 @@ class McpServer:
                 )
                 return self._error_result(tool_name=tool_name, code="OUTPUT_VALIDATION_ERROR", message=refusal)
         return call_result
+
+    def _call_context(
+        self,
+        tool_name: str,
+        request: ServerRequestContext[Any, Any],
+        cancelled: asyncio.Event,
+    ) -> CallContext:
+        """the :class:`CallContext` for one call, its channels bound to the SDK request it arrived on.
+
+        progress and log messages go out on the request's own channel, so over Streamable HTTP they
+        ride the call's response stream and reach the client before its result. a transport that
+        answers in plain JSON has no such stream: what the handler sends is not sent, and the first
+        time that happens the server logs a warning naming the fix.
+
+        :param tool_name: the tool being called
+        :ptype tool_name: str
+        :param request: the SDK's context for the request
+        :ptype request: mcp.server.context.ServerRequestContext
+        :param cancelled: the event the dispatch sets when the call is cancelled
+        :ptype cancelled: asyncio.Event
+        :return: the call's context
+        :rtype: CallContext
+        """
+        session = request.session
+        request_id = request.request_id
+        meta = request.meta or {}
+        progress_token = meta.get("progress_token")
+        # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request,
+        # at a level; on earlier versions every level may be sent
+        allowed_levels = allowed_log_levels(request.protocol_version, request.meta)
+        streams = current_request_streams()
+
+        async def _send_progress(progress: float, total: float | None, message: str | None) -> None:
+            if not streams:
+                self._note_undeliverable(tool_name, "progress")
+                return
+            await session.report_progress(progress, total, message)
+
+        async def _send_log(level: LogLevel, data: Any, logger: str | None) -> None:
+            if level not in allowed_levels:
+                return
+            if not streams:
+                self._note_undeliverable(tool_name, "log")
+                return
+            # sent as the notification itself rather than through the SDK's send_log_message, which
+            # warns on every call (the logging capability is deprecated in 2026-07-28; the message is
+            # not)
+            await session.send_notification(
+                mcp_types.LoggingMessageNotification(
+                    params=mcp_types.LoggingMessageNotificationParams(level=level, data=data, logger=logger),
+                ),
+                related_request_id=request_id,
+            )
+
+        return CallContext(
+            tool_name=tool_name,
+            request_id=request_id,
+            progress_token=progress_token,
+            progress_sender=_send_progress,
+            log_sender=_send_log,
+            cancelled=cancelled,
+        )
+
+    def _note_undeliverable(self, tool_name: str, kind: str) -> None:
+        """log, once per server, that a handler's notification cannot reach the client.
+
+        :param tool_name: the tool whose handler sent it
+        :ptype tool_name: str
+        :param kind: ``"progress"`` or ``"log"``
+        :ptype kind: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._undeliverable_notifications_logged:
+            return
+        self._undeliverable_notifications_logged = True
+        log.warning(
+            "MCP dispatch: a handler's progress and log notifications are not reaching the client: the HTTP "
+            "transport answers in plain JSON (json_response=True). Build it with json_response=False to send "
+            "them on the call's SSE stream. Logged once per server.",
+            extra={"extra_data": {"tool_name": tool_name, "kind": kind}},
+        )
 
     @staticmethod
     def _error_result(
@@ -502,7 +592,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: Starlette ASGI app serving the Streamable-HTTP transport
         :rtype: starlette.applications.Starlette
@@ -542,7 +633,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: the transport
         :rtype: threetears.mcp.http_server.McpHttpTransport
@@ -587,7 +679,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: nothing
         :rtype: None
@@ -599,58 +692,6 @@ class McpServer:
             json_response=json_response,
         )
         await serve_mcp_http(app, host=host, port=port)
-
-
-def _call_context(
-    tool_name: str,
-    request: ServerRequestContext[Any, Any],
-    cancelled: asyncio.Event,
-) -> CallContext:
-    """the :class:`CallContext` for one call, its channels bound to the SDK request it arrived on.
-
-    progress and log messages go out on the request's own channel, so over Streamable HTTP they
-    ride the call's response stream and reach the client before its result.
-
-    :param tool_name: the tool being called
-    :ptype tool_name: str
-    :param request: the SDK's context for the request
-    :ptype request: mcp.server.context.ServerRequestContext
-    :param cancelled: the event the dispatch sets when the call is cancelled
-    :ptype cancelled: asyncio.Event
-    :return: the call's context
-    :rtype: CallContext
-    """
-    session = request.session
-    request_id = request.request_id
-    meta = request.meta or {}
-    progress_token = meta.get("progress_token")
-    # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request,
-    # at a level; on earlier versions every level may be sent
-    allowed_levels = allowed_log_levels(request.protocol_version, request.meta)
-
-    async def _send_progress(progress: float, total: float | None, message: str | None) -> None:
-        await session.report_progress(progress, total, message)
-
-    async def _send_log(level: LogLevel, data: Any, logger: str | None) -> None:
-        if level not in allowed_levels:
-            return
-        # sent as the notification itself rather than through the SDK's send_log_message, which
-        # warns on every call (the logging capability is deprecated in 2026-07-28; the message is not)
-        await session.send_notification(
-            mcp_types.LoggingMessageNotification(
-                params=mcp_types.LoggingMessageNotificationParams(level=level, data=data, logger=logger),
-            ),
-            related_request_id=request_id,
-        )
-
-    return CallContext(
-        tool_name=tool_name,
-        request_id=request_id,
-        progress_token=progress_token,
-        progress_sender=_send_progress,
-        log_sender=_send_log,
-        cancelled=cancelled,
-    )
 
 
 def _call_tool_result(

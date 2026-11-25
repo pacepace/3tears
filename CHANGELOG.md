@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: which HTTP transports carry a handler's progress and log entries, and a warning when one cannot
+
+A handler's `CallContext.report_progress` and `CallContext.log` reach the client on the call's own SSE
+stream, before the result, through a transport built with `json_response=False`: in stateless and
+stateful mode, on protocols 2025-11-25 and 2026-07-28. A client that cancels the call or closes the
+connection cancels the handler and sets `ctx.cancelled`. The mcp tests now prove each of these with the
+SDK's clients over real connections, the handler waiting after every entry until the client holds it.
+The README says which transport options carry what.
+
+**Changed:** `json_response=True` stays the default, and its response is the result alone, so a
+handler's progress or log entry has nowhere to go. The server now logs one warning per server, the
+first time that happens, naming `json_response=False`; before, it was dropped without a word.
+
+**Added:** `current_request_streams()` (`threetears.mcp.http_server`) says whether the request being
+served can carry notifications ahead of its result.
+
 ### mcp: a tool handler can ask for the call's context
 
 **Added:** `CallContext` (`threetears.mcp`). A handler that declares a parameter annotated `CallContext`
