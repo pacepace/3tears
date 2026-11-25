@@ -65,6 +65,10 @@ log = get_logger(__name__)
 try:
     import duckdb
 
+    from threetears.core.utils.duckdb_module import release_default_threads
+
+    release_default_threads()
+
     from threetears.core.cache.duckdb import DuckDBBackend
 
     _DUCKDB: type[DuckDBBackend] | None = DuckDBBackend

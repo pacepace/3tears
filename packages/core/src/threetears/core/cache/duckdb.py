@@ -66,6 +66,10 @@ __all__ = [
 try:
     import duckdb
 
+    from threetears.core.utils.duckdb_module import release_default_threads
+
+    release_default_threads()
+
     _HAS_DUCKDB = True
 except ImportError:
     _HAS_DUCKDB = False

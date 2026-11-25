@@ -35,6 +35,7 @@ workers.
 from __future__ import annotations
 
 import ctypes
+import faulthandler
 import multiprocessing
 import multiprocessing.context
 import os
@@ -47,7 +48,7 @@ from typing import Final
 
 from threetears.observe import BuildOnce, get_logger
 
-__all__ = ["exit_with_parent", "name_process", "start_worker_server"]
+__all__ = ["exit_with_parent", "name_process", "start_pool_worker", "start_worker_server"]
 
 log = get_logger(__name__)
 
@@ -63,6 +64,13 @@ _PROCESS_NAME_LENGTH: Final = 15
 
 #: what ``prctl`` names the calling thread (the process, for its main thread) by: Linux's ``PR_SET_NAME``
 _PR_SET_NAME: Final = 15
+
+#: the variable numpy's OpenBLAS sizes the threads it starts as it loads by: one in a worker (:func:`start_pool_worker`)
+_BLAS_THREADS: Final = "OPENBLAS_NUM_THREADS"
+
+#: the variables Arrow sizes its CPU and I/O pools by as it makes them: a worker's bound (:func:`start_pool_worker`)
+_ARROW_CPU_THREADS: Final = "OMP_NUM_THREADS"
+_ARROW_IO_THREADS: Final = "ARROW_IO_THREADS"
 
 #: whether this process already watches its parent
 _watching = threading.Event()
@@ -136,6 +144,71 @@ def exit_with_parent(interval: float = _INTERVAL, serving: int | None = None) ->
         serving = spawner.pid
     watched = None if serving == parent else serving
     threading.Thread(target=_watch, args=(parent, watched, interval), name="exit-with-parent", daemon=True).start()
+
+
+def _at_most(variable: str, bound: int) -> None:
+    """set ``variable`` to ``bound``, or keep the lower count the environment already gives it.
+
+    :param variable: the environment variable
+    :ptype variable: str
+    :param bound: the most it may say
+    :ptype bound: int
+    :return: nothing
+    :rtype: None
+    """
+    given = os.environ.get(variable, "")
+    if not (given.isdigit() and 0 < int(given) <= bound):
+        os.environ[variable] = str(bound)
+
+
+def start_pool_worker(serving: int, process_name: str | None, cpu_threads: int, io_threads: int) -> None:
+    """a pool worker's start, its pool's ``initializer``: it exits when the serving process dies
+    (:func:`exit_with_parent`, never an orphan waiting on its queue: its parent is the fork server, which outlives a
+    killed serving process while any worker lives), bounds the native thread pools its jobs start, writes a native
+    crash's traceback to its stderr, names itself, and is scheduled below the serving process, so the server stays
+    responsive.
+
+    Here, not beside the pools it serves: this module imports neither numpy nor Arrow, so the bounds are set before a
+    job's import loads them, and each library sizes its pool by its own variable as it makes it.
+
+    A process already at the lowest priority cannot go lower: macOS refuses ``nice`` past it with ``EPERM`` (Linux
+    clamps). The worker then keeps the priority it has and says so once, at its start; raising there would fail the
+    initializer and with it every worker of the pool (``BrokenProcessPool``).
+
+    :param serving: the serving process's pid
+    :ptype serving: int
+    :param process_name: the name the worker gives itself (:func:`name_process`); None to keep the fork server's
+    :ptype process_name: str | None
+    :param cpu_threads: the most threads Arrow's CPU pool runs: the CPUs the process may use
+        (:func:`~threetears.core.utils.cpu_quota.effective_cpu_count`)
+    :ptype cpu_threads: int
+    :param io_threads: the most threads Arrow's I/O pool runs (:func:`~threetears.core.utils.cpu_quota.arrow_io_threads`)
+    :ptype io_threads: int
+    :return: nothing
+    :rtype: None
+    """
+    exit_with_parent(serving=serving)
+    # a job that aborts in native code (Arrow failing to start a thread, say) ends the worker with SIGABRT, and its
+    # caller sees only BrokenProcessPool: its stderr (the pod's log) then holds the job's Python traceback, as pytest's
+    # own faulthandler gives it for a test process. Without it the abort left nothing (2026-11-25)
+    faulthandler.enable()
+    # numpy's Linux OpenBLAS starts a thread a core as it loads (10 on a 10-CPU container, 0 with this, 2026-11-25),
+    # each counted against the pod's thread limit, and no job here runs BLAS. An operator's own setting is kept
+    os.environ.setdefault(_BLAS_THREADS, "1")
+    # Arrow sizes its pools from the cores, never the quota: unsized, a worker's CPU pool ran a thread a core (32 on
+    # monad-1's 32-core cpuset) and its I/O pool 8, beside the serving process's own, against the container's pid limit
+    # (4096: test processes aborting in Arrow as a thread failed to start, 2026-11-25). A lower setting is kept
+    _at_most(_ARROW_CPU_THREADS, cpu_threads)
+    _at_most(_ARROW_IO_THREADS, io_threads)
+    if process_name is not None:
+        name_process(process_name)
+    try:
+        os.nice(5)
+    except OSError as error:
+        log.warning(
+            "process worker keeps its priority: it cannot be lowered further",
+            extra={"extra_data": {"niceness": os.getpriority(os.PRIO_PROCESS, 0), "error": str(error)}},
+        )
 
 
 def name_process(name: str) -> bool:

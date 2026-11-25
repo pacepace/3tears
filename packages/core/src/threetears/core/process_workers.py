@@ -22,7 +22,8 @@ not inline -- on a thread, since a fresh pool starts its processes on submission
 starts the fork server -- and keeps it. A worker that dies
 fails the jobs it held (``BrokenProcessPool``) and the pool is replaced at the next job. :meth:`ProcessWorkers.close`
 shuts it down; at interpreter exit ``concurrent.futures`` joins it anyway. Each worker starts below the serving
-process's priority, and exits when the serving process dies.
+process's priority, with its native thread pools bounded by the CPUs it may use, and exits when the serving process
+dies (:func:`~threetears.core.processes.start_pool_worker`).
 """
 
 from __future__ import annotations
@@ -35,15 +36,13 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
-from threetears.core.processes import exit_with_parent, name_process, start_worker_server
+from threetears.core.processes import start_pool_worker, start_worker_server
+from threetears.core.utils.cpu_quota import arrow_io_threads, effective_cpu_count
 from threetears.observe import get_logger
 
 __all__ = ["ProcessWorkers"]
 
 log = get_logger(__name__)
-
-#: the variable that bounds the threads numpy's OpenBLAS starts as it loads: a worker sets it to one (:func:`_below_the_server`)
-_BLAS_THREADS = "OPENBLAS_NUM_THREADS"
 
 #: the scalar types that cross as they are
 _PLAIN_SCALARS = (bytes, str, int, float, bool, type(None))
@@ -91,40 +90,6 @@ def _plain_call(job: Callable[..., Any], args: tuple[Any, ...]) -> Any:
     answer = job(*args)
     require_plain(answer, what=f"the answer of {job.__qualname__}")
     return answer
-
-
-def _below_the_server(serving: int, process_name: str | None = None) -> None:
-    """a worker's start: it exits when the serving process dies (:func:`~threetears.core.processes.exit_with_parent`,
-    never an orphan waiting on its queue: its parent is the fork server, which outlives a killed serving process while
-    any worker lives), and is scheduled below it, so the server stays responsive.
-
-    A process already at the lowest priority cannot go lower: macOS refuses ``nice`` past it with ``EPERM`` (Linux
-    clamps). The worker then keeps the priority it has and says so once, at its start; raising there would fail the
-    initializer and with it every worker of the pool (``BrokenProcessPool``).
-
-    :param serving: the serving process's pid
-    :ptype serving: int
-    :param process_name: the name the worker gives itself (:func:`~threetears.core.processes.name_process`); None
-        to keep the fork server's
-    :ptype process_name: str | None
-    :return: nothing
-    :rtype: None
-    """
-    exit_with_parent(serving=serving)
-    # before any job imports numpy: its Linux OpenBLAS starts a thread a core as it loads (10 on a 10-CPU container, 0
-    # with this, 2026-11-25), each counted against the pod's thread limit, and no job here runs BLAS. A copy's worker
-    # on a many-core pool host so took the threads its test processes needed ("can't start new thread", monad-1,
-    # 2026-11-25). An operator's own setting is kept
-    os.environ.setdefault(_BLAS_THREADS, "1")
-    if process_name is not None:
-        name_process(process_name)
-    try:
-        os.nice(5)
-    except OSError as error:
-        log.warning(
-            "process worker keeps its priority: it cannot be lowered further",
-            extra={"extra_data": {"niceness": os.getpriority(os.PRIO_PROCESS, 0), "error": str(error)}},
-        )
 
 
 class ProcessWorkers:
@@ -201,14 +166,18 @@ class ProcessWorkers:
         futures = await asyncio.to_thread(self._submitted, job, list(argument_sets))
         try:
             return list(await asyncio.gather(*(asyncio.wrap_future(future) for future in futures)))
-        except BrokenProcessPool:
+        except BrokenProcessPool as error:
             if not self._broken:
                 log.warning(
                     "a worker process died; its pool is replaced at the next job",
                     extra={"extra_data": {"pool": self._name}},
                 )
             self._broken = True
-            raise
+            # the executor's own words name no pool and no job: the caller's error says which, and where the cause is
+            raise BrokenProcessPool(
+                f"a worker process of the {self._name!r} pool died running {job.__qualname__} (killed, or a crash in "
+                "native code: its stderr holds the fault's traceback); the pool is replaced at the next job"
+            ) from error
 
     def _submitted(self, job: Callable[..., Any], argument_sets: list[tuple[Any, ...]]) -> list[Future[Any]]:
         """submit each run to the pool, made (or replaced, after a worker died) first: on a thread.
@@ -225,11 +194,14 @@ class ProcessWorkers:
                 self._pool.shutdown(wait=False)
                 self._pool = None
             if self._pool is None:
+                # the CPUs this process may use, read here (the workers share its cgroup and affinity) and handed to
+                # each worker, which bounds its native pools by them before any job imports one (start_pool_worker)
+                cpus = effective_cpu_count()
                 self._pool = ProcessPoolExecutor(
                     max_workers=self._workers,
                     mp_context=start_worker_server(),
-                    initializer=_below_the_server,
-                    initargs=(os.getpid(), self._process_name),
+                    initializer=start_pool_worker,
+                    initargs=(os.getpid(), self._process_name, cpus, arrow_io_threads(cpus)),
                 )
                 self._broken = False
             pool = self._pool

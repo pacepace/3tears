@@ -30,6 +30,10 @@ from threetears.interfaces.keyed.filters import SQL_TOKEN
 try:
     import duckdb
 
+    from threetears.core.utils.duckdb_module import release_default_threads
+
+    release_default_threads()
+
     _DUCKDB_ERROR: tuple[type[BaseException], ...] = (duckdb.Error,)
 except ImportError:  # NOSILENT: DuckDB is optional; without it no connection reaches run_bound
     _DUCKDB_ERROR = ()

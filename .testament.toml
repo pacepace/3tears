@@ -41,6 +41,14 @@ THREETEARS_REQUIRE_CHROMIUM = "1"
 # 64 MiB default, shared by every test process of the batch, and the suite caches megabyte answers: the L1 files go
 # to the container's /tmp instead (the same code; the directory is the only difference)
 THREETEARS_L1_DIR = "/tmp"
+# every test process's native pools sized as a pod's boot sizes a serving process's (a 4-CPU quota), never from the
+# runner's cores: Arrow's CPU pool reads OMP_NUM_THREADS, numpy's OpenBLAS its own variable (no test runs BLAS). A
+# runner's container holds every test process of its slots under one pid limit (4096): on monad-1 (a 32-core cpuset of
+# 64) 15 test processes and five fork servers held 3,148 threads, a test process 98 idle (OpenBLAS's and DuckDB's
+# default database's, a thread a core) and up to 362 busy. Past 4096 a thread failed to start and Arrow aborted the
+# test process (SIGABRT) or a worker (BrokenProcessPool), 2026-11-25. Workers keep these bounds (start_pool_worker)
+OMP_NUM_THREADS = "4"
+OPENBLAS_NUM_THREADS = "1"
 
 [image]
 dockerfile = "docker/testament.Dockerfile"
