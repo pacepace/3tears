@@ -107,10 +107,12 @@ def _rows(nats: FakeNatsClient) -> _Rows:
 
 
 def _evicted(nats: FakeNatsClient) -> list[str]:
+    # each row a published message names (a write of many rows is one message naming them all)
     return [
-        message.ids[0]
+        row.ids[0]
         for message in nats.published
         if isinstance(message, CacheInvalidationMessage) and message.table == _TABLE
+        for row in message.each_row()
     ]
 
 

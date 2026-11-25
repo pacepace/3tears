@@ -44,10 +44,12 @@ def _collection(pool: Any, nats: FakeNatsClient) -> IntentionsCollection:
 
 
 def _evicted(nats: FakeNatsClient) -> set[tuple[str, ...]]:
+    # each row a published message names (a write of many rows is one message naming them all)
     return {
-        tuple(message.ids)
+        tuple(row.ids)
         for message in nats.published
         if isinstance(message, CacheInvalidationMessage) and message.table == "intentions"
+        for row in message.each_row()
     }
 
 
