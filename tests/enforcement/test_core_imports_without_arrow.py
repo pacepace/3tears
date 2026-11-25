@@ -70,6 +70,9 @@ _ARROW_MODULES: dict[str, str] = {
     "threetears.core.collections.copy_reload": (
         "the copy's reload lane: a reload's Arrow pages staged in shared_copy's reload worker, published in order"
     ),
+    "threetears.core.collections.copy_queries": (
+        "queries over the copy in worker processes: each answer written by its worker as shared Arrow, mapped back"
+    ),
 }
 
 #: a requirement line of ``uv export``: ``name==version`` (with a marker), or ``-e ./packages/<dir>``

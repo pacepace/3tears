@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: queries over the copy run in query worker processes, answered in shared Arrow
+
+**Added:** `threetears.core.collections.copy_queries.CopyQueries`, step 3T-5 of `design-copy-worker-backend.md`
+(decisions 4 and 5). A query over the copy (SQL with scalar `?` binds, `run`; or a declared module-level query by
+name, `run_named`) runs DuckDB in a worker of its own `SharedArrowPool` (`copy-query`) over a published version mapped
+read-only, with the tables handed to it (`tables=`, shared Arrow) and the copy's `prepare` hook; its answer is written
+into a result slot in pieces and mapped back zero-copy (`QueryAnswer`), never pickled. A query reads the version it
+names, or the one current when it is submitted, leased until its answer is mapped, so a publish meanwhile never
+changes it. At most `workers + max_waiting` queries are admitted (callers past it wait in the order they came;
+`wait=False` refuses with `QueryPoolFull`), and they reach the workers in call order. A timeout (`QueryTimeout`) or a
+cancel marks the query on a shared cancel board; its worker interrupts DuckDB at once, or refuses it at its start. A
+dead worker fails its query with `QueryWorkerDied` and is replaced. `query_workers()` sizes the pool from the pod's CPU
+allowance less the serving process, the apply worker and the reload worker (6 CPUs: 3 workers). Not wired yet: the
+engine slots stay until 3T-8, and no caller uses it until 3T-7 / R-3.
+
 ### core: the copy's reload lane: a reload stages in a worker of its own and publishes in order
 
 **Added:** `threetears.core.collections.copy_reload.ReloadLane`, step 3T-4 of `design-copy-worker-backend.md`
