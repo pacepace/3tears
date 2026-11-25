@@ -36,7 +36,8 @@ product repository runs it over its own trees with the framework's classes joine
 (``run_census(roots, framework=True)``), which is where a product's second class for a framework
 table is caught.
 
-Rules 1 to 3 are AST-only; rule 4 imports, in a subprocess.
+Rules 1 to 3 are AST-only, and read one fact per module from the gitignored scan cache, kept by the
+module's bytes (``file_facts``); rule 4 imports, in a subprocess.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
-from threetears.enforcement.common import parse_python_path
 from threetears.enforcement.collection_census import find_census_problems, run_census
+from threetears.enforcement.common.scan_cache import file_facts
 
 __all__: list[str] = []
 
@@ -92,21 +93,6 @@ def _source_roots(repo_root: Path) -> list[Path]:
     for pattern in _SRC_GLOBS:
         roots.update(path for path in repo_root.glob(pattern) if path.is_dir())
     return sorted(roots)
-
-
-def _modules(repo_root: Path) -> list[tuple[str, ast.Module]]:
-    """every source module under ``repo_root``, parsed.
-
-    :param repo_root: the repository, or a planted tree shaped like one
-    :ptype repo_root: Path
-    :return: ``(path relative to the root, tree)`` pairs
-    :rtype: list[tuple[str, ast.Module]]
-    """
-    parsed: list[tuple[str, ast.Module]] = []
-    for root in _source_roots(repo_root):
-        for path in sorted(root.rglob("*.py")):
-            parsed.append((path.relative_to(repo_root).as_posix(), parse_python_path(path)))
-    return parsed
 
 
 def _declarations(node: ast.ClassDef) -> list[tuple[int, ast.expr]]:
@@ -172,6 +158,81 @@ def _declaration_problem(value: ast.expr) -> str | None:
     )
 
 
+@dataclass(frozen=True)
+class _ModuleFacts:
+    """what rules 1 to 3 read of one module, kept by its bytes.
+
+    :ivar declarations: ``(class, line, name, problem)`` of every class-body ``write_generation``
+        assignment, classes in walk order: ``name`` what the value refers to (``_name_of``), ``problem``
+        why it is not a declaration, or ``None``
+    :ivar bare_rows: ``(class, line)`` of every row message a switched-on class publishes with no
+        ``bump=``, in walk order
+    :ivar first_follow: line of the module's first ``follow_generation`` call, in walk order, or ``None``
+    :ivar schedules_a_pass: whether the module names ``generation_catchup_tick`` or ``follow_generation_key``
+    """
+
+    declarations: tuple[tuple[str, int, str | None, str | None], ...]
+    bare_rows: tuple[tuple[str, int], ...]
+    first_follow: int | None
+    schedules_a_pass: bool
+
+
+def _module_facts(path: Path, tree: ast.Module) -> _ModuleFacts:
+    """what rules 1 to 3 read of one module.
+
+    :param path: the module (unused: a fact is named after its module by the caller)
+    :ptype path: Path
+    :param tree: its parse
+    :ptype tree: ast.Module
+    :return: its declarations, bare row messages and follows
+    :rtype: _ModuleFacts
+    """
+    declarations: list[tuple[str, int, str | None, str | None]] = []
+    bare_rows: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        values = _declarations(node)
+        declarations.extend(
+            (node.name, lineno, _name_of(value), _declaration_problem(value)) for lineno, value in values
+        )
+        if not any(_name_of(value) == _SWITCHED_ON for _, value in values):
+            continue
+        bare_rows.extend(
+            (node.name, call.lineno)
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_publish_invalidation"
+            and not any(keyword.arg == "bump" for keyword in call.keywords)
+        )
+    follows = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "follow_generation"
+    ]
+    named = {_name_of(node) for node in ast.walk(tree) if isinstance(node, ast.Name | ast.Attribute)}
+    return _ModuleFacts(
+        declarations=tuple(declarations),
+        bare_rows=tuple(bare_rows),
+        first_follow=follows[0] if follows else None,
+        schedules_a_pass=bool(named & _PASSES),
+    )
+
+
+def _modules(repo_root: Path) -> dict[str, _ModuleFacts]:
+    """every source module under ``repo_root``, as rules 1 to 3 read it, from the scan cache by its bytes.
+
+    :param repo_root: the repository, or a planted tree shaped like one
+    :ptype repo_root: Path
+    :return: path relative to the root -> the module's facts, in walk order
+    :rtype: dict[str, _ModuleFacts]
+    """
+    paths = [path for root in _source_roots(repo_root) for path in sorted(root.rglob("*.py"))]
+    facts = file_facts(_module_facts, paths, root=repo_root)
+    return {path.relative_to(repo_root).as_posix(): fact for path, fact in facts.items()}
+
+
 def find_unreadable_declarations(repo_root: Path) -> list[Violation]:
     """every ``write_generation`` assignment that is not one of the four declarations, written out.
 
@@ -180,16 +241,12 @@ def find_unreadable_declarations(repo_root: Path) -> list[Violation]:
     :return: the violations
     :rtype: list[Violation]
     """
-    violations: list[Violation] = []
-    for source, tree in _modules(repo_root):
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            for lineno, value in _declarations(node):
-                problem = _declaration_problem(value)
-                if problem is not None:
-                    violations.append(Violation(source, lineno, node.name, problem))
-    return violations
+    return [
+        Violation(source, lineno, symbol, problem)
+        for source, facts in _modules(repo_root).items()
+        for symbol, lineno, _, problem in facts.declarations
+        if problem is not None
+    ]
 
 
 def find_rows_announced_without_their_advance(repo_root: Path) -> list[Violation]:
@@ -200,30 +257,17 @@ def find_rows_announced_without_their_advance(repo_root: Path) -> list[Violation
     :return: the violations
     :rtype: list[Violation]
     """
-    violations: list[Violation] = []
-    for source, tree in _modules(repo_root):
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            if not any(_name_of(value) == _SWITCHED_ON for _, value in _declarations(node)):
-                continue
-            for call in ast.walk(node):
-                if (
-                    isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Attribute)
-                    and call.func.attr == "_publish_invalidation"
-                    and not any(keyword.arg == "bump" for keyword in call.keywords)
-                ):
-                    violations.append(
-                        Violation(
-                            source,
-                            call.lineno,
-                            node.name,
-                            "declares WRITE_GENERATION and publishes a row message with no bump=; the "
-                            "generation never moves for that commit",
-                        )
-                    )
-    return violations
+    return [
+        Violation(
+            source,
+            lineno,
+            symbol,
+            "declares WRITE_GENERATION and publishes a row message with no bump=; the "
+            "generation never moves for that commit",
+        )
+        for source, facts in _modules(repo_root).items()
+        for symbol, lineno in facts.bare_rows
+    ]
 
 
 def find_followers_without_a_pass(repo_root: Path) -> list[Violation]:
@@ -235,24 +279,14 @@ def find_followers_without_a_pass(repo_root: Path) -> list[Violation]:
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for source, tree in _modules(repo_root):
-        if source in _FOLLOW_DEFINERS:
+    for source, facts in _modules(repo_root).items():
+        if source in _FOLLOW_DEFINERS or facts.first_follow is None:
             continue
-        follows = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "follow_generation"
-        ]
-        if not follows:
-            continue
-        named = {_name_of(node) for node in ast.walk(tree) if isinstance(node, ast.Name | ast.Attribute)}
-        if not named & _PASSES:
+        if not facts.schedules_a_pass:
             violations.append(
                 Violation(
                     source,
-                    follows[0].lineno,
+                    facts.first_follow,
                     "follow_generation",
                     "follows a table's write generation and schedules neither generation_catchup_tick "
                     "nor follow_generation_key, so a missed broadcast is never acted on",
@@ -295,13 +329,8 @@ class TestTheFamily:
         assert len(_source_roots(_REPO_ROOT)) > 20
         # the declaration's own default is a class-body assignment these walkers must be reading
         base = "packages/core/src/threetears/core/collections/base.py"
-        tree = dict(_modules(_REPO_ROOT))[base]
-        defaults = [
-            _name_of(value)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ClassDef) and node.name == "BaseCollection"
-            for _, value in _declarations(node)
-        ]
+        facts = _modules(_REPO_ROOT)[base]
+        defaults = [name for symbol, _, name, _ in facts.declarations if symbol == "BaseCollection"]
         assert defaults == ["WRITE_GENERATION_UNDECLARED"]
 
     def test_every_declaration_is_one_of_the_four_and_an_opt_out_says_why(self) -> None:

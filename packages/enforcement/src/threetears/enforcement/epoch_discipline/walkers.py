@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.common.scan_cache import file_facts
 from threetears.observe import BuildOnce
 from threetears.enforcement.epoch_discipline.config import (
     RULE_EPOCH_BYPASS,
@@ -471,19 +472,19 @@ def _is_unset(value: ast.expr) -> bool:
 class _ModuleWalk(ast.NodeVisitor):
     """walks one module, recording each rule's hits under their enclosing function."""
 
-    def __init__(self, path: str, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module) -> None:
         """prepare a walk of one module.
 
-        :param path: repo-relative posix path of the module
-        :ptype path: str
+        the walk knows nothing of where the module lives, so what it records is the module's own
+        fact (:class:`_ModuleHits`), kept by the file's bytes; the walk names it after.
+
         :param tree: its parse
         :ptype tree: ast.Module
         :return: nothing
         :rtype: None
         """
-        self.path = path
-        self.hits: list[EpochHit] = []
-        self.definitions: set[str] = set()
+        self.hits: list[tuple[str, int, str, str]] = []
+        self.definitions: list[str] = []
         self._stack: list[str] = []
         self._envs: list[dict[str, str]] = [{}]
         self._announcing: list[bool] = [False]
@@ -529,7 +530,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :return: nothing
         :rtype: None
         """
-        self.hits.append(EpochHit(rule, self.path, getattr(node, "lineno", 0), self._function, symbol))
+        self.hits.append((rule, getattr(node, "lineno", 0), self._function, symbol))
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """walk a class body, reading its expiry attributes.
@@ -540,7 +541,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         self._stack.append(node.name)
-        self.definitions.add(f"{self.path}::{self._function}")
+        self.definitions.append(self._function)
         for statement in node.body:
             target: ast.expr | None = None
             value: ast.expr | None = None
@@ -567,7 +568,7 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         self._stack.append(node.name)
-        self.definitions.add(f"{self.path}::{self._function}")
+        self.definitions.append(self._function)
         env = dict(self._envs[-1])
         for inner in _own_nodes(node.body):
             if isinstance(inner, (ast.Assign, ast.AnnAssign)):
@@ -824,6 +825,51 @@ class _ModuleWalk(ast.NodeVisitor):
             self._hit(RULE_WHOLE_REREAD, node, f"recovery read {name}")
 
 
+@dataclass(frozen=True)
+class _ModuleHits:
+    """what one module's walk found, before it is named after the module.
+
+    :ivar hits: ``(rule, line, function, symbol)`` of every hit, in walk order
+    :ivar definitions: qualified name of every function and class seen
+    """
+
+    hits: tuple[tuple[str, int, str, str], ...]
+    definitions: tuple[str, ...]
+
+
+def _module_hits(path: Path, tree: ast.Module) -> _ModuleHits:
+    """walk one module's tree and record every rule's hits; kept on disk by the file's bytes.
+
+    :param path: the module (unused: a hit is named after the module by the caller)
+    :ptype path: Path
+    :param tree: its parse
+    :ptype tree: ast.Module
+    :return: its hits and definitions
+    :rtype: _ModuleHits
+    """
+    walk = _ModuleWalk(tree)
+    walk.visit(tree)
+    return _ModuleHits(tuple(walk.hits), tuple(walk.definitions))
+
+
+def _modules_hits(repo_root: Path, paths: list[Path]) -> list[_ModuleHits]:
+    """each module's hits, in the order given, from the scan cache where its bytes were seen before.
+
+    a module outside ``repo_root`` (named by its absolute path) is walked here, uncached, since the
+    cache names each file relative to the root.
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :param paths: the modules
+    :ptype paths: list[Path]
+    :return: one fact per module, in order
+    :rtype: list[_ModuleHits]
+    """
+    inside = [path for path in paths if path.is_relative_to(repo_root)]
+    facts = file_facts(_module_hits, inside, root=repo_root)
+    return [facts[path] if path in facts else _module_hits(path, parse_python_path(path)) for path in paths]
+
+
 _SCANS: BuildOnce[tuple[Path, tuple[Path, ...], tuple[str, ...]], EpochScan] = BuildOnce()
 
 
@@ -841,19 +887,19 @@ def _walk(repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple
     """
     scan = EpochScan()
     used: set[str] = set()
+    walked: list[tuple[Path, str]] = []
     for root in src_roots:
         for path in iter_python_files(root):
             relative = relative_posix_path(path, repo_root)
             excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
             used.update(excluded)
-            if excluded:
-                continue
-            tree = parse_python_path(path)
-            walk = _ModuleWalk(relative, tree)
-            walk.visit(tree)
-            scan.hits.extend(walk.hits)
-            scan.definitions.update(walk.definitions)
-            scan.files_scanned += 1
+            if not excluded:
+                walked.append((path, relative))
+    facts = _modules_hits(repo_root, [path for path, _ in walked])
+    for (_, relative), fact in zip(walked, facts, strict=True):
+        scan.hits.extend(EpochHit(rule, relative, line, function, symbol) for rule, line, function, symbol in fact.hits)
+        scan.definitions.update(f"{relative}::{qualified}" for qualified in fact.definitions)
+        scan.files_scanned += 1
     scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
     return scan
 
@@ -864,7 +910,8 @@ def scan_epoch_discipline(
     """every rule's hits under ``src_roots``.
 
     The walk is kept for the process, keyed by its inputs, so the five rule gates of one repo
-    read one walk.
+    read one walk; each module's hits are kept on disk by its bytes (the scan cache), so another
+    process parses only the modules that changed.
 
     :param repo_root: the repo root; paths are relative to it
     :ptype repo_root: Path
