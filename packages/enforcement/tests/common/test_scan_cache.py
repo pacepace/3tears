@@ -551,6 +551,37 @@ def test_a_path_outside_the_root_is_refused(tmp_path: Path) -> None:
         ScanCache(tmp_path / "cache", "code").per_file("facts", _Names(), [outside], root=root)
 
 
+def test_a_per_file_walk_inside_a_scan_leaves_the_scan_storable_and_its_stray_read_spoils_both(tmp_path: Path) -> None:
+    """a whole-workspace scan whose scanner walks through the per-file cache: the walk's own store and code are
+    not the scan's inputs, but a file the walk's extractor read outside its own file is."""
+    root, paths = _modules(tmp_path, a="def f(): pass\n", b="def g(): pass\n")
+    (root / "ledger.txt").write_text("unkeyed")
+    outer = ScanCache(tmp_path / "outer", "code")
+    walk = ScanCache(tmp_path / "walk", "code")
+
+    def declared(_: str) -> ScanInputs:
+        return ScanInputs(root=root, files=tuple(paths))
+
+    def scan(_: str) -> dict[Path, tuple[str, ...]]:
+        return walk.per_file("facts", _Names(), paths, root=root)
+
+    for _ in range(2):
+        assert outer.memoised("scan", ["workspace"], declared, scan) == {"workspace": {paths[0]: ("f",), paths[1]: ("g",)}}
+    assert not outer.unstored, f"the walk's own store or code refused the scan: {outer.unstored}"
+    assert not walk.unstored
+
+    def strays(path: Path, tree: ast.Module) -> str:
+        return (root / "ledger.txt").read_text()
+
+    def stray_scan(_: str) -> dict[Path, str]:
+        return walk.per_file("strays", strays, paths, root=root)
+
+    with pytest.warns(UserWarning, match="enforcement scan cache: .*read outside its key"):
+        outer.memoised("stray scan", ["workspace"], declared, stray_scan)
+    assert any(reason.startswith("stray scan") for reason in outer.unstored), "the scan kept a value its walk read stray"
+    assert walk.unstored, "the walk kept a fact read stray"
+
+
 #: the files :func:`_top_level_functions` was asked about, so a test can see what it parsed
 _EXTRACTED: list[str] = []
 

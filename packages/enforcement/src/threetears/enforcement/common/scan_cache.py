@@ -426,16 +426,38 @@ def _is_code(path: str) -> bool:
 
 
 class _Recorded:
-    """record this thread's watched audit events while the block runs."""
+    """record this thread's watched audit events while the block runs.
+
+    a recording inside another (a per-file walk inside a whole-workspace scan) hands what it saw
+    to the outer one when it ends: the outer scan read those files too.
+    """
 
     def __enter__(self) -> list[tuple[str, tuple[Any, ...]]]:
         _AUDIT.get("audit", _install_audit)
+        self.outer: list[tuple[str, tuple[Any, ...]]] | None = getattr(_RECORDING, "log", None)
         self.log: list[tuple[str, tuple[Any, ...]]] = []
         _RECORDING.log = self.log
         return self.log
 
     def __exit__(self, *_: object) -> None:
+        _RECORDING.log = self.outer
+        if self.outer is not None:
+            self.outer.extend(self.log)
+
+
+class _Unrecorded:
+    """leave the block out of any recording on this thread: the cache's own stores and code keys, never a scan's input.
+
+    a scan that calls into a cached walk would otherwise read the walk's store, the lockfile and the
+    walk's code as inputs it never declared, and never be stored itself.
+    """
+
+    def __enter__(self) -> None:
+        self.outer: list[tuple[str, tuple[Any, ...]]] | None = getattr(_RECORDING, "log", None)
         _RECORDING.log = None
+
+    def __exit__(self, *_: object) -> None:
+        _RECORDING.log = self.outer
 
 
 @dataclass(frozen=True)
@@ -589,6 +611,11 @@ class ScanCache:
         :return: its entries, or none
         :rtype: dict[str, Any]
         """
+        with _Unrecorded():
+            return self._read(name)
+
+    def _read(self, name: str) -> dict[str, Any]:
+        """the store as it is on disk."""
         try:
             blob = self._path(name).read_bytes()
         except OSError:
@@ -615,6 +642,11 @@ class ScanCache:
         :return: nothing
         :rtype: None
         """
+        with _Unrecorded():
+            self._write(name, entries)
+
+    def _write(self, name: str, entries: dict[str, Any]) -> None:
+        """write the store, as store() says."""
         payload = pickle.dumps(entries, protocol=pickle.HIGHEST_PROTOCOL)
         blob = _MAGIC + hashlib.blake2b(payload, digest_size=32).hexdigest().encode() + b"\n" + payload
         target = self._path(name)
@@ -725,7 +757,8 @@ class ImportIndex:
         :raises OSError: when the file cannot be read
         :raises SyntaxError: when it is not valid python
         """
-        source = path.read_bytes()
+        with _Unrecorded():
+            source = path.read_bytes()
         key = _content_key(name, path.name, source)
         found = self._seen.get(key) or self._stored.get(key)
         if found is None:
@@ -868,7 +901,8 @@ def file_facts[V](
     :raises OSError: when a file cannot be read
     """
     qualified = _qualified(extract)
-    code = _EXTRACTOR_CODES.get(qualified, lambda: _extractor_code(extract))
+    with _Unrecorded():
+        code = _EXTRACTOR_CODES.get(qualified, lambda: _extractor_code(extract))
     cache = ScanCache(directory if directory is not None else root / CACHE_DIRECTORY, code)
     store = "facts-" + re.sub(r"[^\w.]+", "_", qualified)
     return cache.per_file(store, extract, paths, root=root, unparsable=unparsable)
