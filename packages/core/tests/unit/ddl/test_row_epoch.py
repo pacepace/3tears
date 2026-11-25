@@ -44,7 +44,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
-def _versioned(name: str = "results", **extra: Any) -> TableSchema:
+def _versioned(name: str = "ve_results", **extra: Any) -> TableSchema:
     return TableSchema(
         name=name,
         primary_key=("office_key", "candidate"),
@@ -229,9 +229,9 @@ def test_an_epoch_column_declared_otherwise_or_named_in_the_key_is_refused() -> 
 def test_an_upsert_of_a_versioned_table_is_planned_as_an_append_with_no_conflict_clause() -> None:
     # append-only L3, chunk 2: chunk 1's interim upsert on (key..., epoch) is gone; a rewrite appends a new version
     store = SqlL3Backend(MagicMock())
-    store.register_schema("results", _versioned())
+    store.register_schema("ve_results", _versioned())
     plan = store.arrow_write_plan(
-        "results",
+        "ve_results",
         ["office_key", "candidate", "join_state_code", "date_created", "date_updated", EPOCH_COLUMN],
         [pa.string(), pa.string(), pa.string(), pa.timestamp("us", tz="UTC"), pa.timestamp("us", tz="UTC"), pa.int64()],
         kind="upsert",
@@ -260,9 +260,9 @@ async def test_a_transaction_that_took_no_writes_turn_has_no_epoch_to_give() -> 
     conn = MagicMock()
     transaction = CallerTransaction(conn)
     with pytest.raises(UnstampedWriteError, match="took no write's turn"):
-        transaction.row_epoch("results")
+        transaction.row_epoch("ve_results")
     transaction.note_write_version(41)
-    first, second = transaction.row_epoch("results"), transaction.row_epoch("results")
+    first, second = transaction.row_epoch("ve_results"), transaction.row_epoch("ve_results")
     assert _version(first) == _version(second) == 41
     assert second > first
 
@@ -277,27 +277,27 @@ async def test_a_collection_write_on_no_transaction_or_one_that_took_no_turn_is_
 async def test_every_store_write_of_a_row_with_no_epoch_is_refused_before_anything_is_sent() -> None:
     pool = MagicMock()
     store = SqlL3Backend(pool)
-    store.register_schema("results", _versioned())
+    store.register_schema("ve_results", _versioned())
     store.register_schema("runs", _stamped())
     row = {"office_key": "sn_NC1", "candidate": "a", "join_state_code": "NC", "votes": 1}
     with pytest.raises(UnstampedWriteError, match="has none"):
-        await store.upsert("results", row)
+        await store.upsert("ve_results", row)
     with pytest.raises(UnstampedWriteError, match="has none"):
-        await store.upsert_many("results", [row], max_rows=10, max_bytes=1 << 20)
+        await store.upsert_many("ve_results", [row], max_rows=10, max_bytes=1 << 20)
     with pytest.raises(UnstampedWriteError, match="has none"):
-        await store.copy_many("results", [row], max_rows=10, max_bytes=1 << 20, conn=MagicMock())
+        await store.copy_many("ve_results", [row], max_rows=10, max_bytes=1 << 20, conn=MagicMock())
     with pytest.raises(UnstampedWriteError, match="has none"):
         await store.upsert_many("runs", [{"run_id": "r1", EPOCH_COLUMN: None}], max_rows=10, max_bytes=1 << 20)
     rows = pa.table({"office_key": ["sn_NC1"], "candidate": ["a"], "join_state_code": ["NC"]})
     plan = ArrowWritePlan(kind="upsert", columns=(), conflict_columns=("office_key", "candidate", EPOCH_COLUMN))
     with pytest.raises(UnstampedWriteError, match="has none"):
-        await store.write_arrow("results", rows, plan, conn=MagicMock())
+        await store.write_arrow("ve_results", rows, plan, conn=MagicMock())
     nulls = rows.append_column(EPOCH_COLUMN, pa.array([None], pa.int64()))
     with pytest.raises(UnstampedWriteError, match="has none"):
-        await store.write_arrow("results", nulls, plan, conn=MagicMock())
+        await store.write_arrow("ve_results", nulls, plan, conn=MagicMock())
     with pytest.raises(UnstampedWriteError, match="has none"):
         await store.load_files(
-            "results",
+            "ve_results",
             [LoadFile(url="file:///nowhere.parquet", rows=1)],
             columns=["candidate", "join_state_code"],
             constants={"office_key": "sn_NC1"},

@@ -20,6 +20,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from datetime import UTC, datetime
 from typing import Any
 
@@ -200,6 +201,8 @@ async def _in_version(held: _Held, step: Callable[[Any], Awaitable[Any]], *, ver
     if version is None:
         async with held.pool.acquire() as conn, CallerTransaction(conn):
             version = await held.epochs.begin(conn=conn)
+    # taken in the block above when not given: a context manager that swallowed its exception would leave it None
+    assert version is not None
     async with held.pool.acquire() as conn, CallerTransaction(conn):
         await held.epochs.touch(version, ["state:NC", "state:PA"], conn=conn)
         return await step(conn)
@@ -267,26 +270,32 @@ async def _raw_append(conn: Any, votes: int, *, staged: bool) -> float:
     return (time.perf_counter() - started) * 1000 / _KEYS
 
 
+async def _save(collection: Any, votes: int, conn: Any, *, copy: bool = False) -> Any:
+    """``collection``'s save of :data:`_KEYS` rows of ``votes`` on ``conn``."""
+    return await collection.save_rows(_rows(_KEYS, votes), conn=conn, copy=copy)
+
+
+async def _appended(votes: int, staged: bool, conn: Any) -> Any:
+    """the hub's raw append of :data:`_KEYS` rows of ``votes`` on ``conn``, staged or copied straight in."""
+    return await _raw_append(conn, votes, staged=staged)
+
+
 async def _rewrite_times(held: _Held) -> dict[str, float]:
     """the ms a row of a rewrite of :data:`_KEYS` held keys: today's upsert, and the versioned table's append."""
     for collection in (held.today, held.versioned):
-        await _in_version(held, lambda conn, c=collection: c.save_rows(_rows(_KEYS, 1), conn=conn, copy=True))
+        await _in_version(held, partial(_save, collection, 1, copy=True))
     times: dict[str, float] = {}
     for votes, trigger in ((2, "with the row trigger"), (3, "without it")):
         if votes == 3:
             await _drop_triggers(held)
-        times[f"upsert {trigger}"] = await _timed(
-            held, lambda conn, v=votes: held.today.save_rows(_rows(_KEYS, v), conn=conn)
-        )
-        times[f"append {trigger}"] = await _timed(
-            held, lambda conn, v=votes: held.versioned.save_rows(_rows(_KEYS, v), conn=conn)
-        )
+        times[f"upsert {trigger}"] = await _timed(held, partial(_save, held.today, votes))
+        times[f"append {trigger}"] = await _timed(held, partial(_save, held.versioned, votes))
         # the hub's two forms of an append, their statements alone: a COPY straight into the table (what the broker
         # runs) against a COPY into a stage then INSERT ... SELECT from it with no conflict clause
         for staged in (False, True):
             form = "staged" if staged else "copied"
             times[f"append {form} {trigger}"] = await _in_version(
-                held, lambda conn, v=votes, s=staged: _raw_append(conn, v + 10 * (1 + s), staged=s)
+                held, partial(_appended, votes + 10 * (1 + staged), staged)
             )
     engine = "YugabyteDB" if held.yugabyte else "Postgres"
     _log.warning("rewrite of %d held keys, ms a row on %s: %s", _KEYS, engine, times)

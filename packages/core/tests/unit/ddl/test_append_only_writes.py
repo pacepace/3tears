@@ -40,7 +40,7 @@ from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, run_marker_insert
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _CANDIDATES = TableSchema(
-    name="results",
+    name="ve_results",
     primary_key=("office_key", "candidate"),
     columns=[
         Column("office_key", STRING_TYPE),
@@ -57,7 +57,7 @@ _CANDIDATES = TableSchema(
 
 #: an LSF table: its key leads with the scope, then the run
 _PROJECTIONS = TableSchema(
-    name="projections",
+    name="ve_projections",
     primary_key=("join_state_code", "run_id", "geo_id"),
     columns=[
         Column("join_state_code", STRING_TYPE),
@@ -118,7 +118,9 @@ def test_a_versioned_tables_required_columns_are_required_of_a_live_version_by_o
     assert _CANDIDATES.live_only_columns == ("votes", "date_created", "date_updated")
     [create] = _CANDIDATES.create_statements(yugabyte=yugabyte)
     assert "gone BOOLEAN DEFAULT false NOT NULL" in create
-    assert 'CONSTRAINT results_live CHECK ("gone" OR ("votes" IS NOT NULL AND "date_created" IS NOT NULL AND ' in create
+    assert (
+        'CONSTRAINT ve_results_live CHECK ("gone" OR ("votes" IS NOT NULL AND "date_created" IS NOT NULL AND ' in create
+    )
     # a marker leaves them out, so the stored table holds them nullable; the key, scope and epoch stay required
     for column in (
         "votes INTEGER,",
@@ -133,7 +135,7 @@ def test_a_versioned_tables_required_columns_are_required_of_a_live_version_by_o
 def test_a_versioned_tables_cache_keeps_its_required_columns_required() -> None:
     table = _CANDIDATES.to_sqlalchemy_table(MetaData())
     assert not table.columns["votes"].nullable
-    assert not [constraint for constraint in table.constraints if constraint.name == "results_live"]
+    assert not [constraint for constraint in table.constraints if constraint.name == "ve_results_live"]
 
 
 def test_the_run_marker_table_is_keyed_by_table_scope_prefix_and_epoch() -> None:
@@ -161,7 +163,7 @@ def test_an_arrow_plan_of_a_versioned_table_appends_its_versions_and_its_gone_ma
     store = _store(_CANDIDATES)
     conn = MagicMock(write_arrow=True)
     markers = store.arrow_write_plan(
-        "results",
+        "ve_results",
         list(_CANDIDATES.gone_marker_columns),
         [pa.string(), pa.string(), pa.string(), pa.int64(), pa.bool_()],
         kind="gone",
@@ -172,7 +174,7 @@ def test_an_arrow_plan_of_a_versioned_table_appends_its_versions_and_its_gone_ma
     assert [name for name, _, _ in markers.columns] == list(_CANDIDATES.gone_marker_columns)
     with pytest.raises(KeyError, match="join_state_code"):
         store.arrow_write_plan(
-            "results",
+            "ve_results",
             ["office_key", "candidate", EPOCH_COLUMN, GONE_COLUMN],
             [pa.string(), pa.string(), pa.int64(), pa.bool_()],
             kind="gone",
@@ -180,7 +182,7 @@ def test_an_arrow_plan_of_a_versioned_table_appends_its_versions_and_its_gone_ma
         )
     with pytest.raises(AppendOnlyWriteError):
         store.arrow_write_plan(
-            "results", ["office_key", "candidate"], [pa.string(), pa.string()], kind="delete", conn=conn
+            "ve_results", ["office_key", "candidate"], [pa.string(), pa.string()], kind="delete", conn=conn
         )
 
 
@@ -197,9 +199,9 @@ async def test_an_arrow_append_goes_through_the_door_as_an_append() -> None:
             GONE_COLUMN: [True],
         }
     )
-    plan = store.arrow_write_plan("results", rows.column_names, rows.schema.types, kind="gone", conn=conn)
+    plan = store.arrow_write_plan("ve_results", rows.column_names, rows.schema.types, kind="gone", conn=conn)
     assert plan is not None
-    await store.write_arrow("results", rows, plan, conn=conn)
+    await store.write_arrow("ve_results", rows, plan, conn=conn)
     kwargs = conn.write_arrow_rows.await_args.kwargs
     assert kwargs["append"] is True and kwargs["delete"] is False and kwargs["conflict_columns"] == ()
 
@@ -212,11 +214,11 @@ async def test_a_versioned_table_is_never_deleted_from() -> None:
     pool.execute = AsyncMock()
     store = _store(_CANDIDATES, pool=pool)
     with pytest.raises(AppendOnlyWriteError):
-        await store.delete_many("results", [("sn_NC1", "a")], max_rows=10)
+        await store.delete_many("ve_results", [("sn_NC1", "a")], max_rows=10)
     with pytest.raises(AppendOnlyWriteError):
-        await store.delete_many_returning("results", [("sn_NC1", "a")], max_rows=10)
+        await store.delete_many_returning("ve_results", [("sn_NC1", "a")], max_rows=10)
     with pytest.raises(AppendOnlyWriteError):
-        await store.delete("results", {"office_key": "sn_NC1", "candidate": "a"})
+        await store.delete("ve_results", {"office_key": "sn_NC1", "candidate": "a"})
     pool.execute.assert_not_called()
 
 
@@ -225,16 +227,16 @@ async def test_a_gone_marker_is_an_insert_of_the_key_the_scope_and_a_newer_epoch
     conn.execute = AsyncMock(return_value="INSERT 0 2")
     store = _store(_CANDIDATES)
     appended = await store.mark_gone(
-        "results", [("sn_NC1", "a"), ("sn_NC1", "b")], epoch=9 << 31, scope="NC", max_rows=10, conn=conn
+        "ve_results", [("sn_NC1", "a"), ("sn_NC1", "b")], epoch=9 << 31, scope="NC", max_rows=10, conn=conn
     )
     assert appended == 2
     [call] = conn.execute.await_args_list
     sql, *params = call.args
-    assert sql.startswith("INSERT INTO results (office_key, candidate, join_state_code, epoch, gone) VALUES ($1")
+    assert sql.startswith("INSERT INTO ve_results (office_key, candidate, join_state_code, epoch, gone) VALUES ($1")
     assert "ON CONFLICT" not in sql and "DELETE" not in sql
     assert params == ["sn_NC1", "a", "NC", 9 << 31, True, "sn_NC1", "b", "NC", 9 << 31, True]
     with pytest.raises(ValueError, match="name the deletes' scope"):
-        await store.mark_gone("results", [("sn_NC1", "a")], epoch=1, scope=None, max_rows=10, conn=conn)
+        await store.mark_gone("ve_results", [("sn_NC1", "a")], epoch=1, scope=None, max_rows=10, conn=conn)
 
 
 # -- a whole run deleted is ONE run marker ----------------------------------------------------------------------------
@@ -255,7 +257,7 @@ async def test_a_whole_run_of_a_versioned_table_deleted_is_one_run_marker_a_pref
     conn.fetchrow = AsyncMock(return_value={"whole": None, "reach": None, "guard": "g", "noted": None})
     store = _store(_PROJECTIONS)
     marked = await store.delete_prefixes(
-        "projections",
+        "ve_projections",
         [
             {"join_state_code": "PA", "run_id": 7},
             {"join_state_code": "PA", "run_id": 8},
@@ -267,10 +269,13 @@ async def test_a_whole_run_of_a_versioned_table_deleted_is_one_run_marker_a_pref
     assert marked == 2
     statements = [call.args for call in conn.execute.await_args_list]
     inserts = [args for args in statements if args[0].startswith("INSERT INTO threetears_run_markers")]
-    assert [args[1:] for args in inserts] == [("projections", 3 << 31, "PA", 7), ("projections", 3 << 31, "PA", 8)]
+    assert [args[1:] for args in inserts] == [
+        ("ve_projections", 3 << 31, "PA", 7),
+        ("ve_projections", 3 << 31, "PA", 8),
+    ]
     # nothing deleted: the one statement on the table is the no-row one that leaves its whole note
-    assert [args[0] for args in statements if "projections" in args[0] and args[0].startswith("DELETE")] == [
-        "DELETE FROM projections WHERE FALSE"
+    assert [args[0] for args in statements if "ve_projections" in args[0] and args[0].startswith("DELETE")] == [
+        "DELETE FROM ve_projections WHERE FALSE"
     ]
 
 
@@ -278,9 +283,9 @@ async def test_a_run_delete_of_a_versioned_table_names_its_epoch_and_its_scope()
     conn = MagicMock()
     store = _store(_PROJECTIONS, _RUNS)
     with pytest.raises(UnstampedWriteError, match="name it"):
-        await store.delete_prefixes("projections", [{"join_state_code": "PA"}], conn=conn)
+        await store.delete_prefixes("ve_projections", [{"join_state_code": "PA"}], conn=conn)
     with pytest.raises(ValueError, match="does not name it"):
         # a run of a table whose key does not lead with its scope: a marker could not be found by it
-        await _store(_CANDIDATES).delete_prefixes("results", [{"office_key": "sn_NC1"}], conn=conn, epoch=1)
+        await _store(_CANDIDATES).delete_prefixes("ve_results", [{"office_key": "sn_NC1"}], conn=conn, epoch=1)
     with pytest.raises(ValueError, match="is not one"):
         await store.delete_prefixes("runs", [{"run_id": "r1"}], conn=conn, epoch=1)
