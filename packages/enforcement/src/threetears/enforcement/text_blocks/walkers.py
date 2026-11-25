@@ -19,7 +19,8 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-from threetears.enforcement.common import iter_python_files, parse_python_file
+from threetears.enforcement.common import iter_python_files
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 __all__ = ["FREE_TEXT", "FREE_TEXT_WORDS", "MARKER", "unbroken_text", "unbroken_text_in"]
 
@@ -189,20 +190,26 @@ def unbroken_text_in(roots: Iterable[Path]) -> list[str]:
     """Every such line under ``roots``, as ``path:line: code``.
 
     The files are the ones every enforcement walker reads (:func:`iter_python_files`), decoded as
-    utf-8 and parsed once per run through the shared parse cache; a file that does not parse is
-    reported through ``note_unscanned`` and skipped.
+    utf-8; each file's lines are kept in the scan cache by its bytes (``file_facts``), so a file
+    seen before is not parsed again. A file that does not parse is reported through
+    ``note_unscanned`` and skipped.
 
     :param roots: directories whose ``*.py`` files are read
     :ptype roots: Iterable[Path]
     :return: one entry per line found
     :rtype: list[str]
     """
-    found: list[str] = []
-    for root in roots:
-        for path in iter_python_files(root):
-            tree = parse_python_file(path)
-            if tree is None:
-                continue
-            lines = path.read_text(encoding="utf-8").splitlines()
-            found.extend(f"{path}:{n}: {lines[n - 1].strip()}" for n in _unbroken_lines(tree, lines))
-    return found
+    walked = [(root, list(iter_python_files(root))) for root in roots]
+    by_anchor: dict[Path, list[Path]] = {}
+    for root, paths in walked:
+        by_anchor.setdefault(facts_root(root), []).extend(paths)
+    lines: dict[Path, tuple[tuple[int, str], ...]] = {}
+    for anchor, paths in by_anchor.items():
+        lines.update(file_facts(_unbroken_in_file, paths, root=anchor, unparsable="note"))
+    return [f"{path}:{n}: {code}" for _, paths in walked for path in paths if path in lines for n, code in lines[path]]
+
+
+def _unbroken_in_file(path: Path, tree: ast.Module) -> tuple[tuple[int, str], ...]:
+    """One file's unbroken lines, each with its code stripped: the fact the scan cache keeps per file."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return tuple((n, lines[n - 1].strip()) for n in _unbroken_lines(tree, lines))

@@ -58,6 +58,11 @@ production parameter); type compatibility is left to a type checker
 for subclassed fakes -- see the caveat on route 1 above about whether
 one actually runs over your test tree -- and is best-effort for
 marker fakes.
+
+each file's fakes (:func:`_fakes_in_module`) are kept in the scan cache
+by the file's bytes (``file_facts``), so a file seen before is not parsed
+again; a fake's methods are kept as their parameter shapes
+(:class:`_MethodShape`), which is all the parity check reads of them.
 """
 
 from __future__ import annotations
@@ -70,6 +75,7 @@ from pathlib import Path
 
 from threetears.enforcement.common.ast_helpers import dotted, note_unscanned, parse_python_path
 from threetears.enforcement.common.exemptions import rationale_defect
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 from threetears.enforcement.common.violations import Violation
 from threetears.observe import contain, get_logger
 
@@ -84,6 +90,22 @@ __all__ = [
 _FAKE_NAME_PREFIXES: tuple[str, ...] = ("Fake", "_Fake")
 _PARITY_MARKER_PREFIX: str = "# parity-with:"
 _PARITY_EXEMPT_PREFIX: str = "# parity-exempt:"
+
+
+@dataclass(frozen=True)
+class _MethodShape:
+    """what the parity check reads of one fake method: its line and the parameters it accepts.
+
+    :ivar lineno: 1-based line of the ``def``
+    :ivar params: every name in ``posonlyargs``, ``args`` and ``kwonlyargs``
+    :ivar has_var_positional: whether it takes ``*args``
+    :ivar has_var_keyword: whether it takes ``**kwargs``
+    """
+
+    lineno: int
+    params: frozenset[str]
+    has_var_positional: bool
+    has_var_keyword: bool
 
 
 @dataclass(frozen=True)
@@ -103,7 +125,7 @@ class _FakeDecl:
     :ivar exempt_rationale: non-blank rationale from the
         ``# parity-exempt:`` marker comment, or ``None`` when absent /
         blank; a present rationale exempts the fake from the check
-    :ivar methods: mapping of method name to its AST function node;
+    :ivar methods: mapping of method name to its parameter shape;
         only top-level methods are recorded (no nested classes)
     """
 
@@ -113,7 +135,7 @@ class _FakeDecl:
     bases: list[str]
     marker_target: str | None
     exempt_rationale: str | None
-    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
+    methods: dict[str, _MethodShape]
 
 
 def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
@@ -124,6 +146,9 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
     directories. classes nested inside other classes or functions
     are collected -- the parity convention applies regardless of
     nesting (a fake-as-inner-class still claims to mock something).
+    each file's fakes are kept in the scan cache by its bytes, keyed
+    relative to the git checkout holding ``scan_root`` (or to
+    ``scan_root`` itself outside one).
 
     :param scan_root: directory to recurse into
     :ptype scan_root: Path
@@ -133,43 +158,73 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
     fakes: list[_FakeDecl] = []
     if not scan_root.is_dir():
         return fakes
-    for py_file in sorted(scan_root.rglob("*.py")):
-        if "__pycache__" in py_file.parts:
-            continue
-        try:
-            source = py_file.read_text(encoding="utf-8")
-            tree = parse_python_path(py_file)
-        except (OSError, SyntaxError) as exc:
-            # Any fake declared in this file is now exempt from parity by accident.
-            note_unscanned(py_file, f"could not read or parse: {type(exc).__name__}")
-            continue
-        source_lines = source.splitlines()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            if not any(node.name.startswith(p) for p in _FAKE_NAME_PREFIXES):
-                continue
-            # unwrap_subscript: a generic base such as ``BaseCollection[FakeRefEntity]``
-            # genuinely names ``BaseCollection``, which is the parity declaration we want
-            rendered_bases = [dotted(b, unwrap_subscript=True) for b in node.bases]
-            bases = [b for b in rendered_bases if b is not None and b != "object"]
-            marker_target, exempt_rationale = _read_markers(source_lines, node.lineno)
-            methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    methods[child.name] = child
-            fakes.append(
-                _FakeDecl(
-                    file=py_file,
-                    name=node.name,
-                    line=node.lineno,
-                    bases=bases,
-                    marker_target=marker_target,
-                    exempt_rationale=exempt_rationale,
-                    methods=methods,
-                ),
-            )
+    files = [py_file for py_file in sorted(scan_root.rglob("*.py")) if "__pycache__" not in py_file.parts]
+    try:
+        found = file_facts(_fakes_in_module, files, root=facts_root(scan_root))
+    except OSError, SyntaxError:
+        # the store raises the first such file's error; walked one by one, each one is noted
+        # and skipped, as the walk always has
+        found = {}
+        for py_file in files:
+            try:
+                found[py_file] = _fakes_in_module(py_file, parse_python_path(py_file))
+            except (OSError, SyntaxError) as exc:
+                # Any fake declared in this file is now exempt from parity by accident.
+                note_unscanned(py_file, f"could not read or parse: {type(exc).__name__}")
+    for file_fakes in found.values():
+        fakes.extend(file_fakes)
     return fakes
+
+
+def _fakes_in_module(py_file: Path, tree: ast.Module) -> tuple[_FakeDecl, ...]:
+    """every ``Fake*`` / ``_Fake*`` class in one module, in :func:`ast.walk` order: the fact the scan cache keeps.
+
+    the file is read again, for the marker lines, only when it declares a fake.
+
+    :param py_file: the module's file
+    :ptype py_file: Path
+    :param tree: its parsed source
+    :ptype tree: ast.Module
+    :return: its fake declarations
+    :rtype: tuple[_FakeDecl, ...]
+    """
+    classes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and any(node.name.startswith(p) for p in _FAKE_NAME_PREFIXES)
+    ]
+    if not classes:
+        return ()
+    source_lines = py_file.read_text(encoding="utf-8").splitlines()
+    fakes: list[_FakeDecl] = []
+    for node in classes:
+        # unwrap_subscript: a generic base such as ``BaseCollection[FakeRefEntity]``
+        # genuinely names ``BaseCollection``, which is the parity declaration we want
+        rendered_bases = [dotted(b, unwrap_subscript=True) for b in node.bases]
+        bases = [b for b in rendered_bases if b is not None and b != "object"]
+        marker_target, exempt_rationale = _read_markers(source_lines, node.lineno)
+        methods: dict[str, _MethodShape] = {}
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                arguments = child.args
+                methods[child.name] = _MethodShape(
+                    lineno=child.lineno,
+                    params=frozenset(arg.arg for arg in arguments.posonlyargs + arguments.args + arguments.kwonlyargs),
+                    has_var_positional=arguments.vararg is not None,
+                    has_var_keyword=arguments.kwarg is not None,
+                )
+        fakes.append(
+            _FakeDecl(
+                file=py_file,
+                name=node.name,
+                line=node.lineno,
+                bases=bases,
+                marker_target=marker_target,
+                exempt_rationale=exempt_rationale,
+                methods=methods,
+            ),
+        )
+    return tuple(fakes)
 
 
 def _read_markers(source_lines: list[str], class_lineno: int) -> tuple[str | None, str | None]:
@@ -453,7 +508,7 @@ def _public_methods(
 
 def _missing_required_params(
     prod_sig: inspect.Signature,
-    fake_method: ast.FunctionDef | ast.AsyncFunctionDef,
+    fake_method: _MethodShape,
 ) -> list[str]:
     """return production-required parameter names absent from the fake.
 
@@ -462,16 +517,16 @@ def _missing_required_params(
     ``**kwargs`` are skipped — they cannot be required by name and
     the fake's variadic catch-all would satisfy any caller anyway).
 
-    the fake's parameter set is read from its AST signature: every
-    arg name that appears in ``args.posonlyargs``, ``args.args``, or
-    ``args.kwonlyargs``. if the fake has ``**kwargs``, every
-    production-required parameter is considered satisfied (kwargs
-    catches anything by name).
+    the fake's parameter set is read from its AST signature, as its
+    :class:`_MethodShape` keeps it: every arg name that appears in
+    ``args.posonlyargs``, ``args.args``, or ``args.kwonlyargs``. if
+    the fake has ``**kwargs``, every production-required parameter is
+    considered satisfied (kwargs catches anything by name).
 
     :param prod_sig: production method signature
     :ptype prod_sig: inspect.Signature
-    :param fake_method: fake's method AST node
-    :ptype fake_method: ast.FunctionDef | ast.AsyncFunctionDef
+    :param fake_method: fake's method, as its parameter shape
+    :ptype fake_method: _MethodShape
     :return: names of production-required params not accepted by fake
     :rtype: list[str]
     """
@@ -488,12 +543,9 @@ def _missing_required_params(
             continue
         required.append(name)
 
-    fake_args = fake_method.args
-    fake_param_names: set[str] = set()
-    for arg in fake_args.posonlyargs + fake_args.args + fake_args.kwonlyargs:
-        fake_param_names.add(arg.arg)
-    has_var_keyword = fake_args.kwarg is not None
-    has_var_positional = fake_args.vararg is not None
+    fake_param_names = fake_method.params
+    has_var_keyword = fake_method.has_var_keyword
+    has_var_positional = fake_method.has_var_positional
 
     if has_var_keyword:
         # **kwargs catches everything by name; nothing is missing

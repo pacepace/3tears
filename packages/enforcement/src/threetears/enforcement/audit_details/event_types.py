@@ -41,20 +41,27 @@ inner construction makes the whole answer unresolved**, never a partial answer.
 name, bare or as an attribute. A same-named unrelated function is therefore treated as a
 caller too. That can only withhold credit, never grant it: the site is credited with the
 keys safe for EVERY resolved value (the intersection), so an extra value narrows it.
+
+**what is parsed.** Over :class:`ScannedModules`, only the modules resolution reaches: each
+file's call and function names are kept in the scan cache by the file's bytes (``file_facts``),
+so the resolver finds a name's callers and definitions without parsing the rest, and the answer
+is the same as over every module parsed.
 """
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from threetears.enforcement.common import callee_names, dotted
+from threetears.enforcement.common import callee_names, dotted, iter_python_files, parse_python_path
+from threetears.enforcement.common.scan_cache import CACHE_DIRECTORY, file_facts
 
 __all__ = [
     "EventTypeResolver",
     "FunctionNode",
+    "ScannedModules",
     "SourceModule",
     "module_name",
     "parameter_names",
@@ -136,6 +143,150 @@ def module_name(path: Path, root: Path) -> tuple[str, bool]:
     return ".".join(parts), is_package
 
 
+@dataclass(frozen=True)
+class _ModuleNames:
+    """what one module calls and defines, by name: the fact the scan cache keeps per file.
+
+    :ivar callees: every name a call in the module is spelled with (:func:`callee_names`)
+    :ivar functions: the name of every function the module defines, at any depth
+    """
+
+    callees: frozenset[str]
+    functions: frozenset[str]
+
+
+def _module_names(path: Path, tree: ast.Module) -> _ModuleNames:
+    """one module's call and function names.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed source
+    :ptype tree: ast.Module
+    :return: its names
+    :rtype: _ModuleNames
+    """
+    callees: set[str] = set()
+    functions: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            callees |= callee_names(node)
+        elif isinstance(node, FunctionNode):
+            functions.add(node.name)
+    return _ModuleNames(callees=frozenset(callees), functions=frozenset(functions))
+
+
+class ScannedModules(Mapping[str, SourceModule]):
+    """every module under a set of source roots, by dotted name, each parsed only when it is looked up.
+
+    the modules are the ones :func:`iter_python_files` yields under each root, in that order; a
+    name two roots both hold is the first root's, and a file that does not parse goes through
+    ``note_unscanned`` and is left out. what each module calls and defines is read through the
+    scan cache, so :class:`EventTypeResolver` over this mapping parses only the modules its
+    answers reach. a module is indexed once per mapping, so its nodes keep their identity.
+    """
+
+    def __init__(self, src_roots: Iterable[Path], repo_root: Path) -> None:
+        """walk the roots and read each file's names, from the scan cache where its bytes were seen.
+
+        :param src_roots: the source roots, each the base of its modules' dotted names
+        :ptype src_roots: Iterable[Path]
+        :param repo_root: the repo's root: the cache lives under it, and keys the files under it
+            relative to it (a root outside it keys its own files)
+        :ptype repo_root: Path
+        """
+        located: list[tuple[str, bool, Path]] = []
+        by_anchor: dict[Path, list[Path]] = {}
+        for root in src_roots:
+            paths = list(iter_python_files(root))
+            located.extend((*module_name(path, root), path) for path in paths)
+            by_anchor.setdefault(repo_root if root.is_relative_to(repo_root) else root, []).extend(paths)
+        names: dict[Path, _ModuleNames] = {}
+        for anchor, paths in by_anchor.items():
+            names.update(
+                file_facts(_module_names, paths, root=anchor, directory=repo_root / CACHE_DIRECTORY, unparsable="note")
+            )
+        self._files: dict[str, tuple[Path, bool]] = {}
+        self._names: dict[str, _ModuleNames] = {}
+        for name, is_package, path in located:
+            if path in names and name not in self._files:
+                self._files[name] = (path, is_package)
+                self._names[name] = names[path]
+        self._indexed: dict[str, SourceModule] = {}
+
+    def __getitem__(self, name: str) -> SourceModule:
+        """the module ``name``, parsed and indexed on its first lookup.
+
+        :param name: a dotted module name
+        :ptype name: str
+        :return: the indexed module
+        :rtype: SourceModule
+        :raises KeyError: when no scanned file is that module
+        """
+        module = self._indexed.get(name)
+        if module is None:
+            path, is_package = self._files[name]
+            module = source_module(parse_python_path(path), name=name, is_package=is_package)
+            self._indexed[name] = module
+        return module
+
+    def __contains__(self, name: object) -> bool:
+        """whether a scanned file is the module ``name``, without parsing it.
+
+        :param name: a dotted module name
+        :ptype name: object
+        :return: whether it is scanned
+        :rtype: bool
+        """
+        return name in self._files
+
+    def __iter__(self) -> Iterator[str]:
+        """every module name, in walk order.
+
+        :return: the names
+        :rtype: Iterator[str]
+        """
+        return iter(self._files)
+
+    def __len__(self) -> int:
+        """how many modules were scanned.
+
+        :return: the count
+        :rtype: int
+        """
+        return len(self._files)
+
+    def path(self, name: str) -> Path:
+        """the file the module ``name`` was read from.
+
+        :param name: a dotted module name
+        :ptype name: str
+        :return: its file
+        :rtype: Path
+        :raises KeyError: when no scanned file is that module
+        """
+        return self._files[name][0]
+
+    def calling(self, names: frozenset[str]) -> list[str]:
+        """every module holding a call spelled with one of ``names``, in walk order, none of them parsed.
+
+        :param names: callee names, as :func:`callee_names` reads a call
+        :ptype names: frozenset[str]
+        :return: the module names
+        :rtype: list[str]
+        """
+        return [module for module, found in self._names.items() if found.callees & names]
+
+    def defining(self, name: str) -> list[str]:
+        """every module defining a function called ``name``, in walk order, none of them parsed.
+
+        :param name: a function name
+        :ptype name: str
+        :return: the module names
+        :rtype: list[str]
+        """
+        return [module for module, found in self._names.items() if name in found.functions]
+
+
 class EventTypeResolver:
     """resolves ``event_type`` arguments across the scanned modules, with its caller index built once."""
 
@@ -161,13 +312,52 @@ class EventTypeResolver:
         self._forwarders = forwarders
         self._calls: dict[str, list[tuple[SourceModule, ast.Call]]] = {}
         self._definitions: dict[str, list[tuple[SourceModule, FunctionNode]]] = {}
-        for module in modules.values():
+        # over ScannedModules, a name's callers and definitions are read when it is first asked for,
+        # from the modules the cached names say hold it
+        self._scanned = modules if isinstance(modules, ScannedModules) else None
+        for module in modules.values() if self._scanned is None else ():
             for node in ast.walk(module.tree):
                 if isinstance(node, ast.Call):
                     for name in callee_names(node):
                         self._calls.setdefault(name, []).append((module, node))
                 elif isinstance(node, FunctionNode):
                     self._definitions.setdefault(node.name, []).append((module, node))
+
+    def _calls_to(self, name: str) -> list[tuple[SourceModule, ast.Call]]:
+        """every call spelled with ``name``, with its module, in module then walk order.
+
+        :param name: a callee name
+        :ptype name: str
+        :return: the calls
+        :rtype: list[tuple[SourceModule, ast.Call]]
+        """
+        if self._scanned is not None and name not in self._calls:
+            modules = [self._scanned[module] for module in self._scanned.calling(frozenset({name}))]
+            self._calls[name] = [
+                (module, node)
+                for module in modules
+                for node in ast.walk(module.tree)
+                if isinstance(node, ast.Call) and name in callee_names(node)
+            ]
+        return self._calls.get(name, [])
+
+    def _definitions_of(self, name: str) -> list[tuple[SourceModule, FunctionNode]]:
+        """every function called ``name``, with its module, in module then walk order.
+
+        :param name: a function name
+        :ptype name: str
+        :return: the definitions
+        :rtype: list[tuple[SourceModule, FunctionNode]]
+        """
+        if self._scanned is not None and name not in self._definitions:
+            modules = [self._scanned[module] for module in self._scanned.defining(name)]
+            self._definitions[name] = [
+                (module, node)
+                for module in modules
+                for node in ast.walk(module.tree)
+                if isinstance(node, FunctionNode) and node.name == name
+            ]
+        return self._definitions.get(name, [])
 
     def resolve_call(self, call: ast.Call, module: SourceModule) -> frozenset[str]:
         """every event type one audit construction or forwarder call can be shown to publish.
@@ -225,7 +415,7 @@ class EventTypeResolver:
             any inner construction is unresolvable
         :rtype: frozenset[str] | None
         """
-        definitions = self._definitions.get(name, [])
+        definitions = self._definitions_of(name)
         if not definitions:
             return _UNRESOLVED
         values: set[str] = set()
@@ -374,7 +564,7 @@ class EventTypeResolver:
         :return: the values, or ``None`` when any caller is unresolvable or none exists
         :rtype: frozenset[str] | None
         """
-        callers = self._calls.get(function.name, [])
+        callers = self._calls_to(function.name)
         if ("parameter", id(function)) in visiting or _stores(function, parameter) or not callers:
             return _UNRESOLVED
         inner = visiting | {("parameter", id(function))}

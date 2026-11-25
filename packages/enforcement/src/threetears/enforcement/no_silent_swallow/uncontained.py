@@ -21,20 +21,25 @@ runtime:
 a bare ``except:`` is left to the silent-body walker, which bans it outright. ``try`` and
 ``try``/``except*`` are both scanned. a ``raise`` or ``contain`` inside a nested function or
 class in the handler does not count: it does not run when the handler does.
+
+each file's findings (:func:`_uncontained_sites`) are kept in the scan cache by the file's bytes
+(``file_facts``), so a file seen before is not parsed again: a broad handler keeps the names its
+body calls, and the containment helper's names are applied to them afterwards.
 """
 
 from __future__ import annotations
 
 import ast
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from threetears.enforcement.common import (
     Violation,
     is_suppress_call,
     iter_python_files,
-    parse_python_file,
 )
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 __all__ = ["find_uncontained"]
 
@@ -93,42 +98,49 @@ def _raises(body: list[ast.stmt]) -> bool:
     return any(isinstance(node, ast.Raise) for node in _same_frame(body))
 
 
-def _contains(body: list[ast.stmt], contain_names: frozenset[str]) -> bool:
-    """true when the handler calls ``contain(...)``.
+def _called_names(body: list[ast.stmt]) -> frozenset[str]:
+    """the names every call in the handler's own frame is made by: a bare name, or an attribute's last part.
 
     :param body: a handler's statements
     :ptype body: list[ast.stmt]
-    :param contain_names: the names the containment helper is called by
-    :ptype contain_names: frozenset[str]
-    :return: whether a call to one of ``contain_names`` runs in the handler's frame
-    :rtype: bool
+    :return: the names; the handler calls ``contain(...)`` when one of them is a containment helper's
+    :rtype: frozenset[str]
     """
+    names: set[str] = set()
     for node in _same_frame(body):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Name) and func.id in contain_names:
-            return True
-        if isinstance(func, ast.Attribute) and func.attr in contain_names:
-            return True
-    return False
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+    return frozenset(names)
 
 
-def _handler_violation(
-    handler: ast.ExceptHandler,
-    module_path: Path,
-    contain_names: frozenset[str],
-) -> Violation | None:
-    """the violation ``handler`` commits, if any.
+@dataclass(frozen=True)
+class _BroadHandler:
+    """an ``except Exception`` that does not re-raise, judged once the containment helper's names are known.
+
+    :ivar line: the ``except`` line
+    :ivar symbol: the caught types, as the violation names them
+    :ivar called: what its own frame calls, as :func:`_called_names` reads it
+    """
+
+    line: int
+    symbol: str
+    called: frozenset[str]
+
+
+def _handler_violation(handler: ast.ExceptHandler, module_path: Path) -> Violation | _BroadHandler | None:
+    """the violation ``handler`` commits, if any, or the broad handler whose verdict waits on ``contain_names``.
 
     :param handler: one ``except`` clause
     :ptype handler: ast.ExceptHandler
     :param module_path: the file it sits in
     :ptype module_path: Path
-    :param contain_names: the names the containment helper is called by
-    :ptype contain_names: frozenset[str]
-    :return: the violation, or ``None``
-    :rtype: Violation | None
+    :return: the violation, the broad handler to judge, or ``None``
+    :rtype: Violation | _BroadHandler | None
     """
     names = _type_names(handler.type)
     if not names or _raises(handler.body):
@@ -153,19 +165,36 @@ def _handler_violation(
             symbol=symbol,
             reason="`except BaseException` must re-raise: it catches cancellation, KeyboardInterrupt and SystemExit",
         )
-    if "Exception" in names and not _contains(handler.body, contain_names):
-        return Violation(
-            category=BROAD_CATEGORY,
-            file=module_path,
-            line=handler.lineno,
-            symbol=symbol,
-            reason=(
-                "a broad `except Exception` re-raises or calls `contain(exc, log=..., what=...)`; "
-                "a log line or a NOSILENT comment does not excuse it. if the failure is an expected "
-                "condition, name its type instead"
-            ),
-        )
+    if "Exception" in names:
+        return _BroadHandler(line=handler.lineno, symbol=symbol, called=_called_names(handler.body))
     return None
+
+
+def _broad_violation(handler: _BroadHandler, module_path: Path, contain_names: frozenset[str]) -> Violation | None:
+    """the violation a broad handler commits unless it calls one of ``contain_names``.
+
+    :param handler: the broad handler
+    :ptype handler: _BroadHandler
+    :param module_path: the file it sits in
+    :ptype module_path: Path
+    :param contain_names: the names the containment helper is called by
+    :ptype contain_names: frozenset[str]
+    :return: the violation, or ``None``
+    :rtype: Violation | None
+    """
+    if handler.called & contain_names:
+        return None
+    return Violation(
+        category=BROAD_CATEGORY,
+        file=module_path,
+        line=handler.line,
+        symbol=handler.symbol,
+        reason=(
+            "a broad `except Exception` re-raises or calls `contain(exc, log=..., what=...)`; "
+            "a log line or a NOSILENT comment does not excuse it. if the failure is an expected "
+            "condition, name its type instead"
+        ),
+    )
 
 
 def _suppress_violation(call: ast.Call, module_path: Path) -> Violation | None:
@@ -235,23 +264,46 @@ def find_uncontained(
     :return: violations, in file order and then source order
     :rtype: list[Violation]
     """
+    walked = [(root, list(iter_python_files(root))) for root in src_roots]
+    by_anchor: dict[Path, list[Path]] = {}
+    for root, paths in walked:
+        by_anchor.setdefault(facts_root(root), []).extend(paths)
+    sites: dict[Path, tuple[Violation | _BroadHandler, ...]] = {}
+    for anchor, paths in by_anchor.items():
+        sites.update(file_facts(_uncontained_sites, paths, root=anchor, unparsable="note"))
     violations: list[Violation] = []
-    for root in src_roots:
-        for module_path in iter_python_files(root):
-            tree = parse_python_file(module_path)
-            if tree is None:
+    for _, paths in walked:
+        for module_path in paths:
+            if module_path not in sites:
                 continue
-            found: list[Violation] = []
-            for node in ast.walk(tree):
-                violation: Violation | None = None
-                if isinstance(node, ast.ExceptHandler):
-                    violation = _handler_violation(node, module_path, contain_names)
-                elif is_suppress_call(node):
-                    assert isinstance(node, ast.Call)
-                    violation = _suppress_violation(node, module_path)
-                elif isinstance(node, ast.Call):
-                    violation = _ignore_errors_violation(node, module_path)
-                if violation is not None:
-                    found.append(violation)
-            violations.extend(sorted(found, key=lambda v: v.line))
+            found = [
+                site if isinstance(site, Violation) else _broad_violation(site, module_path, contain_names)
+                for site in sites[module_path]
+            ]
+            violations.extend(sorted((v for v in found if v is not None), key=lambda v: v.line))
     return violations
+
+
+def _uncontained_sites(path: Path, tree: ast.Module) -> tuple[Violation | _BroadHandler, ...]:
+    """one module's findings, in :func:`ast.walk` order: the fact the scan cache keeps.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed source
+    :ptype tree: ast.Module
+    :return: each violation, and each broad handler whose verdict waits on the containment helper's names
+    :rtype: tuple[Violation | _BroadHandler, ...]
+    """
+    found: list[Violation | _BroadHandler] = []
+    for node in ast.walk(tree):
+        site: Violation | _BroadHandler | None = None
+        if isinstance(node, ast.ExceptHandler):
+            site = _handler_violation(node, path)
+        elif is_suppress_call(node):
+            assert isinstance(node, ast.Call)
+            site = _suppress_violation(node, path)
+        elif isinstance(node, ast.Call):
+            site = _ignore_errors_violation(node, path)
+        if site is not None:
+            found.append(site)
+    return tuple(found)
