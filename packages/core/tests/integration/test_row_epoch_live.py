@@ -2,7 +2,7 @@
 chunk 1).
 
 What the unit tests cannot prove: that the DDL a versioned table declares makes the primary key it says (the key, then
-the epoch; on YugabyteDB the first key column hashed and ``epoch DESC`` last) and the ``(scope, epoch)`` index; that
+the epoch; on YugabyteDB the first key column hashed and ``epoch DESC`` last); that
 each write path the store owns -- an upsert, a copy, an Arrow write without the hub's door, one row, a load from files
 -- lands rows stamped with an epoch of the write's version; that two writes of one key in one version land two versions,
 the later newer; and that a write with no epoch is refused, by 3tears before it is sent and by the database for a
@@ -45,7 +45,6 @@ from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     ROW_STAMPED,
     UnstampedWriteError,
-    epoch_version,
     row_versions,
 )
 from threetears.core.entities.base import BaseEntity
@@ -159,7 +158,7 @@ async def _stored(held: _Held) -> list[asyncpg.Record]:
 # -- the DDL ---------------------------------------------------------------------------------------------------------
 
 
-async def test_a_versioned_table_is_stored_by_its_key_then_its_epoch_with_a_scope_epoch_index(held: _Held) -> None:
+async def test_a_versioned_table_is_stored_by_its_key_then_its_epoch(held: _Held) -> None:
     primary = await held.pool.fetchrow(
         "SELECT i.indexrelid, pg_get_indexdef(i.indexrelid) AS definition, "
         "ARRAY(SELECT a.attname::text FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, place) "
@@ -174,12 +173,6 @@ async def test_a_versioned_table_is_stored_by_its_key_then_its_epoch_with_a_scop
         assert "(office_key HASH, candidate ASC, epoch DESC)" in primary["definition"]
     else:
         assert "(office_key, candidate, epoch)" in primary["definition"]
-    by_scope = await held.pool.fetchval(
-        "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1",
-        f"{_RESULTS.name}_by_scope_epoch",
-    )
-    assert by_scope is not None
-    assert ("(join_state_code HASH, epoch ASC)" if held.yugabyte else "(join_state_code, epoch)") in by_scope
     for table in (_RESULTS.name, _RUNS.name):
         column = await held.pool.fetchrow(
             "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
@@ -193,7 +186,7 @@ async def test_a_versioned_table_is_stored_by_its_key_then_its_epoch_with_a_scop
         "SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indrelid = $1::regclass AND indisprimary", _RUNS.name
     )
     # a stamped table keeps its key alone
-    assert runs_key.rstrip().endswith("(run_id)")
+    assert runs_key.rstrip().endswith("(run_id HASH)" if held.yugabyte else "(run_id)")
 
 
 # -- every write path stamps ------------------------------------------------------------------------------------------
@@ -236,14 +229,14 @@ async def test_every_write_path_stamps_each_row_with_an_epoch_of_its_writes_vers
 
     stored = await _stored(held)
     assert [row["candidate"] for row in stored] == ["a", "b", "c", "d", "e", "f"]
-    assert all(epoch_version(row[EPOCH_COLUMN]) == version for row in stored)
+    assert all(_version(row[EPOCH_COLUMN]) == version for row in stored)
     epochs = [row[EPOCH_COLUMN] for row in stored]
     # each statement drew its own, in the order they ran; the load's rows share one
     assert epochs[:5] == sorted(epochs[:5]) and len(set(epochs[:5])) == 5
     assert epochs[4] == epochs[5]
     runs = await held.pool.fetch(f"SELECT run_id, {EPOCH_COLUMN} FROM {_RUNS.name} ORDER BY run_id")  # noqa: S608
     assert [row["run_id"] for row in runs] == ["r1", "r2"]
-    assert all(epoch_version(row[EPOCH_COLUMN]) == version for row in runs)
+    assert all(_version(row[EPOCH_COLUMN]) == version for row in runs)
 
 
 async def test_two_writes_of_one_key_in_one_version_land_two_versions_the_later_newer(held: _Held) -> None:
@@ -272,7 +265,7 @@ async def test_two_writes_of_one_key_in_one_version_land_two_versions_the_later_
     for candidate in ("a", "b"):
         versions = [row for row in stored if row["candidate"] == candidate]
         assert [row["votes"] for row in versions] == [1, 2], "the later write did not sort newer"
-        assert all(epoch_version(row[EPOCH_COLUMN]) == version for row in versions)
+        assert all(_version(row[EPOCH_COLUMN]) == version for row in versions)
         newest = await held.pool.fetchval(
             f"SELECT votes FROM {_RESULTS.name} WHERE office_key = 'sn_NC1' AND candidate = $1 "  # noqa: S608
             f"ORDER BY {EPOCH_COLUMN} DESC LIMIT 1",
@@ -310,3 +303,8 @@ async def test_a_write_with_no_epoch_is_refused_and_writes_nothing(held: _Held, 
         await held.pool.execute(f"INSERT INTO {_RUNS.name} (run_id) VALUES ('x')")  # noqa: S608
     assert await held.pool.fetchval(f"SELECT count(*) FROM {_RESULTS.name}") == 0  # noqa: S608
     assert await held.pool.fetchval(f"SELECT count(*) FROM {_RUNS.name}") == 0  # noqa: S608
+
+
+def _version(epoch: int) -> int:
+    """the version an epoch was stamped at, by its documented encoding (``version << 31 | sequence``)."""
+    return epoch >> 31

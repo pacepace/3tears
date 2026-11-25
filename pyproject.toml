@@ -700,6 +700,8 @@ module = [
     # as the sources (one rule for the tree), named here as typecheck.sh addresses a test module (its path
     # from the repository root).
     "packages.core.tests.integration.test_load_files_live",
+    "packages.core.tests.integration.test_row_epoch_live",
+    "packages.core.tests.unit.ddl.test_row_epoch",
     "packages.core.tests.integration.test_reload_analyzed_live",
     "packages.core.tests.unit.backends.test_arrow_copy",
     "packages.core.tests.unit.backends.test_load_files",

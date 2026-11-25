@@ -134,7 +134,6 @@ from threetears.core.ddl.row_epoch import (
     RowEpoch,
     UnstampedWriteError,
     next_epoch,
-    scope_epoch_index_name,
     versioned_primary_key_sql,
 )
 from threetears.core.keyset import keyset_pages
@@ -1604,8 +1603,9 @@ class TableSchema:
         register_partial_predicates(self.name, (index.where for index in self.indexes if index.where is not None))
 
     def _declare_row_epoch(self) -> None:
-        """give a table that declares a row epoch its epoch column and, versioned, its ``(scope, epoch)`` index, each
-        where not declared; refuse what cannot hold beside it.
+        """give a table that declares a row epoch its epoch column where not declared; refuse what cannot hold beside
+        it. A versioned table's ``(scope, epoch)`` index is declared with the restore read that names it (append-only
+        chunk 5).
 
         The column is ``BIGINT NOT NULL`` with no default: a write that bypasses 3tears and leaves it out is refused by
         the database. On a versioned table it is part of the stored key, so it is immutable (never in an upsert's
@@ -1657,9 +1657,6 @@ class TableSchema:
                     f"TableSchema(name={self.name!r}): row_versions with {what}: each write keeps its own version of "
                     "a key, so the key alone is unique no longer and one version cannot be fenced against another"
                 )
-        name = scope_epoch_index_name(self.name)
-        if not any(index.name == name for index in self.indexes):
-            object.__setattr__(self, "indexes", (*self.indexes, Index(name, scope, EPOCH_COLUMN)))
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index

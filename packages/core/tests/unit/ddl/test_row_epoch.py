@@ -2,8 +2,7 @@
 follows, and the refusal of a write that carries none.
 
 The epoch is ``version << 31 | sequence``: every later draw sorts newer, within one version and across versions. A
-versioned table's stored key is its key and then the epoch, newest first on YugabyteDB, with a ``(scope, epoch)``
-index; a stamped table keeps its key and carries the column. Every write path the store owns refuses a row of such a
+versioned table's stored key is its key and then the epoch, newest first on YugabyteDB; a stamped table keeps its key and carries the column. Every write path the store owns refuses a row of such a
 table without an epoch, before anything is sent.
 """
 
@@ -35,15 +34,9 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
-    MAX_SEQUENCE,
-    MAX_VERSION,
     ROW_STAMPED,
     RowEpoch,
-    RowEpochKind,
     UnstampedWriteError,
-    compose_epoch,
-    epoch_sequence,
-    epoch_version,
     next_epoch,
     row_versions,
 )
@@ -82,20 +75,25 @@ def _stamped(name: str = "runs") -> TableSchema:
 # -- the encoding ----------------------------------------------------------------------------------------------------
 
 
-def test_an_epoch_is_its_version_then_its_sequence_and_reads_back_as_both() -> None:
-    epoch = compose_epoch(1234, 56)
-    assert epoch == (1234 << 31) | 56
-    assert (epoch_version(epoch), epoch_sequence(epoch)) == (1234, 56)
-    # every sequence of a version sorts below every epoch of the next version
-    assert compose_epoch(7, MAX_SEQUENCE) < compose_epoch(8, 0)
-    # the largest fits a BIGINT
-    assert compose_epoch(MAX_VERSION, MAX_SEQUENCE) == (1 << 63) - 1
+def _version(epoch: int) -> int:
+    """the version an epoch was stamped at, by its documented encoding (``version << 31 | sequence``)."""
+    return epoch >> 31
 
 
-@pytest.mark.parametrize(("version", "sequence"), [(-1, 0), (MAX_VERSION + 1, 0), (1, -1), (1, MAX_SEQUENCE + 1)])
-def test_an_epoch_out_of_range_is_refused_never_wrapped(version: int, sequence: int) -> None:
+def test_an_epoch_carries_its_writes_version_in_its_high_bits_and_fits_a_bigint() -> None:
+    epoch = next_epoch(1234)
+    assert _version(epoch) == 1234
+    assert 0 < epoch & ((1 << 31) - 1), "the sequence is drawn from 1"
+    # every epoch of a version sorts below every epoch of the next, whatever the sequence
+    assert next_epoch(7) < (8 << 31) <= next_epoch(8)
+    # the largest version still fits a BIGINT
+    assert next_epoch((1 << 32) - 1) < 1 << 63
+
+
+@pytest.mark.parametrize("version", [-1, 1 << 32])
+def test_a_version_out_of_range_is_refused_never_wrapped(version: int) -> None:
     with pytest.raises(ValueError, match="must be within"):
-        compose_epoch(version, sequence)
+        next_epoch(version)
 
 
 def test_each_draw_of_a_version_sorts_newer_than_every_draw_before_it_from_any_thread() -> None:
@@ -112,21 +110,21 @@ def test_each_draw_of_a_version_sorts_newer_than_every_draw_before_it_from_any_t
     every = [epoch for each in drawn for epoch in each]
     assert len(set(every)) == len(every), "two write statements drew one epoch"
     assert all(each == sorted(each) for each in drawn), "a later draw on one thread sorted older"
-    assert {epoch_version(epoch) for epoch in every} == {9}
+    assert {_version(epoch) for epoch in every} == {9}
     assert next_epoch(9) > max(every)
 
 
 def test_a_versioned_declaration_names_its_scope_and_a_stamped_one_none() -> None:
     with pytest.raises(ValueError, match="scope"):
-        RowEpoch(RowEpochKind.VERSIONS)
+        RowEpoch(versions=True)
     with pytest.raises(ValueError, match="no scope"):
-        RowEpoch(RowEpochKind.STAMPED, "join_state_code")
+        RowEpoch(versions=False, scope="join_state_code")
 
 
 # -- the declaration and its DDL --------------------------------------------------------------------------------------
 
 
-def test_a_versioned_table_is_stored_by_its_key_then_the_epoch_with_a_scope_epoch_index() -> None:
+def test_a_versioned_table_is_stored_by_its_key_then_the_epoch() -> None:
     schema = _versioned()
     assert schema.pk_columns == ("office_key", "candidate")
     assert schema.stored_key == ("office_key", "candidate", EPOCH_COLUMN)
@@ -137,8 +135,8 @@ def test_a_versioned_table_is_stored_by_its_key_then_the_epoch_with_a_scope_epoc
         True,
         None,
     )
-    [index] = schema.indexes
-    assert (index.name, index.columns) == ("results_by_scope_epoch", ("join_state_code", EPOCH_COLUMN))
+    # its (scope, epoch) index is declared with the restore read that names it (append-only chunk 5)
+    assert schema.indexes == ()
     # never in an upsert's SET: it is part of the stored key
     assert EPOCH_COLUMN not in [column.name for column in schema.mutable_columns()]
 
@@ -158,16 +156,14 @@ def test_a_table_that_declares_no_epoch_is_as_before() -> None:
 
 
 def test_a_versioned_table_on_yugabyte_hashes_its_first_key_column_and_orders_the_epoch_newest_first() -> None:
-    create, index = _versioned().create_statements(yugabyte=True)
+    [create] = _versioned().create_statements(yugabyte=True)
     assert "epoch BIGINT NOT NULL" in create
     assert "PRIMARY KEY ((office_key) HASH, candidate ASC, epoch DESC)" in create
-    assert index.strip() == "CREATE INDEX results_by_scope_epoch ON results (join_state_code, epoch)"
 
 
 def test_a_versioned_table_on_postgres_keeps_the_epoch_last_in_its_primary_key() -> None:
-    create, index = _versioned().create_statements(yugabyte=False)
+    [create] = _versioned().create_statements(yugabyte=False)
     assert "PRIMARY KEY (office_key, candidate, epoch)" in create
-    assert index.strip() == "CREATE INDEX results_by_scope_epoch ON results (join_state_code, epoch)"
 
 
 def test_the_epoch_is_last_in_the_stored_key_whatever_the_columns_order() -> None:
@@ -178,7 +174,7 @@ def test_the_epoch_is_last_in_the_stored_key_whatever_the_columns_order() -> Non
         row_epoch=row_versions("s"),
         l1_eviction=TEST_L1_TABLE,
     )
-    [create, _index] = schema.create_statements(yugabyte=True)
+    [create] = schema.create_statements(yugabyte=True)
     assert "PRIMARY KEY ((b) HASH, a ASC, epoch DESC)" in create
 
 
@@ -259,12 +255,6 @@ def _collection(schema: TableSchema) -> Any:
     return collection_for_schema(schema, entity_class=_Row)(registry, DefaultCoreConfig(), None)
 
 
-def _conn() -> Any:
-    conn = MagicMock()
-    conn.transaction.return_value = MagicMock()
-    return conn
-
-
 async def test_a_transaction_that_took_no_writes_turn_has_no_epoch_to_give() -> None:
     conn = MagicMock()
     transaction = CallerTransaction(conn)
@@ -272,7 +262,7 @@ async def test_a_transaction_that_took_no_writes_turn_has_no_epoch_to_give() -> 
         transaction.row_epoch("results")
     transaction.note_write_version(41)
     first, second = transaction.row_epoch("results"), transaction.row_epoch("results")
-    assert epoch_version(first) == epoch_version(second) == 41
+    assert _version(first) == _version(second) == 41
     assert second > first
 
 
@@ -281,8 +271,6 @@ async def test_a_collection_write_on_no_transaction_or_one_that_took_no_turn_is_
     row = {"office_key": "sn_NC1", "candidate": "a", "join_state_code": "NC"}
     with pytest.raises(UnstampedWriteError, match="joins no transaction"):
         await collection.save_to_store(row)
-    with pytest.raises(UnstampedWriteError, match="joins no transaction"):
-        collection._epoch_stamp(_conn(), "save_rows")  # noqa: SLF001 -- the one stamp every write path takes
 
 
 async def test_every_store_write_of_a_row_with_no_epoch_is_refused_before_anything_is_sent() -> None:

@@ -58,7 +58,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.row_epoch import EPOCH_COLUMN, UnstampedWriteError, epoch_version, row_versions
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, UnstampedWriteError, row_versions
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -616,7 +616,7 @@ async def test_an_arrow_write_of_a_versioned_table_stamps_every_row_with_its_wri
     for envelope, rows, _size in (first, second):
         assert rows.schema.field(EPOCH_COLUMN).type == pa.int64()
         [epoch] = set(rows.column(EPOCH_COLUMN).to_pylist())
-        assert epoch_version(epoch) == 17
+        assert _version(epoch) == 17
         epochs.append(epoch)
         if not copy:
             # the conflict is a version of the key, never the key alone
@@ -635,3 +635,8 @@ async def test_an_arrow_write_of_a_versioned_table_on_a_transaction_that_took_no
         async with proxy.acquire() as conn, CallerTransaction(conn):
             await collection.save_arrow(_table(3), conn=conn)
     assert hub.arrow_requests() == []
+
+
+def _version(epoch: int) -> int:
+    """the version an epoch was stamped at, by its documented encoding (``version << 31 | sequence``)."""
+    return epoch >> 31
