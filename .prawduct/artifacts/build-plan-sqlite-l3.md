@@ -6,9 +6,8 @@ Critic mode: cumulative at the end.
 
 ## Goals
 
-aidc 2.0 keeps its durable state (send queues, delivery ledgers, watches, dead letters) as 3tears collections
-(aidc TRS-25, option A, ratified 2026-11-25). Locally it runs one process on one machine, with no Postgres and no
-NATS. Owner ruling 2026-11-25: build it as SQLite being a proper 3tears L3 (a durable store), NO_L2, the ordinary
+A consumer keeps its durable state (send queues, delivery ledgers, watches, dead letters) as 3tears collections.
+Locally it runs one process on one machine, with no Postgres and no NATS. Owner ruling 2026-11-25: build it as SQLite being a proper 3tears L3 (a durable store), NO_L2, the ordinary
 L1 cache in front; a first-class L3 beside Postgres so any collection that works on Postgres works on SQLite and a
 deployment switches by configuration; a durable file (fixed path, WAL, synchronous=FULL, one-process lock, format
 version) with a kill -9 harness; one shared contract suite run against the existing stores unchanged (Postgres and
@@ -18,7 +17,7 @@ Success: `SqliteL3Backend` passes the contract's schema tier as Postgres does; t
 unchanged; a `DurableStoreCollection` over each store passes with L2 and without; a write survives SIGKILL after
 each kind of write; `l3_store(url)` picks the store; the docs say when to use each.
 
-Superseded: the earlier reading of U11 (an L1-only store whose SQLite L1 file is the record, refusing eviction).
+Superseded: an earlier reading (an L1-only store whose SQLite L1 file is the record, refusing eviction).
 On 0.95.0 the L1 is already a per-process WAL file with an LRU by declared policy, and a schema-backed save with no
 L3 fails today (`save_to_store` answers 0); the owner chose the L3 design instead.
 
