@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### ci: the unit shards run on ubuntu-24.04, where the locked playwright can install Chromium
+
+**Fixed:** GitHub moved `ubuntu-latest` to ubuntu-26.04 on 2026-11-25, and the locked playwright (1.60.0, held
+below 1.61 by `3tears-scrape` for camoufox) cannot install `chromium-headless-shell` there, so every evals shard
+failed at its browser install in about 30 seconds. The `unit` job in `ci.yml` and in `release.yml` now names
+`ubuntu-24.04`. Every other job stays on `ubuntu-latest`. Hosts need do nothing.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and

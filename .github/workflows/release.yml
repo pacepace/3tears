@@ -117,7 +117,9 @@ jobs:
   unit:
     name: unit (${{ matrix.shard }})
     needs: tag-on-main
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not -latest, as ci.yml's unit shards: the locked playwright (<1.61) cannot install
+    # chromium-headless-shell on ubuntu-26.04, and the evals shards' browser tests need it.
+    runs-on: ubuntu-24.04
     strategy:
       # every shard reports, so one failure does not hide another's
       fail-fast: false
