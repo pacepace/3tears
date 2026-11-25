@@ -72,6 +72,7 @@ from threetears.core.collections.delta_files import (
 )
 from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.schema_backed import rail_arrow_types
+from threetears.core.keyed import InlineDuckDB, read_state_arrow, run_inline
 
 if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable, FollowerBackend
@@ -101,7 +102,9 @@ __all__ = [
     "FullTable",
     "StagedFull",
     "StaleTermError",
+    "StatesNotSplitError",
     "VolumeFulls",
+    "copy_rows_of_state",
     "current_full_manifest",
     "deletable_full_files",
     "fingerprint_columns",
@@ -934,15 +937,52 @@ class FullAbsent:
     lacking: tuple[str, ...] = ()
 
 
+class StatesNotSplitError(ValueError):
+    """a full's table asked to be staged by state (:meth:`VolumeFulls.stage` with ``states``) whose rows are not split
+    by state: the table has no scope (:attr:`~threetears.core.collections.copy_follower.FollowedTable.scope`), or its
+    entry in the manifest holds a part of no state. Nothing is staged; the caller reloads the table whole instead
+    (``states=None``), the only way such a table's full is loaded.
+    """
+
+
+def copy_rows_of_state(backend: FollowerBackend, table: FollowedTable, value: str, columns: Sequence[str]) -> Any:
+    """the copy's rows of one state, pinned by the table's scope column (``read_state_arrow``, pinned by its
+    DeclaredScope column): a local read of the pod's own copy, every row it holds of the state, never L3. Blocking: run
+    it on a thread.
+
+    :param backend: the copy
+    :ptype backend: FollowerBackend
+    :param table: a scoped table
+    :ptype table: FollowedTable
+    :param value: the state's scope column value, as text (the column's type binds it)
+    :ptype value: str
+    :param columns: the columns read
+    :ptype columns: Sequence[str]
+    :return: the rows
+    :rtype: pyarrow.Table
+    """
+    assert table.scope is not None  # noqa: S101 -- asked only of a scoped table
+    with backend.read_snapshot() as cursor:
+        # a blocking caller on its own thread: the read runs inline on the snapshot cursor (InlineDuckDB)
+        return run_inline(
+            read_state_arrow(
+                InlineDuckDB(cursor), table.name, scope_column=table.scope[0], state=value, columns=list(columns)
+            )
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class StagedFull:
     """what :meth:`VolumeFulls.stage` staged beside the copy from the current full.
 
     :ivar manifest: the manifest's name
     :ivar versions: each table's version per state: the part's, or the table's for a state with no part (key None
-        for a table with no scope, or a table with no part). A delta at or below a state's version is in the copy
-    :ivar marks: each table's oldest version, of the table and its parts: where the copy catches up from
-    :ivar changes: each table's stage, whole, to apply in one transaction
+        for a table with no scope, or a table with no part). A delta at or below a state's version is in the copy. Staged
+        by state, only the states asked for (no None key): every other state is as the copy held it
+    :ivar marks: each table's oldest version, of the table and its parts: where the copy catches up from (staged by
+        state, the oldest of the states asked for)
+    :ivar changes: each table's stage, to apply in one transaction: whole, or staged by state the states' keys the copy
+        held (``keys``, which leave) and their parts' rows
     :ivar rows: the rows staged
     """
 
@@ -979,6 +1019,7 @@ class VolumeFulls:
         *,
         manifest: FullManifest | None = None,
         stage_name: Callable[[str], str] | None = None,
+        states: Collection[str] | None = None,
     ) -> StagedFull | FullAbsent:
         """stage each table's parts of the current full beside the copy, a part at a time; :class:`FullAbsent` when no
         full is published, or the current one does not hold every table.
@@ -990,9 +1031,18 @@ class VolumeFulls:
         :param stage_name: each table's stage name; None stages in the table's rows stage, as a start does. A running
             copy's reload stages beside its passes, in a stage of its own (``copy_follower._reload_stage``)
         :ptype stage_name: Callable[[str], str] | None
+        :param states: stage only these states (scopes as the manifest names them, ``"state:AZ"``), each table's rows
+            of them replaced and every other state left as the copy holds it; None stages every part whole. Why
+            (decision 54 (c)): a copy that finds a covered delta file gone reloads only the states it touched from the
+            full, never the whole table and never L3. Staged outside the pass lock, the copy's rows of a state are read
+            as it holds them then: the caller holds those states' changes back until the stage is applied, as a reload
+            does its table's
+        :ptype states: Collection[str] | None
         :return: what was staged, or why nothing was
         :rtype: StagedFull | FullAbsent
         :raises FileNotFoundError: when a part the manifest names is not on the volume
+        :raises StatesNotSplitError: staged by state, when a table's rows are not split by state (reload it whole)
+        :raises ValueError: staged by state, when a state is not one of a table's scopes
         """
         if manifest is None:
             manifest = await asyncio.to_thread(current_full_manifest, self.root)
@@ -1016,6 +1066,8 @@ class VolumeFulls:
                     f"{other[0].fingerprint}); the writer starts it fresh and publishes one over its columns",
                     lacking=(name,),
                 )
+        if states is not None:
+            return await self._stage_states(backend, manifest, stage_name, frozenset(states))
         versions: dict[str, dict[str | None, str]] = {}
         marks: dict[str, str] = {}
         changes: list[StagedChange] = []
@@ -1040,6 +1092,70 @@ class VolumeFulls:
         log.info(
             "full staged from the volume",
             extra={"extra_data": {"manifest": manifest.name, "tables": len(changes), "rows": rows}},
+        )
+        return StagedFull(manifest=manifest.name, versions=versions, marks=marks, changes=changes, rows=rows)
+
+    async def _stage_states(
+        self,
+        backend: FollowerBackend,
+        manifest: FullManifest,
+        stage_name: Callable[[str], str] | None,
+        states: frozenset[str],
+    ) -> StagedFull:
+        """:meth:`stage` of only some states: each table's change is not whole; the keys the copy holds of the states
+        leave and their parts' rows go in, so a row the copy holds that the full no longer does goes too.
+
+        :raises StatesNotSplitError: when a table's rows are not split by state
+        :raises ValueError: when a state is not one of a table's scopes
+        """
+        # every table checked before anything is staged: a refusal leaves no stage behind
+        for name, table in self.tables.items():
+            if table.scope is None or any(part.scope is None for part in manifest.tables[name].parts):
+                raise StatesNotSplitError(
+                    f"{name}: its full is not split by state (no scope), so states {sorted(states)} cannot be staged "
+                    "alone; reload the table whole (states=None)"
+                )
+            foreign = sorted(state for state in states if not state.startswith(table.scope[1]))
+            if foreign:
+                raise ValueError(f"{name}: {foreign} are not scopes of it (its scopes begin {table.scope[1]!r})")
+        versions: dict[str, dict[str | None, str]] = {}
+        marks: dict[str, str] = {}
+        changes: list[StagedChange] = []
+        rows = 0
+        for name, table in self.tables.items():
+            assert table.scope is not None  # noqa: S101 -- checked above
+            entry = manifest.tables[name]
+            parts = [part for part in entry.parts if part.scope in states]
+            # a state with no part holds no rows at the table's version: its rows in the copy only leave
+            held: dict[str | None, str] = {state: entry.version for state in states}
+            held.update((part.scope, part.version) for part in parts)
+            versions[name] = held
+            marks[name] = _versions_floor(name, held.values())
+            stage = f"{STAGE_PREFIX}{name}__rows" if stage_name is None else stage_name(name)
+            # named through stage_name too, so a reload's keys stage is a reload's (is_reload_stage) and no pass sweeps it
+            keys_stage = f"{STAGE_PREFIX}{name}__keys" if stage_name is None else stage_name(f"{name}__keys")
+            await asyncio.to_thread(backend.drop_stage, stage, keys_stage)
+            try:
+                await asyncio.to_thread(backend.stage_rows, stage, name, pa.table({}), table.key)
+                await asyncio.to_thread(backend.stage_keys, keys_stage, name, table.key, pa.table({}))
+                for state in sorted(states):
+                    # the copy's keys of the state, an Arrow table straight into the keys stage, never rows in Python
+                    held_keys = await asyncio.to_thread(
+                        copy_rows_of_state, backend, table, state[len(table.scope[1]) :], table.key
+                    )
+                    await asyncio.to_thread(backend.stage_keys, keys_stage, name, table.key, held_keys)
+                for part in parts:
+                    rows += await asyncio.to_thread(self._stage_part, backend, stage, table, part)
+            except BaseException:
+                staged = [stage_ for change in changes for stage_ in (change.keys, change.rows) if stage_]
+                await asyncio.to_thread(backend.drop_stage, *staged, stage, keys_stage)
+                raise
+            changes.append(StagedChange(table=name, key=table.key, keys=keys_stage, rows=stage))
+        log.info(
+            "states staged from the volume's full",
+            extra={
+                "extra_data": {"manifest": manifest.name, "tables": len(changes), "states": len(states), "rows": rows}
+            },
         )
         return StagedFull(manifest=manifest.name, versions=versions, marks=marks, changes=changes, rows=rows)
 

@@ -142,6 +142,7 @@ from threetears.core.collections.volume_fulls import (
     FullPart,
     StagedFull,
     VolumeFulls,
+    copy_rows_of_state,
     current_full_manifest,
     FINGERPRINT_CHECK_SECONDS,
     FINGERPRINT_FORMAT,
@@ -165,7 +166,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
 from threetears.core.declared import whole_read
-from threetears.core.keyed import InlineDuckDB, KeyBatch, WholeReads, read_keyed_arrow, read_state_arrow, run_inline
+from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.process_workers import ProcessWorkers
 from threetears.core.sql_fragments import quote_identifier
@@ -5587,18 +5588,7 @@ class CopyFollower:
         :return: the rows, every column the copy holds
         :rtype: pyarrow.Table
         """
-        assert table.scope is not None  # noqa: S101 -- asked only of a scoped table
-        with self._backend.read_snapshot() as cursor:
-            # a blocking caller on its own thread: the read runs inline on the snapshot cursor (InlineDuckDB)
-            return run_inline(
-                read_state_arrow(
-                    InlineDuckDB(cursor),
-                    table.name,
-                    scope_column=table.scope[0],
-                    state=value,
-                    columns=[column.name for column in table.columns],
-                )
-            )
+        return copy_rows_of_state(self._backend, table, value, [column.name for column in table.columns])
 
     def _drift_checks(self) -> PeriodicTask | None:
         """the periodic drift check :meth:`run` keeps, started; None when the copy starts from no full or the check
