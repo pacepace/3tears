@@ -21,7 +21,9 @@ three owe, is one contract suite (`packages/core/tests/l3_contract.py`) each sto
   committing whole or not at all, and a `DurableStoreCollection` over it with L2 and without;
 - the schema stores (Postgres, SQLite): typed values from the registered `TableSchema` (UUID, `NUMERIC` as
   `Decimal`, bytes, a naive instant read as UTC), an update rewriting the columns it names and keeping the rest,
-  immutable columns, the schema's conflict mode, the NULL-safe and the ordered compare-and-swap, truncate and raw SQL.
+  immutable columns, the schema's conflict mode, the NULL-safe and the ordered compare-and-swap, the unique indexes
+  and constraints and the `NOT NULL` columns the schema declares (refused as the same `asyncpg` exceptions on both),
+  truncate and raw SQL.
 
 ## Use
 
@@ -42,6 +44,19 @@ async with l3_store("sqlite:////var/lib/app/state.sqlite") as store:   # or a po
 the path as written). `SqliteL3Backend(path)` with `open()` / `close()` (or `async with`) is the same store without
 the URL.
 
+A `SchemaBackedCollection` registers its `TableSchema` with the store when it is built. A `DurableStoreCollection`
+has no schema of its own, so the deployment registers its table's before the first read or write, as it would declare
+the table to Postgres:
+
+```python
+store.register_schema(WATCHES.name, WATCHES)          # WATCHES: the table's TableSchema
+watches = WatchCollection(registry, config, NO_L2)    # a DurableStoreCollection over "watches"
+```
+
+Build the collections at startup, before any transaction: registering a table the file must create or change while
+a transaction is open on the store is refused (`RuntimeError`), since the change would wait for a transaction that
+cannot commit while the event loop waits on the change.
+
 ## The file
 
 - **Durable.** Write-ahead log, every commit synced (`synchronous=FULL`): a write that returned is in the file after
@@ -50,19 +65,29 @@ the URL.
 - **One process.** `open()` takes an exclusive `flock` on `<path>.lock`; a second process gets
   `SqliteStoreLockedError`. The kernel drops the lock when the holder dies, however it dies.
 - **Within the process**, writes take one lock (a statement, or a whole transaction); reads use a second
-  connection and see the last commit without waiting for a writer. Statements run on worker threads. A write
-  outside the transaction its own task holds is refused rather than left to wait on itself.
+  connection and see the last commit without waiting for a writer. Statements run on worker threads, and a
+  statement runs to its end even when the task awaiting it is cancelled (a timeout, shutdown): the lock is released
+  after it, so a cancelled write is committed whole or rolled back whole, never half. A write outside the
+  transaction its own task holds is refused rather than left to wait on itself. A task started inside the
+  transaction (`create_task`, `gather`) is another task: a write it makes without `conn=` waits for the
+  transaction, so hand it the transaction's `conn`. A connection from `transaction()` or `acquire()` refuses every
+  statement once its block has ended.
 - **Format.** The file's `user_version` is the store's format; a file of another format, or one another program
   wrote, is refused (`SqliteStoreFormatError`) rather than misread.
 - **Tables.** A collection's `TableSchema` is registered when it is built (`register_schema`), which creates its
-  table, or checks the stored one: a new nullable or defaulted column is added; a dropped or retyped column, or a new
-  required one, is refused with the difference named. Indexes, foreign keys and unique constraints other than the
-  primary key are not created. `server_default` is spelled for `now()`, a quoted literal, a number and
-  `true`/`false`; another default is refused at registration.
-- **The application's own version.** `SqliteL3Backend(path, schema_version=n, migrate=fn)` records `n` in the file;
-  a file at an older version is migrated by `fn(conn, from_version)` in one transaction when the store opens, and
-  one at a newer version is refused. A change a table's registration does not apply itself (a dropped, renamed or
-  retyped column) belongs there.
+  table, or checks the stored one: a new nullable column, or one with a constant default, is added; a dropped or
+  retyped column, a new required one, or a new one defaulted to `now()` (SQLite adds no column whose default is an
+  expression, and rebuilding the table would read every row) is refused with the difference named. Declare such a
+  column nullable, or migrate the file. Columns the schema does not declare
+  `nullable` are `NOT NULL`. The schema's unique indexes (a partial one's `WHERE` included, `nulls_not_distinct`
+  kept) and unique constraints are created, on a stored table too, since they decide which rows the store accepts;
+  stored rows that break one are refused at registration, naming it (`SqliteStoreFormatError`). Other indexes and
+  foreign keys are not created: on one machine's small tables they are a matter of speed, and Postgres keeps them
+  through its migrations. `server_default` is spelled for `now()`, a quoted literal, a number and `true`/`false`;
+  another default is refused at registration.
+- **Errors.** A write the table's constraints refuse raises the `asyncpg` exception Postgres raises for it:
+  `asyncpg.UniqueViolationError` for a key or a unique value already held, `asyncpg.NotNullViolationError` for a
+  missing required value. Code that catches a duplicate on Postgres catches it here.
 - **Health.** `await store.health()` answers while the file reads and raises when it does not, for a readiness probe.
 
 ## The L1 in front

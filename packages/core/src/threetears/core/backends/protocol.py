@@ -27,8 +27,11 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from threetears.core.collections.schema_backed import TableSchema
 
 __all__ = [
     "ArrowL3Reader",
@@ -301,13 +304,13 @@ class SchemaRegisteringStore(Protocol):
     statements from it, ``SqliteL3Backend`` also creates or checks the table in its file.
     """
 
-    def register_schema(self, table: str, schema: Any) -> None:
+    def register_schema(self, table: str, schema: TableSchema) -> None:
         """take ``schema`` as ``table``'s.
 
         :param table: the table's name
         :ptype table: str
-        :param schema: its :class:`~threetears.core.collections.schema_backed.TableSchema`
-        :ptype schema: Any
+        :param schema: its schema
+        :ptype schema: TableSchema
         :return: nothing
         :rtype: None
         """

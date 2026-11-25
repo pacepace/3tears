@@ -22,17 +22,26 @@ exclusive ``flock`` on ``<path>.lock``; a second is refused (:class:`SqliteStore
 refused (:class:`SqliteStoreFormatError`).
 
 **Tables.** :meth:`SqliteL3Backend.register_schema` (which a schema-backed collection calls when it is built)
-creates its table when the file has none, with the declared columns, the primary key and each ``server_default``
-the store can spell (``now()``, a quoted literal, a number, ``true`` / ``false``). A table already in the file must
-hold the declared columns under the same storage types; a declared column it lacks is added when it is nullable or
-has a default (an additive migration, the one kind applied here), and anything else -- a column dropped, a type
-changed -- is refused with the difference named, rather than misreading stored rows. Indexes, foreign keys and
-unique constraints beyond the primary key are not created.
+creates its table when the file has none, with the declared columns (``NOT NULL`` where the schema says so), the
+primary key and each ``server_default`` the store can spell (``now()``, a quoted literal, a number, ``true`` /
+``false``). A table already in the file must hold the declared columns under the same storage types; a declared column
+it lacks is added when it is nullable or has a constant default (an additive migration, the one kind applied here;
+SQLite adds no column defaulted to ``now()``, so such a column is refused as a change to migrate), and anything else -- a column dropped, a type changed -- is refused with the difference named, rather than
+misreading stored rows. The schema's unique indexes (a partial one's ``WHERE`` included) and unique constraints are
+created, since they decide which rows the store accepts; its other indexes and its foreign keys are not.
+
+Building a collection whose table must be created or changed while a transaction is open on the store is refused
+(:class:`RuntimeError`): the table change would wait for the transaction, and the transaction cannot commit while the
+event loop waits on the table change. Build the collections at startup, before any transaction.
 
 **Values.** A UUID, a ``NUMERIC`` (its exact decimal text), a JSONB value (JSON text), a vector (its bracketed
 text) and a ``TIMESTAMPTZ`` (its UTC instant to the microsecond, :func:`~threetears.core.cache.base.stored_instant`,
 which sorts and compares as the instant) are stored as text under a declared type the reader converts back from;
 a boolean as ``0`` / ``1``; ints and bytes as themselves. Reads answer the Python types the Postgres store answers.
+
+**Errors.** A statement the file's constraints refuse raises the ``asyncpg`` exception Postgres raises for it
+(``asyncpg.UniqueViolationError`` for a key already held, ``NotNullViolationError`` ...), so a caller's
+``except asyncpg.UniqueViolationError`` catches a duplicate on either store.
 
 **Raw SQL.** :class:`~threetears.core.backends.protocol.L3Backend`'s escape hatch (``fetch``, ``execute``,
 ``transaction`` ...) runs a statement with the same two rewrites. A statement written for Postgres alone
@@ -42,8 +51,13 @@ loads) are not served by this store.
 
 **Concurrency.** Writes take one lock, in this process, for their statement or for a whole transaction; reads go
 to a second connection and see the last commit (WAL), never waiting for a writer. Each statement runs on a worker
-thread, never on the event loop. A write outside an open transaction, from the task that holds it, is refused
-(:class:`RuntimeError`) rather than left to wait on itself for ever.
+thread, never on the event loop, and runs to its end even when the task awaiting it is cancelled: the lock, and
+the transaction it is part of, are released only after the statement has finished, so a cancelled write is either
+committed whole or rolled back whole. A write outside an open transaction, from the task that holds it, is refused
+(:class:`RuntimeError`) rather than left to wait on itself for ever. A task the holder starts (``create_task``,
+``gather``) is another task: its write without ``conn=`` waits for the transaction, and so waits for ever when the
+holder awaits it inside the block -- hand it ``conn``. A connection a transaction or ``acquire()`` handed out refuses
+every statement once its block has ended.
 """
 
 from __future__ import annotations
@@ -64,6 +78,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, TypeVar
 
+import asyncpg
+
 from threetears.core.backends import schema_sql
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import stored_instant
@@ -73,6 +89,14 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import Column, TableSchema
+
+try:
+    from uuid_utils import UUID as _UuidUtilsUUID
+
+    #: the UUID types bound as their text; uuid_utils' when the uuid-utils extra is installed
+    _UUID_TYPES: tuple[type, ...] = (uuid.UUID, _UuidUtilsUUID)
+except ImportError:  # NOSILENT: the uuid-utils extra is optional; its values never reach this store without it
+    _UUID_TYPES = (uuid.UUID,)
 
 __all__ = [
     "SqliteL3Backend",
@@ -146,7 +170,7 @@ def _bound(value: Any) -> Any:
     """
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, uuid.UUID):
+    if isinstance(value, _UUID_TYPES):
         return str(value)
     if isinstance(value, datetime):
         return stored_instant(value)
@@ -154,9 +178,6 @@ def _bound(value: Any) -> Any:
         return str(value)
     if isinstance(value, (dict, list)):
         return json.dumps(value, default=json_default)
-    if value is not None and type(value).__name__ == "UUID" and hasattr(value, "hex"):
-        # uuid_utils' UUID, which is not a uuid.UUID
-        return str(value)
     return value
 
 
@@ -179,6 +200,96 @@ _CAST: Final = re.compile(r"::\s*[A-Za-z_][A-Za-z0-9_.]*(?:\s*\[\])?")
 _VERB: Final = re.compile(r"^\s*(\w+)")
 _NOW_TEXT: Final = "(strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000+00:00')"
 _LITERAL_DEFAULT: Final = re.compile(r"^\s*('(?:[^']|'')*'|-?\d+(?:\.\d+)?)\s*(?:::\s*[A-Za-z_][A-Za-z0-9_.]*)?\s*$")
+
+
+#: SQLite's integrity refusals, by the words its message starts with, and the SQLSTATE Postgres raises for each; any
+#: other is 23000, ``IntegrityConstraintViolationError``
+_INTEGRITY_SQLSTATES: Final = (
+    ("UNIQUE constraint failed", "23505"),
+    ("NOT NULL constraint failed", "23502"),
+    ("CHECK constraint failed", "23514"),
+    ("FOREIGN KEY constraint failed", "23503"),
+)
+#: what a NULL is indexed as in a unique index declared ``nulls_not_distinct``: a blob no stored value equals, so two
+#: NULLs collide as Postgres's ``NULLS NOT DISTINCT`` says
+_NULL_KEY: Final = "x'7474335f6e756c6c'"
+
+
+def _as_postgres(exc: sqlite3.IntegrityError) -> Exception:
+    """the ``asyncpg`` exception Postgres raises for the refusal ``exc`` reports.
+
+    :param exc: SQLite's refusal
+    :ptype exc: sqlite3.IntegrityError
+    :return: the exception (``asyncpg.UniqueViolationError`` for a key already held)
+    :rtype: Exception
+    """
+    message = str(exc)
+    code = next((sqlstate for words, sqlstate in _INTEGRITY_SQLSTATES if message.startswith(words)), "23000")
+    error: Exception = asyncpg.PostgresError.new({"C": code, "M": message})
+    return error
+
+
+def _run(conn: sqlite3.Connection, query: str, params: Sequence[Any]) -> sqlite3.Cursor:
+    """run ``query`` (written for Postgres) on ``conn``, a refusal raised as Postgres raises it.
+
+    :param conn: the connection
+    :ptype conn: sqlite3.Connection
+    :param query: the statement
+    :ptype query: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :return: the cursor
+    :rtype: sqlite3.Cursor
+    :raises asyncpg.IntegrityConstraintViolationError: when a constraint refuses the statement
+    """
+    try:
+        return conn.execute(_sqlite_statement(query), [_bound(p) for p in params])
+    except sqlite3.IntegrityError as exc:
+        raise _as_postgres(exc) from exc
+
+
+async def _to_the_end(work: Callable[[sqlite3.Connection], _T], conn: sqlite3.Connection) -> _T:
+    """run ``work`` on a worker thread and wait for it to end, even when the task awaiting it is cancelled.
+
+    A thread cannot be stopped, so a cancellation that let the caller go on would leave the statement running on the
+    one writing connection after the caller released its lock and its transaction bookkeeping: the next writer's
+    ``BEGIN`` would fail inside it and roll it back, and its remaining statements would commit one by one. The
+    cancellation is raised once the thread has finished.
+
+    :param work: what to run
+    :ptype work: Callable[[sqlite3.Connection], _T]
+    :param conn: the connection it runs on
+    :ptype conn: sqlite3.Connection
+    :return: what it answers
+    :rtype: _T
+    :raises asyncio.CancelledError: when the awaiting task was cancelled, after ``work`` has finished
+    """
+    running = asyncio.ensure_future(asyncio.to_thread(work, conn))
+    try:
+        return await asyncio.shield(running)
+    except asyncio.CancelledError:
+        await _outlast(running)
+        raise
+
+
+async def _outlast(running: asyncio.Future[Any]) -> None:
+    """wait for ``running`` to end, through any further cancellation, which is raised once it has.
+
+    :param running: the thread's future
+    :ptype running: asyncio.Future[Any]
+    :return: nothing
+    :rtype: None
+    :raises asyncio.CancelledError: when the awaiting task is cancelled again, after ``running`` has ended
+    """
+    try:
+        await asyncio.wait({running})
+    except asyncio.CancelledError:
+        # the thread is still on the connection: wait for it again, then pass the cancellation on
+        await _outlast(running)
+        raise
+    finally:
+        if running.done() and not running.cancelled():
+            running.exception()  # retrieved, so the loop does not report it as never retrieved
 
 
 def _sqlite_statement(sql: str) -> str:
@@ -236,14 +347,51 @@ class _SqliteStoreConnection:
     """the store's writing connection, as a transaction or an acquired connection hands it out.
 
     Passed as ``conn=`` to the store's structured operations, it runs them inside its transaction; it also takes
-    raw statements, as an asyncpg connection does. Its life is the ``async with`` that made it.
+    raw statements, as an asyncpg connection does. Its life is the ``async with`` that made it: once that block has
+    ended it refuses every statement, as a released asyncpg connection does, since the write lock is no longer held.
 
     :param store: the store
     :ptype store: SqliteL3Backend
+    :param on_writer: runs a callable on the writing connection, for a holder of the write lock
+    :ptype on_writer: Callable
+    :param savepoint: opens a transaction (or a savepoint inside one) on this connection
+    :ptype savepoint: Callable
     """
 
-    def __init__(self, store: SqliteL3Backend) -> None:
+    def __init__(
+        self,
+        store: SqliteL3Backend,
+        on_writer: Callable[[Callable[[sqlite3.Connection], Any]], Any],
+        savepoint: Callable[[_SqliteStoreConnection], contextlib.AbstractAsyncContextManager[_SqliteStoreConnection]],
+    ) -> None:
         self._store = store
+        self._on_writer = on_writer
+        self._savepoint = savepoint
+        self._open = True
+
+    @property
+    def is_open(self) -> bool:
+        """whether the block that handed this connection out is still running.
+
+        :return: whether it is
+        :rtype: bool
+        """
+        return self._open
+
+    def release(self) -> None:
+        """end this connection's use: the block that handed it out has ended.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._open = False
+
+    def _held(self) -> None:
+        if not self._open:
+            raise RuntimeError(
+                f"a connection of the SQLite store {self._store.path} was used after the block that handed it out "
+                "ended; it no longer holds the write lock",
+            )
 
     @property
     def store(self) -> SqliteL3Backend:
@@ -256,7 +404,9 @@ class _SqliteStoreConnection:
 
     async def fetch(self, query: str, *params: Any, **_scope: Any) -> list[dict[str, Any]]:
         """run a SELECT on this connection; every row as a dict."""
-        return await self._store.run_on_writer(lambda conn: _rows(conn, query, params))
+        self._held()
+        rows: list[dict[str, Any]] = await self._on_writer(lambda conn: _rows(conn, query, params))
+        return rows
 
     async def fetchrow(self, query: str, *params: Any, **_scope: Any) -> dict[str, Any] | None:
         """run a SELECT on this connection; its first row, or ``None``."""
@@ -270,7 +420,8 @@ class _SqliteStoreConnection:
 
     async def execute(self, query: str, *params: Any, **_scope: Any) -> str:
         """run a statement on this connection; its Postgres command tag."""
-        rows = await self._store.run_on_writer(lambda conn: _changed(conn, query, params))
+        self._held()
+        rows: int = await self._on_writer(lambda conn: _changed(conn, query, params))
         return _tag(query, rows)
 
     def transaction(self, **_options: Any) -> contextlib.AbstractAsyncContextManager[_SqliteStoreConnection]:
@@ -279,17 +430,18 @@ class _SqliteStoreConnection:
         asyncpg's options (``isolation=`` ...) are taken and need nothing here: SQLite's one writer at a time makes
         every transaction serializable.
         """
-        return self._store.savepoint(self)
+        self._held()
+        return self._savepoint(self)
 
 
 def _rows(conn: sqlite3.Connection, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
-    cursor = conn.execute(_sqlite_statement(query), [_bound(p) for p in params])
+    cursor = _run(conn, query, params)
     names = [d[0] for d in cursor.description or ()]
     return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
 
 
 def _changed(conn: sqlite3.Connection, query: str, params: Sequence[Any]) -> int:
-    return conn.execute(_sqlite_statement(query), [_bound(p) for p in params]).rowcount
+    return _run(conn, query, params).rowcount
 
 
 class SqliteL3Backend:
@@ -305,30 +457,10 @@ class SqliteL3Backend:
 
     :param path: the database file; its directory is made when missing
     :ptype path: Path
-    :param schema_version: the version of the application's own tables this code reads, recorded in the file's
-        header (``application_id``); ``0``
-        (the default) for an application that has never migrated them. A file recorded under an older version is
-        migrated by ``migrate`` when the store opens; one under a newer version is refused
-    :ptype schema_version: int
-    :param migrate: ``migrate(conn, from_version)`` brings the application's tables from ``from_version`` to
-        ``schema_version`` (an ``ALTER TABLE``, a rewrite of stored values), on a plain ``sqlite3`` connection inside
-        one transaction the store commits with the new version, or rolls back when it raises. Changes a table's
-        registration does not apply itself (a dropped, renamed or retyped column) belong here
-    :ptype migrate: Callable[[sqlite3.Connection, int], None] | None
     """
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        schema_version: int = 0,
-        migrate: Callable[[sqlite3.Connection, int], None] | None = None,
-    ) -> None:
-        if not 0 <= schema_version < 2**31:
-            raise ValueError(f"schema_version is a count of migrations, from 0 to 2**31 - 1; got {schema_version}")
+    def __init__(self, path: Path) -> None:
         self._path = Path(path)
-        self._schema_version = schema_version
-        self._migrate = migrate
         self._schemas: Mapping[str, TableSchema] = MappingProxyType({})
         self._lock_fd: int | None = None
         self._writer: sqlite3.Connection | None = None
@@ -388,9 +520,9 @@ class SqliteL3Backend:
         writer: sqlite3.Connection | None = None
         try:
             writer = self._connect()
-            writer.execute("PRAGMA journal_mode=WAL")
+            # the format first: a file another program wrote is refused as it was found, not first turned to WAL
             self._check_format(writer)
-            self._migrate_schema(writer)
+            writer.execute("PRAGMA journal_mode=WAL")
             reader = self._connect()
         except BaseException:  # prawduct:allow prawduct/broad-except -- gives the file back, then re-raises unchanged
             if writer is not None:
@@ -450,7 +582,6 @@ class SqliteL3Backend:
         )
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA synchronous=FULL")
-        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def _check_format(self, conn: sqlite3.Connection) -> None:
@@ -466,45 +597,6 @@ class SqliteL3Backend:
             f"{_SQLITE_STORE_FORMAT}. Migrate the file, or move it aside to start empty",
         )
 
-    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
-        """bring the application's tables to ``schema_version`` with ``migrate``, or refuse a file it cannot read.
-
-        :param conn: the writing connection, outside any transaction
-        :ptype conn: sqlite3.Connection
-        :return: nothing
-        :rtype: None
-        :raises SqliteStoreFormatError: when the file records a newer version, or an older one and there is no
-            ``migrate``
-        """
-        # the file header's application_id: SQLite's slot for the application's own format, beside the store's
-        # user_version, written in the same transaction as the migration
-        stored = int(conn.execute("PRAGMA application_id").fetchone()[0])
-        if stored == self._schema_version:
-            return
-        if stored > self._schema_version:
-            raise SqliteStoreFormatError(
-                f"the SQLite store {self._path} holds the application's tables at version {stored}; this code reads "
-                f"version {self._schema_version}. A newer release wrote it",
-            )
-        if self._migrate is None:
-            raise SqliteStoreFormatError(
-                f"the SQLite store {self._path} holds the application's tables at version {stored}; this code reads "
-                f"version {self._schema_version} and was given no migrate to bring them there",
-            )
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._migrate(conn, stored)
-            conn.execute(f"PRAGMA application_id = {int(self._schema_version)}")
-            conn.execute("COMMIT")
-        except BaseException:  # prawduct:allow prawduct/broad-except -- rolls the migration back, then re-raises
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
-        log.info(
-            "SQLite L3 store: the application's tables were migrated",
-            extra={"extra_data": {"path": str(self._path), "from": stored, "to": self._schema_version}},
-        )
-
     # ── running statements ─────────────────────────────────────────────────────────────────────────────────────────
     async def _read(self, read: Callable[[sqlite3.Connection], _T]) -> _T:
         reader = self._reader
@@ -517,8 +609,8 @@ class SqliteL3Backend:
 
         return await asyncio.to_thread(run)
 
-    async def run_on_writer(self, work: Callable[[sqlite3.Connection], _T]) -> _T:
-        """run ``work`` on the writing connection, for a caller already holding the write lock (a transaction).
+    async def _on_writer(self, work: Callable[[sqlite3.Connection], _T]) -> _T:
+        """run ``work`` on the writing connection, to its end, for a caller holding the write lock.
 
         :param work: what to run
         :ptype work: Callable[[sqlite3.Connection], _T]
@@ -528,7 +620,24 @@ class SqliteL3Backend:
         writer = self._writer
         if writer is None:
             raise RuntimeError(f"the SQLite store {self._path} is not open")
-        return await asyncio.to_thread(work, writer)
+        return await _to_the_end(work, writer)
+
+    def _own(self, conn: Any) -> None:
+        """refuse ``conn`` unless it is a connection this store handed out and its block is still running.
+
+        :param conn: the connection a caller passed
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when it is another store's, or its block has ended
+        """
+        if not isinstance(conn, _SqliteStoreConnection) or conn.store is not self:
+            raise RuntimeError(f"a connection of another store was passed to the SQLite store {self._path}")
+        if not conn.is_open:
+            raise RuntimeError(
+                f"a connection of the SQLite store {self._path} was used after the block that handed it out ended; "
+                "it no longer holds the write lock",
+            )
 
     async def _write(self, work: Callable[[sqlite3.Connection], _T], conn: Any) -> _T:
         """run ``work`` in its own transaction, or in the caller's when ``conn`` is one of this store's.
@@ -542,9 +651,8 @@ class SqliteL3Backend:
         :raises RuntimeError: when ``conn`` is another store's, or this task holds a transaction and passed none
         """
         if conn is not None:
-            if not isinstance(conn, _SqliteStoreConnection) or conn.store is not self:
-                raise RuntimeError(f"a connection of another store was passed to the SQLite store {self._path}")
-            return await self.run_on_writer(work)
+            self._own(conn)
+            return await self._on_writer(work)
         if self._transaction_task is not None and self._transaction_task is asyncio.current_task():
             raise RuntimeError(
                 f"a write to the SQLite store {self._path} outside the transaction this task holds would wait for "
@@ -563,13 +671,12 @@ class SqliteL3Backend:
                     raise
                 return result
 
-            return await self.run_on_writer(in_transaction)
+            return await self._on_writer(in_transaction)
 
     async def _fetch_on(self, conn: Any, query: str, params: Sequence[Any]) -> list[dict[str, Any]]:
         if conn is not None:
-            if not isinstance(conn, _SqliteStoreConnection) or conn.store is not self:
-                raise RuntimeError(f"a connection of another store was passed to the SQLite store {self._path}")
-            return await self.run_on_writer(lambda writer: _rows(writer, query, params))
+            self._own(conn)
+            return await self._on_writer(lambda writer: _rows(writer, query, params))
         return await self._read(lambda reader: _rows(reader, query, params))
 
     # ── transactions ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -579,14 +686,15 @@ class SqliteL3Backend:
             raise RuntimeError(f"this task already holds the SQLite store {self._path}: nest with conn.transaction()")
         async with self._write_lock:
             self._transaction_task = asyncio.current_task()
-            handle = _SqliteStoreConnection(self)
+            handle = _SqliteStoreConnection(self, self._on_writer, self._savepoint)
             try:
                 if transaction:
-                    async with self.savepoint(handle):
+                    async with self._savepoint(handle):
                         yield handle
                 else:
                     yield handle
             finally:
+                handle.release()
                 self._transaction_task = None
 
     def transaction(self, namespace: str | None = None) -> contextlib.AbstractAsyncContextManager[Any]:
@@ -609,8 +717,12 @@ class SqliteL3Backend:
         return self._held(transaction=False)
 
     @contextlib.asynccontextmanager
-    async def savepoint(self, handle: _SqliteStoreConnection) -> AsyncIterator[_SqliteStoreConnection]:
+    async def _savepoint(self, handle: _SqliteStoreConnection) -> AsyncIterator[_SqliteStoreConnection]:
         """a transaction on ``handle`` (the outermost) or a savepoint inside it, committed when the block ends cleanly.
+
+        Counted open before its ``BEGIN`` is sent, and rolled back on any exit by exception -- a cancellation during
+        the ``BEGIN`` included, once the ``BEGIN`` has run -- so the writing connection is never left inside a
+        transaction no block owns.
 
         :param handle: the held connection
         :ptype handle: _SqliteStoreConnection
@@ -620,20 +732,27 @@ class SqliteL3Backend:
         depth = self._savepoints
         name = f"tt3_sp_{depth}"
         begin, commit, rollback = (
-            ("BEGIN IMMEDIATE", "COMMIT", ("ROLLBACK",))
+            ("BEGIN IMMEDIATE", ("COMMIT",), ("ROLLBACK",))
             if depth == 0
-            else (f"SAVEPOINT {name}", f"RELEASE {name}", (f"ROLLBACK TO {name}", f"RELEASE {name}"))
+            else (f"SAVEPOINT {name}", (f"RELEASE {name}",), (f"ROLLBACK TO {name}", f"RELEASE {name}"))
         )
-        await self.run_on_writer(lambda writer: writer.execute(begin))
+        began: list[bool] = []
+
+        def open_it(writer: sqlite3.Connection) -> None:
+            writer.execute(begin)
+            began.append(True)
+
         self._savepoints += 1
         try:
+            await self._on_writer(open_it)
             yield handle
         except BaseException:  # prawduct:allow prawduct/broad-except -- rolls back, then re-raises unchanged
             self._savepoints -= 1
-            await asyncio.shield(self.run_on_writer(lambda writer: _run_each(writer, rollback)))
+            if began:
+                await self._on_writer(lambda writer: _run_each(writer, rollback))
             raise
         self._savepoints -= 1
-        await self.run_on_writer(lambda writer: writer.execute(commit))
+        await self._on_writer(lambda writer: _finish(writer, commit, rollback))
 
     # ── tables ─────────────────────────────────────────────────────────────────────────────────────────────────────
     def register_schema(self, table: str, schema: TableSchema) -> None:
@@ -654,18 +773,34 @@ class SqliteL3Backend:
         """
         if "." in table:
             raise ValueError(f"the SQLite store has no schemas: {table!r} is qualified")
-        if self._writer is None:
+        writer = self._writer
+        if writer is None:
             raise RuntimeError(f"the SQLite store {self._path} is not open; open() it before building collections")
-        # a connection of its own: the writing one may be inside another task's transaction on a worker thread, and
-        # a table change waits for that transaction (busy_timeout) rather than landing inside it
+        # a connection of its own, so a table change never lands inside a transaction the writing connection holds.
+        # It runs here, on the event loop: a write running on a worker thread finishes without the loop, and the
+        # change waits for it (busy_timeout); a transaction held across awaits cannot, so a change is refused below
         ddl = self._connect()
         try:
             stored = {row[1]: row[2] for row in ddl.execute(f'PRAGMA table_info("{table}")').fetchall()}
-            if not stored:
-                ddl.execute(self._create_table_sql(table, schema))
-            else:
-                for statement in self._additions(table, schema, stored):
-                    ddl.execute(statement)
+            created = not stored
+            statements = [self._create_table_sql(table, schema)] if created else self._additions(table, schema, stored)
+            indexed = {
+                row[0]
+                for row in ddl.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?", (table,)
+                ).fetchall()
+            }
+            indexes = [(name, sql) for name, sql in _unique_indexes(table, schema) if created or name not in indexed]
+            if not statements and not indexes:
+                self._schemas = MappingProxyType({**self._schemas, table: schema})
+                return
+            if self._transaction_task is not None and (self._savepoints > 0 or writer.in_transaction):
+                raise RuntimeError(
+                    f"the SQLite store {self._path} must create or change table {table!r} while a transaction is "
+                    "open on it: the change would wait for the transaction, which cannot commit while the event "
+                    "loop waits on the change. Build the collection before opening the transaction (at startup)",
+                )
+            _apply_ddl(ddl, table, statements, indexes)
         finally:
             ddl.close()
         self._schemas = MappingProxyType({**self._schemas, table: schema})
@@ -674,7 +809,7 @@ class SqliteL3Backend:
         parts = []
         for column in schema.columns:
             default = _default_sql(column)
-            null = " NOT NULL" if column.name in schema.pk_columns else ""
+            null = " NOT NULL" if column.name in schema.pk_columns or not column.nullable else ""
             parts.append(
                 f'"{column.name}" {_decl_for(column)}{null}' + ("" if default is None else f" DEFAULT {default}")
             )
@@ -683,6 +818,19 @@ class SqliteL3Backend:
         return f'CREATE TABLE "{table}" ({", ".join(parts)})'
 
     def _additions(self, table: str, schema: TableSchema, stored: Mapping[str, str]) -> list[str]:
+        """the statements that add the declared columns ``table`` lacks.
+
+        :param table: the table
+        :ptype table: str
+        :param schema: its declared schema
+        :ptype schema: TableSchema
+        :param stored: the columns the file holds, by name, with their declared types
+        :ptype stored: Mapping[str, str]
+        :return: the statements (none when nothing is added)
+        :rtype: list[str]
+        :raises SqliteStoreFormatError: when the stored table holds a column the schema does not, under another
+            type, or lacks one that can be neither null nor given a constant default
+        """
         declared = {column.name: column for column in schema.columns}
         dropped = sorted(set(stored) - set(declared))
         changed = sorted(
@@ -690,22 +838,28 @@ class SqliteL3Backend:
         )
         added = [column for name, column in declared.items() if name not in stored]
         unaddable = [c.name for c in added if not (c.nullable or c.server_default is not None)]
+        # SQLite adds a column with a constant default only: an expression (now()) would mean rebuilding the table
+        # and copying every stored row, a whole-table read this store does not make on its own
+        unaddable += [c.name for c in added if _default_sql(c) == _NOW_TEXT]
         if dropped or changed or unaddable:
             raise SqliteStoreFormatError(
                 f"the SQLite store {self._path} holds table {table!r} in another shape than declared: "
                 f"columns it holds and the schema does not: {dropped}; columns whose type changed: {changed}; "
-                f"new columns that are neither nullable nor defaulted: {unaddable}. Migrate the file",
+                f"new columns that are neither nullable nor defaulted to a constant (SQLite adds no column defaulted to "
+                f"now()): {unaddable}. Migrate the file",
+            )
+        for column in added:
+            log.info(
+                "SQLite L3 store: adding a declared column",
+                extra={"extra_data": {"path": str(self._path), "table": table, "column": column.name}},
             )
         statements = []
         for column in added:
             default = _default_sql(column)
+            null = "" if column.nullable else " NOT NULL"
             statements.append(
-                f'ALTER TABLE "{table}" ADD COLUMN "{column.name}" {_decl_for(column)}'
+                f'ALTER TABLE "{table}" ADD COLUMN "{column.name}" {_decl_for(column)}{null}'
                 + ("" if default is None else f" DEFAULT {default}")
-            )
-            log.info(
-                "SQLite L3 store: added a declared column",
-                extra={"extra_data": {"path": str(self._path), "table": table, "column": column.name}},
             )
         return statements
 
@@ -738,7 +892,7 @@ class SqliteL3Backend:
         ``pk`` and ``on_conflict`` are the registered schema's, as on the Postgres store.
         """
         schema = self._schema(table)
-        sql, params = _upsert_statement(schema, dict(row), cas)
+        sql, params = schema_sql.build_upsert_statement(schema, dict(row), cas)
         return await self._write(lambda writer: _changed(writer, sql, params), conn)
 
     async def upsert_ordered(self, table: str, row: Mapping[str, Any], *, conn: Any = None) -> int:
@@ -764,7 +918,7 @@ class SqliteL3Backend:
         row is its own statement inside the one transaction.
         """
         schema = self._schema(table)
-        statements = [_upsert_statement(schema, dict(row), None) for row in rows]
+        statements = [schema_sql.build_upsert_statement(schema, dict(row), None) for row in rows]
 
         def write(writer: sqlite3.Connection) -> int:
             for sql, params in statements:
@@ -859,26 +1013,6 @@ class SqliteL3Backend:
         return [await self.execute(q["query"], *q.get("params", [])) for q in queries]
 
 
-def _upsert_statement(schema: TableSchema, data: dict[str, Any], cas: datetime | None) -> tuple[str, list[Any]]:
-    """the statement and parameters the Postgres store writes ``data`` with (``SqlL3Backend._upsert_schema``'s rule).
-
-    :param schema: the table's schema
-    :ptype schema: TableSchema
-    :param data: the row
-    :ptype data: dict[str, Any]
-    :param cas: the fence value, or ``None``
-    :ptype cas: datetime | None
-    :return: the statement and its parameters
-    :rtype: tuple[str, list[Any]]
-    """
-    cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
-    if cas_declared and cas is not None:
-        return schema_sql.build_cas_update_sql(schema, data), schema_sql.build_cas_params(schema, data, cas)
-    if cas_declared and getattr(schema, "cas_null_safe", False):
-        return schema_sql.build_cas_upsert_sql(schema, data), schema_sql.build_cas_upsert_params(schema, data, cas)
-    return schema_sql.build_insert_sql(schema, data), schema_sql.build_insert_params(schema, data)
-
-
 def _run_each(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
     """run each statement in turn (never ``executescript``, which commits a transaction left open first).
 
@@ -891,3 +1025,90 @@ def _run_each(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
     """
     for statement in statements:
         conn.execute(statement)
+
+
+def _finish(conn: sqlite3.Connection, commit: Sequence[str], rollback: Sequence[str]) -> None:
+    """commit a transaction (or release a savepoint), rolling it back when the commit itself fails.
+
+    :param conn: the connection
+    :ptype conn: sqlite3.Connection
+    :param commit: the statements that commit it
+    :ptype commit: Sequence[str]
+    :param rollback: the statements that roll it back
+    :ptype rollback: Sequence[str]
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        _run_each(conn, commit)
+    except BaseException:  # prawduct:allow prawduct/broad-except -- rolls back, then re-raises unchanged
+        if conn.in_transaction:
+            _run_each(conn, rollback)
+        raise
+
+
+def _unique_indexes(table: str, schema: TableSchema) -> list[tuple[str, str]]:
+    """the unique indexes and unique constraints ``schema`` declares, as SQLite creates them: name and statement.
+
+    A partial index's ``WHERE`` (written for Postgres) is rewritten as statements are; a ``nulls_not_distinct``
+    index keys a NULL as one value (:data:`_NULL_KEY`). Access methods, operator classes, collations and ``INCLUDE``
+    columns shape a Postgres index's speed, not which rows it admits, and are not carried.
+
+    :param table: the table
+    :ptype table: str
+    :param schema: its schema
+    :ptype schema: TableSchema
+    :return: each index's name and ``CREATE UNIQUE INDEX`` statement
+    :rtype: list[tuple[str, str]]
+    """
+    made: list[tuple[str, str]] = []
+    for index in schema.indexes:
+        if not index.unique:
+            continue
+        keys = ", ".join(
+            f'ifnull("{name}", {_NULL_KEY})' if index.nulls_not_distinct else f'"{name}"' for name in index.columns
+        )
+        where = "" if index.where is None else f" WHERE {_sqlite_statement(index.where)}"
+        made.append((index.name, f'CREATE UNIQUE INDEX "{index.name}" ON "{table}" ({keys}){where}'))
+    for constraint in schema.unique_constraints:
+        keys = ", ".join(f'"{name}"' for name in constraint.columns)
+        made.append((constraint.name, f'CREATE UNIQUE INDEX "{constraint.name}" ON "{table}" ({keys})'))
+    return made
+
+
+def _apply_ddl(
+    ddl: sqlite3.Connection, table: str, statements: Sequence[str], indexes: Sequence[tuple[str, str]]
+) -> None:
+    """run a table's changes, then its unique indexes, in one transaction: all of them land, or none does.
+
+    :param ddl: the connection
+    :ptype ddl: sqlite3.Connection
+    :param table: the table
+    :ptype table: str
+    :param statements: the table's creation or additions
+    :ptype statements: Sequence[str]
+    :param indexes: each unique index's name and statement
+    :ptype indexes: Sequence[tuple[str, str]]
+    :return: nothing
+    :rtype: None
+    :raises SqliteStoreFormatError: when an index cannot be built (a ``WHERE`` SQLite cannot read, or stored rows
+        that break it)
+    """
+    ddl.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in statements:
+            ddl.execute(statement)
+        for name, statement in indexes:
+            try:
+                ddl.execute(statement)
+            except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+                if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc):
+                    raise
+                raise SqliteStoreFormatError(
+                    f"the SQLite store cannot build table {table!r}'s unique index {name!r}: {exc}",
+                ) from exc
+        ddl.execute("COMMIT")
+    except BaseException:  # prawduct:allow prawduct/broad-except -- rolls back, then re-raises unchanged
+        if ddl.in_transaction:
+            ddl.execute("ROLLBACK")
+        raise

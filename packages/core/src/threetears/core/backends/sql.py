@@ -2032,20 +2032,10 @@ class SqlL3Backend:
           ``build_insert_sql``. Unchanged, and still what ``cas=None`` selects on
           every schema that has not opted in.
 
-        ``cas_null_safe`` is read through ``getattr`` because this module reads the
-        schema duck-typed (see the ``schema_sql`` module docstring); a non-
-        ``TableSchema`` descriptor without the attribute keeps the old behaviour.
+        The choice is :func:`~threetears.core.backends.schema_sql.build_upsert_statement`'s, the one rule
+        every SQL store (this one and the SQLite store) writes by.
         """
-        cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
-        if cas_declared and cas is not None:
-            sql = schema_sql.build_cas_update_sql(schema, data)
-            params = schema_sql.build_cas_params(schema, data, cas)
-        elif cas_declared and getattr(schema, "cas_null_safe", False):
-            sql = schema_sql.build_cas_upsert_sql(schema, data)
-            params = schema_sql.build_cas_upsert_params(schema, data, cas)
-        else:
-            sql = schema_sql.build_insert_sql(schema, data)
-            params = schema_sql.build_insert_params(schema, data)
+        sql, params = schema_sql.build_upsert_statement(schema, data, cas)
         return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
     async def upsert_ordered(self, table: str, row: Mapping[str, Any], *, conn: Any = None) -> int:
