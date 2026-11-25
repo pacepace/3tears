@@ -502,7 +502,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: Starlette ASGI app serving the Streamable-HTTP transport
         :rtype: starlette.applications.Starlette
@@ -542,7 +543,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: the transport
         :rtype: threetears.mcp.http_server.McpHttpTransport
@@ -587,7 +589,8 @@ class McpServer:
             correct per-request bearer identity)
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
-            SSE streams
+            SSE streams; a call's progress and log notifications then cannot
+            reach the client (they need an SSE stream)
         :ptype json_response: bool
         :return: nothing
         :rtype: None
