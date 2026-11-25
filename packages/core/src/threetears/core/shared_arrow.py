@@ -75,6 +75,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import contextvars
 import enum
 import fcntl
 import functools
@@ -160,6 +161,7 @@ __all__ = [
     "MappedVersion",
     "Parts",
     "PiecedSlot",
+    "ReadSlot",
     "SegmentSlot",
     "SharedArrowFullError",
     "SharedArrowPool",
@@ -173,12 +175,14 @@ __all__ = [
     "epochs_version",
     "serving_fallback_counted",
     "file_tokens",
+    "held_slot",
     "merge_parts",
     "merged_rows",
     "plain_name",
     "private_bytes",
     "query_batches",
     "read_version",
+    "riding",
     "stamped",
     "stamping",
     "version_files",
@@ -4392,6 +4396,72 @@ def _usable_cores() -> int:
     return effective_cpu_count(cpu_count=getattr(os, "process_cpu_count", os.cpu_count))
 
 
+class ReadSlot:
+    """one read's engine slot (:class:`_Admission`): it belongs to the read, not the thread that took it, so the read
+    gives it back from whichever thread its block ends on. A read opened on one worker thread and closed on another
+    (``asyncio.to_thread`` twice, as a copy's checkpoint does) gives back exactly its own slot; when the slot was kept
+    per thread, the close on the other thread gave back nothing, and three such reads held every slot of a pod until
+    each read there timed out (reports' replay 9, 2026-11-25: reads in flight 3 with nothing running).
+
+    A read opened inside another's block, in its context on the same thread, rides the outer read's slot
+    (:attr:`rides`): that thread runs no second query at once, and waiting for a slot of its own it would wait on
+    itself. Made only by :meth:`_Admission.enter`; given back only by :meth:`_Admission.leave`.
+    """
+
+    __slots__ = ("admission", "done", "prior", "rides")
+
+    def __init__(self, admission: _Admission, rides: ReadSlot | None) -> None:
+        #: the admission it was taken from
+        self.admission = admission
+        #: the slot this read rides; None when it holds a slot of its own
+        self.rides = rides
+        #: what its context held before it, put back as it is given back there
+        self.prior = _HELD_SLOT.get()
+        #: written once, by its admission under its lock, as the slot is given back
+        self.done = False
+
+
+#: the slot a read in this context holds, and the thread it may be ridden from (None: any thread, as :func:`riding`
+#: hands it): a context, so ``asyncio.to_thread``'s copy of it ends with the call and another task on the same pool
+#: thread never sees it
+_HELD_SLOT: contextvars.ContextVar[tuple[ReadSlot, int | None] | None] = contextvars.ContextVar(
+    "threetears_shared_arrow_held_slot", default=None
+)
+
+
+def held_slot() -> ReadSlot | None:
+    """the slot the read open in this context holds, for :func:`riding` on another thread.
+
+    :return: the slot; None when no shared Arrow read is open in this context
+    :rtype: ReadSlot | None
+    """
+    held = _HELD_SLOT.get()
+    return None if held is None else held[0]
+
+
+@contextlib.contextmanager
+def riding(slot: ReadSlot | None) -> Iterator[None]:
+    """let a read opened in the block, on this thread, ride a read's slot held elsewhere (:func:`held_slot`): the
+    holder opened it on another thread and keeps it open, idle, until the block ends. A copy's checkpoint opens its
+    read on a thread and, when an apply landed meanwhile, opens a fresh one on the loop beside it: riding, the fresh
+    read takes no slot, so the loop never waits for one (up to the reader's ``admit_wait``; with one slot, the read
+    ahead holding it, every time).
+
+    :param slot: the slot; None rides nothing
+    :ptype slot: ReadSlot | None
+    :return: the block
+    :rtype: Iterator[None]
+    """
+    if slot is None:
+        yield
+        return
+    token = _HELD_SLOT.set((slot, None))
+    try:
+        yield
+    finally:
+        _HELD_SLOT.reset(token)
+
+
 class _Admission:
     """the reads one reader runs at once: as many as keep (reads x engine threads) within the process's usable cores.
 
@@ -4399,7 +4469,8 @@ class _Admission:
     interpreter lock (building a result's Python rows) is preempted with it: the event loop then waits until that
     thread runs again (2 CPUs, 4 reads of 2 engine threads each: the loop 12.6-15.8 ms late with the host idle on
     time; prod 2026-10-31, engines sized past the pod's CPU quota froze the loop each throttled period). A read past
-    the slots waits, off the loop, first come first served, at most ``wait`` seconds.
+    the slots waits, off the loop, first come first served, at most ``wait`` seconds. Each read holds a
+    :class:`ReadSlot` of its own, given back from any thread.
     """
 
     def __init__(self, slots: int, wait: float) -> None:
@@ -4409,9 +4480,6 @@ class _Admission:
         self._running = 0
         #: the reads waiting, first come first; replaced whole under ``_turn``
         self._waiting: tuple[object, ...] = ()
-        #: the slots each thread holds: a thread already in a read runs no second query at once, so a read it opens
-        #: inside one takes no other slot (and would wait forever on its own if it did)
-        self._held = threading.local()
 
     @property
     def counts(self) -> tuple[int, int]:
@@ -4419,25 +4487,38 @@ class _Admission:
         with self._turn:
             return self._running, len(self._waiting)
 
-    def enter(self) -> None:
-        """take a slot, waiting in turn for one.
+    def _ridden(self) -> ReadSlot | None:
+        """the slot of this admission a read opened now rides: one held in this context, still held, from this thread
+        (or handed by :func:`riding`); None to take a slot of its own."""
+        held = _HELD_SLOT.get()
+        if held is None:
+            return None
+        slot, thread = held
+        if slot.admission is not self or (thread is not None and thread != threading.get_ident()):
+            return None
+        with self._turn:
+            return None if slot.done else slot
 
+    def enter(self) -> ReadSlot:
+        """take a slot, waiting in turn for one; a read inside another's block on this thread rides its slot.
+
+        :return: the read's slot, for :meth:`leave`
+        :rtype: ReadSlot
         :raises TimeoutError: when no slot came within the wait
         """
-        depth = getattr(self._held, "depth", 0)
-        if depth:
-            self._held.depth = depth + 1
-            return
-        me = object()
+        outer = self._ridden()
+        if outer is not None:
+            return ReadSlot(self, outer)
+        slot = ReadSlot(self, None)
         with self._turn:
-            self._waiting = (*self._waiting, me)
+            self._waiting = (*self._waiting, slot)
             _READS_QUEUED.inc()
             try:
                 admitted = self._turn.wait_for(
-                    lambda: self._running < self.slots and self._waiting[0] is me, timeout=self._wait
+                    lambda: self._running < self.slots and self._waiting[0] is slot, timeout=self._wait
                 )
             finally:
-                self._waiting = tuple(each for each in self._waiting if each is not me)
+                self._waiting = tuple(each for each in self._waiting if each is not slot)
                 _READS_QUEUED.dec()
             if not admitted:
                 self._turn.notify_all()
@@ -4447,19 +4528,35 @@ class _Admission:
                 )
             self._running += 1
             _READS_IN_FLIGHT.inc()
-            self._held.depth = 1
             # the next in line may be admitted too, when slots remain
             self._turn.notify_all()
+        _HELD_SLOT.set((slot, threading.get_ident()))
+        return slot
 
-    def leave(self) -> None:
-        """give the slot back (when the thread's outermost read ends)."""
-        self._held.depth -= 1
-        if self._held.depth:
-            return
+    def leave(self, slot: ReadSlot) -> None:
+        """give the read's slot back, from whichever thread its block ends on; a read that rode another's gives back
+        nothing.
+
+        :param slot: what :meth:`enter` gave the read
+        :ptype slot: ReadSlot
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when the slot is another reader's or was given back already: never a silent count
+        """
+        if slot.admission is not self:
+            raise RuntimeError("a shared Arrow read's slot was given back to another reader's admission")
         with self._turn:
-            self._running -= 1
-            _READS_IN_FLIGHT.dec()
-            self._turn.notify_all()
+            if slot.done:
+                raise RuntimeError("a shared Arrow read's slot was given back twice")
+            slot.done = True
+            if slot.rides is None:
+                self._running -= 1
+                _READS_IN_FLIGHT.dec()
+                self._turn.notify_all()
+        held = _HELD_SLOT.get()
+        if held is not None and held[0] is slot:
+            # the context the read opened in: reads opened in it after this take slots of their own
+            _HELD_SLOT.set(slot.prior)
 
 
 class SharedArrowReader:
@@ -4550,12 +4647,13 @@ class SharedArrowReader:
         :raises RuntimeError: after :meth:`close`
         :raises TimeoutError: when no engine slot came within the reader's ``admit_wait``
         """
-        self._admission.enter()
+        # the slot is the read's: its block may end on another thread than it opened on (:class:`ReadSlot`)
+        slot = self._admission.enter()
         try:
             with self._read() as read:
                 yield read
         finally:
-            self._admission.leave()
+            self._admission.leave(slot)
 
     @contextlib.contextmanager
     def _read(self) -> Iterator[SharedRead]:

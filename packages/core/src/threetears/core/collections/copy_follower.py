@@ -218,6 +218,7 @@ from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.process_workers import ProcessWorkers
+from threetears.core.shared_arrow import ReadSlot, held_slot, riding
 from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
@@ -434,6 +435,34 @@ _DRIFT_CHECKS = counter(
 
 #: a state's held version once a change of it was applied with no epoch: never a part's version
 _VERSION_UNKNOWN: Final = ""
+
+
+def _close_contained(stack: ExitStack) -> None:
+    """close a checkpoint's read opened ahead (:meth:`CopyFollower._open_marked`). Blocking (IO): run on a thread.
+
+    :param stack: the stack holding the read open
+    :ptype stack: ExitStack
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        stack.close()
+    except Exception as exc:  # noqa: BLE001 - a checkpoint is a start's shortcut; the copy is unaffected
+        contain(exc, log=log, what="a copy checkpoint's read could not be closed")
+
+
+def _close_landed(opening: asyncio.Future[tuple[ExitStack, Any, int | None, ReadSlot | None]]) -> None:
+    """close, on a thread, the read a cancelled checkpoint was opening, once its open lands: never left open, holding
+    its engine slot (:meth:`CopyFollower._write_checkpoint`).
+
+    :param opening: the open, done
+    :ptype opening: asyncio.Future[tuple[ExitStack, Any, int | None, ReadSlot | None]]
+    :return: nothing
+    :rtype: None
+    """
+    if opening.cancelled() or opening.exception() is not None:
+        return  # nothing opened: a failed open closes what it opened itself
+    asyncio.get_running_loop().run_in_executor(None, _close_contained, opening.result()[0])
 
 
 def _drift_check_seconds(given: float | None) -> float:
@@ -4349,15 +4378,25 @@ class CopyFollower:
         opened ahead and closed after, each on a thread; the checkpoint's own read only hands it over
         (:meth:`_marked_read`), so the read still begins where the write counts what it holds, with no await between.
 
+        Why shielded: the read holds an engine slot until it is closed (a shared Arrow read's
+        :class:`~threetears.core.shared_arrow.ReadSlot`). A cancel while it opens lets the open finish and closes what
+        it opened as it lands; a cancel while it closes lets the close finish. Unshielded, either left the read open and
+        its slot held for good (three such reads fill a pod's slots, and every read there then times out).
+
         :return: nothing
         :rtype: None
         """
         assert self._checkpoints is not None  # noqa: S101 -- narrowed by the caller
-        opened: tuple[ExitStack, Any, int | None] | None = None
+        opened: tuple[ExitStack, Any, int | None, ReadSlot | None] | None = None
         try:
-            opened = await asyncio.to_thread(self._open_marked)
-            stack, cursor, mark = opened
-            written = await self._checkpoints.write(lambda: self._marked_read(cursor, mark))
+            opening = asyncio.ensure_future(asyncio.to_thread(self._open_marked))
+            try:
+                opened = await asyncio.shield(opening)
+            except asyncio.CancelledError:
+                opening.add_done_callback(_close_landed)
+                raise
+            stack, cursor, mark, slot = opened
+            written = await self._checkpoints.write(lambda: self._marked_read(cursor, mark, slot))
         except asyncio.CancelledError, KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - a checkpoint is a start's shortcut; the copy is unaffected
@@ -4369,7 +4408,7 @@ class CopyFollower:
             return
         finally:
             if opened is not None:
-                await asyncio.to_thread(opened[0].close)
+                await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(_close_contained, opened[0])))
         if written is not None:
             # a change applied while it was written stays counted: asked again once this write is done, so an epoch
             # applied from the notes meanwhile is not left waiting for a change that may not come
@@ -6561,37 +6600,50 @@ class CopyFollower:
             stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})
             yield cursor, stamp, marks
 
-    def _open_marked(self) -> tuple[ExitStack, Any, int | None]:
+    def _open_marked(self) -> tuple[ExitStack, Any, int | None, ReadSlot | None]:
         """open a read of the copy and read the mark of the change it holds. Blocking (IO): run it on a thread; close
         the stack the same way.
 
-        :return: the stack holding the read open, its cursor, and its change's mark (None before the first change)
-        :rtype: tuple[ExitStack, duckdb.DuckDBPyConnection, int | None]
+        :return: the stack holding the read open, its cursor, its change's mark (None before the first change), and the
+            engine slot it holds (None when the copy's reads take none: only a shared Arrow read does)
+        :rtype: tuple[ExitStack, duckdb.DuckDBPyConnection, int | None, ReadSlot | None]
         """
+        before = held_slot()
         stack = ExitStack()
         try:
             cursor = stack.enter_context(self._backend.read_snapshot())
-            return stack, cursor, self._backend.staged_mark(cursor)
+            slot = held_slot()
+            # only a slot this read took: one its caller's context held is not this read's to hand on
+            return stack, cursor, self._backend.staged_mark(cursor), None if slot is before else slot
         except BaseException:
             stack.close()
             raise
 
     @contextmanager
-    def _marked_read(self, cursor: Any, mark: int | None) -> Iterator[tuple[Any, Any, Mapping[str, str | None]]]:
+    def _marked_read(
+        self, cursor: Any, mark: int | None, slot: ReadSlot | None
+    ) -> Iterator[tuple[Any, Any, Mapping[str, str | None]]]:
         """:meth:`reading_marked` over a read opened ahead (:meth:`_open_marked`), as a checkpoint opens it: the stamp
         and marks of its change. A read opened before the last change applied (an apply landed while the checkpoint
         claimed its lock) misses a change the checkpoint counts as held, so a fresh read is opened here instead, on the
         loop as before: rare, and never wrong. A change is counted toward a checkpoint only once its mark is applied.
 
+        Why the fresh read rides the read ahead's slot (:func:`~threetears.core.shared_arrow.riding`): it is opened on
+        the loop, and taking a slot of its own it would wait for one there, the loop held up to the reader's
+        ``admit_wait`` (30 s); with one slot, the read ahead holding it, every time. The read ahead stays open, idle,
+        until the checkpoint is written, so the slot is held for the fresh read throughout.
+
         :param cursor: the read opened ahead
         :ptype cursor: duckdb.DuckDBPyConnection
         :param mark: its change's mark
         :ptype mark: int | None
+        :param slot: the engine slot the read ahead holds; None when it holds none
+        :ptype slot: ReadSlot | None
         :return: ``(cursor, stamp, marks)``
         :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Any, Mapping[str, str | None]]]
         """
         if self._applied_mark is not None and (mark is None or mark < self._applied_mark):
-            with self.reading_marked() as fresh:
+            with riding(slot), self.reading_marked() as fresh:
                 yield fresh
             return
         stamp, marks = self._stamps.get(mark, (None, {})) if mark is not None else (None, {})

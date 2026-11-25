@@ -26,6 +26,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -73,6 +74,7 @@ from threetears.core.collections.delta_files import TableDelta, write_delta_file
 from prometheus_client import REGISTRY  # noqa: E402
 from threetears.core.testing.keyed_statements import as_lists  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
+from threetears.core.shared_arrow import SharedArrowStore  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -2857,3 +2859,167 @@ async def test_a_checkpoint_opens_and_closes_its_read_of_the_copy_off_the_loop(m
     await writer.checkpointed()
     assert pointers.entries, "no checkpoint was written"
     assert on_loop == [], f"a read of the copy was opened or closed on the event loop: {on_loop}"
+
+
+class _NewThreadEach(ThreadPoolExecutor):
+    """a default executor running each call on a thread of its own: every read of the copy a checkpoint opens on one
+    thread is closed on another, as a pool of many threads may do at any time."""
+
+    def submit[T](self, fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> Future[T]:
+        future: Future[T] = Future()
+
+        def run() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:  # noqa: BLE001 - handed to the future's waiter, which raises it
+                future.set_exception(exc)
+
+        threading.Thread(target=run, daemon=True).start()
+        return future
+
+
+def _slotted_reads(backend: DuckDBBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, slots: int = 1) -> Any:
+    """each read of the copy holds a shared Arrow read's engine slot, as a copy published as shared Arrow does
+    (reports' ``SharedArrowBackend.read_snapshot``): the reader the slots are counted on, ``slots`` of them, a read
+    waiting at most 1 s for one."""
+    store = SharedArrowStore(tmp_path / "shm", max_bytes=8 << 20)
+    store.publish("v1", {"t": pa.table({"a": [1]})})
+    reader = store.reader(config={"threads": 1}, admit_wait=1.0, cores=slots)
+    snapshot = backend.read_snapshot
+
+    @contextmanager
+    def slotted() -> Iterator[Any]:
+        with reader.read(), snapshot() as cursor:
+            yield cursor
+
+    monkeypatch.setattr(backend, "read_snapshot", slotted)
+    return reader
+
+
+def _slots_held(reader: Any) -> tuple[int, int]:
+    return reader.status()["in_flight"], reader.status()["queued"]
+
+
+async def test_checkpoints_whose_reads_close_on_other_threads_hold_no_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a checkpoint's read of the copy, opened on one thread and closed on another, keeps its engine slot:
+    reports' replay 9 (2026-11-25) leaked three, every slot of the pod, and every read there then timed out at 30 s.
+    Ten checkpoints, each read closed on another thread than it opened on: no slot held after any, each written."""
+    asyncio.get_running_loop().set_default_executor(_NewThreadEach())
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
+    reader = _slotted_reads(backend, tmp_path, monkeypatch)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    assert _pointer_seq(pointers) == 1
+    assert _slots_held(reader) == (0, 0)
+    for round_ in range(2, 12):
+        l3.put([("VA", round_, round_)])
+        log.commit([("VA", round_)])
+        lock.version += 1
+        assert await writer.catch_up()
+        await writer.checkpointed()
+        assert _slots_held(reader) == (0, 0), f"checkpoint {round_} left a slot held"
+        assert _pointer_seq(pointers) == round_, f"checkpoint {round_} was not written"
+    writer.stop()
+    reader.close()
+
+
+async def test_a_checkpoint_cancelled_while_its_read_opens_leaves_no_slot_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a checkpoint cancelled while its read of the copy opens on a thread (the follower stopped) leaves
+    the read open: the thread opens it after the cancel, and nothing closed it, its engine slot held for good."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
+    reader = _slotted_reads(backend, tmp_path, monkeypatch)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    loop_thread = threading.get_ident()
+    opening, release = threading.Event(), threading.Event()
+    slotted = backend.read_snapshot
+
+    @contextmanager
+    def held_open() -> Iterator[Any]:
+        with slotted() as cursor:
+            if threading.get_ident() != loop_thread:
+                opening.set()
+                assert release.wait(timeout=10), "the test never let the open land"
+            yield cursor
+
+    monkeypatch.setattr(backend, "read_snapshot", held_open)
+    l3.put([("VA", 7, 70)])
+    log.commit([("VA", 7)])
+    lock.version += 1
+    assert await writer.catch_up()
+    assert await asyncio.to_thread(opening.wait, 5), "the checkpoint never opened its read"
+    writer.stop()
+    await writer.checkpointed()
+    release.set()
+    deadline = time.monotonic() + 5
+    while _slots_held(reader) != (0, 0) and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert _slots_held(reader) == (0, 0), "the read the cancelled checkpoint opened still holds its slot"
+    reader.close()
+
+
+async def test_a_checkpoints_fresh_read_takes_no_slot_on_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a checkpoint whose read ahead missed the last change (an apply landed while it claimed its lock) waits
+    on the event loop for an engine slot for the fresh read it opens there: the loop held up to the reader's
+    ``admit_wait`` (30 s in a pod), and with one slot, the read ahead holding it, every time, the checkpoint then lost.
+    The fresh read rides the read ahead's slot: the loop is never late, and the checkpoint is written."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    backend, writer, _ = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
+    reader = _slotted_reads(backend, tmp_path, monkeypatch, slots=1)
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    loop_thread = threading.get_ident()
+    marked = backend.staged_mark
+    fresh: list[str] = []
+
+    def behind(cursor: Any) -> int | None:
+        # the read ahead (on a thread) holds a change before the last applied: the checkpoint opens a fresh read
+        if threading.get_ident() != loop_thread:
+            return None
+        fresh.append("fresh read on the loop")
+        return marked(cursor)
+
+    monkeypatch.setattr(backend, "staged_mark", behind)
+    late = 0.0
+
+    async def tick() -> None:
+        nonlocal late
+        while True:
+            began = time.monotonic()
+            await asyncio.sleep(0.01)
+            late = max(late, time.monotonic() - began - 0.01)
+
+    ticker = asyncio.create_task(tick())
+    l3.put([("VA", 7, 70)])
+    log.commit([("VA", 7)])
+    lock.version += 1
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+
+    assert fresh, "the checkpoint never opened a fresh read"
+    assert late < 0.5, f"the event loop was {late:.2f} s late: the fresh read waited for a slot on it"
+    assert _pointer_seq(pointers) == 2, "the checkpoint was not written"
+    assert _slots_held(reader) == (0, 0)
+    writer.stop()
+    reader.close()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import fcntl
 import gc
 import logging
@@ -21,6 +22,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -1662,4 +1664,79 @@ class TestAReaderRunsNoMoreEngineThreadsThanItsCores:
         assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
         with reader.read():
             pass
+        reader.close()
+
+    def test_a_read_opened_on_one_thread_and_closed_on_another_gives_its_slot_back(
+        self, store: SharedArrowStore
+    ) -> None:
+        """Flips if a read's slot is kept per thread: a read opened on one worker thread and closed on another
+        (``asyncio.to_thread`` twice, as a copy's checkpoint does) gave nothing back, and three such reads held every
+        slot of a reports pod until each read there timed out at 30 s (replay 9, 2026-11-25: reads in flight 3 with
+        nothing running)."""
+        _serving_version(store, "v1")
+        reader = store.reader(config={"threads": 1}, admit_wait=0.5, cores=1)
+        opened: list[Any] = []
+        failed: list[BaseException] = []
+
+        def on_a_thread(step: Callable[[], None]) -> None:
+            def run() -> None:
+                try:
+                    step()
+                except BaseException as exc:  # noqa: BLE001 - handed to the test thread, which raises it
+                    failed.append(exc)
+
+            thread = threading.Thread(target=run)
+            thread.start()
+            thread.join(timeout=5)
+
+        for _ in range(3):
+            block = reader.read()
+
+            def enter(block: contextlib.AbstractContextManager[Any] = block) -> None:
+                opened.append(block.__enter__())
+
+            def leave(block: contextlib.AbstractContextManager[Any] = block) -> None:
+                block.__exit__(None, None, None)
+
+            on_a_thread(enter)
+            on_a_thread(leave)
+            assert failed == []
+            assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
+        with reader.read() as last:
+            assert last.cursor.execute('SELECT count(*) FROM "t0"').fetchone() == (10,)
+        reader.close()
+
+    def test_a_read_inside_a_read_on_the_same_thread_rides_its_slot(self, store: SharedArrowStore) -> None:
+        """Flips if a read opened inside another's block, on its thread, waits for a slot of its own: with one slot it
+        would wait on itself until it timed out."""
+        _serving_version(store, "v1")
+        reader = store.reader(config={"threads": 1}, admit_wait=0.5, cores=1)
+        with reader.read(), reader.read() as inner:
+            assert inner.cursor.execute('SELECT count(*) FROM "t0"').fetchone() == (10,)
+            assert (reader.status()["in_flight"], reader.status()["queued"]) == (1, 0)
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
+        reader.close()
+
+    def test_a_read_another_call_left_open_on_a_pool_thread_lends_no_slot_to_the_next_call_there(
+        self, store: SharedArrowStore
+    ) -> None:
+        """Flips if a read rides any read open on its thread: a pool thread runs one ``asyncio.to_thread`` call after
+        another, each in its own copy of its caller's context, and a read one call left open (a checkpoint's read,
+        held across awaits) is not the next call's to ride: two queries would run under one slot."""
+        _serving_version(store, "v1")
+        reader = store.reader(config={"threads": 1}, admit_wait=0.5, cores=2)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+
+            def call[T](step: Callable[[], T]) -> T:
+                # as ``asyncio.to_thread`` runs a call: in a copy of the caller's context
+                return pool.submit(contextvars.copy_context().run, step).result(timeout=5)
+
+            first = reader.read()
+            call(first.__enter__)
+            second = reader.read()
+            call(second.__enter__)
+            assert (reader.status()["in_flight"], reader.status()["queued"]) == (2, 0)
+            call(lambda: second.__exit__(None, None, None))
+            call(lambda: first.__exit__(None, None, None))
+        assert (reader.status()["in_flight"], reader.status()["queued"]) == (0, 0)
         reader.close()
