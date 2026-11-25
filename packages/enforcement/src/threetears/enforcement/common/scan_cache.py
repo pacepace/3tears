@@ -52,8 +52,9 @@ holds a complete answer for the keys its writer looked up.
 
 **Nothing here is required.** A missing directory is created; one that cannot be created, read or
 written (a read-only checkout) leaves every lookup a miss, the scan is computed as it would be
-without the cache, and the first failed write warns. The default directory,
-``.cache/enforcement-scans`` under the repo root, is gitignored.
+without the cache, and the first failed write warns. The default directory is
+``.cache/enforcement-scans`` under the repo root, and it carries its own ``.gitignore`` (as
+``.pytest_cache`` does), so a consumer repo's checkout stays clean without naming it.
 """
 
 from __future__ import annotations
@@ -102,6 +103,9 @@ _ORPHAN_AGE_S = 3600.0
 #: a store written under other code is removed once nothing has rewritten it for this long
 _OTHER_CODE_AGE_S = 86400.0
 
+#: what a store directory's own ``.gitignore`` says: everything here, itself included, is git's to ignore
+_SELF_IGNORE = "# the enforcement scan cache (threetears.enforcement.common.scan_cache); never tracked\n*\n"
+
 #: what a computation may open outside its inputs: the interpreter's own code, never data
 _CODE_SUFFIXES = frozenset({".py", ".pyc", ".so"})
 _CODE_ROOTS = tuple(sorted({os.path.realpath(prefix) for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix)}))
@@ -146,6 +150,27 @@ def _install_audit() -> bool:
 
 #: the hook, added once per process on the first computation that records
 _AUDIT: BuildOnce[str, bool] = BuildOnce()
+
+
+def _ignore_itself(directory: Path) -> None:
+    """give *directory* a ``.gitignore`` that ignores everything in it, so any checkout's git leaves the stores alone.
+
+    A consumer repo's gates write their stores under its root without its ``.gitignore`` naming them,
+    as ``.pytest_cache`` and ``.mypy_cache`` do. Written whole and renamed into place, once.
+
+    :raises OSError: when the directory cannot be written
+    """
+    target = directory / ".gitignore"
+    if target.is_file():
+        return
+    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".gitignore-", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(_SELF_IGNORE)
+        os.replace(temporary, target)
+    except OSError:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 class _ScanCacheWarning(UserWarning):
@@ -595,6 +620,7 @@ class ScanCache:
         target = self._path(name)
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
+            _ignore_itself(self.directory)
             handle, temporary = tempfile.mkstemp(dir=self.directory, prefix=f".{name}-", suffix=".tmp")
         except OSError as exc:
             self._refuse(f"{name}: {self.directory} cannot be written ({exc.strerror or exc})")

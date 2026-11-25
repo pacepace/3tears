@@ -248,6 +248,23 @@ def test_an_inputs_key_moves_with_a_files_name_or_byte_and_with_nothing_else(tmp
     assert key("c", "b") != original
 
 
+def test_a_store_leaves_any_checkout_clean_without_its_gitignore_naming_it(tmp_path: Path) -> None:
+    """a consumer repo whose gates cache under its root sees no untracked file, though its .gitignore says nothing."""
+    repo = tmp_path / "consumer"
+    _write(repo, {"a": "alpha", ".gitignore": "*.log\n"})
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+    counted = _Counted(repo)
+
+    ScanCache(repo / ".cache" / "enforcement-scans", "code").memoised("s", ["a"], counted.declared, counted.compute)
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, capture_output=True, text=True, check=True
+    )
+
+    assert counted.calls == ["a"]
+    assert list((repo / ".cache" / "enforcement-scans").glob("s-*.pickle")), "nothing was stored"
+    assert sorted(status.stdout.splitlines()) == ["?? .gitignore", "?? a"], status.stdout
+
+
 # -- a computation that reads outside its key is answered and not stored -----------------------
 
 
