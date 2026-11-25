@@ -1516,7 +1516,9 @@ def _scoped(stamp: Any) -> tuple[Mapping[str, int], frozenset[str]] | None:
     epochs = getattr(stamp, "epochs", None)
     if not isinstance(epochs, Mapping):
         return None
-    held = frozenset(getattr(stamp, "pending", frozenset())) if isinstance(stamp, Unsettled) else frozenset()
+    # a settled stamp's pending scopes are those a commit withheld (ScopeEpochs' "A commit may withhold scopes"): held
+    # as a write in progress's are, at the epoch the copy has, so their rows a write left part way are never applied
+    held = frozenset(getattr(stamp, "pending", frozenset()))
     return epochs, held
 
 
@@ -3709,7 +3711,7 @@ class CopyFollower:
                 [
                     name
                     for name, scopes in self._staged_scopes.items()
-                    if writing and self._clashes(scopes, held) and (None in scopes or not self._splittable(name))
+                    if self._held_back(scopes, held, writing=writing) and (None in scopes or not self._splittable(name))
                 ]
             )
             self._drain()
@@ -4050,6 +4052,22 @@ class CopyFollower:
         if self._checkpointing is not None:
             await asyncio.gather(self._checkpointing, return_exceptions=True)
 
+    @classmethod
+    def _held_back(cls, scopes: AbstractSet[str | None], held: frozenset[str], *, writing: bool) -> bool:
+        """whether a stage of these scopes may not be applied now: while a write is in progress, as :meth:`_clashes`;
+        at a settled stamp, only when it holds a scope a commit withheld (a table of no scope is applied as ever).
+
+        :param scopes: the scopes a stage holds rows of (None: a table of no scope)
+        :ptype scopes: AbstractSet[str | None]
+        :param held: the scopes held (a write's, or a commit's withheld)
+        :ptype held: frozenset[str]
+        :param writing: whether a write is in progress
+        :ptype writing: bool
+        :return: whether it is held back
+        :rtype: bool
+        """
+        return cls._clashes(scopes, held) if writing else bool(scopes & held)
+
     @staticmethod
     def _clashes(scopes: AbstractSet[str | None], held: frozenset[str]) -> bool:
         """whether a stage of these scopes may not be applied while a write holds ``held``.
@@ -4079,7 +4097,7 @@ class CopyFollower:
         """
         scoped = _scoped(first)
         waiting = self._waiting_scopes() if scoped is not None else frozenset()
-        if not isinstance(first, Unsettled) and not left and not waiting:
+        if not isinstance(first, Unsettled) and not held and not left and not waiting:
             return first
         epochs = dict(scoped[0]) if scoped is not None else dict(first.epochs or {})
         before = _scoped(self._status.stamp)
@@ -4180,7 +4198,8 @@ class CopyFollower:
                 continue
             if name in self._whole:
                 why = self._whole[name]
-                if writing and why not in ("cold_start", "reset"):
+                # a scoped table is read whole again only once no scope is held (a withheld one's rows are part way)
+                if (writing or (held and table.scope is not None)) and why not in ("cold_start", "reset"):
                     continue
                 whole[name] = why
                 self._whole = without_entry(self._whole, name)
@@ -4241,7 +4260,8 @@ class CopyFollower:
         unsettled = isinstance(second, Unsettled)
         moved = {scope for scope in set(epochs_a) | set(epochs_b) if epochs_a.get(scope) != epochs_b.get(scope)}
         whole_moved = bool(moved) or (unsettled != isinstance(first, Unsettled))
-        blocked = moved | (held_b if unsettled else frozenset())
+        # held_b at a settled stamp: the scopes a commit withheld, never applied until a later commit moves them
+        blocked = moved | held_b
         forget: list[str] = []
         left: set[str] = set()
         leaving: dict[str, Any] = {}
@@ -4272,9 +4292,13 @@ class CopyFollower:
         if whole_rule:
             # nothing applies this pass: a stage holding a scope a write took is forgotten (its keys read again once
             # the write commits); one whose scope only moved is kept, its keys heard again topping it up
-            if unsettled:
+            if unsettled or held_b:
                 self._forget_tables_now(
-                    [name for name, scopes in self._staged_scopes.items() if self._clashes(scopes, held_b)]
+                    [
+                        name
+                        for name, scopes in self._staged_scopes.items()
+                        if self._held_back(scopes, held_b, writing=unsettled)
+                    ]
                 )
             return False
         self._forget_tables_now(forget)

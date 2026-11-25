@@ -1193,6 +1193,8 @@ class _Scopes:
         self.version = 1
         self.epochs: dict[str, int] = {"state:VA": 1, "state:IL": 1}
         self.held: frozenset[str] | None = None
+        #: the scopes a commit withheld (pending at a settled stamp: ScopeEpochs' "A commit may withhold scopes")
+        self.withheld: frozenset[str] = frozenset()
         self.on_read: Any = None
         self.reads = 0
 
@@ -1201,7 +1203,7 @@ class _Scopes:
         if self.on_read is not None and self.on_read[0] == self.reads:
             self.on_read[1]()
         if self.held is None:
-            return SimpleNamespace(version=self.version, epochs=dict(self.epochs), pending=frozenset())
+            return SimpleNamespace(version=self.version, epochs=dict(self.epochs), pending=self.withheld)
         return Unsettled("a long write", epochs=dict(self.epochs), pending=self.held, version=self.version)
 
     def commit(self, *scopes: str) -> None:
@@ -1268,6 +1270,38 @@ async def test_a_commit_beside_a_held_write_reaches_the_copy_and_the_held_scope_
     # the write commits: IL follows
     lock.commit("state:IL")
     lock.held = None
+    assert await follower.catch_up()
+    assert _copy(backend) == l3.held()
+    assert follower.stamp.epochs == lock.epochs
+
+
+async def test_a_scope_a_commit_withheld_stays_settled_until_a_later_commit_moves_it() -> None:
+    """ScopeEpochs' "A commit may withhold scopes": a load whose IL page failed commits VA and withholds IL, whose rows
+    it left part way. No write is in progress, so the stamp is settled, but IL stays pending: the copy applies VA and
+    keeps IL as it was, until a later commit moves IL. Before the fix a settled stamp held nothing, so IL's half-written
+    rows were applied."""
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    settled_il = _of(backend, "IL")
+    # the load wrote VA whole and IL part way, then committed withholding IL
+    l3.put([("VA", 1, 77), ("IL", 0, 50)])
+    log.commit([("VA", 1), ("IL", 0)])
+    lock.commit("state:VA")
+    lock.withheld = frozenset({"state:IL"})
+    assert await follower.catch_up()
+    assert _of(backend, "VA") == _l3_of(l3, "VA")
+    assert _of(backend, "IL") == settled_il, "a withheld scope's half-written rows were applied"
+    stamp = follower.stamp
+    assert isinstance(stamp, PartialStamp) and stamp.held == frozenset({"state:IL"})
+    # the next load finishes IL and commits it: IL follows
+    l3.put([("IL", 9, 90)])
+    log.commit([("IL", 9)])
+    lock.commit("state:IL")
+    lock.withheld = frozenset()
     assert await follower.catch_up()
     assert _copy(backend) == l3.held()
     assert follower.stamp.epochs == lock.epochs

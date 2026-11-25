@@ -268,6 +268,85 @@ async def test_scopes_an_abandoned_write_touched_move_at_the_next_commit(held: _
     assert (await held.epochs.snapshot()).epoch("state:VA") == version, "a touched scope moved twice"
 
 
+async def _touched_write(held: _Held, scopes: set[str]) -> int:
+    version: int = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: held.epochs.touch(version, scopes, conn=conn))
+    return version
+
+
+async def test_a_withheld_scope_stays_pending_while_the_rest_of_the_write_commits(held: _Held) -> None:
+    """a load whose IL page failed: VA, race:us-pres and IL were written (IL part way); the commit withholds IL and the
+    national race IL touched. The version and VA move; IL and the race keep their epochs, pending and withheld."""
+    await _write(held, {"state:VA", "state:IL", "race:us-pres"})
+    version = await _touched_write(held, {"state:VA", "state:IL", "race:us-pres"})
+
+    await _in_transaction(
+        held.pool,
+        lambda conn: held.epochs.commit(version, set(), conn=conn, withheld={"state:IL", "race:us-pres", "state:XX"}),
+    )
+
+    settled = await held.epochs.settled()
+    assert isinstance(settled, EpochSnapshot), "a withhold is a commit: no write is in progress"
+    assert (settled.version, settled.writing) == (version, None)
+    assert dict(settled.epochs) == {"state:VA": version, "state:IL": 1, "race:us-pres": 1}
+    assert settled.pending == settled.withheld == frozenset({"state:IL", "race:us-pres"}), "an untouched scope is none"
+
+
+async def test_a_withheld_scope_moves_only_at_the_commit_of_a_later_write_that_touched_it(held: _Held) -> None:
+    await _write(held, {"state:VA", "state:IL"})
+    first = await _touched_write(held, {"state:VA", "state:IL"})
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(first, set(), conn=conn, withheld={"state:IL"}))
+    # a write that does not touch IL (IL left out of its slice) commits: IL stays withheld
+    second = await _touched_write(held, {"state:VA"})
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(second, set(), conn=conn))
+    kept = await held.epochs.snapshot()
+    assert (kept.epoch("state:VA"), kept.epoch("state:IL")) == (second, 1)
+    assert kept.withheld == frozenset({"state:IL"})
+    # an abandon (a commit of what a dead write left) leaves it withheld too
+    await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    dead = (await held.epochs.snapshot()).writing
+    assert dead is not None
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(dead, (), conn=conn))
+    assert (await held.epochs.snapshot()).withheld == frozenset({"state:IL"})
+    # the write that finishes IL touches it again and commits it: IL moves to that write's version
+    third = await _touched_write(held, {"state:IL"})
+    assert (await held.epochs.snapshot()).withheld == frozenset(), "a touch is a write's again, not a withhold"
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(third, set(), conn=conn))
+    moved = await held.epochs.settled()
+    assert isinstance(moved, EpochSnapshot)
+    assert moved.epoch("state:IL") == third and moved.previous["state:IL"] == 1
+    assert moved.pending == moved.withheld == frozenset()
+
+
+async def test_a_scope_both_named_to_move_and_withheld_is_refused_and_nothing_moves(held: _Held) -> None:
+    version = await _touched_write(held, {"state:VA"})
+
+    with pytest.raises(ValueError, match="both named to move and withheld"):
+        await _in_transaction(
+            held.pool, lambda conn: held.epochs.commit(version, {"state:VA"}, conn=conn, withheld={"state:VA"})
+        )
+
+    snapshot = await held.epochs.snapshot()
+    assert snapshot.writing == version and snapshot.epoch("state:VA") == 0
+
+
+async def test_a_reader_holding_the_epochs_reads_a_withhold_and_its_release_as_a_whole_read_would(
+    held: _Held,
+) -> None:
+    """the incremental read (pending leg, epoch leg) answers a withhold and its release exactly as a whole read."""
+    reader = _replica(held.pool)[1]
+    await _write(held, {"state:VA", "state:IL"})
+    await reader.snapshot()
+    version = await _touched_write(held, {"state:VA", "state:IL"})
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, set(), conn=conn, withheld={"state:IL"}))
+    assert await reader.snapshot() == await _replica(held.pool)[1].snapshot()
+    assert (await reader.snapshot()).withheld == frozenset({"state:IL"})
+    finish = await _touched_write(held, {"state:IL"})
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(finish, set(), conn=conn))
+    assert await reader.snapshot() == await _replica(held.pool)[1].snapshot()
+    assert (await reader.snapshot()).withheld == frozenset()
+
+
 async def test_a_touch_rolled_back_with_its_data_leaves_nothing_pending(held: _Held) -> None:
     version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
 

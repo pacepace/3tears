@@ -528,6 +528,7 @@ async def counts_by_relations(
     fresh: str | None = None,
     pins: Mapping[str, Mapping[str, Any]] | None = None,
     page: None = None,
+    ahead: None = None,
 ) -> dict[str, dict[Any, int]]: ...
 
 
@@ -550,6 +551,7 @@ async def counts_by_relations(
     fresh: str | None = None,
     pins: None = None,
     page: int | None = None,
+    ahead: Mapping[str, Mapping[str, Mapping[str, str | None]]] | None = None,
 ) -> dict[str, list[MarkedCount]]: ...
 
 
@@ -571,6 +573,7 @@ async def counts_by_relations(
     fresh: str | None = None,
     pins: Mapping[str, Mapping[str, Any]] | None = None,
     page: int | None = None,
+    ahead: Mapping[str, Mapping[str, Mapping[str, str | None]]] | None = None,
 ) -> dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]:
     """:func:`counts_by` over several relations at once: one statement a batch, a ``UNION ALL`` of each relation's
     keyed count, so a warehouse answers every relation in the statements one relation took.
@@ -648,6 +651,12 @@ async def counts_by_relations(
     :param page: with ``since``, the most groups a statement answers, every page read (unpaged, one statement, when
         None); not with ``packed_rows``
     :ptype page: int | None
+    :param ahead: with ``since``, label -> a value of ``column`` -> that value's own marks, the same stamps as the
+        relation's and each at or past its mark: the value's rows are those past its own marks, every other value's
+        those past the relation's (a source's change record kept per state: a state a load already took further than
+        the rest names only its rows past its own mark), and its fresh flag is judged by its own marks too. Still one
+        statement (or one a page): the relation's marks bound every part, so each reads only its rows past them
+    :ptype ahead: Mapping[str, Mapping[str, Mapping[str, str | None]]] | None
     :return: label -> value -> its rows; every label present. With ``since``: label -> its groups past the marks
     :rtype: dict[str, dict[Any, int]] | dict[str, list[MarkedCount]]
     :raises ValueError: as :func:`counts_by`, when no relation is named, or packed with neither ``values`` nor
@@ -679,7 +688,10 @@ async def counts_by_relations(
             groups,
             packed_as,
             page,
+            ahead or {},
         )
+    if ahead:
+        raise ValueError("ahead= names a value's own marks past a relation's: it needs since=")
     if group or max_of or fresh is not None or page is not None:
         raise ValueError("group=, max_of=, fresh= and page= group the rows past a relation's marks: they need since=")
     if batch < 1:
@@ -1003,6 +1015,7 @@ async def _counts_since(
     groups: int | None,
     packed_as: str,
     page: int | None = None,
+    ahead: Mapping[str, Mapping[str, Mapping[str, str | None]]] | None = None,
 ) -> dict[str, list[MarkedCount]]:
     """every relation's groups past its marks, one statement, or keyset pages of ``page`` groups
     (:func:`counts_by_relations` with ``since``).
@@ -1028,6 +1041,12 @@ async def _counts_since(
     unknown = set(group) - set(labels)
     if unknown:
         raise ValueError(f"group= names relations not counted: {sorted(unknown)}")
+    own_marks = ahead or {}
+    if set(own_marks) - set(labels):
+        raise ValueError(f"ahead= names relations not counted: {sorted(set(own_marks) - set(labels))}")
+    for label, by_value in own_marks.items():
+        if any(set(marks) != set(since[label]) for marks in by_value.values()):
+            raise ValueError(f"ahead= for {label!r} names the stamps its marks do, each value's")
     answer: dict[str, list[MarkedCount]] = {label: [] for label in labels}
     conditions, params = by_conditions(pinned)
     for fragment in where:
@@ -1041,9 +1060,33 @@ async def _counts_since(
     for index, label in enumerate(labels):
         past, marks, compared = _past_marks(since[label], len(params) + 1)
         params += marks
+        fresh_when = "" if fresh is None else f"WHEN {compared[fresh]} THEN 1 "
+        by_value = own_marks.get(label) or {}
+        if by_value:
+            # WHY (reports, Pace 2026-11-25): a state a load already took past the table's low-water mark names only
+            # its rows past its own; the relation's marks still bound the part, so it reads only rows past them
+            own_values: list[str] = []
+            branches: list[str] = []
+            fresh_cases: list[str] = []
+            for value, value_marks in sorted(by_value.items()):
+                params.append(value)
+                named = f"${len(params)}"
+                own_values.append(named)
+                value_past, value_params, value_compared = _past_marks(value_marks, len(params) + 1)
+                params += value_params
+                branches.append(f"({quoted} = {named} AND {value_past})")
+                if fresh is not None:
+                    fresh_cases.append(
+                        f"WHEN {quoted} = {named} THEN CASE WHEN {value_compared[fresh]} THEN 1 ELSE 0 END "
+                    )
+            past = (
+                f"({past} AND ({quoted} IS NULL OR {quoted} NOT IN ({', '.join(own_values)}) "
+                f"OR {' OR '.join(branches)}))"
+            )
+            fresh_when = "".join(fresh_cases) + fresh_when
         grouped = group.get(label)
         group_text = "CAST(NULL AS VARCHAR)" if grouped is None else f"CAST({quote_identifier(grouped)} AS VARCHAR)"
-        flag = "0" if fresh is None else f"max(CASE WHEN {compared[fresh]} THEN 1 ELSE 0 END)"
+        flag = "0" if fresh is None else f"max(CASE {fresh_when}ELSE 0 END)"
         clause = " AND ".join([*conditions, past])
         source = relation(tables[label], "r", params)
         tail = f"FROM {source} WHERE {clause} GROUP BY {quoted}"
