@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 
 import asyncio
+import hashlib
 import inspect
 import json
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping, Sequence
@@ -67,7 +68,12 @@ from threetears.interfaces.keyed.keys import (
     partial_predicate,
 )
 from threetears.interfaces.keyed.rows import DeclaredScope, KeyColumn, KeyColumns
-from threetears.core.backends.arrow_copy import arrow_python_columns, arrow_python_rows, with_constant_columns
+from threetears.core.backends.arrow_copy import (
+    arrow_python_columns,
+    arrow_python_rows,
+    with_constant_columns,
+    with_typed_constants,
+)
 from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
@@ -79,6 +85,7 @@ from threetears.core.backends.protocol import (
     BulkDurableStore,
     CopyingStore,
     DurableStore,
+    GoneMarkingStore,
     KeyLedReadingStore,
     LoadFile,
     LoadingStore,
@@ -94,6 +101,7 @@ from threetears.core.backends.schema_sql import (
     build_select_column_list,
     bulk_update_columns,
     coerce_row as _coerce_row_fn,
+    copy_writes,
     decode_l2_value as _decode_l2_value,
     decode_vector as _decode_vector,
     encode_jsonb as encode_jsonb,
@@ -131,6 +139,7 @@ from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUM
 from threetears.core.declared import whole_read
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
+    GONE_COLUMN,
     RowEpoch,
     UnstampedWriteError,
     next_epoch,
@@ -1641,6 +1650,17 @@ class TableSchema:
             )
         if not versions:
             return
+        # the "gone" marker's flag: a delete appends the key's version at its epoch with it set (append-only L3, chunk 2)
+        gone = Column(GONE_COLUMN, BOOL_TYPE, immutable=True, nullable=False, server_default="false")
+        held_gone = next((column for column in self.columns if column.name == GONE_COLUMN), None)
+        if held_gone is None:
+            object.__setattr__(self, "columns", [*self.columns, gone])
+        elif held_gone != gone:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): its {GONE_COLUMN!r} column must be {gone!r} (or left out, and it "
+                f"is added so): a delete appends the key's version with it set, and a write that leaves it out writes "
+                f"a live version"
+            )
         scope = declared.scope
         if scope is None or not any(column.name == scope for column in self.columns):
             raise ValueError(f"TableSchema(name={self.name!r}): row_versions scope {scope!r} is not one of its columns")
@@ -1971,6 +1991,45 @@ class TableSchema:
         return self._stored_key
 
     @property
+    def versioned(self) -> bool:
+        """whether the table keeps a version a write, append-only (:attr:`row_epoch` is ``row_versions``): a write
+        appends the key's new version and a delete appends a "gone" marker, never an upsert or a ``DELETE``.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self.row_epoch is not None and self.row_epoch.versions
+
+    @property
+    def gone_marker_columns(self) -> tuple[str, ...]:
+        """the columns a versioned table's "gone" marker carries: the key, the scope (when the key does not name it),
+        the epoch and the gone flag. Empty for any other table.
+
+        :return: the columns, in that order
+        :rtype: tuple[str, ...]
+        """
+        if not self.versioned:
+            return ()
+        assert self.row_epoch is not None and self.row_epoch.scope is not None  # noqa: S101 -- narrowed by versioned
+        scope = () if self.row_epoch.scope in self._pk_columns else (self.row_epoch.scope,)
+        return (*self._pk_columns, *scope, EPOCH_COLUMN, GONE_COLUMN)
+
+    @property
+    def live_only_columns(self) -> tuple[str, ...]:
+        """a versioned table's required columns a "gone" marker leaves out: every ``NOT NULL`` column but the key, the
+        epoch, the gone flag and the scope. Nullable in the stored table, where one ``CHECK`` requires them of a live
+        version (:meth:`create_statements`); empty for any other table.
+
+        :return: the columns, in declared order
+        :rtype: tuple[str, ...]
+        """
+        if not self.versioned:
+            return ()
+        assert self.row_epoch is not None  # noqa: S101 -- narrowed by versioned
+        kept = {*self._pk_columns, EPOCH_COLUMN, GONE_COLUMN, self.row_epoch.scope}
+        return tuple(column.name for column in self.columns if not column.nullable and column.name not in kept)
+
+    @property
     def stamps_epoch(self) -> bool:
         """whether every write of the table stamps each row with its epoch (:attr:`row_epoch` declared).
 
@@ -2009,6 +2068,26 @@ class TableSchema:
             create = create.replace(rendered, ordered)
         indexes = tuple(str(CreateIndex(index).compile(dialect=dialect)) for index in table.indexes)
         return (create, *indexes)
+
+    def _live_check(self) -> Any:
+        """a versioned table's ``CHECK`` that a live version holds every required column a "gone" marker leaves out
+        (:attr:`live_only_columns`): ``gone OR (c IS NOT NULL AND ...)``, so the database still refuses a live version
+        missing one, as the column's ``NOT NULL`` did.
+
+        WHY a CHECK and not a marker carrying every column: a delete names the key (and the scope), never the row it
+        removes; filling the rest would mean reading the old version back a key at a time, the read the append was
+        made to avoid. A separate marker table would make every newest-per-key read a second probe; in the table, the
+        marker is the key's first entry newest-first, which the read stops at.
+
+        :return: the constraint
+        :rtype: sqlalchemy.CheckConstraint
+        """
+        required = " AND ".join(f'"{name}" IS NOT NULL' for name in self.live_only_columns)
+        name = f"{self.name}_live"
+        if len(name) > 63:
+            # a constraint name is bounded (NAMEDATALEN): a digest keeps it one per table
+            name = f"live_{hashlib.sha256(self.name.encode()).hexdigest()[:24]}"
+        return sa.CheckConstraint(f'"{GONE_COLUMN}" OR ({required})', name=name)
 
     def keyset_order(self, pinned: Iterable[str] = ()) -> tuple[str, ...]:
         """the columns a keyset read of the rows ``pinned``'s equality filters name pages on, so an index answers
@@ -2189,6 +2268,7 @@ class TableSchema:
         # order (below) so the epoch is last whatever the columns' order
         versioned = stored and self.row_epoch is not None and self.row_epoch.versions
         pk_set = set(self._stored_key if stored else self._pk_columns)
+        live_only = frozenset(self.live_only_columns) if stored else frozenset()
         sa_columns: list[Any] = []
         for col in self.columns:
             if col.column_type not in type_mapping:
@@ -2203,6 +2283,9 @@ class TableSchema:
             # PK columns are NOT NULL by definition; for non-PK columns
             # carry through the schema's :attr:`Column.nullable` flag.
             nullable = False if is_pk else col.nullable
+            if col.name in live_only:
+                # a "gone" marker leaves it out: required of a live version by the table's CHECK below
+                nullable = True
             kwargs: dict[str, Any] = {
                 "primary_key": is_pk and not versioned,
                 "nullable": nullable,
@@ -2255,6 +2338,7 @@ class TableSchema:
             metadata,
             *sa_columns,
             *((sa.PrimaryKeyConstraint(*self._stored_key),) if versioned else ()),
+            *(() if not live_only else (self._live_check(),)),
             *sa_fk_constraints,
             *sa_unique_constraints,
             info={} if self.l1_eviction is None else {L1_EVICTION_INFO: self.l1_eviction},
@@ -3328,6 +3412,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         written = 0
         if copy:
             written = await self._copy_rows(store, stamped, conn=conn, max_rows=max_rows, max_bytes=max_bytes)
+        elif stamped and self._appends_by_copy(store, stamped[0]):
+            # a versioned table's rewrite is an append of the keys' new versions: a COPY, never an upsert
+            # (TableSchema.versioned). WHY: an upsert into a table with a row trigger reads and flushes a row at a time
+            # on YugabyteDB, 1.58 ms a row against 0.09 for a copy (append-only L3, scratch copies of
+            # latest_results_candidates_by_id, 2026-11-25)
+            written = await self._copy_rows(
+                store,
+                stamped,
+                conn=conn,
+                max_rows=max_rows or self.BULK_MAX_ROWS,
+                max_bytes=max_bytes or self.BULK_MAX_BYTES,
+                append=True,
+            )
         elif stamped and isinstance(store, BulkDurableStore):
             written = await store.upsert_many(
                 self.table_name,
@@ -3483,7 +3580,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         keys, enrollments = await asyncio.to_thread(self._arrow_enrollments, stamped, asyncio.get_running_loop())
         # enrolled before the write, so a write whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
-        transaction.record_arrow(self, stamped, plan.update_columns)
+        # an append (a versioned table's new version) replaces the key's row whole, as the upsert it stands for set every
+        # mutable column: its delta file records that SET list, never the append's empty one
+        written = (
+            bulk_update_columns(self.schema, insert_columns_for_data(self.schema, dict.fromkeys(stamped.column_names)))
+            or []
+            if plan.kind == "append"
+            else plan.update_columns
+        )
+        transaction.record_arrow(self, stamped, written)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         bound = max_rows if max_rows is not None or copy else self.BULK_MAX_ROWS
@@ -3533,6 +3638,25 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         return keys, CallerTransaction.enrollments(self, keys, seen, turns)
 
+    def _appends_by_copy(self, store: DurableStore, first: Mapping[str, Any]) -> bool:
+        """whether :meth:`save_rows`' upsert of a versioned table is written as a copy of the keys' new versions: the
+        table is versioned, its store copies, and a copy writes every column the rows send
+        (:func:`~threetears.core.backends.schema_sql.copy_writes`: not a jsonb or a vector). Otherwise the store's bulk
+        statement writes them, an ``INSERT`` with no conflict clause for a versioned table.
+
+        :param store: the collection's durable store
+        :ptype store: DurableStore
+        :param first: the first row, whose columns every row supplies
+        :ptype first: Mapping[str, Any]
+        :return: whether
+        :rtype: bool
+        """
+        return (
+            self.schema.versioned
+            and isinstance(store, CopyingStore)
+            and all(copy_writes(column) for column in insert_columns_for_data(self.schema, dict(first)))
+        )
+
     async def _copy_rows(
         self,
         store: DurableStore,
@@ -3541,6 +3665,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         conn: Any,
         max_rows: int | None,
         max_bytes: int | None,
+        append: bool = False,
     ) -> int:
         """insert ``rows``, already stamped and checked, on the caller's transaction: :meth:`save_rows` with ``copy``.
 
@@ -3554,6 +3679,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype max_rows: int | None
         :param max_bytes: the most bytes one copy's request comes to; when neither bound is given, :func:`copy_bounds`
         :ptype max_bytes: int | None
+        :param append: the rows are a versioned table's new versions, noted a row each (``CopyingStore.copy_many``)
+        :ptype append: bool
         :return: rows written
         :rtype: int
         """
@@ -3562,12 +3689,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if isinstance(store, CopyingStore):
             if max_rows is None and max_bytes is None:
                 max_rows, max_bytes = copy_bounds(conn, len(rows))
+            appending: dict[str, bool] = {"append": True} if append else {}
             return await store.copy_many(
                 self.table_name,
                 rows,
                 max_rows=max_rows or self.BULK_MAX_ROWS,
                 max_bytes=max_bytes or self.BULK_MAX_BYTES,
                 conn=conn,
+                **appending,
             )
         # a store that cannot copy: still insert-only, a write per row
         for data in rows:
@@ -4398,7 +4527,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # a table that opts in to delta files: the commit's file names the prefixes, which a copy and the fold clear
         # from their own rows (decision 23); no row is listed, so L3 is never read for them
         transaction.record_prefixes(self, prefixes)
-        deleted = await store.delete_prefixes(self.table_name, [dict(prefix) for prefix in prefixes], conn=conn)
+        # a versioned table's prefixes are run markers at the delete's epoch, ONE a prefix, never a DELETE
+        marking = {"epoch": self._epoch_stamp(conn, "delete_prefixes")[EPOCH_COLUMN]} if self.schema.versioned else {}
+        deleted = await store.delete_prefixes(
+            self.table_name, [dict(prefix) for prefix in prefixes], conn=conn, **marking
+        )
         log.debug(
             "key-prefix delete written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "prefixes": len(reach), "rows": deleted}},
@@ -4427,8 +4560,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         conn: Any,
         max_rows: int | None = None,
         delta_scope: Any = None,
+        scope: Any = None,
     ) -> int:
         """delete many rows by key on a caller's transaction, through the collection's durable store.
+
+        **A versioned table** (:attr:`TableSchema.versioned`) is never deleted from: each key is a "gone" marker
+        appended at the delete's epoch (the store's ``mark_gone``), carrying the key, the table's scope and the epoch.
 
         The other half of :meth:`save_rows`, for a load that makes a table match a source: the rows
         the source no longer holds leave in a few multi-row ``DELETE`` statements, not one round trip
@@ -4453,12 +4590,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             file carries it, and the fold files the delete under that state's part (decision 27). A writer deletes
             within one state's load, so it knows it. None for any other table
         :ptype delta_scope: Any
+        :param scope: for a versioned table whose key does not name its scope column (``row_versions(scope)``), the
+            scope of every key deleted, which each gone marker carries; when None, ``delta_scope`` where the table's
+            delta scope is that column. None for any other table
+        :ptype scope: Any
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the collection
             has no durable store, caches absences or defers its L3 writes; when ``max_rows`` is under
             one; when a key is not as wide as the table's key; when ``delta_scope`` is given for a table that declares
-            none
+            none; when a versioned table's markers' scope cannot be named
         :raises DeltaFileRefusedError: when the table declares a :attr:`TableSchema.delta_scope` and no
             ``delta_scope`` is given, before any statement
         """
@@ -4487,7 +4628,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         # each key named is a delete marker in the table's delta file, whichever way it is enrolled below
         transaction.record_deletes(self, named, scope=delta_scope)
-        if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore):
+        # a versioned table is never deleted from (its "gone" markers are appended below), so never DELETE ... RETURNING
+        versioned = self.schema.versioned
+        marker_scope = self._marker_scope(delta_scope, scope) if versioned else None
+        if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore) and not versioned:
             return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
         # a collection whose row messages carry columns reads each row before it goes, on the caller's
         # transaction, so the message can say whose it was: a statement a batch of keys where the store reads
@@ -4517,7 +4661,22 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         deleted = 0
-        if named and isinstance(store, BulkDeletingStore):
+        if versioned and named:
+            # append-only: a "gone" marker a key at the delete's epoch, never a DELETE (TableSchema.versioned)
+            if not isinstance(store, GoneMarkingStore):
+                raise ValueError(
+                    f"{type(self).__name__}.delete_rows: {self.table_name} is versioned, and its store cannot append "
+                    f"gone markers"
+                )
+            deleted = await store.mark_gone(
+                self.table_name,
+                named,
+                epoch=self._epoch_stamp(conn, "delete_rows")[EPOCH_COLUMN],
+                scope=marker_scope,
+                max_rows=max_rows or self.BULK_MAX_ROWS,
+                conn=conn,
+            )
+        elif named and isinstance(store, BulkDeletingStore):
             deleted = await store.delete_many(
                 self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn
             )
@@ -4544,6 +4703,34 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises ValueError: when a state is named for a table whose markers carry none
         """
         check_delta_scope(self.table_name, self.schema.delta_scope, delta_scope)
+
+    def _marker_scope(self, delta_scope: Any, scope: Any) -> Any:
+        """the scope value every "gone" marker of a versioned table's delete carries when its key does not name the
+        scope column: the delete's ``scope``, else its ``delta_scope`` (the state of every key it deletes) when the
+        table's delta scope is that column. None when the key names it.
+
+        :param delta_scope: the delete's named state, or None
+        :ptype delta_scope: Any
+        :param scope: the delete's named scope, or None
+        :ptype scope: Any
+        :return: the scope value, or None
+        :rtype: Any
+        :raises ValueError: when the key names the scope and a scope is given anyway, or does not and none can be named
+        """
+        epoch = self.schema.row_epoch
+        assert epoch is not None and epoch.scope is not None  # noqa: S101 -- a versioned table's
+        if epoch.scope in self.schema.pk_columns:
+            if scope is not None:
+                raise ValueError(f"{self.table_name}: its key names its scope {epoch.scope!r}; give no scope")
+            return None
+        if scope is not None:
+            return scope
+        if delta_scope is None or self.schema.delta_scope != epoch.scope:
+            raise ValueError(
+                f"{type(self).__name__}: {self.table_name}'s key does not name its scope {epoch.scope!r}, and each gone "
+                f"marker carries it (a restore finds the marker by it): name the scope of every key deleted (scope)"
+            )
+        return delta_scope
 
     def _delete_keys_named(
         self, keys: Sequence[Sequence[Any]], loop: asyncio.AbstractEventLoop | None = None
@@ -4599,7 +4786,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         return entity_keys, CallerTransaction.enrollments(self, entity_keys, seen, turns)
 
-    async def delete_arrow(self, keys: Any, *, conn: Any, max_rows: int | None = None, delta_scope: Any = None) -> int:
+    async def delete_arrow(
+        self, keys: Any, *, conn: Any, max_rows: int | None = None, delta_scope: Any = None, scope: Any = None
+    ) -> int:
         """:meth:`delete_rows` for keys already in an Arrow table: deleted through the store's Arrow write door, the
         keys sent as Arrow and merged by one ``DELETE ... USING`` a request, at most ``max_rows`` keys a request
         (:attr:`BULK_MAX_ROWS` when None), as :meth:`delete_rows` names them a statement: the request is one
@@ -4620,6 +4809,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param delta_scope: the state of every key deleted, for a table whose key does not name it (as
             :meth:`delete_rows`)
         :ptype delta_scope: Any
+        :param scope: a versioned table's scope of every key, when neither its key nor ``keys`` carry the scope column
+            (as :meth:`delete_rows`)
+        :ptype scope: Any
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: as :meth:`delete_rows`: no :class:`CallerTransaction` open on ``conn``; no durable store,
@@ -4652,29 +4844,73 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             self._arrow_delete_enrollments, keys, asyncio.get_running_loop()
         )
         arrow_store = store if isinstance(store, ArrowWritingStore) and not self.invalidation_columns else None
+        sent = keys
+        if arrow_store is not None and self.schema.versioned:
+            # append-only: the keys become "gone" markers at the delete's epoch, appended (TableSchema.versioned)
+            sent = await self._gone_markers(keys, delta_scope, scope, conn)
         plan = (
             arrow_store.arrow_write_plan(
-                self.table_name, keys.column_names, keys.schema.types, kind="delete", conn=conn
+                self.table_name,
+                sent.column_names,
+                sent.schema.types,
+                kind="gone" if self.schema.versioned else "delete",
+                conn=conn,
             )
             if arrow_store is not None
             else None
         )
         if arrow_store is None or plan is None:
             # no door for these keys, or messages that carry each row's columns: today's delete
-            return await self.delete_rows(named, conn=conn, max_rows=max_rows, delta_scope=delta_scope)
+            return await self.delete_rows(named, conn=conn, max_rows=max_rows, delta_scope=delta_scope, scope=scope)
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
         transaction.enroll_all(enrollments)
         transaction.record_deletes(self, named, scope=delta_scope)
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         await arrow_store.write_arrow(
-            self.table_name, keys, plan, conn=conn, max_rows=max_rows if max_rows is not None else self.BULK_MAX_ROWS
+            self.table_name, sent, plan, conn=conn, max_rows=max_rows if max_rows is not None else self.BULK_MAX_ROWS
         )
         log.debug(
             "Arrow bulk delete written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "rows": len(named)}},
         )
         return len(named)
+
+    async def _gone_markers(self, keys: Any, delta_scope: Any, scope: Any, conn: Any) -> Any:
+        """a versioned table's "gone" markers of ``keys``, as Arrow: the key's columns, the scope (the keys' own
+        column when they carry it, else the delete's ``delta_scope``), the delete's epoch and the flag, each constant
+        laid out by Arrow with its declared type (:attr:`TableSchema.gone_marker_columns`).
+
+        :param keys: the keys, a column for each key column
+        :ptype keys: pyarrow.Table
+        :param delta_scope: the delete's named state, or None
+        :ptype delta_scope: Any
+        :param scope: the delete's named scope, or None
+        :ptype scope: Any
+        :param conn: the caller's connection, its transaction's write turn taken
+        :ptype conn: Any
+        :return: the markers
+        :rtype: pyarrow.Table
+        :raises ValueError: when the markers' scope cannot be named (:meth:`_marker_scope`)
+        :raises UnstampedWriteError: when the transaction took no write's turn
+        """
+        epoch = self.schema.row_epoch
+        assert epoch is not None and epoch.scope is not None  # noqa: S101 -- a versioned table's
+        carried = epoch.scope in keys.column_names
+        selected = [
+            *self.schema.pk_columns,
+            *((epoch.scope,) if carried and epoch.scope not in self.schema.pk_columns else ()),
+        ]
+        constants: dict[str, tuple[Any, Any]] = {
+            EPOCH_COLUMN: (self._epoch_stamp(conn, "delete_arrow")[EPOCH_COLUMN], pa.int64()),
+            GONE_COLUMN: (True, pa.bool_()),
+        }
+        if not carried:
+            named = self._marker_scope(delta_scope, scope)
+            if named is not None:
+                column = self.schema.column(epoch.scope)
+                constants[epoch.scope] = (named, rail_arrow_types([column])[epoch.scope])
+        return await asyncio.to_thread(with_typed_constants, keys.select(selected), constants)
 
     def _arrow_delete_enrollments(
         self, keys: Any, loop: asyncio.AbstractEventLoop | None = None

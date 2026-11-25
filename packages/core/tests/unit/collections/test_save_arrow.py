@@ -31,6 +31,7 @@ from threetears.nats import Subject
 
 from threetears.core.backends import arrow_copy, nats_proxy, sql
 from threetears.core.backends.arrow_copy import (
+    APPEND_FIELD,
     CONFLICT_COLUMNS_FIELD,
     DELETE_FIELD,
     JSON_COLUMNS_FIELD,
@@ -58,7 +59,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.row_epoch import EPOCH_COLUMN, UnstampedWriteError, row_versions
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, UnstampedWriteError, row_versions
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -619,9 +620,9 @@ async def test_an_arrow_write_of_a_versioned_table_stamps_every_row_with_its_wri
         assert _version(epoch) == 17
         epochs.append(epoch)
         if not copy:
-            # the conflict is a version of the key, never the key alone
-            assert envelope[CONFLICT_COLUMNS_FIELD] == ["office_key", "geo_id", EPOCH_COLUMN]
-            assert EPOCH_COLUMN not in envelope[UPDATE_COLUMNS_FIELD]
+            # append-only L3, chunk 2: a rewrite appends the key's new version, never an upsert
+            assert envelope[APPEND_FIELD] is True
+            assert ON_CONFLICT_FIELD not in envelope and CONFLICT_COLUMNS_FIELD not in envelope
     # the same keys written twice in one version: the later write sorts newer
     assert epochs[1] > epochs[0]
 
@@ -635,6 +636,70 @@ async def test_an_arrow_write_of_a_versioned_table_on_a_transaction_that_took_no
         async with proxy.acquire() as conn, CallerTransaction(conn):
             await collection.save_arrow(_table(3), conn=conn)
     assert hub.arrow_requests() == []
+
+
+# -- append-only: a versioned table's writes append, its deletes are gone markers, a whole run one run marker ----------
+
+
+async def _on_rail(hub: _Hub, step: Any, *, version: int = 17) -> Any:
+    collection = _collection(_VERSIONED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
+        transaction.note_write_version(version)
+        return await step(collection, conn)
+
+
+async def test_a_rewrite_of_a_versioned_table_as_python_rows_is_a_copy_that_appends() -> None:
+    hub = _Hub(write_arrow=True)
+    rows = [{"office_key": "sn_NC1", "geo_id": f"{n:05d}", "votes": n} for n in range(40)]
+    await _on_rail(hub, lambda collection, conn: collection.save_rows(rows, conn=conn))
+    # no statement at all, so no ON CONFLICT: one copy request saying it appends
+    assert hub.statements() == []
+    [(envelope, sent, _size)] = hub.arrow_requests()
+    assert envelope[APPEND_FIELD] is True
+    assert ON_CONFLICT_FIELD not in envelope and DELETE_FIELD not in envelope
+    assert sent.num_rows == 40
+    assert _version(sent.column(EPOCH_COLUMN)[0].as_py()) == 17
+
+
+async def test_an_arrow_delete_of_a_versioned_table_appends_a_gone_marker_a_key_at_a_newer_epoch() -> None:
+    hub = _Hub(write_arrow=True)
+    keys = pa.table({"office_key": ["sn_NC1", "sn_NC1"], "geo_id": ["00001", "00002"]})
+
+    async def step(collection: Any, conn: Any) -> None:
+        await collection.save_arrow(_table(2), conn=conn)
+        assert await collection.delete_arrow(keys, conn=conn) == 2
+
+    await _on_rail(hub, step)
+    (_, written, _), (envelope, markers, _) = hub.arrow_requests()
+    assert hub.statements() == []
+    assert envelope[APPEND_FIELD] is True and DELETE_FIELD not in envelope
+    assert markers.column_names == ["office_key", "geo_id", EPOCH_COLUMN, GONE_COLUMN]
+    assert markers.column(GONE_COLUMN).to_pylist() == [True, True]
+    [epoch] = set(markers.column(EPOCH_COLUMN).to_pylist())
+    assert epoch > written.column(EPOCH_COLUMN)[0].as_py()
+
+
+async def test_a_delete_of_a_versioned_tables_keys_appends_gone_markers_and_deletes_nothing() -> None:
+    hub = _Hub(write_arrow=True)
+    await _on_rail(
+        hub, lambda collection, conn: collection.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00002")], conn=conn)
+    )
+    [statement] = hub.statements()
+    assert statement["query"].startswith("INSERT INTO versioned_results (office_key, geo_id, epoch, gone) VALUES")
+    assert "DELETE" not in statement["query"] and "ON CONFLICT" not in statement["query"]
+
+
+async def test_a_whole_run_of_a_versioned_table_deleted_names_its_epoch_and_scope_to_the_broker() -> None:
+    hub = _Hub(write_arrow=True)
+    await _on_rail(
+        hub, lambda collection, conn: collection.delete_prefixes([{"office_key": "sn_NC1"}], conn=conn), version=23
+    )
+    [body] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.delete_prefixes")]
+    assert body["scope"] == "office_key"
+    assert _version(body["epoch"]) == 23
+    assert body["prefixes"] == [{"office_key": "sn_NC1"}]
 
 
 def _version(epoch: int) -> int:

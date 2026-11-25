@@ -226,7 +226,8 @@ def test_an_epoch_column_declared_otherwise_or_named_in_the_key_is_refused() -> 
         )
 
 
-def test_an_upsert_of_a_versioned_table_conflicts_on_a_version_of_the_key() -> None:
+def test_an_upsert_of_a_versioned_table_is_planned_as_an_append_with_no_conflict_clause() -> None:
+    # append-only L3, chunk 2: chunk 1's interim upsert on (key..., epoch) is gone; a rewrite appends a new version
     store = SqlL3Backend(MagicMock())
     store.register_schema("results", _versioned())
     plan = store.arrow_write_plan(
@@ -237,8 +238,8 @@ def test_an_upsert_of_a_versioned_table_conflicts_on_a_version_of_the_key() -> N
         conn=MagicMock(write_arrow=True),
     )
     assert plan is not None
-    assert plan.conflict_columns == ("office_key", "candidate", EPOCH_COLUMN)
-    assert EPOCH_COLUMN not in plan.update_columns
+    assert plan.kind == "append"
+    assert (plan.conflict_columns, plan.update_columns) == ((), ())
 
 
 # -- a write that carries no epoch is refused -------------------------------------------------------------------------

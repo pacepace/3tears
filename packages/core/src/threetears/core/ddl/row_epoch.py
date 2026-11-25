@@ -42,6 +42,14 @@ write statement, later draws sorting newer.
 - **Stamped** (:data:`ROW_STAMPED`), the small tables updated in place (``lsf_runs``, ``state_fingerprints``): one row a
   key, carrying its last write's epoch.
 
+**Append-only (versions).** A versioned table is never upserted and never deleted from: a write appends the key's new
+version (an ``INSERT`` with no ``ON CONFLICT``, its own epoch, so it never meets an older version's), and a delete
+appends a "gone" marker, the key at the delete's epoch with :data:`GONE_COLUMN` true. The marker carries the key, the
+scope and the epoch alone: the table's other required columns are required of a live version only (a ``CHECK`` of the
+stored table, ``gone OR (c IS NOT NULL AND ...)``), so the database still refuses a live version missing one. A whole
+run deleted (a key prefix) is one row of the run-marker table (:mod:`~threetears.core.ddl.run_markers`), never a
+marker a row.
+
 **A write that carries no epoch is refused**: by 3tears before it is sent (:class:`UnstampedWriteError`), and by the
 database for any write that bypasses 3tears (the column is ``NOT NULL`` with no default).
 
@@ -55,7 +63,9 @@ from dataclasses import dataclass
 from typing import Final
 
 __all__ = [
+    "AppendOnlyWriteError",
     "EPOCH_COLUMN",
+    "GONE_COLUMN",
     "ROW_STAMPED",
     "RowEpoch",
     "UnstampedWriteError",
@@ -67,6 +77,10 @@ __all__ = [
 #: the column every row of a table that declares a :class:`RowEpoch` carries its epoch in
 EPOCH_COLUMN: Final[str] = "epoch"
 
+#: the column a versioned table's "gone" marker sets: the key's version at that epoch says the key is gone (a delete,
+#: appended rather than run). ``BOOLEAN NOT NULL DEFAULT false``: a write that leaves it out writes a live version
+GONE_COLUMN: Final[str] = "gone"
+
 #: the low bits of an epoch, the write statement's sequence
 _SEQUENCE_BITS: Final[int] = 31
 
@@ -75,6 +89,12 @@ _MAX_SEQUENCE: Final[int] = (1 << _SEQUENCE_BITS) - 1
 
 #: the largest version an epoch holds: 32 bits, so the epoch stays a positive BIGINT
 _MAX_VERSION: Final[int] = (1 << 32) - 1
+
+
+class AppendOnlyWriteError(ValueError):
+    """a ``DELETE`` (or an upsert) of a versioned table: refused before anything is sent. A versioned table is
+    append-only: a write appends the key's new version, a delete appends a "gone" marker, a whole run deleted appends
+    one run marker (:mod:`~threetears.core.ddl.run_markers`)."""
 
 
 class UnstampedWriteError(ValueError):

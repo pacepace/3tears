@@ -60,6 +60,7 @@ __all__ = [
     "build_key_led_delete_sql",
     "build_led_by_select_sql",
     "build_ordered_upsert_sql",
+    "build_no_row_delete_sql",
     "build_prefix_delete_sql",
     "build_select_column_list",
     "build_where_pk",
@@ -720,9 +721,12 @@ def _with_conflict_clause(
     :return: the INSERT with it
     :rtype: str
     """
-    # the stored key: a versioned table's conflict is a version of the key (its epoch), never the key alone
-    pk_cols = ", ".join(getattr(schema, "stored_key", schema.pk_columns))
-    if schema.on_conflict == "raise":
+    pk_cols = ", ".join(schema.pk_columns)
+    if schema.on_conflict == "raise" or getattr(schema, "versioned", False):
+        # a versioned table is append-only (row_epoch.row_versions): a write appends the key's new version at its own
+        # epoch, which no older version holds, so it never conflicts and is never an upsert. WHY (append-only L3,
+        # chunk 2): an upsert into a table with a row trigger runs a read and a flush a row on YugabyteDB (its ON
+        # CONFLICT batching is off for such tables), 1.58 ms a row against 0.09 for a COPY
         result = sql
     elif schema.on_conflict == "ignore":
         result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
@@ -977,6 +981,20 @@ def build_whole_key_delete_sql(schema: TableSchema) -> str:
         f"DELETE /*+ YbBatchedNL(named doomed) */ FROM {schema.name} AS doomed "
         f"WHERE ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}) AS named)"
     )
+
+
+def build_no_row_delete_sql(schema: TableSchema) -> str:
+    """a ``DELETE`` of the table that no row passes: its statement triggers fire and no row goes. A versioned table's
+    whole run deleted is a run marker (``SqlL3Backend.delete_prefixes``), which deletes nothing of the table, so this
+    statement under the prefix marks fires its whole-write trigger: the one change note naming the prefixes today's
+    delete left (until the change-note ring retires, append-only L3 chunk 7).
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :return: the ``DELETE``
+    :rtype: str
+    """
+    return f"DELETE FROM {schema.name} WHERE FALSE"
 
 
 def build_prefix_delete_sql(schema: TableSchema, columns: KeyColumns, *, last_as_array: bool) -> str:

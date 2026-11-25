@@ -38,6 +38,7 @@ from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, stepped
 from threetears.core.backends.arrow_copy import (
     CONFLICT_COLUMNS_FIELD,
     COPY_ARROW_FIELD,
+    APPEND_FIELD,
     DELETE_FIELD,
     JSON_COLUMNS_FIELD,
     ON_CONFLICT_FIELD,
@@ -2469,7 +2470,9 @@ class _ProxyConnection:
             response.get("row_count"),
         )
 
-    async def delete_prefixes(self, table: str, prefixes: Sequence[Mapping[str, Any]]) -> int:
+    async def delete_prefixes(
+        self, table: str, prefixes: Sequence[Mapping[str, Any]], *, epoch: int | None = None, scope: str | None = None
+    ) -> int:
         """delete every row of ``table`` whose key leads with one of ``prefixes``, in the open transaction: the
         ``l3.tx.delete_prefixes`` request, which names the table and the prefixes and carries no SQL.
 
@@ -2481,20 +2484,28 @@ class _ProxyConnection:
         :ptype table: str
         :param prefixes: each prefix, the key's leading columns and their values
         :ptype prefixes: Sequence[Mapping[str, Any]]
-        :return: the rows deleted
+        :param epoch: a versioned table's delete epoch: the broker writes ONE run marker a prefix at it and deletes
+            nothing (:mod:`~threetears.core.ddl.run_markers`)
+        :ptype epoch: int | None
+        :param scope: with ``epoch``, the versioned table's scope column, which every prefix names
+        :ptype scope: str | None
+        :return: the rows deleted, or for a versioned table the run markers written
         :rtype: int
         :raises ValueError: outside an open transaction
         :raises DataLayerUnavailableError: on a broker error, or a broker without the request
         """
         if self.tx_id is None:
             raise ValueError("delete_prefixes runs only inside an open transaction (l3.tx.delete_prefixes)")
-        payload = {
+        payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),  # convert at border: NATS l3.tx.delete_prefixes request payload field
             "table": table,
             "prefixes": [{column: transport_param(value) for column, value in prefix.items()} for prefix in prefixes],
         }
+        if epoch is not None:
+            payload["epoch"] = epoch
+            payload["scope"] = scope
         subject = Subjects.l3_tx("delete_prefixes", namespace=self._backend.ns).path
         response = await self.tx_request(subject, payload)
         if not response.get("success", False):
@@ -2766,6 +2777,7 @@ class _ProxyConnection:
         columns: Sequence[str],
         schema_name: str | None = None,
         timeout: float | None = None,
+        append: bool = False,
     ) -> str:
         """bulk-insert ``records`` into ``table_name`` with ``COPY``, in the open transaction.
 
@@ -2784,6 +2796,9 @@ class _ProxyConnection:
         :ptype schema_name: str | None
         :param timeout: unused; the backend's timeout bounds the request
         :ptype timeout: float | None
+        :param append: the rows are a versioned table's new versions (:data:`APPEND_FIELD`): the broker notes them a row
+            each, never marking the transaction whole
+        :ptype append: bool
         :return: the asyncpg-shape status tag, ``"COPY <rows>"``
         :rtype: str
         :raises ValueError: when no transaction is open, or ``schema_name`` is given
@@ -2808,12 +2823,15 @@ class _ProxyConnection:
             else None
         )
         subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
+        appending: dict[str, bool] = {APPEND_FIELD: True} if append else {}
         if rows is None:
             payload = await _on_copy_thread(self._copy_payload, table_name, columns, records)
-            response = await self.tx_request(subject, payload, offload_encode="copy")
+            response = await self.tx_request(subject, {**payload, **appending}, offload_encode="copy")
         else:
             envelope = self._copy_envelope(table_name, columns, rows)
-            response = await self.tx_request(subject, envelope, offload_encode="copy", rows_ipc=rows.ipc)
+            response = await self.tx_request(
+                subject, {**envelope, **appending}, offload_encode="copy", rows_ipc=rows.ipc
+            )
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.copy")
         row_count = response.get("row_count")
@@ -2829,6 +2847,7 @@ class _ProxyConnection:
         update_columns: Sequence[str] = (),
         delete: bool = False,
         max_rows: int | None = None,
+        append: bool = False,
     ) -> int:
         """write an Arrow table's rows to ``table_name`` in the open transaction, through the hub's Arrow write door.
 
@@ -2859,6 +2878,9 @@ class _ProxyConnection:
         :ptype delete: bool
         :param max_rows: the most rows one request carries, at least one; None for the budget's bytes alone
         :ptype max_rows: int | None
+        :param append: the rows are a versioned table's new versions or "gone" markers (:data:`APPEND_FIELD`): the hub
+            inserts them with no conflict clause and notes them a row each
+        :ptype append: bool
         :return: the rows the hub's statements counted: inserted, upserted or deleted
         :rtype: int
         :raises ValueError: when no transaction is open, the hub announced no write door, one row alone is past the
@@ -2873,8 +2895,12 @@ class _ProxyConnection:
             raise ValueError(
                 "the hub holding this transaction announced no Arrow write door (write_arrow): it would insert the rows"
             )
+        if append and (delete or conflict_columns):
+            raise ValueError(f"{table_name}: an append is neither an upsert nor a delete")
         fields: dict[str, Any] = {}
-        if delete:
+        if append:
+            fields[APPEND_FIELD] = True
+        elif delete:
             fields[DELETE_FIELD] = True
         elif conflict_columns:
             fields[ON_CONFLICT_FIELD] = "update"

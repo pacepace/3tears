@@ -172,6 +172,9 @@ def test_whole_reads_and_writes_are_found(sql: str, expected: list[tuple[str, st
         # key predicate; a shape probe reads no row
         "SELECT * FROM t LIMIT 0",
         "SELECT a, flag FROM t WHERE flag = $1 LIMIT 0",
+        # a statement no row passes fires its statement triggers and touches no row (a versioned table's run marker
+        # leaves the table's one whole change note so, append-only L3 chunk 2)
+        "DELETE FROM {} WHERE FALSE",
         "SELECT a FROM t WHERE k = $1 AND ({})",
         "SELECT a FROM {} WHERE {pk}",
         "SELECT * FROM pg_class",

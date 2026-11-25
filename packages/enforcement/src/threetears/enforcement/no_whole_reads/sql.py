@@ -2231,6 +2231,9 @@ def _judge_write(
                     and where is None
                 )
             )
+            if where is not None and _NO_ROWS.fullmatch(f"WHERE {where.strip()}"):
+                # a predicate no row passes: the statement touches no row, as a read of it reads none
+                continue
             if unseen and where is None:
                 findings.append(_SqlFinding("unknown-predicate", table.removesuffix("{}") or table))
                 continue
