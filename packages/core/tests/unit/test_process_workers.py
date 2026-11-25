@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from threetears.core.process_workers import ProcessWorkers, require_plain
+from threetears.core.process_workers import BLAS_THREADS, ProcessWorkers, require_plain
 
 
 def _pid_and(value: bytes) -> tuple[int, bytes]:
@@ -35,6 +35,14 @@ def _comm() -> str:
     """
     comm = Path("/proc/self/comm")
     return comm.read_text(encoding="utf-8").strip() if comm.exists() else ""
+
+
+def _blas_threads() -> str | None:
+    """
+    :return: the bound the worker's BLAS starts its threads by
+    :rtype: str | None
+    """
+    return os.environ.get(BLAS_THREADS)
 
 
 def _an_object() -> object:
@@ -105,6 +113,16 @@ async def test_a_pool_s_workers_carry_the_name_it_gives_them() -> None:
         assert comms[1] != comms[0]
     else:
         assert comms == ("", "")
+
+
+async def test_a_worker_s_blas_starts_one_thread_not_one_a_core(
+    workers: ProcessWorkers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a worker loads numpy with its BLAS unbounded: on Linux OpenBLAS starts a thread a core as it loads,
+    idle in a worker that runs no BLAS, each counted against the pod's thread limit (a many-core pool host ran out:
+    "can't start new thread", 2026-11-25)."""
+    monkeypatch.delenv(BLAS_THREADS, raising=False)
+    assert await workers.run(_blas_threads) == "1"
 
 
 class TestPlainData:
