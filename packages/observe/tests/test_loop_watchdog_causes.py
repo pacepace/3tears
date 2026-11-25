@@ -32,6 +32,13 @@ pytestmark = pytest.mark.timeout(600, method="thread")
 #: how long each deliberate hold lasts: several times the bound the tests set
 HOLD_SECONDS = 0.3
 
+#: the HOLD_SECONDS holds and the forced collection are these tests' subject, made on the loop on purpose: the
+#: loop-stall guard (threetears.core.testing.loop_stall, 0.25 s of loop CPU a turn) would fail them for the very stall
+#: the watchdog must log. Ten times HOLD_SECONDS leaves a loaded pool host room (0.30-0.42 s measured on monad-1)
+_DELIBERATE_HOLD = pytest.mark.loop_stall_limit(
+    seconds=10 * HOLD_SECONDS, why="the test holds the loop on purpose: the stall is what the watchdog must log"
+)
+
 #: the held-loop dump is Linux's alone: off Linux no SIGALRM is armed (``loop_watchdog._HeldStacks.claim``: on macOS the
 #: signal ended the loop thread's wait for the interpreter lock with an error CPython takes as fatal)
 _LINUX_DUMP = pytest.mark.skipif(sys.platform != "linux", reason="the held-loop dump is armed on Linux alone")
@@ -78,6 +85,7 @@ def _with_the_collector(message: str, data: dict[str, Any]) -> bool:
 
 
 @_LINUX_DUMP
+@_DELIBERATE_HOLD
 async def test_a_loop_held_with_the_lock_in_c_is_logged_with_the_loops_stack_taken_while_held() -> None:
     logged = Log()
     size = _calibrated(_sum_in_c, 1_000_000, HOLD_SECONDS)
@@ -122,6 +130,7 @@ def _timed_collection(n: int) -> float:
     return took
 
 
+@_DELIBERATE_HOLD
 async def test_a_forced_collection_is_timed_and_names_the_stall_it_caused() -> None:
     logged = Log()
     # enough containers for a full collection of about 80 ms, four times the bound below; a cap keeps it small
@@ -240,6 +249,7 @@ async def test_a_watchdog_leaves_an_alarm_someone_else_handles_alone() -> None:
 
 
 @_LINUX_DUMP
+@_DELIBERATE_HOLD
 async def test_an_alarm_taken_over_and_given_back_is_handled_again_by_the_next_watchdog() -> None:
     first = LoopWatchdog(logger=Log())
     first.start()
