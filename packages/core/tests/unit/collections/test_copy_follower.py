@@ -2947,16 +2947,26 @@ async def test_a_checkpoint_cancelled_while_its_read_opens_leaves_no_slot_held(
     loop_thread = threading.get_ident()
     opening, release = threading.Event(), threading.Event()
     slotted = backend.read_snapshot
+    #: every read opened, kept: a read nothing closes stays open (never let go by its generator's collection, which a
+    #: reference anywhere, or a cycle until the collector runs, holds off)
+    kept: list[Any] = []
 
-    @contextmanager
-    def held_open() -> Iterator[Any]:
-        with slotted() as cursor:
+    class HeldOpen:
+        def __init__(self) -> None:
+            self.read = slotted()
+            kept.append(self)
+
+        def __enter__(self) -> Any:
+            cursor = self.read.__enter__()
             if threading.get_ident() != loop_thread:
                 opening.set()
                 assert release.wait(timeout=10), "the test never let the open land"
-            yield cursor
+            return cursor
 
-    monkeypatch.setattr(backend, "read_snapshot", held_open)
+        def __exit__(self, *exc: object) -> None:
+            self.read.__exit__(*exc)
+
+    monkeypatch.setattr(backend, "read_snapshot", HeldOpen)
     l3.put([("VA", 7, 70)])
     log.commit([("VA", 7)])
     lock.version += 1
@@ -3017,9 +3027,9 @@ async def test_a_checkpoints_fresh_read_takes_no_slot_on_the_loop(
     ticker.cancel()
     await asyncio.gather(ticker, return_exceptions=True)
 
-    assert fresh, "the checkpoint never opened a fresh read"
     assert late < 0.5, f"the event loop was {late:.2f} s late: the fresh read waited for a slot on it"
     assert _pointer_seq(pointers) == 2, "the checkpoint was not written"
+    assert fresh, "the checkpoint never opened a fresh read"
     assert _slots_held(reader) == (0, 0)
     writer.stop()
     reader.close()
