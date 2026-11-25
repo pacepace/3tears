@@ -30,7 +30,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from unittest.mock import AsyncMock, MagicMock
 from typing import Any
 
@@ -2963,8 +2963,10 @@ async def test_a_checkpoint_cancelled_while_its_read_opens_leaves_no_slot_held(
                 assert release.wait(timeout=10), "the test never let the open land"
             return cursor
 
-        def __exit__(self, *exc: object) -> None:
-            self.read.__exit__(*exc)
+        def __exit__(
+            self, kind: type[BaseException] | None, exc: BaseException | None, trace: TracebackType | None
+        ) -> None:
+            self.read.__exit__(kind, exc, trace)
 
     monkeypatch.setattr(backend, "read_snapshot", HeldOpen)
     l3.put([("VA", 7, 70)])
