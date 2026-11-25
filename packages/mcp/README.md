@@ -9,9 +9,9 @@ pip install 3tears-mcp           # server, tools, identity, PlatformHttpClient
 pip install "3tears-mcp[grants]" # plus the Postgres-backed grant store
 ```
 
-The base depends on the `mcp` SDK, `3tears-observe`, httpx, starlette and uvicorn only. Everything
-below that needs the rest of the family -- `LocalGrantAuthorizer`, `rbac`, `migrations/` -- is the
-`grants` extra. Bring your own `Authorizer` and the base is all you install.
+The base depends on the `mcp` SDK (2.x; 1.x is not supported), `3tears-observe`, httpx, starlette and
+uvicorn only. Everything below that needs the rest of the family -- `LocalGrantAuthorizer`, `rbac`,
+`migrations/` -- is the `grants` extra. Bring your own `Authorizer` and the base is all you install.
 
 ## What's in here
 
@@ -138,11 +138,10 @@ Bearer identity works the same way it does under `build_http_app()`. The endpoin
 
 The protocol versions are the SDK's. With the locked `mcp` 2.3.0, the HTTP transport serves the
 handshake-era revisions (up to 2025-11-25) and the 2026-07-28 single-exchange protocol, including
-`server/discover`. A 2.x `mcp.Client` in its default `auto` mode probes `server/discover` and settles
+`server/discover`. An `mcp.Client` in its default `auto` mode probes `server/discover` and settles
 on 2026-07-28, and its calls go through the same dispatch, RBAC gate and bearer identity
-(`tests/unit/test_http_transport_embedding.py` proves it). On mcp 1.x the transport speaks the
-handshake only. 3tears adds nothing per version, so a newer SDK's versions are served once the lock
-moves to it.
+(`tests/unit/test_http_transport_embedding.py` proves it). 3tears adds nothing per version, so a newer
+SDK's versions are served once the lock moves to it.
 
 ## RBAC model
 

@@ -40,7 +40,8 @@ Run everything at the gates: before you open a PR (`./scripts/check-all.sh`, whi
 merges into `develop`. CI runs everything on every PR as well.
 
 `check-all.sh` also runs the two suites CI's `check` job runs beside the unit suite:
-`./scripts/test-mcp-v1.sh` (the MCP packages on mcp 1.x, overlaid on the locked 2.x) and
+`./scripts/test-mcp-v1.sh` (models and evals, which still support mcp 1.x, on it, overlaid on the
+locked 2.x; 3tears-mcp requires 2.x) and
 `./scripts/test-otel-floor.sh` (observe's OpenTelemetry tests at its declared floors, in an isolated
 environment). Both set their own dependency versions, so they run locally, never on the pool, and
 `test.sh` alone does not cover them: PR #1087 went red in CI on `test-mcp-v1.sh` after every local

@@ -327,9 +327,10 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/test-otel-floor.sh -v
 
-      # 3tears 0.75 runs on mcp 1.x as well as the locked 2.x, so consumers can move on their own
-      # schedule; the step above only ever sees 2.x. Goes away when 3tears drops mcp 1.x, which the owner decides; no release is set.
-      - name: Test the MCP packages on mcp 1.x
+      # 3tears-models and 3tears-evals' fastmcp extra run on mcp 1.x as well as the locked 2.x, so
+      # consumers can move on their own schedule; the unit suite only ever sees 2.x. 3tears-mcp
+      # requires 2.x. Goes away when models and evals drop mcp 1.x too, which the owner decides.
+      - name: Test models and evals on mcp 1.x
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/test-mcp-v1.sh -q
 

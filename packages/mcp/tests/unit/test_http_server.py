@@ -121,9 +121,8 @@ async def _mcp_client(app: Any, *, token: str) -> AsyncIterator[ClientSession]:
     )
 
     async with app.router.lifespan_context(app), client:
-        async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
-            # 1.x yields a third value (the session id), 2.x two
-            async with ClientSession(streams[0], streams[1]) as session:
+        async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write):
+            async with ClientSession(read, write) as session:
                 yield session
 
 

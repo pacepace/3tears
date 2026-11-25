@@ -54,11 +54,6 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: mcp 1.x registers handlers with ``@server.list_tools()`` / ``@server.call_tool()``; 2.x removed
-#: both and takes ``on_list_tools`` / ``on_call_tool`` in the constructor. 3tears runs on either
-#: (``mcp>=1.27,<3``), so consumers move to 2.x on their own schedule; 1.x is dropped when the owner says.
-_SDK_V1 = hasattr(_SdkServer, "call_tool")
-
 #: what a client is told when the tool provider fails; the provider's own error is logged, not sent
 _TOOLS_UNAVAILABLE_MESSAGE = "the server's tool set could not be read"
 
@@ -154,49 +149,22 @@ class McpServer:
     def _build_sdk_server(self, name: str) -> _SdkServer[Any]:
         """build the SDK server with this server's ``tools/list`` + ``tools/call`` handlers.
 
-        each :class:`McpServer` gets its own SDK server (no cross-pollination). mcp 1.x and
-        2.x register handlers differently (see :data:`_SDK_V1`); both answer from the same
-        :meth:`_tools` and :meth:`_dispatch`, so a caller sees one behaviour on either.
+        each :class:`McpServer` gets its own SDK server (no cross-pollination); both handlers
+        answer from :meth:`_tools` and :meth:`_dispatch`.
 
         :param name: advertised server name
         :ptype name: str
         :return: the wired SDK server
         :rtype: mcp.server.Server
         """
-        if _SDK_V1:
-            # typed as Any: the 1.x decorators do not exist in the 2.x stubs mypy checks against
-            server: Any = _SdkServer(name)
-
-            @server.list_tools()  # type: ignore[untyped-decorator]
-            async def _list_tools() -> list[mcp_types.Tool]:
-                return self._tools()
-
-            # the call handler goes straight into request_handlers, which is all the 1.x call_tool
-            # decorator does once its own work is done. _dispatch checks the arguments and answers
-            # every refusal itself. two more things the decorator did are left out on purpose: its
-            # cache of an earlier tools/list goes stale once a live provider changes a schema, and is
-            # refreshed on a miss by calling the provider outside _dispatch, where a failure reached
-            # the client as the exception's own text; and it turned an exception escaping the handler
-            # into an isError result. what escapes _dispatch is a bug, which 2.x answers with a
-            # JSON-RPC error, and 1.x now answers alike
-            async def _call_tool(request: Any) -> Any:
-                params = request.params
-                # Any: 1.x's ServerResult is the model wrapping a result, 2.x's stubs name a union
-                v1_types: Any = mcp_types
-                return v1_types.ServerResult(await self._dispatch(params.name, params.arguments or {}))
-
-            server.request_handlers[mcp_types.CallToolRequest] = _call_tool
-
-            built: _SdkServer[Any] = server
-            return built
 
         async def _on_list_tools(_ctx: Any, _params: Any) -> mcp_types.ListToolsResult:
             return mcp_types.ListToolsResult(tools=self._tools())
 
         async def _on_call_tool(_ctx: Any, params: Any) -> mcp_types.CallToolResult:
-            # 2.x passes arguments=None for a call that sent none; 1.x passed {}. what escapes
-            # _dispatch is a bug (it answers every refusal itself), so it is not caught here: on
-            # either major the SDK answers the request with a JSON-RPC error
+            # the SDK passes arguments=None for a call that sent none. what escapes _dispatch is a
+            # bug (it answers every refusal itself), so it is not caught here: the SDK answers the
+            # request with a JSON-RPC error
             return await self._dispatch(params.name, params.arguments or {})
 
         return _SdkServer(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
@@ -228,7 +196,7 @@ class McpServer:
             tools = self._current_tools()
         except Exception as exc:
             log.exception("MCP tools/list: the tool provider failed")
-            # the SDK puts the exception's text in the JSON-RPC error it answers, on either major:
+            # the SDK puts the exception's text in the JSON-RPC error it answers:
             # a fixed message keeps the provider's internals off the wire, as tools/call's
             # TOOLS_UNAVAILABLE does
             raise RuntimeError(_TOOLS_UNAVAILABLE_MESSAGE) from exc
@@ -247,7 +215,7 @@ class McpServer:
         handler exception -- returns a :class:`CallToolResult` with
         ``isError=True`` so the MCP client sees the failure at the
         protocol level. the happy path returns one too, with
-        ``isError=False``: 2.x no longer wraps a bare content list.
+        ``isError=False``: the SDK does not wrap a bare content list.
 
         the structured error detail (machine-readable ``code`` field)
         is preserved in the content text as JSON so callers that want
@@ -287,9 +255,8 @@ class McpServer:
                 message=f"no tool named {tool_name!r} registered",
             )
 
-        # 1.x's call_tool decorator checked the arguments against the tool's inputSchema before
-        # the handler ran, and 2.x's low-level server does not: checked here, against the tool as
-        # the provider answers it now, in the decorator's words, so both majors refuse alike
+        # the SDK's low-level server does not check arguments against the tool's inputSchema: checked
+        # here, before the handler runs, against the tool as the provider answers it now
         try:
             jsonschema.validate(instance=arguments, schema=tool.input_schema)
         except jsonschema.ValidationError as exc:
@@ -617,11 +584,7 @@ def _call_tool_result(
     is_error: bool,
     structured: dict[str, Any] | None = None,
 ) -> mcp_types.CallToolResult:
-    """build a :class:`CallToolResult` on either SDK major.
-
-    built from the wire names: 1.x's fields are ``isError`` / ``structuredContent`` and 2.x's
-    are ``is_error`` / ``structured_content`` with the wire names as aliases, so a constructor
-    keyword would be wrong on one of them while a validated dict is right on both.
+    """build a :class:`CallToolResult`.
 
     :param content: the content blocks
     :ptype content: list[mcp_types.TextContent]
@@ -632,14 +595,13 @@ def _call_tool_result(
     :return: the result
     :rtype: mcp_types.CallToolResult
     """
-    fields: dict[str, Any] = {"content": content, "isError": is_error}
-    if structured is not None:
-        fields["structuredContent"] = structured
-    return mcp_types.CallToolResult.model_validate(fields)
+    if structured is None:
+        return mcp_types.CallToolResult(content=list(content), is_error=is_error)
+    return mcp_types.CallToolResult(content=list(content), is_error=is_error, structured_content=structured)
 
 
 def _plain_error_result(message: str) -> mcp_types.CallToolResult:
-    """the bare-text error result mcp 1.x's ``call_tool`` decorator answered with.
+    """a bare-text error result, for a call refused before its tool ran (its arguments).
 
     :param message: the error text
     :ptype message: str
@@ -681,16 +643,15 @@ def _listed_tool(tool: McpTool) -> mcp_types.Tool:
     :return: the SDK's tool, with only the optional fields the tool sets
     :rtype: mcp_types.Tool
     """
-    # model_validate with the wire names: 1.x names the fields inputSchema / outputSchema, 2.x
-    # input_schema / output_schema with the wire names as aliases, and the alias is accepted by both
-    listed: dict[str, Any] = {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+    # only the optional fields the tool sets, so the listing leaves the rest unset rather than null
+    optional: dict[str, Any] = {}
     if tool.output_schema is not None:
-        listed["outputSchema"] = tool.output_schema
+        optional["output_schema"] = tool.output_schema
     if tool.title is not None:
-        listed["title"] = tool.title
+        optional["title"] = tool.title
     if tool.annotations is not None:
-        listed["annotations"] = tool.annotations.to_wire()
-    return mcp_types.Tool.model_validate(listed)
+        optional["annotations"] = mcp_types.ToolAnnotations.model_validate(tool.annotations.to_wire())
+    return mcp_types.Tool(name=tool.name, description=tool.description, input_schema=tool.input_schema, **optional)
 
 
 def _as_call_tool_result(result: Any) -> mcp_types.CallToolResult:
@@ -706,8 +667,7 @@ def _as_call_tool_result(result: Any) -> mcp_types.CallToolResult:
     if isinstance(result, mcp_types.CallToolResult):
         return result
 
-    # a plain content result is wrapped here rather than by the SDK: 1.x wrapped a returned list in
-    # CallToolResult(isError=False), 2.x requires the handler to return the result
+    # a plain content result is wrapped here: the SDK requires the handler to return the result
     if isinstance(result, list) and all(isinstance(item, mcp_types.TextContent) for item in result):
         return _call_tool_result(content=result, is_error=False)
     if isinstance(result, mcp_types.TextContent):
@@ -731,8 +691,7 @@ def _output_schema_refusal(wire: dict[str, Any], output_schema: dict[str, Any]) 
     """why a successful result breaks the tool's ``outputSchema``, or ``None`` when it does not.
 
     the spec's server MUST: a tool that declares an output schema returns structured results that
-    conform to it. an error result is exempt. 2.x's low-level server checks nothing; 1.x's
-    decorator checked only results it built itself, never a returned CallToolResult.
+    conform to it. an error result is exempt. the SDK's low-level server checks nothing.
 
     :param wire: the call's result as the JSON the client receives
     :ptype wire: dict[str, Any]

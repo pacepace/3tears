@@ -946,7 +946,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.20" },
-    { name = "mcp", specifier = ">=1.27,<3" },
+    { name = "mcp", specifier = ">=2.0,<3" },
     { name = "sqlalchemy", marker = "extra == 'grants'" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "uuid-utils", marker = "extra == 'grants'" },

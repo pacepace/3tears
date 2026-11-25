@@ -2,8 +2,7 @@
 
 every assertion is on what a real MCP client receives over the server's own Streamable-HTTP app,
 so the wire names (``outputSchema``, ``title``, ``annotations``, ``structuredContent``,
-``isError``) are checked as the client sees them, on either SDK major
-(``scripts/test-mcp-v1.sh`` runs this file on mcp 1.x).
+``isError``) are checked as the client sees them.
 """
 
 from __future__ import annotations
@@ -69,8 +68,8 @@ async def _session(server: McpServer) -> AsyncIterator[ClientSession]:
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
     try:
         async with app.router.lifespan_context(app), client:
-            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as streams:
-                async with ClientSession(streams[0], streams[1]) as session:  # 1.x yields a third value
+            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write):
+                async with ClientSession(read, write) as session:
                     await session.initialize()
                     yield session
     finally:

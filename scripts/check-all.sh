@@ -53,7 +53,7 @@ fi
 
 # CI's check job runs this; it stays local because it overlays mcp 1.x on the locked environment.
 echo ""
-echo "=== Tests (MCP packages on mcp 1.x) ==="
+echo "=== Tests (models and evals on mcp 1.x) ==="
 "$REPO_ROOT/scripts/test-mcp-v1.sh" -q
 
 # CI's check job runs this; it stays local because it pins observe's OpenTelemetry floors in an isolated env.

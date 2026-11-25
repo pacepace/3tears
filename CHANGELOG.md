@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: 3tears-mcp requires mcp 2.x; mcp 1.x support is dropped
+
+**Changed (breaking):** `3tears-mcp` declares `mcp>=2.0,<3` (was `>=1.27,<3`). A consumer still on mcp
+1.x stays on the release before this one until it moves to 2.x; the move is mcp's own (see "For a
+consumer moving to mcp 2.x" under the entry that added 2.x support). The tests pass on mcp 2.0.0 and
+on the locked 2.3.
+
+- `McpServer` registers its handlers only through 2.x's `Server(on_list_tools=, on_call_tool=)`. The
+  runtime switch on the installed SDK and the 1.x decorator path are gone. What it does on top of the
+  SDK is unchanged: it checks arguments against the tool's `inputSchema`, passes a call with no
+  arguments as `{}`, returns every success as a `CallToolResult`, and a bug that escapes dispatch
+  reaches the client as a JSON-RPC error.
+- `3tears-models` (`mcp>=1.27,<3`) and the `3tears-evals` `fastmcp` extra (`fastmcp>=3.4.2,<5`) still
+  support mcp 1.x. `scripts/test-mcp-v1.sh` and its CI step now run only their tests on mcp 1.x.
+
 ### agent-acl: a list shows a row only through a grant whose role acts where its scope needs it to
 
 **Fixed:** `caller_visible_customer_clause` (and the `customer_scope_visibility_clause` and

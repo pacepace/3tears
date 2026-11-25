@@ -24,8 +24,8 @@ classifiers = [
 # Authorizer needs. The floor is pinned in tests/enforcement/test_dependency_alignment.py.
 dependencies = [
     "3tears-observe>=0.95.0,<0.96.0",
-    "jsonschema>=4.20",  # McpServer checks arguments against inputSchema (mcp 2.x no longer does); mcp's own dependency
-    "mcp>=1.27,<3",  # 1.x and 2.x both supported (McpServer picks the SDK API) until the owner drops 1.x
+    "jsonschema>=4.20",  # McpServer checks arguments against inputSchema (the SDK's low-level server does not); mcp's own dependency
+    "mcp>=2.0,<3",  # McpServer registers its handlers through the 2.x Server constructor
     "httpx>=0.27",
     "starlette>=0.40",
     "uvicorn>=0.30",

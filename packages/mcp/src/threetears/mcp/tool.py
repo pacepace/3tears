@@ -47,7 +47,7 @@ class McpToolAnnotations:
 
     every hint is optional and ``None`` leaves it out of the listing, so the client applies the
     spec's default for it. hints are advice to the client, not a guarantee the server enforces.
-    a 3tears type rather than the SDK's, so it is one shape on mcp 1.x and 2.x.
+    a 3tears type rather than the SDK's, so a tool declares its hints without importing the SDK.
 
     :ivar read_only_hint: the tool does not modify its environment (spec default ``False``)
     :ivar destructive_hint: a modifying tool may destroy or overwrite something, rather than only
