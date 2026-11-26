@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, NoReturn, TypeVar, cast
 from uuid import uuid7
 
+from asyncpg import PostgresError
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
@@ -419,6 +420,27 @@ class _Bump:
 
 #: no advance was made and none was owed.
 _NO_BUMP: Final = _Bump()
+
+#: the SQLSTATE classes a database answers with when it cannot say how a statement or commit ended: a connection
+#: exception (``08``), an operator intervention such as a shutdown (``57``), an internal error (``XX``)
+_OUTCOME_UNKNOWN_CLASSES: Final = frozenset({"08", "57", "XX"})
+
+
+def _outcome_known(error: BaseException) -> bool:
+    """whether a write that raised ``error`` is known not to have committed: the database answered it with its own error
+    (``asyncpg.PostgresError``, which the L3 rail's proxy raises as well), and not one of a lost connection, a shutdown
+    or an internal failure. Anything else -- a dropped connection during ``COMMIT``, a timeout waiting for the reply,
+    a cancellation -- leaves the outcome unknown: the write may have landed.
+
+    :param error: what the write raised
+    :ptype error: BaseException
+    :return: whether the write is known not to have landed
+    :rtype: bool
+    """
+    if not isinstance(error, PostgresError):
+        return False
+    state = f"{getattr(error, 'sqlstate', '') or ''}"
+    return state[:2] not in _OUTCOME_UNKNOWN_CLASSES
 
 
 def _reach_kw(reach: WholeReach | None) -> dict[str, Any]:
@@ -2248,6 +2270,90 @@ class BaseCollection(ABC, Generic[EntityT]):
             return await self._bump_generation(changed, reach=reach)
         failure = await self._advance_generation(changed, reach=reach)
         return _NO_BUMP if failure is None else _Bump(failure=failure)
+
+    @asynccontextmanager
+    async def _write_heard(
+        self,
+        entity_ids: Sequence[Any],
+        rows: Sequence[dict[str, Any] | None],
+        *,
+        cascaded: Sequence[CascadedRows] = (),
+    ) -> AsyncIterator[None]:
+        """send a write naming its rows (:meth:`_naming_changed`), and when it raises with its outcome unknown, announce
+        every row it may have written before the error goes on.
+
+        The one place a write on the collection's own pool (one statement, or a transaction of its own) is heard
+        however it ended: a statement or ``COMMIT`` whose reply never came (a dropped connection, a timeout, a
+        cancellation) may have landed, and the caller, raising, never reaches the announcement it makes after a write
+        returns. So each row is evicted from L1 and L2 and announced in one advance of the table
+        (:meth:`invalidate_cache_many`), and every row a delete's foreign-key actions reached through its own collection
+        (``announce_delete_cascade``), shielded from a cancellation, and the write's own error raised after. A spurious
+        announcement costs a reader one re-read; a missed one leaves every pod serving what L3 no longer holds (every
+        epoch heard). A write the database refused with its own error (:func:`_outcome_known`) did not land and
+        announces nothing. A failure to announce is logged and the write's error raised: it is the caller's.
+
+        A write joined to a caller's transaction needs none of this: it is enrolled there before it is sent, and
+        settled however the transaction ends (:class:`~threetears.core.collections.caller_transaction.CallerTransaction`).
+
+        :param entity_ids: the keys the write may change, pk values or tuples in declared order
+        :ptype entity_ids: Sequence[Any]
+        :param rows: the row each key's write saw, for its invalidation columns (None where none was seen)
+        :ptype rows: Sequence[dict[str, Any] | None]
+        :param cascaded: the rows of other tables the write reaches (a stamped delete's foreign-key actions)
+        :ptype cascaded: Sequence[CascadedRows]
+        :return: the block's context
+        :rtype: AsyncIterator[None]
+        """
+        with self._naming_changed([self.changed_row(key, row) for key, row in zip(entity_ids, rows, strict=True)]):
+            try:
+                yield
+            # BaseException, not Exception: a cancelled write's outcome is as unknown as a dropped connection's
+            except BaseException as error:  # prawduct:allow prawduct/broad-except -- announced, then re-raised
+                if not _outcome_known(error):
+                    await asyncio.shield(self._announce_unknown_outcome(entity_ids, rows, cascaded, error))
+                raise
+
+    async def _announce_unknown_outcome(
+        self,
+        entity_ids: Sequence[Any],
+        rows: Sequence[dict[str, Any] | None],
+        cascaded: Sequence[CascadedRows],
+        error: BaseException,
+    ) -> None:
+        """announce every row a write whose outcome is unknown may have written (:meth:`_write_heard`); a failure to is
+        logged, never raised over the write's own error.
+
+        :param entity_ids: the write's keys
+        :ptype entity_ids: Sequence[Any]
+        :param rows: the row each key's write saw
+        :ptype rows: Sequence[dict[str, Any] | None]
+        :param cascaded: the rows of other tables it reached
+        :ptype cascaded: Sequence[CascadedRows]
+        :param error: what the write raised
+        :ptype error: BaseException
+        :return: nothing
+        :rtype: None
+        """
+        log.warning(
+            "a write's outcome is unknown; every row it may have written is announced",
+            extra={
+                "extra_data": {"table": self.table_name, "rows": len(entity_ids), "error": f"{type(error).__name__}"}
+            },
+        )
+        try:
+            await self.invalidate_cache_many(list(entity_ids), rows=list(rows))
+            if cascaded:
+                await announce_delete_cascade(self, cascaded)
+        except (
+            Exception
+        ) as failure:  # prawduct:allow prawduct/broad-except -- contained; the write's own error is raised
+            contain(
+                failure,
+                log=log,
+                what="a write whose outcome is unknown could not be announced in full; the write's own error is raised",
+                extra={"table": self.table_name, "error": f"{type(error).__name__}"},
+                level="error",
+            )
 
     def _naming_changed(self, rows: Sequence[ChangedRow]) -> AbstractContextManager[None]:
         """name ``rows`` on every L3 write request made inside the block (``CHANGED_ROWS_FIELD``).
@@ -4243,7 +4349,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
             before = await self._l2_revision_before_write(entity_id)
             try:
-                with self._naming_changed([self.changed_row(entity_id, data)]):
+                # a write whose outcome is unknown (it may have landed) is withdrawn from L1 and L2 and announced in
+                # one advance before its error reaches the handler below (_write_heard)
+                async with self._write_heard([entity_id], [data]):
                     rows_affected = await self.save_to_store(data)
             # BaseException, not Exception: a cancelled write's outcome is as unknown as a failed
             # one's, and CancelledError is not an Exception. Only an Exception is swallowed: this
@@ -4260,8 +4368,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                     },
                 )
                 # L1 took this row synchronously at the assignment; withdraw it from every tier
-                # so every reader goes to L3.
-                await self._withdraw_from_caches(entity_id)
+                # so every reader goes to L3. A write whose outcome is unknown was withdrawn and announced, with an
+                # advance, by _write_heard; one the database refused did not land and advances nothing
+                if _outcome_known(exc):
+                    await self._withdraw_from_caches(entity_id)
                 if not isinstance(exc, Exception):
                     raise
                 return
@@ -5171,7 +5281,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # touched the key since (see _cache_committed_row).
                 before = await self._l2_revision_before_write(entity_id)
                 try:
-                    with self._naming_changed([self.changed_row(entity_id, data)]):
+                    async with self._write_heard([entity_id], [data]):
                         rows_affected = await self.save_to_store(data, original_timestamp)
                 # BaseException, not Exception: a cancellation mid-write leaves the outcome as
                 # unknown as any failure does, and CancelledError is not an Exception.
@@ -5649,10 +5759,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         s_min: int | None = None
-        if gone_mark and any(rows.keys for rows in cascaded):
-            s_min = await self._mark_gone_after_cascades(entity_id, row, cascaded)
-        else:
-            with self._naming_changed([self.changed_row(entity_id, row)]):
+        # however it ends: a delete (or its transaction's commit) whose reply never came is announced, the rows its
+        # foreign-key actions reach with it, before its error is raised (_write_heard)
+        async with self._write_heard([entity_id], [row], cascaded=cascaded):
+            if gone_mark and any(rows.keys for rows in cascaded):
+                s_min = await self._mark_gone_after_cascades(entity_id, row, cascaded)
+            else:
                 await self.delete_from_store(entity_id)
         # a transaction's stamps are its commit's: every record its advances write names its lowest (a one-statement
         # delete's record names its own statement's stamp instead)
@@ -5695,10 +5807,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: int | None
         """
         pool = self.required_l3_pool
-        with self._naming_changed([self.changed_row(entity_id, row)]):
-            async with pool.acquire() as conn, CallerTransaction(conn) as transaction:
-                await apply_delete_cascade(self, cascaded, conn=conn)
-                await self.mark_gone_in_store(entity_id, conn=conn)
+        # named on every request by the caller's _write_heard (delete)
+        async with pool.acquire() as conn, CallerTransaction(conn) as transaction:
+            await apply_delete_cascade(self, cascaded, conn=conn)
+            await self.mark_gone_in_store(entity_id, conn=conn)
         return transaction.s_min
 
     async def mark_gone_in_store(self, entity_id: Any, *, conn: Any = None) -> None:
