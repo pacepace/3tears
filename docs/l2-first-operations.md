@@ -1,50 +1,42 @@
 # Running the change log's recovery, and L2-first collections
 
 The epoch change log (`{ns}-epoch-changes`) is in NATS, memory storage, three replicas. It is the only
-clock and the only catch-up path. To survive NATS losing it, every committed write also leaves a **change
-note** in L3, in the same transaction as its rows: the table, the row's key and its invalidation columns,
-never the row's data. One **keeper** process runs the ring of note tables and, after a loss, puts the log
-back from the notes. Followers never read the notes; they walk the log.
+clock and the only catch-up path. To survive NATS losing it, every table carries its own **epoch**: a versioned
+table on every version it appends, a stamped table on the one row a key it updates. One **log keeper** process
+marks the log's position every 30 s and, after a loss, puts the log back from the tables: every version and stamped
+row written since a mark. Followers never read the tables to catch up; they walk the log.
 
 An **L2-first** collection commits each write in NATS (one epoch record in the change log, carrying the
-row), then a saver makes L3 match. Its L3 writes leave notes like any other table's.
+row), then a saver makes L3 match.
 
 This page is for whoever wires, runs and watches it. The design is in the module docstrings of
-`threetears.core.collections.change_note_keeper` and `threetears.core.collections.l2_first`. The process that runs
-the keeper installs `3tears[arrow]`: a restore folds its notes as Arrow.
+`threetears.core.collections.log_keeper`, `threetears.core.collections.table_restore` and
+`threetears.core.collections.l2_first`. The process that runs the keeper installs `3tears[arrow]`: a restore folds
+what it reads as Arrow.
 
 ## Facts every section uses
 
 | What | Value |
 |---|---|
-| Change-log keys | `{tenant}.{table}.e` (`threetears.core.tenancy.epoch_change_key`): `s-{schema}` for an agent-schema table, `v-{value}` for a platform table's declared tenant column (a digest `h-...` when the value is not one subject token), `_all` for a platform-wide table, a platform table's whole-table or keys-unknown change, or an undeclared table. An agent-schema table's whole-table or keys-unknown change goes under its schema's `s-` key, named by the writer (`advance_with_change(tenant=...)`) and by the truncate and file-load notes |
+| Change-log keys | `{tenant}.{table}.e` (`threetears.core.tenancy.epoch_change_key`): `s-{schema}` for an agent-schema table, `v-{value}` for a platform table's declared tenant column (a digest `h-...` when the value is not one subject token), `_all` for a platform-wide table, a platform table's whole-table or keys-unknown change, or an undeclared table. An agent-schema table's whole-table or keys-unknown change goes under its schema's `s-` key, named by the writer (`advance_with_change(tenant=...)`) |
 | Tenancy | declared on the collection or its `TableSchema` (`tenancy = TENANT_BY_SCHEMA`, `tenant_column("customer_id")`, `no_tenant(reason)`); never guessed. The collection census (`find_census_problems`, run by the framework's and every consumer's `test_one_class_per_table` gate) fails on a concrete class with no declaration. At runtime an undeclared table still goes on `_all`, so nothing is lost, with one WARNING per table (`collection class declares no tenancy`) and `threetears_collection_tenancy_undeclared_records_total{table}` per record |
 | Who reads what | a platform service (hub, registry, gateway) reads every tenant (`EpochGenerationReader(nc)`, the wildcard `*.{table}.e`). A pod reads by each table's declared tenancy: `EpochGenerationReader(nc, tenants=PodTenants(schema=..., customer=...))` reads a schema table under `s-{its schema}` only, a platform table with a tenant column under `v-{its customer}` and `_all`, any other under `_all`: exactly the keys the grants its host names cover (`build_permissions(epoch_change_grants=...)`). `PodTenants` is the only form a pod's reader takes |
 | Row values | `ChangedRow.value` (an L2-first commit's row) rides under its tenant's key, so it is readable only by whoever may read that tenant, as in the collections bucket |
-| Note tables | `threetears_change_notes_0`, `_1`, `_2` in the platform schema: one current, one previous, one emptied and waiting |
-| Ring row | `threetears_change_note_ring` (one row; only the keeper writes it, once per switch; no save reads it) |
-| Cached slot | each writing process: `ChangeNoteSlot(notes_schema=...)`, carried on every pool connection as the session setting `threetears.change_note_slot` (`"<slot>:<valid until>"`, database clock) |
-| Slot copy's age | read again every fence / 4; never used past fence / 2 (`slot_max_age`); the database refuses it after its `valid until` |
-| Which tables are noted | every table a class declares `write_generation`, absence caching or `l2_first` for: `noted_tables()` |
-| Triggers | `threetears_change_note` (row) and `threetears_change_note_truncate` on each noted table, in every schema |
-| Keeper | `ChangeNoteKeeper(pool, notes_schema=..., log=source)`, run by `run_change_note_keeper(held_lease, keeper)` |
-| Ring switch | when the current table has taken half the restore budget in log bytes, `switch_bytes` = `max_bytes` × 75 % / 2 (24 MiB of the hub's 64 MiB log), or holds `switch_notes` = `switch_bytes` / 64 notes (393 216 on the hub; counted every fence / 20, stopping at the threshold), whichever comes first: so the current and previous tables fit a restore whole, and a bulk raw-SQL write with one small epoch cannot pile notes behind the log's bytes |
-| Keeper alive | `threetears_change_notes_keeper_last_pass_timestamp_seconds`, set by every whole keeper pass: alert when its max across processes is older than 3 fences (30 min) |
+| Keeper | `LogKeeper(pool, schema=..., log=source)`, run under its lease by `LogKeeping(keeper, nats, lease=...)` (`start()` once, `claim_and_keep(holder)` every `LOG_KEEPER_CLAIM_EVERY`, 15 s) |
+| Keeper alive | `threetears_change_notes_keeper_last_pass_timestamp_seconds`, set by every whole keeper pass: alert when its max across processes is older than 30 min |
 | L2-first worker alive | `threetears_l2_first_worker_last_pass_timestamp_seconds`, set by every whole worker pass: alert when its max across processes is older than 10 passes |
-| Marks | `threetears_change_note_marks`: the log's position every fence / 20 (30 s), pruned at each switch; a restore too big for the log starts at one |
-| Fence | the keeper's `fence`, 10 min by default, told to writers in the ring row (`fence_seconds`) at each switch. The least time between switches (`wait_seconds` = the larger of this fence and the one told before) |
-| Emptying | batched deletes of the idle table (`empty_batch` 1000 per statement, `empty_pause` 20 ms between, at most `empty_budget` 1 s per pass); never `TRUNCATE`. `emptied` in the ring row is set only once a read finds the table empty |
-| Restore reads | the current and the previous note tables |
+| Marks | `threetears_change_note_marks` in the keeper's schema: the log's position every 30 s, and at once whenever the keeper takes a log. Kept for the log's whole window (the newest mark before the log's oldest record, and every one after), never by age; `threetears_change_log_marks_dropped_total` |
+| The log the keeper knows | the incarnation its newest mark names; no ring row holds it |
+| Restore reads | every versioned table's versions and stamped table's rows with `epoch >= X`, X = (T - M) << 15 from the lost log's oldest mark (T its time, M the margin: 10 min) |
 | Every source of the deployment | `EpochGenerationSource(..., restored_from_l3=True)` |
 | Follower quiet pass | every `quiet_pass_interval()`: the log's retention (24 h) / 4 = 6 h |
-| Missing notes | `threetears_change_notes_missing_total{table}`: alert on any increase |
-| Restore truncated | `threetears_change_notes_restore_truncated_total`: only the newest notes that fit were put back; followers older than its `covered_from` are behind; alert on any increase |
-| Restore refused | `threetears_change_notes_restores_refused_total`: not even the notes after the newest mark fit; alert on any increase |
-| Noted columns | key and invalidation columns are uuid, text, varchar or an integer; a table with any other gets no trigger, with an ERROR |
-| Ring | `threetears_change_notes_switches_total`, `threetears_change_notes_emptied_total`, `threetears_change_notes_emptied_rows_total`, `threetears_change_notes_restores_total` |
-| Switch held by an emptying | `threetears_change_notes_switch_waits_total`, with one WARNING per held switch |
-| Writes without a cached slot | `threetears_change_notes_ring_reads_total{table}` (counted at each switch); `threetears_change_note_slot_refreshes_total{outcome}` per process |
-| Scrub lag | `threetears_change_notes_scrub_behind` (epochs the log holds after the scrub's position) |
+| Unrestorable records | `threetears_change_notes_missing_total{table}`: a record of a table that carries no epoch, which a restore cannot read back; alert on any increase |
+| Margin violations | `threetears_restore_margin_violations_total{table}`: a record after a mark whose lowest stamp is below the mark's X; alert on any increase |
+| Restores | `threetears_change_notes_restores_total`; `threetears_restore_unvouched_total` (no mark of the lost log: every follower behind) |
+| Restore truncated | `threetears_change_notes_restore_truncated_total`: only the changes after a later mark fit; followers older than its `covered_from` are behind; alert on any increase |
+| Restore refused | `threetears_change_notes_restores_refused_total`: not even the changes after the newest mark fit; alert on any increase |
+| A second database's part | `threetears_change_notes_put_backs_total`; `threetears_change_notes_put_back_short_total{reason}` (`too_large`, `floor_after_label`): alert on any increase |
+| Scrub lag | `threetears_change_notes_scrub_behind` (records the log holds after the scrub's position) |
 | Quiet marks moved | `collection_epoch_quiet_marks_moved_total{table}` |
 | Pods behind | `collection_epoch_tables_behind`; `collection_epoch_behind_total{reason}` |
 | L2-first refusals | `threetears_l2_first_l3_refused_total{table}`: alert on any increase |
@@ -59,10 +51,8 @@ Every record is keyed by tenant first (see the facts table). A writer splits one
 row's `ChangedRow.tenant`, named by the collection from its declared tenant column, or by the writer that knows
 the row's schema (the hub's broker, for an agent-schema table, through `advance_for_write(source, table, rows, schema=...)`, which applies the table's declaration). A whole-table or keys-unknown change carries no
 row: an agent-schema table's goes under the schema the writer names (it belongs to that schema alone), a
-platform table's on `_all`. The change notes carry the same tenant, from the trigger (the row's schema, or its
-tenant column, by the same token rule; a truncate or file load of a schema table notes its schema), so a restore
-puts each tenant's records back under its own key. A lost write's recovery advances a whole-table change of a
-schema table under each schema holding it when the notes cannot name one. A record of a schema table that names
+platform table's on `_all`. A restore names each record's tenant from the table's declared tenancy (its schema, or
+its tenant column, by the same token rule), so it puts each tenant's records back under its own key. A record of a schema table that names
 no schema still goes on `_all`, where no pod reads that table, and is said once per table and counted
 (`threetears_epoch_change_schema_record_untenanted_total{table}`).
 
@@ -127,95 +117,50 @@ source = EpochGenerationSource(
     nats_client, change_retention=EpochChangeRetention(replicas=3), restored_from_l3=True
 )
 registry.set_generation_source(source)
-
-# the cached ring slot: one per process and database, carried on every connection of the L3 pool
-from threetears.core.utils import ChangeNoteSlot, session_settings_connection_class
-
-slot = ChangeNoteSlot(notes_schema="platform")
-pool = await asyncpg.create_pool(
-    dsn, connection_class=session_settings_connection_class(search_path="platform", note_slot=slot)
-)
 ```
-
-A pool without the slot still writes correct notes: each noted statement then reads the ring row itself (one
-hot row every writer reads, which is what the slot removes), and its notes are flagged and counted at the
-next switch on `threetears_change_notes_ring_reads_total{table}`.
 
 A source without `restored_from_l3` declares a lost log again under a new incarnation, and every follower
 is then behind (`replaced`) until it restarts. With it, a write while the log is lost waits up to
-`restore_wait` (10 s) for the keeper, then fails with an ERROR (its rows and their notes are committed); a
+`restore_wait` (10 s) for the keeper, then fails with an ERROR (its rows are committed, with their epochs); a
 read of the generation fails at once and its caller asks L3.
+
+Every table a restore must put back carries its epoch: declare it versioned (`TableSchema(row_epoch=row_versions(...))`)
+or stamped (`row_epoch=ROW_STAMPED`). A switched-on table without one is said at WARNING at its migration run (refused
+once `REFUSE_TABLES_WITHOUT_EPOCH` is on), and its records are counted by the scrub.
 
 ## Run the keeper
 
 ```python
-from datetime import timedelta
-from threetears.core.coordination.lease import KVLease
-from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, run_change_note_keeper
-from threetears.core.collections.generation import noted_tables
+from threetears.core.collections.log_keeper import LogKeeper, LogKeeping, LOG_KEEPER_CLAIM_EVERY
 
-keeper = ChangeNoteKeeper(l3_pool, notes_schema="platform", log=source)
-await keeper.install()                          # the ring; once per database, safe to run again
-await keeper.install_triggers(noted_tables())   # also run it periodically, as the write-mark install is
-
-lease = KVLease(nats_client, bucket_name="leases")
-held = await lease.hold("change-note-keeper", ttl=timedelta(seconds=30), renew_every=timedelta(seconds=10))
-await run_change_note_keeper(held, keeper)      # a pass every second
+keeping = LogKeeping(LogKeeper(l3_pool, schema="platform", log=source), nats_client, lease="change-note-keeper")
+await keeping.start()                          # the marks table, then one pass; before this process writes
+# then every LOG_KEEPER_CLAIM_EVERY (15 s), in a periodic task:
+await keeping.claim_and_keep(holder="hub-<replica>")   # a pass every second while it holds the lease
 ```
+
+A second database whose writers share the log (identity-core's) runs its own keeper beside it,
+`LogKeeper(pool, schema=<its schema>, log=<its source, database=<its schema>>, keeps_log=False)`, under a lease of its
+own.
 
 Each pass, in order:
 
-1. **Log absent** (NATS lost it): put it back from the notes (see "After NATS loses the change log").
-2. **New log** the keeper did not put back: take it; its notes cover it from its start.
-3. **Fence**: once the wait has passed since the last switch, record the log's position. Every epoch
-   after it has its note in the current table or a later one.
-4. **Empty**: after a switch, delete the idle table's notes (the table after the new current one) in
-   batches, each its own short transaction, with a pause between, for at most `empty_budget` per pass; the
-   next pass carries on. It was current two switches back, at least one wait ago, so no cached slot that
-   names it is still valid and no statement that took it is still running. `emptied` is set when a read
-   finds no note left. Never `TRUNCATE`: it takes an exclusive lock and bumps the catalog version, which
-   replans every session's note function; deletes on an idle table touch no writer.
-5. **Switch**: when the wait has passed, the idle table's emptying has finished, and the current table has
-   taken half the restore budget (`max_bytes` × 75 % / 2, as bytes per sequence the log holds times
-   sequences since the switch),
-   make the idle table current. The ring row refuses a switch into a table not yet emptied: a due switch
-   waits, logged once and counted on `threetears_change_notes_switch_waits_total`. The fence's position
-   becomes the coverage's **floor**: every epoch after it has its note in the current or the previous
-   table. The switch tells writers this keeper's fence, and counts the notes of the table it left that
-   read the ring row.
-6. **Scrub**, every `scrub_every` (a tenth of the fence: 1 min), not every pass: check up to `scrub_batch`
-   (1000) epochs after the floor, up to the log's head one scrub ago, against the notes. Report each one
-   whose note is not where the coverage needs it. Never repair. Its cost: one log read per epoch checked
-   (64 at a time), and per note table two index lookups led by `(key_text, table_name)`, sized by the
-   epochs checked, not by the coverage. Only an epoch that names no rows (a whole-table or keys-unknown
-   one) asks whether its table has any note at all, which stops at the first note found and scans the
-   table only when none is there: the case the alert is for.
+1. **Log absent** (NATS lost it) and the newest mark names a log: put it back from the tables (see "After NATS loses
+   the change log"). No mark at all (a database's first start): declare a fresh log and mark it.
+2. **A restore left unlabelled** (its keeper died part-way): done again in full into the same log.
+3. **A log the keeper does not know** (its newest mark names another): taken, said at WARNING unless it is this
+   keeper's own restore, and marked at once.
+4. **Mark**: every 30 s, the log's position after the database's clock; then drop the marks older than the log's
+   window's anchor.
+5. **Scrub**, every minute, not every pass: up to 1000 records after the scrub's position, up to the log's head one
+   scrub ago. Each record of this database is checked against the tables a restore reads back (an ERROR and
+   `threetears_change_notes_missing_total{table}` for one that carries no epoch) and against the newest mark before it
+   (an ERROR and `threetears_restore_margin_violations_total{table}` for a lowest stamp below its X). Never repair.
+   The log's owner reads by sequence, 64 at a time; a keeper beside reads its schema's tables by their keys, never by
+   sequence (a pod's grant cannot name that read).
 
-Two keepers at once never switch twice (every ring update names the switch it read), but empty and scrub
-twice; the lease keeps it to one. Tuning: `fence` (a writer's cached slot is used up to half of it, so keep
-the other half far beyond the longest transaction any writer runs), `switch_bytes` and
-`switch_notes` (defaults in the facts table's "Ring switch" row; never set `switch_bytes` below what the log
-takes between two passes, nor above the default, or a restore fits only in part), `empty_batch`, `empty_pause`,
-`empty_budget`, `every`.
-
-### Why a cached slot never writes into a table being emptied
-
-A process's copy names a table that was current when the copy was read, and the database uses it only
-until `valid until` = the read's `now()` + fence / 2. The ring switches at most once per wait (at least
-the fence the writers were told, and the one told before), and empties a table only after the second
-switch away from it, at least one full wait after it stopped being current. By then every copy naming it
-expired at least half a fence ago, and a statement that took it had that half to end. The validity is
-written and checked on the database's clock, so process clocks do not enter it. A process that cannot
-refresh keeps no usable copy past fence / 2; its connections then read the ring row (correct, slower).
-
-### Alert: a ring switch waits on an emptying
-
-`threetears_change_notes_switch_waits_total` increased: a switch was due, but the idle table still held
-notes. Normal for a pass or two on a large table. If it keeps rising, the current table keeps growing past
-its switch size (the facts table's "Ring switch" row), and the coverage with it, until a restore fits only in
-part. Check the keeper's ERROR lines (a failing delete), and
-`threetears_change_notes_emptied_rows_total` moving; raise `empty_batch` or `empty_budget` if the deletes run
-but too slowly.
+Two keepers at once mark and scrub twice, and never restore twice (the log is declared once); the lease keeps it to
+one.
 
 ## After NATS loses the change log
 
@@ -223,53 +168,52 @@ but too slowly.
    L2-first writes raise `L2LostError`; other writes wait for the restore, and no process starts a log.
 2. The keeper's next pass first declares a new log under a NEW incarnation, marked as being restored
    (`threetears_restoring` in the stream's metadata) and continuing nothing yet: writes waiting for the log
-   append to it at once. It then sizes the current and previous note tables' distinct rows in the database
-   (what the log holds plus every record must stay under 75 % of `max_bytes`), streams them a page at a time
-   folded into records (each distinct key once, with its invalidation columns; a truncate or file load as one
-   whole-table record; at most 5000 rows of one table held at once), appends them, and only then labels the log as continuing the lost one from the floor (`continues`,
-   `covered_from`). It logs one WARNING with the counts and counts `threetears_change_notes_restores_total`.
-   Until the label is written every follower of the lost log is behind (`replaced`), never current.
+   append to it at once. It then reads the tables' changes since the lost log's oldest mark, sized first against the
+   restore budget (what the log holds plus every record must stay under 75 % of `max_bytes`), each table a scope or a
+   bucket at a time, folded in the restore's worker; appends them; and only then labels the log as continuing the
+   lost one from that mark's position (`continues`, `covered_from`). It logs one WARNING with the counts and counts
+   `threetears_change_notes_restores_total`. Until the label is written every follower of the lost log is behind
+   (`replaced`), never current.
    - A restore that stops part-way (a refused append, a NATS error, the keeper losing its lease or its
      process) is unlabelled: the next pass, by any keeper, does it again in full into the same log, under
      fresh append ids. A key appended twice is evicted twice.
-   - A coverage whose records would not fit puts back its newest part that does: the notes written since
-     the oldest mark that fits (less half the wait), with that mark's log position as `covered_from`. One
-     ERROR (`only the newest change notes`) names `covered_from` and the notes left out, and
+   - Changes too big for the log are put back from a later mark, the oldest whose part fits. One ERROR
+     (`only the tables' changes after a later mark`) names `covered_from`, and
      `threetears_change_notes_restore_truncated_total` counts it (alert on any). Followers at or past it
      catch up; older ones are behind (`record_lost`) until they restart.
-   - Only when not even the notes after the newest mark fit is the restore refused: one ERROR
+   - Only when not even the changes after the newest mark fit is the restore refused: one ERROR
      (`was NOT restored`), `threetears_change_notes_restores_refused_total` (alert on any), and the new log
      is taken as a fresh one. Every follower of the lost log stays behind until it restarts. Nothing reloads.
-3. Once the label is written, a follower whose mark under the lost incarnation is at or past the floor
+   - A keeper beside (identity-core's) puts its own database's tables back into the same log from its own marks,
+     labelling nothing: `threetears_change_notes_put_backs_total`.
+3. Once the label is written, a follower whose mark under the lost incarnation is at or past `covered_from`
    carries its mark to the start of the new log and walks every record, the writes made during the restore
-   included: it evicts each noted key once (some it already held
-   current) and is caught up. Nothing is dropped except a table a restored whole-table record names: that
-   is a truncate or load that happened in the coverage, re-applied.
-4. A follower whose mark is older than the floor is behind (`record_lost`), serving what it holds, until it
+   included: it evicts each key once (some it already held current) and is caught up. A run deleted whole comes
+   back as its prefix.
+4. A follower whose mark is older than `covered_from` is behind (`record_lost`), serving what it holds, until it
    restarts.
 5. For L2-first tables the worker's refiller then puts L2's rows back from L3 (see below).
 6. Verify: `collection_epoch_tables_behind` returns to 0; the keeper's WARNING names the restored
    incarnation; `l2_first_status` shows every L2-first table `complete=True`.
 
-What a loss costs: a write whose epoch append failed while the log was absent is in L3 with its note, but
-not in the restored log unless it committed before the keeper read the notes. A follower that missed it
-serves its old copy of those rows until they are written again. An L2-first write that did not wait and
-had not reached L3 is gone until its source sends it again.
+What a loss costs: a write whose epoch append failed while the log was absent is in L3 with its epoch, and a restore
+that reads after it puts it back. An L2-first write that did not wait and had not reached L3 is gone until its source
+sends it again. A table carrying no epoch is not put back at all: the scrub reports it before a loss.
 
-## Alert: an epoch has no change note
+## Alert: a record a restore cannot read back
 
-`threetears_change_notes_missing_total` increased. The ERROR names the table, the epoch, the key and the
-note tables looked in. A restore after a NATS loss would not put that epoch back.
+`threetears_change_notes_missing_total` increased. The ERROR names the table and the record. A restore after a NATS
+loss would not put that table's changes back: no versioned or stamped table of that name carries an epoch in this
+database.
 
-Causes, most likely first:
+Do: declare the table versioned or stamped (its migration then adds the epoch and its restore index). The scrub never
+writes anything.
 
-- the table has no note trigger yet (created since the last `install_triggers`, or its class names its
-  table per instance so `noted_tables()` cannot name it): run `install_triggers`;
-- an L2-first table whose saver is behind: the record is in NATS and its row (and note) not yet in L3;
-  see "unsaved_epochs growing" below;
-- a writer stalled between its commit and its epoch append for longer than the fence: raise the fence.
+## Alert: a record below its mark's floor
 
-Do: fix the cause. The scrub never writes a note.
+`threetears_restore_margin_violations_total` increased. A writer held a transaction, or its append, longer than the
+margin M (10 min): a restore from that mark would read the table from X and miss what it wrote below X. The ERROR names
+the table, the scopes, the keys and the stamps. Find the writer that holds its transaction that long.
 
 ## Followers: the quiet pass
 
@@ -323,7 +267,7 @@ for status in await l2_first_status(registry, epochs=source):
 a WARNING. Past 1.0 the log refuses records, and every write that needs one fails.
 
 Do: raise `EpochChangeRetention.max_bytes` on every source that declares the log, or find the writer
-producing so many epochs. The note ring switches at the same size, so it follows.
+producing so many epochs.
 
 ## Alert: L3 refused a committed L2-first write
 
@@ -337,23 +281,16 @@ Do: fix the row at its source and send it again.
 
 3tears ships the library pieces above. The hub owns:
 
-- **The keeper.** One process (the hub, under a lease) runs `run_change_note_keeper`, calls
-  `keeper.install()` at start and `install_triggers(noted_tables())` periodically beside the write-mark
-  install, and builds every source with `restored_from_l3=True`.
-- **The cached slot.** Every process that writes noted tables gives its L3 pool a `ChangeNoteSlot`
-  (`session_settings_connection_class(..., note_slot=slot)`), so no save reads the ring row.
-- **The broker's file loads.** The hub's `l3.load_files` copies on its own connection; it should set
-  `NOTE_WHOLE_SETTING` (`SELECT set_config('threetears.note_whole', '1', true)`) in each load transaction,
-  as `SqlL3Backend.load_files` does, so a load is one whole-table note rather than one per row.
-- **The scripts.** `aibots` CLI commands that print the ring (`keeper.ring()`), `l2_first_status` per table,
+- **The keeper.** One process (the hub, under a lease) runs `LogKeeping`: `start()` before it writes,
+  `claim_and_keep` every `LOG_KEEPER_CLAIM_EVERY`; it builds every source with `restored_from_l3=True`.
+- **The scripts.** `aibots` CLI commands that print the keeper's newest mark, `l2_first_status` per table,
   and run a keeper or refill pass, each with its runbook step.
 - **The L2-first worker deployment.** One process per principal holding L2-first collections runs
   `run_l2_first_worker` under a lease.
 - **The grants.** Epoch and change-log writes for the principal that commits L2-first writes.
 - **The alert rules.** On the metrics in the facts table, at the thresholds given.
-- **Settings.** If the hub makes the fence, `every`, a lease TTL or `max_bytes` a per-environment setting,
+- **Settings.** If the hub makes the mark interval, `every`, a lease TTL or `max_bytes` a per-environment setting,
   each goes in 1Password through the existing env-var pattern, with its provisioning step.
 
 The write-mark trigger is never installed on an L2-first table, and the reconciler deletes any mark on one
-without advancing it: its epoch already named its rows before L3 had them. The note trigger is installed on
-it like any other table.
+without advancing it: its epoch already named its rows before L3 had them.
