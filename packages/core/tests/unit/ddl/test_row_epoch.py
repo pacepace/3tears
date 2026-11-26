@@ -34,6 +34,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import (
     AppendOnlyWriteError,
+    bucket_epoch_index_name,
     EPOCH_COLUMN,
     ROW_STAMPED,
     RowEpoch,
@@ -364,3 +365,10 @@ def test_a_versioned_tables_cache_holds_one_row_a_key() -> None:
     table = _versioned().to_sqlalchemy_table(MetaData())
     assert [column.name for column in table.primary_key.columns] == ["office_key", "candidate"]
     assert EPOCH_COLUMN in table.columns
+
+
+def test_a_schema_qualified_stamped_tables_restore_index_is_named_by_the_bare_table() -> None:
+    # the hub's audit table is declared platform_audit.audit_events; an index name is one plain identifier
+    schema = _stamped("platform_audit.audit_events")
+    assert bucket_epoch_index_name(schema.name) == "audit_events_bucket_epoch"
+    assert "audit_events_bucket_epoch" in {index.name for index in schema.indexes}
