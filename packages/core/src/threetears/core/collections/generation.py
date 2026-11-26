@@ -42,7 +42,7 @@ from threetears.core.backends.broker_generation import (
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
 from threetears.core.collections.undeclared_tables import report_undeclared_table
-from threetears.core.frozen_state import frozen, with_entry, without_entry
+from threetears.core.frozen_state import frozen, logged, with_entry, without_entry
 from threetears.observe import FrozenWeakSet
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.exceptions import GenerationUnavailableError, SchemaTenantUnknownError
@@ -347,14 +347,18 @@ class _TableMark:
     :ivar accounted: every advance up to and including this count, under :attr:`incarnation`, is
         accounted for
     :ivar heard: advances beyond :attr:`accounted` this pod has heard rows of, by
-        ``(incarnation, count)``
+        ``(incarnation, count)``; a :func:`~threetears.core.frozen_state.logged` map, so a count (one advance set)
+        copies a key about log2(n) times over its life, never every waiting advance a count. Replaced whole by
+        :func:`~dataclasses.replace` and a frozen ``dict`` copied each count, hearing W waiting advances cost O(W^2):
+        20,000 advances heard behind one gap held one turn 0.52 s, and counting each one's last rows 0.88 s more
+        (``_MAX_REMEMBERED_ADVANCES`` waiting; macOS arm64, Python 3.14, 2026-11-25)
     :ivar overflowed: whether :attr:`heard` stopped recording because it was full
     """
 
     sighted: bool = False
     incarnation: str | None = None
     accounted: int = 0
-    heard: Mapping[tuple[str, int], _Heard] = field(default_factory=frozen)
+    heard: Mapping[tuple[str, int], _Heard] = field(default_factory=logged)
     overflowed: bool = False
 
 
@@ -570,7 +574,7 @@ class GenerationMarks:
             mark,
             accounted=parts[1],
             overflowed=False,
-            heard=frozen(
+            heard=logged(
                 {key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > parts[1]}
             ),
         )
@@ -635,7 +639,7 @@ class GenerationMarks:
         ):
             return False
         self._tables = with_entry(
-            self._tables, table_name, replace(mark, incarnation=restored, accounted=0, heard=frozen(), overflowed=False)
+            self._tables, table_name, replace(mark, incarnation=restored, accounted=0, heard=logged(), overflowed=False)
         )
         return True
 
@@ -661,7 +665,7 @@ class GenerationMarks:
             incarnation=incarnation,
             accounted=count,
             overflowed=False,
-            heard=frozen({key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > count}),
+            heard=logged({key: heard for key, heard in mark.heard.items() if key[0] == incarnation and key[1] > count}),
         )
         self._tables = with_entry(self._tables, table_name, self._moved_on(mark))
 
@@ -690,10 +694,13 @@ class GenerationMarks:
         heard = mark.heard.get(parts)
         if heard is None:
             if len(mark.heard) >= _MAX_REMEMBERED_ADVANCES:
-                self._tables = with_entry(self._tables, table_name, replace(mark, overflowed=True))
+                if not mark.overflowed:
+                    # once full, an advance more changes nothing: never the mark rebuilt again a count
+                    self._tables = with_entry(self._tables, table_name, replace(mark, overflowed=True))
                 return
-            heard = _Heard(rows=0, of=of)
-        heard = replace(heard, rows=heard.rows + rows)
+            heard = _Heard(rows=rows, of=of)
+        else:
+            heard = _Heard(rows=heard.rows + rows, of=heard.of)
         self._tables = with_entry(
             self._tables, table_name, self._moved_on(replace(mark, heard=with_entry(mark.heard, parts, heard)))
         )
@@ -718,14 +725,11 @@ class GenerationMarks:
             accounted += 1
         if accounted == mark.accounted:
             return mark
-        passed = range(mark.accounted + 1, accounted + 1)
-        return replace(
-            mark,
-            accounted=accounted,
-            heard=frozen(
-                {key: heard for key, heard in mark.heard.items() if not (key[0] == incarnation and key[1] in passed)}
-            ),
-        )
+        # each passed advance unset alone: a move past a few never rebuilds every advance still waiting
+        heard = mark.heard
+        for passed in range(mark.accounted + 1, accounted + 1):
+            heard = without_entry(heard, (incarnation, passed))
+        return replace(mark, accounted=accounted, heard=heard)
 
     def judge(self, table_name: str, token: str | None) -> GenerationVerdict:
         """compare a generation just read with the table's mark, changing nothing.

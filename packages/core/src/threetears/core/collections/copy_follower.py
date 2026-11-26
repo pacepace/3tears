@@ -4445,10 +4445,28 @@ class CopyFollower:
             self._checkpoint_wake = None
         if self._checkpoints.due():
             self._checkpointing = asyncio.create_task(self._write_checkpoint())
+            self._checkpointing.add_done_callback(self._checkpoint_done)
             return
         wait = self._checkpoints.noted_due_in()
         if wait is not None:
             self._checkpoint_wake = asyncio.get_running_loop().call_later(wait, self._checkpoint_if_due)
+
+    def _checkpoint_done(self, task: asyncio.Task[Any]) -> None:
+        """let go of a checkpoint's write once it is done.
+
+        WHY: a task cancelled keeps the CancelledError that left its coroutine (``Task._cancelled_exc``), whose
+        traceback holds :meth:`_write_checkpoint`'s frame, which holds this follower (``self``, a cell its lambda closes
+        over). Kept here, that is a cycle: follower -> task -> error -> traceback -> frame -> follower, and a follower
+        stopped while it wrote a checkpoint (:meth:`stop` cancels the write) was freed, with its copy and its mapped
+        version, only by a full collection, which a pod that runs none never does.
+
+        :param task: the write, done
+        :ptype task: asyncio.Task[Any]
+        :return: nothing
+        :rtype: None
+        """
+        if self._checkpointing is task:
+            self._checkpointing = None
 
     async def _write_checkpoint(self) -> None:
         """write a checkpoint beside the follower, of the state :meth:`current` pins.

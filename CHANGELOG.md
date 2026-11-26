@@ -141,6 +141,22 @@ run (reports' `_whole_tiers`); `ApplyPlan` carries `merges` and `instants`. A sc
 (a space, an apostrophe, non-ASCII, `all`, a tier-like name, over 96 characters) names its part escaped (`e.` and
 `.XX` bytes) or hashed (`h.`), never failing at publish: `copy_parts.part_name` and `scope_of_part`.
 
+### core: a mark counts an advance's rows without copying every advance waiting behind a gap
+
+**Fixed:** `GenerationMarks` keeps the advances heard past its mark in a `logged()` map (`threetears.core.frozen_state`),
+still immutable to its readers, so a count sets one advance and copies a key about log2(n) times over its life, where a
+frozen `dict` copied whole on every count made hearing W waiting advances O(W^2). A mark already full (it stopped
+recording) is no longer rebuilt on each advance more, and moving past advances unsets only those passed. 20,000 advances
+heard behind one gap in one turn: 0.52 s of the loop before, 0.062 s now; counting each one's last rows 0.88 s before,
+0.060 s now (macOS arm64, Python 3.14). The marks left are the same.
+
+### core: a follower stopped while it writes a checkpoint makes no reference cycle
+
+**Fixed:** `CopyFollower` lets go of its checkpoint's write once the write is done. Cancelled by `stop()`, the write's
+task kept the `CancelledError` that left its coroutine, whose traceback held the write's frame, which held the follower:
+follower -> task -> error -> traceback -> frame -> follower. A stopped follower, with its copy and the version it held
+mapped, was freed only by a full collection, which reports' pod never runs.
+
 ### observe, core: a kept failure and the shared Arrow store make no reference cycle
 
 **Added:** `threetears.observe.frames_released(exc)`: an exception to be kept past its `except` block (on a result, in a
