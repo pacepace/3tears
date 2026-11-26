@@ -240,8 +240,8 @@ async def test_a_namespace_delete_marks_it_and_its_grants_gone() -> None:
 
 async def test_a_role_live_grants_name_is_refused_its_gone_mark() -> None:
     """role_assignments.role_id is ON DELETE RESTRICT, and a role's delete is a gone mark (an UPDATE) the database's
-    guard never sees: 3tears counts the role's live grants through idx_role_assignments_role and refuses, naming the
-    grants table and how many."""
+    guard never sees: 3tears counts the role's live grants through role_assignments_page_by_role_scope_type and
+    refuses, naming the grants table and how many."""
     role_id = uuid4()
 
     def answer(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:

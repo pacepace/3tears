@@ -3,7 +3,8 @@
 ``RoleAssignmentCollection``'s schema declares every index the acl migrations create on the table, so
 :func:`~threetears.interfaces.keyed.keys.serving_index` chooses among all of them: a grant's natural-key reads go to its
 scope's unique index (one row), a group's reads to ``idx_role_assignments_group_scope``, a role's to
-``idx_role_assignments_role``, a namespace's to ``idx_role_assignments_scope_namespace``. Declared only in part, a read
+``role_assignments_page_by_role_scope_type``, a namespace's (or a set of namespaces') to
+``idx_role_assignments_scope_namespace``. Declared only in part, a read
 was hinted to a worse index that was declared (a grant's natural-key read to the group's every grant), or to none.
 
 Each read runs through a reader that says it is YugabyteDB and records what it is sent; the hint is the statement's
@@ -19,7 +20,7 @@ import pytest
 from threetears.agent.acl import RoleAssignmentCollection, RoleCollection
 from threetears.agent.acl.types import ScopeType
 from threetears.core.collections.delete_cascade import refuse_restricted_delete
-from threetears.core.keyed import AnyOf, serving_index
+from threetears.core.keyed import AnyOf, Fragment, read_by, serving_index
 
 from .collection_support import make_collection
 
@@ -149,23 +150,24 @@ async def test_a_group_s_grants_read_the_group_scope_index() -> None:
 
 
 async def test_a_role_s_grants_read_the_role_index() -> None:
-    """Flips if a role's grants, listed or counted, are not hinted to idx_role_assignments_role."""
+    """Flips if a role's grants, listed or counted, are not hinted to role_assignments_page_by_role_scope_type (the
+    hub's v163 index, acl v009; v004's idx_role_assignments_role is on no hub schema)."""
     reader = _Yugabyte()
     assignments = _assignments(reader)
     await assignments.list_by_role(uuid7())
     await assignments.count_by_role(uuid7())
     listed, counted = reader.sent
-    assert listed.startswith(_hint("t", "idx_role_assignments_role")), listed
-    assert counted.startswith(_hint("r", "idx_role_assignments_role")), counted
+    assert listed.startswith(_hint("t", "role_assignments_page_by_role_scope_type")), listed
+    assert counted.startswith(_hint("r", "role_assignments_page_by_role_scope_type")), counted
 
 
 async def test_a_role_s_delete_counts_its_live_grants_through_the_role_index() -> None:
     """Flips if the restricted delete's count of a role's live grants (role_assignments.role_id ON DELETE RESTRICT,
-    run by 3tears for a gone mark) is not hinted to idx_role_assignments_role."""
+    run by 3tears for a gone mark) is not hinted to role_assignments_page_by_role_scope_type."""
     reader = _Yugabyte()
     await refuse_restricted_delete(make_collection(RoleCollection, l3_pool=reader), [uuid7()])
     (counted,) = reader.sent
-    assert counted.startswith(_hint("r", "idx_role_assignments_role")), counted
+    assert counted.startswith(_hint("r", "role_assignments_page_by_role_scope_type")), counted
 
 
 async def test_a_namespace_s_grants_read_its_namespace_index() -> None:
@@ -174,6 +176,27 @@ async def test_a_namespace_s_grants_read_its_namespace_index() -> None:
     hinted to (scope_type, assignment_id), every namespace grant of every namespace read and filtered."""
     reader = _Yugabyte()
     await _assignments(reader).list_scoped_to_namespace(uuid7())
+    (read,) = reader.sent
+    assert read.startswith(_hint("t", "idx_role_assignments_scope_namespace")), read
+
+
+async def test_a_set_of_namespaces_grants_read_the_namespace_index() -> None:
+    """Flips if the read of a set of namespaces' grants in both partitions, its guard stated (the hub's outside grants:
+    ``scope_namespace_id = ANY(...)``, ``scope_type = 'namespace'``, ``scope_namespace_id IS NOT NULL``), is not
+    hinted to idx_role_assignments_scope_namespace: binding no set, it was hinted to the scope-type index, every
+    namespace grant read and filtered, and the hub read once a namespace to reach the namespace index."""
+    reader = _Yugabyte()
+    await read_by(
+        reader,
+        "role_assignments",
+        by={
+            "scope_namespace_id": AnyOf([uuid7(), uuid7(), uuid7()], cast="uuid"),
+            "scope_type": ScopeType.NAMESPACE.value,
+            "row_scope": AnyOf(("platform", "customer"), cast=None),
+        },
+        where=[Fragment('t."scope_namespace_id" IS NOT NULL')],
+        columns=("row_scope", "assignment_id", "scope_namespace_id", "group_id", "role_id"),
+    )
     (read,) = reader.sent
     assert read.startswith(_hint("t", "idx_role_assignments_scope_namespace")), read
 
@@ -187,11 +210,12 @@ async def test_a_customer_s_type_grants_read_their_index() -> None:
 
 
 async def test_a_scope_type_s_grants_read_the_scope_type_index() -> None:
-    """Flips if every grant of one scope type is not hinted to idx_role_assignments_scope_type."""
+    """Flips if every grant of one scope type is not hinted to role_assignments_page_by_scope_type (the hub's v163
+    index, range-sharded on YugabyteDB, acl v009; v004's idx_role_assignments_scope_type is on no hub schema)."""
     reader = _Yugabyte()
     await _assignments(reader).list_by_scope_type(ScopeType.ALL)
     (read,) = reader.sent
-    assert read.startswith(_hint("t", "idx_role_assignments_scope_type")), read
+    assert read.startswith(_hint("t", "role_assignments_page_by_scope_type")), read
 
 
 def test_no_grant_index_holds_live_rows_alone() -> None:
