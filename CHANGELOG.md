@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: importing `ProviderError` loads none of the engine
+
+**Fixed (#1332):** `from threetears.evals.providers import ProviderError` took over a second cold, since the client's
+root imported its model, which imports `threetears.evals.testing` and through it `actions`, `ops` and the report
+stack. The root now serves each name from its defining module on first read, and the failure's module imports nothing
+of the engine at load, so catching a provider's failure costs about 0.04s. `describe_failure` moves to its own module
+below the root; it is still imported from `threetears.evals.providers`, and every public name and signature is
+unchanged. Importing `Model` still loads the engine.
+
+**For hosts:** nothing to change. A process that imports `ProviderError` only to catch it no longer pays the engine's
+import.
+
 ### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
 
 **Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it

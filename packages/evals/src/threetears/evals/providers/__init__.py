@@ -52,17 +52,26 @@ Anthropic model is priced and bounded with no network read. A host that hands it
 does, is priced from it unchanged; it replaces the default by handing each model its own pricer.
 
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
-and only the names in ``__all__``.
+and only the names in ``__all__``. Each name is served by the module ``__getattr__`` from the module defining it, on
+first read, so a host that imports only :class:`ProviderError` to catch it loads the failure's module and none of the
+client or the engine (``tests/test_import_time.py``).
 """
 
 from __future__ import annotations
 
-from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, PriceRefresh
-from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
-from threetears.evals.providers.model import Clients, Completion, Model
-from threetears.evals.providers.pricing import AnthropicPublishedRates, CallPrice, HostRates, ModelRates, Pricer
-from threetears.evals.providers.retry import DeclinedRetry
-from threetears.evals.providers.wire import PriceSource
+from collections.abc import Mapping
+from importlib import import_module
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, PriceRefresh
+    from threetears.evals.providers.describe import describe_failure
+    from threetears.evals.providers.failures import Provider, ProviderError
+    from threetears.evals.providers.model import Clients, Completion, Model
+    from threetears.evals.providers.pricing import AnthropicPublishedRates, CallPrice, HostRates, ModelRates, Pricer
+    from threetears.evals.providers.retry import DeclinedRetry
+    from threetears.evals.providers.wire import PriceSource
 
 __all__ = [
     "CATALOGUE_FETCH_TIMEOUT_S",
@@ -82,3 +91,43 @@ __all__ = [
     "ProviderError",
     "describe_failure",
 ]
+
+#: Each name of ``__all__``, by the module defining it: served by :func:`__getattr__` on first read, so importing this
+#: root (or :class:`ProviderError` from it) loads no more of the client than the name asked for.
+_LAZY_EXPORTS: Mapping[str, str] = MappingProxyType(
+    {
+        "CATALOGUE_FETCH_TIMEOUT_S": "threetears.evals.providers.catalogue",
+        "AnthropicPublishedRates": "threetears.evals.providers.pricing",
+        "CallPrice": "threetears.evals.providers.pricing",
+        "Catalogue": "threetears.evals.providers.catalogue",
+        "Clients": "threetears.evals.providers.model",
+        "Completion": "threetears.evals.providers.model",
+        "DeclinedRetry": "threetears.evals.providers.retry",
+        "HostRates": "threetears.evals.providers.pricing",
+        "Model": "threetears.evals.providers.model",
+        "ModelRates": "threetears.evals.providers.pricing",
+        "PriceRefresh": "threetears.evals.providers.catalogue",
+        "Pricer": "threetears.evals.providers.pricing",
+        "PriceSource": "threetears.evals.providers.wire",
+        "Provider": "threetears.evals.providers.failures",
+        "ProviderError": "threetears.evals.providers.failures",
+        "describe_failure": "threetears.evals.providers.describe",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:  # Any: each name is whatever its defining module holds
+    """Serve each name of ``__all__`` from the module defining it, on first read.
+
+    :param name: The attribute asked for.
+    :return: The exported object.
+    :raises AttributeError: When ``name`` is not one this root exports.
+    """
+    if (defined_in := _LAZY_EXPORTS.get(name)) is not None:
+        return getattr(import_module(defined_in), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    """Every name the module holds, the lazily served ones among them."""
+    return sorted({*globals(), *_LAZY_EXPORTS})
