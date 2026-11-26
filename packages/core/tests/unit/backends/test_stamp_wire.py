@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 import pytest
 from threetears.nats import Subject
 

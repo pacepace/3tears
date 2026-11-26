@@ -19,7 +19,7 @@ YugabyteDB are the integration pass's (``test_table_restore_plans_live``).
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import duckdb
@@ -27,6 +27,7 @@ import pyarrow as pa
 import pytest
 
 from threetears.core.backends import schema_sql
+from threetears.core.backends.protocol import L3Reader
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.schema_backed import BIGINT_TYPE, BOOL_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.table_restore import StampedTable, _bucket_rows
@@ -364,7 +365,9 @@ class TestReadsSkipGoneRows:
 
 async def _whole_read(reader: _L3) -> list[dict[str, Any]]:
     """a whole read's pager, as complete_copy and the store's scan read a table a page at a time."""
-    return await read_l3_rows(reader, _TABLE, ["state", "run_id", "rows"], ["state", "run_id"], page_size=1)
+    return await read_l3_rows(
+        cast(L3Reader, reader), _TABLE, ["state", "run_id", "rows"], ["state", "run_id"], page_size=1
+    )
 
 
 # -- no read answers the L3 restore bucket ----------------------------------------------------------------------------

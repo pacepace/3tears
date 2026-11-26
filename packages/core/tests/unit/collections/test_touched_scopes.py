@@ -210,6 +210,7 @@ def test_a_versioned_tables_declaration_reads_back_from_its_index_comment() -> N
     """Flips if what the hub reads off a versioned table's (scope, epoch) index comment is not the table's own scope
     column, scope epochs table and prefix (the broker touches a load's scopes by it), or a comment that is none reads
     as one."""
+    assert _RESULTS.row_epoch is not None
     comment = restore_declaration(_RESULTS.row_epoch, tuple(_RESULTS.pk_columns), (), ("schema", None))
     assert declared_versions(comment) == _RESULTS.row_epoch
     assert declared_versions(None) is None and declared_versions('{"other": 1}') is None

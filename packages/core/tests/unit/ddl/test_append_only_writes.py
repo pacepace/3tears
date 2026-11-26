@@ -318,7 +318,10 @@ async def test_a_whole_run_of_a_versioned_table_deleted_is_one_run_marker_a_pref
     assert _touches(conn) == [(_NOW + 3, ["PA"])]
     statements = [call.args for call in conn.execute.await_args_list]
     inserts = [args for args in statements if args[0].startswith("INSERT INTO threetears_run_markers")]
-    assert [args[1:] for args in inserts] == [("ve_projections", _NOW + 3, "PA", 7), ("ve_projections", _NOW + 3, "PA", 8)]
+    assert [args[1:] for args in inserts] == [
+        ("ve_projections", _NOW + 3, "PA", 7),
+        ("ve_projections", _NOW + 3, "PA", 8),
+    ]
     # nothing deleted: the one statement on the table is the no-row one that leaves its whole note
     assert [args[0] for args in statements if "ve_projections" in args[0] and args[0].startswith("DELETE")] == [
         "DELETE FROM ve_projections WHERE FALSE"
