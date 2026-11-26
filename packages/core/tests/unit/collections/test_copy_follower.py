@@ -1030,6 +1030,47 @@ async def test_notes_that_cannot_name_a_large_commit_leave_the_copy_behind_until
     assert follower.status().behind == {}
 
 
+@pytest.mark.parametrize("cleanup", [True, False], ids=["cleanup-commit", "keys-unknown-commit"])
+async def test_a_cleanup_commit_costs_the_copy_nothing_while_a_keys_unknown_one_walks_its_notes(
+    noted_world: Any, cleanup: bool
+) -> None:
+    """Flips if a copy walks the change notes of quiet-time cleanup's own commit (its record names its floor F,
+    ``cleanup_floor``): one l3.noted_keys read a cleanup batch on every pod, and every key a load overlapping the batch
+    wrote re-read from L3 (the notes bracket names them with no epoch). Every row cleanup removed is below F, so the
+    record is marked applied and nothing is read; any other keys-unknown record still walks its notes."""
+    world, registry = noted_world
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    before = _copy(backend)
+    since = datetime.now(UTC)
+    # a load's rows written while cleanup's batch committed: the batch's notes bracket names their keys
+    l3.put([("VA", 1, 9), ("VA", 2, 9)])
+    notes = _Notes([(since, ("VA", "1")), (since + timedelta(microseconds=1), ("VA", "2"))])
+    registry.set_noted_keys_reader(notes)
+    log.count += 1
+    token = f"inc:{log.count}"
+    log.records[token] = EpochChange(
+        table=_TABLE,
+        token=token,
+        keys_unknown=True,
+        noted_between=(since, since + timedelta(seconds=1)),
+        cleanup_floor=1_000 if cleanup else None,
+    )
+    lock.version += 1
+    l3.rows_read = 0
+
+    assert await follower.catch_up()
+
+    assert follower.status().behind == {}
+    if cleanup:
+        assert (notes.pages, l3.rows_read) == (0, 0), "cleanup's commit is marked applied, reading nothing"
+        assert _copy(backend) == before
+    else:
+        assert notes.pages >= 1, "a keys-unknown commit's keys are in its notes"
+        assert l3.rows_read == 2
+        assert _copy(backend) == l3.held()
+
+
 def _silent_hub(error: Exception | None) -> NatsProxyL3Backend:
     """the pod's broker transport on a bus where no hub answers l3.noted_keys: none listens, or none replies."""
 

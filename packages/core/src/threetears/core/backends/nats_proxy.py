@@ -55,6 +55,7 @@ from threetears.core.backends.arrow_copy import (
 from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.backends.broker_generation import (
     CHANGED_ROWS_FIELD,
+    CLEANUP_DELETE_FIELD,
     COMMIT_S_MIN_FIELD,
     COMMIT_SCOPES_FIELD,
     DELTA_FILES_FIELD,
@@ -68,6 +69,7 @@ from threetears.core.backends.broker_generation import (
     named_commit_scopes,
     named_delta_files,
     note_load_answer,
+    note_sent_request,
     stamp_fields,
     record_reply_generations,
 )
@@ -403,6 +405,12 @@ _NOTED_KEYS_GRACE_SECONDS: Final = 1.0
 #: (:meth:`NatsProxyL3Backend.nats_request_bytes`), so the hub's answer -- a refusal of a request that queued past the
 #: deadline included -- arrives while the pod still waits for it
 _TX_REPLY_GRACE_SECONDS: Final = 2.0
+
+#: the ``l3.tx.*`` doors whose every request writes (a copy, a key-prefix delete), and those carrying one statement,
+#: which writes unless it is a select: the requests a ``CallerTransaction`` is told of before they are sent
+#: (``note_sent_request``), so cleanup's delete never shares a commit with another write
+_TX_WRITE_DOORS: Final = frozenset({"copy", "delete_prefixes"})
+_TX_STATEMENT_DOORS: Final = frozenset({"execute", "fetchrow", "fetch"})
 
 
 def _noted_keys_answer(response: Mapping[str, Any], table: str) -> NotedKeysPage | str:
@@ -2324,8 +2332,29 @@ class _ProxyConnection:
         :return: the parsed reply
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: as :meth:`NatsProxyL3Backend.nats_request` raises
+        :raises CleanupMixedWriteError: when the ``CallerTransaction`` open on this connection refuses the request,
+            before it is sent: quiet-time cleanup's delete beside another write (``cleanup_mix_refusal``)
         """
+        self._note_request(subject, payload)
         return await self._backend.nats_request(subject, payload, timeout_s=self._tx_wait_s(), **options)
+
+    def _note_request(self, subject: str, payload: Mapping[str, Any]) -> None:
+        """tell the ``CallerTransaction`` open on this connection of a statement or write about to be sent, so a cleanup
+        delete never shares a commit with another write (``note_sent_request``): a statement door's request writes
+        unless it is a select, a copy's and a key-prefix delete's always do. Nothing for begin, commit or rollback.
+
+        :param subject: the ``l3.tx.*`` subject
+        :ptype subject: str
+        :param payload: the request, its cleanup marker among it (``stamp_fields``)
+        :ptype payload: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises CleanupMixedWriteError: when the transaction refuses it (``cleanup_mix_refusal``)
+        """
+        door = subject.rpartition(".")[2]
+        if door in _TX_WRITE_DOORS or door in _TX_STATEMENT_DOORS:
+            writes = door in _TX_WRITE_DOORS or statement_operation(str(payload.get("query", ""))) != "select"
+            note_sent_request(self, cleanup=payload.get(CLEANUP_DELETE_FIELD) is True, writes=writes)
 
     def transaction(
         self,
@@ -2672,6 +2701,7 @@ class _ProxyConnection:
             else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
+        self._note_request(subject, payload)
         reply = await self._backend.nats_request_bytes(
             subject, payload, timeout_s=self._tx_wait_s(), offload_encode=offload
         )

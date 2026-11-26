@@ -24,6 +24,7 @@ from threetears.core.backends.broker_generation import (
     CLEANUP_DELETE_FIELD,
     CLEANUP_FLOOR_FIELD,
     STAMP_S_MIN_FIELD,
+    CleanupMixedWriteError,
     STAMPS_EPOCH_FIELD,
     cleanup_deleting,
     stamp_fields,
@@ -455,3 +456,69 @@ async def test_a_cleanup_delete_on_l3_query_carries_the_marker_and_floor() -> No
     for body in (marked, fetched):
         assert (body[CLEANUP_DELETE_FIELD], body[CLEANUP_FLOOR_FIELD]) == (True, _HIGH), body
     assert CLEANUP_DELETE_FIELD not in plain and CLEANUP_FLOOR_FIELD not in plain
+
+
+# -- a cleanup commit is only cleanup ----------------------------------------------------------------------------------
+
+_CLEANUP_DELETE = 'DELETE FROM projections WHERE "epoch" < $1'
+_OTHER_WRITE = "UPDATE runs SET state = $1 WHERE run_id = 'r1'"
+
+
+async def _cleanup_delete(conn: Any, *, fetch: bool) -> None:
+    with cleanup_deleting(_HIGH):
+        if fetch:
+            await conn.fetch(f'{_CLEANUP_DELETE} RETURNING "epoch"', _HIGH)
+        else:
+            await conn.execute(_CLEANUP_DELETE, _HIGH)
+
+
+@pytest.mark.parametrize(
+    ("cleanup_first", "fetch"),
+    [(True, False), (False, False), (False, True)],
+    ids=["write-after-cleanup", "cleanup-after-write", "cleanup-fetch-after-write"],
+)
+async def test_a_transaction_mixing_a_cleanup_delete_and_another_write_is_refused_before_it_is_sent(
+    cleanup_first: bool, fetch: bool
+) -> None:
+    """Flips if a CallerTransaction sends quiet-time cleanup's delete beside any other write: its commit's records
+    would name cleanup's floor, and every copy skips them reading nothing (``catch_up_generation``), the other write
+    with them. The second kind is refused before it is sent, and the transaction rolled back."""
+    broker = _Broker(_BEGIN, _DONE, _COMMIT)
+    proxy = broker.proxy()
+    with pytest.raises(CleanupMixedWriteError, match="makes no other write"):
+        async with proxy.acquire() as conn, CallerTransaction(conn):
+            if cleanup_first:
+                await _cleanup_delete(conn, fetch=fetch)
+                await conn.execute(_OTHER_WRITE, "PA")
+            else:
+                await conn.execute(_OTHER_WRITE, "PA")
+                await _cleanup_delete(conn, fetch=fetch)
+    sent = [body for _, body in broker.sent if "query" in body]
+    assert len(sent) == 1, "the refused request was never sent"
+    assert bool(sent[0].get(CLEANUP_DELETE_FIELD)) is cleanup_first
+    assert broker.bodies("l3.tx.commit") == []
+    assert len(broker.bodies("l3.tx.rollback")) == 1
+
+
+async def test_a_collection_write_beside_a_cleanup_delete_is_refused_as_it_joins() -> None:
+    """Flips if a collection write joining the transaction (its enrollment, the rule's door on a connection the L3 rail
+    does not carry) is let in inside cleanup_deleting after another write."""
+    broker = _Broker(_BEGIN, _DONE, _COMMIT)
+    proxy = broker.proxy()
+    with pytest.raises(CleanupMixedWriteError):
+        async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
+            await conn.execute(_OTHER_WRITE, "PA")
+            with cleanup_deleting(_HIGH):
+                transaction.enroll(cast(Any, None), "r1")
+    assert broker.bodies("l3.tx.commit") == []
+
+
+async def test_a_transaction_of_only_cleanup_deletes_and_reads_commits() -> None:
+    """Flips if the rule refuses what cleanup's own transaction is: its deletes, and reads beside them."""
+    broker = _Broker(_BEGIN, _DONE, _DONE, {"success": True, "rows": [], "row_count": 0}, _COMMIT)
+    proxy = broker.proxy()
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        await _cleanup_delete(conn, fetch=False)
+        await _cleanup_delete(conn, fetch=False)
+        await conn.fetch("SELECT run_id FROM runs WHERE run_id = $1", "r1")
+    assert len(broker.bodies("l3.tx.commit")) == 1
