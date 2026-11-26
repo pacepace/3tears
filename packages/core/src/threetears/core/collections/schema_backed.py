@@ -2105,8 +2105,12 @@ class TableSchema:
         # its key: the run-marker table in its schema holds them
         resets = RUN_MARKERS_TABLE
         if scope not in pk_cols:
-            # no prefix of the key names the scope, so no run marker names the table (delete_prefixes refuses one)
-            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, resets=resets)
+            # no prefix of the key names the scope, so no run marker names the table (delete_prefixes refuses one).
+            # Every version of a key holds its scope (a gone marker carries the key's scope, decision 27), so a read's
+            # pin on it is judged inside the newest relation, by the scope's index (VersionedTable.fixed); never a
+            # moveable one (refused on a versioned table today, kept out here all the same)
+            fixed = () if scope in self.moveable else (scope,)
+            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, resets=resets, fixed=fixed)
         texts: list[str] = []
         for name in pk_cols:
             kind = key_array_type(self, name)

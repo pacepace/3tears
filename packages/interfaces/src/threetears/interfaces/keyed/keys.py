@@ -756,6 +756,15 @@ class VersionedTable:
         (``threetears.core.ddl.run_markers.TABLE_RESET_SCOPE``, an empty prefix): every read hides each version older
         than the newest (:func:`_reset_cut`). None for a table read with no reset cut. Apart from :attr:`markers`: a
         table whose key names no scope takes no run marker, and is reset all the same
+    :ivar fixed: the columns past the key that every version of a key holds alike, so a read's condition on them (and
+        the key) is judged inside the relation's ``DISTINCT ON`` as a condition on the key is (:meth:`judged_within`):
+        the table's declared scope when its key does not name it (``row_versions(scope=...)``) and no write may move a
+        key's row by it (``TableSchema.moveable``; a versioned table declares none). WHY the scope holds of a key: a
+        delete's "gone" marker of such a table carries the scope of every key it deletes (decision 27), and a restore
+        finds a key's versions and its marker by that scope, so a key whose versions held two scopes would already be
+        restored wrong. A pin on it judged inside reads only the scope's versions, by its scope index, where judged
+        after it read every scope's (measured 2026-11-26: reports' race-keyed live tables, a state's count and a
+        state's geographies read every state's versions)
     """
 
     name: str
@@ -766,6 +775,7 @@ class VersionedTable:
     scope_at: int = 0
     texts: tuple[str, ...] = ()
     resets: str | None = None
+    fixed: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """refuse a declaration naming anything but plain columns, or a marker prefix it cannot spell.
@@ -774,9 +784,11 @@ class VersionedTable:
         """
         if not self.key:
             raise ValueError(f"versioned table {self.name!r} names its key")
-        for column in (*self.key, self.epoch, self.gone):
+        for column in (*self.key, self.epoch, self.gone, *self.fixed):
             if _COLUMN.fullmatch(column) is None:
                 raise ValueError(f"a versioned table names plain columns only, not {column!r}")
+        if set(self.fixed) & {*self.key, self.epoch, self.gone}:
+            raise ValueError(f"versioned table {self.name!r}: a fixed column is past the key, its epoch and gone flag")
         if self.resets is not None and _COLUMN.fullmatch(self.resets) is None:
             raise ValueError(f"the reset markers' table is a plain name, not {self.resets!r}")
         if self.markers is not None:
@@ -787,6 +799,20 @@ class VersionedTable:
                     f"versioned table {self.name!r}: a marker's prefix names the scope (key column {self.scope_at}) "
                     f"and is spelled by the types of at most the key's {len(self.key)} columns, got {len(self.texts)}"
                 )
+
+    def judged_within(self, condition: str, *, alias: str | None = None) -> bool:
+        """whether a read's condition holds of every version of a key alike, so it is judged inside the newest
+        relation's ``DISTINCT ON`` (:func:`newest_relation`'s ``within``) without changing which version is a key's
+        newest: it names the key's columns and the :attr:`fixed` ones alone (:func:`key_only`).
+
+        :param condition: the condition's SQL
+        :ptype condition: str
+        :param alias: the alias the condition may name a column by (``t``); none when None
+        :ptype alias: str | None
+        :return: whether it is judged inside
+        :rtype: bool
+        """
+        return key_only(condition, (*self.key, *self.fixed), alias=alias)
 
 
 #: every ``(relation, table)`` a versioned declaration registered, a tuple replaced whole (as the keys are)
@@ -1316,7 +1342,7 @@ def key_pins_within(table: VersionedTable, by: Mapping[str, Any]) -> tuple[list[
     values: list[Any] = []
     for column, value in by.items():
         conditions, params = by_conditions({column: value}, first=len(values) + 1, alias="t")
-        if all(key_only(condition, table.key, alias="t") for condition in conditions):
+        if all(table.judged_within(condition, alias="t") for condition in conditions):
             inside += conditions
             values += params
     return inside, values
@@ -1384,7 +1410,7 @@ def newest_page_statement(
     for fragment in where:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
-    inside = [condition for condition in conditions if key_only(condition, table.key, alias="t")]
+    inside = [condition for condition in conditions if table.judged_within(condition, alias="t")]
     outside = [condition for condition in conditions if condition not in inside]
     if past is not None:
         condition, values = past_condition(walked, [past[place] for place in places], len(params) + 1, by_row=by_row)

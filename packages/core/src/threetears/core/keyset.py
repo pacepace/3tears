@@ -79,7 +79,6 @@ from threetears.interfaces.keyed.keys import (
     NEWEST_LIVE,
     NEWEST_VERSIONS,
     VersionedTable,
-    key_only,
     newest_relation,
     newest_settings,
     next_newest_keys,
@@ -1429,7 +1428,7 @@ class _KeysetStatement:
         #: the columns the equality filters pin (to a value: a NULL pin names no key column's place)
         self._pinned = frozenset(column for column, value in (where or {}).items() if value is not None)
         self._filters, self._values = equality_conditions(where, first=1, quote=quote)
-        #: each filter on its own, as a versioned page judges it inside its newest relation or after (key_only)
+        #: each filter on its own, as a versioned page judges it inside its newest relation or after (VersionedTable.judged_within)
         #: (the equality filters one a column: "col" = $n or "col" IS NULL, joined by AND)
         self._parts: list[str] = self._filters.split(" AND ") if self._filters else []
         for column, (array, values) in (where_any or {}).items():
@@ -1545,7 +1544,7 @@ class _KeysetStatement:
         :return: the statement, then its parameters
         :rtype: tuple[Any, ...]
         """
-        inside = [part for part in self._parts if key_only(part, newest.table.key)]
+        inside = [part for part in self._parts if newest.table.judged_within(part)]
         outside = [part for part in self._parts if part not in inside]
         params = list(self._values)
         if cursor is not None:
