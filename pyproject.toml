@@ -725,6 +725,7 @@ module = [
     "packages.core.tests.unit.collections.test_copy_reload",
     "packages.core.tests.unit.collections.copy_query_jobs",
     "packages.core.tests.unit.collections.test_copy_queries",
+    "packages.core.tests.unit.collections.test_copy_let_go_loop",
     "packages.core.tests.unit.collections.test_copy_lookup_key_types",
     "packages.core.tests.unit.collections.test_copy_bounded_files",
     "packages.core.tests.unit.collections.test_copy_follower_reads",
