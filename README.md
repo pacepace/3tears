@@ -136,6 +136,7 @@ The engine builds the analyst and editor loop and records the gaps it hits as is
 - [Evals README](packages/evals/README.md): a first eval in one TOML file, then one idea per rung.
 - [Observability](docs/observability.md): what 3tears logs and traces, and what the host configures.
 - [Exceptions](docs/exceptions.md): how failures reach a caller or an operator.
+- [Model key pool](docs/model-key-pool.md): running a chat model on several API keys, each inside a budget.
 - [Adding a migration](docs/how-to-add-a-migration.md): the one path for a schema change.
 - [CHANGELOG](CHANGELOG.md): what changed in each release.
 
