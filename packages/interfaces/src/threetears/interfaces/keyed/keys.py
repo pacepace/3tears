@@ -542,16 +542,24 @@ def primary_key(table: Any) -> tuple[str, ...] | None:
     return next((index.columns for named, index in _INDEXES if named == relation and index.primary), None)
 
 
-def _rank(index: DeclaredIndex, pinned: set[str], sorts: Sequence[Sort]) -> tuple[int, int, bool] | None:
+def _rank(index: DeclaredIndex, pinned: set[str], sorts: Sequence[Sort]) -> tuple[int, int, bool, bool] | None:
     """how well ``index`` serves a read pinning ``pinned`` sorted by ``sorts`` (more pins held, then fewer columns,
-    then the primary key); None when it does not serve it."""
+    then a partial index whose predicate the read states, then the primary key); None when it does not serve it.
+
+    WHY a stated partial index before the primary key of the same shape (no-whole-reads, coordinator 2026-11-26): it
+    holds only the rows the read asks. A group's live members a page at a time (agent_acl v010's
+    ``group_members_live_by_group`` (group_id, id ASC) WHERE NOT gone, the primary key (group_id, id)): named the
+    primary key, YugabyteDB walked the group's 2,000 gone memberships for a page of 51, filtering each in storage
+    (acl ``test_group_members_live_page`` on YugabyteDB: 2,051 rows scanned). Only an index :func:`_states` admits is
+    ranked, so the read always states its predicate."""
     held = _leading_held(index, pinned)
     if held == 0 or index.columns[held : held + len(sorts)] != tuple(sort.column for sort in sorts):
         return None
     against = {(column in index.descending) != sort.descending for column, sort in zip(index.columns[held:], sorts)}
     if len(against) > 1:
         return None
-    return held, -len(index.columns), index.primary
+    partial = bool(index.live or index.stated or index.guarded)
+    return held, -len(index.columns), partial, index.primary
 
 
 def _leading_held(index: DeclaredIndex, pinned: set[str]) -> int:

@@ -20,6 +20,8 @@ version history:
 - v003 -- ``mcp_tool_grants`` carries its epoch (``ROW_STAMPED``): the epoch backfilled a page of keys a statement,
   the gone flag, the stored restore bucket, its ``(epoch_bucket, epoch)`` index and declaration, so a restore of a
   lost change log reads the grants a bucket at a time and the change-note ring can be retired. Always attached.
+- v004 -- ``mcp_tool_grants_live_by_id`` (grant_id ASC) WHERE NOT gone: an operator's page of grants reads live
+  grants only, never through the revoked ones until cleanup. Always attached.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from threetears.mcp.migrations.v002_contract_lookup_indexes_dropped import (
     drop_lookup_indexes,
 )
 from threetears.mcp.migrations.v003_grants_carry_their_epoch import grants_carry_their_epoch
+from threetears.mcp.migrations.v004_grant_pages_read_a_live_index import grant_pages_read_a_live_index
 from threetears.mcp.rbac import McpToolGrantCollection
 
 PACKAGE_NAME = "mcp"
@@ -64,6 +67,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
         pkg.version(2)(drop_lookup_indexes)
     # always attached: it only adds, and every pod of this release stamps its writes (the outage-window cutover)
     pkg.version(3)(grants_carry_their_epoch)
+    pkg.version(4)(grant_pages_read_a_live_index)
     # the grants are followed by write generation: the run that creates the table, and every run
     # after, gives it its change-note triggers
     pkg.mark_write_generation(McpToolGrantCollection.schema)

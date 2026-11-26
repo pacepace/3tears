@@ -77,7 +77,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
-from threetears.core.ddl.row_epoch import BUCKET_COLUMN, EPOCH_COLUMN
+from threetears.core.ddl.row_epoch import BUCKET_COLUMN, EPOCH_COLUMN, GONE_COLUMN
 from threetears.core.frozen_state import EMPTY, frozen, with_entry
 from threetears.enforcement.common import (
     dotted,
@@ -116,6 +116,7 @@ from threetears.enforcement.no_whole_reads.helpers import (
     PagerOrder,
     UNSEEN,
     helper_statements,
+    live_guarded,
     narrows,
     pager_order,
     templated,
@@ -326,6 +327,22 @@ _INDEX_RANGE_ARGUMENTS: Final = ("table", "by", "order", "where", "visible", "co
 #: the modules 3tears' keyed helpers are imported from: core's (the runners, every builder re-exported) and the
 #: interfaces package's (the builders, for a package that may not depend on core)
 _KEYED_MODULES: Final = ("threetears.core.keyed", "threetears.interfaces.keyed")
+
+#: the foreign-key actions a collection declares to 3tears, as a module imports them, onto the read 3tears runs for
+#: each (:meth:`_ModuleWalk._judge_declared_action`): a cascade's child rows, a restrict's live children counted
+_DECLARED_ACTIONS: Final[Mapping[str, str]] = {
+    **dict.fromkeys(
+        ("threetears.core.collections.DeleteCascade", "threetears.core.collections.delete_cascade.DeleteCascade"),
+        "cascade",
+    ),
+    **dict.fromkeys(
+        ("threetears.core.collections.DeleteRestrict", "threetears.core.collections.delete_cascade.DeleteRestrict"),
+        "restrict",
+    ),
+}
+
+#: 3tears' module running those reads: a walk holding it judges them there, once per construction
+_DECLARED_ACTIONS_MODULE: Final = "threetears/core/collections/delete_cascade.py"
 
 #: a local copy's read of one state, bounded only by a declared state column (:meth:`_ModuleWalk._judge_state_read`)
 _STATE_READ: Final = "read_state_arrow"
@@ -2309,6 +2326,7 @@ class _ModuleWalk(ast.NodeVisitor):
         sentinels: SentinelTemplates | None = None,
         key_sources: KeySources | None = None,
         scope_sources: ScopeSources | None = None,
+        declared_actions: bool = False,
     ) -> None:
         """prepare a walk of one module.
 
@@ -2369,6 +2387,10 @@ class _ModuleWalk(ast.NodeVisitor):
         :ptype never_none: frozenset[tuple[str, str]]
         :param bounded: what a copy accessor's relation reads as under a checked bounded producer
         :ptype bounded: Bounded | None
+        :param declared_actions: whether each ``DeleteCascade`` / ``DeleteRestrict`` the module constructs from 3tears
+            is judged as the keyed read of its child 3tears runs for it (:meth:`_judge_declared_action`): when the
+            walked repo does not hold 3tears' ``delete_cascade`` module, whose reads are judged per construction there
+        :ptype declared_actions: bool
         :return: nothing
         :rtype: None
         """
@@ -2448,6 +2470,7 @@ class _ModuleWalk(ast.NodeVisitor):
         self._key_sources = key_sources if key_sources is not None else KeySources()
         #: the repo's declared state-column sources (:mod:`.keys`): a column from one bounds read_state_arrow alone
         self._scope_sources = scope_sources if scope_sources is not None else ScopeSources()
+        self._declared_actions = declared_actions
         #: (function, local) -> whether the local flows from a declared key source, each found once
         self._key_locals: Mapping[tuple[int, str], bool] = EMPTY
         self._verify = verify
@@ -3431,7 +3454,115 @@ class _ModuleWalk(ast.NodeVisitor):
             self._judge_helper(node)
             self._judge_change_relation(node)
             self._judge_handed(node)
+            self._judge_declared_action(node)
         self.generic_visit(node)
+
+    def _judge_declared_action(self, node: ast.Call) -> None:
+        """judge a foreign-key action a collection declares to 3tears (``DeleteCascade(child_table, child_column,
+        ...)``, ``DeleteRestrict(...)``, imported from 3tears, :data:`_DECLARED_ACTIONS`) as the keyed read of its child
+        3tears runs for it when a stamped parent is deleted, under the name of the class attribute holding it
+        (``<path>::<Class>.delete_cascades``), which an index's purpose names:
+
+        - a cascade's child rows, a page at a time by the child's key
+          (``threetears.core.collections.delete_cascade._children``: ``keyset_rows(pool, child, by={column:
+          AnyOf(parents)}, order=<child key>)``);
+        - a restrict's live children, counted (``_live_children``: ``counts_by(pool, child, column=column,
+          values=AnyOf(parents))``).
+
+        Each read is judged as the walk judges that helper call written here: a stamped child with its live guard, a
+        child with no index leading with the column a finding. A construction whose child or column the walk cannot
+        read as a string is ``unknown-predicate``. Only when the repo does not hold 3tears' own module, whose two
+        reads the walk judges there once per construction.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :return: nothing
+        :rtype: None
+        """
+        if not self._declared_actions or not isinstance(node.func, ast.Name):
+            return
+        action = _DECLARED_ACTIONS.get(self.imports.get(node.func.id, ""))
+        if action is None:
+            return
+        given = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
+        child, column = (
+            None if value is None else _constant_text(value, self._envs[-1])
+            for value in (
+                given.get("child_table", node.args[0] if node.args else None),
+                given.get("child_column", node.args[1] if len(node.args) > 1 else None),
+            )
+        )
+        if child is None or column is None:
+            self._hit(
+                node,
+                f"unknown-predicate {node.func.id}({'child_table' if child is None else 'child_column'})",
+                self._spelled(node),
+            )
+            return
+        parents = ast.Call(func=ast.Name("AnyOf", ast.Load()), args=[ast.Name("parents", ast.Load())], keywords=[])
+        pool = ast.Name("pool", ast.Load())
+        sent: ast.Call
+        if action == "cascade":
+            declared = self._schema.table(child)
+            key = declared.primary_keys[0] if declared is not None and declared.primary_keys else ()
+            if not key:
+                self._hit(node, f"unknown-schema {child}", self._spelled(node))
+                return
+            order = ast.List(
+                elts=[
+                    ast.Call(func=ast.Name("Sort", ast.Load()), args=[ast.Constant(each)], keywords=[]) for each in key
+                ],
+                ctx=ast.Load(),
+            )
+            sent = ast.Call(
+                func=ast.Name("keyset_rows", ast.Load()),
+                args=[pool, ast.Constant(child)],
+                keywords=[
+                    ast.keyword("by", ast.Dict(keys=[ast.Constant(column)], values=[parents])),
+                    ast.keyword("order", order),
+                ],
+            )
+        else:
+            sent = ast.Call(
+                func=ast.Name("counts_by", ast.Load()),
+                args=[pool, ast.Constant(child)],
+                keywords=[ast.keyword("column", ast.Constant(column)), ast.keyword("values", parents)],
+            )
+        sent = live_guarded(ast.copy_location(sent, node), self._schema.stamped, GONE_COLUMN)
+        reader = replace(self._reader(node), names=frozenset({self._declared_action_name(node)}))
+        for statement in helper_statements(sent):
+            if statement.sql is None:
+                self._hit(node, f"unknown-predicate {node.func.id}({statement.unseen})", self._spelled(node))
+                continue
+            for finding in judge_sql(statement.sql, reader):
+                if finding.kind in {HEAD, KEYED_COUNT} or self._transient_table(finding.table):
+                    continue
+                self._hit(node, f"{finding.kind} {finding.table}", statement.sql)
+
+    def _declared_action_name(self, node: ast.Call) -> str:
+        """the name a declared foreign-key action's read is judged under: the class attribute (or module constant)
+        whose value holds the construction (``<path>::<Class>.delete_cascades``), recorded among the constants an
+        index's purpose may name; the enclosing scope's name when no assignment outside a function holds it.
+
+        :param node: the construction
+        :ptype node: ast.Call
+        :return: ``<path>::<qualified name>``
+        :rtype: str
+        """
+        held: ast.AST | None = self._parents.get(node)
+        while held is not None and not isinstance(held, ast.stmt):
+            held = self._parents.get(held)
+        target: ast.expr | None = None
+        if isinstance(held, ast.Assign) and len(held.targets) == 1:
+            target = held.targets[0]
+        elif isinstance(held, ast.AnnAssign):
+            target = held.target
+        if not isinstance(target, ast.Name) or self._function_nodes:
+            return f"{self.path}::{self._function}"
+        scope = "" if self._function == "<module>" else f"{self._function}."
+        name = f"{self.path}::{scope}{target.id}"
+        self.constants.add(name)
+        return name
 
     def _declare(self, node: ast.Call) -> None:
         """record a read declared whole by nature: ``whole_read(<read>, kind=..., reason=..., ruling=..., proof=...,
@@ -4486,6 +4617,11 @@ class _ModuleWalk(ast.NodeVisitor):
             if self._epoch_index_range(located):
                 # one range of the row-epoch index the table's declaration gives it: keyed whatever table it is
                 continue
+            local = _on_a_local_database(call) or self._bound_to_a_local_database(call)
+            if not local:
+                # a shared keyed read of a stamped L3 table answers its live rows alone: judged with the live guard
+                # 3tears adds at run time (live_read), never on a local copy, which holds no gone flag
+                located = live_guarded(located, self._schema.stamped, GONE_COLUMN)
             for statement in self._helper_statements(located):
                 if statement.sql is UNSEEN or statement.sql is None:
                     if self._inside_keyed_helper():
@@ -4498,7 +4634,7 @@ class _ModuleWalk(ast.NodeVisitor):
                         )
                     continue
                 reader = self._reader(site)
-                if _on_a_local_database(call) or self._bound_to_a_local_database(call):
+                if local:
                     reader = replace(reader, local=True)
                 for finding in judge_sql(statement.sql, reader):
                     if finding.kind in {HEAD, KEYED_COUNT} or self._transient_table(finding.table):
@@ -9808,8 +9944,12 @@ def scan_whole_reads(
                 sentinels=sentinel_templates.get(relative),
                 key_sources=key_sources,
                 scope_sources=scope_sources,
+                declared_actions=declared_actions,
             )
 
+        # each foreign-key action a module declares to 3tears is judged where it is constructed, unless the walk holds
+        # 3tears' own module running its reads (judged there once per construction)
+        declared_actions = not any(relative.endswith(_DECLARED_ACTIONS_MODULE) for relative, _ in modules)
         # the repo's step builders, by name across every walked module: a call of one is a step judged where it is
         # written (R11)
         builders = step_builders([trees[relative] for relative, _ in walked])

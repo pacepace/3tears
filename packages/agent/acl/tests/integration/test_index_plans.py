@@ -787,14 +787,22 @@ async def test_members_of_groups(conn: asyncpg.Connection) -> None:
     members, recorder = _recorded(acl.GroupMemberCollection, conn)
     found = await members.members_of_groups([groups[0], groups[1]])
     plan = recorder.plans[0]
-    # PostgreSQL reads the group index; YugabyteDB reads the primary key (group_id HASH, id), the rows' own storage,
-    # by the same condition. Either way the read finds exactly the groups' rows by group
-    keyed = plan_uses_index(plan, "idx_group_members_group_id") or plan_uses_index(plan, "group_members_pkey")
+    # PostgreSQL reads the group index, or since agent_acl v010 the live-only group_members_live_by_group (a live
+    # read states its NOT gone, and that index holds only the live rows asked for); YugabyteDB reads the primary key
+    # (group_id HASH, id), the rows' own storage, by the same condition. Either way the read finds exactly the groups'
+    # rows by group
+    keyed = any(
+        plan_uses_index(plan, index)
+        for index in ("idx_group_members_group_id", "group_members_live_by_group", "group_members_pkey")
+    )
     assert keyed and plan.rows_scanned == len(found) == 20, json.dumps(plan.plan)[:2500]
     # a group's member count reads the same index (or, on YugabyteDB, the primary key) by the group alone
     assert await members.count_by_group(groups[0]) == 10
     counted = recorder.plans[-1]
-    keyed = plan_uses_index(counted, "idx_group_members_group_id") or plan_uses_index(counted, "group_members_pkey")
+    keyed = any(
+        plan_uses_index(counted, index)
+        for index in ("idx_group_members_group_id", "group_members_live_by_group", "group_members_pkey")
+    )
     assert keyed and counted.rows_scanned == 10, json.dumps(counted.plan)[:2500]
 
 
@@ -1105,3 +1113,82 @@ async def test_role_assignment_indexes_match_the_migrations(conn: asyncpg.Connec
     assert not undeclared, (
         f"the migrations create {sorted(undeclared)} on role_assignments, which the schema does not declare"
     )
+
+
+#: the rows a live page keeps: each page's plan reads about its own rows, never the gone ones before them
+_LIVE_PAGE = 50
+
+
+def _within_its_page(plan: StatementPlan) -> bool:
+    """whether a page's plan read about the page's own rows (its LIMIT, and the one row past it that says another page
+    follows), never the gone rows the primary key holds before them.
+
+    :param plan: the page's plan
+    :ptype plan: StatementPlan
+    :return: whether it did
+    :rtype: bool
+    """
+    return plan.rows_scanned <= 2 * (_LIVE_PAGE + 1)
+
+
+async def test_group_members_live_page(conn: asyncpg.Connection) -> None:
+    """Flips if a group's page of members (GroupMemberCollection.page_by_group) or a group delete's cascade read
+    (GroupCollection.read_cascade) stops reading group_members_live_by_group (agent_acl v010): through the primary key
+    each walks the group's gone memberships, the first 2,000 of its key order here, before its first live one."""
+    await _seed(conn, "groups", 2, row_scope="'platform'", customer_id="NULL", name="'g' || g")
+    groups = [row["group_id"] for row in await conn.fetch("SELECT group_id FROM groups ORDER BY group_id")]
+    await conn.execute(
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
+        " SELECT gen_random_uuid(), ($1::uuid[])[1 + g % 2], 'user', gen_random_uuid(), $2"
+        " FROM generate_series(1, 10000) g",
+        groups,
+        next_epoch(),
+    )
+    await conn.execute(
+        "UPDATE group_members SET gone = true WHERE id IN (SELECT id FROM group_members WHERE group_id = $1"
+        " ORDER BY id LIMIT 2000)",
+        groups[0],
+    )
+    await conn.execute("ANALYZE group_members")
+    members, recorder = _recorded(acl.GroupMemberCollection, conn)
+    page = await members.page_by_group(groups[0], limit=_LIVE_PAGE)
+    assert len(page.entities) == _LIVE_PAGE
+    plan = recorder.plans[0]
+    assert plan_uses_index(plan, "group_members_live_by_group") and _within_its_page(plan), json.dumps(plan.plan)[:2500]
+    held, cascading = _recorded(acl.GroupCollection, conn)
+    cascade = await held.read_cascade(groups[0])
+    assert len(cascade.members) == 3000, len(cascade.members)
+    assert plan_uses_index(cascading.plans[0], "group_members_live_by_group"), json.dumps(cascading.plans[0].plan)[
+        :2500
+    ]
+
+
+async def test_groups_live_page(conn: asyncpg.Connection) -> None:
+    """Flips if a page of every group (GroupCollection.page_all) stops reading groups_live_by_id (agent_acl v010):
+    through the primary key it walks the gone groups, the first 2,000 by id here, before its first live one."""
+    await _seed(conn, "groups", row_scope="'platform'", customer_id="NULL", name="'g' || g")
+    await conn.execute(
+        "UPDATE groups SET gone = true WHERE group_id IN (SELECT group_id FROM groups ORDER BY group_id LIMIT 2000)"
+    )
+    await conn.execute("ANALYZE groups")
+    groups, recorder = _recorded(acl.GroupCollection, conn)
+    page = await groups.page_all(limit=_LIVE_PAGE)
+    assert len(page.entities) == _LIVE_PAGE
+    plan = recorder.plans[0]
+    assert plan_uses_index(plan, "groups_live_by_id") and _within_its_page(plan), json.dumps(plan.plan)[:2500]
+
+
+async def test_role_assignments_live_page(conn: asyncpg.Connection) -> None:
+    """Flips if the customer backfill's page of grants (_customer_backfill_plan, run by
+    RoleAssignmentCollection.backfill_customers) stops reading role_assignments_live_by_id (agent_acl v010): through
+    the primary key it walks the revoked grants, the first 2,000 by id here, before its first live one."""
+    await _seed_assignments(conn)
+    await conn.execute(
+        "UPDATE role_assignments SET gone = true WHERE assignment_id IN (SELECT assignment_id FROM role_assignments"
+        " ORDER BY assignment_id LIMIT 2000)"
+    )
+    await conn.execute("ANALYZE role_assignments")
+    assignments, recorder = _recorded(acl.RoleAssignmentCollection, conn)
+    await assignments.backfill_customers(limit=_LIVE_PAGE)
+    plan = recorder.plans[0]
+    assert plan_uses_index(plan, "role_assignments_live_by_id") and _within_its_page(plan), json.dumps(plan.plan)[:2500]
