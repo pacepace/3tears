@@ -35,6 +35,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink
 from threetears.evals.kernel.claims.derived import ClaimDerivation, derive_claim_readings
 from threetears.evals.kernel.host.measures import ClaimReaderDefect
 from threetears.evals.kernel.claims.extraction import ClaimExtractor, ExtractedClaim
@@ -101,21 +102,25 @@ class GradedCriterion:
     web_failure: str | None = None
 
 
-def criterion_steps(criterion: ClaimCriterion, client: CompletionClient) -> tuple[ClaimExtractor, ClaimVerifier]:
+def criterion_steps(
+    criterion: ClaimCriterion, client: CompletionClient, *, sink: ClaimCallSink | None = None
+) -> tuple[ClaimExtractor, ClaimVerifier]:
     """The extraction and the verify step a criterion runs, on ``client``.
 
     :param criterion: The criterion.
     :param client: The judge's client, which names its model.
+    :param sink: Where both steps also write each call as it returns; None writes none.
     :return: Its extractor and its verifier.
     :raises ValueError: The client names no model.
     """
-    extractor = ClaimExtractor(client, guidance=criterion.guidance, repairs=criterion.repairs)
+    extractor = ClaimExtractor(client, guidance=criterion.guidance, repairs=criterion.repairs, sink=sink)
     verifier = ClaimVerifier(
         client,
         pages=criterion.pages,
         repairs=criterion.repairs,
         grounded_in=criterion.grounded_in,
         guidance=criterion.guidance,
+        sink=sink,
     )
     return extractor, verifier
 
@@ -143,7 +148,9 @@ def criterion_fingerprint(criterion: ClaimCriterion, extractor: ClaimExtractor, 
     return canonical_digest(definition)
 
 
-def web_checker(criterion: ClaimCriterion, client: CompletionClient) -> WebChecker | None:
+def web_checker(
+    criterion: ClaimCriterion, client: CompletionClient, *, sink: ClaimCallSink | None = None
+) -> WebChecker | None:
     """The web step a criterion runs, on ``client``; None for a criterion with no web budget.
 
     :param criterion: The criterion.
@@ -152,7 +159,7 @@ def web_checker(criterion: ClaimCriterion, client: CompletionClient) -> WebCheck
     """
     if criterion.web is None:
         return None
-    return WebChecker(client, budget=criterion.web, repairs=criterion.repairs, guidance=criterion.guidance)
+    return WebChecker(client, budget=criterion.web, repairs=criterion.repairs, guidance=criterion.guidance, sink=sink)
 
 
 def criterion_fingerprints(template: EvalTemplate, client: CompletionClient) -> dict[str, str]:
@@ -393,6 +400,7 @@ async def grade_criterion(
     derivation: ClaimDerivation | None,
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
+    sink: ClaimCallSink | None = None,
 ) -> GradedCriterion:
     """Grade one cell under one criterion: list its claims, verify them, check the nominated ones on the web where it
     declares a budget, and keep the grade with its tally. A cell whose candidate said nothing (claim evidence with no
@@ -419,6 +427,8 @@ async def grade_criterion(
     :param search: The host's search, billed and bounded by the caller; required for a criterion with a web budget
         that nominates a claim. A grade that checked a claim on a result a recording served is marked
         (:attr:`~threetears.evals.schema.models.ClaimGrade.web_replayed`).
+    :param sink: The caller's, where every step also writes each call as it returns, with its step and the failure it
+        named to the model: what the caller still holds when a step raises past the grade. None writes none.
     :return: The grade and its tally.
     :raises ClaimGradingFailed: A step failed (``cut_short``, ``unreadable``, ``repair_budget_spent``, or
         ``cost_cap`` or ``hold_exceeded`` from a client its hold refuses outside the web step), or the grade would
@@ -426,7 +436,7 @@ async def grade_criterion(
         (``evidence_over_cap``); web checks past the cap are the web step's loss alone (:func:`within_the_trace`).
     :raises ValueError: A criterion with a web budget nominated a claim, and no search was given.
     """
-    extractor, verifier = criterion_steps(criterion, client)
+    extractor, verifier = criterion_steps(criterion, client, sink=sink)
     if not evidence.segments:
         # The candidate said nothing: there is no text to list claims from, so nothing is asked and nothing is spent.
         # The grade names the criterion and the evidence, lists no claim, and its tally is silent.
@@ -436,7 +446,7 @@ async def grade_criterion(
             calls=(),
         )
         return GradedCriterion(grade=grade, tally=grade_tally(grade, evidence, criterion, derivation=derivation))
-    checker = web_checker(criterion, client)
+    checker = web_checker(criterion, client, sink=sink)
     # Each step folds its completions into a ledger it requires; the judge phase bills the calls from the client.
     ledger = RoleUsageLedger(role="judge")
     calls: list[ClaimCall] = []
@@ -537,6 +547,7 @@ async def grade_or_loss(
     derivation: ClaimDerivation | None,
     truth_kept: Callable[[GradedCriterion], None] | None = None,
     search: Search | None = None,
+    sink: ClaimCallSink | None = None,
 ) -> GradedCriterion | KnownClaimLoss:
     """Grade one cell under one criterion (:func:`grade_criterion`), or name the loss the cell records instead.
 
@@ -557,6 +568,7 @@ async def grade_or_loss(
     :param search: The host's search, for a criterion with a web budget (:func:`grade_criterion`). A caller refuses
         such a criterion with no search before it asks anything (the run's launch refusal), so a missing one never
         reaches here as a loss.
+    :param sink: See :func:`grade_criterion`: the calls a lost criterion made are read from it, never from the loss.
     :return: The grade and its tally, or the loss.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
@@ -571,6 +583,7 @@ async def grade_or_loss(
             derivation=derivation,
             truth_kept=truth_kept,
             search=search,
+            sink=sink,
         )
     except ClaimGradingFailed as failed:
         # Recorded, never swallowed: the loss is the criterion's on the cell, which keeps every other reading.

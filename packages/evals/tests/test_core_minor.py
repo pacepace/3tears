@@ -708,6 +708,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "WebCheckRecord.outcome": frozenset({"true", "false", "inconclusive"}),
         "ClaimCitation.stance": frozenset({"supports", "contradicts"}),
         "ClaimCall.role": frozenset({"extract", "truth", "ground", "repair", "web"}),
+        "ClaimLossCall.step": frozenset({"extract", "truth", "reask", "ground", "web"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),

@@ -53,6 +53,7 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.capped_completion import call_ceiling
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink
 from threetears.evals.kernel.claims.extraction import ExtractedClaim, claim_call, echo_chars, filler
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.host.apparatus import ApparatusError
@@ -420,12 +421,16 @@ class WebChecker:
     :ivar budget: The criterion's web budget.
     :ivar repairs: Its repair budget, held by this step on its own.
     :ivar guidance: The host's notes on reading claims in its domain, appended to every prompt.
+    :ivar sink: Where each call is also written as it returns, with the failure it named to the model, for a caller
+        that keeps the calls of a step that failed (:class:`~threetears.evals.kernel.claims.call_sink.ClaimCallSink`);
+        None writes none.
     """
 
     client: CompletionClient
     budget: WebBudget
     repairs: RepairBudget
     guidance: str = ""
+    sink: ClaimCallSink | None = field(default=None, compare=False, repr=False)
     _prompts: _Prompts = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -741,6 +746,7 @@ class WebChecker:
                 response_format=_repair_format(),
                 calls=calls,
                 ledger=ledger,
+                reason=fault,
             )
             try:
                 again = _Verdict.model_validate(extract_json(content))
@@ -801,14 +807,19 @@ class WebChecker:
         response_format: dict[str, Any],
         calls: list[ClaimCall],
         ledger: RoleUsageLedger,
+        reason: str | None = None,
     ) -> tuple[str, int]:
         """One billed and recorded call's finished reply, and its place among the step's calls.
 
+        :param reason: The failure the call names to the model, for a call that asks again; None for a first ask.
         :raises ClaimGradingFailed: The reply was cut short.
         """
         completion = await self.client.generate(system=system, user=user, response_format=response_format)
         ledger.add_llm_result(completion)
-        calls.append(claim_call(role, completion))
+        recorded = claim_call(role, completion)
+        calls.append(recorded)
+        if self.sink is not None:
+            self.sink.write(recorded, step="web", reason=reason)
         cut_short = describe_incomplete_completion(completion)
         if cut_short is not None:
             raise ClaimGradingFailed(f"a web check's {role} reply was cut short: {cut_short}", loss="cut_short")
@@ -830,6 +841,7 @@ class WebChecker:
                 response_format=_query_format(),
                 calls=calls,
                 ledger=ledger,
+                reason=None if refused is None else _unreadable(refused),
             )
             try:
                 return self._read_queries(content)
@@ -872,6 +884,7 @@ class WebChecker:
                 response_format=_verdict_format(),
                 calls=calls,
                 ledger=ledger,
+                reason=None if refused is None else _unreadable(refused),
             )
             try:
                 return _Verdict.model_validate(extract_json(content)), call

@@ -431,6 +431,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.ClaimLossCall": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.ClaimQuestion": {
       "kind": "literal",
       "signature": "",
@@ -748,7 +753,7 @@
     },
     "threetears.evals.schema.EvalTrace": {
       "kind": "model",
-      "signature": "EvalTrace(schema_minor: CoreSchemaMinor = 24, id: str, doc_type: Literal['eval_trace'] = 'eval_trace', schema_version: CoreSchemaVersion = 15, scope_id: str, result_id: str, eval_run_id: str, trace: list[dict[str, Any]] = list(), otel_trace: list[dict[str, Any]] = list(), judge_evidence: JudgeEvidence | None = None, judged_artifact: JudgedArtifact | None = None, call_ledger: CallLedger | None = None, end_state: VerbatimJsonObject | None = None, claim_evidence: ClaimEvidence | None = None, claim_grades: dict[DimName, ClaimGrade] = dict())",
+      "signature": "EvalTrace(schema_minor: CoreSchemaMinor = 24, id: str, doc_type: Literal['eval_trace'] = 'eval_trace', schema_version: CoreSchemaVersion = 15, scope_id: str, result_id: str, eval_run_id: str, trace: list[dict[str, Any]] = list(), otel_trace: list[dict[str, Any]] = list(), judge_evidence: JudgeEvidence | None = None, judged_artifact: JudgedArtifact | None = None, call_ledger: CallLedger | None = None, end_state: VerbatimJsonObject | None = None, claim_evidence: ClaimEvidence | None = None, claim_grades: dict[DimName, ClaimGrade] = dict(), claim_loss_calls: dict[DimName, tuple[ClaimLossCall, ...]] = dict())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvidenceDocument": {

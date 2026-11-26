@@ -58,12 +58,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 from pydantic import ConfigDict, Field, ValidationError
 
 from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.verbatim import VERBATIM_FOLD, verbatim_span
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
@@ -340,11 +341,15 @@ class ClaimExtractor:
     :ivar repairs: The criterion's repair budget, whose rounds the extraction takes and whose ``max_items_per_cell``
         bounds the items it asks again, as its own step's; None (a bare extractor) asks up to two rounds of every
         failing item.
+    :ivar sink: Where each call is also written as it returns, with the failure it named to the model, for a caller
+        that keeps the calls of a grade lost before it returns (:class:`~threetears.evals.kernel.claims.call_sink.
+        ClaimCallSink`); None writes none.
     """
 
     client: CompletionClient
     guidance: str = ""
     repairs: RepairBudget | None = None
+    sink: ClaimCallSink | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a client that names no model.
@@ -538,14 +543,19 @@ class ClaimExtractor:
         response_format: dict[str, Any],
         ledger: RoleUsageLedger,
         calls: list[ClaimCall],
+        reason: str | None = None,
     ) -> str:
         """One billed and recorded call's finished reply.
 
+        :param reason: The failure the call names to the model, for a call that asks again; None for a first ask.
         :raises ClaimGradingFailed: The reply was cut short.
         """
         completion = await self.client.generate(system=system, user=user, response_format=response_format)
         ledger.add_llm_result(completion)
-        calls.append(claim_call(role, completion))
+        call = claim_call(role, completion)
+        calls.append(call)
+        if self.sink is not None:
+            self.sink.write(call, step="extract", reason=reason)
         cut_short = describe_incomplete_completion(completion)
         if cut_short is not None:
             raise ClaimGradingFailed(f"the claim extractor's reply was cut short: {cut_short}", loss="cut_short")
@@ -572,6 +582,7 @@ class ClaimExtractor:
                 response_format=self.response_format,
                 ledger=ledger,
                 calls=calls,
+                reason=None if unreadable is None else _unreadable(unreadable),
             )
             try:
                 return _read_listing(content, len(cell))
@@ -618,6 +629,7 @@ class ClaimExtractor:
             response_format=self.repair_response_format,
             ledger=ledger,
             calls=calls,
+            reason=failure,
         )
         try:
             repaired = _Repaired.model_validate(extract_json(content))

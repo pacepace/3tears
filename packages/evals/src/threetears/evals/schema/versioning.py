@@ -195,6 +195,8 @@ the document, so extending one is a major. Each, and why:
   ``ClaimCall.role`` — the truth readings count by them (a session claim is in none, a verdict is derived from its
   citations and its web check, only the judge nominates), so a value an older build cannot name would be counted as
   the wrong one.
+- ``ClaimLossCall.step`` — which step of a lost criterion asked each call it kept; a step an older build cannot name
+  would place a call in the wrong step.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
   would be stated as neither.
@@ -540,7 +542,10 @@ CORE_SCHEMA_VERSION: int = 15
 #:   trace's cap it left as stored). Each is left
 #:   out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
-#:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace's claims
+#:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace may carry
+#:   ``EvalTrace.claim_loss_calls`` (criterion -> ``ClaimLossCall``: a ``ClaimCall`` with its ``step`` and the
+#:   ``reason`` it named to the model), every call of each criterion that lost the cell or a step, left out while
+#:   empty. A trace's claims
 #:   payload holds at most ``CLAIM_TRACE_BYTES`` (3 MiB), its documents at most ``CLAIM_DOCUMENT_BYTES`` (1 MiB). An
 #:   older build reads such a trace or result under its newer-minor tolerance, keeps the fields and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.

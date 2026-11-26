@@ -140,7 +140,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, Final, Literal
@@ -149,6 +149,7 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.capped_completion import call_ceiling
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink, ClaimStep
 from threetears.evals.kernel.claims.extraction import ExtractedClaim, claim_call, echo_chars, filler
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.host.apparatus import ApparatusError
@@ -985,6 +986,9 @@ class ClaimVerifier:
     :ivar grounded_in: The provenances of the documents the candidate itself was given, whose support grounds a claim;
         None asks no ground step.
     :ivar guidance: The host's own notes on reading claims in its domain, appended to every prompt. Empty by default.
+    :ivar sink: Where each call is also written as it returns, with its step and the failure it named to the model,
+        for a caller that keeps the calls of a grade lost before it returns
+        (:class:`~threetears.evals.kernel.claims.call_sink.ClaimCallSink`); None writes none.
     """
 
     client: CompletionClient
@@ -992,6 +996,7 @@ class ClaimVerifier:
     repairs: RepairBudget
     grounded_in: tuple[EvidenceProvenance, ...] | None = None
     guidance: str = ""
+    sink: ClaimCallSink | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a client that names no model, or an empty ``grounded_in``.
@@ -1476,6 +1481,7 @@ class ClaimVerifier:
         )
         answers, call = await self._ask(
             role="truth",
+            step="reask",
             system=self._reask_system(),
             first=_REASK_TEMPLATE.format(
                 evidence=_Shown(tuple(entry for entry in shown.facts if entry[0] in listed), ()).numbered(),
@@ -1488,7 +1494,7 @@ class ClaimVerifier:
             ledger=ledger,
         )
         reasked = {item: self._check(answers[item[1]], call, view) for item, view in views.items()}
-        await self._repair("truth", reasked, cell, calls, ledger, asked=asked)
+        await self._repair("truth", reasked, cell, calls, ledger, asked=asked, written_as="reask")
         # A re-ask that cites nothing changes nothing: the batch's answer stands, and the claim goes on to the web.
         checked.update({item: found for item, found in reasked.items() if found.citations})
 
@@ -1501,14 +1507,21 @@ class ClaimVerifier:
         response_format: dict[str, Any],
         calls: list[ClaimCall],
         ledger: RoleUsageLedger,
+        step: ClaimStep,
+        reason: str | None = None,
     ) -> tuple[str, int]:
         """One billed and recorded call's finished reply, and its place among the calls.
 
+        :param step: The step that asks it, as the sink records it.
+        :param reason: The failure the call names to the model, for a call that asks again; None for a first ask.
         :raises ClaimGradingFailed: The reply was cut short.
         """
         completion = await self.client.generate(system=system, user=user, response_format=response_format)
         ledger.add_llm_result(completion)
-        calls.append(claim_call(role, completion))
+        recorded = claim_call(role, completion)
+        calls.append(recorded)
+        if self.sink is not None:
+            self.sink.write(recorded, step=step, reason=reason)
         cut_short = describe_incomplete_completion(completion)
         if cut_short is not None:
             raise ClaimGradingFailed(f"the claim verifier's {role} reply was cut short: {cut_short}", loss="cut_short")
@@ -1550,17 +1563,26 @@ class ClaimVerifier:
         what: str,
         calls: list[ClaimCall],
         ledger: RoleUsageLedger,
+        step: ClaimStep | None = None,
     ) -> tuple[dict[int, _Answer], int]:
         """A call's answers, by claim position, and its place among the calls, asked again in full, naming why, while
         a finished reply will not be ``read``.
 
+        :param step: The step the sink records the calls under; None records ``role``.
         :raises ClaimGradingFailed: A reply was cut short, or none of the attempts' replies could be used.
         """
         user = first
         refused: ValueError | None = None
         for _attempt in range(_ATTEMPTS):
             content, call = await self._complete(
-                role=role, system=system, user=user, response_format=response_format, calls=calls, ledger=ledger
+                role=role,
+                system=system,
+                user=user,
+                response_format=response_format,
+                calls=calls,
+                ledger=ledger,
+                step=step or role,
+                reason=None if refused is None else _unreadable(refused),
             )
             try:
                 return read(content), call
@@ -1605,11 +1627,13 @@ class ClaimVerifier:
         ledger: RoleUsageLedger,
         *,
         asked: int = 0,
+        written_as: ClaimStep | None = None,
     ) -> int:
         """Ask every claim failing under ``step`` again alone, with its failure named, shown the evidence its answer
         was checked against, within that step's own repair budget; keep each answer that passes.
 
         :param asked: How many of the step's ``max_items_per_cell`` were spent before.
+        :param written_as: The step the sink records the repairs under; None records ``step``.
         :return: How many are spent after.
         :raises ClaimGradingFailed: The next round would ask more items than the step's budget has left, a claim still
             fails after the rounds, or a repair reply was cut short.
@@ -1642,6 +1666,8 @@ class ClaimVerifier:
                     ),
                     calls=calls,
                     ledger=ledger,
+                    step=written_as or step,
+                    reason=before.fault,
                 )
                 try:
                     answer = _read_repair(step, content)

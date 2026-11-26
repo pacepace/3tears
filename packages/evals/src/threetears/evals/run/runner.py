@@ -81,6 +81,7 @@ from threetears.evals.kernel.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink
 from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.claims.grading import (
@@ -131,6 +132,7 @@ from threetears.evals.schema.models import (
     CellTermination,
     ClaimEvidence,
     ClaimGrade,
+    ClaimLossCall,
     ClaimTally,
     CLAIM_TRACE_BYTES,
     ConversationStopCause,
@@ -693,6 +695,8 @@ class _ClaimsRecord:
     :ivar grades: criterion -> its grade, for each tallied criterion (``EvalTrace.claim_grades``).
     :ivar fingerprints: criterion -> the fingerprint of its definition, for every criterion the phase was due
         (``EvalResult.claim_fingerprints``).
+    :ivar loss_calls: criterion -> every call it made, for each criterion that lost the cell or lost a step while it
+        ran and made a call (``EvalTrace.claim_loss_calls``).
     """
 
     evidence: ClaimEvidence | None
@@ -700,6 +704,7 @@ class _ClaimsRecord:
     failures: Mapping[str, KnownClaimLoss]
     grades: Mapping[str, ClaimGrade]
     fingerprints: Mapping[str, str]
+    loss_calls: Mapping[str, tuple[ClaimLossCall, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -718,6 +723,9 @@ class _ClaimsPhase:
         dims' calls.
     :ivar fingerprints: criterion -> the fingerprint of its definition, for every criterion the phase grades: what the
         cell records whether the criterion is graded or lost, so a re-judge can tell it would grade the same.
+    :ivar sinks: criterion -> where its steps write each call as it returns, for each criterion that began asking:
+        read however the criterion ended (graded, lost, or cut by the deadline), since a lost criterion's grade, and
+        the calls on it, never returned.
     """
 
     evidence: ClaimEvidence
@@ -742,6 +750,7 @@ class _ClaimsPhase:
     #: The provider's refusal of the calling account on a claims call, in its description, once one was refused: what
     #: stops the run after the cell, as a judge dimension's refusal does, since every later call meets the same key.
     account_refusal: str | None = None
+    sinks: dict[str, ClaimCallSink] = field(default_factory=dict)
 
     def record(self, *, unfinished: KnownClaimLoss | None = None) -> _ClaimsRecord:
         """What the phase leaves, every criterion that did not finish lost as ``unfinished``.
@@ -758,13 +767,26 @@ class _ClaimsPhase:
         kept = {name: self.provisional[name] for name in cut if unfinished == "deadline" and name in self.provisional}
         cut = [name for name in cut if name not in kept]
         failures = {**self.failures, **dict.fromkeys(cut, unfinished)} if cut else dict(self.failures)
+        lost = {name: loss for name, loss in failures.items() if loss is not None}
+        grades = {**self.grades, **{name: graded.grade for name, graded in kept.items()}}
         return _ClaimsRecord(
             evidence=self.evidence if self.stored else None,
             tallies={**self.tallies, **{name: graded.tally for name, graded in kept.items()}},
-            failures={name: loss for name, loss in failures.items() if loss is not None},
-            grades={**self.grades, **{name: graded.grade for name, graded in kept.items()}},
+            failures=lost,
+            grades=grades,
             fingerprints=dict(self.fingerprints),
+            loss_calls={
+                name: tuple(sink.calls)
+                for name, sink in self.sinks.items()
+                if sink.calls and (name in lost or (name in grades and _lost_a_step(grades[name])))
+            },
         )
+
+
+def _lost_a_step(grade: ClaimGrade) -> bool:
+    """Whether a grade's ground or web step failed while it ran: a ground step never asked, since the evidence
+    declares no documents (``documents_undeclared``), made no call to keep."""
+    return grade.web_loss is not None or grade.ground_loss not in (None, "documents_undeclared")
 
 
 def _judge_record(
@@ -2637,6 +2659,9 @@ async def _run_claims_phase(
                     capped = True
                     phase.failures[name] = "cost_cap"
                     continue
+            # The phase owns the sink, so whatever ends the grade (a loss raised past it, or the deadline's cancel), the
+            # calls made before it stay on the phase that every ending's record reads.
+            calls_made = phase.sinks[name] = ClaimCallSink()
             claims_client = _ClaimsClient(
                 client,
                 phase=phase,
@@ -2658,6 +2683,7 @@ async def _run_claims_phase(
                     derivation=derivations.get(name),
                     truth_kept=partial(phase.provisional.__setitem__, name),
                     search=claims_client.search if web is not None and criterion.web is not None else None,
+                    sink=calls_made,
                 )
             except CompletionProtocolDefect:
                 log.error("Eval run %s: a claims completion breaks the protocol; the run fails", eval_run_id)
@@ -3374,6 +3400,7 @@ def assemble_completed_cell(
             # What the claim criteria read, and each one's grade: what a re-grade and every claim reading rest on.
             claim_evidence=judged.claims.evidence if judged.claims is not None else None,
             claim_grades=dict(judged.claims.grades) if judged.claims is not None else {},
+            claim_loss_calls=dict(judged.claims.loss_calls) if judged.claims is not None else {},
         ),
     )
 
@@ -3533,6 +3560,7 @@ def _cut_short_cell(
         # The claim criteria already graded keep their grades, beside the evidence every criterion read.
         claim_evidence=claims.evidence if claims is not None else None,
         claim_grades=dict(claims.grades) if claims is not None else {},
+        claim_loss_calls=dict(claims.loss_calls) if claims is not None else {},
     )
     return CellOutcome(result, trace)
 

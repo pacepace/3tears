@@ -6408,6 +6408,28 @@ class ClaimCall(CoreShapeModel):
     )
 
 
+#: The most of the failure a call named to the model that a lost criterion's record keeps
+#: (:attr:`ClaimLossCall.reason`): enough to name each claim and check it failed.
+CLAIM_LOSS_REASON_CHARS: Final = 2000
+
+
+class ClaimLossCall(ClaimCall):
+    """One call a criterion made in a cell where it lost the cell or one of its steps, kept as it was made: which step
+    asked it and, for a call that asked again, the failure it named to the model (:attr:`EvalTrace.claim_loss_calls`).
+    """
+
+    step: Literal["extract", "truth", "reask", "ground", "web"] = Field(
+        description="The step that asked it: the extraction, the truth step, the truth step's re-ask of a claim "
+        "doubted with no citation, the ground step, or the web step."
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=CLAIM_LOSS_REASON_CHARS,
+        description="The failure it named to the model, for a call that asked again (a repair, or a reply asked again "
+        "after it could not be read), at most CLAIM_LOSS_REASON_CHARS characters; None for a first ask.",
+    )
+
+
 class GradedClaim(CoreShapeModel):
     """One claim a criterion listed in a cell's output, with its tags and what grading it found."""
 
@@ -6992,6 +7014,14 @@ class EvalTrace(CoreDocumentModel):
     claim_evidence: ClaimEvidence | None = Field(default=None, exclude_if=lambda value: value is None)
     #: Each claim criterion's grade of this cell, by the criterion's name. Empty (left out) for a cell none graded.
     claim_grades: dict[DimName, ClaimGrade] = Field(default_factory=dict, exclude_if=lambda grades: not grades)
+    #: Each claim criterion that lost the cell, or lost its ground or web step while it ran, by the criterion's name:
+    #: every call it made that returned, in the order made, each with its step and the failure it named to the model,
+    #: so what spent a budget is read from the record, never from a paid re-grade. A criterion that lost a step keeps
+    #: its grade too, whose calls these are. As the cell's own judge phase left them: a re-judge keeps them as stored.
+    #: Empty (left out) for a cell that lost no criterion and no step, or whose losses made no call.
+    claim_loss_calls: dict[DimName, tuple[ClaimLossCall, ...]] = Field(
+        default_factory=dict, exclude_if=lambda calls: not calls
+    )
 
     @model_validator(mode="after")
     def _evidence_and_its_declaration_travel_together(self) -> Self:

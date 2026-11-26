@@ -87,6 +87,7 @@
 "threetears.evals.schema.ClaimItemView": "provisional",
 "threetears.evals.schema.ClaimJudgeCounts": "provisional",
 "threetears.evals.schema.ClaimLoss": "provisional",
+"threetears.evals.schema.ClaimLossCall": "provisional",
 "threetears.evals.schema.ClaimQuestion": "provisional",
 "threetears.evals.schema.ClaimQuestionFigures": "provisional",
 "threetears.evals.schema.ClaimRead": "provisional",

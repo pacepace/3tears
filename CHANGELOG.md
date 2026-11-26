@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a claims criterion that loses the cell keeps the calls it made, and why each asked again
+
+**Fixed (#1338):** a claims criterion lost to its repair budget (or any other loss) stored only the loss: the trace
+held no grade, so nothing said which step or call spent the budget, or whether the re-ask was one of them, and the
+only way to find out was a paid re-grade with logging on. The grade's calls are built from what its steps return, and
+the loss is raised past that return. Each step now also writes every call to a record the judge phase owns, as the
+call returns, and the phase reads that record however the criterion ends: graded, lost, or cut by the cell's deadline.
+The trace keeps it as `EvalTrace.claim_loss_calls` (criterion -> its calls, each a `ClaimLossCall`: the call's
+`role`, `served_model`, temperature and sent settings, as a grade's `ClaimCall`, plus `step`, one of `extract`,
+`truth`, `reask`, `ground` or `web`, and `reason`, the failure the call named to the model when it asked again, a
+repair or a reply asked again after it could not be read, at most 2,000 characters). It is kept for each criterion
+that lost the cell and for each whose ground or web step failed while it ran; those keep their grade too, and the
+calls are the grade's own, in its order. A cell that lost nothing, or whose only loss is a ground step never asked
+(`documents_undeclared`), stores exactly what it stored before. The loss still reaches the result as before
+(`claim_failures`, or the tally's `ground_loss` and `web_loss`). A re-judge leaves the record as the judge phase
+stored it.
+
+**For hosts:** nothing to change in code. A build from before this refuses a trace carrying `claim_loss_calls`
+(`extra_forbidden`, naming it), since the field is added within the unreleased core minor 15.24: deploy the line as
+one, and a rollback past this build cannot read the traces of cells it lost. A trace with no loss is read by either
+build.
+
 ### evals: a type checker refuses a misspelt name from the package root
 
 **Fixed:** `from threetears.evals import Evall` passed strict mypy, typed `Any`, because the root's module
