@@ -47,7 +47,7 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.registry import BEHIND_REASONS, CacheInvalidationMessage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
-from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
+from threetears.core.backends.broker_generation import GENERATION_BY_EPOCH  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.copy_queries import CopyQueries, CopyVersion  # noqa: E402
@@ -63,7 +63,7 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     FollowerPhase,
     HubCapabilityMissingError,
     PartialStamp,
-    require_generation_by_trigger,
+    require_generation_by_epoch,
 )
 from threetears.core.collections.copy_stages import SharedCopyStages  # noqa: E402
 from threetears.core.testing.published_copy import PublishedCopy, SharedCopy, copy_rows  # noqa: E402
@@ -739,16 +739,16 @@ class _Hub:
 
 
 async def test_a_hub_that_does_not_advance_trigger_switched_tables_is_refused_by_name() -> None:
-    with pytest.raises(HubCapabilityMissingError, match=GENERATION_BY_TRIGGER):
-        await require_generation_by_trigger(_Hub(frozenset()))
+    with pytest.raises(HubCapabilityMissingError, match=GENERATION_BY_EPOCH):
+        await require_generation_by_epoch(_Hub(frozenset()))
 
 
 async def test_a_hub_that_announces_it_is_accepted() -> None:
-    await require_generation_by_trigger(_Hub(frozenset({GENERATION_BY_TRIGGER, "other"})))
+    await require_generation_by_epoch(_Hub(frozenset({GENERATION_BY_EPOCH, "other"})))
 
 
 async def test_an_l3_with_no_broker_between_is_not_asked() -> None:
-    await require_generation_by_trigger(_L3())
+    await require_generation_by_epoch(_L3())
 
 
 # --- a load's partition ----------------------------------------------------------------------------
@@ -893,7 +893,11 @@ class _Notes:
     ) -> NotedKeysPage | str:
         self.pages += 1
         since, until = noted_between
-        after = cursor.after if cursor is not None and cursor.after is not None else since - timedelta(microseconds=1)
+        after = (
+            datetime.fromisoformat(cursor.after)
+            if cursor is not None and cursor.after is not None
+            else since - timedelta(microseconds=1)
+        )
         start, end = bisect.bisect_right(self.times, after), bisect.bisect_right(self.times, until)
         taken, more = self.notes[start : min(end, start + limit)], end - start > limit
         if more:
@@ -901,7 +905,7 @@ class _Notes:
         return NotedKeysPage(
             keys=tuple(keys for _, keys in taken),
             whole_table=False,
-            next=NotedKeysCursor(slot=0, after=taken[-1][0]) if more else None,
+            next=NotedKeysCursor(slot=0, after=taken[-1][0].isoformat()) if more else None,
         )
 
 
@@ -1076,7 +1080,7 @@ async def test_the_door_answers_a_page_the_client_reads_back_whole() -> None:
         "keys": [["VA", "1"], ["VA", "2"]],
         "columns": [None, {"state": "VA"}],
         "whole_table": False,
-        "next": {"slot": 3, "after": at.isoformat()},
+        "next": {"slot": 3, "schema": "tools_reports", "scope": "VA", "after": "c3"},
     }
     sent: list[dict[str, Any]] = []
 
@@ -1091,22 +1095,26 @@ async def test_the_door_answers_a_page_the_client_reads_back_whole() -> None:
         nats_client=nats, namespace_prefix="test", default_namespace="tools.reports", identity_token=lambda: "token"
     )
     page = await proxy.noted_keys(
-        "votes", noted_between=(at, at), cursor=NotedKeysCursor(slot=2, after=at), limit=10, max_bytes=1 << 20
+        "votes",
+        noted_between=(at, at),
+        cursor=NotedKeysCursor(slot=2, schema="tools_reports", scope="TX", after="c2"),
+        limit=10,
+        max_bytes=1 << 20,
     )
     assert page == NotedKeysPage(
         keys=(("VA", "1"), ("VA", "2")),
         columns=(None, {"state": "VA"}),
         whole_table=False,
-        next=NotedKeysCursor(slot=3, after=at),
+        next=NotedKeysCursor(slot=3, schema="tools_reports", scope="VA", after="c3"),
     )
     (asked,) = sent
     assert asked["subject"] == "test.l3.noted_keys"
     assert asked["max_bytes"] == 500, "held under half the payload the bus announces"
-    assert asked["cursor"] == {"slot": 2, "after": at.isoformat()}
+    assert asked["cursor"] == {"slot": 2, "schema": "tools_reports", "scope": "TX", "after": "c2"}
     assert "tenant" not in asked, "the broker names the tenant from the caller's verified schema, never the request"
 
 
-# --- a checkpoint before the notes it needs can no longer be read ---------------------------------------------------
+# --- a keys-unknown bracket is paged again after a restart: no checkpoint is due for it -----------------------------
 
 
 class _Covered(_Notes):
@@ -1126,21 +1134,16 @@ def _pointer_seq(pointers: _Pointers) -> int:
     return Checkpoint.decode(pointers.entries["votes-ckpt"][0]).seq
 
 
-def _notes_age(base: str = "votes-ckpt") -> float | None:
-    return REGISTRY.get_sample_value("copy_checkpoint_notes_unsaved_age_seconds", {"base": base})
-
-
-async def test_an_epoch_taken_from_the_notes_makes_a_checkpoint_due_before_they_go_so_a_restart_is_never_stuck() -> (
-    None
-):
-    """a large commit's few rows never reach the rows ratio, so before the fix no checkpoint followed it: a restart
-    loaded the checkpoint from before it, met its epoch again, found its notes emptied and stayed behind for good. Now
-    an epoch applied from the notes a quarter fence old makes the checkpoint due at once, and the restart is current.
-    """
+async def test_an_epoch_from_a_keys_unknown_bracket_makes_no_checkpoint_due_and_a_restart_pages_it_again() -> None:
+    """Flips if an epoch applied from a keys-unknown bracket still makes a checkpoint due by its age (the change-note
+    ring's quarter-fence rule, until 0.95, when the notes answered a bracket for half a fence): the bracket is paged
+    from the table's own versions, which cleanup keeps while the change log holds a record from then, so a restart
+    from the checkpoint before it meets the epoch again, pages its bracket again and is current (append-only L3
+    chunk 7)."""
     l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
     l3.put(_rows("VA", 200))
     log.commit([("VA", i) for i in range(200)])
-    since = datetime.now(UTC) - timedelta(minutes=3)  # past a quarter of the 10-minute fence
+    since = datetime.now(UTC) - timedelta(minutes=3)  # past a quarter of the old 10-minute fence
     notes = _Covered([(since, ("VA", "7")), (since, ("VA", "8"))])
     _, writer, _ = _replica(l3, log, lock, store, pointers, "a", notes=notes)
     assert not await writer.start()
@@ -1154,13 +1157,13 @@ async def test_an_epoch_taken_from_the_notes_makes_a_checkpoint_due_before_they_
     assert await writer.catch_up()
     await writer.checkpointed()
 
-    assert _pointer_seq(pointers) == 2, "two rows of 200 held: due by the notes' age alone"
-    notes.emptied = True
+    assert _pointer_seq(pointers) == 1, "two rows of 200 held: nothing makes a checkpoint due"
     second, follower, _ = _replica(l3, log, lock, store, pointers, "b", notes=notes)
     assert await follower.start()
     assert await follower.catch_up()
     assert follower.status().behind == {}
     assert _copy(second) == l3.held()
+    writer.stop()
 
 
 async def test_a_restart_from_a_checkpoint_older_than_the_notes_catches_up_from_the_commits_delta_file(
@@ -1206,62 +1209,6 @@ async def test_a_restart_from_a_checkpoint_older_than_the_notes_catches_up_from_
     assert _copy(second) == l3.held()
     assert (l3.statements, notes.pages) == (0, 0), "neither L3 nor the notes read"
     assert follower.stamp == lock.version
-
-
-async def test_a_quiet_copy_still_checkpoints_an_epoch_taken_from_the_notes_before_they_go() -> None:
-    """after a large commit nothing else may be applied: before the fix a checkpoint was asked only after an apply,
-    so none came and the epoch's notes went unsaved. Now the follower asks again when the epoch makes one due."""
-    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
-    l3.put(_rows("VA", 200))
-    log.commit([("VA", i) for i in range(200)])
-    notes = _Covered([])
-    _, writer, _ = _replica(l3, log, lock, store, pointers, "a", notes=notes)
-    assert not await writer.start()
-    assert await writer.catch_up()
-    await writer.checkpointed()
-    # due a quarter of the 10-minute fence after the bracket begins: 2 s from now
-    due = datetime.now(UTC) + timedelta(seconds=2)
-    since = due - timedelta(minutes=10) / 4
-    notes.notes = [(since, ("VA", "7"))]
-    l3.put([("VA", 7, 70)])
-    _too_large(log, since=since)
-    lock.version += 1
-    assert await writer.catch_up()
-    await writer.checkpointed()
-    assert _pointer_seq(pointers) == 1, "not due yet"
-
-    async with asyncio.timeout(10):
-        while _pointer_seq(pointers) == 1:
-            await asyncio.sleep(0.05)
-    await writer.checkpointed()
-    assert datetime.now(UTC) >= due
-    writer.stop()
-
-
-async def test_how_long_an_epoch_from_the_notes_waits_for_a_checkpoint_is_a_gauge() -> None:
-    """the risk is seen before a restart: ``copy_checkpoint_notes_unsaved_age_seconds`` is the age of the oldest epoch
-    applied from the notes that no checkpoint holds, and 0 once one does. Before the fix there was no such gauge."""
-    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
-    l3.put(_rows("VA", 200))
-    log.commit([("VA", i) for i in range(200)])
-    since = datetime.now(UTC) - timedelta(seconds=60)
-    notes = _Covered([(since, ("VA", "7"))])
-    _, writer, checkpoints = _replica(l3, log, lock, store, pointers, "a", notes=notes)
-    assert not await writer.start()
-    assert await writer.catch_up()
-    await writer.checkpointed()
-    assert _notes_age() == 0.0
-    l3.put([("VA", 7, 70)])
-    _too_large(log, since=since)
-    lock.version += 1
-    assert await writer.catch_up()
-    await writer.checkpointed()
-
-    age = _notes_age()
-    assert age is not None and 60 <= age < 120, "a minute old, not yet due"
-    assert await checkpoints.write(writer.current) is not None
-    assert _notes_age() == 0.0
-    writer.stop()
 
 
 def test_the_notes_not_covered_reason_names_what_ends_it_for_a_follower_started_from_a_checkpoint() -> None:

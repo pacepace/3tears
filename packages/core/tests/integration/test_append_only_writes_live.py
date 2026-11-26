@@ -1,12 +1,11 @@
 """Integration: a versioned table's writes append, on a real database (``design-append-only-l3.md``, chunk 2).
 
 What the unit tests cannot prove: that a rewrite of keys a versioned table holds lands a second version of each, both
-kept, at half an upsert's cost while the change-note row trigger stays (its own note a row is what is left), and at a
-copy's once it goes (on YugabyteDB an upsert into a table with a row trigger reads and
-flushes a row at a time: the scratch measurement was 1.58 ms a row against 0.09 for a copy); that a delete appends a
-"gone" marker at a newer epoch and removes nothing, the stored table taking a marker that leaves out its required
-columns while still refusing a live version without them; that a whole run deleted is exactly one run marker, its
-prefix as text, and leaves the table's whole note; and that a stamped table still upserts, one row a key.
+kept, at a copy's cost now the change-note row trigger is gone (on YugabyteDB an upsert into a table with a row trigger
+reads and flushes a row at a time: the scratch measurement was 1.58 ms a row against 0.09 for a copy); that a delete
+appends a "gone" marker at a newer epoch and removes nothing, the stored table taking a marker that leaves out its
+required columns while still refusing a live version without them; that a whole run deleted is exactly one run marker, its
+prefix as text; and that a stamped table still upserts, one row a key.
 
 Against the session ``db_container``: Postgres in the ``integration`` suite, YugabyteDB in ``integration_yugabyte``. The
 speed ratio is asserted on YugabyteDB alone (``yugabyte_only``), where the cause it removes lives; both engines log
@@ -42,13 +41,6 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.collections.scope_epochs import ScopeEpochs, scope_epochs_collection
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.change_notes import (
-    NOTE_RING_SIZE,
-    change_notes_ddl,
-    note_table,
-    note_trigger_sql,
-    trigger_function_sql,
-)
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, ROW_STAMPED, row_versions
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.entities.base import BaseEntity
@@ -109,9 +101,6 @@ _RUNS = TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
-#: the tables given the change-note row trigger, as every page-written table carries it today
-_NOTED = (_VERSIONED, _TODAY, _PROJECTIONS)
-
 
 class _Result(BaseEntity):
     primary_key_field = "candidate"
@@ -144,11 +133,9 @@ async def _ddl(pool: asyncpg.Pool, statement: str) -> None:
 @pytest.fixture
 async def held(db_container: str) -> AsyncIterator[_Held]:
     schema = f"append_only_{uuid.uuid4().hex[:8]}"
-    notes = f"{schema}_notes"
     admin = await asyncpg.connect(db_container)
     try:
         await admin.execute(f"CREATE SCHEMA {schema}")
-        await admin.execute(f"CREATE SCHEMA {notes}")
     finally:
         await admin.close()
     pool = await asyncpg.create_pool(
@@ -158,24 +145,9 @@ async def held(db_container: str) -> AsyncIterator[_Held]:
     try:
         async with pool.acquire() as conn:
             yugabyte = await on_yugabyte(conn)
-        for statement in change_notes_ddl(notes):
-            await _ddl(pool, statement)
         epochs_class = scope_epochs_collection(_EPOCHS)
         for table in (epochs_class.schema, _VERSIONED, _TODAY, _PROJECTIONS, _RUNS, RUN_MARKERS_SCHEMA):
             for statement in table.create_statements(yugabyte=yugabyte):
-                await _ddl(pool, statement)
-        for table in _NOTED:
-            await _ddl(
-                pool,
-                trigger_function_sql(
-                    notes_schema=notes,
-                    table_schema=schema,
-                    table=table.name,
-                    keys=table.pk_columns,
-                    columns=["join_state_code"],
-                ),
-            )
-            for statement in note_trigger_sql(notes_schema=notes, table_schema=schema, table=table.name).values():
                 await _ddl(pool, statement)
         registry = CollectionRegistry()
         registry.configure(l3_pool=SqlL3Backend(pool))
@@ -191,8 +163,7 @@ async def held(db_container: str) -> AsyncIterator[_Held]:
             runs=collection_for_schema(_RUNS, entity_class=_Run)(registry, config, None),
         )
     finally:
-        for each in (schema, notes):
-            await pool.execute(f"DROP SCHEMA IF EXISTS {each} CASCADE")
+        await pool.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await pool.close()
 
 
@@ -236,12 +207,6 @@ async def _timed(held: _Held, step: Callable[[Any], Awaitable[Any]]) -> float:
     started = time.perf_counter()
     await _in_version(held, step)
     return (time.perf_counter() - started) * 1000 / _KEYS
-
-
-async def _drop_triggers(held: _Held) -> None:
-    for table in _NOTED:
-        for trigger in note_trigger_sql(notes_schema="x", table_schema=held.schema, table=table.name):
-            await held.pool.execute(f'DROP TRIGGER IF EXISTS "{trigger}" ON {table.name}')
 
 
 _STAGE = '"AwStage"'
@@ -289,9 +254,7 @@ async def _rewrite_times(held: _Held) -> dict[str, float]:
     for collection in (held.today, held.versioned):
         await _in_version(held, functools.partial(_saved, collection, _rows(_KEYS, 1), copy=True))
     times: dict[str, float] = {}
-    for votes, trigger in ((2, "with the row trigger"), (3, "without it")):
-        if votes == 3:
-            await _drop_triggers(held)
+    for votes, trigger in ((2, "first round"), (3, "second round")):
         times[f"upsert {trigger}"] = await _timed(held, functools.partial(_saved, held.today, _rows(_KEYS, votes)))
         times[f"append {trigger}"] = await _timed(held, functools.partial(_saved, held.versioned, _rows(_KEYS, votes)))
         # the hub's two forms of an append, their statements alone: a COPY straight into the table (what the broker
@@ -330,10 +293,10 @@ async def test_a_rewrite_of_held_keys_appends_at_a_copys_speed_not_an_upserts(he
     # measured on the pool's YugabyteDB, 2026-11-25, ms a row (5,000 held keys, 7 columns, a direct connection):
     #   with the change-note row trigger: upsert 0.447, append 0.226 (a COPY 0.226, staged + INSERT ... SELECT 0.222)
     #   without it:                       upsert 0.030, append 0.019 (a COPY 0.005, staged 0.006)
-    # with the trigger on, its own note a row is what is left of the append (it leaves in chunk 7); the upsert pays it
-    # and its unbatched ON CONFLICT read besides. Chunk 1's upsert of a versioned table ran at the upsert's cost (1.0)
-    assert times["append with the row trigger"] <= 0.75 * times["upsert with the row trigger"], shown
-    assert times["append without it"] <= times["upsert without it"], shown
+    # the ring's trigger retired in chunk 7, so both rounds run without it: the append at a copy's cost, never above the
+    # upsert's. Chunk 1's upsert of a versioned table ran at the upsert's cost (1.0)
+    assert times["append first round"] <= times["upsert first round"], shown
+    assert times["append second round"] <= times["upsert second round"], shown
 
 
 # -- a delete appends a gone marker -----------------------------------------------------------------------------------
@@ -393,14 +356,6 @@ async def test_a_whole_run_deleted_writes_exactly_one_run_marker_and_deletes_not
     )
     newest = await held.pool.fetchval(f"SELECT max({EPOCH_COLUMN}) FROM {_PROJECTIONS.name}")  # noqa: S608
     assert marker[EPOCH_COLUMN] > newest
-    # the table's one whole note, naming no key, as today's delete left
-    whole = 0
-    for index in range(NOTE_RING_SIZE):
-        whole += await held.pool.fetchval(
-            f"SELECT count(*) FROM {held.schema}_notes.{note_table(index)} WHERE table_name = $1 AND keys IS NULL",  # noqa: S608
-            _PROJECTIONS.name,
-        )
-    assert whole == 1
 
 
 # -- a stamped table still upserts ------------------------------------------------------------------------------------

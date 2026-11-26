@@ -294,7 +294,7 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
                 "last_epoch",
                 "scope",
                 asc="last_epoch",
-                purpose="packages/core/src/threetears/core/collections/table_restore.py::_changed_scopes",
+                purpose="packages/core/src/threetears/core/collections/table_restore.py::changed_scopes",
                 plan_test=(
                     "packages/core/tests/integration/test_table_restore_plans_live.py::"
                     "test_a_restore_finds_its_scopes_through_the_last_epoch_index"

@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.keyed._filters import Selected
 from threetears.core.keyed.rows import read_joined
 from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
@@ -205,7 +206,12 @@ async def join_rows(
 
 
 def lateral_joins(
-    joins: Sequence[Joined], binds: list[Any], *, source: str = "r", fenced: bool = False
+    joins: Sequence[Joined],
+    binds: list[Any],
+    *,
+    source: str = "r",
+    fenced: bool = False,
+    guarded: frozenset[str] = frozenset(),
 ) -> tuple[list[str], str]:
     """each join as a ``LATERAL`` lookup of the rows of its table the row ``source`` names (``j1."group_id" =
     r."group_id"`` and the join's own pins, a later join's ``on`` naming an earlier one's column by the name it lands
@@ -223,6 +229,9 @@ def lateral_joins(
     :param fenced: end each lookup in ``OFFSET 0``, so the planner keeps it a lookup a row and never pulls it up into
         a join it may hash from the joined side (a source whose row count it cannot estimate, a recursive walk's)
     :ptype fenced: bool
+    :param guarded: the joined tables read as stamped L3 tables (``_filters.stamped_names``): each lookup of one
+        answers its live rows alone (``NOT j."gone"``), so a join never brings back a row a delete marked gone
+    :ptype guarded: frozenset[str]
     :return: the select-list items, and the joins' text (each after a space)
     :rtype: tuple[list[str], str]
     :raises ValueError: when a join counts or says whether it matched (a lookup answers neither)
@@ -240,6 +249,8 @@ def lateral_joins(
         ]
         pinned, values = by_conditions(join.by or {}, first=len(binds) + 1, alias="j")
         binds += values
+        if join.table in guarded:
+            pinned = [*pinned, f"NOT j.{quote_identifier(GONE_COLUMN)}"]
         wanted = ", ".join(quote_identifier(column) for column in dict.fromkeys(join.columns.values()))
         kind = "LEFT JOIN LATERAL" if join.left else "CROSS JOIN LATERAL"
         tail = " ON TRUE" if join.left else ""

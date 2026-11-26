@@ -13,6 +13,8 @@ is everything the NATS log still holds, and a restore reads every version at or 
 version below F is removed when a newer version of its key exists (it is superseded), and a "gone" marker below F is
 removed together with every older version of its key. A key's newest live version is never removed. A run marker below
 F is removed after every row of its run older than it; until then the marker stays, so no row of a gone run comes back.
+A table's reset marker (``TABLE_RESET_SCOPE``, written before a ``TRUNCATE``) below F is removed by its key: no restore
+reads it, and the rows it says were emptied are gone already.
 
 WHY the window holds for superseded versions too: a restore folds each version it reads into the key and its declared
 invalidation columns, and an older version's columns (a row that moved scope, a group it left) are what a follower
@@ -44,16 +46,22 @@ its delete marks its row gone in place. Its gone rows below F go by
 :func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`, a bucket at a time through its
 ``(epoch_bucket, epoch)`` index, after the versioned tables, its progress one row under :data:`STAMPED_SCOPE`.
 
-**Only while nothing loads, and never in a writer's way.** :class:`LoadGate` listens to the scope epochs table
-(``ScopeEpochs.on_change``: this process's own writes and every peer's broadcast, no L3 read a change). A change heard
-stops cleanup before its next batch, so it pauses within one batch of a load starting; only then does it read the
-epochs (``ScopeEpochs.snapshot``, the rows that changed) to learn whether a write is in progress or a scope is pending.
-It resumes on the next change heard once nothing is loading (a commit is one), from where it stopped. Nothing runs on a
-timer. Cleanup deletes only rows stamped below F, which is at least ten minutes older than any transaction a writer may
-still commit (``MAX_TRANSACTION_AGE_MS``), so it never contends for a row a writer writes, and it touches no scope
-epoch, so it never holds up a ``begin``.
+**Only while nothing loads, and never in a writer's way.** :class:`LoadGate` is one gate with two feeds. Over the
+scope epochs table (reports) it listens to ``ScopeEpochs.on_change`` (this process's own writes and every peer's
+broadcast, no L3 read a change): a change heard stops cleanup before its next batch, so it pauses within one batch of a
+load starting; only then does it read the epochs (``ScopeEpochs.snapshot``, the rows that changed) to learn whether a
+write is in progress or a scope is pending, and it resumes on the next change heard once nothing is loading (a commit is
+one). A database with no scope epochs (the hub's) feeds it the change log's own records as this process hears them
+(:meth:`LoadGate.from_change_log`): a record heard pauses cleanup the same way, and since the last record of a load is
+followed by silence, not by a change to hear, quiet is one timer armed on each record heard (cancelled and armed
+again), never a periodic read; when it fires cleanup resumes. Either way it resumes from where it stopped. Cleanup
+deletes only rows stamped below F, which is at least ten minutes older than any transaction a writer may still commit
+(``MAX_TRANSACTION_AGE_MS``), so it never contends for a row a writer writes, and it touches no scope epoch, so it never
+holds up a ``begin``.
 
 **Accounting** (metrics only; alerting is Grafana's): ``threetears_quiet_cleanup_removed_total`` by table and kind,
+``threetears_quiet_cleanup_referenced_total`` by table (a stamped table's gone rows left a round because another row
+still references them, :mod:`~threetears.core.collections.stamped_cleanup`),
 ``threetears_quiet_cleanup_backlog_scopes`` by table (scopes not yet cleared to the floor), and
 ``threetears_quiet_cleanup_paused`` (1 while a load holds it) with ``threetears_quiet_cleanup_pauses_total``.
 
@@ -89,7 +97,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
 from threetears.core.collections.stamped_cleanup import StampedSweep, clear_stamped_gone
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, cleanup_floor
-from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, TABLE_RESET_SCOPE
 from threetears.core.keyed import Fragment, KeyBatch, Sort, delete_before, delete_keyed, keyset_rows, read_keyed_arrow
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed import next_past, page_statement
@@ -97,7 +105,14 @@ from threetears.interfaces.keyed.keys import index_hint, serving_index
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 
-__all__ = ["ChangeLogWindow", "CleanupPass", "LoadGate", "QuietCleanup", "log_window_floor"]
+__all__ = [
+    "QUIET_AFTER_SECONDS",
+    "ChangeLogWindow",
+    "CleanupPass",
+    "LoadGate",
+    "QuietCleanup",
+    "log_window_floor",
+]
 
 log = get_logger(__name__)
 
@@ -118,7 +133,8 @@ _PREFIX_SEPARATOR: Final = "\x1f"
 _REMOVED = counter(
     "threetears_quiet_cleanup_removed_total",
     description="rows quiet-time cleanup removed: a versioned table's superseded versions and gone markers "
-    "(version), a gone run's rows (run_row) and run markers (run_marker); a stamped table's gone rows (stamped_gone)",
+    "(version), a gone run's rows (run_row) and run markers (run_marker); a stamped table's gone rows (stamped_gone); "
+    "a table's reset markers (reset_marker)",
     label_names=("table", "kind"),
 )
 _BACKLOG = gauge(
@@ -165,52 +181,202 @@ async def log_window_floor(log_reader: ChangeLogWindow) -> int | None:
     return None if s_min is None else cleanup_floor(int(s_min))
 
 
-class LoadGate:
-    """whether anything is loading, from the scope epochs table: a write in progress, or a scope pending.
+#: how long the change log must stay silent before a gate fed by it (:meth:`LoadGate.from_change_log`) finds nothing
+#: loading. A choice, not a measurement: cleanup deletes only rows stamped below F, never a row a writer writes, so a
+#: resume between two commits of one load costs at most one batch beside it (~80 ms, measured at :data:`_DEFAULT_BATCH`)
+#: before the next record pauses it again; 30 s keeps it from waking between the commits of a load that writes steadily
+QUIET_AFTER_SECONDS: Final = 30.0
 
-    Listens to ``ScopeEpochs.on_change`` (this process's own writes and every peer's broadcast): a change heard sets
-    :attr:`stirred` at once, with no L3 read, and cleanup stops before its next batch. :meth:`look` then reads the
-    epochs once (``ScopeEpochs.snapshot``, which reads only what changed) to learn whether the load is still on.
+
+class _EpochsFeed:
+    """the gate's feed from the scope epochs table (reports): a change heard stirs it, and a look reads the epochs.
 
     :param epochs: the scope epochs of the tables cleaned
     :ptype epochs: ScopeEpochs
     """
 
+    names_scopes: Final = True
+
     def __init__(self, epochs: ScopeEpochs) -> None:
         self._epochs = epochs
+
+    def listen(self, stir: Callable[[], None]) -> Callable[[], None]:
+        """call ``stir`` on every change heard (this process's own writes and every peer's broadcast).
+
+        :param stir: the gate's stir
+        :ptype stir: Callable[[], None]
+        :return: a call that stops listening
+        :rtype: Callable[[], None]
+        """
+        return self._epochs.on_change(stir)
+
+    async def quiet(self) -> frozenset[str] | None:
+        """read the epochs once (``ScopeEpochs.snapshot``, the rows that changed): their scopes when nothing is
+        loading, None while a write is in progress or a scope it touched is pending (one a commit withheld is not a
+        load: it waits for its writer's next write).
+
+        :return: the scopes, or None while loading
+        :rtype: frozenset[str] | None
+        """
+        snapshot: EpochSnapshot = await self._epochs.snapshot()
+        loading = snapshot.writing is not None or bool(snapshot.pending - snapshot.withheld)
+        return None if loading else frozenset(snapshot.epochs)
+
+
+class _ChangeLogFeed:
+    """the gate's feed from the change log's own records as this process hears them (a database with no scope epochs:
+    the hub). A record heard stirs the gate and (re)arms ONE timer, cancelled and armed again on every record; the gate
+    is quiet while no timer is armed, and the timer firing stirs it once more, so cleanup resumes then. Nothing is read
+    from L3 to learn whether a load is on: the records are the load.
+
+    :param on_record: subscribes a listener to the records this process hears (called on the loop with the record,
+        which the gate does not read), answering a call that removes it
+    :ptype on_record: Callable[[Callable[..., None]], Callable[[], None]]
+    :param quiet_after: seconds of silence after the last record heard before the gate is quiet
+    :ptype quiet_after: float
+    """
+
+    names_scopes: Final = False
+
+    def __init__(self, on_record: Callable[[Callable[..., None]], Callable[[], None]], quiet_after: float) -> None:
+        if quiet_after <= 0:
+            raise ValueError(f"a change-log gate waits some silence before it is quiet; got {quiet_after} s")
+        self._on_record = on_record
+        self._quiet_after = quiet_after
+        #: the one timer, armed while the log is not yet quiet; replaced whole, owned by the loop
+        self._timer: asyncio.TimerHandle | None = None
+        self._stir: Callable[[], None] = lambda: None
+
+    def listen(self, stir: Callable[[], None]) -> Callable[[], None]:
+        """call ``stir`` on every record heard, and once more when the log has been quiet for ``quiet_after``.
+
+        :param stir: the gate's stir
+        :ptype stir: Callable[[], None]
+        :return: a call that stops listening (and disarms the timer)
+        :rtype: Callable[[], None]
+        """
+        self._stir = stir
+        remove = self._on_record(self._heard)
+
+        def stop() -> None:
+            remove()
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+        return stop
+
+    def _heard(self, *_record: Any) -> None:
+        """a record heard: stir the gate at once (cleanup stops before its next batch) and re-arm the quiet timer.
+
+        :param _record: the record, unread
+        :ptype _record: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._stir()
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = asyncio.get_running_loop().call_later(self._quiet_after, self._fell_quiet)
+
+    def _fell_quiet(self) -> None:
+        """the timer fired: no record for ``quiet_after``. The gate is quiet, and is stirred so cleanup looks.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._timer = None
+        self._stir()
+
+    async def quiet(self) -> frozenset[str] | None:
+        """no scopes (the log names none) when no record was heard for ``quiet_after``, else None. No read.
+
+        :return: an empty set, or None while loading
+        :rtype: frozenset[str] | None
+        """
+        return None if self._timer is not None else frozenset()
+
+
+class LoadGate:
+    """whether anything is loading: one gate, fed by the scope epochs table (reports, :class:`LoadGate`'s own
+    constructor) or by the change log's records as this process hears them (a database with no scope epochs, such as
+    the hub's: :meth:`from_change_log`).
+
+    Either feed stirs it at once, with no L3 read: :attr:`stirred` is set and cleanup stops before its next batch.
+    :meth:`look` then asks the feed whether the load is still on: the scope epochs feed reads the epochs once
+    (``ScopeEpochs.snapshot``, which reads only what changed) and is quiet on the next change heard once nothing is
+    loading (a commit is one); the change-log feed reads nothing, and is quiet once no record was heard for its
+    ``quiet_after`` (one timer, re-armed on each record, never a periodic read).
+
+    :param epochs: the scope epochs of the tables cleaned (or the change log's feed :meth:`from_change_log` makes)
+    :ptype epochs: ScopeEpochs
+    """
+
+    def __init__(self, epochs: ScopeEpochs | _ChangeLogFeed) -> None:
+        self._feed = epochs if isinstance(epochs, _ChangeLogFeed) else _EpochsFeed(epochs)
         self._heard = asyncio.Event()
         # the first look is owed: nothing is known yet
         self._heard.set()
-        self._remove = epochs.on_change(self._heard.set)
+        self._remove = self._feed.listen(self._heard.set)
+
+    @classmethod
+    def from_change_log(
+        cls,
+        on_record: Callable[[Callable[..., None]], Callable[[], None]],
+        *,
+        quiet_after: float = QUIET_AFTER_SECONDS,
+    ) -> LoadGate:
+        """a gate fed by the change log's records as this process hears them: every record heard pauses cleanup
+        before its next batch, and cleanup resumes from where it stopped once the log was silent for
+        ``quiet_after``. It names no scopes, so it cleans stamped tables (a versioned table is cleaned a scope at a
+        time, from a scope epochs table: :class:`QuietCleanup` refuses one with this gate).
+
+        :param on_record: subscribes a listener to the records this process hears (on the loop; the listener takes the
+            record, unread), answering a call that removes it
+        :ptype on_record: Callable[[Callable[..., None]], Callable[[], None]]
+        :param quiet_after: seconds of silence before the gate is quiet (:data:`QUIET_AFTER_SECONDS`)
+        :ptype quiet_after: float
+        :return: the gate
+        :rtype: LoadGate
+        :raises ValueError: for a silence of no time
+        """
+        return cls(_ChangeLogFeed(on_record, quiet_after))
+
+    @property
+    def names_scopes(self) -> bool:
+        """whether a quiet look names the scopes to clean (the scope epochs feed), so versioned tables can be cleaned.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        return self._feed.names_scopes
 
     @property
     def stirred(self) -> bool:
-        """whether an epoch changed since the last :meth:`look`: a load may have started.
+        """whether the feed stirred since the last :meth:`look`: a load may have started.
 
-        :return: whether one did
+        :return: whether it did
         :rtype: bool
         """
         return self._heard.is_set()
 
     async def heard(self) -> None:
-        """wait until an epoch changes (returns at once when one already did since the last :meth:`look`).
+        """wait until the feed stirs (returns at once when it already did since the last :meth:`look`).
 
         :return: nothing
         :rtype: None
         """
         await self._heard.wait()
 
-    async def look(self) -> EpochSnapshot | None:
-        """read the epochs once: the snapshot when nothing is loading, None while a write is in progress or a scope
-        it touched is pending (one a commit withheld is not a load: it waits for its writer's next write).
+    async def look(self) -> frozenset[str] | None:
+        """ask the feed once whether anything is loading: the scopes to clean when nothing is (the scope epochs table's,
+        their prefix on; none from the change log), None while a load is on.
 
-        :return: the snapshot, or None while loading
-        :rtype: EpochSnapshot | None
+        :return: the scopes, or None while loading
+        :rtype: frozenset[str] | None
         """
         self._heard.clear()
-        snapshot = await self._epochs.snapshot()
-        loading = snapshot.writing is not None or bool(snapshot.pending - snapshot.withheld)
-        return None if loading else snapshot
+        return await self._feed.quiet()
 
     def close(self) -> None:
         """stop listening.
@@ -308,7 +474,8 @@ class QuietCleanup:
         :func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`, their progress under the scope
         :data:`STAMPED_SCOPE`
     :ptype tables: Sequence[TableSchema]
-    :param gate: the load signal
+    :param gate: the load signal: over the tables' scope epochs, or fed by the change log
+        (:meth:`LoadGate.from_change_log`, stamped tables only)
     :ptype gate: LoadGate
     :param floor: the restore window's floor F (:func:`log_window_floor` over the change log); None removes nothing
     :ptype floor: Callable[[], Awaitable[int | None]]
@@ -322,7 +489,8 @@ class QuietCleanup:
     :ptype progress: str
     :param run_markers: the run-marker table in the tables' schema; None when they delete no whole runs
     :ptype run_markers: str | None
-    :raises ValueError: for a table that declares no row epoch, or a batch under one
+    :raises ValueError: for a table that declares no row epoch, a versioned table with a gate that names no scopes,
+        or a batch under one
     """
 
     def __init__(
@@ -342,6 +510,13 @@ class QuietCleanup:
             raise ValueError(
                 f"quiet-time cleanup clears versioned (row_versions) and stamped (ROW_STAMPED) tables; not {refused}"
             )
+        unscoped = [schema.name for schema in tables if schema.versioned and not gate.names_scopes]
+        if unscoped:
+            raise ValueError(
+                f"quiet-time cleanup clears a versioned table a scope at a time, from the scope epochs table; a gate "
+                f"fed by the change log (LoadGate.from_change_log) names no scopes, so it cannot clear {unscoped}. "
+                f"Give it a LoadGate over the tables' ScopeEpochs"
+            )
         if batch < 1:
             raise ValueError(f"a cleanup batch visits at least one version; got {batch}")
         self._pool = pool
@@ -357,7 +532,8 @@ class QuietCleanup:
         self._place: _Place | None = None
 
     async def run(self) -> None:
-        """clean whenever an epoch change is heard and nothing is loading; forever, until cancelled.
+        """clean whenever the gate stirs (an epoch change or a record heard, or the log falling quiet) and nothing is
+        loading; forever, until cancelled.
 
         :return: never
         :rtype: None
@@ -373,33 +549,31 @@ class QuietCleanup:
         :return: what it did
         :rtype: CleanupPass
         """
-        snapshot = await self._gate.look()
-        floor = None if snapshot is None else await self._floor()
-        if snapshot is None:
+        quiet = await self._gate.look()
+        floor = None if quiet is None else await self._floor()
+        if quiet is None:
             done = self._paused(0, None)
         elif floor is None:
             # NOSILENT: the window is unknown (no log, or its oldest record names no stamp): nothing is removed
             _PAUSED.set(0)
             done = CleanupPass(removed=0, paused=False, finished=False, floor=None)
         else:
-            done = await self._clean_to(snapshot, floor)
+            done = await self._clean_to(quiet, floor)
         return done
 
-    async def _clean_to(self, snapshot: EpochSnapshot, floor: int) -> CleanupPass:
-        """clear every scope ``snapshot`` names of every table to ``floor``, a scope at a time, stopping when a load
-        starts.
+    async def _clean_to(self, quiet: frozenset[str], floor: int) -> CleanupPass:
+        """clear every scope ``quiet`` names of every table to ``floor``, a scope at a time, stopping when a load
+        starts; then each table's reset markers below ``floor``.
 
-        :param snapshot: the scope epochs, read while nothing was loading
-        :ptype snapshot: EpochSnapshot
+        :param quiet: the scopes the gate named, looked at while nothing was loading (none from the change log)
+        :ptype quiet: frozenset[str]
         :param floor: F
         :ptype floor: int
         :return: what it did
         :rtype: CleanupPass
         """
         scopes = sorted(
-            scope.removeprefix(self._prefix)
-            for scope in snapshot.epochs
-            if scope != WHOLE and scope.startswith(self._prefix)
+            scope.removeprefix(self._prefix) for scope in quiet if scope != WHOLE and scope.startswith(self._prefix)
         )
         removed = 0
         stopped = False
@@ -417,6 +591,7 @@ class QuietCleanup:
                 _BACKLOG.labels(table=schema.name).set(len(behind) - left - 1)
             if stopped:
                 break
+            removed += await self._clear_resets(schema.name, cleaned.get(TABLE_RESET_SCOPE, 0), floor)
         unfinished = False
         if not stopped:
             stopped, unfinished, count = await self._clean_stamped(floor)
@@ -443,7 +618,9 @@ class QuietCleanup:
         removed = 0
         unfinished = False
         for schema in self._stamped:
-            since = (await self._cleaned_to(schema.name)).get(STAMPED_SCOPE, 0)
+            cleaned = await self._cleaned_to(schema.name)
+            removed += await self._clear_resets(schema.name, cleaned.get(TABLE_RESET_SCOPE, 0), floor)
+            since = cleaned.get(STAMPED_SCOPE, 0)
             _BACKLOG.labels(table=schema.name).set(int(since < floor))
             if since >= floor:
                 continue
@@ -460,6 +637,52 @@ class QuietCleanup:
             else:
                 unfinished = True
         return False, unfinished, removed
+
+    async def _clear_resets(self, table: str, cleaned_to: int, floor: int) -> int:
+        """remove ``table``'s reset markers (:data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE`, an empty
+        prefix) stamped in ``[cleaned_to, floor)``: read by their key ``(table_name, scope)`` and deleted each by its
+        whole key, then recorded under the progress scope :data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE`,
+        so a round whose floor has not moved reads none. A reset marker below F is read by no restore (each reads from
+        its own floor, at or above F), and the rows its ``TRUNCATE`` emptied are gone already, so nothing waits on it.
+
+        :param table: the table cleaned
+        :ptype table: str
+        :param cleaned_to: the epoch below which its reset markers were cleared
+        :ptype cleaned_to: int
+        :param floor: F
+        :ptype floor: int
+        :return: the markers removed
+        :rtype: int
+        """
+        if self._run_markers is None or cleaned_to >= floor:
+            return 0
+        markers = await keyset_rows(
+            self._pool,
+            self._run_markers,
+            columns=("prefix", EPOCH_COLUMN),
+            by={"table_name": table, "scope": TABLE_RESET_SCOPE},
+            order=(Sort("prefix"), Sort(EPOCH_COLUMN, cast="bigint")),
+            where=[
+                Fragment(f't."{EPOCH_COLUMN}" >= $1', (cleaned_to,)),
+                Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,)),
+            ],
+        )
+        removed = 0
+        for marker in markers:
+            gone = await delete_keyed(
+                self._pool,
+                self._run_markers,
+                by={
+                    "table_name": table,
+                    "scope": TABLE_RESET_SCOPE,
+                    "prefix": str(marker["prefix"]),
+                    EPOCH_COLUMN: int(marker[EPOCH_COLUMN]),
+                },
+            )
+            removed += gone.count
+        _REMOVED.labels(table=table, kind="reset_marker").inc(removed)
+        await self._record(table, TABLE_RESET_SCOPE, floor)
+        return removed
 
     def _paused(self, removed: int, floor: int | None) -> CleanupPass:
         """a pass that stopped for a load: counted, and the paused gauge raised until a pass finishes.

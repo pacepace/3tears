@@ -50,7 +50,6 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -487,7 +486,7 @@ async def test_a_direct_load_copies_each_file_ordered_by_key_in_transactions_of_
     result = await _direct(_store(pool), files)
     assert result == LoadResult(row_count=4, files=(FileLoad(0, 3), FileLoad(1, 1)))
     assert [[len(records) for _, records, _ in copies] for copies in pool.committed] == [[2], [1], [1]]
-    assert pool.settings == [(NOTE_WHOLE_SETTING,)] * 3, "each transaction is marked whole for its change note"
+    assert pool.settings == [], "no transaction is marked whole: no change note is written since the ring retired"
     [(table, records, columns)] = pool.committed[0]
     assert table == "lsf_rows"
     assert columns == ["geo", "votes", "source_id", "race", "loaded_at"]
@@ -496,15 +495,13 @@ async def test_a_direct_load_copies_each_file_ordered_by_key_in_transactions_of_
     assert pool.committed[1][0][1] == [("g3", 0, _SOURCE, "r1", _WHEN)]
 
 
-async def test_a_direct_load_names_its_key_prefixes_for_each_transaction_s_whole_note(tmp_path: Path) -> None:
+async def test_a_direct_load_sets_no_note_setting_for_its_key_prefixes(tmp_path: Path) -> None:
+    """Flips if a direct load still names its key prefixes to a change note's session setting: no trigger reads it
+    since the ring retired, so it would be a statement a transaction for nothing."""
     pool = _Pool()
     files = [_parquet_file(tmp_path / "a.parquet", _geo_rows("g3", "g1", "g2"))]
     await _direct(_store(pool), files, key_prefixes=[{"race": "r1"}])
-    assert len(pool.settings) == 2, "one setting statement a transaction"
-    for setting in pool.settings:
-        assert setting[0] == NOTE_WHOLE_SETTING
-        assert setting[1] == NOTE_REACH_SETTING
-        assert json.loads(setting[2]) == {"prefixes": [{"race": "r1"}]}
+    assert pool.settings == []
 
 
 async def test_a_key_already_held_stops_the_load_at_that_transaction(tmp_path: Path) -> None:

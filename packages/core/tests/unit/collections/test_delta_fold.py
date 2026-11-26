@@ -2113,7 +2113,11 @@ class _NotedL3(_KeyedL3):
         # two pages, the second past the first's cursor, as the ring answers a bracket's keys
         half = len(self.noted) // 2
         if cursor is None:
-            return NotedKeysPage(keys=self.noted[:half], whole_table=False, next=NotedKeysCursor(slot=0, after=_AT))
+            return NotedKeysPage(
+                keys=self.noted[:half],
+                whole_table=False,
+                next=NotedKeysCursor(slot=0, schema="platform", after=_AT.isoformat()),
+            )
         return NotedKeysPage(keys=self.noted[half:], whole_table=False, next=None)
 
 

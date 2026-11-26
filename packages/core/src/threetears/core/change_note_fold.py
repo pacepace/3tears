@@ -1,7 +1,7 @@
 """a restore's keyed change notes folded into their epoch records in a worker process, never on the event loop.
 
-**Why.** A lost change log is put back from the change notes (:class:`~threetears.core.collections.change_note_keeper.
-ChangeNoteKeeper`) inside a serving process (the hub). The restore read every keyed note as rows (asyncpg records),
+**Why.** A lost change log is put back (:class:`~threetears.core.collections.log_keeper.LogKeeper`, from the tables'
+own epochs since the change-note ring retired) inside a serving process (the hub). The restore read every keyed note as rows (asyncpg records),
 folded them into each table's distinct rows and validated them as :class:`~threetears.core.collections.epoch_change.
 ChangedRow` models on the event loop, and ``finish_restore`` then wrote each chunk's records there too. Measured (L1,
 2026-11-15, ``test_change_note_restore_speed_live.py::test_a_restore_holds_the_loop_under_1_ms_a_turn``, the
@@ -30,7 +30,7 @@ in the next page, so it is not folded: the worker answers where it starts (the b
 process hands those bytes again at the front of the next page. The final page folds everything.
 
 **What is checked.** A note's ids come from its ``TEXT[]`` keys and its columns from the trigger's
-``jsonb_build_object`` of ``::text`` values (:mod:`threetears.core.ddl.change_notes`), so each row is a
+``jsonb_build_object`` of ``::text`` values (a table restore's ``COPY`` of its key, the same form), so each row is a
 :class:`ChangedRow` by construction; the worker refuses columns that are not a JSON object, as the fold always did,
 and a row too large for any record. A follower reads each record through ``read_epoch_change_body``, which validates
 it whole.
@@ -86,7 +86,7 @@ def _page_table(data: bytes) -> pa.Table:
 _FoldedRecord = tuple[int, str, str | None, bytes]
 
 #: the most the folder's store holds at once (a page handed, its records, the next page): its pages are about
-#: :data:`~threetears.core.collections.change_note_keeper._RESTORE_PAGE_BYTES` and its records about twice that, so this is
+#: :data:`~threetears.core.collections.table_restore._PAGE_BYTES` and its records about twice that, so this is
 #: far above what a restore takes, and below the 64 MiB a container's ``/dev/shm`` has by default
 _STORE_BYTES: Final = 48 << 20
 

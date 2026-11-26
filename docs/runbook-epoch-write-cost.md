@@ -68,15 +68,15 @@ the same table, so they contend only where the platform makes them.
 |---|---|
 | `undeclared` | nothing (today's default) |
 | `declared` | one append of the epoch's change record to the change log (its stream sequence is the epoch; there is no counter to contend for) |
-| `declared+notes` | `declared`, plus the change-note trigger's note row in the write's transaction. A keeper process runs the note ring beside the writers with a 1 s fence (`--fence-seconds`) and a switch size of a fifth of the run's records, so the ring switches and empties its idle table (batched deletes) mid-run. Each writer's pool carries the cached ring slot, as the hub's does |
 
-Pick variants with `--variants` (e.g. `--variants declared declared+notes`).
+Pick variants with `--variants` (e.g. `--variants declared`). The `declared+notes` variant measured the change-note
+ring's trigger until the ring retired in 0.95; its recorded results below are history.
 
 The script times each append through the source's public `advance_with_change`, so its append columns
 measure the shipped path.
 
-For what a change note and a write mark cost a bulk write on YugabyteDB, and the buffered notes that answer it, see
-[Writing to L3 on YugabyteDB](writing-to-l3-on-yugabytedb.md).
+What a per-row trigger cost a bulk write on YugabyteDB (1.58 ms a row against 0.43 without, 2026-11-25) is why the
+ring retired: `threetears.core.ddl.epoch_catalog` refuses one on a versioned table.
 
 ## How to read the result
 

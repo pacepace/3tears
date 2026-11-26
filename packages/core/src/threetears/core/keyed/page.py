@@ -102,6 +102,7 @@ async def keyset_page(
     where: Sequence[Fragment] = (),
     lock: Lock | None = None,
     records: bool = False,
+    with_gone: bool = False,
 ) -> KeyPage:
     """one page of ``table``'s rows ``by`` names, in ``order``, after ``cursor``.
 
@@ -134,6 +135,10 @@ async def keyset_page(
         with no copy into a dict: a first-of or top-n read rewritten onto the first page answers what its ``fetch``
         / ``fetchrow`` answered before
     :ptype records: bool
+    :param with_gone: read the table as stored, as ``copy_keyed(with_gone=True)`` does: a versioned table's every
+        version and gone marker, a stamped table's gone rows. A read of what changed in an epoch range
+        (:mod:`~threetears.core.collections.epoch_reads`), which hears each delete by its marker or gone row
+    :ptype with_gone: bool
     :return: the page
     :rtype: KeyPage
     :raises ValueError: when the sort is empty, a sort column is not read, a sort expression's name is a column read,
@@ -148,7 +153,7 @@ async def keyset_page(
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
         refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     past = None if cursor is None else cursor_values(order, cursor)
-    newest = newest_of(conn, table) if lock is None else None
+    newest = newest_of(conn, table) if lock is None and not with_gone else None
     if newest is not None and isinstance(table, str):
         # a versioned table paged in its key's order: its LIMIT and cursor inside the newest relation, so the page
         # reads only its range's versions (newest_listing)
@@ -158,7 +163,7 @@ async def keyset_page(
     # a versioned table's rows are its keys' newest live versions alone, read in its place: its key is then unique
     # among them; the pins on the key are named inside its DISTINCT ON (a page in an order past the key reads its
     # pinned scope's newest versions first). A stamped table's rows are its live ones alone (live_read)
-    read_from, where = live_read(conn, table, where, lock=lock, by=by)
+    read_from, where = (table, tuple(where)) if with_gone else live_read(conn, table, where, lock=lock, by=by)
     by_row = past is not None and await _steps_by_row(conn, order)
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
     hint = await yugabyte_index_hint(conn, table, by, order)

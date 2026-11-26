@@ -1553,9 +1553,6 @@ class _Checkpointed(_World):
         )
         self.lock.commit("state:VA")
 
-    def notes_age(self) -> float | None:
-        return REGISTRY.get_sample_value("copy_checkpoint_notes_unsaved_age_seconds", {"base": self.checkpoints.base})
-
 
 async def _checkpointed_world(volume: Path) -> _Checkpointed:
     world = _Checkpointed(volume)
@@ -1568,10 +1565,8 @@ async def _checkpointed_world(volume: Path) -> _Checkpointed:
 async def test_an_epoch_from_the_notes_on_a_table_the_copy_loads_from_the_volume_makes_no_checkpoint_due(
     _volume: Path,
 ) -> None:
-    """Flips if an epoch taken from the change notes on a table whose full is on the volume makes a checkpoint due or
-    sets ``copy_checkpoint_notes_unsaved_age_seconds``: no checkpoint holds that table, and a start loads it from the
-    volume and never needs its notes, so the old trigger wrote a checkpoint of the other tables for nothing and showed
-    an age no checkpoint could end."""
+    """Flips if an epoch taken from a keys-unknown bracket on a table whose full is on the volume makes a checkpoint
+    due: no checkpoint holds that table, and a start loads it from the volume."""
     world = await _checkpointed_world(_volume)
     world.too_large(_RESET, datetime.now(UTC) - timedelta(minutes=3))  # past a quarter of the 10-minute fence
 
@@ -1579,33 +1574,23 @@ async def test_an_epoch_from_the_notes_on_a_table_the_copy_loads_from_the_volume
     await world.follower.checkpointed()
 
     assert world.seq() == 1, "a notes epoch on a table loaded from the volume made a checkpoint due"
-    assert world.checkpoints.noted_due_in() is None
-    assert world.notes_age() == 0.0
     world.follower.stop()
 
 
-async def test_with_both_kinds_of_table_only_an_epoch_from_the_notes_on_a_checkpointed_table_makes_one_due(
+async def test_no_epoch_from_a_keys_unknown_bracket_makes_a_checkpoint_due_of_either_kind_of_table(
     _volume: Path,
 ) -> None:
-    """Flips if the older notes epoch of a table loaded from the volume sets when a checkpoint is due, or if one of a
-    table the checkpoint holds stops making it due: the trigger and its gauge follow the checkpointed table alone."""
+    """Flips if an epoch taken from a keys-unknown bracket makes a checkpoint due by its age (the change-note ring's
+    quarter-fence rule, until 0.95): the bracket is paged from the table's own versions, which cleanup keeps while the
+    change log holds a record from then, so a start from an older checkpoint pages it again (append-only L3 chunk 7)."""
     world = await _checkpointed_world(_volume)
     world.too_large(_RESET, datetime.now(UTC) - timedelta(minutes=3))
-    world.too_large(_PLAIN, datetime.now(UTC) - timedelta(seconds=60))
-
-    assert await world.follower.catch_up()
-    await world.follower.checkpointed()
-
-    assert world.seq() == 1, "the volume table's older epoch made the checkpoint due"
-    age = world.notes_age()
-    assert age is not None and 60 <= age < 120, "plain's epoch alone waits: a minute old, not yet due"
-
     world.too_large(_PLAIN, datetime.now(UTC) - timedelta(minutes=3))
+
     assert await world.follower.catch_up()
     await world.follower.checkpointed()
 
-    assert world.seq() == 2, "plain's epoch a quarter fence old makes the checkpoint due"
-    assert world.notes_age() == 0.0
+    assert world.seq() == 1, "an epoch from a bracket three minutes old made a checkpoint due"
     world.follower.stop()
 
 

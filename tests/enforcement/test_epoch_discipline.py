@@ -116,8 +116,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/scope_epochs.py::ScopeEpochs",
             f"{_CORE}/coordination/source_token.py::SourceTokenFence",
             f"{_CORE}/coordination/source_token.py::clear_signals",
-            # the change-note ring in L3: its ring row, its note tables and its triggers (installed, emptied)
-            f"{_CORE}/collections/change_note_keeper.py::ChangeNoteKeeper",
+            # the log keeper's own marks of the change log in L3 (installed, marked, swept by the log's window)
+            f"{_CORE}/collections/log_keeper.py::LogKeeper",
             # the migration runner's own version ledger, _schema_migrations
             f"{_CORE}/data/migrations/runner.py::MigrationRunner",
             # the epoch client's own counter table, config_epochs: it IS the epoch

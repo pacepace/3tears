@@ -62,6 +62,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     UniqueConstraint,
 )
+from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.keyed import Sort, delete_keyed, keyset_rows, read_row
 from threetears.core.security.secret_refs import validate_ref
 from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
@@ -149,6 +150,11 @@ _DATASOURCE_TABLES_SCHEMA = TableSchema(
         ),
     ),
     write_generation=WRITE_GENERATION,
+    # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+    # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore hears
+    # it. Stamped, not versioned: a table's description and introspection are rewritten in place, a key at a time. The hub's migration stamps it (its DDL is the hub's:
+    # threetears.datasources.stamp_tables.STAMPED_TABLES)
+    row_epoch=ROW_STAMPED,
     l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
@@ -240,6 +246,11 @@ _TABLE_TEMPLATES_SCHEMA = TableSchema(
     ],
     # a template a follower missed the change of is caught up from its epoch, as every datasource table is
     write_generation=WRITE_GENERATION,
+    # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+    # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore hears
+    # it. Stamped, not versioned: a template is edited in place, a key at a time. The hub's migration stamps it (its DDL is the hub's:
+    # threetears.datasources.stamp_tables.STAMPED_TABLES)
+    row_epoch=ROW_STAMPED,
     l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
@@ -287,6 +298,11 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
     schema = TableSchema(
         name="datasources",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore hears
+        # it. Stamped, not versioned: a source is edited in place (its status, its flags), a key at a time. The hub's migration stamps it (its DDL is the hub's:
+        # threetears.datasources.stamp_tables.STAMPED_TABLES)
+        row_epoch=ROW_STAMPED,
         primary_key="id",
         columns=[
             Column("id", UUID_TYPE),
@@ -691,16 +707,16 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
         return await self.write_row(data, conn=conn)
 
     async def delete_from_store(self, entity_id: Any) -> None:
-        """hard-delete data source table from L3.
+        """delete a data source table from L3: its row
+        marked gone in place, never deleted (``ROW_STAMPED``): the gone flag set and the epoch risen past a fresh stamp
+        (``mark_gone_in_store``), so a restore of a lost change log hears the delete.
 
         :param entity_id: data source table UUID
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
-        if self.l3_pool is None:
-            return
-        await delete_keyed(self.l3_pool, "datasource_tables", by={"id": entity_id})
+        await self.mark_gone_in_store(entity_id)
 
     async def get_by_natural_key(
         self,
@@ -1234,16 +1250,16 @@ class TableTemplateCollection(DeclaredTableCollection[TableTemplateEntity]):
         return await self.write_row(data, conn=conn)
 
     async def delete_from_store(self, entity_id: Any) -> None:
-        """hard-delete template row from L3.
+        """delete a template row from L3: its row
+        marked gone in place, never deleted (``ROW_STAMPED``): the gone flag set and the epoch risen past a fresh stamp
+        (``mark_gone_in_store``), so a restore of a lost change log hears the delete.
 
         :param entity_id: template UUID
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
-        if self.l3_pool is None:
-            return
-        await delete_keyed(self.l3_pool, "table_templates", by={"id": entity_id})
+        await self.mark_gone_in_store(entity_id)
 
 
 #: ``datasource_customers`` as the hub declares it (hub v001): which customers a ``restricted`` shared datasource

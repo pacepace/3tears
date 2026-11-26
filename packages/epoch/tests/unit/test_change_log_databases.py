@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
+from threetears.core.collections.log_keeper import LogKeeper
 from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import (
     ChangedRow,
@@ -164,18 +164,18 @@ class TestARestoresWorkerAssemblesTheSameForm:
 
 
 class TestAKeeperKnowsItsDatabase:
-    def test_a_ring_beside_the_log_is_refused_without_one(self) -> None:
-        """Flips if a second database's ring starts with no name on its writes: its records and the owner's of a
-        table they both note could not be told apart, by either scrub or by any follower."""
+    def test_a_keeper_beside_the_log_is_refused_without_one(self) -> None:
+        """Flips if a second database's keeper starts with no name on its writes: its records and the owner's of a
+        table they both write could not be told apart, by either scrub or by any follower."""
         unnamed = EpochGenerationSource(FakeNatsClient())
         with pytest.raises(ValueError, match="names its database"):
-            ChangeNoteKeeper(_NO_POOL, notes_schema="identity", log=unnamed, keeps_log=False)
-        ChangeNoteKeeper(_NO_POOL, notes_schema="platform", log=unnamed)  # the owner of a log no one shares, as before
+            LogKeeper(_NO_POOL, schema="identity", log=unnamed, keeps_log=False)
+        LogKeeper(_NO_POOL, schema="platform", log=unnamed)  # the owner of a log no one shares, as before
 
-    def test_its_log_names_its_rings_schema(self) -> None:
+    def test_its_log_names_its_keepers_schema(self) -> None:
         named = EpochGenerationSource(FakeNatsClient(), database="platform")
-        with pytest.raises(ValueError, match="ring's schema"):
-            ChangeNoteKeeper(_NO_POOL, notes_schema="identity", log=named, keeps_log=False)
-        with pytest.raises(ValueError, match="ring's schema"):
-            ChangeNoteKeeper(_NO_POOL, notes_schema="identity", log=named)
-        ChangeNoteKeeper(_NO_POOL, notes_schema="platform", log=named, keeps_log=False)
+        with pytest.raises(ValueError, match="keeper's schema"):
+            LogKeeper(_NO_POOL, schema="identity", log=named, keeps_log=False)
+        with pytest.raises(ValueError, match="keeper's schema"):
+            LogKeeper(_NO_POOL, schema="identity", log=named)
+        LogKeeper(_NO_POOL, schema="platform", log=named, keeps_log=False)

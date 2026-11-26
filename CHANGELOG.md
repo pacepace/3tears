@@ -6,6 +6,186 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: quiet-time cleanup runs on every database and never trips a foreign key
+
+**Added:** ``LoadGate.from_change_log(on_record, quiet_after=QUIET_AFTER_SECONDS)``: a load gate for a database with no
+scope epochs (the hub's), fed by the change log's own records as this process hears them. A record heard stirs it at
+once (cleanup stops before its next batch, no L3 read), and quiet is ONE timer, cancelled and armed again on each
+record (30 s by default, ``quiet_cleanup.QUIET_AFTER_SECONDS``): when it fires cleanup resumes from where it stopped.
+Nothing polls L3. ``LoadGate(epochs)`` (reports) is the same gate fed by ``ScopeEpochs``, unchanged.
+``LoadGate.names_scopes`` says whether a quiet look names scopes; ``QuietCleanup`` refuses a versioned table with a gate
+that names none (``ValueError``).
+
+**Changed (breaking):** ``LoadGate.look()`` answers the scopes to clean (a ``frozenset``, empty from the change log) or None while
+loading, where it answered the ``EpochSnapshot``.
+
+**Fixed:** a stamped parent's delete marked the parent gone, then its declared cascades, so each child carried a newer
+epoch than its parent: cleanup could reach the parent below the floor while a child was above it, and under a
+``NO ACTION`` foreign key the parent's ``DELETE`` failed and ``clear_stamped_gone`` raised. ``BaseCollection.delete``
+now takes the cascades first, deepest first (``apply_delete_cascade(..., conn=)``), then marks the parent
+(``BaseCollection.mark_gone_in_store(entity_id, conn=)``, new; the datasources' stamped collections use it), all in one
+``CallerTransaction``, whose ``s_min`` (new property) the delete's advances name. Every child's epoch is at most its
+parent's. And cleanup is FK-correct whatever it meets: when the database refuses a page's ``DELETE`` for a foreign key,
+its rows go a key at a time, each still referenced is left, counted (``threetears_quiet_cleanup_referenced_total`` by
+table; ``StampedSweep.referenced``) and never raised, and the pass is not recorded finished, so a later one removes it.
+
+**Fixed:** a table's reset markers (``TABLE_RESET_SCOPE``, empty prefix) were never removed: cleanup read run markers
+by real scope values alone. Cleanup now removes each one below the floor by its key, after the table's scopes, its
+progress under ``(table_name, TABLE_RESET_SCOPE)`` so a round whose floor has not moved reads none
+(``threetears_quiet_cleanup_removed_total{kind="reset_marker"}``).
+
+### core: a restore from the tables is as exact as the ring: every invalidation column, every reset
+
+The change-note ring's notes carried a row's key and every declared invalidation column, and a ``TRUNCATE`` left a
+whole-table note naming the reset. The reads that replaced it (``table_restore``, ``epoch_reads``, the writers'
+backstop in ``lost_writes``) now do the same.
+
+**Added:** ``TableSchema(invalidation_columns=...)``: a table's invalidation columns beyond the key, declared where its
+DDL can name them. The collection class reads them from the schema, as it reads ``tenancy``. A table's restore
+declaration (``row_epoch.restore_declaration``, ``stamped_restore_declaration``, both taking ``columns=``) names them as
+``"columns"`` when they hold a column the tenancy does not; a table without one keeps its comment byte for byte.
+``row_epoch.invalidation_columns_of`` reads them back. A restore's records, ``epoch_reads.range_rows`` (the backstop) and
+``epoch_keys_page`` (a keys-unknown page) carry every one; a stamped row whose moveable columns a write changed since X
+comes back once more with each value it left, under the tenant it left (``table_restore.moved_since``), and the tenant it
+left pages it back.
+
+**Added:** a table reset is one row of the run-marker table: ``run_markers.TABLE_RESET_SCOPE`` (chr(30)), an empty
+prefix, the reset's epoch (``table_reset_marker_sql``). ``run_markers.record_table_reset(conn, table, epoch)`` writes it
+before the ``TRUNCATE``, on the same connection, for a table that carries a restore declaration;
+``SqlL3Backend.truncate`` calls it under the DDL lock. ``table_restore.table_resets`` reads it by the key
+``(table_name, scope)``: a restore appends the table whole as a reset, the backstop records it
+(``epoch_reads.whole_changes``, stamped tables included), and a keys-unknown page answers ``whole_table`` for every
+tenant of a column-tenancy table. ``StampedTable`` gains ``run_markers``.
+
+**Changed (breaking):** a collection class over a table that carries an epoch (``row_epoch``) declaring an
+``invalidation_columns`` column its ``TableSchema`` does not is refused at class definition (``TypeError``): move it to
+the schema. A reset of a table carrying an epoch in a schema with no run-marker table raises
+``run_markers.TableResetUnrecordedError`` before anything is emptied: create ``RUN_MARKERS_SCHEMA`` there.
+``StampedTable.moved_tenant`` is ``moved_columns``. The hub's broker (``l3.truncate``) and its data-space truncate
+must call ``record_table_reset`` before their ``TRUNCATE``, as ``note_table_resets`` wrote the ring's reset note.
+
+### core: the change-note ring retires; the log keeper restores from the tables
+
+Append-only L3 chunk 7 (``design-append-only-l3.md`` decision 3: the ring is retired entirely). Nothing writes or reads
+change notes; every table a restore puts back carries its epoch.
+
+**Changed (renamed):** ``threetears.core.collections.change_note_keeper`` is ``threetears.core.collections.log_keeper``:
+``ChangeNoteKeeper(pool, notes_schema=, log=, fence=, switch_bytes=, ...)`` is ``LogKeeper(pool, schema=, log=,
+mark_every=, scrub_every=, scrub_batch=, keeps_log=)``; ``ChangeNoteKeeping`` is ``LogKeeping`` (no
+``install_triggers``); ``run_change_note_keeper`` is ``run_log_keeper``; ``CHANGE_NOTE_KEEPER_CLAIM_EVERY`` is
+``LOG_KEEPER_CLAIM_EVERY``. ``KeeperPass`` keeps ``started``, ``restored``, ``adopted``, ``put_back`` and ``scrub``, and
+gains ``marked``; ``NoteRingState`` and ``ring()`` go. The keeper keeps the marks table
+(``threetears.core.ddl.keeper_marks``, the same ``threetears_change_note_marks``) for the log's window, and knows the log
+its newest mark names: no ring row. A lost log is put back from the tables (``table_restore``) since the lost log's
+oldest mark, sized first against the restore budget and cut at a later mark when it does not fit; a keeper beside
+(``keeps_log=False``) marks its own database and puts its own tables back. The scrub reports a record of a table a
+restore cannot read back (no epoch) on ``threetears_change_notes_missing_total{table}``, and margin violations as before.
+``threetears.core.data.migrations.change_notes`` is ``epoch_refusals`` (its two refusals);
+``session_settings_connection_class`` takes no ``note_slot``.
+
+**Metrics kept** (the dashboards and alerts read them): ``threetears_change_notes_keeper_last_pass_timestamp_seconds``,
+``_missing_total`` (now: a record of a table carrying no epoch), ``_restores_total``, ``_restores_refused_total``,
+``_restore_truncated_total``, ``_put_backs_total``, ``_put_back_short_total``, ``_scrub_behind``,
+``threetears_change_log_marks_dropped_total``, ``threetears_restore_unvouched_total``,
+``threetears_restore_margin_violations_total``. **Removed:** ``threetears_change_notes_switches_total``,
+``_emptied_total``, ``_empty_timeouts_total``, ``_emptied_rows_total``, ``_switch_waits_total``,
+``_switch_held_since_timestamp_seconds``, ``_current_bytes``, ``_switch_at_bytes``, ``_ring_reads_total``,
+``_untriggered_tables``, ``_current_count_seconds``, ``_current_count_notes``,
+``threetears_change_note_slot_refreshes_total``.
+
+**Removed:** ``threetears.core.ddl.change_notes`` (the ring's DDL, functions and per-row triggers, the note buffer,
+``NOTE_WHOLE_SETTING``, ``NOTE_REACH_SETTING``, ``WHOLE_COPY_ROWS``, ``note_buffer_open_sql``, ``note_flush_sql``);
+``noted_rows_since``, ``NotedRows`` and ``whole_noted_change``; ``threetears.core.testing.note_ring``;
+``threetears.core.utils.change_note_slot`` (``ChangeNoteSlot``, ``change_note_slot_connection_class``); the note settings
+``SqlL3Backend`` set around a copy, a file load and a truncate; ``generation.NotedTable``, ``noted_tables`` and
+``switched_tables_not_noted``; ``give_noted_tables_their_note_trigger`` and ``switched_tables_without_notes``;
+``switch_off``'s note triggers and function (it drops the write-mark trigger alone); the census's
+``unnoted_switched_tables`` and ``find_unnoted_switched_tables``; the no-whole-reads ``ring_empty`` and ``restore`` kinds;
+``docs/writing-to-l3-on-yugabytedb.md``. ``ring_cutover.drop_ring`` stays: the cutover's step.
+
+**Held:** ``REFUSE_TABLES_WITHOUT_EPOCH`` stays ``False`` (``work/0950-stamp-own-tables`` has not landed); its TODO test
+fails until it does.
+
+### core: the ring's readers read the tables' own epoch ranges; prefix marks and the checkpoint notes rule go
+
+Append-only L3 chunk 7, the readers (``design-append-only-l3.md`` decision 3). No new mechanism: each reader that read
+the change-note ring reads what a table changed in a bracket with the restore's own read, narrowed to the bracket's
+epoch range (``threetears.core.collections.epoch_reads``): a versioned table's changed scopes, each one range of its
+``(scope, epoch, key...)`` index; a stamped table's 16 ``(epoch_bucket, epoch)`` ranges; run markers by their key.
+
+**Changed:** ``lost_writes.announce_window`` (the writers' backstop) announces a dead writer's window from the rows
+stamped in it, for every table carrying an epoch (a versioned table carries no trigger, so its lost advances were never
+announced before). ``noted_keys_page`` (the hub's ``l3.noted_keys`` door, ``PoolNotedKeysReader``, ``DeltaFolds``'
+lost-file recovery) pages a bracket's keys from the same read; ``NotedKeysCursor`` is ``(slot, schema, scope, after)``,
+on the wire ``{slot, schema, scope, after}``. ``tables_switched_by_trigger`` is ``tables_switched_by_epoch`` (the epoch
+alone); ``require_generation_by_trigger``/``GENERATION_BY_TRIGGER`` are ``require_generation_by_epoch``/
+``GENERATION_BY_EPOCH`` (``"generation_by_epoch"`` on the wire). ``keyset_page`` takes ``with_gone``.
+
+**Removed:** ``delete_prefixes``' prefix write marks and no-row delete (``build_no_row_delete_sql``); the copy
+checkpoint's notes-due rule (``note_fence``, ``applied(noted=)``, ``noted_due_in``,
+``copy_checkpoint_notes_unsaved_age_seconds``); the migration run's note-trigger step.
+
+**Added (held):** ``epoch_catalog.refuse_tables_without_epoch`` refuses a switched-on table without an epoch at its
+migration run, held by ``REFUSE_TABLES_WITHOUT_EPOCH = False`` until ``work/0950-stamp-own-tables`` merges; its TODO
+test fails until then.
+
+### core: versioned tables carry no per-row trigger; marks kept for the log's window; the cutover's ring step
+
+Append-only L3 chunk 7, the parts not held for a decision (`design-append-only-l3.md`, decisions 3 and 4).
+
+**Changed:** a versioned (page-written) table is given no change-note trigger: `noted_tables()` leaves it out
+(`generation.is_versioned_class`), and the migration run's note step and the keeper's trigger install skip any table
+the catalog says is versioned (its `(scope, epoch)` index's restore declaration). The scrub judges a versioned table's
+records by their `s_min` alone, never as a missing note. `lost_writes.tables_switched_by_trigger` also answers the
+tables carrying an epoch (`epoch BIGINT NOT NULL`), so the broker advances a versioned table with no trigger.
+
+**Added (refusal):** a per-row trigger on any versioned table is refused, with how to fix
+(`threetears.core.ddl.epoch_catalog.PerRowTriggerError`): at the end of every migration run (its schema) and at the
+keeper's install (every schema). The static half is the enforcement rule `threetears.enforcement.row_triggers`
+(`tests/enforcement/test_no_row_trigger_on_versioned_tables.py`); a consumer runs it over its own tree.
+
+**Fixed:** a ring switch no longer drops the keeper's marks. On a slow day the switch dropped the mark the window's
+oldest record needed, before a restore read the tables from it. `ChangeNoteKeeper.keep_window_marks`, after each mark,
+drops only marks older than the newest mark before the log's oldest record. Never by age. Counted in
+`threetears_change_log_marks_dropped_total`.
+
+**Added:** `threetears.core.data.migrations.ring_cutover.drop_ring`, the outage-window cutover's step. It drops every
+ring trigger, note function and ring table under the DDL lock, by `DROP` only, never `TRUNCATE` or `DELETE`, and keeps
+the marks table. It is not wired until the ring retires.
+### core, agent-acl, mcp, datasources: 3tears' own switched-on tables carry their epoch (ROW_STAMPED)
+
+**Changed (append-only L3, decision 3):** the ten tables 3tears declares that are switched on, whose change-note ring
+was their only restore path, are declared `row_epoch=ROW_STAMPED` (one row a key, its last write's epoch, a delete a
+gone mark in place): `coordination_revocations`; `namespaces`, `groups`, `group_members`, `roles`, `role_assignments`;
+`mcp_tool_grants`; `datasources`, `datasource_tables`, `table_templates`. Stamped, not versioned, each: written in place,
+or written once and deleted, by no writer that takes a scope's turn (`ScopeEpochs`); one row a key either way.
+
+**Added:** `threetears.core.data.migrations.stamp_tables` stamps a table an earlier migration created: the epoch added
+nullable, the gone flag, the epoch backfilled a page of keys a keyed `UPDATE` (`keyset_pages`, then `update_keyed`;
+never a whole-table statement), `NOT NULL`, the stored `epoch_bucket`, its `(epoch_bucket ASC, epoch)` index (`SPLIT
+AT` on YugabyteDB) and its `COMMENT ON INDEX` declaration. Idempotent, never truncating, for the outage-window cutover.
+Migrations: coordination v007, mcp v003 (always attached), agent_acl v006. The hub owns the DDL of the datasource
+tables, and of the access tables in its database: its migration stamps them with
+`threetears.datasources.stamp_tables.STAMPED_TABLES` and agent_acl v006's `STAMPED_TABLES`. Also
+`TableSchema.bucket_hash_kind`, and `threetears.core.testing.stamped_tables` (what each stamped table's tests hold it
+to).
+
+**Changed:** a stamped table's delete is a gone mark everywhere: `SchemaBackedCollection.delete_from_store` (one keyed
+`UPDATE`, its epoch risen), the datasource tables' own deletes, a revoke of grants (`delete_by_group_and_scope`), the
+revocation list's expiry sweep. Every raw write stamps (the builtin role, a namespace's and a grant's ensure; keyed
+updates through `stamped_values`). A namespace or grant ensured again after its delete is made live in place, its gone
+row still holding the key. The raw reads of these tables read live rows alone (the visibility clause, the grants' cold
+fill, knowledge's origin read).
+
+**Changed:** a stamped parent's delete runs no foreign-key action in the database, so 3tears takes each declared one
+itself (`delete_cascade.apply_delete_cascade`, refused before the gone mark when a child has no collection here): a
+`CASCADE` marks the child rows gone, a `SET NULL` sets the column NULL by key, its epoch risen. A group's delete marks
+its memberships and grants gone.
+
+**Changed:** a walk in one statement (`read_reached(depth=)`) and a ranked read joining in one statement guard a stamped
+table in place (`NOT "gone"` on each level and each join) instead of refusing it: the visible-customer walk reads the
+stamped access tables. A link chain still refuses one.
+
 ### core: a copy follower keeps a versioned table one row a logical key
 
 **Added** (append-only L3, chunk 4): `FollowedTable` refuses a versioned L3 table (`TableSchema(row_epoch=row_versions(...))`)

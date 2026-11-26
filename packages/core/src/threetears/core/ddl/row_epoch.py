@@ -111,6 +111,7 @@ __all__ = [
     "next_epoch",
     "RESTORE_BUCKETS",
     "RESTORE_DECLARATION_MARK",
+    "invalidation_columns_of",
     "bucket_epoch_index_name",
     "bucket_split_sql",
     "bucket_sql",
@@ -261,16 +262,54 @@ def scope_epoch_index_name(table: str) -> str:
     return f"scope_epoch_{hashlib.sha256(table.encode()).hexdigest()[:24]}"
 
 
+def _declared_columns(declared: dict[str, Any], tenancy: tuple[str, str | None], columns: tuple[str, ...]) -> None:
+    """name a table's declared invalidation columns in its restore declaration (``"columns"``), so a restore's records
+    carry each one as the change notes did (:func:`invalidation_columns_of`). Named only when they hold a column the
+    tenancy does not: a table whose one invalidation column is its tenant column (or that has none) keeps its comment
+    byte for byte as before.
+
+    :param declared: the declaration being built
+    :ptype declared: dict[str, Any]
+    :param tenancy: the table's tenancy kind and its tenant column (or None)
+    :ptype tenancy: tuple[str, str | None]
+    :param columns: its declared invalidation columns, the tenant column among them or not
+    :ptype columns: tuple[str, ...]
+    :return: nothing
+    :rtype: None
+    """
+    kind, column = tenancy
+    named = tuple(dict.fromkeys((*columns, *((column,) if kind == "column" and column else ()))))
+    if named != ((column,) if kind == "column" and column else ()):
+        declared["columns"] = list(named)
+
+
+def invalidation_columns_of(value: dict[str, Any]) -> tuple[str, ...]:
+    """the declared invalidation columns a restore declaration names (:func:`restore_declaration`,
+    :func:`stamped_restore_declaration`): its ``"columns"``, or a column tenancy's tenant column alone for a declaration
+    that names none; the tenant column always among them.
+
+    :param value: the declaration, parsed
+    :ptype value: dict[str, Any]
+    :return: the columns, in declared order
+    :rtype: tuple[str, ...]
+    """
+    tenant = str(value["tenant_column"]) if value.get("tenancy") == "column" and value.get("tenant_column") else None
+    named = tuple(str(each) for each in value.get("columns", ()))
+    return tuple(dict.fromkeys((*named, *((tenant,) if tenant else ()))))
+
+
 def restore_declaration(
     declared: RowEpoch,
     keys: tuple[str, ...],
     instants: tuple[str, ...],
     tenancy: tuple[str, str | None],
+    columns: tuple[str, ...] = (),
 ) -> str:
     """what a versioned table's ``(scope, epoch)`` index says of the table as its comment, for the restore to read it by.
 
     JSON: the mark, the scope column, the key columns in order (``instants`` those a record spells as their UTC text),
-    the scope epochs table and prefix, and the tenancy (``schema``, ``column`` with its column, or none). The keeper
+    the scope epochs table and prefix, the tenancy (``schema``, ``column`` with its column, or none), and the declared
+    invalidation columns when they name one the tenancy does not (``"columns"``, :func:`_declared_columns`). The keeper
     reads it back from the catalog (:mod:`~threetears.core.collections.table_restore`).
 
     :param declared: the table's declaration
@@ -281,6 +320,8 @@ def restore_declaration(
     :ptype instants: tuple[str, ...]
     :param tenancy: the table's tenancy kind and its tenant column (or None)
     :ptype tenancy: tuple[str, str | None]
+    :param columns: its declared invalidation columns (``TableSchema.invalidation_columns``)
+    :ptype columns: tuple[str, ...]
     :return: the comment's text
     :rtype: str
     :raises ValueError: when the declaration is not a versioned table's
@@ -288,19 +329,18 @@ def restore_declaration(
     if not declared.versions or declared.scope is None or declared.epochs is None:
         raise ValueError("only a versioned table's (scope, epoch) index carries a restore declaration")
     kind, column = tenancy
-    return json.dumps(
-        {
-            RESTORE_DECLARATION_MARK: 1,
-            "scope": declared.scope,
-            "keys": list(keys),
-            "instants": list(instants),
-            "epochs": declared.epochs,
-            "scope_prefix": declared.scope_prefix,
-            "tenancy": kind,
-            "tenant_column": column,
-        },
-        separators=(",", ":"),
-    )
+    value: dict[str, Any] = {
+        RESTORE_DECLARATION_MARK: 1,
+        "scope": declared.scope,
+        "keys": list(keys),
+        "instants": list(instants),
+        "epochs": declared.epochs,
+        "scope_prefix": declared.scope_prefix,
+        "tenancy": kind,
+        "tenant_column": column,
+    }
+    _declared_columns(value, tenancy, columns)
+    return json.dumps(value, separators=(",", ":"))
 
 
 def declared_versions(text: str | None) -> RowEpoch | None:
@@ -469,13 +509,19 @@ def bucket_split_sql() -> str:
 
 
 def stamped_restore_declaration(
-    keys: tuple[str, ...], instants: tuple[str, ...], tenancy: tuple[str, str | None]
+    keys: tuple[str, ...],
+    instants: tuple[str, ...],
+    tenancy: tuple[str, str | None],
+    moveable: tuple[str, ...] = (),
+    columns: tuple[str, ...] = (),
 ) -> str:
     """what a stamped table's ``(bucket, epoch)`` index says of the table as its comment, for the restore to read it by.
 
     JSON: the mark, ``"kind": "stamped"``, the bucket column and the number of buckets, the key columns in order
     (``instants`` those a record spells as their UTC text), and the tenancy. A versioned table's declaration
-    (:func:`restore_declaration`) names no kind.
+    (:func:`restore_declaration`) names no kind. A table a write may move between tenants (``TableSchema.moveable``,
+    :mod:`~threetears.core.ddl.tenant_moves`) names its moveable columns too (``"moveable"``), so a restore reads back
+    the tenant each moved row left; a table with none carries no such key, its comment byte for byte as before.
 
     :param keys: the table's primary key's columns, in order
     :ptype keys: tuple[str, ...]
@@ -483,23 +529,29 @@ def stamped_restore_declaration(
     :ptype instants: tuple[str, ...]
     :param tenancy: the table's tenancy kind and its tenant column (or None)
     :ptype tenancy: tuple[str, str | None]
+    :param moveable: the columns a write may move the row's tenant by; none for most tables
+    :ptype moveable: tuple[str, ...]
+    :param columns: its declared invalidation columns (``TableSchema.invalidation_columns``), named as
+        :func:`restore_declaration` names them
+    :ptype columns: tuple[str, ...]
     :return: the comment's text
     :rtype: str
     """
     kind, column = tenancy
-    return json.dumps(
-        {
-            RESTORE_DECLARATION_MARK: 1,
-            "kind": "stamped",
-            "bucket": BUCKET_COLUMN,
-            "buckets": RESTORE_BUCKETS,
-            "keys": list(keys),
-            "instants": list(instants),
-            "tenancy": kind,
-            "tenant_column": column,
-        },
-        separators=(",", ":"),
-    )
+    declared: dict[str, Any] = {
+        RESTORE_DECLARATION_MARK: 1,
+        "kind": "stamped",
+        "bucket": BUCKET_COLUMN,
+        "buckets": RESTORE_BUCKETS,
+        "keys": list(keys),
+        "instants": list(instants),
+        "tenancy": kind,
+        "tenant_column": column,
+    }
+    if moveable:
+        declared["moveable"] = list(moveable)
+    _declared_columns(declared, tenancy, columns)
+    return json.dumps(declared, separators=(",", ":"))
 
 
 def _wall_ms() -> int:

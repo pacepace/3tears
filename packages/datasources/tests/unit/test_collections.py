@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -684,7 +686,9 @@ class TestHubTableParity:
         await coll.save_to_store(row)
         sql = pool.execute.call_args.args[0]
         assert dropped not in sql
-        assert len(pool.execute.call_args.args) - 1 == len(row)
+        # and a stamped table's write its stamp (ROW_STAMPED: the epoch and the gone flag), nothing else
+        stamp = 2 if coll.schema.stamps_epoch else 0
+        assert len(pool.execute.call_args.args) - 1 == len(row) + stamp
 
     async def test_a_row_short_of_an_insert_is_written_as_an_update_of_what_it_carries(self) -> None:
         """postgres checks NOT NULL on an INSERT's proposed row before resolving a conflict."""
@@ -696,8 +700,12 @@ class TestHubTableParity:
         row_id = uuid4()
         await coll.save_to_store({"id": row_id, "column_hash": "abc", "coverage_dimension": "state_code"})
         sql, *params = pool.execute.call_args.args
-        assert sql == "UPDATE datasource_tables SET column_hash = $1 WHERE id = $2"
-        assert params == ["abc", row_id]
+        # stamped (ROW_STAMPED): the epoch risen past the write's stamp, the row live
+        assert (
+            sql
+            == "UPDATE datasource_tables SET column_hash = $1, epoch = GREATEST(epoch + 1, $2), gone = $3 WHERE id = $4"
+        )
+        assert params[0] == "abc" and isinstance(params[1], int) and params[2:] == [False, row_id]
 
     async def test_a_write_without_its_conflict_key_is_refused_before_any_write(self) -> None:
         registry, config = _make_registry_and_config()
@@ -768,7 +776,9 @@ class TestHubTableParity:
         """``date_created`` is ``immutable``: an update keeps the stored stamp, so it is read back, not cached as sent."""
         registry, config = _make_registry_and_config()
         coll = cls(registry=registry, config=config)
-        assert coll.columns_decided_by_store(row_factory()) == ("date_created",)
+        # a stamped table's epoch rises past the stored one (GREATEST), so it is the store's too, and read back
+        stamp = ("epoch", "gone") if coll.schema.stamps_epoch else ()
+        assert coll.columns_decided_by_store(row_factory()) == ("date_created", *stamp)
 
     def test_a_row_missing_a_column_leaves_it_for_the_store_to_decide(self) -> None:
         registry, config = _make_registry_and_config()
@@ -782,7 +792,8 @@ class TestHubTableParity:
         registry, config = _make_registry_and_config()
         coll = DataSourceTableCollection(registry=registry, config=config)
         decided = coll.columns_decided_by_store(_full_table_row())
-        assert set(decided) == {"coverage_dimension", "date_created"}
+        # and its stamp: the epoch rises past the stored one (GREATEST), so the row is read back (ROW_STAMPED)
+        assert set(decided) == {"coverage_dimension", "date_created", "epoch", "gone"}
 
 
 # ---------------------------------------------------------------------------
@@ -957,16 +968,25 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
         registry.get_collection.side_effect = {"datasource_tables": tables, "table_templates": templates}.get
         template_id, bound = uuid4(), [uuid4(), uuid4()]
         pool = AsyncMock()
-        template_read = 'SELECT t.* FROM "table_templates" AS t WHERE t."id" = $1 LIMIT 1'
+        # a stamped table's point read names its declared columns and reads its live row alone (ROW_STAMPED)
+        template_read = 'FROM "table_templates" AS t WHERE t."id" = $1 AND (NOT t."gone") LIMIT 1'
 
         async def _fetch(sql: str, *args: Any) -> list[dict[str, Any]]:
-            if sql == template_read:
+            if template_read in sql:
                 # the template's own row (a keyed point read), read first so its customer column rides with the
                 # delete's change
                 return [{"id": template_id, "customer_id": None}]
             return [{"id": table_id} for table_id in bound]
 
         pool.fetch = AsyncMock(side_effect=_fetch)
+
+        @asynccontextmanager
+        async def _itself(**_options: Any) -> AsyncIterator[Any]:
+            yield pool
+
+        # a stamped parent's delete takes its cascade and its gone mark on one connection, in one transaction
+        pool.acquire = MagicMock(side_effect=_itself)
+        pool.transaction = MagicMock(side_effect=_itself)
         templates.l3_pool = pool
 
         await templates.delete(template_id)
@@ -974,7 +994,7 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
         # the template's row was read by its key, then the bound tables before the delete, by the column the
         # action clears: one statement each
         (own_sql, own_id), (read_sql, read_ids) = (call.args for call in pool.fetch.await_args_list)
-        assert own_sql == template_read
+        assert template_read in own_sql
         assert own_id == template_id
         # the cascade's keyed page of the children (delete_cascade._children: keyset_rows by the child's key)
         assert 'FROM "datasource_tables" AS t WHERE t."template_id" = ANY($1)' in read_sql

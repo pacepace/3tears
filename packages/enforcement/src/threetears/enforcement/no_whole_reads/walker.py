@@ -151,7 +151,6 @@ __all__ = [
     "DECLARED_KINDS",
     "DECLARED_L1_KINDS",
     "DECLARED_OUTSIDE_KINDS",
-    "DECLARED_RING_KINDS",
     "DECLARED_SPEED_KINDS",
     "DEFAULT_NARROWING_KEYWORDS",
     "DEFAULT_PAGER_CALLS",
@@ -163,7 +162,6 @@ __all__ = [
     "WrittenStatement",
     "declared_whole_read",
     "scan_whole_reads",
-    "RING_NOTE_TABLE",
 ]
 
 #: 3tears' helpers that read every row they are not narrowed to: a keyset pager over a head, a whole-table copy, a
@@ -621,35 +619,6 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     "drain": frozenset({"whole-select", "whole-delete", "calls-whole-read"}),
     # an operator's reset
     "operator_reset": frozenset({"truncate", "truncate-call", "whole-delete"}),
-    # the change-note ring's own upkeep (Pace 2026-11-14, as the 11-11 TRUNCATE ruling): emptying an idle ring slot
-    # whole, a DELETE of that slot's notes and nothing else (RING_NOTE_TABLE guards the table). It only declares the
-    # keeper's batched deletes; why they are batched and never TRUNCATE is measured and written above
-    # threetears.core.collections.change_note_keeper.ChangeNoteKeeper.empty_slot. And (Pace 2026-11-15) on Postgres the
-    # plain VACUUM of the slot just emptied, before the ring may switch back into it: a VACUUM of a ring slot alone,
-    # never an ANALYZE, never another table (_over_the_ring)
-    "ring_empty": frozenset(
-        {
-            "non-key-where",
-            "whole-delete",
-            "whole-maintenance",
-            "unknown-schema",
-            "unknown-predicate",
-            "calls-whole-read",
-        }
-    ),
-    # putting a lost change log back reads every note of the ring's coverage (its current and previous slots, named
-    # at run time) and nothing else (RING_NOTE_TABLE guards the table)
-    "restore": frozenset(
-        {
-            "whole-select",
-            "whole-aggregate",
-            "non-key-where",
-            "unknown-schema",
-            "unknown-predicate",
-            "may-read-whole",
-            "calls-whole-read",
-        }
-    ),
     # (Pace 2026-11-15) emptying a process's own L1 copy of a table whole when the table is dropped: one DELETE with no
     # WHERE on the drop's thread (SQLiteBackend.delete_all, reached only from drop_cached_table), never a declared L3
     # table and never a read (DECLARED_L1_KINDS guards both). Why one DELETE and not the keyed walk: measured at the
@@ -681,8 +650,6 @@ DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
         "backup_verification",
         "schema_change",
         "rolling_upgrade",
-        "ring_empty",
-        "restore",
         "l1_table_drop",
     }
 )
@@ -690,13 +657,6 @@ DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
 #: the kinds whose every statement is a bare ``DELETE FROM`` (no ``WHERE``) of a relation no declared L3 table is: a
 #: process's own L1 copy of a table, emptied whole when the table is dropped (Pace 2026-11-15)
 DECLARED_L1_KINDS: Final[frozenset[str]] = frozenset({"l1_table_drop"})
-
-#: the kinds whose every statement is over the change-note ring's slots (``threetears_change_notes_<n>``, its template
-#: ``threetears_change_notes_{}``), and nothing else
-DECLARED_RING_KINDS: Final[frozenset[str]] = frozenset({"ring_empty", "restore"})
-
-#: a change-note ring slot as the walk spells it, quoted or not (its place, and any schema, read at run time)
-RING_NOTE_TABLE: Final[re.Pattern[str]] = re.compile(r'(?:^|\.)"?threetears_change_notes_(?:\{\}|\d+)?"?$')
 
 #: the kinds whose relation is never a declared L3 table: a process-local buffer, a warehouse relation
 DECLARED_OUTSIDE_KINDS: Final[frozenset[str]] = frozenset({"drain", "unbounded_by_warehouse"})

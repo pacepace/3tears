@@ -452,6 +452,17 @@ class CallerTransaction:
         return self._saved_delta_files
 
     @property
+    def s_min(self) -> int | None:
+        """the lowest row epoch this transaction stamped: its commit's ``s_min``, which every epoch record of it names.
+        A caller that advances the tables it wrote after the transaction ended names it the same way
+        (``naming_commit_s_min``). None when it stamped no row.
+
+        :return: the stamp, or None
+        :rtype: int | None
+        """
+        return self._s_min
+
+    @property
     def committed_generations(self) -> Mapping[str, str]:
         """each generation token this transaction's commit wrote, by table: what a part folded past its delta file is
         current to (:meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`). Through the L3 broker, every

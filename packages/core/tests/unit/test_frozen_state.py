@@ -17,6 +17,7 @@ from threetears.core.frozen_state import (
     with_entries,
     with_entry,
     with_newest,
+    with_newest_entries,
     without_entries,
     without_entry,
 )
@@ -60,6 +61,25 @@ def test_the_newest_goes_last_and_the_oldest_go_past_the_limit() -> None:
 
     assert list(with_newest(held, "a", 1)) == ["b", "c", "a"]
     assert list(with_newest(held, "d", 4, limit=2)) == ["c", "d"]
+    assert list(held) == ["a", "b", "c"]
+
+
+def test_a_batch_goes_newest_in_its_order_as_one_at_a_time_would() -> None:
+    held = with_newest(with_newest(with_newest(EMPTY, "a", 1), "b", 2), "c", 3)
+    batch = {"a": 10, "d": 4}
+
+    one_at_a_time = with_newest(with_newest(held, "a", 10, limit=3), "d", 4, limit=3)
+    assert (
+        list(with_newest_entries(held, batch, limit=3).items())
+        == list(one_at_a_time.items())
+        == [
+            ("c", 3),
+            ("a", 10),
+            ("d", 4),
+        ]
+    )
+    assert list(with_newest_entries(held, batch)) == ["b", "c", "a", "d"]
+    assert with_newest_entries(held, {}) is held
     assert list(held) == ["a", "b", "c"]
 
 

@@ -7,7 +7,7 @@ reader without putting the keeper's database client and metrics on the L1 import
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final, Protocol, runtime_checkable
@@ -19,6 +19,8 @@ __all__ = [
     "NotedKeysPage",
     "NotedKeysReader",
     "noted_key_pages",
+    "noted_keys_cursor",
+    "noted_keys_cursor_wire",
 ]
 
 #: the most notes one page of a keys-unknown epoch's keys reads
@@ -30,14 +32,48 @@ _NOTED_KEYS_PAGE_BYTES: Final = 4 * 1024 * 1024
 
 @dataclass(frozen=True, slots=True)
 class NotedKeysCursor:
-    """where a paged read of a bracket's noted keys goes on: a ring note table, and the last time read in it.
+    """where a paged read of a bracket's changed keys goes on (:func:`~threetears.core.collections.epoch_reads
+    .epoch_keys_page`): the relation, the index range in it, and the keyset place in that range.
 
-    :ivar slot: the ring note table (``0`` to ``NOTE_RING_SIZE - 1``) the next page reads
-    :ivar after: the last ``noted_at`` read in it; ``None`` before its first page
+    :ivar slot: a stamped table's bucket (``0`` to ``RESTORE_BUCKETS - 1``); ``0`` for a versioned table's scope
+    :ivar schema: the schema of the relation the next page reads
+    :ivar scope: a versioned table's scope value the next page reads; ``None`` for a stamped table
+    :ivar after: the keyset cursor of the last row read in that range (``"past"`` once it is read to its end);
+        ``None`` before its first page
     """
 
-    slot: int
-    after: datetime | None = None
+    slot: int = 0
+    schema: str | None = None
+    scope: str | None = None
+    after: str | None = None
+
+
+def noted_keys_cursor_wire(cursor: NotedKeysCursor) -> dict[str, Any]:
+    """a cursor as the ``l3.noted_keys`` request and reply carry it: the one shape the pod and the broker share.
+
+    :param cursor: the cursor
+    :ptype cursor: NotedKeysCursor
+    :return: ``{slot, schema, scope, after}``
+    :rtype: dict[str, Any]
+    """
+    return {"slot": cursor.slot, "schema": cursor.schema, "scope": cursor.scope, "after": cursor.after}
+
+
+def noted_keys_cursor(raw: Mapping[str, Any]) -> NotedKeysCursor:
+    """a cursor from its wire form (:func:`noted_keys_cursor_wire`).
+
+    :param raw: the wire form
+    :ptype raw: Mapping[str, Any]
+    :return: the cursor
+    :rtype: NotedKeysCursor
+    """
+    schema, scope, after = raw.get("schema"), raw.get("scope"), raw.get("after")
+    return NotedKeysCursor(
+        slot=int(raw.get("slot") or 0),
+        schema=None if schema is None else str(schema),
+        scope=None if scope is None else str(scope),
+        after=None if after is None else str(after),
+    )
 
 
 @dataclass(frozen=True, slots=True)

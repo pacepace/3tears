@@ -322,10 +322,10 @@ async def test_a_whole_run_of_a_versioned_table_deleted_is_one_run_marker_a_pref
         ("ve_projections", _NOW + 3, "PA", 7),
         ("ve_projections", _NOW + 3, "PA", 8),
     ]
-    # nothing deleted: the one statement on the table is the no-row one that leaves its whole note
-    assert [args[0] for args in statements if "ve_projections" in args[0] and args[0].startswith("DELETE")] == [
-        "DELETE FROM ve_projections WHERE FALSE"
-    ]
+    # nothing deleted, nothing marked: the run markers are the delete (no no-row DELETE, no prefix marks)
+    assert [args[0] for args in statements if args[0].startswith("DELETE")] == []
+    assert [args[0] for args in statements if "set_config" in args[0]] == []
+    conn.fetchrow.assert_not_awaited()
 
 
 async def test_a_run_delete_of_a_versioned_table_names_its_epoch_and_its_scope() -> None:

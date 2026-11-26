@@ -33,7 +33,11 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.loop_turns import LoopTurns, called_in_turns, stepped
-from threetears.core.backends.broker_generation import named_commit_generation, naming_changed_rows
+from threetears.core.backends.broker_generation import (
+    named_commit_generation,
+    naming_changed_rows,
+    naming_commit_s_min,
+)
 from threetears.core.backends.protocol import L3Backend, L3PoolLike
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import NonFiniteNumericError
@@ -56,11 +60,17 @@ from threetears.core.collections.epoch_change import (
     records_changes,
 )
 from threetears.core.collections.delete_cascade import (
+    CascadedRows,
     DeleteCascade,
+    DeleteRestrict,
     announce_delete_cascade,
+    apply_delete_cascade,
     read_delete_cascade,
+    refuse_restricted_delete,
+    refuse_unappliable_cascade,
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
+from threetears.core.ddl.tenant_moves import taken_moves
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
 from threetears.core.collections.generation import (
     WRITE_GENERATION,
@@ -124,6 +134,7 @@ __all__ = [
     "BaseCollection",
     "CasMutation",
     "DeleteCascade",
+    "DeleteRestrict",
     "EntityT",
     "NoL2",
     "ScanReadTicket",
@@ -699,6 +710,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: them through their own collections after (:mod:`~threetears.core.collections.delete_cascade`).
     delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = ()
 
+    #: Each foreign key that points at this table with ``ON DELETE RESTRICT`` or ``NO ACTION``. A stamped table's
+    #: delete marks its row gone (an ``UPDATE``), so the database's guard never runs: :meth:`delete` refuses itself
+    #: while a child table holds live rows naming the row
+    #: (:func:`~threetears.core.collections.delete_cascade.refuse_restricted_delete`).
+    delete_restricts: ClassVar[tuple[DeleteRestrict, ...]] = ()
+
     #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
     #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
     #: a cache of computed answers each replica's caller keeps in memory itself -- so it takes no
@@ -752,6 +769,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             cls.tenancy = declared_tenancy
         if not isinstance(cls.tenancy, Tenancy):
             raise TypeError(f"{cls.__name__}.tenancy must be a Tenancy; got {cls.tenancy!r}")
+        schema_columns = getattr(schema, "invalidation_columns", ())
+        if isinstance(schema_columns, tuple) and isinstance(cls.invalidation_columns, tuple):
+            if getattr(schema, "row_epoch", None) is not None:
+                # a table carrying an epoch is restored from its own rows by the declaration its DDL writes, which
+                # reads the schema alone: a column only the class names would be missing from every restored record
+                # and every epoch-range read, a coarser eviction than its notes gave (Pace 2026-11-25)
+                unnamed = [
+                    column
+                    for column in cls.invalidation_columns
+                    if column not in schema_columns and column != cls.tenancy.column
+                ]
+                if unnamed:
+                    raise TypeError(
+                        f"{cls.__name__} declares invalidation_columns {unnamed!r} its schema "
+                        f"{getattr(schema, 'name', '?')!r} does not: a table carrying an epoch names them on its "
+                        f"TableSchema (invalidation_columns=...), so its restore declaration carries them"
+                    )
+            # the schema's declared invalidation columns ride with every changed row, as the class's own do
+            cls.invalidation_columns = tuple(dict.fromkeys((*cls.invalidation_columns, *schema_columns)))
         if cls.tenancy.column is not None and cls.tenancy.column not in cls.invalidation_columns:
             # the tenant column rides with every changed row, so its record and its note name the tenant
             cls.invalidation_columns = (*cls.invalidation_columns, cls.tenancy.column)
@@ -5086,6 +5122,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         bump = _NO_BUMP
         # the row this save's message takes its invalidation columns from: as stored, where read back
         announced: dict[str, Any] = data
+        # the row as each tenant it just left held it, when the write moved it (tenant_moves): named beside it
+        left: list[dict[str, Any]] = []
 
         if defer:
             # the row is visible in L1 and L2 before L3 by design: L2 is ahead of L3 for up to one
@@ -5121,6 +5159,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             held = await self._store_uncommitted(entity, entity_id, data, original_timestamp, working, conn)
             # the eviction's broadcast takes its invalidation columns from the row as stored
             caller_transaction.restate(self, entity_id, row=held)
+            for each in self._rows_left(held):
+                # a key written twice is evicted twice (CallerTransaction.enroll): once for each tenant
+                caller_transaction.enroll(self, entity_id, row=each)
             # nothing is cached and nothing is broadcast until the caller's transaction ends
             # (CallerTransaction settles every key its writes touched).
             return
@@ -5147,7 +5188,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # the row is committed: advance the generation before anything else, so an absence
                 # a reader recorded from an L3 read that predated this commit stops answering as
                 # soon as possible. a failure is raised only once L1, L2 and the broadcast have run.
-                bump = await self._bump_after_commit([self.changed_row(entity_id, data)])
+                left = self._rows_left(data)
+                bump = await self._bump_after_commit(
+                    [self.changed_row(entity_id, data), *(self.changed_row(entity_id, each) for each in left)]
+                )
                 # the database may have filled in columns the row did not name; what every tier
                 # and the handle keep is the row L3 holds, never the row as sent.
                 stored = await self._stored_row(entity_id, data)
@@ -5180,9 +5224,29 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # a handle reading through it would answer None, or another version.
                     entity.hold_row({**carried, **stored})
 
-        await self._announce_row(entity_id, bump=bump, row=announced)
+        if left:
+            # one message a row the advance covers: the key for its new tenant, and for each tenant it left
+            await self._publish_rows(
+                [entity_id] * (1 + len(left)), [announced, *left], generation=bump.token, bump_rows=bump.rows
+            )
+        else:
+            await self._announce_row(entity_id, bump=bump, row=announced)
         if bump.failure is not None:
             raise bump.failure
+
+    def _rows_left(self, row: dict[str, Any]) -> list[dict[str, Any]]:
+        """the row as each tenant the write just made of it left held it: one copy a moveable column the write moved
+        (``TableSchema.moveable``), that column holding the value it left. The store noted the moves from the
+        statement's own ``RETURNING`` (:func:`~threetears.core.ddl.tenant_moves.note_moves`); taken here, so the next
+        write starts afresh. The write's record and messages name each copy beside the row, so the old tenant's
+        followers evict the key (:mod:`~threetears.core.ddl.tenant_moves`). Empty when the write moved nothing.
+
+        :param row: the row as the write sent (or stored) it
+        :ptype row: dict[str, Any]
+        :return: the copies, function-local
+        :rtype: list[dict[str, Any]]
+        """
+        return [{**row, column: former} for column, former in taken_moves(self.table_name)]
 
     async def _store_uncommitted(
         self,
@@ -5575,23 +5639,92 @@ class BaseCollection(ABC, Generic[EntityT]):
         row = await self._row_before_delete(entity_id)
         # the rows the database's foreign-key actions will rewrite, read while they still name it
         cascaded = await read_delete_cascade(self, [entity_id])
+        # a stamped table's delete marks its row gone in place: no foreign-key action runs in the database, so 3tears
+        # takes each declared one itself (refused before anything is written, when one cannot be taken)
+        gone_mark = self._marks_gone()
+        if gone_mark:
+            # nor does the database's RESTRICT / NO ACTION guard: a row its live children name is refused here
+            await refuse_restricted_delete(self, [entity_id])
+            refuse_unappliable_cascade(self, cascaded)
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        with self._naming_changed([self.changed_row(entity_id, row)]):
-            await self.delete_from_store(entity_id)
-        bump = await self._bump_generation([self.changed_row(entity_id, row)])
-        self._evict_l1(entity_id)
-        await self._delete_from_l2(entity_id)
-        await self._announce_row(entity_id, bump=bump, row=row)
-        try:
-            await announce_delete_cascade(self, cascaded)
-        except GenerationUnavailableError:
-            # the row's own failure, when there is one, is the one raised
-            if bump.failure is None:
-                raise
+        s_min: int | None = None
+        if gone_mark and any(rows.keys for rows in cascaded):
+            s_min = await self._mark_gone_after_cascades(entity_id, row, cascaded)
+        else:
+            with self._naming_changed([self.changed_row(entity_id, row)]):
+                await self.delete_from_store(entity_id)
+        # a transaction's stamps are its commit's: every record its advances write names its lowest (a one-statement
+        # delete's record names its own statement's stamp instead)
+        with naming_commit_s_min(s_min) if s_min is not None else nullcontext():
+            bump = await self._bump_generation([self.changed_row(entity_id, row)])
+            self._evict_l1(entity_id)
+            await self._delete_from_l2(entity_id)
+            await self._announce_row(entity_id, bump=bump, row=row)
+            try:
+                await announce_delete_cascade(self, cascaded)
+            except GenerationUnavailableError:
+                # the row's own failure, when there is one, is the one raised
+                if bump.failure is None:
+                    raise
         if bump.failure is not None:
             raise bump.failure
         return True
+
+    async def _mark_gone_after_cascades(
+        self, entity_id: Any, row: dict[str, Any] | None, cascaded: Sequence[CascadedRows]
+    ) -> int | None:
+        """a stamped parent's delete that reaches children: each declared foreign-key action taken first
+        (:func:`~threetears.core.collections.delete_cascade.apply_delete_cascade`), then the parent marked gone
+        (:meth:`mark_gone_in_store`), in one transaction.
+
+        WHY children first: each statement draws its stamp from the transaction's clock, which only rises, so every
+        child's epoch is at most its parent's. Quiet-time cleanup removes a gone row once its epoch is below the
+        restore window's floor; with the parent stamped last, the floor reaches the children no later than the parent.
+        Marked the other way round, the floor could pass a parent while its gone child was still above it, and under a
+        ``NO ACTION`` foreign key cleanup's delete of the parent failed on the child. WHY one transaction: a failure
+        leaves neither half, never a parent gone with its grants still granting, nor grants gone under a live parent.
+
+        :param entity_id: the parent's key
+        :ptype entity_id: Any
+        :param row: the parent row as read before the delete, for its change record's columns
+        :ptype row: dict[str, Any] | None
+        :param cascaded: what :func:`~threetears.core.collections.delete_cascade.read_delete_cascade` read
+        :ptype cascaded: Sequence[CascadedRows]
+        :return: the transaction's lowest stamp, which every record of its advances names (None when it stamped none)
+        :rtype: int | None
+        """
+        pool = self.required_l3_pool
+        with self._naming_changed([self.changed_row(entity_id, row)]):
+            async with pool.acquire() as conn, CallerTransaction(conn) as transaction:
+                await apply_delete_cascade(self, cascaded, conn=conn)
+                await self.mark_gone_in_store(entity_id, conn=conn)
+        return transaction.s_min
+
+    async def mark_gone_in_store(self, entity_id: Any, *, conn: Any = None) -> None:
+        """mark one stamped row (``ROW_STAMPED``) gone in place in L3: its gone flag set and its epoch risen past a
+        fresh stamp, drawn from ``conn``'s transaction when it joins one (``CallerTransaction.stamp_for``). What a
+        stamped collection's delete writes in place of a ``DELETE``.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the connection of the caller's transaction, or None for one statement on the pool
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises NotImplementedError: on a collection whose table is not stamped
+        """
+        raise NotImplementedError(f"{type(self).__name__}: {self.table_name} is not stamped (ROW_STAMPED)")
+
+    def _marks_gone(self) -> bool:
+        """whether this collection's delete marks its row gone in place (a stamped table, ``ROW_STAMPED``) rather than
+        deleting it, so no foreign-key action of the database runs for it.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        schema = getattr(self, "schema", None)
+        return bool(getattr(schema, "stamps_epoch", False)) and not getattr(schema, "versioned", False)
 
     @traced()
     async def l2_cas_mutate(

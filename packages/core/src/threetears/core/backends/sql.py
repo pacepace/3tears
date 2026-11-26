@@ -72,14 +72,6 @@ from threetears.core.backends.protocol import (
 )
 from threetears.core.declared import whole_read
 from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
-from threetears.core.ddl.change_notes import (
-    NOTE_REACH_SETTING,
-    NOTE_WHOLE_SETTING,
-    WHOLE_COPY_ROWS,
-    note_reach_text,
-    prefix_write_mark_sql,
-    prefix_write_restore_sql,
-)
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
@@ -87,9 +79,11 @@ from threetears.core.ddl.row_epoch import (
     AppendOnlyWriteError,
     RowEpoch,
     UnstampedWriteError,
+    next_epoch,
     touch_last_epoch_sql,
 )
-from threetears.core.ddl.run_markers import run_marker_insert_sql
+from threetears.core.ddl.run_markers import record_table_reset, run_marker_insert_sql
+from threetears.core.ddl.tenant_moves import moves_returned, note_moves
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyed.point import read_row
@@ -1558,12 +1552,6 @@ class SqlL3Backend:
         measures its request (``copy_request_bytes``: the rail's), by ``max_bytes`` of the whole request; a
         direct connection streams the copy, so its batches are cut by rows alone.
 
-        A copy of :data:`~threetears.core.ddl.change_notes.WHOLE_COPY_ROWS` rows or more on a direct
-        connection marks its transaction whole (:data:`~threetears.core.ddl.change_notes.NOTE_WHOLE_SETTING`):
-        one change note for the table, not a note (a write) a row that names nothing past that many. On
-        the rail's connection the broker marks it, counting the session's copied rows; a client may not
-        set it there.
-
         :param table: the table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
         :param rows: the rows, each keyed by column
@@ -1574,8 +1562,8 @@ class SqlL3Backend:
         :ptype max_bytes: int
         :param conn: the caller's connection, its transaction open
         :ptype conn: Any
-        :param append: the rows are a versioned table's new versions (append-only L3): never marked whole, so they are
-            noted a row each as the upsert they replace was; on the rail the request says so (``append``)
+        :param append: the rows are a versioned table's new versions (append-only L3); on the rail the request says
+            so (``append``)
         :ptype append: bool
         :return: rows written
         :rtype: int
@@ -1602,8 +1590,6 @@ class SqlL3Backend:
             loop=asyncio.get_running_loop(),
         )
         rail = getattr(conn, "copy_request_bytes", None) is not None
-        if len(rows) >= WHOLE_COPY_ROWS and not rail and not append:
-            await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
         # on the rail an append says so, for the broker's own marking; a direct connection's copy takes no such word
         appending: dict[str, bool] = {"append": True} if append and rail else {}
         written = 0
@@ -1691,6 +1677,10 @@ class SqlL3Backend:
             schema_sql.copy_writes(column) for column in emitted
         ):
             return None
+        if set(update or ()) & set(getattr(schema, "moveable", ())):
+            # the door's upsert sets only the columns it is sent; a moveable column's move is recorded by the
+            # statement's own SET terms (tenant_moves), which the bulk statement with VALUES writes and the door does not
+            return None
         sent: list[tuple[str, str | None, Any]] = []
         for column in emitted:
             if column.name in given:
@@ -1765,9 +1755,12 @@ class SqlL3Backend:
 
     async def truncate(self, table: str, *, reason: str | None = None) -> None:
         """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction. On a direct pool the collection
-        records the epoch itself, ``reason`` with it, and the truncate's change note names it too
-        (:data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`, set for the statement's session and cleared
-        after), so a log restored from the notes puts the reset back as a reset.
+        records the epoch itself, ``reason`` with it.
+
+        A table that carries an epoch (a restore reads it back from its rows) gets its reset marker first, on the same
+        connection under the same lock (:func:`~threetears.core.ddl.run_markers.record_table_reset`): a ``TRUNCATE``
+        leaves no row, so the marker is what a restore, the writers' backstop and a keys-unknown page hear the reset
+        by. One in a schema without the run-marker table is refused before anything is emptied.
 
         On the rail the broker runs it (``NatsProxyL3Backend.truncate``, the ``l3.truncate``
         request), under the database's DDL lock and only for a table of the caller's own data
@@ -1784,6 +1777,7 @@ class SqlL3Backend:
         :rtype: None
         :raises ValueError: when a request-scoped connection is bound, or the name is not a plain
             identifier
+        :raises TableResetUnrecordedError: when the table carries an epoch and its schema holds no run-marker table
         """
         if _request_l3_conn.get() is not None:
             raise ValueError(
@@ -1799,23 +1793,17 @@ class SqlL3Backend:
             )
             return
         name = as_written(_plain_identifier(table))
-        reach = note_reach_text(reason=reason)
         with _unmask_asyncpg_release_race():
             async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
-                # TRUNCATE runs alone, so its reach is the session's for the one statement, never left behind
-                if reach:
-                    await conn.execute("SELECT set_config($1, $2, false)", NOTE_REACH_SETTING, reach)
-                try:
-                    await whole_read(
-                        conn.execute(f"TRUNCATE TABLE {name}"),
-                        kind="operator_reset",
-                        reason="an operator's reset empties the table with TRUNCATE; SchemaBackedCollection.reset is its one caller",
-                        ruling="Pace 2026-11-12: operator_reset declared in code; coordinator 2026-11-12: plain truncate() retired, reset() the one caller",
-                        proof="packages/core/tests/unit/collections/test_truncate.py::test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset",
-                    )
-                finally:
-                    if reach:
-                        await conn.execute("SELECT set_config($1, $2, false)", NOTE_REACH_SETTING, "")
+                # the reset's marker before the rows go, so a restore or the backstop never misses it
+                await record_table_reset(conn, name, next_epoch())
+                await whole_read(
+                    conn.execute(f"TRUNCATE TABLE {name}"),
+                    kind="operator_reset",
+                    reason="an operator's reset empties the table with TRUNCATE; SchemaBackedCollection.reset is its one caller",
+                    ruling="Pace 2026-11-12: operator_reset declared in code; coordinator 2026-11-12: plain truncate() retired, reset() the one caller",
+                    proof="packages/core/tests/unit/collections/test_truncate.py::test_the_store_s_truncate_is_reached_only_from_an_operator_s_reset",
+                )
         _logger.info("table truncated", extra={"extra_data": {"table": table}})
 
     async def analyze(self, table: str) -> None:
@@ -1850,9 +1838,8 @@ class SqlL3Backend:
         key_prefixes: Sequence[Mapping[str, Any]] | None = None,
     ) -> LoadResult:
         """Insert every row of parquet ``files`` into ``table`` with ``COPY``, committing as it goes. On a direct pool
-        the collection records the epoch itself, ``key_prefixes`` with it, and each transaction's whole-table change
-        note names them too (:data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`), so a log restored from
-        the notes puts the load back as its prefixes. On the rail the request names them for the broker.
+        the collection records the epoch itself, ``key_prefixes`` with it. On the rail the request names them for the
+        broker.
 
         The load's columns are checked against the table's registered schema first, on either path,
         so a caller's local run refuses what the rail would. On the rail the broker then does it
@@ -1864,8 +1851,6 @@ class SqlL3Backend:
         off the loop), held to the row count its :class:`LoadFile` declares, its rows given the
         ``constants`` and ordered by primary key, and copied in transactions of
         ``rows_per_transaction`` rows (``copy_records_to_table``), each bounded by ``timeout_ms``.
-        Each transaction is marked whole (:data:`~threetears.core.ddl.change_notes.NOTE_WHOLE_SETTING`), so
-        a noted table's trigger writes one whole-table change note for it rather than one per row.
         Values are written as an insert binds them (:func:`schema_sql.normalize_write_value`).
         Insert-only: a key already held fails that transaction, and the load stops there; the
         transactions before it stay committed. The load's own checks run before anything is
@@ -1948,7 +1933,6 @@ class SqlL3Backend:
             _check_load_url(file.url)
         fixed = [schema_sql.normalize_write_value(declared[name], value) for name, value in constants.items()]
         key_positions = [names.index(name) for name in schema.pk_columns]
-        reach = note_reach_text(prefixes=key_prefixes)
         loaded: list[FileLoad] = []
         for index, file in enumerate(files):
             data = await _fetch_load_file(file.url)
@@ -1972,18 +1956,6 @@ class SqlL3Backend:
                 batch = records[start : start + rows_per_transaction]
                 with _unmask_asyncpg_release_race():
                     async with asyncio.timeout(timeout_ms / 1000), self._pool.acquire() as conn, conn.transaction():
-                        # the load's epoch names the whole table, so its change note does too: one per
-                        # transaction, never one per copied row (threetears.core.collections.change_notes)
-                        if reach:
-                            # and names the load's prefixes, as its epoch does
-                            await conn.execute(
-                                "SELECT set_config($1, '1', true), set_config($2, $3, true)",
-                                NOTE_WHOLE_SETTING,
-                                NOTE_REACH_SETTING,
-                                reach,
-                            )
-                        else:
-                            await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
                         await conn.copy_records_to_table(table, records=batch, columns=names)
             loaded.append(FileLoad(index=index, rows_loaded=len(records)))
         result = LoadResult(row_count=sum(file.rows_loaded for file in loaded), files=tuple(loaded))
@@ -2422,15 +2394,13 @@ class SqlL3Backend:
         array when that column has an array form, else one statement a prefix. A state's gone runs, ``(state,
         run_id)``, are one statement however many rows they hold.
 
-        The delete is noted as ONE whole-table change note of the table naming the prefixes (the note a load from
-        files leaves, :mod:`threetears.core.ddl.change_notes`), never a note a row: the statements are marked whole
-        before (:func:`~threetears.core.ddl.change_notes.prefix_write_mark_sql`) and the marks put back after
-        (:func:`~threetears.core.ddl.change_notes.prefix_write_restore_sql`), so the transaction's other writes are
-        noted as they would have been. Two statements more, whatever the rows.
+        A versioned table's runs deleted are their run markers, stamped at the delete's epoch: a restore, the
+        writers' backstop and a keys-unknown page read each one back by its key (:mod:`~threetears.core.collections
+        .epoch_reads`), so nothing else marks the transaction (until 0.95 its statements were marked whole for the
+        change-note ring, two statements more and a no-row delete to fire its trigger).
 
-        On the L3 rail a pod may not set those marks (the broker refuses ``set_config``), so the broker runs the
-        delete itself: the connection's ``delete_prefixes`` (the ``l3.tx.delete_prefixes`` request), whose commit
-        the broker then records by the prefixes.
+        On the L3 rail the broker runs the delete itself: the connection's ``delete_prefixes`` (the
+        ``l3.tx.delete_prefixes`` request), whose commit the broker then records by the prefixes.
 
         :param table: the table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
@@ -2484,31 +2454,11 @@ class SqlL3Backend:
         )
         if not statements:
             return 0
-        reach = note_reach_text(prefixes=prefixes)
-        prior = await self._fetchrow(
-            prefix_write_mark_sql(), NOTE_WHOLE_SETTING, NOTE_REACH_SETTING, reach, table, conn=conn
-        )
-        assert prior is not None  # narrow: a SELECT of no FROM answers one row
         deleted = 0
         # a versioned table's run markers carry the delete's stamp, and their scopes go to the transaction
         with stamped_send(conn, _stamp_of(schema, epoch), touched):
             for sql, args in statements:
                 deleted += parse_rowcount(await self._execute(sql, *args, conn=conn))
-        if versioned:
-            # the run markers deleted no row of the table, so its whole-write trigger has not fired: a statement of no
-            # row fires it, the one note naming the prefixes today's delete left (until the ring retires, chunk 7)
-            assert schema is not None  # noqa: S101 -- narrowed by versioned
-            await self._execute(schema_sql.build_no_row_delete_sql(schema), conn=conn)
-        await self._execute(
-            prefix_write_restore_sql(),
-            NOTE_WHOLE_SETTING,
-            prior["whole"] or "",
-            NOTE_REACH_SETTING,
-            prior["reach"] or "",
-            prior["guard"],
-            prior["noted"] or "",
-            conn=conn,
-        )
         _logger.debug(
             "key-prefix delete",
             extra={
@@ -2896,7 +2846,9 @@ class SqlL3Backend:
         ``TableSchema`` descriptor without the attribute keeps the old behaviour.
         """
         cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
-        if cas_declared and cas is not None:
+        fenced = cas_declared and cas is not None
+        if fenced:
+            assert cas is not None  # narrow: fenced
             sql = schema_sql.build_cas_update_sql(schema, data)
             params = schema_sql.build_cas_params(schema, data, cas)
         elif cas_declared and getattr(schema, "cas_null_safe", False):
@@ -2905,7 +2857,37 @@ class SqlL3Backend:
         else:
             sql = schema_sql.build_insert_sql(schema, data)
             params = schema_sql.build_insert_params(schema, data)
-        return parse_rowcount(await self._execute(sql, *params, conn=conn))
+        return await self._write_noting_moves(schema, data, sql, params, fenced=fenced, conn=conn)
+
+    async def _write_noting_moves(
+        self, schema: TableSchema, data: Mapping[str, Any], sql: str, params: Sequence[Any], *, fenced: bool, conn: Any
+    ) -> int:
+        """run a single-row write of ``schema``'s table and return the rows it affected; when it sets a moveable
+        column (``TableSchema.moveable``, :mod:`~threetears.core.ddl.tenant_moves`), return the row's move from the
+        statement itself (``RETURNING``, no second read) and note it for the collection that asked for the write
+        (:func:`~threetears.core.ddl.tenant_moves.note_moves`), which names the tenant the row left in its record.
+
+        :param schema: the table's schema
+        :ptype schema: TableSchema
+        :param data: the row as written
+        :ptype data: Mapping[str, Any]
+        :param sql: the write
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Sequence[Any]
+        :param fenced: the write is the fenced ``UPDATE``
+        :ptype fenced: bool
+        :param conn: the caller's connection; ``None`` uses the pool
+        :ptype conn: Any
+        :return: the rows affected
+        :rtype: int
+        """
+        moving = schema_sql.moving_columns(schema, data, fenced=fenced)
+        if not moving:
+            return parse_rowcount(await self._execute(sql, *params, conn=conn))
+        rows = await self._fetch(sql + schema_sql.moving_returning(moving), *params, conn=conn)
+        note_moves(schema.name, moves_returned(rows[0], moving) if rows else ())
+        return len(rows)
 
     async def upsert_ordered(self, table: str, row: Mapping[str, Any], *, conn: Any = None) -> int:
         """Insert ``row``, or update the stored row only when its compare-and-swap order is older.
@@ -2932,7 +2914,7 @@ class SqlL3Backend:
         sql = schema_sql.build_ordered_upsert_sql(schema, data)
         params = schema_sql.build_insert_params(schema, data)
         with stamped_send(conn, _stamp_of(schema, data.get(EPOCH_COLUMN)), _row_touched(schema, data), table=table):
-            return parse_rowcount(await self._execute(sql, *params, conn=conn))
+            return await self._write_noting_moves(schema, data, sql, params, fenced=False, conn=conn)
 
     async def delete(self, table: str, pk: KeyValues, *, conn: Any = None) -> None:
         """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error).
