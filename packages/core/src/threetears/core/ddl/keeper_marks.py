@@ -27,11 +27,13 @@ _MARKS_TABLE_DDL: Final = (
     "at TIMESTAMPTZ NOT NULL)"
 )
 
-#: the marks table's indexes, ``{schema}`` its schema (quoted): a restore reads one lost log's marks in position order;
+#: the marks table's indexes, ``{schema}`` its schema (quoted): a restore reads one lost log's marks in position order,
+#: and the window's sweep finds its anchor (the log's newest mark before its first record) from the same index;
 #: the window's sweep deletes the marks older than its anchor, a page at a time by their time, and every pass reads the
 #: newest mark (the log the keeper knows) from the same time index, backwards
 _MARKS_INDEX_DDL: Final = (
-    "-- purpose: packages/core/src/threetears/core/collections/log_keeper.py::LogKeeper.marks_past\n"
+    "-- purpose: packages/core/src/threetears/core/collections/log_keeper.py::LogKeeper.marks_past; "
+    "packages/core/src/threetears/core/collections/log_keeper.py::LogKeeper.keep_window_marks\n"
     "-- plan_test: packages/core/tests/integration/test_keeper_marks_plans.py::test_threetears_change_note_marks_position_reads_a_restores_marks\n"
     'CREATE INDEX IF NOT EXISTS "threetears_change_note_marks_position" ON {schema}."threetears_change_note_marks" '
     "(log_incarnation, seq ASC, id ASC)",

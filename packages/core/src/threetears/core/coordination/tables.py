@@ -571,7 +571,12 @@ class CoordinationCountersCollection(CoordinationCollection):
                 "idx_coordination_counters_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                # the sweep's delete, and a stamped table's page of expired rows it marks gone (_mark_expired_gone,
+                # reached for whichever coordination table is ROW_STAMPED)
+                purpose=(
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection._mark_expired_gone",
+                ),
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
@@ -609,7 +614,12 @@ class CoordinationClaimsCollection(CoordinationCollection):
                 "idx_coordination_claims_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                # the sweep's delete, and a stamped table's page of expired rows it marks gone (_mark_expired_gone,
+                # reached for whichever coordination table is ROW_STAMPED)
+                purpose=(
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection._mark_expired_gone",
+                ),
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
@@ -648,7 +658,12 @@ class CoordinationRevocationsCollection(CoordinationCollection):
                 "idx_coordination_revocations_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                # the sweep's delete, and a stamped table's page of expired rows it marks gone (_mark_expired_gone,
+                # reached for whichever coordination table is ROW_STAMPED)
+                purpose=(
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection._mark_expired_gone",
+                ),
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
@@ -685,7 +700,12 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
                 "idx_coordination_redemptions_expiry_range",
                 "expires_at",
                 asc=("expires_at",),
-                purpose="packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                # the sweep's delete, and a stamped table's page of expired rows it marks gone (_mark_expired_gone,
+                # reached for whichever coordination table is ROW_STAMPED)
+                purpose=(
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection.sweep_expired",
+                    "packages/core/src/threetears/core/coordination/tables.py::CoordinationCollection._mark_expired_gone",
+                ),
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),

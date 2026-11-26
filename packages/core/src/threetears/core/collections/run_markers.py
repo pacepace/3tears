@@ -16,7 +16,6 @@ from __future__ import annotations
 from typing import Final
 
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
-from threetears.core.ddl.run_markers import RUN_MARKER_COLUMNS, RUN_MARKERS_TABLE
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 
@@ -24,8 +23,11 @@ __all__ = ["RUN_MARKERS_SCHEMA"]
 
 #: the run-marker table: the table a run of was deleted, the run's scope and key prefix as text, the delete's epoch
 RUN_MARKERS_SCHEMA: Final = TableSchema(
-    name=RUN_MARKERS_TABLE,
-    primary_key=RUN_MARKER_COLUMNS,
+    # the name and key spelled here, not by RUN_MARKERS_TABLE and RUN_MARKER_COLUMNS: the no-whole-reads walk reads a
+    # declaration's names only from its own module, and judges every read of the table by this key
+    # (test_run_markers_schema holds them equal)
+    name="threetears_run_markers",
+    primary_key=("table_name", "scope", "prefix", "epoch"),
     columns=[
         Column("table_name", STRING_TYPE),
         Column("scope", STRING_TYPE),

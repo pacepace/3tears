@@ -25,7 +25,11 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import PlanRecorder, explain_statement, plan_uses_index
-from threetears.datasources.collections import CapabilitySourceCollection, TableTemplateCollection
+from threetears.datasources.collections import (
+    CapabilitySourceCollection,
+    DataSourceTableCollection,
+    TableTemplateCollection,
+)
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 pytestmark = pytest.mark.integration
@@ -48,6 +52,12 @@ CREATE TABLE datasource_tables (
 #: hub v146's index (``USING lsm (template_id HASH)`` on YugabyteDB, the database's default first column there)
 _BY_TEMPLATE_DDL = (
     "CREATE INDEX datasource_tables_by_template ON datasource_tables (template_id) WHERE template_id IS NOT NULL"
+)
+
+#: the hub's natural-key index, among live rows only (datasources' LIVE_UNIQUE_INDEXES)
+_NATURAL_KEY_DDL = (
+    "CREATE UNIQUE INDEX datasource_tables_datasource_id_schema_name_table_name_key"
+    " ON datasource_tables (datasource_id, schema_name, table_name) WHERE NOT gone"
 )
 
 #: rows seeded: past the size where the planner would rather scan than use an index
@@ -99,6 +109,23 @@ async def test_a_template_delete_reads_the_tables_it_unbinds_through_datasource_
     plan = recorder.plans[0]
     assert plan_uses_index(plan, "datasource_tables_by_template"), json.dumps(plan.plan)[:2500]
     assert plan.rows_scanned == bound, json.dumps(plan.plan)[:2500]
+
+
+async def test_a_table_is_read_by_its_natural_key_through_its_live_unique_index(conn: asyncpg.Connection) -> None:
+    """Flips if the introspector's read of one table by its natural key (datasource, schema, name) stops reading the
+    hub's live unique index on it (datasources' LIVE_UNIQUE_INDEXES), or answers another row."""
+    await conn.execute(_NATURAL_KEY_DDL)
+    await conn.execute("ANALYZE datasource_tables")
+    wanted = await conn.fetchrow("SELECT id, datasource_id FROM datasource_tables WHERE table_name = 't7'")
+    recorder = PlanRecorder(conn)
+    tables = DataSourceTableCollection(registry=CollectionRegistry(), config=DefaultCoreConfig())
+    tables.l3_pool = recorder
+    found = await tables.get_by_natural_key(wanted["datasource_id"], "s", "t7")
+    assert found is not None and found.id == wanted["id"], found
+    (plan,) = recorder.plans
+    assert plan_uses_index(plan, "datasource_tables_datasource_id_schema_name_table_name_key"), json.dumps(plan.plan)[
+        :2500
+    ]
 
 
 #: ``datasources`` as hub v001 leaves it, the columns the sweep's read names (and the name it is unique on)

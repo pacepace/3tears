@@ -679,16 +679,15 @@ class QuietCleanup:
         """
         if self._run_markers is None or cleaned_to >= floor:
             return 0
+        # the run-marker table's own columns, spelled as its declaration spells them (RUN_MARKERS_SCHEMA): its key
+        # (table_name, scope, prefix, epoch), read a page at a time past the bound (table_name, scope)
         markers = await keyset_rows(
             self._pool,
             self._run_markers,
-            columns=("prefix", EPOCH_COLUMN),
+            columns=("prefix", "epoch"),
             by={"table_name": table, "scope": TABLE_RESET_SCOPE},
-            order=(Sort("prefix"), Sort(EPOCH_COLUMN, cast="bigint")),
-            where=[
-                Fragment(f't."{EPOCH_COLUMN}" >= $1', (cleaned_to,)),
-                Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,)),
-            ],
+            order=(Sort("prefix"), Sort("epoch", cast="bigint")),
+            where=[Fragment('t."epoch" >= $1', (cleaned_to,)), Fragment('t."epoch" < $1', (floor,))],
         )
         removed = 0
         for marker in markers:
@@ -888,12 +887,12 @@ class QuietCleanup:
             return 0
         key = schema.pk_columns
         casts = tuple(self._cast(schema, column) for column in key)
-        named = KeyBatch(columns=key, keys=[candidates.column(c).combine_chunks() for c in key], casts=casts)
         types = rail_arrow_types([schema.column(name) for name in (*key, EPOCH_COLUMN)])
         held = await read_keyed_arrow(
             self._pool,
             schema.name,
-            keys=named,
+            # the table's own key, written where the read is so the key it binds is the one read
+            keys=KeyBatch(key, keys=[candidates.column(c).combine_chunks() for c in key], casts=casts),
             types=types,
             where=[Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,))],
             # the versions themselves, as stored: a shared read would answer each key's newest live version alone
@@ -901,7 +900,8 @@ class QuietCleanup:
         )
         versions = pa.concat_tables(held) if held else pa.schema(list(types.items())).empty_table()
         doomed = await asyncio.to_thread(_removable, candidates, versions, key)
-        stored = (*key, EPOCH_COLUMN)
+        # a versioned table's stored key: its key, then the epoch (a version a write)
+        stored = schema.stored_key
         count = 0
         if doomed.num_rows:
             # marked cleanup's with its floor (CLEANUP_DELETE_FIELD), and bounded by it in the statement itself: the
@@ -912,7 +912,7 @@ class QuietCleanup:
                     self._pool,
                     schema.name,
                     keys=KeyBatch(
-                        columns=stored,
+                        stored,
                         keys=[doomed.column(c).combine_chunks() for c in stored],
                         casts=(*casts, "bigint"),
                     ),
@@ -937,13 +937,15 @@ class QuietCleanup:
         """
         if self._run_markers is None:
             return True, 0
+        # the run-marker table's own columns, spelled as its declaration spells them (RUN_MARKERS_SCHEMA): its key
+        # (table_name, scope, prefix, epoch), read a page at a time past the bound (table_name, scope)
         markers = await keyset_rows(
             self._pool,
             self._run_markers,
-            columns=("prefix", EPOCH_COLUMN),
+            columns=("prefix", "epoch"),
             by={"table_name": schema.name, "scope": value},
-            order=(Sort("prefix"), Sort(EPOCH_COLUMN, cast="bigint")),
-            where=[Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,))],
+            order=(Sort("prefix"), Sort("epoch", cast="bigint")),
+            where=[Fragment('t."epoch" < $1', (floor,))],
         )
         removed = 0
         stopped = False

@@ -63,7 +63,7 @@ from threetears.core.collections.schema_backed import (
     UniqueConstraint,
 )
 from threetears.core.ddl.row_epoch import ROW_STAMPED
-from threetears.core.keyed import Sort, delete_keyed, keyset_rows, read_row
+from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_rows, read_row
 from threetears.core.security.secret_refs import validate_ref
 from threetears.datasources.customer_scope import BY_CUSTOMER, COLUMN_CATALOGUE, TABLE_CATALOGUE
 from threetears.datasources.entities import (
@@ -135,6 +135,11 @@ _DATASOURCE_TABLES_SCHEMA = TableSchema(
             "table_name",
             unique=True,
             where="NOT gone",
+            # the introspector's "insert vs update" read of one table by its natural key
+            purpose="packages/datasources/src/threetears/datasources/collections.py::"
+            "DataSourceTableCollection.get_by_natural_key",
+            plan_test="packages/datasources/tests/integration/test_index_plans.py::"
+            "test_a_table_is_read_by_its_natural_key_through_its_live_unique_index",
         ),
         # hub v146: the tables bound to a template. Declared here too because 3tears reads by it: a template's delete
         # reads the tables its ON DELETE SET NULL unbinds (DeleteCascade on TableTemplateCollection), through
@@ -403,7 +408,17 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             # the hub's unique index on the name (hub v001), among live rows only (LIVE_UNIQUE_INDEXES, Pace
             # 2026-11-25): a datasource by its name; a gone datasource keeps its name until cleanup without refusing a
             # re-create, which is a new row with a new id
-            Index("idx_datasources_name", "name", unique=True, where="NOT gone"),
+            Index(
+                "idx_datasources_name",
+                "name",
+                unique=True,
+                where="NOT gone",
+                # schema priming's name -> id resolution, one row a name
+                purpose="packages/datasources/src/threetears/datasources/schema_priming.py::"
+                "SchemaPrimingIntegration.datasource_ids",
+                plan_test="packages/datasources/tests/integration/test_index_plans.py::"
+                "test_schema_priming_reads_its_names_through_the_unique_name_index",
+            ),
             # hub v001: the rows of one status (``USING lsm (status HASH)`` on YugabyteDB). Declared here because 3tears
             # reads by it: the scheduler sweep's active ids (iter_active_ids), run on its own by the hub's introspect
             # scheduler. The hub's migration stays the one that builds the index
@@ -755,6 +770,9 @@ class DataSourceTableCollection(DeclaredTableCollection[DataSourceTableEntity]):
                 self.l3_pool,
                 "datasource_tables",
                 by={"datasource_id": datasource_id, "schema_name": schema_name, "table_name": table_name},
+                # its live rows, as the natural key's unique index holds them (WHERE NOT gone): stated, so the read
+                # is the index's
+                where=[Fragment('NOT "gone"')],
                 records=True,
             )
             if row is not None:
