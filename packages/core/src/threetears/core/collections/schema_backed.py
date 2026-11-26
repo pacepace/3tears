@@ -2110,9 +2110,10 @@ class TableSchema:
 
     def _versioned_table(self, pk_cols: tuple[str, ...]) -> VersionedTable:
         """this versioned table as a read of it sees only each key's newest live version
-        (:func:`~threetears.interfaces.keyed.keys.newest_relation`): its key, the epoch and "gone" columns, and the run
+        (:func:`~threetears.interfaces.keyed.keys.newest_relation`): its key, the epoch and "gone" columns, the run
         markers a whole run deleted leaves, found by a prefix of the key holding the scope, each prefix value as text
-        cast from its column's type as the marker's write casts it (``SqlL3Backend._run_marker_statements``).
+        cast from its column's type as the marker's write casts it (``SqlL3Backend._run_marker_statements``), and its
+        reset markers (:meth:`reset_table`), found by the table alone.
 
         :param pk_cols: the key's columns
         :ptype pk_cols: tuple[str, ...]
@@ -2121,9 +2122,12 @@ class TableSchema:
         """
         assert self.row_epoch is not None and self.row_epoch.scope is not None  # noqa: S101 -- a versioned table's
         scope = self.row_epoch.scope
+        # every versioned table's reads cut at its newest reset marker (reset_table, a TRUNCATE's marker), whatever
+        # its key: the run-marker table in its schema holds them
+        resets = RUN_MARKERS_TABLE
         if scope not in pk_cols:
             # no prefix of the key names the scope, so no run marker names the table (delete_prefixes refuses one)
-            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN)
+            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, resets=resets)
         texts: list[str] = []
         for name in pk_cols:
             kind = key_array_type(self, name)
@@ -2133,8 +2137,10 @@ class TableSchema:
             texts.append(kind.removesuffix("[]"))
         at = pk_cols.index(scope)
         if len(texts) <= at:
-            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN)
-        return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, RUN_MARKERS_TABLE, at, tuple(texts))
+            return VersionedTable(self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, resets=resets)
+        return VersionedTable(
+            self.name, pk_cols, EPOCH_COLUMN, GONE_COLUMN, RUN_MARKERS_TABLE, at, tuple(texts), resets=resets
+        )
 
     def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:
         """the keys this declaration says the table holds: its primary key, each ``UNIQUE`` constraint, each unique
@@ -5085,6 +5091,75 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         await self._drop_and_advance(
             "key prefixes deleted", reach=WholeReach(prefixes=tuple(dict(prefix) for prefix in prefixes))
         )
+
+    async def reset_table(self, *, conn: Any) -> int:
+        """reset this versioned table on a caller's transaction: ONE reset marker (the run-marker table's row under
+        :data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE`, an empty prefix, the whole table) at the reset's
+        epoch, and nothing deleted. Every read then sees no version older than the marker
+        (:func:`~threetears.interfaces.keyed.keys.newest_relation`), and quiet-time cleanup removes them once the marker
+        falls below the restore window. What a live table keyed by no state does in place of :meth:`reset`'s
+        ``TRUNCATE``: a run marker needs a key prefix naming the scope, and a ``TRUNCATE`` takes YugabyteDB's catalog
+        version cluster-wide and is no part of a transaction.
+
+        **Then its new rows, in the same transaction**: appended after the marker (:meth:`save_rows`,
+        :meth:`save_arrow`), each stamped newer than it so none is hidden, the commit replacing the table atomically. A
+        crash before ``COMMIT`` leaves the marker unwritten and every old row visible. Rows the transaction wrote
+        before the marker are refused (:meth:`CallerTransaction.enroll_reset`): the marker would hide them.
+
+        When the transaction ends, whichever way, the table is settled as a reset (:meth:`settle_reset`): every cache
+        drops it, and its epoch's record names the whole table, a reset, so every following process and the fold read
+        it again as on a first start (a reset's record names no delta file).
+
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :return: the reset markers written (one)
+        :rtype: int
+        :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the table is not versioned
+            (:meth:`reset` empties any other); when the collection has no durable store, its store cannot write the
+            marker, or it defers its L3 writes; when the transaction wrote rows of the table already
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.reset_table")
+        if not self.schema.versioned:
+            raise ValueError(
+                f"{type(self).__name__}.reset_table: {self.table_name} is not versioned (row_versions): no read of it "
+                f"cuts at a reset marker. Empty it with reset() (an operator's TRUNCATE)"
+            )
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.reset_table: {self.table_name} has no durable store to reset")
+        if not isinstance(store, PrefixDeletingStore):
+            raise ValueError(
+                f"{type(self).__name__}.reset_table: the store of {self.table_name} cannot write a reset marker"
+            )
+        if self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.reset_table: {self.table_name} defers its L3 writes, and a buffered row would "
+                f"land after the reset hid it"
+            )
+        # drawn before the enrollment, which keeps it: rows the transaction appends after the marker are taken only
+        # stamped newer (CallerTransaction.enroll_all)
+        epoch = self._epoch_stamp(conn, "reset_table")[EPOCH_COLUMN]
+        # enrolled before the write, so a reset whose outcome is unknown is settled with the rest
+        transaction.enroll_reset(self, marker_epoch=epoch)
+        # the empty prefix is the whole table: the store writes the table's reset marker, never a DELETE
+        written = await store.delete_prefixes(self.table_name, [{}], conn=conn, epoch=epoch)
+        log.debug(
+            "table reset marker written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "epoch": epoch}},
+        )
+        return written
+
+    async def settle_reset(self) -> None:
+        """settle every cache of the table once the caller's transaction that reset it (:meth:`reset_table`) has
+        ended: dropped whole and the write generation advanced once, its epoch's record a reset, as :meth:`reset`
+        settles a ``TRUNCATE``.
+
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the table's write generation had to advance and could not; this
+            process's caches were dropped
+        """
+        await self._drop_and_advance("table reset", reach=WholeReach(reason=RESET_REASON))
 
     async def delete_rows(
         self,

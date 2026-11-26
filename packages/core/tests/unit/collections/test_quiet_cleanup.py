@@ -27,7 +27,7 @@ from threetears.core.collections.quiet_cleanup import LoadGate, QuietCleanup, lo
 from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
 from threetears.core.ddl.row_epoch import cleanup_floor, epoch_wall_ms, row_versions
-from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, table_reset_marker_sql
 from threetears.core.keyed import ThreadedDuckDB
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.enforcement.no_whole_reads.schema import SchemaCatalog, collect_schema
@@ -359,6 +359,58 @@ async def test_a_reset_marker_below_the_floor_is_removed_and_one_above_it_kept(w
     again = await world.cleanup(_at(100)).clean()
     assert again.finished and again.removed == 0
     assert all(CLEANUP_PROGRESS_TABLE in query for query in world.spy.statements), world.spy.statements
+
+
+def _reset(conn: Any, table: str, epoch: int) -> None:
+    """a table's reset marker, as the writer's statement writes it."""
+    conn.execute(table_reset_marker_sql(), [table, epoch])
+
+
+async def test_every_version_below_a_reset_marker_under_the_floor_goes_and_then_the_marker(world: _World) -> None:
+    """Flips if a version a reset marker under F hides is kept (one visited in an earlier round, below its scope's
+    progress, most of all), a version written after the marker goes, or the marker goes before the versions it hides;
+    or if a reset marker still inside the restore window (at or above F) has its versions or itself removed."""
+    _result(world.conn, ("o1", "a"), "NC", _at(10))
+    _result(world.conn, ("o2", "b"), "VA", _at(20))
+    _result(world.conn, ("o3", "c"), "VA", _at(22))
+    _result(world.conn, ("o3", "c"), "VA", _at(24), gone=True)
+    # an earlier round cleared both scopes to 25: the versions at 10 and 20 were each their key's newest then
+    assert (await world.cleanup(_at(25)).clean()).finished
+    assert world.rows("cl_results") == {("o1", "a", _at(10), False), ("o2", "b", _at(20), False)}
+    # the reset at 30, then its transaction's own row of o1 at 40; another table reset inside the window, at 150
+    _reset(world.conn, "cl_results", _at(30))
+    _result(world.conn, ("o1", "a"), "NC", _at(40))
+    _projection(world.conn, 7, "g1", _at(10))
+    _reset(world.conn, "cl_projections", _at(150))
+    swept = await world.cleanup(_at(100)).clean()
+    assert swept.finished
+    assert world.rows("cl_results") == {("o1", "a", _at(40), False)}
+    assert world.rows("cl_projections") == {(7, "g1", _at(10), False)}
+    assert world.markers() == {("", _at(150))}
+
+
+async def test_a_reset_marker_stays_until_every_version_it_hides_is_gone(world: _World) -> None:
+    """Flips if a load starting mid-way through the versions a reset hides leaves the marker removed while some of
+    them remain (they would come back), or the next round does not finish them."""
+    for index in range(4):
+        _result(world.conn, (f"o{index}", "a"), "NC", _at(10 + index))
+    _reset(world.conn, "cl_results", _at(30))
+    cleanup = world.cleanup(_at(100), batch=2)
+
+    def begin_after_first_delete(query: str) -> None:
+        if query.lstrip().upper().startswith("DELETE"):
+            world.spy.after = None
+            world.epochs.change(writing=2)
+
+    world.spy.after = begin_after_first_delete
+    swept = await cleanup.clean()
+    assert swept.paused
+    assert len(world.rows("cl_results")) == 2
+    assert world.markers() == {("", _at(30))}
+    world.epochs.change(writing=None)
+    assert (await cleanup.clean()).finished
+    assert world.rows("cl_results") == set()
+    assert world.markers() == set()
 
 
 # -- only while nothing loads -----------------------------------------------------------------------------------------

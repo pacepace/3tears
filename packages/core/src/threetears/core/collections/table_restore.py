@@ -57,7 +57,7 @@ a move since X left evict the key, as the ring's old-row note had them do. A row
 C) is two moves, so A's followers and B's both hear it.
 
 **A table reset is heard whole.** A ``TRUNCATE`` leaves no row, so whatever resets a table that carries an epoch writes
-its reset marker into the run-marker table first (:func:`~threetears.core.ddl.run_markers._table_reset_marker_sql`), at
+its reset marker into the run-marker table first (:func:`~threetears.core.ddl.run_markers.table_reset_marker_sql`), at
 the reset's epoch. Each table's reset markers since X are read by their key (:func:`table_resets`) and come back as the
 whole table, a reset (:data:`~threetears.core.collections.epoch_change.RESET_REASON`): every follower clears it.
 """
@@ -509,7 +509,7 @@ async def _bucket_moves(pool: Any, table: StampedTable, bucket: int, floor: int)
 
 async def table_resets(pool: Any, table: RestoredTable, floor: int, ceiling: int | None = None) -> list[NotedChange]:
     """``table`` reset (emptied by a ``TRUNCATE``) at ``floor`` or later (to ``ceiling``, when named): its reset markers
-    (:func:`~threetears.core.ddl.run_markers._table_reset_marker_sql`), read by the run-marker table's key
+    (:func:`~threetears.core.ddl.run_markers.table_reset_marker_sql`), read by the run-marker table's key
     ``(table_name, scope)``, as ONE whole-table change, a reset, under the table's tenant (``_all`` for a column
     tenancy, whose every tenant it clears).
 
