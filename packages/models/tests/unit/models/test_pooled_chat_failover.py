@@ -2,8 +2,9 @@
 
 A refusal that is the key's moves the call to the next key, once per key; any other failure propagates
 unchanged; a stream that has handed the caller a chunk is never retried; and a call whose keys are only
-rate-limited waits for the earliest hold, up to the pool's cap, under an injected clock. Every refusal is
-a recorded provider response, served to the real provider model on loopback.
+rate-limited waits for the earliest hold, up to the pool's cap, under an injected clock. Each failover is
+counted by reason (KP-K1). Every refusal is a recorded provider response, served to the real provider
+model on loopback.
 """
 
 from __future__ import annotations
@@ -16,13 +17,23 @@ from decimal import Decimal
 import anthropic
 import pytest
 from langchain_core.messages import HumanMessage
+from prometheus_client import CollectorRegistry
 
-from threetears.models.key_pool import KeyState, KeyStatus, NoKeyAvailableError, reservation_estimate
+from threetears.models.key_pool import (
+    KeyPool,
+    KeyPoolMetrics,
+    KeyState,
+    KeyStatus,
+    MoveReason,
+    NoKeyAvailableError,
+    reservation_estimate,
+)
 from threetears.models.pricing import cost_of_usage
 from threetears.models.tracking import estimate_input_tokens
 
 from . import key_error_fixtures as fx
 from .key_pool_support import (
+    POOL,
     PROVIDER,
     FakeFlakyStore,
     ManualClock,
@@ -153,6 +164,31 @@ class TestFailuresThatAreNotTheKeys:
         assert (a.state, a.spent, a.reserved) == (KeyState.OK, Decimal(0), Decimal(0))
 
 
+class TestASettleThatFails:
+    """A served call whose settle fails still returns its answer; its reservation stays open, settled
+    in full when it expires, and the store is asked to settle it once (KP-G5, KP-E5)."""
+
+    async def test_the_answer_is_returned_and_the_reservation_left_open(self) -> None:
+        store = FakeFlakyStore()
+        pool = make_pool(spec("a"), store=store)
+        store.failing["settle"] = ConnectionError("the ledger's database is unreachable")
+        with KeyedWire("a").serve() as url:
+            answer = await pooled_model(pool, url).ainvoke("hello")
+        assert answer.content == "ok"
+        assert store.calls.count("settle") == 1
+        store.failing.clear()
+        assert (await key_status(pool, "a")).reserved == _reservation()
+
+    def test_a_streamed_answer_is_returned_and_the_reservation_left_open(self) -> None:
+        store = FakeFlakyStore()
+        pool = make_pool(spec("a"), store=store)
+        store.failing["settle"] = ConnectionError("the ledger's database is unreachable")
+        with KeyedWire("a").serve() as url:
+            text = "".join(str(chunk.content) for chunk in pooled_model(pool, url).stream("hello"))
+        assert text == "ok"
+        assert store.calls.count("settle") == 1
+
+
 class TestStreams:
     """A stream fails over only before its first chunk (KP-H5)."""
 
@@ -262,3 +298,115 @@ class TestRateLimitWait:
             pooled_model(pool, url).invoke("hello")
         assert wire.labels_sent() == ["a", "b"]
         assert sleep.waits == []
+
+
+def _failovers(registry: CollectorRegistry, reason: MoveReason) -> float | None:
+    return registry.get_sample_value("threetears_key_pool_failovers_total", {"pool": POOL, "reason": str(reason)})
+
+
+def _no_failovers(pool: KeyPool, registry: CollectorRegistry) -> bool:
+    return not pool.counters.failovers and all(_failovers(registry, reason) in (None, 0.0) for reason in MoveReason)
+
+
+class TestFailoverCounter:
+    """KP-K1: each failover inside a call is counted once, by why the key refused it, in the pool's
+    counters and in ``threetears_key_pool_failovers_total``; nothing else is."""
+
+    @pytest.mark.parametrize(
+        ("recorded", "reason"),
+        [
+            pytest.param(fx.ANTHROPIC_BILLING_402, MoveReason.EXHAUSTED, id="exhausted"),
+            pytest.param(fx.ANTHROPIC_AUTHENTICATION_401, MoveReason.REVOKED, id="revoked"),
+            pytest.param(fx.ANTHROPIC_PERMISSION_403, MoveReason.FORBIDDEN, id="forbidden"),
+            pytest.param(fx.ANTHROPIC_RATE_LIMIT_429, MoveReason.RATE_LIMITED, id="rate-limited"),
+        ],
+    )
+    async def test_each_key_moving_verdict_counts_one_failover_by_its_kind(
+        self, recorded: fx.RecordedError, reason: MoveReason
+    ) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), spec("b"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b")
+        wire.script("a", refusal(recorded))
+        with wire.serve() as url:
+            await pooled_model(pool, url).ainvoke("hello")
+        assert wire.labels_sent() == ["a", "b"]
+        assert pool.counters.failovers == {reason: 1}
+        assert _failovers(registry, reason) == 1
+
+    def test_a_breaker_that_refused_the_call_counts_a_tripped_failover(self) -> None:
+        breakers, monotonic = tripping_registry()
+        breakers.get(PROVIDER, credential=secret_for("a")).record_failure()
+        monotonic.now += 31  # one probe is due: the first call takes it, the second is refused by the breaker
+        registry = CollectorRegistry()
+        pool = make_pool(
+            spec("a"), spec("b"), store=FakeFlakyStore(), breaker_registry=breakers, observer=KeyPoolMetrics(registry)
+        )
+        wire = KeyedWire("a", "b")
+
+        async def both() -> None:
+            with wire.serve() as url:
+                model = pooled_model(pool, url)
+                await asyncio.gather(model.ainvoke("hello"), model.ainvoke("hello"))
+
+        asyncio.run(both())
+        assert pool.counters.failovers == {MoveReason.TRIPPED: 1}
+        assert _failovers(registry, MoveReason.TRIPPED) == 1
+
+    async def test_two_refusals_in_one_call_count_two_failovers(self) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), spec("b"), spec("c"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b", "c")
+        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        wire.script("b", refusal(fx.ANTHROPIC_AUTHENTICATION_401))
+        with wire.serve() as url:
+            await pooled_model(pool, url).ainvoke("hello")
+        assert wire.labels_sent() == ["a", "b", "c"]
+        assert pool.counters.failovers == {MoveReason.RATE_LIMITED: 1, MoveReason.REVOKED: 1}
+        assert _failovers(registry, MoveReason.RATE_LIMITED) == _failovers(registry, MoveReason.REVOKED) == 1
+
+    async def test_a_failure_that_is_not_the_keys_counts_no_failover(self) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), spec("b"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b")
+        wire.script("a", refusal(fx.ANTHROPIC_API_ERROR_500))
+        with wire.serve() as url, pytest.raises(anthropic.InternalServerError):
+            await pooled_model(pool, url).ainvoke("hello")
+        assert wire.labels_sent() == ["a"]
+        assert _no_failovers(pool, registry)
+
+    def test_a_partial_stream_failure_counts_no_failover(self) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), spec("b"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b")
+        wire.script("a", partial_then("rate_limit_error", "Rate limited"))
+        with wire.serve() as url, pytest.raises(anthropic.APIStatusError):
+            for _ in pooled_model(pool, url).stream("hello"):
+                pass
+        assert _no_failovers(pool, registry)
+
+    async def test_a_refusal_that_leaves_no_key_counts_no_failover(self) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a")
+        wire.script("a", refusal(fx.ANTHROPIC_AUTHENTICATION_401))
+        with wire.serve() as url, pytest.raises(NoKeyAvailableError):
+            await pooled_model(pool, url).ainvoke("hello")
+        assert _no_failovers(pool, registry)
+
+    def test_a_retry_on_the_same_key_after_its_hold_is_not_a_failover(self) -> None:
+        clock = ManualClock()
+        registry = CollectorRegistry()
+        pool = make_pool(
+            spec("a"),
+            clock=clock,
+            sleep=RecordingSleep(clock),
+            max_rate_limit_wait=timedelta(seconds=60),
+            observer=KeyPoolMetrics(registry),
+        )
+        wire = KeyedWire("a")
+        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        with wire.serve() as url:
+            pooled_model(pool, url).invoke("hello")
+        assert wire.labels_sent() == ["a", "a"]
+        assert _no_failovers(pool, registry)

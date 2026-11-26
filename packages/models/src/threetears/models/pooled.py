@@ -23,6 +23,11 @@ the call (it opened after the pool chose the key) is released, since nothing was
 tried. Once a stream has handed the caller a chunk, nothing is retried (KP-H5): the failure is recorded,
 the reservation settled as the classifier says, and the provider's error raised.
 
+Each failover is counted by the pool (``KeyPool.record_failover``, KP-K1) when the call's next attempt
+runs on another key, by why the key refused it: the verdict's kind, or ``tripped`` for its breaker. A
+retry on the same key after its rate-limit hold is not a failover, and nor is a refusal that ends the
+call in ``NoKeyAvailableError``.
+
 **Re-binding** (KP-J2). ``bind_tools``, ``with_structured_output``, ``bind``, ``with_config``,
 ``with_retry``, ``with_types`` -- any method of the model that returns a runnable -- is applied to every
 key's model, and returns a pooled model over the results, so the call runs the same binding whichever
@@ -66,6 +71,7 @@ from threetears.models.key_pool import (
     KeyPool,
     KeyPoolLease,
     KeyPoolStoreError,
+    MoveReason,
     NoKeyAvailableError,
     VerdictKind,
     reservation_estimate,
@@ -84,6 +90,14 @@ logger = get_logger(__name__)
 
 #: The per-call keyword that bounds a call's output, which its reservation prices (KP-E1).
 _MAX_TOKENS: Final = "max_tokens"
+
+#: The failover reason each key-moving verdict gives (KP-K1).
+_FAILOVER_REASON: Final = {
+    VerdictKind.EXHAUSTED: MoveReason.EXHAUSTED,
+    VerdictKind.REVOKED: MoveReason.REVOKED,
+    VerdictKind.FORBIDDEN: MoveReason.FORBIDDEN,
+    VerdictKind.RATE_LIMITED: MoveReason.RATE_LIMITED,
+}
 
 
 class PooledChatModel(Runnable[Any, Any]):
@@ -268,7 +282,7 @@ class PooledChatModel(Runnable[Any, Any]):
                 _run_sync(call.succeeded(lease, meter))
                 return result
             finally:
-                if not lease.closed:
+                if call.open(lease):
                     _run_sync(call.abandoned(lease, meter))
 
     async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
@@ -299,7 +313,7 @@ class PooledChatModel(Runnable[Any, Any]):
                 await call.succeeded(lease, meter)
                 return result
             finally:
-                if not lease.closed:
+                if call.open(lease):
                     await call.abandoned(lease, meter)
 
     def stream(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any | None) -> Iterator[Any]:  # noqa: A002
@@ -337,7 +351,7 @@ class PooledChatModel(Runnable[Any, Any]):
                 close = getattr(chunks, "close", None)
                 if close is not None:
                     close()
-                if not lease.closed:
+                if call.open(lease):
                     _run_sync(call.abandoned(lease, meter))
 
     async def astream(
@@ -380,7 +394,7 @@ class PooledChatModel(Runnable[Any, Any]):
                 close = getattr(chunks, "aclose", None)
                 if close is not None:
                     await close()
-                if not lease.closed:
+                if call.open(lease):
                     await call.abandoned(lease, meter)
 
 
@@ -446,6 +460,10 @@ class _Call:
         self._rate_limited: set[str] = set()
         self._last: Exception | None = None
         self._attempts = 0
+        # the key the last attempt's refusal moved the call off, and why, until the next attempt's key
+        self._refused: tuple[str, MoveReason] | None = None
+        # reservations of served attempts whose settle failed: left open on purpose, for the sweep
+        self._left_open: set[str] = set()
 
     def meter(self) -> _Meter:
         return _Meter(self._capabilities)
@@ -466,6 +484,11 @@ class _Call:
                 raise exc from self._last
             raise
         self._attempts += 1
+        if self._refused is not None:
+            refused_label, reason = self._refused
+            self._refused = None
+            if lease.label != refused_label:
+                self._pool.record_failover(reason)
         return lease
 
     async def succeeded(self, lease: KeyPoolLease, meter: _Meter) -> None:
@@ -478,6 +501,7 @@ class _Call:
         try:
             await lease.settle(meter.cost(lease.amount))
         except KeyPoolStoreError:
+            self._left_open.add(lease.reservation_id)
             logger.warning(
                 "key pool %r: the call on key %r was served but its settlement failed; its reservation of %s "
                 "USD stays open and settles at its full amount when it expires",
@@ -506,6 +530,7 @@ class _Call:
             # the key's breaker refused the call before it was sent: nothing to bill, and no verdict
             await lease.release()
             self._tried.add(lease.label)
+            self._refused = (lease.label, MoveReason.TRIPPED)
             return True
         verdict = self._pool.classify(exc, stream_started=stream_started)
         if not verdict.moves_key:
@@ -523,7 +548,13 @@ class _Call:
             self._rate_limited.add(lease.label)
         else:
             self._tried.add(lease.label)
+        self._refused = (lease.label, _FAILOVER_REASON[verdict.kind])
         return True
+
+    def open(self, lease: KeyPoolLease) -> bool:
+        """Whether an attempt's lease still needs closing when the attempt ends: it isn't closed, and
+        isn't a served attempt's whose settle failed, which stays open for the sweep to settle."""
+        return not lease.closed and lease.reservation_id not in self._left_open
 
     async def abandoned(self, lease: KeyPoolLease, meter: _Meter) -> None:
         """Close the lease of an attempt that ended neither served nor failed -- cancelled, or a stream

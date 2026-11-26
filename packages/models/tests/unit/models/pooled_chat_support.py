@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -149,10 +149,14 @@ class Exchange:
 
 class KeyedWire:
     """The Anthropic Messages API, answering each key's requests from that key's script, in order; a
-    key whose script has run out gets :func:`reply`. Every request is kept, by the key that sent it."""
+    key whose script has run out gets :func:`reply`. Every request is kept, by the key that sent it.
 
-    def __init__(self, *labels: str) -> None:
-        self._labels = {secret_for(label): label for label in labels}
+    Each key sends :func:`secret_for` its label, unless ``secrets`` gives the label's secret.
+    """
+
+    def __init__(self, *labels: str, secrets: Mapping[str, str] | None = None) -> None:
+        given = secrets if secrets is not None else {}
+        self._labels = {given.get(label, secret_for(label)): label for label in labels}
         self._scripts: dict[str, list[Answer]] = {label: [] for label in labels}
         self._lock = threading.Lock()
         self.exchanges: list[Exchange] = []

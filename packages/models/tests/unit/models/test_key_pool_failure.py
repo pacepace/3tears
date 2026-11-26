@@ -135,6 +135,29 @@ class TestNoKeyAvailable:
         assert logged[1].extra_data["suppressed"] == 2  # type: ignore[attr-defined]
         assert pool.counters.no_key_available == 4
 
+    async def test_a_raise_whose_states_changed_is_logged_inside_the_minute(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The last key going from short of room to exhausted is logged at once, so the newest line
+        never shows a state the pool has left."""
+        clock = ManualClock()
+        pool = make_pool(spec("a"), spec("b", "1"), clock=clock)
+        await fail_on(pool, revoked())
+        await serve(pool, amount="0.6")
+        for _ in range(2):  # too big for b's room; the second, with the same states, is suppressed
+            with pytest.raises(NoKeyAvailableError):
+                await pool.acquire(MODEL, Decimal("0.5"))
+        clock.advance(seconds=10)
+        await fail_on(pool, exhausted(VerdictScope.KEY))
+        with pytest.raises(NoKeyAvailableError):
+            await pool.acquire(MODEL, Decimal("0.01"))
+        logged = lines(caplog, logging.ERROR, "no key in pool")
+        assert len(logged) == 2
+        assert "a: revoked; b: no room" in logged[0].getMessage()
+        assert "a: revoked; b: exhausted" in logged[1].getMessage()
+        assert "1 more not logged" in logged[1].getMessage()
+        assert pool.counters.no_key_available == 3
+
     async def test_the_dedup_is_per_pool(self, caplog: pytest.LogCaptureFixture) -> None:
         clock = ManualClock()
         first, second = make_pool(spec("a"), clock=clock, name="one"), make_pool(spec("a"), clock=clock, name="two")
