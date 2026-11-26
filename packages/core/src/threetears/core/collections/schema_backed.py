@@ -3434,6 +3434,22 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         return {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
 
+    def _appended_epoch(self, stamps: Mapping[str, Any]) -> int | None:
+        """the epoch a versioned table's write stamped its rows with (:meth:`_epoch_stamp`), which its enrollment names
+        so rows appended after the transaction's run markers are checked newer than them
+        (:meth:`CallerTransaction.enroll_all`); None for any other table, whose write beside a key-prefix delete is
+        refused.
+
+        :param stamps: the constants the write stamped its rows with
+        :ptype stamps: Mapping[str, Any]
+        :return: the epoch, or None
+        :rtype: int | None
+        """
+        if not self.schema.versioned:
+            return None
+        epoch = stamps.get(EPOCH_COLUMN)
+        return None if epoch is None else int(epoch)
+
     def stamped_values(self, values: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any]:
         """``values`` for a keyed ``UPDATE`` of this table, stamped (:func:`stamped_values`).
 
@@ -3912,8 +3928,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             if len(rows) >= self.L1_EVICT_OFF_LOOP_KEYS
             else self._stamped_rows(rows, stamps)
         )
-        # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-        transaction.enroll_all(enrollments)
+        # enrolled before the write, so a write whose outcome is unknown is settled with the rest; a versioned table's
+        # append names its epoch, which the transaction checks against its run markers of the table (enroll_all)
+        transaction.enroll_all(enrollments, epoch=self._appended_epoch(stamps))
         transaction.record_rows(self, stamped, self._bulk_written(stamped, store, copy=copy))
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
@@ -4086,8 +4103,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # them held it 6-7 ms with the collector held and 50-55 ms with it running (the WD2 bench, 179 columns,
         # 2026-11-16)
         keys, enrollments = await asyncio.to_thread(self._arrow_enrollments, stamped, asyncio.get_running_loop())
-        # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-        transaction.enroll_all(enrollments)
+        # enrolled before the write, so a write whose outcome is unknown is settled with the rest; a versioned table's
+        # append names its epoch, which the transaction checks against its run markers of the table (enroll_all)
+        transaction.enroll_all(enrollments, epoch=self._appended_epoch(stamps))
         # an append (a versioned table's new version) replaces the key's row whole, as the upsert it stands for set every
         # mutable column: its delta file records that SET list, never the append's empty one
         written = (
@@ -4999,6 +5017,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         **One kind of write a table a transaction**: a transaction that deletes a table's prefixes writes no row of
         that table by key (:meth:`CallerTransaction.enroll_prefixes`); its new rows go in a transaction of their own.
+        **But a versioned table** replaces a run in one transaction: its run markers first, then its new rows appended
+        (:meth:`save_rows`, :meth:`save_arrow`), each stamped newer than the markers so none hides them; the commit is
+        one epoch naming the markers' prefixes and the rows'. Rows appended before the markers are refused: a marker
+        would hide them.
 
         **A table that opts in to delta files** (:attr:`TableSchema.delta_files`): the commit's delta file names the
         prefixes and no rows (:meth:`CallerTransaction.record_prefixes`), saved before the commit and named in its
@@ -5032,13 +5054,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if not prefixes:
             return 0
         reach = self._load_reach({}, prefixes)
+        # a versioned table's prefixes are run markers at the delete's epoch, ONE a prefix, never a DELETE. Drawn before
+        # the enrollment, which keeps it: rows the transaction appends after the markers are taken only stamped newer
+        marking = {"epoch": self._epoch_stamp(conn, "delete_prefixes")[EPOCH_COLUMN]} if self.schema.versioned else {}
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
-        transaction.enroll_prefixes(self, reach)
+        transaction.enroll_prefixes(self, reach, marker_epoch=marking.get("epoch"))
         # a table that opts in to delta files: the commit's file names the prefixes, which a copy and the fold clear
         # from their own rows (decision 23); no row is listed, so L3 is never read for them
         transaction.record_prefixes(self, prefixes)
-        # a versioned table's prefixes are run markers at the delete's epoch, ONE a prefix, never a DELETE
-        marking = {"epoch": self._epoch_stamp(conn, "delete_prefixes")[EPOCH_COLUMN]} if self.schema.versioned else {}
         deleted = await store.delete_prefixes(
             self.table_name, [dict(prefix) for prefix in prefixes], conn=conn, **marking
         )
