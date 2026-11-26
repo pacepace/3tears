@@ -25,7 +25,7 @@ _POD = "pod-shape"
 
 def _replica(nats: FakeNatsClient) -> HeartbeatCollection:
     registry = CollectionRegistry()
-    registry.configure(l1_backend=create_registry_l1_backend(), l2_client=nats, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=create_registry_l1_backend(), l2_client=nats, kv_key_scope=_SCOPE)
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return HeartbeatCollection(registry, config, nats_client=nats)
 
