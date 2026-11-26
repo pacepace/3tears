@@ -601,6 +601,41 @@ async def test_a_number_or_a_fragment_is_no_quote_even_where_one_excerpt_holds_i
     )
 
 
+async def test_a_short_excerpt_quoted_whole_names_its_claim() -> None:
+    cell = (Segment(text="The Varn Bridge opened in 1894.", unit=0), Segment(text="Yes, 1894.", unit=1))
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _item(0, "The Varn Bridge opened in 1894.", "1894"),
+                _item(1, "The Varn Bridge opened in 1894.", "Yes, 1894", restates="1894"),
+            )
+        ]
+    )
+
+    claims = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert [claim.restates for claim in claims] == [None, 0], "a number that is a claim's whole excerpt names it"
+    assert len(client.calls) == 1
+
+
+async def test_a_short_number_no_excerpt_equals_is_still_refused() -> None:
+    cell = (Segment(text="Platform 2 opened in 1894.", unit=0), Segment(text="Yes, 1894.", unit=1))
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _item(0, "Platform 2 opened in 1894.", "Platform 2 opened in 1894"),
+                _item(1, "Platform 2 opened in 1894.", "Yes, 1894", restates="2"),
+            ),
+            _repair("Platform 2 opened in 1894.", "Yes, 1894", restates="Platform 2 opened in 1894"),
+        ]
+    )
+
+    claims = await _extractor(client).extract(cell, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[1].restates == 0
+    assert 'its restates quotes "2", a number or a fragment, which names no claim' in client.calls[1]["user"]
+
+
 @pytest.mark.parametrize(
     ("cell", "listed", "quote", "named"),
     [

@@ -26,9 +26,9 @@ claim, ahead of any claim whose longer excerpt merely holds it. A quote equal to
 stands, on word boundaries, in exactly one earlier excerpt and holds no other earlier excerpt whole, so a quote of one
 claim's excerpt with a neighbour's words added never silently names the neighbour. The quote is matched against
 excerpts rather than segments, so a line said word for word in two segments resolves to the one said first, and two
-claims cut from one sentence stay apart. A number or a fragment of fewer than :data:`_SHORTEST_QUOTE` characters, a
-quote no earlier excerpt matches, and one that could name claims stating different facts name no single claim, and
-each is a failed check. A position in a list of a hundred claims is easily miscounted, and a miscounted one would pass
+claims cut from one sentence stay apart. A number or a fragment of fewer than :data:`_SHORTEST_QUOTE` characters that
+is no earlier claim's whole excerpt, a quote no earlier excerpt matches, and one that could name claims stating
+different facts name no single claim, and each is a failed check. A position in a list of a hundred claims is easily miscounted, and a miscounted one would pass
 every check and lend the restatement another claim's verdict, since a restatement is never asked about on its own.
 
 **Repair, not refusal.** A reply that will not parse is asked again in full, naming why, twice, then raises. An item
@@ -92,8 +92,9 @@ _REPAIR_ROUNDS: Final = 2
 #: The role every extraction call is billed under: it reads the candidate's output, as a judge does.
 _ROLE: Final = "judge"
 
-#: The fewest characters, folded, a ``restates`` quote holds: fewer is a number or a fragment of a word, which an
-#: excerpt can hold by chance (a counted place written as a string, a digit of a year), never a claim's excerpt.
+#: The fewest characters, folded, a ``restates`` quote that is no earlier claim's whole excerpt holds: fewer, or no
+#: letter, is a number or a fragment of a word, which an excerpt can hold by chance (a counted place written as a
+#: string, a digit of a year). A short whole excerpt ("1894") is still quoted whole.
 _SHORTEST_QUOTE: Final = 4
 
 #: Something other than whitespace: what a claim's text and an excerpt must hold.
@@ -686,8 +687,8 @@ def _restated(listed: Sequence[_ListedClaim], cell: tuple[Segment, ...]) -> list
     Only claims of the item's scope listed before it can be named, and each stands for the first claim of its own chain,
     so claims of one chain are one name. A quote equal, folded, to some of their excerpts names those; equal to none, it
     names those whose excerpt holds it on word boundaries together with those whose whole excerpt it holds. It names a
-    claim when all it names stand for one first claim. A quote of fewer than :data:`_SHORTEST_QUOTE` characters or with
-    no letter names nothing. Items are resolved in the order they appear, so every claim a quote can name was resolved
+    claim when all it names stand for one first claim. A quote equal to no excerpt that has fewer than
+    :data:`_SHORTEST_QUOTE` characters or no letter names nothing, since an excerpt holds it by chance. Items are resolved in the order they appear, so every claim a quote can name was resolved
     before it. A claim whose own quote failed stands for itself until it is repaired.
     """
     order = _order(listed)
@@ -701,16 +702,17 @@ def _restated(listed: Sequence[_ListedClaim], cell: tuple[Segment, ...]) -> list
             continue
         quote = _quoted(item.restates)
         sought = VERBATIM_FOLD.fold(item.restates)[0].strip()
-        if len(sought) < _SHORTEST_QUOTE or not any(character.isalpha() for character in sought):
+        earlier = [other for other in order[:rank] if listed[other].scope == item.scope]
+        # A whole excerpt names its claim however short it is: an excerpt of "1894" is quoted as "1894".
+        named = [other for other in earlier if sought and folded[other] == sought]
+        whole = bool(named)
+        if not whole and (len(sought) < _SHORTEST_QUOTE or not any(character.isalpha() for character in sought)):
             resolved[position] = (
                 None,
                 f"its restates quotes {quote}, a number or a fragment, which names no claim; restates copies the whole "
                 f"excerpt of the earlier {item.scope} claim this one restates, exactly as listed, or is null",
             )
             continue
-        earlier = [other for other in order[:rank] if listed[other].scope == item.scope]
-        named = [other for other in earlier if folded[other] == sought]
-        whole = bool(named)
         if not whole:
             named = [
                 other
