@@ -12,6 +12,7 @@ test_quiet_cleanup_plans_live.py``) proves the plans on YugabyteDB.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any, cast
 import duckdb
 import pytest
 
+from threetears.core.backends.broker_generation import CLEANUP_DELETE_FIELD, CLEANUP_FLOOR_FIELD, stamp_fields
 from threetears.core.collections.cleanup_progress import CLEANUP_PROGRESS_TABLE
 from threetears.core.collections.quiet_cleanup import LoadGate, QuietCleanup, log_window_floor
 from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema
@@ -116,6 +118,8 @@ class _Spy(ThreadedDuckDB):
     def __init__(self, conn: Any) -> None:
         super().__init__(conn)
         self.statements: list[str] = []
+        #: what each statement's request would say on the rail (stamp_fields, read as the proxy reads it)
+        self.fields: list[dict[str, Any]] = []
         self.after: Callable[[str], None] | None = None
 
     async def answers_from_yugabyte(self) -> bool:
@@ -123,6 +127,7 @@ class _Spy(ThreadedDuckDB):
 
     def _seen(self, query: str) -> None:
         self.statements.append(query)
+        self.fields.append(stamp_fields())
         if self.after is not None:
             self.after(query)
 
@@ -433,3 +438,39 @@ async def test_every_statement_cleanup_sends_is_keyed(world: _World, catalog: Sc
     assert not any("TRUNCATE" in query.upper() for query in world.spy.statements)
     # the scope's versions are read through its (scope, epoch, key) range, a page at a time
     assert any('t."join_state_code" = ' in query and "LIMIT" in query.upper() for query in world.spy.statements)
+
+
+# -- the broker can tell cleanup's deletes, and bound them ------------------------------------------------------------
+
+
+async def test_every_delete_of_a_versioned_table_says_it_is_cleanups_with_its_floor(world: _World) -> None:
+    """Flips if a delete of a versioned table goes out unmarked (the broker refuses every other delete of one), names
+    a floor other than the one it was worked out against, or a point delete carries no epoch bound of its own; and if
+    any other statement claims to be cleanup's."""
+    floor = _at(100)
+    for index in range(3):
+        _result(world.conn, (f"o{index}", "a"), "NC", _at(10 + index))
+        _result(world.conn, (f"o{index}", "a"), "NC", _at(30 + index))
+    for geo in ("g1", "g2"):
+        _projection(world.conn, 7, geo, _at(10))
+    world.conn.execute(f"INSERT INTO {RUN_MARKERS_TABLE} VALUES ('cl_projections', 'NC', 'NC\x1f7', ?)", [_at(50)])
+    swept = await world.cleanup(floor, batch=2).clean()
+    assert swept.finished and swept.removed
+    sent = list(zip(world.spy.statements, world.spy.fields, strict=True))
+    versioned = [
+        (query, fields)
+        for query, fields in sent
+        if "DELETE FROM" in query.upper()
+        and any(f'"{table}"' in query.upper().split("WHERE")[0].lower() for table in ("cl_results", "cl_projections"))
+    ]
+    point = [query for query, _ in versioned if "LIMIT" not in query.upper()]
+    runs = [query for query, _ in versioned if "LIMIT" in query.upper()]
+    # superseded versions by their whole stored key, and a run's rows by its prefix
+    assert point and runs, sent
+    for query, fields in versioned:
+        assert fields.get(CLEANUP_DELETE_FIELD) is True and fields.get(CLEANUP_FLOOR_FIELD) == floor, query
+    for query in point:
+        # the point delete bounds itself below F in its own WHERE, past the keys it names: no key can reach F
+        assert re.search(r'\) AND \(?"epoch" < \$\d+\)?$', query.rstrip()), query
+    others = [fields for query, fields in sent if (query, fields) not in versioned]
+    assert others and not any(CLEANUP_DELETE_FIELD in fields for fields in others)

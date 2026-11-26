@@ -21,8 +21,11 @@ from threetears.nats import Subject
 
 from threetears.core.backends.arrow_copy import WRITE_ARROW_FIELD, split_copy_request
 from threetears.core.backends.broker_generation import (
+    CLEANUP_DELETE_FIELD,
+    CLEANUP_FLOOR_FIELD,
     STAMP_S_MIN_FIELD,
     STAMPS_EPOCH_FIELD,
+    cleanup_deleting,
     stamp_fields,
     stamping_write,
 )
@@ -331,3 +334,43 @@ def test_a_stamp_is_a_positive_bigint() -> None:
         assert stamp_fields() == {STAMPS_EPOCH_FIELD: True, STAMP_S_MIN_FIELD: _LOW}
         with stamping_write(None):
             assert stamp_fields() == {STAMPS_EPOCH_FIELD: False}
+
+
+# -- quiet-time cleanup's deletes say so, with their floor ------------------------------------------------------------
+
+
+def test_a_cleanup_delete_names_its_floor_beside_its_stamp() -> None:
+    """Flips if a request inside cleanup_deleting does not say it is cleanup's with the floor, if one outside it does,
+    or if a floor no row epoch can be is taken."""
+    for bad in (0, -1, 1 << 63):
+        with pytest.raises(ValueError, match="positive BIGINT"), cleanup_deleting(bad):
+            pass
+    with cleanup_deleting(_HIGH):
+        assert stamp_fields() == {STAMPS_EPOCH_FIELD: False, CLEANUP_DELETE_FIELD: True, CLEANUP_FLOOR_FIELD: _HIGH}
+        with stamping_write(_LOW):
+            assert stamp_fields() == {
+                STAMPS_EPOCH_FIELD: True,
+                STAMP_S_MIN_FIELD: _LOW,
+                CLEANUP_DELETE_FIELD: True,
+                CLEANUP_FLOOR_FIELD: _HIGH,
+            }
+    assert stamp_fields() == {STAMPS_EPOCH_FIELD: False}
+
+
+async def test_a_cleanup_delete_on_l3_query_carries_the_marker_and_floor() -> None:
+    """Flips if l3.query (execute and fetch, the doors cleanup's point and prefix deletes take) sends a cleanup delete
+    without its marker and floor, or marks a request sent outside the block."""
+    broker = _Broker(
+        {"success": True, "row_count": 1},
+        {"success": True, "rows": [], "row_count": 0},
+        {"success": True, "row_count": 0},
+    )
+    proxy = broker.proxy()
+    with cleanup_deleting(_HIGH):
+        await proxy.execute('DELETE FROM projections WHERE "epoch" < $1', _HIGH)
+        await proxy.fetch('DELETE FROM projections WHERE "epoch" < $1 RETURNING "epoch"', _HIGH)
+    await proxy.execute("DELETE FROM runs WHERE run_id = $1", "r1")
+    marked, fetched, plain = broker.bodies("l3.query")
+    for body in (marked, fetched):
+        assert (body[CLEANUP_DELETE_FIELD], body[CLEANUP_FLOOR_FIELD]) == (True, _HIGH), body
+    assert CLEANUP_DELETE_FIELD not in plain and CLEANUP_FLOOR_FIELD not in plain

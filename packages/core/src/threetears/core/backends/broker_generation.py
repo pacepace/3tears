@@ -78,6 +78,8 @@ from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
     "CHANGED_ROWS_FIELD",
+    "CLEANUP_DELETE_FIELD",
+    "CLEANUP_FLOOR_FIELD",
     "COMMIT_SCOPES_FIELD",
     "COMMIT_S_MIN_FIELD",
     "DELTA_FILES_FIELD",
@@ -108,6 +110,7 @@ __all__ = [
     "naming_unconfirmed_delta_files",
     "note_load_answer",
     "note_advanced_generation",
+    "cleanup_deleting",
     "record_reply_generations",
     "reply_generations_since",
     "StampedScopes",
@@ -419,18 +422,62 @@ def stamping_write(s_min: int | None) -> Iterator[None]:
         _STAMPED_WRITE.reset(token)
 
 
+#: the request field marking a delete as quiet-time cleanup's (:mod:`~threetears.core.collections.quiet_cleanup`):
+#: ``true`` on every L3 request made inside :func:`cleanup_deleting`, beside :data:`CLEANUP_FLOOR_FIELD`. A versioned
+#: table (``row_versions``) is never deleted from but by cleanup: the broker refuses any other delete of one, and takes
+#: a marked one only for stored versions below the named floor, a floor no higher than its own reading of the change
+#: log's window (``cleanup_floor``). The hub imports this name.
+CLEANUP_DELETE_FIELD: Final = "cleanup_delete"
+
+#: beside :data:`CLEANUP_DELETE_FIELD`, the floor F the delete was worked out against
+#: (:func:`~threetears.core.ddl.row_epoch.cleanup_floor`): every row it removes is stamped below it. One BIGINT. The
+#: hub imports this name.
+CLEANUP_FLOOR_FIELD: Final = "cleanup_floor"
+
+#: the floor of the cleanup delete being sent in this context (:func:`cleanup_deleting`); None for any other request
+_CLEANUP_FLOOR: ContextVar[int | None] = ContextVar("threetears_cleanup_floor", default=None)
+
+
+@contextmanager
+def cleanup_deleting(floor: int) -> Iterator[None]:
+    """send every L3 request made inside this block as quiet-time cleanup's delete, worked out against ``floor``
+    (:data:`CLEANUP_DELETE_FIELD`, :data:`CLEANUP_FLOOR_FIELD`). The one place a request says it is cleanup's: every
+    request's payload reads it (:func:`stamp_fields`), so no door can send a cleanup delete unmarked.
+
+    :param floor: the floor F the block's deletes stay below, a positive BIGINT
+    :ptype floor: int
+    :return: a context in which the requests say so
+    :rtype: Iterator[None]
+    :raises ValueError: when ``floor`` is no row epoch
+    """
+    if not 0 < floor < 1 << 63:
+        raise ValueError(f"a cleanup delete's floor is a row epoch, a positive BIGINT: got {floor}")
+    token = _CLEANUP_FLOOR.set(floor)
+    try:
+        yield
+    finally:
+        _CLEANUP_FLOOR.reset(token)
+
+
 def stamp_fields() -> dict[str, Any]:
     """the fields every L3 request carries to say whether its write stamps row epochs, as the enclosing
-    :func:`stamping_write` named it: ``{stamps_epoch: false}``, or ``{stamps_epoch: true, s_min: <lowest>}``. A request
-    measured before it is sent (a bulk write's batches) is measured inside the same block, so it is sized exactly.
+    :func:`stamping_write` named it: ``{stamps_epoch: false}``, or ``{stamps_epoch: true, s_min: <lowest>}``; and,
+    inside :func:`cleanup_deleting`, that it is quiet-time cleanup's delete with its floor (``{cleanup_delete: true,
+    cleanup_floor: F}``). A request measured before it is sent (a bulk write's batches) is measured inside the same
+    block, so it is sized exactly.
 
     :return: the fields, a fresh dict the caller merges into its payload
     :rtype: dict[str, Any]
     """
     s_min = _STAMPED_WRITE.get()
-    if s_min is None:
-        return {STAMPS_EPOCH_FIELD: False}
-    return {STAMPS_EPOCH_FIELD: True, STAMP_S_MIN_FIELD: s_min}
+    fields: dict[str, Any] = (
+        {STAMPS_EPOCH_FIELD: False} if s_min is None else {STAMPS_EPOCH_FIELD: True, STAMP_S_MIN_FIELD: s_min}
+    )
+    floor = _CLEANUP_FLOOR.get()
+    if floor is not None:
+        fields[CLEANUP_DELETE_FIELD] = True
+        fields[CLEANUP_FLOOR_FIELD] = floor
+    return fields
 
 
 @dataclass(frozen=True, slots=True)
