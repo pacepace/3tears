@@ -90,6 +90,7 @@ from threetears.core.ddl.row_epoch import (
     touch_last_epoch_sql,
 )
 from threetears.core.ddl.run_markers import run_marker_insert_sql
+from threetears.core.ddl.tenant_moves import moves_returned, note_moves
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyed.point import read_row
@@ -1691,6 +1692,10 @@ class SqlL3Backend:
             schema_sql.copy_writes(column) for column in emitted
         ):
             return None
+        if set(update or ()) & set(getattr(schema, "moveable", ())):
+            # the door's upsert sets only the columns it is sent; a moveable column's move is recorded by the
+            # statement's own SET terms (tenant_moves), which the bulk statement with VALUES writes and the door does not
+            return None
         sent: list[tuple[str, str | None, Any]] = []
         for column in emitted:
             if column.name in given:
@@ -2896,7 +2901,9 @@ class SqlL3Backend:
         ``TableSchema`` descriptor without the attribute keeps the old behaviour.
         """
         cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
-        if cas_declared and cas is not None:
+        fenced = cas_declared and cas is not None
+        if fenced:
+            assert cas is not None  # narrow: fenced
             sql = schema_sql.build_cas_update_sql(schema, data)
             params = schema_sql.build_cas_params(schema, data, cas)
         elif cas_declared and getattr(schema, "cas_null_safe", False):
@@ -2905,7 +2912,37 @@ class SqlL3Backend:
         else:
             sql = schema_sql.build_insert_sql(schema, data)
             params = schema_sql.build_insert_params(schema, data)
-        return parse_rowcount(await self._execute(sql, *params, conn=conn))
+        return await self._write_noting_moves(schema, data, sql, params, fenced=fenced, conn=conn)
+
+    async def _write_noting_moves(
+        self, schema: TableSchema, data: Mapping[str, Any], sql: str, params: Sequence[Any], *, fenced: bool, conn: Any
+    ) -> int:
+        """run a single-row write of ``schema``'s table and return the rows it affected; when it sets a moveable
+        column (``TableSchema.moveable``, :mod:`~threetears.core.ddl.tenant_moves`), return the row's move from the
+        statement itself (``RETURNING``, no second read) and note it for the collection that asked for the write
+        (:func:`~threetears.core.ddl.tenant_moves.note_moves`), which names the tenant the row left in its record.
+
+        :param schema: the table's schema
+        :ptype schema: TableSchema
+        :param data: the row as written
+        :ptype data: Mapping[str, Any]
+        :param sql: the write
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Sequence[Any]
+        :param fenced: the write is the fenced ``UPDATE``
+        :ptype fenced: bool
+        :param conn: the caller's connection; ``None`` uses the pool
+        :ptype conn: Any
+        :return: the rows affected
+        :rtype: int
+        """
+        moving = schema_sql.moving_columns(schema, data, fenced=fenced)
+        if not moving:
+            return parse_rowcount(await self._execute(sql, *params, conn=conn))
+        rows = await self._fetch(sql + schema_sql.moving_returning(moving), *params, conn=conn)
+        note_moves(schema.name, moves_returned(rows[0], moving) if rows else ())
+        return len(rows)
 
     async def upsert_ordered(self, table: str, row: Mapping[str, Any], *, conn: Any = None) -> int:
         """Insert ``row``, or update the stored row only when its compare-and-swap order is older.
@@ -2932,7 +2969,7 @@ class SqlL3Backend:
         sql = schema_sql.build_ordered_upsert_sql(schema, data)
         params = schema_sql.build_insert_params(schema, data)
         with stamped_send(conn, _stamp_of(schema, data.get(EPOCH_COLUMN)), _row_touched(schema, data), table=table):
-            return parse_rowcount(await self._execute(sql, *params, conn=conn))
+            return await self._write_noting_moves(schema, data, sql, params, fenced=False, conn=conn)
 
     async def delete(self, table: str, pk: KeyValues, *, conn: Any = None) -> None:
         """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error).

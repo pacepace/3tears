@@ -71,6 +71,7 @@ from threetears.interfaces.keyed.keys import (
     partial_predicate,
     VersionedTable,
 )
+from threetears.interfaces.keyed.filters import Fragment
 from threetears.interfaces.keyed.rows import DeclaredScope, KeyColumn, KeyColumns
 from threetears.core.backends.arrow_copy import (
     arrow_python_columns,
@@ -162,6 +163,7 @@ from threetears.core.ddl.row_epoch import (
     stamped_restore_declaration,
     versioned_primary_key_sql,
 )
+from threetears.core.ddl.tenant_moves import moved_columns, moved_epoch_column, moved_from_column
 from threetears.core.keyset import keyset_pages
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.entities.base import BaseEntity
@@ -432,7 +434,45 @@ def stamped_values(schema: TableSchema, values: Mapping[str, Any], *, conn: Any 
         raise AppendOnlyWriteError(f"stamped_values: {schema.name} is versioned (append-only), never updated in place")
     stamp = CallerTransaction.stamp_for(conn, schema.name)
     # a RisingStamp, not a bare Fragment: update_keyed reads the stamp off it and sends it as the write's s_min
-    return {**values, EPOCH_COLUMN: rising_stamp(stamp, quote_identifier(EPOCH_COLUMN))}
+    stamped = {**values, EPOCH_COLUMN: rising_stamp(stamp, quote_identifier(EPOCH_COLUMN))}
+    for name in schema.moveable:
+        if name in values:
+            stamped.update(_moved_values(schema, name, values[name], stamp))
+    return stamped
+
+
+def _moved_values(schema: TableSchema, name: str, new: Any, stamp: int) -> dict[str, Fragment]:
+    """a keyed ``UPDATE``'s values for a moveable column's two L3-only columns (:mod:`~threetears.core.ddl.tenant_moves`):
+    the row's old value and the update's rising stamp, set only when the column's value changes. In the same statement
+    as the column's own value, from the row as it was (an ``UPDATE``'s right-hand sides read the old row).
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param name: the moveable column
+    :ptype name: str
+    :param new: the value the update sets it to
+    :ptype new: Any
+    :param stamp: the update's stamp, as its epoch's value carries it
+    :ptype stamp: int
+    :return: ``{<name>_moved_from: ..., <name>_moved_epoch: ...}``
+    :rtype: dict[str, Fragment]
+    :raises ValueError: when the new value is an expression (a move is judged against a bound value)
+    """
+    if isinstance(new, Fragment):
+        raise ValueError(f"{schema.name}.{name} is moveable: set it to a value, not an expression, so a move is seen")
+    column = quote_identifier(name)
+    moved_from = quote_identifier(moved_from_column(name))
+    moved_epoch = quote_identifier(moved_epoch_column(name))
+    moving = f"{column} IS DISTINCT FROM $1::{sql_cast(schema.column(name).column_type)}"
+    return {
+        moved_from_column(name): Fragment(f"CASE WHEN {moving} THEN {column} ELSE {moved_from} END", (new,)),
+        # the same rising stamp as the epoch's own (rising_stamp), so a write that moved the row returns
+        # moved_epoch = epoch
+        moved_epoch_column(name): Fragment(
+            f"CASE WHEN {moving} THEN GREATEST({quote_identifier(EPOCH_COLUMN)} + 1, $2::bigint) ELSE {moved_epoch} END",
+            (new, stamp),
+        ),
+    }
 
 
 def sql_cast(column_type: str) -> str:
@@ -1536,6 +1576,10 @@ class TableSchema:
     # version a write, the epoch the last column of the stored key; ROW_STAMPED keeps one row a key, stamped. The
     # column is added when not declared; every write of the table stamps it, and a write without it is refused
     row_epoch: RowEpoch | None = None
+    # the columns a write may move a row's tenant by, in place (threetears.core.ddl.tenant_moves): a stamped table's
+    # tenancy (invalidation) columns that can change. Each gets its L3-only <column>_moved_from and _moved_epoch, which
+    # the write that moves the row fills in the same statement, so the tenant it left hears of it live and on a restore
+    moveable: tuple[str, ...] = ()
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     # the key the table stores rows by: the primary key, then the epoch for a versioned table (row_epoch)
@@ -1567,6 +1611,7 @@ class TableSchema:
             # before anything reads the columns or the indexes: the epoch column and the (scope, epoch) index are
             # the table's own, added where not declared
             self._declare_row_epoch()
+        self._refuse_unsound_moveable()
         if self.delta_files:
             # refused where it is declared, not at the first write: a column no file can type would refuse every one
             rail_arrow_types(self.columns)
@@ -1878,6 +1923,51 @@ class TableSchema:
         :rtype: bool
         """
         return self.row_epoch is not None and not self.row_epoch.versions
+
+    def _refuse_unsound_moveable(self) -> None:
+        """refuse a :attr:`moveable` declaration no write could keep (:mod:`~threetears.core.ddl.tenant_moves`).
+
+        Only a stamped table moves a row in place: a versioned one appends the key's new version, whose record names
+        its own tenant, and an unstamped one has no epoch a restore reads it by. Each moveable column is declared, is
+        not a key column (a row moved by its key is another row), and no declared column takes either of its L3-only
+        names.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the declaration is any of the above
+        """
+        if not self.moveable:
+            return
+        if not self._stamped():
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): moveable={self.moveable!r} on a table that is not ROW_STAMPED: only a "
+                "stamped table's write moves a row between tenants in place"
+            )
+        pk = self.primary_key
+        keys = (pk,) if isinstance(pk, str) else tuple(pk)
+        declared = {column.name for column in self.columns}
+        for name in self.moveable:
+            if name not in declared:
+                raise ValueError(f"TableSchema(name={self.name!r}): moveable column {name!r} is not one of its columns")
+            if name in keys:
+                raise ValueError(f"TableSchema(name={self.name!r}): moveable column {name!r} is a key column")
+            taken = [each for each in moved_columns(name) if each in declared]
+            if taken:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): {taken[0]!r} is the L3-only column moveable {name!r} carries; "
+                    "declare no column of that name"
+                )
+        if len(set(self.moveable)) != len(self.moveable):
+            raise ValueError(f"TableSchema(name={self.name!r}): moveable names a column twice: {self.moveable!r}")
+
+    @property
+    def moved_from_columns(self) -> tuple[tuple[str, str, str], ...]:
+        """each :attr:`moveable` column with its two L3-only columns: ``(column, moved_from, moved_epoch)``.
+
+        :return: them, in declared order
+        :rtype: tuple[tuple[str, str, str], ...]
+        """
+        return tuple((name, *moved_columns(name)) for name in self.moveable)
 
     def _bucket_expression(self) -> str:
         """a stamped table's :data:`~threetears.core.ddl.row_epoch.BUCKET_COLUMN` expression, from its key columns.
@@ -2358,7 +2448,7 @@ class TableSchema:
             text = restore_declaration(declared, self._pk_columns, instants, tenancy)
             index = scope_epoch_index_name(self.name)
         else:
-            text = stamped_restore_declaration(self._pk_columns, instants, tenancy)
+            text = stamped_restore_declaration(self._pk_columns, instants, tenancy, self.moveable)
             index = bucket_epoch_index_name(self.name)
         quoted = text.replace("'", "''")
         return (f"COMMENT ON INDEX {quote_identifier(index)} IS '{quoted}'",)
@@ -2638,6 +2728,13 @@ class TableSchema:
                     nullable=False,
                 )
             )
+            by_name = {col.name: col for col in self.columns}
+            for name, moved_from, moved_epoch in self.moved_from_columns:
+                # the tenant a moved row left and its move's epoch: the L3 table's alone, as the bucket is
+                # (threetears.core.ddl.tenant_moves), NULL in a row that never moved
+                held = by_name[name]
+                sa_columns.append(sa.Column(moved_from, type_mapping[held.column_type](held), nullable=True))
+                sa_columns.append(sa.Column(moved_epoch, BigInteger(), nullable=True))
         table = sa.Table(
             self.name,
             metadata,
