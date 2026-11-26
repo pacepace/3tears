@@ -68,8 +68,17 @@ that overrides its own cites the claim with the opposite stance. So a claim supp
 that an overriding one contradicts reads ``contradicted``; support from the overriding document stands over a
 contradiction from the one it overrides; and where the overriding document is silent, the overridden one's citation
 stands. A key fact is no document: it overrides nothing and is never overruled, so a key fact an overriding document
-contradicts still reads ``supported`` with ``evidence_conflict``, which code cannot detect as stale. A host keeps its
-key facts to the values in force. The ground step reads no precedence, since it cites support alone.
+contradicts is a conflict, asked again in the re-ask (below), and code cannot detect the fact as stale. A host keeps
+its key facts to the values in force. The ground step reads no precedence, since it cites support alone.
+
+**A support states every value.** A claim may state several values ("drums and vocals", "in a band and on its
+album"). The truth and re-ask rules say evidence supports it only where what is cited as support, one piece or several
+together, states every value it states: evidence that states some of them and is silent on the rest is not cited as
+support, and evidence that gives a different value for one of them contradicts it. A value joint by meaning (a song
+two people wrote together) is one value. Code cannot read whether evidence covers a value, so the rule binds the model
+and no check holds it: a reply citing a partial support passes every code check and reads ``supported``. A partial
+support beside a contradiction of another of its values is a conflict, and goes to the re-ask. The cost, taken for the
+false rate: a true compound the evidence states only part of reads ``unverifiable``, never ``supported``.
 
 **Batches.** One call per unit, holding every world claim of that unit, and one more for the claims outside any unit.
 A restatement is not asked again: it rides in its original's batch, shown beside it, and takes the original's
@@ -84,35 +93,55 @@ repair budget: its rounds, and the most items one cell may ask again, which each
 claims are asked again. Still failing, or past the budget, fails (``repair_budget_spent``); a reply cut short fails at
 once (``cut_short``).
 
-**A doubted claim is asked again, with the key facts about what it names.** The truth batch is shown every key fact,
-but no check can make a model cite one, so a world claim it answers with no citation and marks suspect, though a key
-fact contradicts it, would read ``unverifiable`` wherever the web is off, past the cell's web budget or inconclusive.
-So once the truth step's repairs pass, every such claim that names a key entity is asked again, all of them in one
-call per cell (the re-ask), each listed with the refs of its own entities' facts. Code decides which those are, never
-the model: a claim names a key entity when the entity's name, or one of its aliases, stands in the claim's proposition
-or a restatement's as whole words in order, under the verbatim fold. So "Ann Lee" stands in "Ann Lee lives in York"
-and in "Ann Lee's home is York", and neither the entity "Annabel Lee", "Lee Ann" nor "Ann Lee's brother" stands in
-"Ann Lee moved to York". The re-ask has its own prompt, which asks whether any of a claim's facts states it true or
-false and says nothing of the batch's answer. Each item is checked as a truth answer is, against that claim's facts
-alone, so a ref listed for another claim is no evidence shown for it. An item citing a key fact replaces the batch's
-answer: a cited contradiction reads ``contradicted`` and a cited support ``supported``, graded against the case, so
-the web never checks it. One citing nothing leaves the batch's answer standing, and the claim goes on to the web as
-before. A failing item is repaired as a truth batch's is, shown its own facts, within what the truth step's repairs
-left of ``max_items_per_cell``; a restatement takes its original's outcome. So the re-ask adds one call per cell,
-asked again in full only when its reply cannot be read (at most :data:`_ATTEMPTS` calls), whatever the number of
-claims doubted, and the price ceiling prices it so; ``RepairBudget``'s count is unchanged. No claim's outcome turns on
-its place: every doubted claim naming a key entity is in the one call. A re-ask reply cut short or unreadable in its
-attempts, an item past the repair budget, a provider's failure or a protocol defect fails as any truth call does, and
-never leaves a claim ``unverifiable``. Its limits: the match reads names, not reference. A claim naming the entity
-inside a phrase about someone else ("Ann Lee's brother moved to York") is listed with Ann Lee's facts. A fact filed
-under Ann Lee's own entry that is about someone else ("Her brother moved to York.") is shown, and cited as support
-for "Ann Lee moved to York", with its heading's "Ann Lee" as the subject, it passes every code check: only the model's
-reading stands between it and a false ``supported``. A short name or alias inside a longer one ("Lee" for Ann Lee, an
-entity named "Ann") matches every claim naming the longer. A claim that names its subject only by a pronoun or a
-description the key lists as no alias, or in a script written without spaces between words, is asked nothing again.
-Nor does code hold the relation: a key fact about another attribute of the same subject ("Ann Lee was born in Leeds",
-against "Ann Lee lives in York"), cited as a contradiction that passes every check, reads ``contradicted``. The
-re-ask's prompt says that such a fact bears on nothing, and that binding stays the model's, as in the truth batch.
+**Two kinds of claim are asked again, all in one call per cell (the re-ask),** once the truth step's repairs pass.
+
+- *A doubted claim, with the key facts about what it names.* The truth batch is shown every key fact, but no check can
+  make a model cite one, so a world claim it answers with no citation and marks suspect, though a key fact contradicts
+  it, would read ``unverifiable`` wherever the web is off, past the cell's web budget or inconclusive. So every such
+  claim that names a key entity is listed with the refs of its own entities' facts. Code decides which those are,
+  never the model: a claim names a key entity when the entity's name, or one of its aliases, stands in the claim's
+  proposition or a restatement's as whole words in order, under the verbatim fold. So "Ann Lee" stands in "Ann Lee
+  lives in York" and in "Ann Lee's home is York", and neither the entity "Annabel Lee", "Lee Ann" nor "Ann Lee's
+  brother" stands in "Ann Lee moved to York". An item citing evidence replaces the batch's answer: a cited
+  contradiction reads ``contradicted`` and a cited support ``supported``, graded against the case, so the web never
+  checks it. **One citing nothing leaves the batch's answer standing**, and the claim goes on to the web as before.
+- *A conflict, with the evidence it cited.* A world claim whose citations that stand once precedence is read both
+  support and contradict it is listed with the refs of exactly the evidence it cited on both sides, key facts and case
+  passages, and never its entities' other facts. Its item replaces the batch's citations whatever it cites: only
+  support reads ``supported`` and only contradiction ``contradicted``, both from the case; both reads ``unverifiable``
+  with ``evidence_conflict``, since the verdict table never reads evidence still standing on both sides as support.
+  **One citing nothing never falls back to the batch's answer**: the batch's citations stay on record, both sides, so
+  the claim reads ``unverifiable`` with ``evidence_conflict``. That is the opposite of a doubted claim's rule, since a
+  conflict's batch answer is itself what is in doubt. A conflict cites evidence, so it is never nominated, and the web
+  never decides one: it is the case's own evidence that disagrees.
+
+The re-ask has its own prompt, which asks whether any of a claim's evidence states it true or false and says nothing of
+the batch's answer. Each item is checked as a truth answer is, against that claim's own refs alone, so a ref listed
+for another claim is no evidence shown for it. A failing item is repaired as a truth batch's is, shown its own
+evidence; a restatement takes its original's outcome. No claim's outcome turns on its place: every claim of either
+kind is in the one call. A re-ask reply cut short or unreadable in its attempts, an item past the repair budget, a
+provider's failure or a protocol defect fails as any truth call does, and never leaves a claim ``unverifiable``.
+
+**What the re-ask costs.** One call per cell, asked again in full only when its reply cannot be read (at most
+:data:`_ATTEMPTS` calls), whatever the number of claims it holds. A conflict rides in the call the doubted claims make,
+adding none; a cell with a conflict and no doubted claim naming a key entity makes the one call where it made none. The
+price ceiling prices it wherever the truth step can be shown evidence (a key fact or a case document), at the truth
+step's whole evidence. Its failing items are repaired within what the truth step's repairs left of
+``max_items_per_cell``, so ``RepairBudget``'s arithmetic is unchanged: the truth step, its re-ask items included, asks
+at most ``max_items_per_cell`` items again, and a cell at most four times that.
+
+**Its limits.** The match reads names, not reference. A claim naming the entity inside a phrase about someone else
+("Ann Lee's brother moved to York") is listed with Ann Lee's facts. A fact filed under Ann Lee's own entry that is
+about someone else ("Her brother moved to York.") is shown, and cited as support for "Ann Lee moved to York", with its
+heading's "Ann Lee" as the subject, it passes every code check: only the model's reading stands between it and a false
+``supported``. A short name or alias inside a longer one ("Lee" for Ann Lee, an entity named "Ann") matches every claim
+naming the longer. A claim that names its subject only by a pronoun or a description the key lists as no alias, or in
+a script written without spaces between words, is asked nothing again as a doubted claim. Nor does code hold the
+relation: evidence about another attribute of the same subject ("Ann Lee was born in Leeds", against "Ann Lee lives in
+York"), cited as a contradiction that passes every check, reads ``contradicted``, and cited as the only support of a
+conflict asked again, reads ``supported``. A conflict is shown again the very evidence it misread, so a model that
+binds it the same way twice keeps that reading. The re-ask's prompt says that such evidence bears on nothing, and that
+binding stays the model's, as in the truth batch.
 
 **Truth and groundedness fail apart.** A truth failure raises
 :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`, costing the cell this criterion. A ground
@@ -212,13 +241,18 @@ _BATCH_RULE: Final = (
 )
 
 #: The re-ask rule, by revision and in words: part of the identity, raised with any change to which claims are asked
-#: again or which key facts they are shown (:func:`_names_subject`).
+#: again, what each is shown (:func:`_names_subject`, :func:`_standing`) or how its answer is read.
 _REASK_RULE: Final = (
-    "reask-v1: once the truth step's repairs pass, every original world claim whose answer cites nothing and is "
-    "suspect, and whose proposition or a restatement's names a key entity (the entity's name or an alias standing in "
-    "it as whole folded words in order), is asked again in one call per cell, each listed with the refs of the key "
-    "facts of the entities it names and checked against those alone; its failing items are repaired within the truth "
-    "step's repair budget; an answer citing a key fact replaces the batch's, one citing nothing leaves it standing"
+    "reask-v2: once the truth step's repairs pass, two kinds of original world claim are asked again, all in one call "
+    "per cell: a doubted claim, whose answer cites nothing and is suspect, and whose proposition or a restatement's "
+    "names a key entity (the entity's name or an alias standing in it as whole folded words in order), listed with the "
+    "refs of the key facts of the entities it names; and a conflict, whose citations standing after precedence both "
+    "support and contradict it, listed with the refs of exactly the key facts and case passages it cited; each is "
+    "checked against its own refs alone, and its failing items are repaired within the truth step's repair budget; a "
+    "doubted claim's answer citing evidence replaces the batch's, and one citing nothing leaves the batch's standing; "
+    "a conflict's answer replaces the batch's whatever it cites, and one citing nothing keeps the batch's citations, "
+    "so it never falls back to the batch's supported; the verdict table reads citations still standing on both sides "
+    "unverifiable, with evidence_conflict"
 )
 
 #: What a claim is, for a check: the same fact about the same subject. Shared by every verify prompt.
@@ -234,11 +268,23 @@ _CITING_RULES: Final = (
     "- Cite each piece of evidence at most once for a claim."
 )
 
+#: A claim that states several values is supported only where its support states every one: the truth and re-ask
+#: rules', and no code check's, since code cannot read whether evidence covers a value.
+_EVERY_VALUE_RULE: Final = (
+    "- A claim may state several values (drums and vocals; in a band and on its album). Evidence supports it only "
+    "when it states every value the claim states, alone or with the other evidence you cite as support for it. "
+    "Evidence that states some of the values and is silent on the rest is not cited as support unless other evidence "
+    "you cite states the rest. Evidence that gives a different value for one of them contradicts the claim, even when "
+    "it states the others. Values joined by meaning (a song two people wrote together) are one value.\n"
+)
+
 _TRUTH_RULES: Final = (
+    # one line: the every-value rule is one list item, written here in full with no placeholder
     "Read each claim against the numbered evidence given, and nothing else: not what you remember.\n"
     "- Cite every piece of evidence that bears on a claim, by its ref (K1, S1, ...), with its stance: supports when "
     "it states this same fact about this same subject; contradicts when it states a different value for this same "
     "subject and relation. A contradiction's value is the value the evidence gives instead.\n"
+    + _EVERY_VALUE_RULE
     + _CITING_RULES
     + "\n- A key fact (K) is quoted the same way, from its line as shown after its ref: the entity that line names "
     "may stand as the subject.\n"
@@ -247,14 +293,16 @@ _TRUTH_RULES: Final = (
 )
 
 _REASK_RULES: Final = (
-    "Read each claim against the case facts listed for it, and nothing else: not what you remember. Each is a fact "
-    "about an entity the claim names.\n"
-    "- Does any of them state that the claim is true or false? Cite each that does, by its ref, with its stance: "
+    # one line: the every-value rule is one list item, written here in full with no placeholder
+    "Read each claim against the case evidence listed for it, and nothing else: not what you remember. Each piece is "
+    "a key fact (K) about an entity the claim names, or a passage (S) of a case document.\n"
+    "- Does any of it state that the claim is true or false? Cite each piece that does, by its ref, with its stance: "
     "supports when it states this same fact about this same subject; contradicts when it states a different value for "
-    "this same subject and relation. A contradiction's value is the value the fact gives instead.\n"
-    "- A fact may state another attribute of the entity, or something about someone or something else (a relative, a "
-    "work, a place): such a fact bears on nothing here. When none of a claim's facts bears on it, cite nothing for "
+    "this same subject and relation. A contradiction's value is the value the evidence gives instead.\n"
+    "- A piece may state another attribute of the entity, or something about someone or something else (a relative, a "
+    "work, a place): such a piece bears on nothing here. When none of a claim's evidence bears on it, cite nothing for "
     "it.\n"
+    + _EVERY_VALUE_RULE
     + _CITING_RULES
     + "\n- A key fact (K) is quoted the same way, from its line as shown after its ref: the entity that line names "
     "may stand as the subject."
@@ -278,8 +326,8 @@ _TRUTH_SYSTEM: Final = (
 )
 
 _REASK_SYSTEM: Final = (
-    "You check factual claims a text states against case facts about the entities each claim names. Each claim is "
-    "numbered and followed by the refs of its facts; answer for every claim asked, by its number.\n\n"
+    "You check factual claims a text states against the case evidence listed for each. Each claim is numbered and "
+    "followed by the refs of its evidence; answer for every claim asked, by its number.\n\n"
     + _REASK_RULES
     + _ANSWER_LINE
 )
@@ -307,11 +355,11 @@ _USER_TEMPLATE: Final = "# Evidence\n\n{evidence}\n\n# Claims\n\n{claims}"
 
 _FACT_TEMPLATE: Final = "{ref}. {fact}"
 
-_REASK_TEMPLATE: Final = "# Case facts\n\n{evidence}\n\n# Claims\n\n{claims}"
+_REASK_TEMPLATE: Final = "# Case evidence\n\n{evidence}\n\n# Claims\n\n{claims}"
 
-#: Beneath a claim the re-ask lists: the refs of the key facts about the entities it names, the only ones it is read
-#: against.
-_REASK_REFS: Final = "Its facts: {refs}"
+#: Beneath a claim the re-ask lists: the refs of its evidence, the only pieces it is read against (a doubted claim's,
+#: the key facts about the entities it names; a conflict's, what it cited on both sides).
+_REASK_REFS: Final = "Its evidence: {refs}"
 
 #: A key fact as a call is shown it after its ref: the text a key citation quotes.
 _FACT_LINE: Final = "A key fact about {entity}: {claim}"
@@ -517,8 +565,8 @@ class ClaimFinding:
     :ivar truth_citations: Case evidence cited for or against it, each checked.
     :ivar suspect: No case evidence bears on it, and the model doubts it: the judge's nomination for the web check.
     :ivar truth_call: The call whose answer stands for it, by its place in :attr:`Verification.calls`: its batch's,
-        the repair that fixed it, or the re-ask, shown the key facts naming its subject, whose citation stands. A
-        restatement's is its original's.
+        the repair that fixed it, or the re-ask (or the repair of its item) that decided it: a doubted claim's whose
+        citation stands, or a conflict's, whatever it cited. A restatement's is its original's.
     :ivar ground_citations: Documents the candidate was given that support it, each checked; empty when not asked.
     :ivar grounded: Whether one supports it; None when the criterion names no ``grounded_in``, or the ground step was
         lost.
@@ -570,8 +618,8 @@ class TruthVerdict:
 
     :ivar verdict: ``supported``, ``contradicted``, ``unverifiable`` or ``true_ungrounded``.
     :ivar graded_against: ``case`` or ``web``, what decided it; None for ``unverifiable``.
-    :ivar evidence_conflict: Case evidence both supports and contradicts it, and no override settles which stands; the
-        support stands.
+    :ivar evidence_conflict: Case evidence both supports and contradicts it, and no override settles which stands: it
+        reads ``unverifiable``.
     :ivar nominated_by: ``judge`` when no case evidence bears on it and the model doubts it; else None.
     """
 
@@ -588,14 +636,16 @@ def truth_verdict(
     web: WebOutcome | None = None,
     outranks: Mapping[str, frozenset[str]] | None = None,
 ) -> TruthVerdict:
-    """The verdict table: case support always reads supported, case contradiction contradicted, and the web decides
-    only a claim no case evidence bears on that the model doubts.
+    """The verdict table: case support alone reads supported, case contradiction alone contradicted, both
+    unverifiable with ``evidence_conflict``, and the web decides only a claim no case evidence bears on that the
+    model doubts.
 
-    Precedence comes first. A citation is overruled when another, of the opposite stance, cites a passage whose
-    document overrides the first one's (``outranks``); the table reads the citations that stand. So support from an
+    Precedence comes first (:func:`_standing`): the table reads the citations that stand. So support from an
     overridden document that an overriding one contradicts reads contradicted, the overriding document's support
     stands over the overridden one's contradiction, and where no overriding document cites the claim, every citation
-    stands. Overrides run in no cycle, so some citation always stands.
+    stands. Overrides run in no cycle, so some citation always stands. Citations still standing on both sides are a
+    conflict, which the verify step asks again (the re-ask): what this reads is what that left, and it never reads
+    evidence on both sides as support.
 
     :param citations: The claim's checked case citations.
     :param suspect: Whether the model doubts it, with no case evidence bearing on it.
@@ -606,14 +656,7 @@ def truth_verdict(
     :raises ValueError: A web outcome is given for a claim nobody nominated: the web never overrules case evidence and
         never checks a claim the model did not doubt.
     """
-    above = outranks or {}
-    standing = [
-        citation
-        for citation in citations
-        if not any(
-            other.stance != citation.stance and citation.ref in above.get(other.ref, frozenset()) for other in citations
-        )
-    ]
+    standing = _standing(citations, outranks)
     supports = any(citation.stance == "supports" for citation in standing)
     contradicts = any(citation.stance == "contradicts" for citation in standing)
     nominated = not citations and suspect
@@ -622,8 +665,10 @@ def truth_verdict(
             "a web outcome was given for a claim nobody nominated: the web checks only a claim no case evidence bears "
             "on that the judge doubts, and never overrules case evidence"
         )
+    if supports and contradicts:
+        return TruthVerdict("unverifiable", None, True, None)
     if supports:
-        return TruthVerdict("supported", "case", contradicts, None)
+        return TruthVerdict("supported", "case", False, None)
     if contradicts:
         return TruthVerdict("contradicted", "case", False, None)
     if not nominated:
@@ -633,6 +678,25 @@ def truth_verdict(
     if web == "false":
         return TruthVerdict("contradicted", "web", False, "judge")
     return TruthVerdict("unverifiable", None, False, "judge")
+
+
+def _standing(citations: Sequence[ClaimCitation], outranks: Mapping[str, frozenset[str]] | None) -> list[ClaimCitation]:
+    """The citations that stand once precedence is read: each but those another, of the opposite stance, overrules by
+    citing a passage whose document overrides the first one's (``outranks``)."""
+    above = outranks or {}
+    return [
+        citation
+        for citation in citations
+        if not any(
+            other.stance != citation.stance and citation.ref in above.get(other.ref, frozenset()) for other in citations
+        )
+    ]
+
+
+def _in_conflict(citations: Sequence[ClaimCitation], outranks: Mapping[str, frozenset[str]]) -> bool:
+    """Whether the citations that stand both support and contradict: a conflict, which the re-ask asks again."""
+    stances = {citation.stance for citation in _standing(citations, outranks)}
+    return stances == {"supports", "contradicts"}
 
 
 @dataclass(frozen=True)
@@ -1126,11 +1190,13 @@ class ClaimVerifier:
         each asked in full up to its attempts, at the step's evidence bound and the echo allowance for the claims of
         that batch's segments (:func:`~threetears.evals.kernel.claims.extraction.echo_chars`); and the most items the
         repair budget lets the step ask again, each at the evidence bound and the allowance for one claim, its answer
-        and its failure. Where the key states a fact, the truth step's one re-ask too, asked in full up to its attempts,
-        at every key fact and twice the cell's echo allowance, for its claims and the refs beneath each; its failing
-        items are among the truth step's repairs. The evidence bound is the key's facts as shown, and, for the passages, every character the
-        page budget lets the step read of its documents with each passage's heading. The ground step is priced only
-        where it is asked: ``grounded_in`` named, and a document of those provenances given.
+        and its failure. Wherever the truth step can be shown evidence (a key fact or a case document), its one re-ask
+        too, asked in full up to its attempts, at the truth step's evidence bound, since a doubted claim is shown key
+        facts and a conflict the key facts and case passages it cited, and at twice the cell's echo allowance, for its
+        claims and the refs beneath each; its failing items are among the truth step's repairs. The evidence bound is
+        the key's facts as shown, and, for the passages, every character the page budget lets the step read of its
+        documents with each passage's heading. The ground step is priced only where it is asked: ``grounded_in``
+        named, and a document of those provenances given.
 
         :param segments: The cell's segments.
         :param key: The case's reference key, or None.
@@ -1140,13 +1206,14 @@ class ClaimVerifier:
         cell = tuple(segments)
         given = tuple(documents or ())
         facts = [] if key is None else [(entity.name, fact) for entity in key.fact_entities for fact in entity.facts]
+        case = [document for document in given if document.provenance == "case"]
         steps: dict[_Step, str] = {
             "truth": self._evidence_bound(
                 [
                     _FACT_TEMPLATE.format(ref=f"K{at}", fact=_fact_line(entity, fact))
                     for at, (entity, fact) in enumerate(facts, start=1)
                 ],
-                [document for document in given if document.provenance == "case"],
+                case,
                 document_precedence(given),
             )
         }
@@ -1187,19 +1254,17 @@ class ClaimVerifier:
             if repair is None:
                 return None
             total += repair * self.repairs.max_items_per_cell
-        if facts:
-            # The re-ask: one call per cell, asked in full up to its attempts, shown at most every key fact, its claims
-            # and the refs beneath each within twice the cell's echo allowance. Its failing items are repaired within
-            # the truth step's items, priced above at the whole evidence.
+        if facts or case:
+            # The re-ask: one call per cell, asked in full up to its attempts, shown at most the truth step's evidence
+            # (a doubted claim's key facts, a conflict's cited facts and passages), its claims and the refs beneath
+            # each within twice the cell's echo allowance. Its failing items are repaired within the truth step's
+            # items, priced above at the whole evidence.
             reask = call_ceiling(
                 self.client,
                 system=self._reask_system(),
                 user=_AGAIN_TEMPLATE.format(
                     user=_REASK_TEMPLATE.format(
-                        evidence="\n\n".join(
-                            _FACT_TEMPLATE.format(ref=f"K{at}", fact=_fact_line(entity, fact))
-                            for at, (entity, fact) in enumerate(facts, start=1)
-                        ),
+                        evidence=steps["truth"],
                         claims=filler(2 * echo_chars(*(segment.text for segment in cell))),
                     ),
                     failure=echo,
@@ -1448,19 +1513,39 @@ class ClaimVerifier:
         calls: list[ClaimCall],
         ledger: RoleUsageLedger,
     ) -> None:
-        """Ask every truth claim whose standing answer cites nothing and is suspect, and that names a key entity
-        (:func:`_names_subject`, over its proposition and its restatements'), again in one call, each listed with the
-        refs of its own entities' facts and checked against those alone; repair its failing items within what the
-        truth step's repairs left; keep each answer that cites a fact.
+        """Ask the cell's doubted claims and its conflicts again, all in one call, each listed with the refs of its own
+        evidence and checked against those alone; repair its failing items within what the truth step's repairs left;
+        and read each answer by its kind's rule.
+
+        A doubted claim's standing answer cites nothing and is suspect, and it names a key entity
+        (:func:`_names_subject`, over its proposition and its restatements'): it is listed with its own entities'
+        facts, and an answer citing evidence replaces the batch's, while one citing nothing leaves the batch's
+        standing. A conflict's citations that stand after precedence (:func:`_in_conflict`) both support and
+        contradict it: it is listed with exactly what it cited, key facts and case passages, and its answer replaces
+        the batch's whatever it cites, while one citing nothing keeps the batch's citations, so the verdict table
+        reads it unverifiable with the conflict and never the batch's supported.
 
         :param asked: How many of the truth step's ``max_items_per_cell`` its repairs spent.
         :param called: Each key entity's name, and the folded words of its name and of each alias.
         :raises ClaimGradingFailed: The reply was cut short or could not be used in its attempts, or a failing item
             could not be repaired within the truth step's repair budget.
         """
+        outranks = shown.outranks()
         views: dict[tuple[_Step, int], _Shown] = {}
+        conflicts: set[tuple[_Step, int]] = set()
         for item, found in sorted(checked.items()):
-            if item[0] != "truth" or found.citations or not found.answer.suspect:
+            if item[0] != "truth":
+                continue
+            if _in_conflict(found.citations, outranks):
+                cited = {citation.ref for citation in found.citations}
+                views[item] = _Shown(
+                    tuple(entry for entry in shown.facts if entry[0] in cited),
+                    tuple(entry for entry in shown.passages if entry[0] in cited),
+                    shown.precedence,
+                )
+                conflicts.add(item)
+                continue
+            if found.citations or not found.answer.suspect:
                 continue
             said = [_words(claim.claim) for at, claim in enumerate(cell) if item[1] in (at, claim.restates)]
             if facts := tuple(
@@ -1471,16 +1556,20 @@ class ClaimVerifier:
             return
         listed = {ref for view in views.values() for ref in view.refs}
         claims = "\n\n".join(
-            _rendered_claim(position, cell) + "\n" + _REASK_REFS.format(refs=", ".join(ref for ref, _, _ in view.facts))
+            _rendered_claim(position, cell)
+            + "\n"
+            + _REASK_REFS.format(refs=", ".join([ref for ref, _, _ in view.facts] + [ref for ref, _ in view.passages]))
             for (_, position), view in views.items()
+        )
+        evidence = _Shown(
+            tuple(entry for entry in shown.facts if entry[0] in listed),
+            tuple(entry for entry in shown.passages if entry[0] in listed),
+            shown.precedence,
         )
         answers, call = await self._ask(
             role="truth",
             system=self._reask_system(),
-            first=_REASK_TEMPLATE.format(
-                evidence=_Shown(tuple(entry for entry in shown.facts if entry[0] in listed), ()).numbered(),
-                claims=claims,
-            ),
+            first=_REASK_TEMPLATE.format(evidence=evidence.numbered(), claims=claims),
             response_format=self._reask_response_format(),
             read=lambda content: _read_reask(content, tuple(position for _, position in views)),
             what=f"re-ask for claims {[position for _, position in views]}",
@@ -1489,8 +1578,18 @@ class ClaimVerifier:
         )
         reasked = {item: self._check(answers[item[1]], call, view) for item, view in views.items()}
         await self._repair("truth", reasked, cell, calls, ledger, asked=asked)
-        # A re-ask that cites nothing changes nothing: the batch's answer stands, and the claim goes on to the web.
-        checked.update({item: found for item, found in reasked.items() if found.citations})
+        for item, found in reasked.items():
+            if found.citations:
+                checked[item] = found
+            elif item in conflicts:
+                # A conflict's re-ask that cites nothing never falls back to the batch's answer: the batch's citations
+                # stay on record, both sides, and the call that cited nothing decided it, unverifiable.
+                before = checked[item]
+                checked[item] = _Checked(
+                    answer=before.answer, call=found.call, citations=before.citations, fault=None, shown=before.shown
+                )
+            # A doubted claim's re-ask that cites nothing changes nothing: the batch's answer stands, and the claim
+            # goes on to the web.
 
     async def _complete(
         self,

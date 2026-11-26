@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a case conflict is asked again and never reads supported by default, and a support covers every value
+
+**Fixed (#1338):** a world claim whose case evidence both supported and contradicted it read `supported` with
+`evidence_conflict`. In a broadcast pass, a planted false claim read so whenever a key fact gave another value for what
+it stated ("began in Glasgow", the key "in Edinburgh") and the judge cited a fact about another property as support.
+Such a claim (its citations, once precedence is read, still on both sides) now joins the cell's one re-ask call, shown
+exactly the key facts and case passages it cited on both sides and checked against those alone, with every citation
+check. Only support cited reads `supported`, only contradiction `contradicted`, both from the case. Both sides cited,
+or nothing, reads `unverifiable` with `evidence_conflict`: a conflict's re-ask that cites nothing never falls back to
+the batch's answer, the opposite of a doubted claim's re-ask, where citing nothing leaves the batch's answer standing.
+The web never checks a conflict. Precedence still decides first: a case document's support over an overridden
+document's contradiction reads `supported` and is not asked again. A key fact an overriding document contradicts is now
+a conflict, asked again. The known limit: the re-ask is shown the very evidence the batch misread, so a model that
+cites the other property's fact as the only support again still reads `supported`.
+
+**Changed:** the truth and re-ask rules say a claim stating several values ("performed drums and vocals") is supported
+only where what is cited as support, one piece or several together, states every value it states; evidence that states
+some and is silent on the rest is not cited as support, and evidence giving another value for one of them contradicts.
+A value joint by meaning ("written by two people together") is one value. This binds the model by rule; code cannot
+read whether evidence covers a value, so a reply citing a partial support still reads `supported`. A true compound the
+evidence states only in part now reads `unverifiable`, so supported counts may fall.
+
+**Cost:** no added call where a cell already asks a doubted claim again: a conflict rides in that call. A cell with a
+conflict and no doubted claim naming a key entity makes one re-ask (at most three attempts) where it made none. The
+re-ask is priced wherever the truth step is shown evidence, a key fact or a case document, at the truth step's whole
+evidence, so a claims criterion's price ceiling rises for cells with case documents. Its failing items are repaired
+within the truth step's `max_items_per_cell`; `RepairBudget`'s arithmetic is unchanged. The re-ask rule (now
+`reask-v2`) and the every-value rule move the claim verifier's identity once, so every claims criterion's fingerprint
+moves, and grades made before and after this never pool. The web step's identity does not move.
+
+**For hosts:** deploy the reader everywhere before any cell is graded or re-read under this build, and do not roll back
+past it once one has been. A stored claim may now read `unverifiable` with `evidence_conflict` (a `GradedClaim`), and a
+tally may count a conflict among its unverifiable claims (`ClaimJudgeCounts.evidence_conflicts` now nests in supported
+plus unverifiable); a build from before this change refuses both by name ("case evidence in conflict reads
+supported, not 'unverifiable'"; "counts do not nest: evidence_conflicts"), so it cannot load a trace or result graded
+here. Grades stored before load as they were, a conflict among them still `supported`. Nothing to change in code.
+Re-judging stored cells gives a new fingerprint; the `evidence_conflicts` and `unverifiable` readings' descriptions
+say what they now count.
+
 ### evals: a type checker refuses a misspelt name from the package root
 
 **Fixed:** `from threetears.evals import Evall` passed strict mypy, typed `Any`, because the root's module

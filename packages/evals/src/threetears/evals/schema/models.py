@@ -6206,9 +6206,9 @@ class EvidenceDocument(CoreShapeModel):
         "with opposite stances, its own stance decides (house rules over a rulebook, an erratum over its text, a "
         "policy update over the old policy). Where it is silent, the other's stands. Precedence follows the chain: a "
         "document overrides what the documents it overrides override. It never reaches the case key's facts, which "
-        "are no document: a key fact an overriding document contradicts reads supported with a conflict, so keep key "
-        "facts to the values in force. Empty (left out) for a document that overrides none, and always for a `run` "
-        "document.",
+        "are no document: a key fact an overriding document contradicts is a conflict, asked again and, while still "
+        "cited on both sides, read unverifiable, so keep key facts to the values in force. Empty (left out) for a "
+        "document that overrides none, and always for a `run` document.",
     )
 
     @field_validator("text", mode="after")
@@ -6447,7 +6447,9 @@ class GradedClaim(CoreShapeModel):
     )
     evidence_conflict: bool = Field(
         default=False,
-        description="Case evidence both supports and contradicts it, and no document's override settles which stands.",
+        description="Case evidence both supports and contradicts it, and no document's override settles which stands. "
+        "Asked again, it reads `unverifiable` while its evidence still stands on both sides or the re-ask cites "
+        "nothing; a grade stored before conflicts were asked again reads `supported`.",
     )
     web: Literal["checked", "skipped_cap", "lost", "none"] = Field(
         default="none",
@@ -6498,8 +6500,13 @@ class GradedClaim(CoreShapeModel):
             )
         if self.graded_against == "case" and not self.truth_citations:
             raise ValueError(f"claim {self.claim!r} was decided by case evidence it cites none of")
-        if self.evidence_conflict and self.verdict != "supported":
-            raise ValueError(f"claim {self.claim!r}: case evidence in conflict reads supported, not {self.verdict!r}")
+        # A conflict reads unverifiable; a grade stored before conflicts were asked again read it supported, and
+        # still loads.
+        if self.evidence_conflict and self.verdict not in {"supported", "unverifiable"}:
+            raise ValueError(
+                f"claim {self.claim!r}: case evidence in conflict reads supported (a grade stored before conflicts "
+                f"were asked again) or unverifiable, not {self.verdict!r}"
+            )
         if (self.web != "none" or self.graded_against == "web") and self.nominated_by is None:
             raise ValueError(f"claim {self.claim!r} went to the web check, and nobody nominated it")
         if self.graded_against == "web" and self.web != "checked":
@@ -6756,7 +6763,8 @@ class ClaimJudgeCounts(CoreShapeModel):
             ),
             ("grounded_specific", self.grounded_specific, self.asserted_specific),
             ("contradicted + unverifiable + true_ungrounded", self.claims - supported, self.claims),
-            ("evidence_conflicts", self.evidence_conflicts, supported),
+            # A conflict reads unverifiable, or supported in a grade stored before conflicts were asked again.
+            ("evidence_conflicts", self.evidence_conflicts, supported + self.unverifiable),
             ("web_checked + web_skipped", self.web_checked + self.web_skipped, self.claims),
             ("true_ungrounded", self.true_ungrounded, self.web_checked),
             ("web_decided", self.web_decided, min(self.asserted, self.web_checked)),

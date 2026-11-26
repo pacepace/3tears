@@ -3,8 +3,9 @@
 Every behaviour is driven through a client that answers from a script and records what it was sent, so nothing is
 spent and each reply is chosen. The truth step sees the case key's facts (``K1..``) and passages of the case's own
 documents (``S1..``) and never a document the candidate fetched; the ground step, asked only under ``grounded_in``,
-sees only those documents. Code derives every verdict: case support always reads supported, case contradiction
-contradicted, and only a claim no case evidence bears on that the model doubts is nominated for the web. Each
+sees only those documents. Code derives every verdict: case support alone reads supported, case contradiction alone
+contradicted, both (asked again, and still both) unverifiable with the conflict, and only a claim no case evidence
+bears on that the model doubts is nominated for the web. Each
 citation's quote is a stretch of the evidence shown, a passage or a key fact's line, with its subject and value found
 inside it and no sentence end or line break between them (a full stop after an abbreviation is none): that narrows a neighbouring value to one sentence or row (a
 semicolon joins clauses of one sentence), keeps a key fact from supporting a value it does not state, and what one
@@ -754,7 +755,15 @@ async def test_a_fact_the_key_omits_contradicts_nothing() -> None:
     assert "An omission contradicts nothing" in client.calls[1]["system"]
 
 
-async def test_case_support_with_a_case_contradiction_reads_supported_with_a_conflict() -> None:
+#: The catalogue's line, cited against the authorship claim: a conflict with the key's support.
+_CATALOGUE_CONTRADICTS = _cite(
+    "S2", "contradicts", quote="Harrow Tales: written by Ida Venn", subject="Harrow Tales", value="Ida Venn"
+)
+
+
+async def test_case_support_with_a_case_contradiction_still_both_when_asked_again_reads_unverifiable_with_a_conflict() -> (
+    None
+):
     other = EvidenceDocument(
         id="catalogue", provenance="case", title="A catalogue", text="Harrow Tales: written by Ida Venn, 1932."
     )
@@ -765,22 +774,22 @@ async def test_case_support_with_a_case_contradiction_reads_supported_with_a_con
                 _answer(
                     1,
                     _WRITTEN_BY_IDA_VENN,
-                    _cite(
-                        "S2",
-                        "contradicts",
-                        quote="Harrow Tales: written by Ida Venn",
-                        subject="Harrow Tales",
-                        value="Ida Venn",
-                    ),
+                    _CATALOGUE_CONTRADICTS,
                 ),
                 _answer(2),
             ),
+            _reasked((1, [_WRITTEN_BY_IDA_VENN, _CATALOGUE_CONTRADICTS])),
         ]
     )
 
     grade = _grade(_CLAIMS, await _verify(client, documents=(_PRESS, other)))
 
-    assert (grade.claims[1].verdict, grade.claims[1].evidence_conflict) == ("supported", True)
+    assert (grade.claims[1].verdict, grade.claims[1].graded_against, grade.claims[1].evidence_conflict) == (
+        "unverifiable",
+        None,
+        True,
+    )
+    assert "Its evidence: K1, S2" in client.calls[2]["user"], "asked again, shown both sides it cited"
 
 
 async def test_a_claim_no_evidence_covers_that_the_model_doubts_is_nominated_and_reads_unverifiable_with_web_off() -> (
@@ -790,7 +799,7 @@ async def test_a_claim_no_evidence_covers_that_the_model_doubts_is_nominated_and
 
     grade = _grade(_CLAIMS, await _verify(client))
 
-    assert "Its facts: K1" in client.calls[2]["user"], "it names Harrow Tales, a key entity: asked again"
+    assert "Its evidence: K1" in client.calls[2]["user"], "it names Harrow Tales, a key entity: asked again"
     chapters = grade.claims[2]
     assert (chapters.suspect, chapters.nominated_by, chapters.verdict, chapters.web) == (
         True,
@@ -808,7 +817,7 @@ _CONTRADICTION = ClaimCitation(ref="K2", stance="contradicts")
     ("citations", "suspect", "web", "expected"),
     [
         ((_SUPPORT,), False, None, ("supported", "case", False, None)),
-        ((_SUPPORT, _CONTRADICTION), False, None, ("supported", "case", True, None)),
+        ((_SUPPORT, _CONTRADICTION), False, None, ("unverifiable", None, True, None)),
         ((_CONTRADICTION,), False, None, ("contradicted", "case", False, None)),
         ((), True, "true", ("true_ungrounded", "web", False, "judge")),
         ((), True, "false", ("contradicted", "web", False, "judge")),
@@ -886,17 +895,19 @@ async def test_support_from_an_overridden_document_its_override_contradicts_read
     overridden: bool,
 ) -> None:
     update = _UPDATE if overridden else _UPDATE.model_copy(update={"overrides": ()})
+    both = (_TWO_WEEKS_IN_THE_POLICY, _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts"))
     client = _FakeScriptedClient(
-        _loan_replies(
-            _answer(0, _TWO_WEEKS_IN_THE_POLICY, _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts")),
-            _answer(1, _RENEW_ONCE_IN_THE_POLICY),
-        )
+        [
+            *_loan_replies(_answer(0, *both), _answer(1, _RENEW_ONCE_IN_THE_POLICY)),
+            # With no override the two documents conflict, and a re-ask that still cites both leaves it unsettled.
+            *([] if overridden else [_reasked((0, list(both)))]),
+        ]
     )
 
     grade = _grade(_LOAN_CLAIMS, await _verify(client, _LOAN_CLAIMS, key=None, documents=(_POLICY, update)))
 
     two_weeks, renew_once, _ = grade.claims
-    expected = ("contradicted", "case", False) if overridden else ("supported", "case", True)
+    expected = ("contradicted", "case", False) if overridden else ("unverifiable", None, True)
     assert (two_weeks.verdict, two_weeks.graded_against, two_weeks.evidence_conflict) == expected
     assert [c.stance for c in two_weeks.truth_citations] == ["supports", "contradicts"], "both stay on the record"
     assert (renew_once.verdict, renew_once.evidence_conflict) == ("supported", False), (
@@ -946,8 +957,8 @@ async def test_precedence_follows_the_chain_past_a_silent_document_between() -> 
 
 
 async def test_a_key_fact_sits_outside_precedence() -> None:
-    """A key fact is no document: an overriding document's contradiction does not overrule it, and it reads as the
-    conflict it is."""
+    """A key fact is no document: an overriding document's contradiction does not overrule it, so it is the conflict
+    it is, asked again, and still cited on both sides it reads unverifiable."""
     key = ReferenceKey(
         core=(
             ReferenceEntity(
@@ -956,20 +967,15 @@ async def test_a_key_fact_sits_outside_precedence() -> None:
             ),
         )
     )
-    client = _FakeScriptedClient(
-        _loan_replies(
-            _answer(
-                0,
-                _cite("K1", quote="A loan runs two weeks.", subject="A loan", value="two weeks"),
-                _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts"),
-            ),
-            _answer(1),
-        )
+    both = (
+        _cite("K1", quote="A loan runs two weeks.", subject="A loan", value="two weeks"),
+        _stance(_THREE_WEEKS_IN_THE_UPDATE, "contradicts"),
     )
+    client = _FakeScriptedClient([*_loan_replies(_answer(0, *both), _answer(1)), _reasked((0, list(both)))])
 
     grade = _grade(_LOAN_CLAIMS, await _verify(client, _LOAN_CLAIMS, key=key, documents=(_POLICY, _UPDATE)))
 
-    assert (grade.claims[0].verdict, grade.claims[0].evidence_conflict) == ("supported", True)
+    assert (grade.claims[0].verdict, grade.claims[0].evidence_conflict) == ("unverifiable", True)
 
 
 async def test_an_override_of_a_document_the_call_was_not_shown_is_not_stated() -> None:
@@ -1020,11 +1026,11 @@ _S_OVERRIDES = {"S2": frozenset({"S1"})}
     ("citations", "outranks", "expected"),
     [
         ((_S_SUPPORT, _S_CONTRADICTION), _S_OVERRIDES, ("contradicted", False)),
-        ((_S_SUPPORT, _S_CONTRADICTION), {}, ("supported", True)),
+        ((_S_SUPPORT, _S_CONTRADICTION), {}, ("unverifiable", True)),
         ((_S_SUPPORT, _S_CONTRADICTION), {"S1": frozenset({"S2"})}, ("supported", False)),
         ((_S_SUPPORT,), _S_OVERRIDES, ("supported", False)),
         ((_S_CONTRADICTION,), _S_OVERRIDES, ("contradicted", False)),
-        ((_SUPPORT, _S_CONTRADICTION), _S_OVERRIDES, ("supported", True)),
+        ((_SUPPORT, _S_CONTRADICTION), _S_OVERRIDES, ("unverifiable", True)),
         ((_S_SUPPORT, ClaimCitation(ref="S2", stance="supports")), _S_OVERRIDES, ("supported", False)),
     ],
     ids=[
@@ -1043,7 +1049,7 @@ def test_precedence_in_the_verdict_table(
     verdict = truth_verdict(citations, suspect=False, outranks=outranks)
 
     assert (verdict.verdict, verdict.evidence_conflict) == expected
-    assert verdict.graded_against == "case"
+    assert verdict.graded_against == (None if verdict.evidence_conflict else "case")
 
 
 # --- house rules, summaries and the candidate's own documents ---------------------------------------------------------
@@ -1937,7 +1943,7 @@ async def test_a_suspect_claim_a_key_fact_about_its_subject_bears_on_is_asked_ag
     assert [call.role for call in grade.calls] == ["truth", "truth"]
     assert _schema(client.calls[1]) == "claim_reask"
     asked = client.calls[1]["user"]
-    assert f"K2. A key fact about Ann Lee: {fact}" in asked and "Its facts: K2" in asked
+    assert f"K2. A key fact about Ann Lee: {fact}" in asked and "Its evidence: K2" in asked
     assert "Ada Moss" not in asked and _PRESS.text not in asked, "the re-ask is shown the claim's entities' facts alone"
 
 
@@ -2256,11 +2262,12 @@ async def test_an_unreadable_reask_is_asked_again_in_full_and_one_never_readable
 
 
 async def test_the_price_ceiling_bounds_the_reask() -> None:
-    """The re-ask is priced once per cell, asked in full up to its attempts, at every key fact."""
+    """The re-ask is priced once per cell, asked in full up to its attempts, at the truth step's evidence: against a
+    cell shown no evidence, which asks no re-ask, the difference holds every re-ask call made."""
     repairs = RepairBudget(rounds=0, max_items_per_cell=0)
     key = _key(("Ann Lee", _LEEDS))
     ceiling = _verifier(_FakeBytePricedClient([]), repairs=repairs).price_ceiling(_LEE, key=key, documents=(_PRESS,))
-    unkeyed = _verifier(_FakeBytePricedClient([]), repairs=repairs).price_ceiling(_LEE, key=None, documents=(_PRESS,))
+    unkeyed = _verifier(_FakeBytePricedClient([]), repairs=repairs).price_ceiling(_LEE, key=None, documents=())
     client = _FakeScriptedClient([_doubted(), *[_Reply(content="not json")] * 2, _reasked((0, [_IN_LEEDS]))])
 
     await _verify(client, (_LIVES_IN_YORK,), key=key, documents=(_PRESS,), repairs=repairs)
@@ -2275,7 +2282,7 @@ async def test_the_price_ceiling_bounds_the_reask() -> None:
 #: the shipped prompts, schemas, selection, batch and sentence-break rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:21a9a6b8ab71"
+_PINNED_IDENTITY = "scripted/verify|claimverify:340d6258dbf1"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:

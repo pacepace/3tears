@@ -395,6 +395,22 @@ def test_case_evidence_on_both_sides_reads_supported_and_is_counted() -> None:
     assert _moved(_BASE, _readings(_swap(1, conflicted))) == {"evidence_conflicts"}
 
 
+def test_a_conflict_asked_again_and_still_unsettled_reads_unverifiable_and_is_counted_among_them() -> None:
+    """Asked again, a conflict that still cites both sides (or cites nothing) reads unverifiable: it leaves the
+    supported claims and joins the unverifiable ones, counted as a conflict, and never as false."""
+    conflicted = _claim(
+        1,
+        truth_citations=(*_SUPPORTS_CASE, *_CONTRADICTS_CASE),
+        evidence_conflict=True,
+        verdict="unverifiable",
+        graded_against=None,
+    )
+
+    moved = _moved(_BASE, _readings(_swap(1, conflicted)))
+
+    assert moved == {"evidence_conflicts", "unverifiable"}, "never false, and its grounding untouched"
+
+
 def test_one_lie_in_each_of_two_units_against_two_in_one_unit() -> None:
     """R1 reads the two alike; R1b, which counts a unit once, does not."""
     spread = _readings((_session(), _false(1), _claim(2), _false(3), _claim(4)))

@@ -389,6 +389,41 @@ async def test_case_evidence_decides_a_claim_the_web_never_searches_past(stance:
     assert port.queries == [] and "claim_web_queries" not in judge.asked, "the web never overrules case evidence"
 
 
+async def test_a_case_conflict_the_reask_still_cites_both_sides_of_is_never_searched_with_the_web_on() -> None:
+    """A conflict between case documents is the case's to settle: one its re-ask still cites both sides of reads
+    unverifiable with the conflict, and the web never checks it, though the web is on and its budget is untouched."""
+    later = "The Lantern Almanac was first printed in 1923."
+    catalogue = EvidenceDocument(id="catalogue", provenance="case", title="Catalogue", text=_FIRST)
+    press = EvidenceDocument(id="press-ledger", provenance="case", title="Press ledger", text=later)
+    evidence = ClaimEvidence(segmentation="sentences-v1", segments=_SEGMENTS, documents=(catalogue, press))
+    both = [
+        {"ref": "S1", "stance": "supports", "quote": _FIRST, "subject": "The Lantern Almanac", "value": "1921"},
+        {"ref": "S2", "stance": "contradicts", "quote": later, "subject": "The Lantern Almanac", "value": "1923"},
+    ]
+    judge = _FakeWebJudge(
+        script={
+            "claim_truth": [_truth(0, suspect=False, cited=both)],
+            "claim_reask": [json.dumps({"claims": [{"claim": 0, "citations": both}]})],
+        }
+    )
+    port = _FakeWebSearch()
+
+    result, trace = await _cell(judge, port, evidence=evidence)
+
+    (claim,) = trace.claim_grades[_CRITERION].claims
+    assert (claim.verdict, claim.graded_against, claim.evidence_conflict, claim.nominated_by, claim.web) == (
+        "unverifiable",
+        None,
+        True,
+        None,
+        "none",
+    )
+    assert judge.asked.count("claim_reask") == 1
+    assert port.queries == [] and "claim_web_queries" not in judge.asked, "the web never decides a case conflict"
+    (counts,) = result.claim_tallies[_CRITERION].by_judge
+    assert (counts.unverifiable, counts.evidence_conflicts) == (1, 1)
+
+
 async def test_the_web_step_is_shown_neither_the_candidates_documents_nor_any_case_evidence() -> None:
     judge = _FakeWebJudge()
     case = EvidenceDocument(id="rules", provenance="case", title="Reading room rules", text=_ROOM_RULES)

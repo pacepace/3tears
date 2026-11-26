@@ -184,7 +184,8 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             share=False,
             formula="world claims neither supported nor contradicted",
             population=_TALLIED,
-            evidence="world claims of every tag no case evidence covered and no web check settled",
+            evidence="world claims of every tag that no case evidence covered and no web check settled, and those whose "
+            "case evidence both supports and contradicts them, asked again and still unsettled",
         ),
         "true_ungrounded": _Reading(
             "Claims only the web confirmed",
@@ -210,7 +211,9 @@ _READINGS: Final[Mapping[str, _Reading]] = MappingProxyType(
             share=False,
             formula="world claims with case evidence on both sides",
             population=_TALLIED,
-            evidence="world claims of every tag; such a claim reads supported",
+            evidence="world claims of every tag whose case evidence, once precedence is read, both supports and "
+            "contradicts them, and that asked again still cite both sides or cite nothing; each reads unverifiable, "
+            "never supported (a grade stored before conflicts were asked again reads it supported)",
         ),
         "web_checked": _Reading(
             "Claims checked on the web",

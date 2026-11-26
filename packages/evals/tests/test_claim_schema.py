@@ -796,7 +796,9 @@ def test_a_tally_holds_every_count_the_diagnostics_read_and_the_tags_nest() -> N
         pytest.param(
             {"contradicted": 4, "unverifiable": 1}, "contradicted + unverifiable", id="more-verdicts-than-claims"
         ),
-        pytest.param({"evidence_conflicts": 2}, "evidence_conflicts", id="more-conflicts-than-supported"),
+        pytest.param(
+            {"evidence_conflicts": 3}, "evidence_conflicts", id="more-conflicts-than-supported-and-unverifiable"
+        ),
         pytest.param({"web_checked": 0, "web_decided": 0}, "true_ungrounded", id="true-ungrounded-unchecked"),
         pytest.param({"web_decided": 3, "web_checked": 3}, "web_decided", id="web-decided-unasserted"),
     ],
