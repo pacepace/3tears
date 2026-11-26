@@ -1385,6 +1385,22 @@ class EpochGenerationSource(_ChangeLogReading):
             return None
         return read_logged_epoch_change(entry.value, _token(state.incarnation, seq))
 
+    async def label_cleanup_floor(self, floor: int) -> ChangeLogState:
+        """publish the restore window's cleanup floor F in the log's state, for its current incarnation: what a pod's
+        reader, which may not read the log by sequence, learns F from (``ChangeLogState.cleanup_floor``). The log's
+        owner (its keeper) calls it when F moved.
+
+        :param floor: F
+        :ptype floor: int
+        :return: what the log holds after
+        :rtype: ChangeLogState
+        :raises GenerationUnavailableError: when the log is absent or cannot be updated
+        """
+        try:
+            return await self._log().label_cleanup_floor(floor)
+        except KvError as exc:
+            raise GenerationUnavailableError(f"the change log's cleanup floor could not be published: {exc}") from exc
+
     async def observe_change_log_fill(self) -> float | None:
         """measure how full the change log is, set ``threetears_epoch_changes_fill_ratio``, and warn near full.
 

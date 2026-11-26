@@ -17,6 +17,19 @@ least-recently-used eviction is gone (there is nothing kept to choose among); a 
 let-go still in flight before it is refused. ``threetears_cache_evictions_total`` counts those waits, and
 ``threetears_cache_evicted_age_seconds`` reports how long the version had been superseded. ``SharedArrowStore.settle``
 also waits for the let-gos its sweep started.
+### core, epoch, nats: a pod learns the cleanup floor from the change log's state
+
+**Added:** the change log's owner publishes the restore window's cleanup floor F in the log's stream metadata
+(``threetears_cleanup_floor``, ``<incarnation>:<F>``), and ``ChangeLogState.cleanup_floor`` reads it back for the log's
+own incarnation (``None`` when absent, malformed, or another incarnation's). ``LogKeeper`` publishes it at each mark where
+F moved, and only under ``keeps_log=True`` (the hub's keeper): one read of the oldest record by sequence a mark, one
+stream update only when F moved (``NatsChangeLog.label_cleanup_floor``, ``EpochGenerationSource.label_cleanup_floor``;
+the fake log too). ``quiet_cleanup.log_window_floor`` now takes any reader of the log's state
+(``ChangeLogStateReading``): a ``ChangeLogWindow`` (the hub) still reads F by sequence (``held_window_floor``); any
+other reader (a pod's ``EpochGenerationReader``, which is not granted ``ChangeLog.at``) takes the published F. No new
+grant. Rolling: a log no owner published a floor in (an older hub) gives a pod ``None``, and its cleanup removes nothing;
+the hub's broker still bounds every cleanup delete by its own live F. ``ChangeLogLike`` gains
+``label_cleanup_floor``; a keeper's log (``_ChangeLogKeeping``) does too.
 
 ### core: a keyed update of a stamped table writes its live rows alone
 

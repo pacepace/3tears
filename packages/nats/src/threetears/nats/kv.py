@@ -88,12 +88,15 @@ from threetears.nats.errors import (
 from threetears.nats import kv_watch
 from threetears.nats.capabilities import ChangeLogBinder, KvPublisher, TypedSubscriber
 from threetears.nats.change_log import (
+    CHANGE_LOG_CLEANUP_FLOOR_METADATA,
     CHANGE_LOG_CONTINUES_METADATA,
     CHANGE_LOG_RESTORING_METADATA,
     CHANGE_LOG_COVERED_FROM_METADATA,
     CHANGE_LOG_INCARNATION_METADATA,
     ChangeLogEntry,
     ChangeLogState,
+    cleanup_floor_metadata,
+    published_cleanup_floor,
 )
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
@@ -4050,6 +4053,7 @@ class NatsChangeLog:
             covered_from=int(covered) if continues and covered.isdigit() else None,
             max_age=timedelta(seconds=float(info.config.max_age)) if info.config.max_age else None,
             restoring=str(restoring) if restoring else None,
+            cleanup_floor=published_cleanup_floor(metadata.get(CHANGE_LOG_CLEANUP_FLOOR_METADATA), str(incarnation)),
         )
 
     async def label_restored(self, *, continues: tuple[str, int | None]) -> ChangeLogState:
@@ -4065,6 +4069,48 @@ class NatsChangeLog:
         :raises KvBucketNotFoundError: when the broker holds no such stream
         :raises KvError: when the stream cannot be read or updated
         """
+
+        def labelled(metadata: dict[str, str], _incarnation: str) -> dict[str, str]:
+            """the metadata with the restore's label in place of its being restored."""
+            kept = {key: value for key, value in metadata.items() if key != CHANGE_LOG_RESTORING_METADATA}
+            kept[CHANGE_LOG_CONTINUES_METADATA] = continues[0]
+            kept[CHANGE_LOG_COVERED_FROM_METADATA] = "" if continues[1] is None else str(continues[1])
+            return kept
+
+        return await self._relabel(labelled, "labelled restored")
+
+    async def label_cleanup_floor(self, floor: int) -> ChangeLogState:
+        """publish the restore window's cleanup floor F in the log's metadata, for its current incarnation
+        (:data:`~threetears.nats.change_log.CHANGE_LOG_CLEANUP_FLOOR_METADATA`): what a reader that may not read the
+        log by sequence (a pod) reads F from, in the ``STREAM.INFO`` it already reads (:meth:`state`). Only the log's
+        owner calls it (a stream update is a management verb no pod is granted), and only when F moved.
+
+        :param floor: F
+        :ptype floor: int
+        :return: what it holds after
+        :rtype: ChangeLogState
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the stream cannot be read or updated
+        """
+
+        def published(metadata: dict[str, str], incarnation: str) -> dict[str, str]:
+            """the metadata publishing F for the log's incarnation."""
+            return {**metadata, CHANGE_LOG_CLEANUP_FLOOR_METADATA: cleanup_floor_metadata(floor, incarnation)}
+
+        return await self._relabel(published, "labelled with its cleanup floor")
+
+    async def _relabel(self, change: Callable[[dict[str, str], str], dict[str, str]], what: str) -> ChangeLogState:
+        """rewrite the stream's metadata through ``change`` (given it and the log's incarnation), and say what it holds.
+
+        :param change: the metadata wanted, from the metadata held and the incarnation
+        :ptype change: Callable[[dict[str, str], str], dict[str, str]]
+        :param what: what the change does, for errors
+        :ptype what: str
+        :return: what it holds after
+        :rtype: ChangeLogState
+        :raises KvBucketNotFoundError: when the broker holds no such stream
+        :raises KvError: when the stream cannot be read or updated
+        """
         js = self._client.jetstream_context()
         try:
             info = await self._call(lambda: js.stream_info(self._stream), "change log info")
@@ -4072,21 +4118,18 @@ class NatsChangeLog:
             raise KvBucketNotFoundError(f"change log {self._stream} is absent", bucket=self._bucket) from exc
         except _BOUNDED_CALL_FAILURES as exc:
             raise KvError(f"change log {self._stream} could not be read: {exc}") from exc
-        metadata = {
-            key: value for key, value in (info.config.metadata or {}).items() if key != CHANGE_LOG_RESTORING_METADATA
-        }
-        metadata[CHANGE_LOG_CONTINUES_METADATA] = continues[0]
-        metadata[CHANGE_LOG_COVERED_FROM_METADATA] = "" if continues[1] is None else str(continues[1])
-        updated = dataclasses.replace(info.config, metadata=metadata)
+        held = dict(info.config.metadata or {})
+        incarnation = held.get(CHANGE_LOG_INCARNATION_METADATA) or f"created-{info.created}"
+        updated = dataclasses.replace(info.config, metadata=change(held, str(incarnation)))
         try:
             await self._call(lambda: js.update_stream(updated), "change log label")
         except APIError as exc:
-            raise KvError(f"change log {self._stream} could not be labelled restored: {exc}") from exc
+            raise KvError(f"change log {self._stream} could not be {what}: {exc}") from exc
         except _BOUNDED_CALL_FAILURES as exc:
-            raise KvError(f"change log {self._stream} could not be labelled restored: {exc}") from exc
+            raise KvError(f"change log {self._stream} could not be {what}: {exc}") from exc
         state = await self.state()
         if state is None:
-            raise KvBucketNotFoundError(f"change log {self._stream} vanished as it was labelled", bucket=self._bucket)
+            raise KvBucketNotFoundError(f"change log {self._stream} vanished as it was {what}", bucket=self._bucket)
         return state
 
     async def append(self, key: str, value: bytes, *, msg_id: str) -> int:

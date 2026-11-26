@@ -18,6 +18,12 @@ a restore from that mark reads the tables from X and labels the new log as cover
 for the log's whole window (:meth:`LogKeeper.keep_window_marks`): the newest mark before the log's oldest record (the
 anchor) and every one after it; never by age or a TTL.
 
+**The cleanup floor, published.** At each mark the log's owner reads the window's cleanup floor F (``quiet_cleanup.
+held_window_floor``: one read of the oldest record by sequence) and, where it moved, publishes it in the log's stream
+metadata (``ChangeLogState.cleanup_floor``, one stream update). A pod may not read the log by sequence (``ChangeLog.at``),
+so its quiet-time cleanup learns F there, in the ``STREAM.INFO`` it already reads; a log no owner published one in
+(an older hub) has none, and that cleanup removes nothing.
+
 **What the keeper knows of the log is its newest mark.** No row holds the keeper's state: the log it last knew is the
 incarnation its newest mark names (:meth:`LogKeeper.newest_mark`, one row read backwards through the marks' time
 index). A pass that finds another log than that one takes it at once by marking it, so the newest mark always names
@@ -83,6 +89,7 @@ from threetears.observe.metrics import counter, gauge
 from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, NotedChange
 from threetears.core.collections.epoch_change import EpochChange, EpochWalk
+from threetears.core.collections.quiet_cleanup import held_window_floor
 from threetears.core.collections.table_restore import RestoredTable, StampedTable, TableChanges, restored_tables
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
@@ -232,6 +239,17 @@ class _ChangeLogKeeping(Protocol):
         :return: the record, or ``None`` when the log no longer holds it
         :rtype: EpochChange | None
         :raises GenerationUnavailableError: when the log cannot be read
+        """
+        ...
+
+    async def label_cleanup_floor(self, floor: int) -> ChangeLogState:
+        """publish the restore window's cleanup floor F in the log's state, for its current incarnation.
+
+        :param floor: F
+        :ptype floor: int
+        :return: what the log holds after
+        :rtype: ChangeLogState
+        :raises GenerationUnavailableError: when the log is absent or cannot be updated
         """
         ...
 
@@ -697,7 +715,27 @@ class LogKeeper:
             read_at,
         )
         await self.keep_window_marks(state)
+        if self._keeps_log:
+            await self._publish_floor(state)
         return True
+
+    async def _publish_floor(self, state: ChangeLogState) -> int | None:
+        """publish the restore window's cleanup floor F in the log's state where it moved: what a pod's quiet-time
+        cleanup reads F from (``quiet_cleanup.log_window_floor`` over a reader with no read by sequence). Only the
+        log's owner publishes, at each mark: one read of the oldest record by sequence, and one stream update only when
+        F moved. A pod's F is then at most one mark old; the broker still bounds every cleanup delete by its live F.
+
+        :param state: the log, as this pass read it
+        :ptype state: ChangeLogState
+        :return: the floor published, or None when it did not move or cannot be known
+        :rtype: int | None
+        :raises GenerationUnavailableError: when the log cannot be read or updated
+        """
+        floor = await held_window_floor(self._log, state)
+        if floor is None or floor == state.cleanup_floor:
+            return None
+        await self._log.label_cleanup_floor(floor)
+        return floor
 
     async def drop_marks_before(self, at: datetime) -> int:
         """delete the marks written before ``at``, a page at a time through the marks' time index (no cache serves
