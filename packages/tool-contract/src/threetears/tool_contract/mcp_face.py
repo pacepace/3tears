@@ -100,8 +100,8 @@ def _call_result(result: ToolResult, *, structured: bool) -> mcp_types.CallToolR
 
     :param result: what the tool returned
     :ptype result: ToolResult
-    :param structured: whether the tool declares an output schema, so a success's content, a JSON object, is its
-        structured content too
+    :param structured: whether the tool declares an output schema, so its content, a JSON object, is its structured
+        content too, on a success and a failure alike
     :ptype structured: bool
     :return: the call's result
     :rtype: mcp.types.CallToolResult
@@ -113,11 +113,14 @@ def _call_result(result: ToolResult, *, structured: bool) -> mcp_types.CallToolR
             # a tool with an output schema whose content is no JSON object is refused by the server's output check
             return mcp_types.CallToolResult(content=[text], is_error=False)
         return mcp_types.CallToolResult(content=[text], is_error=False, structured_content=parsed)
-    return tool_error(
-        result.content or result.error or "",
-        code=_failure_code(result),
-        message=result.error or None,
-    )
+    # a structured tool's failure content, a JSON object, travels as structured content too, as its successes do; the
+    # output schema binds successes only (the server's output check and the SDK's clients skip an isError result), so
+    # the failure's shape need not fit it
+    text = result.content or result.error or ""
+    answered = tool_error(text, code=_failure_code(result), message=result.error or None)
+    failure = _json_object(text) if structured else None
+    # the text kept as the tool wrote it, as a success's is; the parsed object beside it
+    return answered if failure is None else answered.model_copy(update={"structured_content": failure})
 
 
 def _failure_code(result: ToolResult) -> ErrorCode | str | None:

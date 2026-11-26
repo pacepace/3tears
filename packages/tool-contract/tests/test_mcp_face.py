@@ -249,3 +249,35 @@ class TestRefusals:
 def test_every_result_code_is_one_of_the_mcp_servers_built_in_codes_with_its_meaning() -> None:
     """the error model is aligned with the ToolResult vocabulary: each code is known, under the same spelling."""
     assert set(TOOL_RESULT_ERROR_CODES) <= set(BUILTIN_ERROR_CODES)
+
+
+class TestAStructuredToolsFailure:
+    """a tool with an output schema sends its failure's JSON object as structured content too, as its successes."""
+
+    _SUCCESS_ONLY = {"type": "object", "properties": {"ok": {"const": True}}, "required": ["ok"]}
+
+    @pytest.mark.asyncio
+    async def test_the_failure_object_is_structured_content_beside_its_text_and_its_code(self) -> None:
+        envelope = '{"ok": false, "error": "tainted", "error_code": "tainted"}'
+        tool = _Send(
+            ToolResult(success=False, content=envelope, metadata={"error_code": "tainted"}),
+            # a schema only successes fit: the output schema binds successes, and the SDK's client checks no failure
+            output_schema=self._SUCCESS_ONLY,
+        )
+        result = await _call(_server(tool, error_codes=ErrorCodes([TAINTED])), {"session": "s1"})
+        assert result.is_error is True
+        assert _text(result) == envelope
+        assert result.structured_content == {"ok": False, "error": "tainted", "error_code": "tainted"}
+        assert _error(result)["code"] == "tainted"
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_no_json_object_stays_text_alone(self) -> None:
+        tool = _Send(ToolResult(success=False, content="it broke"), output_schema=self._SUCCESS_ONLY)
+        result = await _call(_server(tool), {"session": "s1"})
+        assert (_text(result), result.structured_content) == ("it broke", None)
+
+    @pytest.mark.asyncio
+    async def test_a_tool_without_an_output_schema_keeps_its_failure_text_alone(self) -> None:
+        tool = _Send(ToolResult(success=False, content='{"ok": false}', metadata={"error_code": "tainted"}))
+        result = await _call(_server(tool, error_codes=ErrorCodes([TAINTED])), {"session": "s1"})
+        assert (_text(result), result.structured_content) == ('{"ok": false}', None)

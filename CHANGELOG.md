@@ -33,7 +33,9 @@ annotations=None)` (the `mcp` extra, `3tears-tool-contract[mcp]`): the `McpTool`
 3tears-mcp's `McpServer`, listed with the tool's description, input and output schema. A successful `ToolResult` is
 its content (and, for a tool with an output schema, its content as `structuredContent`); a failed one is
 `isError` with its content and its code on the protocol result: `error_code`, else `metadata["error_code"]`, else
-`TOOL_ERROR`. An `execute` that declares a `CallContext` parameter is passed the call's context, with `run`
+`TOOL_ERROR`; a failure of a tool with an output schema carries its JSON object content as `structuredContent` too,
+its text unchanged (the output schema binds successes only: the server and the SDK's clients check no failure against
+it). An `execute` that declares a `CallContext` parameter is passed the call's context, with `run`
 unchanged. A tool whose `face_mcp` is `False` is refused. Arguments are checked against the input schema before
 `run`, so a loose value the schema refuses is `INVALID_ARGUMENTS`, not coerced.
 
