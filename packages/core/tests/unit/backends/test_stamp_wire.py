@@ -25,6 +25,7 @@ from threetears.core.backends.broker_generation import (
     CLEANUP_FLOOR_FIELD,
     STAMP_S_MIN_FIELD,
     CleanupMixedWriteError,
+    CleanupWriteNotDeleteError,
     STAMPS_EPOCH_FIELD,
     cleanup_deleting,
     stamp_fields,
@@ -522,3 +523,86 @@ async def test_a_transaction_of_only_cleanup_deletes_and_reads_commits() -> None
         await _cleanup_delete(conn, fetch=False)
         await conn.fetch("SELECT run_id FROM runs WHERE run_id = $1", "r1")
     assert len(broker.bodies("l3.tx.commit")) == 1
+
+
+# -- a request marked cleanup's only deletes -------------------------------------------------------------------------
+
+_MARKED_INSERT = "INSERT INTO runs (run_id, state) VALUES ($1, 'NC')"
+_MARKED_UPDATE = "UPDATE runs SET state = 'NC' WHERE run_id = $1"
+
+
+async def _marked_on_door(door: str, query: str) -> _Broker:
+    """one request marked cleanup's sent on ``door`` (a statement for the statement doors); the broker, its bodies
+    kept. A tx door's request runs in a CallerTransaction, committed or rolled back as its body ends."""
+    broker = _Broker(_BEGIN, _DONE, _DONE, {"success": True, "rows": [], "row_count": 0}, _COMMIT)
+    proxy = broker.proxy()
+    if door == "l3.query":
+        broker.replies = [{"success": True, "row_count": 1}]
+        with cleanup_deleting(_HIGH):
+            await proxy.execute(query, "r1")
+        return broker
+    if door == "l3.batch":
+        broker.replies = [{"success": True, "results": [{"success": True, "row_count": 1}]}]
+        with cleanup_deleting(_HIGH):
+            await proxy.execute_batch([{"query": query, "params": ["r1"]}])
+        return broker
+    async with proxy.acquire() as conn, CallerTransaction(conn):
+        with cleanup_deleting(_HIGH):
+            if door == "l3.tx.execute":
+                await conn.execute(query, "r1")
+            elif door == "l3.tx.fetch":
+                await conn.fetch(f"{query} RETURNING run_id", "r1")
+            elif door == "l3.tx.copy":
+                await conn.copy_records_to_table("runs", records=[("r1", "NC")], columns=("run_id", "state"))
+            else:
+                await conn.delete_prefixes("projections", [{"join_state_code": "NC"}], epoch=_LOW, scope="state")
+    return broker
+
+
+@pytest.mark.parametrize(
+    ("door", "query"),
+    [
+        ("l3.query", _MARKED_INSERT),
+        ("l3.query", _MARKED_UPDATE),
+        ("l3.batch", _MARKED_INSERT),
+        ("l3.batch", _MARKED_UPDATE),
+        ("l3.tx.execute", _MARKED_INSERT),
+        ("l3.tx.execute", _MARKED_UPDATE),
+        ("l3.tx.fetch", _MARKED_UPDATE),
+        ("l3.tx.copy", ""),
+        ("l3.tx.delete_prefixes", ""),
+    ],
+    ids=[
+        "query-insert",
+        "query-update",
+        "batch-insert",
+        "batch-update",
+        "tx-insert",
+        "tx-update",
+        "tx-fetch-update",
+        "tx-copy",
+        "tx-run-markers",
+    ],
+)
+async def test_a_request_marked_cleanups_that_is_no_delete_is_refused_before_it_is_sent(door: str, query: str) -> None:
+    """Flips if a request marked quiet-time cleanup's that writes by anything but a delete (an insert, an update, a
+    copy's rows, a versioned table's run markers) is sent, on any door: its commit's records would name cleanup's floor,
+    and every copy skips them reading nothing."""
+    with pytest.raises(CleanupWriteNotDeleteError, match="only deletes"):
+        await _marked_on_door(door, query)
+
+
+@pytest.mark.parametrize("door", ["l3.query", "l3.batch", "l3.tx.execute", "l3.tx.fetch", "l3.tx.delete_prefixes"])
+async def test_a_marked_delete_is_still_sent_on_every_door(door: str) -> None:
+    """Flips if the rule refuses what cleanup sends: its deletes, on each door, marked with the floor."""
+    query = 'DELETE FROM runs WHERE run_id = $1 AND "epoch" < 7'
+    if door == "l3.tx.delete_prefixes":
+        broker = _Broker(_BEGIN, _DONE, _COMMIT)
+        proxy = broker.proxy()
+        async with proxy.acquire() as conn, CallerTransaction(conn):
+            with cleanup_deleting(_HIGH):
+                await conn.delete_prefixes("runs", [{"run_id": "r1"}])
+    else:
+        broker = await _marked_on_door(door, query)
+    marked = [body for _, body in broker.sent if body.get(CLEANUP_DELETE_FIELD) is True]
+    assert len(marked) == 1 and marked[0][CLEANUP_FLOOR_FIELD] == _HIGH, broker.sent

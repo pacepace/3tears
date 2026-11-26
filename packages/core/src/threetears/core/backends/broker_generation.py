@@ -65,7 +65,7 @@ keeps the two answers the same.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -111,9 +111,12 @@ __all__ = [
     "note_load_answer",
     "note_advanced_generation",
     "CleanupMixedWriteError",
+    "CleanupWriteNotDeleteError",
     "cleanup_delete_floor",
     "cleanup_deleting",
     "cleanup_mix_refusal",
+    "cleanup_write_refusal",
+    "refuse_cleanup_non_delete",
     "holding_sent_requests",
     "note_sent_request",
     "releasing_sent_requests",
@@ -565,6 +568,56 @@ def cleanup_mix_refusal(*, cleanup: bool, writes: bool, cleaned: bool, wrote: bo
             "transaction of their own, and every other write in another"
         )
     return None
+
+
+class CleanupWriteNotDeleteError(ValueError):
+    """a request marked quiet-time cleanup's writes anything but a delete (:func:`cleanup_write_refusal`)."""
+
+
+#: the one row-changing verb a request marked cleanup's may carry
+_CLEANUP_VERBS: Final = frozenset({"delete"})
+
+
+def cleanup_write_refusal(*, cleanup: bool, verbs: Iterable[str]) -> str | None:
+    """the rule by which a request marked quiet-time cleanup's (:func:`cleanup_deleting`) only deletes: any other
+    row-changing verb it carries (an insert, an update, an upsert, a copy's rows, a versioned table's run or reset
+    markers) is refused before it is sent, by the pod (the L3 rail, :func:`refuse_cleanup_non_delete`) and by the hub's
+    broker alike, on every door. A marked read changes nothing and passes.
+
+    WHY: the records of a marked request's commit name cleanup's floor F, and every copy marks such a record applied,
+    reading nothing (``CollectionRegistry.catch_up_generation``): right for a delete of rows below F, which no reader
+    holds; a marked insert or update would be skipped by every copy, which would keep serving what L3 no longer holds.
+
+    :param cleanup: the request is marked cleanup's
+    :ptype cleanup: bool
+    :param verbs: the row-changing verbs the request carries (``insert``, ``update``, ``delete``, ``upsert``); none for
+        a read
+    :ptype verbs: Iterable[str]
+    :return: the refusal's message, or None when the request may be sent
+    :rtype: str | None
+    """
+    others = sorted(set(verbs) - _CLEANUP_VERBS) if cleanup else []
+    if not others:
+        return None
+    return (
+        f"a request marked quiet-time cleanup's (cleanup_deleting) only deletes; this one also writes by "
+        f"{', '.join(others)}: its commit would be recorded as cleanup's, which every copy skips, reading nothing"
+    )
+
+
+def refuse_cleanup_non_delete(verbs: Iterable[str]) -> None:
+    """refuse, before it is sent, a request made in this context that is marked cleanup's (:func:`cleanup_deleting`)
+    and writes by anything but a delete (:func:`cleanup_write_refusal`); nothing outside such a block.
+
+    :param verbs: the row-changing verbs the request carries; none for a read
+    :ptype verbs: Iterable[str]
+    :return: nothing
+    :rtype: None
+    :raises CleanupWriteNotDeleteError: when the marked request writes otherwise
+    """
+    refusal = cleanup_write_refusal(cleanup=_CLEANUP_FLOOR.get() is not None, verbs=verbs)
+    if refusal is not None:
+        raise CleanupWriteNotDeleteError(refusal)
 
 
 #: each connection a transaction is open on in this context that is told of every request sent on it, before it is
