@@ -84,6 +84,18 @@ from threetears.models.errors import (
     is_provider_error,
 )
 from threetears.models.factory import create_chat_model, create_embedding_model
+from threetears.models.key_pool import (
+    InMemoryKeyPoolStore,
+    KeyPool,
+    KeyPoolLease,
+    KeyPoolStore,
+    KeyPoolStoreError,
+    KeySpec,
+    NoKeyAvailableError,
+    NoOutputLimitError,
+    Secret,
+    reservation_estimate,
+)
 from threetears.models.preprocessing import (
     OBJECT_REFERENCE_BLOCK_TYPE,
     ObjectReference,
@@ -154,6 +166,16 @@ from threetears.models.providers import (  # noqa: E402, F401
 
 __all__ = [
     "USAGE_METADATA_PREFIX",
+    "InMemoryKeyPoolStore",
+    "KeyPool",
+    "KeyPoolLease",
+    "KeyPoolStore",
+    "KeyPoolStoreError",
+    "KeySpec",
+    "NoKeyAvailableError",
+    "NoOutputLimitError",
+    "Secret",
+    "reservation_estimate",
     "TokenRates",
     "UnpricedModelError",
     "cost_of_usage",
