@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a restore from the tables is as exact as the ring: every invalidation column, every reset
+
+The change-note ring's notes carried a row's key and every declared invalidation column, and a ``TRUNCATE`` left a
+whole-table note naming the reset. The reads that replaced it (``table_restore``, ``epoch_reads``, the writers'
+backstop in ``lost_writes``) now do the same.
+
+**Added:** ``TableSchema(invalidation_columns=...)``: a table's invalidation columns beyond the key, declared where its
+DDL can name them. The collection class reads them from the schema, as it reads ``tenancy``. A table's restore
+declaration (``row_epoch.restore_declaration``, ``stamped_restore_declaration``, both taking ``columns=``) names them as
+``"columns"`` when they hold a column the tenancy does not; a table without one keeps its comment byte for byte.
+``row_epoch.invalidation_columns_of`` reads them back. A restore's records, ``epoch_reads.range_rows`` (the backstop) and
+``epoch_keys_page`` (a keys-unknown page) carry every one; a stamped row whose moveable columns a write changed since X
+comes back once more with each value it left, under the tenant it left (``table_restore.moved_since``), and the tenant it
+left pages it back.
+
+**Added:** a table reset is one row of the run-marker table: ``run_markers.TABLE_RESET_SCOPE`` (chr(30)), an empty
+prefix, the reset's epoch (``table_reset_marker_sql``). ``run_markers.record_table_reset(conn, table, epoch)`` writes it
+before the ``TRUNCATE``, on the same connection, for a table that carries a restore declaration;
+``SqlL3Backend.truncate`` calls it under the DDL lock. ``table_restore.table_resets`` reads it by the key
+``(table_name, scope)``: a restore appends the table whole as a reset, the backstop records it
+(``epoch_reads.whole_changes``, stamped tables included), and a keys-unknown page answers ``whole_table`` for every
+tenant of a column-tenancy table. ``StampedTable`` gains ``run_markers``.
+
+**Changed (breaking):** a collection class over a table that carries an epoch (``row_epoch``) declaring an
+``invalidation_columns`` column its ``TableSchema`` does not is refused at class definition (``TypeError``): move it to
+the schema. A reset of a table carrying an epoch in a schema with no run-marker table raises
+``run_markers.TableResetUnrecordedError`` before anything is emptied: create ``RUN_MARKERS_SCHEMA`` there.
+``StampedTable.moved_tenant`` is ``moved_columns``. The hub's broker (``l3.truncate``) and its data-space truncate
+must call ``record_table_reset`` before their ``TRUNCATE``, as ``note_table_resets`` wrote the ring's reset note.
+
 ### core: the change-note ring retires; the log keeper restores from the tables
 
 Append-only L3 chunk 7 (``design-append-only-l3.md`` decision 3: the ring is retired entirely). Nothing writes or reads

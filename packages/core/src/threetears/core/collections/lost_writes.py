@@ -56,15 +56,9 @@ from threetears.observe.periodic import PeriodicTask
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.epoch_change import ChangedRow, advance_recording
-from threetears.core.collections.epoch_reads import epoch_range, range_rows, tenant_of_relation
+from threetears.core.collections.epoch_reads import epoch_range, range_rows, tenant_of_relation, whole_changes
 from threetears.core.collections.noted_change import NotedChange
-from threetears.core.collections.table_restore import (
-    RestoredTable,
-    VersionedTable,
-    changed_scopes,
-    restored_tables,
-    run_marker_changes,
-)
+from threetears.core.collections.table_restore import RestoredTable, restored_tables
 from threetears.core.collections.generation import GenerationSource, tenancy_of_table, written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
@@ -335,8 +329,10 @@ async def _changes_of(
     changed, gone markers included (and maybe rows other writes changed then, which a follower reads again
     harmlessly). Read as the restore reads them (:func:`~threetears.core.collections.epoch_reads.range_rows`): a
     scope's or a bucket's index range a keyset page at a time, stopped as soon as more distinct rows are held than one
-    record names. Few enough rows are named, each under its own tenant; a run deleted in the window (its run marker)
-    is recorded whole under its tenant, naming its prefixes. More rows than one record names are recorded keys
+    record names. Few enough rows are named, each under its own tenant with every declared invalidation column (a row
+    a write moved, again with the tenant and values it left); a reset in the window (its reset marker) is recorded
+    whole as a reset, and a run deleted in it (its run marker) whole under its tenant, naming its prefixes
+    (:func:`~threetears.core.collections.epoch_reads.whole_changes`). More rows than one record names are recorded keys
     unknown with the window as their bracket, under each tenant, which each follower pages from the table's versions
     in it (:func:`~threetears.core.collections.change_notes.noted_keys_page`), said at WARNING and counted.
 
@@ -358,8 +354,11 @@ async def _changes_of(
     :rtype: list[_Advance]
     """
     floor, ceiling = epoch_range((since, until))
-    # function-local: the distinct rows, keyed by tenant and key, at most one record's worth plus one
-    named: dict[tuple[str | None, tuple[str, ...]], dict[str, str | None] | None] = {}
+    # function-local: the distinct rows, keyed by tenant, key and invalidation columns (a moved row's values before and
+    # after are two), at most one record's worth plus one
+    named: dict[
+        tuple[str | None, tuple[str, ...], tuple[tuple[str, str | None], ...]], dict[str, str | None] | None
+    ] = {}
     too_many = False
     whole: list[NotedChange] = []
     for relation in relations:
@@ -367,17 +366,13 @@ async def _changes_of(
         by_column = relation.tenancy.kind == "column"
         async for rows in range_rows(pool, relation, floor, ceiling, page=_MAX_NOTED_ROWS + 1):
             for row in rows:
-                named.setdefault((row.tenant if by_column else own, row.keys), row.columns)
+                held = tuple(row.columns.items()) if row.columns else ()
+                named.setdefault((row.tenant if by_column else own, row.keys, held), row.columns)
             if len(named) > _MAX_NOTED_ROWS:
                 too_many = True
                 break
-        if isinstance(relation, VersionedTable) and relation.run_markers:
-            values = [
-                scope[len(relation.scope_prefix) :]
-                for scope in await changed_scopes(pool, relation.schema, relation.epochs, floor)
-                if scope.startswith(relation.scope_prefix)
-            ]
-            whole.extend(await run_marker_changes(pool, relation, values, floor, ceiling))
+        # a reset, a run deleted: whole changes no key names, read by the run-marker table's key
+        whole.extend(await whole_changes(pool, relation, floor, ceiling))
         if too_many:
             break
     if not too_many:
@@ -387,7 +382,7 @@ async def _changes_of(
                 _Advance(
                     rows=[
                         ChangedRow(ids=list(keys), columns=columns, tenant=tenant)
-                        for (tenant, keys), columns in named.items()
+                        for (tenant, keys, _held), columns in named.items()
                     ]
                 )
             )

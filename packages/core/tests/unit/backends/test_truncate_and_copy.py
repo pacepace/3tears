@@ -156,6 +156,9 @@ class _LockingConn:
             return [{"database_name": "aibots"}]
         if "pg_try_advisory_lock" in sql:
             return [{"acquired": True}]
+        if "pg_description" in sql:
+            # the table a reset names, as the catalog holds it: one that carries no epoch, so no reset marker
+            return [{"table_schema": "public", "table_name": "lsf_rows", "declared": False, "run_markers": False}]
         return [{"released": True}]
 
     async def execute(self, sql: str, *params: Any) -> str:
@@ -182,9 +185,10 @@ async def test_a_direct_pool_truncates_on_one_connection_holding_the_ddl_lock() 
     pool = _DirectPool()
     await SqlL3Backend(pool).truncate("lsf_rows")
     statements = pool.conn.statements
-    assert statements.index("TRUNCATE TABLE lsf_rows") == 2
+    assert statements.index("TRUNCATE TABLE lsf_rows") == 3
     assert "pg_try_advisory_lock" in statements[1]
-    assert "pg_advisory_unlock" in statements[3]
+    assert "pg_description" in statements[2], "whether the table carries an epoch, under the lock, before the reset"
+    assert "pg_advisory_unlock" in statements[4]
 
 
 async def test_a_direct_pool_s_reset_sets_no_note_setting_around_its_truncate() -> None:

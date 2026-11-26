@@ -79,9 +79,10 @@ from threetears.core.ddl.row_epoch import (
     AppendOnlyWriteError,
     RowEpoch,
     UnstampedWriteError,
+    next_epoch,
     touch_last_epoch_sql,
 )
-from threetears.core.ddl.run_markers import run_marker_insert_sql
+from threetears.core.ddl.run_markers import record_table_reset, run_marker_insert_sql
 from threetears.core.ddl.tenant_moves import moves_returned, note_moves
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
@@ -1756,6 +1757,11 @@ class SqlL3Backend:
         """Empty ``table`` with ``TRUNCATE``, alone and outside any transaction. On a direct pool the collection
         records the epoch itself, ``reason`` with it.
 
+        A table that carries an epoch (a restore reads it back from its rows) gets its reset marker first, on the same
+        connection under the same lock (:func:`~threetears.core.ddl.run_markers.record_table_reset`): a ``TRUNCATE``
+        leaves no row, so the marker is what a restore, the writers' backstop and a keys-unknown page hear the reset
+        by. One in a schema without the run-marker table is refused before anything is emptied.
+
         On the rail the broker runs it (``NatsProxyL3Backend.truncate``, the ``l3.truncate``
         request), under the database's DDL lock and only for a table of the caller's own data
         space. On a direct pool it runs here, on one connection holding that same lock
@@ -1771,6 +1777,7 @@ class SqlL3Backend:
         :rtype: None
         :raises ValueError: when a request-scoped connection is bound, or the name is not a plain
             identifier
+        :raises TableResetUnrecordedError: when the table carries an epoch and its schema holds no run-marker table
         """
         if _request_l3_conn.get() is not None:
             raise ValueError(
@@ -1788,6 +1795,8 @@ class SqlL3Backend:
         name = as_written(_plain_identifier(table))
         with _unmask_asyncpg_release_race():
             async with self._pool.acquire() as conn, database_ddl_lock(ConnectionSession(conn)):
+                # the reset's marker before the rows go, so a restore or the backstop never misses it
+                await record_table_reset(conn, name, next_epoch())
                 await whole_read(
                     conn.execute(f"TRUNCATE TABLE {name}"),
                     kind="operator_reset",
