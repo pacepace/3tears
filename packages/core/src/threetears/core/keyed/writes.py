@@ -24,7 +24,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from threetears.core.backends.broker_generation import stamping_write
 from threetears.core.backends.protocol import parse_rowcount
+from threetears.core.ddl.row_epoch import stamp_of_values
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -137,7 +139,10 @@ async def update_keyed(
         natively=binds_native_arrays(conn),
         binder=binder_for(conn, keys),
     )
-    return await _ran(conn, statements, returning)
+    # a stamped table's update (its epoch a RisingStamp, stamped_values) says so on the wire with its stamp as s_min,
+    # as every stamped write does; its stamp was noted as the statement's own when it was drawn (stamp_for)
+    with stamping_write(stamp_of_values(values)):
+        return await _ran(conn, statements, returning)
 
 
 async def delete_keyed(

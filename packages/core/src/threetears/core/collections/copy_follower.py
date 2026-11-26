@@ -113,6 +113,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING, runtime_checkable
 
+from threetears.interfaces.keyed.keys import versioned_table
 from threetears.interfaces.keyed.rows import DeclaredKey, DeclaredScope, KeyColumns
 from threetears.observe import PeriodicTask, contain, get_logger, retry_until_done
 from threetears.observe.metrics import counter, gauge
@@ -1233,7 +1234,10 @@ class FollowedTable:
     """one table a :class:`CopyFollower` keeps whole.
 
     :ivar name: the table, as L3 and the copy both name it
-    :ivar key: its primary key's columns, in declared order: the order a change record names a key's values in
+    :ivar key: its primary key's columns, in declared order: the order a change record names a key's values in. For a
+        versioned L3 table (``TableSchema(row_epoch=row_versions(...))``) the logical key, never L3's stored key: L3
+        keeps a version of a key a write (its primary key the key, then the epoch), the copy one row a key, each key's
+        newest live version (append-only L3, chunk 4)
     :ivar columns: the columns the copy holds, each read from L3 (``name`` and ``column_type``); every key column is one
     :ivar order: a unique column order an index of L3 serves, for the first warm's pages; the key when empty
     :ivar partition_order: a unique column order an index led by a load's constant columns serves, for the pages of a
@@ -1261,6 +1265,15 @@ class FollowedTable:
     delta_files: bool = False
 
     def __post_init__(self) -> None:
+        versions = versioned_table(self.name, l3=True)
+        if versions is not None and tuple(self.key) != versions.key:
+            # every read of it the follower makes (keyed, a prefix's pages, a whole read) answers each logical key's
+            # newest live version, one row a key: a copy keyed otherwise would hold a row a version (the epoch in its
+            # key), or fold two keys into one
+            raise ValueError(
+                f"{self.name} is versioned (append-only L3): its copy is keyed by the logical key {list(versions.key)}, "
+                f"one row a key, never L3's stored key with {versions.epoch!r}; got {list(self.key)}"
+            )
         held = {column.name for column in self.columns}
         missing = [column for column in self.key if column not in held]
         if missing:

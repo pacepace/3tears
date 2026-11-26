@@ -4,7 +4,9 @@
 Each request type is driven through the store (``SqlL3Backend``) over the proxy as a collection writes, and its body
 read as the broker receives it: a write of a table that declares a row epoch says ``true`` with its rows' lowest stamp;
 any other request, a table with a column named ``epoch`` that is no row epoch among them (``scope_epochs``), says
-``false``. A bulk write's batches are measured inside their stamp, so each is sized exactly as it is sent.
+``false``. A bulk write's batches are measured inside their stamp, so each is sized exactly as it is sent. The writes
+made outside the store say so too: a keyed update of a stamped table (``update_keyed`` with ``stamped_values``) and a
+declared table's own statements (``DeclaredTableCollection.write_row``), each with its own stamp as ``s_min``.
 """
 
 from __future__ import annotations
@@ -12,13 +14,11 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pyarrow as pa
 import pytest
-from threetears.nats import Subject
-
 from threetears.core.backends.arrow_copy import WRITE_ARROW_FIELD, split_copy_request
 from threetears.core.backends.broker_generation import (
     CLEANUP_DELETE_FIELD,
@@ -32,9 +32,13 @@ from threetears.core.backends.broker_generation import (
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.protocol import LoadFile
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.collections import DeclaredTableCollection
+from threetears.core.collections.base import NO_L2
 from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema, stamped_values
 from threetears.core.collections.scope_epochs import scope_epochs_schema
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     ROW_STAMPED,
@@ -43,7 +47,10 @@ from threetears.core.ddl.row_epoch import (
     row_versions,
     wall_clock_ms,
 )
+from threetears.core.entities.base import BaseEntity
+from threetears.core.keyed import update_keyed
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.nats import Subject
 
 _TX_ID = str(uuid.UUID("00000000-0000-4000-8000-000000000903"))
 
@@ -300,6 +307,80 @@ async def test_a_query_and_a_batch_say_what_their_block_names() -> None:
     assert [_stamp(body) for body in queries] == [(True, _LOW), (False, None), (False, None)]
     [batch] = broker.bodies("l3.batch")
     assert _stamp(batch) == (True, _LOW)
+
+
+# -- the writes made outside the store: a keyed update, a declared table's own statements ----------------------------
+
+
+class _Run(BaseEntity):
+    primary_key_field = "run_id"
+
+
+class _Runs(DeclaredTableCollection[_Run]):
+    """a declared collection of the stamped table, writing its own statements (write_row)."""
+
+    schema = _RUNS
+
+    @property
+    def entity_class(self) -> type[_Run]:
+        return _Run
+
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        return None
+
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
+        return await self.write_row(data, conn=conn)
+
+    async def delete_from_store(self, entity_id: Any) -> None:
+        return None
+
+
+def _runs(proxy: NatsProxyL3Backend) -> _Runs:
+    collection = _Runs(
+        registry=CollectionRegistry(),
+        config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
+        nats_client=NO_L2,
+    )
+    collection.l3_pool = cast(Any, proxy)
+    return collection
+
+
+async def test_a_keyed_update_of_a_stamped_table_names_its_stamp_on_the_wire() -> None:
+    broker = _Broker(_DONE, _BEGIN, _DONE, _COMMIT)
+    proxy = broker.proxy()
+    # one statement, its own commit: l3.query
+    alone = stamped_values(_RUNS, {"state": "done"})
+    await update_keyed(proxy, "runs", values=alone, by={"run_id": "r1"})
+    # on a transaction: l3.tx.execute
+    async with proxy.transaction() as conn:
+        joined = stamped_values(_RUNS, {"state": "done"}, conn=conn)
+        await update_keyed(conn, "runs", values=joined, by={"run_id": "r2"})
+    [query] = broker.bodies("l3.query")
+    assert _stamp(query) == (True, alone[EPOCH_COLUMN].params[0])
+    [statement] = broker.bodies("l3.tx.execute")
+    assert _stamp(statement) == (True, joined[EPOCH_COLUMN].params[0])
+
+
+async def test_a_keyed_update_of_an_unstamped_table_stamps_nothing() -> None:
+    broker = _Broker(_DONE)
+    await update_keyed(broker.proxy(), "runs", values={"state": "done"}, by={"run_id": "r1"})
+    [query] = broker.bodies("l3.query")
+    assert _stamp(query) == (False, None)
+
+
+async def test_a_declared_tables_write_row_names_its_stamp_on_the_wire() -> None:
+    broker = _Broker(_DONE, _DONE)
+    collection = _runs(broker.proxy())
+    await collection.write_row({"run_id": "r1", "state": "NC"})
+    await collection.write_row({"run_id": "r2"})
+    upsert, update = broker.bodies("l3.query")
+    for body in (upsert, update):
+        # the row's stamp is the one epoch the statement binds: a BIGINT past every other parameter (the gone flag the
+        # write also binds is a bool, which Python counts as an int, so it is left out by type)
+        [stamp] = [value for value in body["params"] if isinstance(value, int) and not isinstance(value, bool)]
+        assert _stamp(body) == (True, stamp)
 
 
 # -- the measure and the helper --------------------------------------------------------------------------------------

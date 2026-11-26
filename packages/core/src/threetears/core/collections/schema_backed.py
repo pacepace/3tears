@@ -72,7 +72,6 @@ from threetears.interfaces.keyed.keys import (
     VersionedTable,
 )
 from threetears.interfaces.keyed.rows import DeclaredScope, KeyColumn, KeyColumns
-from threetears.interfaces.keyed.filters import Fragment
 from threetears.core.backends.arrow_copy import (
     arrow_python_columns,
     arrow_python_rows,
@@ -157,6 +156,7 @@ from threetears.core.ddl.row_epoch import (
     bucket_sql,
     key_hash_sql,
     restore_declaration,
+    rising_stamp,
     scope_epoch_index_name,
     next_epoch,
     stamped_restore_declaration,
@@ -431,8 +431,8 @@ def stamped_values(schema: TableSchema, values: Mapping[str, Any], *, conn: Any 
     if declared.versions:
         raise AppendOnlyWriteError(f"stamped_values: {schema.name} is versioned (append-only), never updated in place")
     stamp = CallerTransaction.stamp_for(conn, schema.name)
-    quoted = quote_identifier(EPOCH_COLUMN)
-    return {**values, EPOCH_COLUMN: Fragment(f"GREATEST({quoted} + 1, $1::bigint)", (stamp,))}
+    # a RisingStamp, not a bare Fragment: update_keyed reads the stamp off it and sends it as the write's s_min
+    return {**values, EPOCH_COLUMN: rising_stamp(stamp, quote_identifier(EPOCH_COLUMN))}
 
 
 def sql_cast(column_type: str) -> str:

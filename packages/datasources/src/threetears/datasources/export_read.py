@@ -23,8 +23,9 @@ warning:
 **Then it is deleted, always** (Pace's ruling, 2026-10-09: delete after load, no timer, no lifecycle
 rule): from the moment the export is asked, every way out -- the part proven and read, a
 proof refusing it, a read failing, the ask failing or the caller cancelled while it was in flight (the
-hub's answer is still waited for, so the delete comes after the last file) -- asks the hub to delete
-every version under the destination
+delete is sent at once and the cancel raised without waiting for the ``UNLOAD``: the hub keeps the
+export's record and deletes it when the ``UNLOAD`` ends) -- asks the hub to delete every version under
+the destination
 (``export_delete``), with a delete-only grant the reader does not hold, so no copy of warehouse rows
 outlives the load. A refused export is logged at WARNING with what was refused (the proof and the
 counts) so an operator can tell why without the files. A delete that fails is raised
@@ -699,11 +700,16 @@ async def _asked_export(
     cancelled while it was in flight, a transport failure or a timeout, a warehouse error midway -- is
     deleted there too, unless the hub refused it before anything ran (:data:`_REFUSED_BEFORE_WRITING`).
 
-    A cancel does not stop the hub: the ``UNLOAD`` goes on writing after the caller stops waiting, and
-    a delete sent meanwhile would delete what was there so far and the hub's record of it, leaving the
-    files written after it with nothing to find them. So under a cancel the hub's answer is still
-    waited for (the client's export deadline outlasts the hub's statement deadline, so a timeout too
-    means the ``UNLOAD`` is over), then the export deleted, then the cancel raised.
+    A cancel does not stop the hub: the ``UNLOAD`` goes on writing after the caller stops waiting. So
+    the hub takes a delete asked while its ``UNLOAD`` may still be writing and defers it: it keeps the
+    export's record, marked delete-pending, and deletes the files by the destination when the
+    ``UNLOAD`` ends, failed or written; a hub stopped before that leaves the record for this pod's
+    next sweep of its own exports (``list_own_exports``). Under a cancel, then, the wait for the
+    answer is dropped, the delete sent at once and run to its end, and the cancel raised: a pod's
+    shutdown or rollout never waits out an ``UNLOAD``. The hub's deferral is required, not probed:
+    the datasource rail names no capability (only the ``l3.query`` rail's replies do), and every hub
+    this client meets defers, the two having shipped in one cutover. A hub that did not would delete
+    the files written so far and its record, and the files written after it would be left.
 
     :param client: the caller's datasource client
     :ptype client: DatasourceQueryClient
@@ -717,18 +723,26 @@ async def _asked_export(
     :ptype what: str
     :return: the hub's answer
     :rtype: DatasourceExportResult
-    :raises asyncio.CancelledError: when the caller was cancelled, once the export is deleted
+    :raises asyncio.CancelledError: when the caller was cancelled, once the delete was asked (the hub
+        runs it when the ``UNLOAD`` ends)
     :raises DatasourceQueryError: when the hub refused the export, or the ask failed (deleted first)
     """
     asking = asyncio.ensure_future(ask)
     stopped: asyncio.CancelledError | None = None
+    try:
+        await asyncio.wait({asking})
+    except asyncio.CancelledError as exc:
+        # NOSILENT: the caller stopped waiting while the hub may still be writing; the wait for its answer is
+        # dropped, the delete is asked at once (the hub runs it when the UNLOAD ends), and the cancel raised
+        stopped = exc
+        asking.cancel()
     while not asking.done():
+        # the ask's own wait unwinding, which holds no warehouse work; a second cancel is the same cancel
         try:
             await asyncio.wait({asking})
-        except asyncio.CancelledError as exc:
-            # NOSILENT: the caller stopped waiting while the hub may still be writing; the cancel is
-            # raised once the hub answered and the export was deleted
-            stopped = stopped or exc
+        except asyncio.CancelledError:
+            # NOSILENT: cancelled again while the ask's wait unwinds; the cancel is raised after the delete
+            continue
     if asking.cancelled():
         stopped = stopped or asyncio.CancelledError()
     failure = None if asking.cancelled() else asking.exception()

@@ -477,10 +477,13 @@ class TestTheExportIsTheOneAskedFor:
 
 class TestDeleteAfterLoad:
     @pytest.mark.asyncio
-    async def test_a_part_cancelled_while_the_export_is_asked_is_deleted_once_the_hub_answered(self) -> None:
-        """Flips if a cancel landing while the hub still writes leaves the export, or deletes before its last file.
+    async def test_a_part_cancelled_while_the_export_is_asked_is_deleted_at_once_without_waiting_for_the_hub(
+        self,
+    ) -> None:
+        """Flips if a cancel landing while the hub still writes leaves the export, or waits for the hub's UNLOAD.
 
-        As on the bus, the cancel stops only the caller's wait: the hub goes on and answers.
+        As on the bus, the cancel stops only the caller's wait: the hub goes on and answers. The delete is asked at
+        once and the hub runs it when its UNLOAD ends, so the cancel is raised while the hub is still held.
         """
         asking, answer = asyncio.Event(), asyncio.Event()
 
@@ -498,14 +501,20 @@ class TestDeleteAfterLoad:
         task = asyncio.create_task(_part(client, _Store(_export([_ROWS]))))
         await asking.wait()
         task.cancel()
-        await asyncio.sleep(0)
+        for _ in range(100):  # passes of the loop with the hub held, never a timer
+            if task.done():
+                break
+            await asyncio.sleep(0)
+        settled = task.done()
         answer.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.wait({client.running})
 
-        assert [kind for kind, _ in client.calls] == ["fingerprint", "export", "delete"], (
-            "the export was left, or deleted before the hub answered"
+        assert settled, "the cancel waited for the hub's answer"
+        # the held hub records its export as it answers: the delete was asked before that
+        assert [kind for kind, _ in client.calls] == ["fingerprint", "delete", "export"], (
+            "the export was left, or its delete waited for the hub's answer"
         )
 
     @pytest.mark.asyncio
