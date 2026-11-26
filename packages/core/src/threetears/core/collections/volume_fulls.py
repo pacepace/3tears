@@ -63,7 +63,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, histogram
 
-from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
+from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
 from threetears.core.collections.delta_files import (
     DeltaFileUnreadableError,
     delta_file_version,
@@ -1007,6 +1007,7 @@ class VolumeFulls:
         stage_name: Callable[[str], str] | None = None,
         states: Collection[str] | None = None,
         reads: CopyReads | None = None,
+        whole_kind: WholeKind = "cold_start",
     ) -> StagedFull | FullAbsent:
         """stage each table's parts of the current full beside the copy, a part at a time; :class:`FullAbsent` when no
         full is published, or the current one does not hold every table.
@@ -1029,6 +1030,10 @@ class VolumeFulls:
             through them (a job over the state, never a cursor of the serving process over a shared copy). Required with
             ``states``
         :ptype reads: CopyReads | None
+        :param whole_kind: the declared whole read a table staged whole is staged under, so its apply empties the table
+            under the same declaration: ``cold_start`` for a start from the full, ``recovery`` for a running copy's
+            reload of a table waiting for it (``CopyFollower._reload_from_volume``)
+        :ptype whole_kind: WholeKind
         :return: what was staged, or why nothing was
         :rtype: StagedFull | FullAbsent
         :raises FileNotFoundError: when a part the manifest names is not on the volume
@@ -1080,8 +1085,9 @@ class VolumeFulls:
             except BaseException:
                 await asyncio.to_thread(backend.drop_stage, *[c.rows for c in changes if c.rows], stage)
                 raise
-            # a start from the full fills an empty copy: its apply empties the table as a cold start, as a checkpoint's
-            changes.append(StagedChange(table=name, key=table.key, rows=stage, whole=True, whole_kind="cold_start"))
+            # a start from the full fills an empty copy: its apply empties the table as a cold start, as a checkpoint's;
+            # a running copy's reload of a waiting table replaces it as the recovery it is
+            changes.append(StagedChange(table=name, key=table.key, rows=stage, whole=True, whole_kind=whole_kind))
         log.info(
             "full staged from the volume",
             extra={"extra_data": {"manifest": manifest.name, "tables": len(changes), "rows": rows}},

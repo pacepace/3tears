@@ -110,6 +110,7 @@ from threetears.enforcement.no_whole_reads.schema import (
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
     DECLARED_KINDS,
+    DECLARED_L1_DELETE_KINDS,
     DECLARED_L1_KINDS,
     DECLARED_OUTSIDE_KINDS,
     DECLARED_SPEED_KINDS,
@@ -789,6 +790,8 @@ class _Declared:
                     kinds_of.setdefault((owner.path, owner.function), set()).add(owner.kind)
             elif hit.kind != "calls-whole-read":
                 undeclared.add((hit.path, hit.function))
+        # the functions holding a hit of their own
+        holding = {(hit.path, hit.function) for hit in hits}
         used: set[int] = set()
         for hit in hits:
             for index, declared in enumerate(sound):
@@ -798,11 +801,9 @@ class _Declared:
                     target = self._target(hit)
                     if target in undeclared or kinds_of.get(target) != {declared.kind}:
                         continue
-                if hit.kind == "whole-call" and any(
-                    target in undeclared or kinds_of.get(target) != {declared.kind} for target in hit.reaches
+                if hit.kind == "whole-call" and not self._call_declared(
+                    hit, declared.kind, kinds_of, undeclared, holding
                 ):
-                    # a call into the repo's own functions: each must be declared there with the same kind (one the
-                    # walk cannot find in the repo has no declaration to check, and is the call's alone)
                     continue
                 self.covered.add(hit)
                 used.add(index)
@@ -836,6 +837,44 @@ class _Declared:
                     "no whole read of its kind (a keyed read needs no declaration; a call into a function must be "
                     "declared there with the same kind): remove it or fix what it wraps"
                 )
+
+    @staticmethod
+    def _call_declared(
+        hit: WholeReadHit,
+        kind: str,
+        kinds_of: dict[tuple[str, str], set[str]],
+        undeclared: set[tuple[str, str]],
+        holding: set[tuple[str, str]],
+    ) -> bool:
+        """whether a ``whole-call`` declared ``kind`` at its site is covered by what it reaches.
+
+        A call into the repo's own functions is covered when each target is declared there with the same kind, exactly
+        (one the walk cannot find in the repo has no declaration to check, and is the call's alone). A call whose every
+        target has no hit of its own (it reads nothing itself: a reload that hands its full to the copy's apply) is
+        covered when every function it reaches through them, at any depth (:attr:`WholeReadHit.reached`), is settled:
+        none holds an undeclared hit, each declared one is declared under kinds including ``kind``, and one at least
+        is. So ``looked`` -> ``_reload_from_volume`` -> ``_swap_in_full`` -> ``DuckDBBackend.apply_staged`` is the
+        apply's own declarations' to cover, when one of them is ``kind``.
+
+        :param hit: the whole-call
+        :ptype hit: WholeReadHit
+        :param kind: the kind declared at the call
+        :ptype kind: str
+        :param kinds_of: each function onto the kinds its sound declarations cover its hits under
+        :ptype kinds_of: dict[tuple[str, str], set[str]]
+        :param undeclared: the functions holding a hit no sound declaration covers
+        :ptype undeclared: set[tuple[str, str]]
+        :param holding: the functions holding a hit of their own
+        :ptype holding: set[tuple[str, str]]
+        :return: whether the call is covered
+        :rtype: bool
+        """
+        if not hit.reaches or any(target in holding for target in hit.reaches):
+            return not any(target in undeclared or kinds_of.get(target) != {kind} for target in hit.reaches)
+        reached = [place for place in hit.reached if place in holding]
+        return bool(reached) and not any(
+            place in undeclared or kind not in kinds_of.get(place, set()) for place in reached
+        )
 
     @staticmethod
     def _target(hit: WholeReadHit) -> tuple[str, str]:
@@ -888,7 +927,9 @@ class _Declared:
         """
         if hit.kind not in DECLARED_KINDS[declared.kind]:
             return False
-        if declared.kind in DECLARED_L1_KINDS:
+        if declared.kind in DECLARED_L1_KINDS or (
+            declared.kind in DECLARED_L1_DELETE_KINDS and hit.kind == "whole-delete"
+        ):
             return _BARE_DELETE.match(hit.statement) is not None and _declared_relation_outside(hit, schema)
         if declared.kind in DECLARED_OUTSIDE_KINDS and hit.kind != "calls-whole-read":
             return _declared_relation_outside(hit, schema)

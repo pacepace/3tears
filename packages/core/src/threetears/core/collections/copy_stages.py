@@ -431,6 +431,15 @@ class SharedCopyStages:
                         proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass",
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
                     )
+                elif change.whole_kind == "recovery":
+                    whole_read(
+                        whole.add(change.table),  # type: ignore[func-returns-value]
+                        kind="recovery",
+                        reason="a running copy's reload of one table from the writer's full on the volume replaces the shared copy's table, so it is marked whole",
+                        ruling="Pace 2026-11-27: recovery reloads stay, but are never silent; the shared copy's apply marks the reloaded table whole under the same kind",
+                        proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass",
+                        speed="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_keeps_its_budget",
+                    )
                 elif change.whole_kind == "rolling_upgrade":
                     whole_read(
                         whole.add(change.table),  # type: ignore[func-returns-value]

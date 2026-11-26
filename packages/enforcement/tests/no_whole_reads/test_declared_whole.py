@@ -905,3 +905,139 @@ def test_the_l1_table_drop_kind_is_declared_at_run_time() -> None:
         )
         == 1
     )
+
+
+# ---- a declared call into a function with no reads of its own: covered by what it reaches (Pace 2026-11-27) ----------
+
+_RECOVERY_RULING = "Pace 2026-11-27: recovery reloads stay, but are never silent"
+
+
+def _apply_declaring(*kinds: str, extra: str = "") -> str:
+    """a copy's apply emptying its in-process table, declared under each of ``kinds`` (one branch a kind), as
+    ``DuckDBBackend.apply_staged`` declares its whole changes; ``extra`` is more of its body."""
+    branches = "".join(
+        f"""
+        if kind == "{kind}":
+            return await whole_read(
+                conn.execute(f"DELETE FROM {{table}}"),
+                kind="{kind}",
+                reason="the complete rows replace the in-process copy's table, so it is emptied first",
+                ruling="{_RECOVERY_RULING}",
+                proof="tests/test_backup.py::test_apply_entry",
+                speed="tests/test_backup.py::test_apply_speed",
+            )"""
+        for kind in kinds
+    )
+    return f"""
+    from threetears.core.declared import whole_read
+
+    async def apply_staged(conn, table, kind):{branches}{extra}
+        return None
+"""
+
+
+#: the follower's chain, its shape today: looked -> _reload_from_volume -> _swap_in_full -> apply_staged, the two
+#: between holding no read of their own
+_FOLLOWER = f"""
+    from threetears.core.declared import whole_read
+    from copy_apply import apply_staged
+
+    async def _swap_in_full(conn, table):
+        return await apply_staged(conn, table, "recovery")
+
+    async def _reload_from_volume(conn, table):
+        return await _swap_in_full(conn, table)
+
+    async def _reload_reading(conn, table):
+        await conn.execute(f"DELETE FROM {{table}}")
+        return await _swap_in_full(conn, table)
+
+    async def looked(conn, table):
+        return await whole_read(
+            CALLEE(conn, table),
+            kind="KIND",
+            reason="a table waiting for the writer's full is reloaded whole from the full on the volume",
+            ruling="{_RECOVERY_RULING}",
+            proof="tests/test_backup.py::test_looked_entry",
+            speed="tests/test_backup.py::test_looked_speed",
+        )
+"""
+
+_RECOVERY_PROOFS = _PROOFS + textwrap.indent(
+    "".join(
+        f"\ndef test_{name}_entry():\n    assert {name}\n\ndef test_{name}_speed():\n    budget_problem({name})\n"
+        for name in ("apply", "looked")
+    )
+    + "\ndef test_apply_entry():\n    assert apply_staged\n\ndef test_apply_speed():\n    budget_problem(apply_staged)\n",
+    "    ",
+)
+
+
+def _recovery_findings(
+    tmp_path: Path, apply: str, *, callee: str = "_reload_from_volume", kind: str = "recovery"
+) -> list[str]:
+    """the gate over the follower's chain into ``apply``, the call at ``looked`` into ``callee`` declared ``kind``."""
+    follower = _FOLLOWER.replace("CALLEE", callee).replace("KIND", kind)
+    return _findings(tmp_path, {"copy_apply.py": apply, "follower.py": follower}, _RECOVERY_PROOFS)
+
+
+def test_a_declared_call_into_a_function_with_no_reads_is_covered_by_the_reads_it_reaches(tmp_path: Path) -> None:
+    """Flips if a recovery-declared reload call into a function with no reads of its own is refused when every whole
+    read its chain reaches is declared under kinds including recovery (the reload -> its swap -> the apply)."""
+    apply = _apply_declaring("cold_start", "schema_change", "recovery")
+    findings = _recovery_findings(tmp_path, apply)
+    assert not any("in looked:" in finding or " looked whole_read" in finding for finding in findings), findings
+    assert not any("copy_apply.py" in finding for finding in findings), findings
+
+
+def test_a_declared_call_whose_reached_reads_allow_another_kind_is_still_flagged(tmp_path: Path) -> None:
+    """Flips if a recovery-declared call passes when the reads it reaches are declared, but none for recovery
+    (DuckDBBackend.apply_staged before it declared one): the kinds must include the call's."""
+    apply = _apply_declaring("cold_start", "schema_change")
+    findings = _recovery_findings(tmp_path, apply)
+    assert any("in looked: whole-call _reload_from_volume" in finding for finding in findings), findings
+    # the reads themselves are soundly declared: the call alone is refused, for its kind
+    assert not any("copy_apply.py" in finding for finding in findings), findings
+
+
+def test_a_declared_call_reaching_an_undeclared_read_is_still_flagged(tmp_path: Path) -> None:
+    """Flips if a declared call passes when a function its chain reaches holds a whole read nobody declared, beside
+    the declared ones."""
+    undeclared = """
+        await conn.execute(f"DELETE FROM {table}")"""
+    apply = _apply_declaring("cold_start", "recovery", extra=undeclared)
+    findings = _recovery_findings(tmp_path, apply)
+    assert any("in looked: whole-call _reload_from_volume" in finding for finding in findings), findings
+    assert any("in apply_staged: whole-delete" in finding for finding in findings), findings
+
+
+def test_a_declared_call_into_a_callee_with_its_own_undeclared_read_is_still_flagged(tmp_path: Path) -> None:
+    """Flips if a declared call passes into a callee that reads whole itself with no declaration, however well
+    declared the reads further down are: the callee's own read is the callee's to declare."""
+    apply = _apply_declaring("cold_start", "recovery")
+    findings = _recovery_findings(tmp_path, apply, callee="_reload_reading")
+    assert any("in looked: whole-call _reload_reading" in finding for finding in findings), findings
+    assert any("in _reload_reading: whole-delete" in finding for finding in findings), findings
+
+
+def test_a_recovery_empties_only_an_in_process_copy_never_an_l3_table(tmp_path: Path) -> None:
+    """Flips if recovery lets a whole DELETE of a declared L3 table through: it admits only the bare emptying of a
+    relation no declared table is (the in-process copy's table)."""
+    module = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    async def apply_staged(conn):
+        return await whole_read(
+            conn.execute("DELETE FROM items"),
+            kind="recovery",
+            reason="the complete rows replace the in-process copy's table, so it is emptied first",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_apply_entry",
+            speed="tests/test_backup.py::test_apply_speed",
+        )
+"""
+    findings = _findings(tmp_path, {"store.py": module}, _RECOVERY_PROOFS)
+    assert any("in apply_staged: whole-delete items" in finding for finding in findings), findings
