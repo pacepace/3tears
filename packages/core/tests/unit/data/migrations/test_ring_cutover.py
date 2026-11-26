@@ -53,9 +53,7 @@ class _Conn:
         if "pg_trigger" in query:
             schema, names = args
             return [
-                {"table_name": t, "trigger_name": g}
-                for s, t, g in sorted(self.triggers)
-                if s == schema and g in names
+                {"table_name": t, "trigger_name": g} for s, t, g in sorted(self.triggers) if s == schema and g in names
             ]
         if "pg_proc" in query:
             return [{"name": n, "args": a} for n, a, s in sorted(self.functions) if s == args[0]]
