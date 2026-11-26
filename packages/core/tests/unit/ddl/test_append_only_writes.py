@@ -116,7 +116,7 @@ def test_a_gone_marker_carries_the_key_the_scope_the_epoch_and_the_flag() -> Non
 @pytest.mark.parametrize("yugabyte", [False, True])
 def test_a_versioned_tables_required_columns_are_required_of_a_live_version_by_one_check(yugabyte: bool) -> None:
     assert _CANDIDATES.live_only_columns == ("votes", "date_created", "date_updated")
-    [create] = _CANDIDATES.create_statements(yugabyte=yugabyte)
+    create, _index = _CANDIDATES.create_statements(yugabyte=yugabyte)
     assert "gone BOOLEAN DEFAULT false NOT NULL" in create
     assert 'CONSTRAINT results_live CHECK ("gone" OR ("votes" IS NOT NULL AND "date_created" IS NOT NULL AND ' in create
     # a marker leaves them out, so the stored table holds them nullable; the key, scope and epoch stay required

@@ -118,8 +118,12 @@ def test_a_versioned_table_is_stored_by_its_key_then_the_epoch() -> None:
         True,
         None,
     )
-    # its (scope, epoch) index is declared with the restore read that names it (append-only chunk 5)
-    assert schema.indexes == ()
+    # its (scope, epoch, key...) index: cleanup pages a scope by it (chunk 6), a restore reads its (scope, epoch) lead
+    [index] = schema.indexes
+    assert (index.name, index.columns) == (
+        "results_scope_epoch",
+        ("join_state_code", EPOCH_COLUMN, "office_key", "candidate"),
+    )
     # never in an upsert's SET: it is part of the stored key
     assert EPOCH_COLUMN not in [column.name for column in schema.mutable_columns()]
 
@@ -139,14 +143,16 @@ def test_a_table_that_declares_no_epoch_is_as_before() -> None:
 
 
 def test_a_versioned_table_on_yugabyte_hashes_its_first_key_column_and_orders_the_epoch_newest_first() -> None:
-    [create] = _versioned().create_statements(yugabyte=True)
+    create, index = _versioned().create_statements(yugabyte=True)
     assert "epoch BIGINT NOT NULL" in create
     assert "PRIMARY KEY ((office_key) HASH, candidate ASC, epoch DESC)" in create
+    assert "results_scope_epoch ON results (join_state_code, epoch, office_key, candidate)" in index
 
 
 def test_a_versioned_table_on_postgres_keeps_the_epoch_last_in_its_primary_key() -> None:
-    [create] = _versioned().create_statements(yugabyte=False)
+    create, index = _versioned().create_statements(yugabyte=False)
     assert "PRIMARY KEY (office_key, candidate, epoch)" in create
+    assert "results_scope_epoch ON results (join_state_code, epoch, office_key, candidate)" in index
 
 
 def test_the_epoch_is_last_in_the_stored_key_whatever_the_columns_order() -> None:
@@ -157,7 +163,7 @@ def test_the_epoch_is_last_in_the_stored_key_whatever_the_columns_order() -> Non
         row_epoch=row_versions("s"),
         l1_eviction=TEST_L1_TABLE,
     )
-    [create] = schema.create_statements(yugabyte=True)
+    create, _index = schema.create_statements(yugabyte=True)
     assert "PRIMARY KEY ((b) HASH, a ASC, epoch DESC)" in create
 
 

@@ -51,6 +51,10 @@ _ARROW_MODULES: dict[str, str] = {
         "a restore's serving side: hands its note pages to a worker as Arrow tables (shared_arrow), never pickled"
     ),
     "threetears.core.change_note_fold_job": "a restore's worker side: parses the notes' CSV and folds them in Arrow",
+    "threetears.core.collections.quiet_cleanup": (
+        "quiet-time cleanup of versioned tables: works out what a page of versions supersedes in Arrow; run by the "
+        "process that owns the tables' writes, which installs the arrow extra"
+    ),
     "threetears.core.collections.change_note_keeper": (
         "the change-note keeper: its restore folds through change_note_fold; run by the hub alone"
     ),

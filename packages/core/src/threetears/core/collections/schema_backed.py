@@ -214,6 +214,14 @@ log = get_logger(__name__)
 _NO_REPLY: Final = object()
 
 
+#: the cleanup read a versioned table's ``(scope, epoch, key...)`` index serves, and the plan test proving it does
+_CLEANUP_READ: Final = "packages/core/src/threetears/core/collections/quiet_cleanup.py::QuietCleanup._candidates"
+_CLEANUP_PLAN_TEST: Final = (
+    "packages/core/tests/integration/test_quiet_cleanup_plans_live.py::"
+    "test_cleanup_pages_a_scope_through_the_scope_epoch_index"
+)
+
+
 #: a page of more values than this (rows times the schema's columns) is read-coerced on a worker thread taking turns
 #: with the loop (:func:`_coerced_page`), a smaller one on the loop. A refill's page at the production reply cap is
 #: about 10,000 rows: of 49 columns, coerced in 55-59 ms and its rows as read freed in 3 ms more, in one stretch on
@@ -1612,9 +1620,10 @@ class TableSchema:
         register_partial_predicates(self.name, (index.where for index in self.indexes if index.where is not None))
 
     def _declare_row_epoch(self) -> None:
-        """give a table that declares a row epoch its epoch column where not declared; refuse what cannot hold beside
-        it. A versioned table's ``(scope, epoch)`` index is declared with the restore read that names it (append-only
-        chunk 5).
+        """give a table that declares a row epoch its epoch column where not declared, and a versioned one its
+        ``(scope, epoch, key...)`` index; refuse what cannot hold beside it. Quiet-time cleanup reads the index a scope
+        at a time (:mod:`~threetears.core.collections.quiet_cleanup`); the restore read (append-only chunk 5) reads its
+        ``(scope, epoch)`` lead.
 
         The column is ``BIGINT NOT NULL`` with no default: a write that bypasses 3tears and leaves it out is refused by
         the database. On a versioned table it is part of the stored key, so it is immutable (never in an upsert's
@@ -1677,6 +1686,27 @@ class TableSchema:
                     f"TableSchema(name={self.name!r}): row_versions with {what}: each write keeps its own version of "
                     "a key, so the key alone is unique no longer and one version cannot be fenced against another"
                 )
+        name = f"{self.name}_scope_epoch"
+        if len(name) > 63:
+            # an identifier is bounded (NAMEDATALEN): a digest keeps it one per table
+            name = f"scope_epoch_{hashlib.sha256(self.name.encode()).hexdigest()[:24]}"
+        if not any(index.name == name for index in self.indexes):
+            # WHY the scope leads, hashed on YugabyteDB (its default for a first column): the epochs rise, so an index
+            # led by them sends every insert to the last tablet; led by the scope, the rising end spreads across scopes
+            # (design-append-only-l3.md, decision 3). WHY the key after the epoch: cleanup pages a scope's versions in
+            # (epoch, key) order, and one write statement stamps all its rows alike (a load from files, tens of
+            # thousands in one scope), so only the key orders a page inside one epoch without sorting the whole of it
+            keyed = tuple(column for column in ((pk,) if isinstance(pk, str) else tuple(pk)) if column != scope)
+            versions_index = Index(
+                name,
+                scope,
+                EPOCH_COLUMN,
+                *keyed,
+                purpose=_CLEANUP_READ,
+                plan_test=_CLEANUP_PLAN_TEST,
+                reason="cleanup pages a scope's versions by (epoch, key), the key ordering one write's many rows",
+            )
+            object.__setattr__(self, "indexes", (*self.indexes, versions_index))
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index

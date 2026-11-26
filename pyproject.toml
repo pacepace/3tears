@@ -689,6 +689,8 @@ module = [
     "threetears.core.change_note_fold_job",
     # and Arrow rows matched by a key in Arrow's hash kernels (never Acero)
     "threetears.core.arrow_keys",
+    # and quiet-time cleanup's work-out of what a page of versions supersedes (Arrow's group-by and join)
+    "threetears.core.collections.quiet_cleanup",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped
@@ -705,6 +707,7 @@ module = [
     "packages.core.tests.unit.ddl.test_append_only_writes",
     "packages.core.tests.integration.test_reload_analyzed_live",
     "packages.core.tests.unit.backends.test_arrow_copy",
+    "packages.core.tests.unit.backends.test_stamp_wire",
     "packages.core.tests.unit.backends.test_load_files",
     "packages.core.tests.unit.collections.test_bulk_write_off_loop",
     "packages.core.tests.unit.collections.test_delta_files",
