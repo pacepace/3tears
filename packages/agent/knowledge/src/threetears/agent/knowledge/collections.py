@@ -22,10 +22,11 @@ read of one row by its primary key.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 from threetears.agent.acl import ACCESS_TABLES, visible_rows
+from threetears.core.collections.delete_cascade import DeleteCascade
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
@@ -47,6 +48,7 @@ from threetears.knowledge import (
     build_table_ref,
     derive_scope,
 )
+from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.eviction import Declared, Policy
 
 #: Every table the concept visibility scan reads, and every table the access decision that narrows
@@ -409,9 +411,24 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
     # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
 
     primary_key_column: str = "id"
+    #: playbook_entries_origin_entry_id_fkey (hub v012, ``ON DELETE SET NULL``): a shadow loses its link to a deleted
+    #: original. The row is marked gone in place (``ROW_STAMPED``), so the database's action never runs: 3tears sets
+    #: each shadow's ``origin_entry_id`` NULL by key, its epoch risen, in the delete's transaction
+    #: (``apply_delete_cascade``)
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
+        DeleteCascade("playbook_entries", "origin_entry_id", "SET NULL"),
+    )
     schema = TableSchema(
         name="playbook_entries",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: the hub edits a row in place, a key at a time (its scope immutable through
+        # an update, a promotion a new row), never a page of rows at once. Its DDL is the hub's, so the hub's migration
+        # stamps it (threetears.agent.knowledge.stamp_tables.STAMPED_TABLES)
+        row_epoch=ROW_STAMPED,
+        # the tenant on the schema too, so the restore declaration names it
+        tenancy=tenant_column("customer_id"),
         primary_key="id",
         columns=[
             Column("id", UUID_TYPE),
@@ -646,9 +663,22 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
     # so its schema declares ``write_generation=WRITE_GENERATION``, which this class reads (one declaration)
 
     primary_key_column: str = "id"
+    #: concepts_origin_concept_id_fkey (hub v013, ``ON DELETE SET NULL``): a shadow loses its link to a deleted
+    #: original. The row is marked gone in place (``ROW_STAMPED``), so the database's action never runs: 3tears sets
+    #: each shadow's ``origin_concept_id`` NULL by key, its epoch risen, in the delete's transaction
+    #: (``apply_delete_cascade``)
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (DeleteCascade("concepts", "origin_concept_id", "SET NULL"),)
     schema = TableSchema(
         name="concepts",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: the hub edits a row in place, a key at a time (its scope immutable through
+        # an update, a promotion a new row), never a page of rows at once. Its DDL is the hub's, so the hub's migration
+        # stamps it (threetears.agent.knowledge.stamp_tables.STAMPED_TABLES)
+        row_epoch=ROW_STAMPED,
+        # the tenant on the schema too, so the restore declaration names it
+        tenancy=tenant_column("customer_id"),
         primary_key="id",
         columns=[
             Column("id", UUID_TYPE),

@@ -108,6 +108,9 @@ class StampingTable:
         restore declaration names them; none for most tables
     :ivar columns: its declared invalidation columns (``TableSchema.invalidation_columns``), as the restore
         declaration names them; none for most tables
+    :ivar schema: the schema holding it when not the migration's own (``search_path``): a table of a second schema of
+        the same database (the hub's audit table, in ``<platform>_audit``). Its statements name it qualified; its index
+        and declaration keep the bare name
     """
 
     name: str
@@ -116,6 +119,17 @@ class StampingTable:
     tenancy: tuple[str, str | None] = ("undeclared", None)
     moveable: tuple[str, ...] = ()
     columns: tuple[str, ...] = ()
+    schema: str | None = None
+
+    @property
+    def qualified(self) -> str:
+        """the table as its statements name it: quoted, under its own schema when it names one.
+
+        :return: the name
+        :rtype: str
+        """
+        quoted = quote_identifier(self.name)
+        return quoted if self.schema is None else f"{quote_identifier(self.schema)}.{quoted}"
 
     @property
     def index(self) -> str:
@@ -184,20 +198,23 @@ def bucket_statements(table: StampingTable, *, yugabyte: bool) -> tuple[str, ...
     :return: the statements
     :rtype: tuple[str, ...]
     """
-    quoted = quote_identifier(table.name)
+    quoted = table.qualified
     expression = bucket_sql(tuple(key_hash_sql(quote_identifier(column), kind) for column, kind in table.keys))
     declaration = stamped_restore_declaration(
         table.key_columns, table.instants, table.tenancy, table.moveable, table.columns
     ).replace("'", "''")
     split = f" {bucket_split_sql()}" if yugabyte else ""
+    # an index lives in its table's schema: created by its bare name, commented on under that schema
+    index = quote_identifier(table.index)
+    commented = index if table.schema is None else f"{quote_identifier(table.schema)}.{index}"
     return (
         f"ALTER TABLE {quoted} ADD COLUMN IF NOT EXISTS {BUCKET_COLUMN} smallint "
         f"GENERATED ALWAYS AS ({expression}) STORED NOT NULL",
         "-- purpose: threetears.core.collections.table_restore::_bucket_rows\n"
         "-- reason: a lost change log is rebuilt from each bucket's rows stamped since the keeper's mark\n"
-        f"CREATE INDEX IF NOT EXISTS {quote_identifier(table.index)} ON {quoted} ({BUCKET_COLUMN} ASC, {EPOCH_COLUMN})"
+        f"CREATE INDEX IF NOT EXISTS {index} ON {quoted} ({BUCKET_COLUMN} ASC, {EPOCH_COLUMN})"
         f"{split}",
-        f"COMMENT ON INDEX {quote_identifier(table.index)} IS '{declaration}'",
+        f"COMMENT ON INDEX {commented} IS '{declaration}'",
     )
 
 
@@ -260,8 +277,9 @@ async def backfill_epochs(store: Any, table: StampingTable, *, page_size: int = 
     :rtype: int
     """
     rail = _Rail(store)
-    # the keyed helpers quote a table themselves: it is named to them bare (a plain identifier, frozen)
-    name = table.name
+    # the keyed helpers quote a table themselves: it is named to them bare (a plain identifier, frozen), under its
+    # own schema when it names one (a TRUSTED ``schema.table``, as they take it)
+    name = table.name if table.schema is None else f"{table.schema}.{table.name}"
     stamp = next_epoch()
     columns = ", ".join(quote_identifier(column) for column in table.key_columns)
     casts = tuple(_KEY_CASTS.get(kind, "text") for _, kind in table.keys)
@@ -308,7 +326,7 @@ async def stamp_existing_table(store: Any, table: StampingTable, *, yugabyte: bo
     :return: the rows the backfill stamped
     :rtype: int
     """
-    quoted = quote_identifier(table.name)
+    quoted = table.qualified
     await store.execute(f"ALTER TABLE {quoted} ADD COLUMN IF NOT EXISTS {EPOCH_COLUMN} bigint")
     await store.execute(f"ALTER TABLE {quoted} ADD COLUMN IF NOT EXISTS {GONE_COLUMN} boolean NOT NULL DEFAULT false")
     stamped = await backfill_epochs(store, table)
