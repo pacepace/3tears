@@ -333,6 +333,7 @@ async def keyset_rows(
     page: int = 500,
     visible: Sequence[Fragment] = (),
     where: Sequence[Fragment] = (),
+    with_gone: bool = False,
 ) -> list[dict[str, Any]]:
     """every row of ``table`` that ``by`` names, in ``order``: :func:`keyset_page`'s statement read page after page
     to the last.
@@ -363,6 +364,9 @@ async def keyset_rows(
     :ptype visible: Sequence[Fragment]
     :param where: filters beside the prefix, as :func:`keyset_page` takes them
     :ptype where: Sequence[Fragment]
+    :param with_gone: read the table as stored, as :func:`keyset_page` takes it: a versioned table's every version and
+        gone marker, a stamped table's gone rows. A walk that must reach deleted rows too (an erasure, a PII rotation)
+    :ptype with_gone: bool
     :return: the rows, in the sort's order
     :rtype: list[dict[str, Any]]
     :raises ValueError: as :func:`keyset_page`
@@ -370,18 +374,20 @@ async def keyset_rows(
     check_page(table, columns, order, page)
     # every statement after the first starts past the last row read: the order must hold a key
     refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
-    newest = newest_of(conn, table)
+    newest = None if with_gone else newest_of(conn, table)
     if newest is not None and isinstance(table, str):
         listed = await newest_listing(conn, newest, table, columns, by, order, None, None, visible, where, page + 1)
         if listed is not None:
             return listed[0]
-    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone
-    read_from, where = live_read(conn, table, where, by=by)
+    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone; with_gone the
+    # table as stored, as keyset_page reads it
+    read_from, where = (table, tuple(where)) if with_gone else live_read(conn, table, where, by=by)
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None
     legs = False
-    hint = await yugabyte_index_hint(conn, table, by, order, live=True)
+    # a live read states a live-only index's NOT gone; one read with_gone does not
+    hint = await yugabyte_index_hint(conn, table, by, order, live=not with_gone)
     while True:
         sql, params = page_statement(
             read_from,
