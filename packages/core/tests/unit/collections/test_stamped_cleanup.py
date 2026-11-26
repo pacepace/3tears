@@ -15,7 +15,7 @@ is a plain column here. The seeded rows, F = 100:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any, cast
 
 import duckdb
@@ -28,6 +28,13 @@ from threetears.core.backends.broker_generation import (
     stamp_fields,
 )
 from threetears.core.collections.cleanup_progress import CLEANUP_PROGRESS_TABLE
+from threetears.core.collections.epoch_change import (
+    ChangedRow,
+    EpochChange,
+    advance_recording,
+    epoch_change_body,
+    read_epoch_change_body,
+)
 from threetears.core.collections.quiet_cleanup import STAMPED_SCOPE, LoadGate, QuietCleanup
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
@@ -327,3 +334,123 @@ def test_a_change_log_gate_refuses_versioned_tables() -> None:
 
     with pytest.raises(ValueError, match="names no scopes"):
         QuietCleanup(object(), (versioned,), LoadGate.from_change_log(_HeardLog().on_record), window)
+
+
+class _RecordingLog:
+    """a generation source that keeps the change log (the hub's): each advance's record stored as the log stores it,
+    read back, and heard by every listener of :class:`_HeardLog`, as the hub hears the records it appends."""
+
+    def __init__(self, heard: _HeardLog) -> None:
+        self._heard = heard
+        self._seq = 0
+
+    async def current(self, table_name: str) -> str:
+        return f"1:{self._seq}"
+
+    async def advance(self, table_name: str) -> str:
+        raise AssertionError("a source that keeps the change log is advanced with its change")
+
+    async def advance_with_change(
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        tenant: str | None = None,
+        cleanup_floor: int | None = None,
+    ) -> str:
+        self._seq += 1
+        token = f"1:{self._seq}"
+        body = epoch_change_body(table_name, rows, keys_unknown=keys_unknown, cleanup_floor=cleanup_floor)
+        self._heard.hear(read_epoch_change_body(body, table_name, token))
+        return token
+
+
+class _Advancing(_Settled):
+    """:class:`_Settled` whose every delete of the table is recorded on the change log as the broker records a delete
+    it runs, naming the floor the request's wire fields carry (``CLEANUP_FLOOR_FIELD``). With ``load_beside``, a
+    load's own write lands beside each batch too: its record, heard as the hub hears a peer's."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection, log: _RecordingLog, heard: _HeardLog, *, load_beside: bool):
+        super().__init__(conn)
+        self._log = log
+        self._heard = heard
+        self._load_beside = load_beside
+        self.recorded_deletes = 0
+
+    async def execute(self, query: str, *params: Any) -> str:
+        answered = await super().execute(query, *params)
+        if query.startswith("DELETE") and _TABLE in query:
+            self.recorded_deletes += 1
+            floor = stamp_fields()[CLEANUP_FLOOR_FIELD]
+            await advance_recording(self._log, _TABLE, [ChangedRow(ids=["CA", "r1"])], cleanup_floor=floor)
+            if self._load_beside:
+                self._heard.hear(EpochChange(table=_TABLE, token="2:1", rows=[ChangedRow(ids=["NV", "r9"])], s_min=500))
+        return answered
+
+
+def _change_log_cleanup(
+    db: duckdb.DuckDBPyConnection, *, load_beside: bool
+) -> tuple[QuietCleanup, _Advancing, LoadGate]:
+    db.execute(
+        f"CREATE TABLE {CLEANUP_PROGRESS_TABLE} (table_name VARCHAR, scope VARCHAR, cleaned_to BIGINT, "
+        "PRIMARY KEY (table_name, scope))"
+    )
+    heard = _HeardLog()
+    pool = _Advancing(db, _RecordingLog(heard), heard, load_beside=load_beside)
+    gate = LoadGate.from_change_log(heard.on_record, quiet_after=30.0)
+
+    async def window() -> int | None:
+        return 100
+
+    return QuietCleanup(pool, (_RUNS,), gate, window, batch=1, run_markers=None), pool, gate
+
+
+async def test_a_change_log_gate_does_not_pause_on_the_records_of_cleanups_own_deletes(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if a change-log gate (the hub's) hears the records of cleanup's own deletes as a load and pauses cleanup
+    after its first batch: a delete sent inside cleanup_deleting is recorded as cleanup's, with its floor, and the gate
+    skips that record. Batches of one row, so every row removed is its own batch and its own record."""
+    cleanup, pool, gate = _change_log_cleanup(db, load_beside=False)
+    try:
+        done = await cleanup.clean()
+        assert not done.paused and done.finished and done.removed == 3, done
+        assert pool.recorded_deletes >= 2
+        assert _held(db) == [("CA", "r3"), ("NV", "r1")]
+        assert not gate.stirred
+    finally:
+        gate.close()
+
+
+async def test_a_change_log_gate_still_pauses_on_any_other_record(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a record that is not cleanup's own (a load's write, here one landing beside cleanup's first batch)
+    does not pause cleanup before its next batch, though cleanup's own record beside it is skipped."""
+    cleanup, pool, gate = _change_log_cleanup(db, load_beside=True)
+    try:
+        done = await cleanup.clean()
+        assert done.paused and not done.finished, done
+        assert pool.recorded_deletes == 1
+        assert len(_held(db)) == 4
+        assert gate.stirred
+    finally:
+        gate.close()
+
+
+def test_a_record_says_it_is_cleanups_only_inside_cleanup_deleting() -> None:
+    """Flips if the record of a write made inside cleanup_deleting does not carry cleanup's floor (stored and read
+    back), or a record of any other write does."""
+    heard = _HeardLog()
+    records: list[EpochChange] = []
+    heard.on_record(records.append)
+    log = _RecordingLog(heard)
+
+    async def advance_both() -> None:
+        await advance_recording(log, _TABLE, [ChangedRow(ids=["CA", "r1"])])
+        with cleanup_deleting(100):
+            await advance_recording(log, _TABLE, [ChangedRow(ids=["CA", "r1"])])
+        # the broker names the request's floor itself: it runs no cleanup_deleting block
+        await advance_recording(log, _TABLE, [ChangedRow(ids=["CA", "r1"])], cleanup_floor=90)
+
+    asyncio.run(advance_both())
+    assert [record.cleanup_floor for record in records] == [None, 100, 90]

@@ -104,6 +104,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from threetears.core.backends.broker_generation import cleanup_delete_floor
 from threetears.core.cache.base import stored_instant
 from threetears.core.exceptions import GenerationNotCommittedError, GenerationUnavailableError
 from threetears.core.utils.write_ledger import process_write_ledger
@@ -305,6 +306,11 @@ class EpochChange(BaseModel):
         held by it (a record after the keeper's mark whose ``s_min`` is below the restore's floor is a violation,
         ``design-append-only-l3.md`` decision 3). ``None`` for a commit that stamped no row, and from a writer built
         before the field
+    :ivar cleanup_floor: the record is of quiet-time cleanup's own delete (:mod:`~threetears.core.collections
+        .quiet_cleanup`), sent marked with the floor F it was worked out against (``CLEANUP_FLOOR_FIELD`` on the
+        wire): every row it removed is stamped below F, so no follower or restore reads it, and a gate fed by the
+        change log (``LoadGate.from_change_log``) does not hear it as a load. ``None`` for every other write, and from
+        a writer built before the field
     """
 
     table: str
@@ -322,6 +328,7 @@ class EpochChange(BaseModel):
     delta_file_unconfirmed: bool = False
     unconfirmed_writer: str | None = None
     s_min: int | None = None
+    cleanup_floor: int | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -349,6 +356,7 @@ class EpochChange(BaseModel):
             _check_unconfirmed(self.delta_file, None, whole_table=self.whole_table, prefixes=self.prefixes)
         _check_unconfirmed_writer(self.unconfirmed_writer, self.delta_file if self.delta_file_unconfirmed else None)
         _check_s_min(self.s_min)
+        _check_cleanup_floor(self.cleanup_floor)
         return self
 
 
@@ -363,6 +371,19 @@ def _check_s_min(s_min: int | None) -> None:
     """
     if s_min is not None and not 0 < s_min < 1 << 63:
         raise ValueError(f"a record's s_min is a row epoch, a positive BIGINT: got {s_min}")
+
+
+def _check_cleanup_floor(floor: int | None) -> None:
+    """refuse a ``cleanup_floor`` that is no row epoch: a positive BIGINT, as the wire's ``CLEANUP_FLOOR_FIELD``.
+
+    :param floor: the floor cleanup's delete was worked out against, or None
+    :ptype floor: int | None
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when it is refused
+    """
+    if floor is not None and not 0 < floor < 1 << 63:
+        raise ValueError(f"a record's cleanup_floor is a row epoch, a positive BIGINT: got {floor}")
 
 
 def _check_unconfirmed(
@@ -764,6 +785,7 @@ async def advance_recording(
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
     s_min: int | None = None,
+    cleanup_floor: int | None = None,
 ) -> str | None:
     """advance ``table_name``'s generation through ``source``, storing the change when the source records changes.
 
@@ -818,6 +840,11 @@ async def advance_recording(
     :ptype unconfirmed_writer: str | None
     :param s_min: the commit's lowest row epoch (:attr:`EpochChange.s_min`), for a source that records it
     :ptype s_min: int | None
+    :param cleanup_floor: the write was quiet-time cleanup's own delete, worked out against this floor
+        (:attr:`EpochChange.cleanup_floor`), for a source that records it: the broker passes the floor its request
+        named (``CLEANUP_FLOOR_FIELD``); ``None`` takes the one of the :func:`~threetears.core.backends
+        .broker_generation.cleanup_deleting` block this advance runs in (a direct pool's cleanup), none outside one
+    :ptype cleanup_floor: int | None
     :return: the token the advance wrote, as :meth:`GenerationSource.advance`
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -833,6 +860,9 @@ async def advance_recording(
             unconfirmed_delta_file, delta_file, whole_table=rows is None and not keys_unknown, prefixes=prefixes
         )
     _check_unconfirmed_writer(unconfirmed_writer, unconfirmed_delta_file)
+    # read here, in the writer's context: a retry from the ledger runs outside it and names the same floor
+    cleaning = cleanup_floor if cleanup_floor is not None else cleanup_delete_floor()
+    _check_cleanup_floor(cleaning)
     if not repair:
         return await _advance_recording_once(
             source,
@@ -849,6 +879,7 @@ async def advance_recording(
             unconfirmed_delta_file=unconfirmed_delta_file,
             unconfirmed_writer=unconfirmed_writer,
             s_min=s_min,
+            cleanup_floor=cleaning,
         )
     kept_rows = None if rows is None else list(rows)
 
@@ -868,6 +899,7 @@ async def advance_recording(
             unconfirmed_delta_file=unconfirmed_delta_file,
             unconfirmed_writer=unconfirmed_writer,
             s_min=s_min,
+            cleanup_floor=cleaning,
         )
 
     try:
@@ -896,6 +928,7 @@ async def _advance_recording_once(
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
     s_min: int | None = None,
+    cleanup_floor: int | None = None,
 ) -> str | None:
     """one try of :func:`advance_recording`, its change already checked.
 
@@ -927,6 +960,8 @@ async def _advance_recording_once(
     :ptype unconfirmed_writer: str | None
     :param s_min: the commit's lowest row epoch
     :ptype s_min: int | None
+    :param cleanup_floor: the floor of quiet-time cleanup's delete the write was, or None
+    :ptype cleanup_floor: int | None
     :return: the token the advance wrote
     :rtype: str | None
     :raises GenerationUnavailableError: when the advance, or the record of its change, failed
@@ -960,6 +995,9 @@ async def _advance_recording_once(
                 extra["unconfirmed_writer"] = unconfirmed_writer
         if s_min is not None and _takes(source, "s_min"):
             extra["s_min"] = s_min
+        if cleanup_floor is not None and _takes(source, "cleanup_floor"):
+            # a source built before it records cleanup's delete as any write's: a change-log gate then hears it
+            extra["cleanup_floor"] = cleanup_floor
         return await source.advance_with_change(table_name, rows, keys_unknown=keys_unknown, **extra)
     return await source.advance(table_name)
 
@@ -1131,6 +1169,9 @@ class _EpochBody(BaseModel):
     #: the commit's lowest row epoch, on every record of it; last, so a keyed record's form (cut from a record naming
     #: none) is unchanged, and a reader built before it ignores it
     s_min: int | None = None
+    #: on a record of quiet-time cleanup's own delete, the floor it was worked out against; after s_min, so a keyed
+    #: record's form (cut from a record naming none) is unchanged, and a reader built before it ignores it
+    cleanup_floor: int | None = None
 
 
 def epoch_change_body(
@@ -1148,6 +1189,7 @@ def epoch_change_body(
     unconfirmed_delta_file: str | None = None,
     unconfirmed_writer: str | None = None,
     s_min: int | None = None,
+    cleanup_floor: int | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -1185,6 +1227,9 @@ def epoch_change_body(
     :ptype unconfirmed_writer: str | None
     :param s_min: the commit's lowest row epoch (:attr:`EpochChange.s_min`); ``None`` names none
     :ptype s_min: int | None
+    :param cleanup_floor: for a record of quiet-time cleanup's own delete, its floor (:attr:`EpochChange
+        .cleanup_floor`); ``None`` for any other write
+    :ptype cleanup_floor: int | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, a partition with either, or a delta file name that is
@@ -1204,6 +1249,7 @@ def epoch_change_body(
         )
     _check_unconfirmed_writer(unconfirmed_writer, unconfirmed_delta_file)
     _check_s_min(s_min)
+    _check_cleanup_floor(cleanup_floor)
     body = _EpochBody(
         table=table_name,
         whole_table=rows is None and not keys_unknown,
@@ -1219,6 +1265,7 @@ def epoch_change_body(
         unconfirmed_delta_file=unconfirmed_delta_file,
         unconfirmed_writer=unconfirmed_writer,
         s_min=s_min,
+        cleanup_floor=cleanup_floor,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -1320,6 +1367,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             delta_file_unconfirmed=body.unconfirmed_delta_file is not None,
             unconfirmed_writer=body.unconfirmed_writer,
             s_min=body.s_min,
+            cleanup_floor=body.cleanup_floor,
         )
         if body.unconfirmed_delta_file is not None and body.delta_file is not None:
             raise ValueError("a record names a delta file confirmed or unconfirmed, never both")

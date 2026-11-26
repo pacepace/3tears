@@ -999,6 +999,7 @@ class EpochGenerationSource(_ChangeLogReading):
         unconfirmed_delta_file: str | None = None,
         unconfirmed_writer: str | None = None,
         s_min: int | None = None,
+        cleanup_floor: int | None = None,
     ) -> str:
         """append the epochs of one committed write: the rows it changed, the whole table, or keys unknown.
 
@@ -1048,6 +1049,10 @@ class EpochGenerationSource(_ChangeLogReading):
         :param s_min: the commit's lowest row epoch, named by every record the write appends
             (:attr:`~threetears.core.collections.epoch_change.EpochChange.s_min`)
         :ptype s_min: int | None
+        :param cleanup_floor: for quiet-time cleanup's own delete, the floor it was worked out against, named by every
+            record the write appends (:attr:`~threetears.core.collections.epoch_change.EpochChange.cleanup_floor`), so
+            a change-log gate does not hear cleanup's own batches as a load
+        :ptype cleanup_floor: int | None
         :return: the generation token the advance wrote
         :rtype: str
         :raises GenerationUnavailableError: when the epoch could not be appended
@@ -1076,6 +1081,7 @@ class EpochGenerationSource(_ChangeLogReading):
                         unconfirmed_delta_file=unconfirmed_delta_file,
                         unconfirmed_writer=unconfirmed_writer,
                         s_min=s_min,
+                        cleanup_floor=cleanup_floor,
                     ),
                 )
             ]
@@ -1083,7 +1089,14 @@ class EpochGenerationSource(_ChangeLogReading):
             bodies = [
                 (
                     tenant,
-                    epoch_change_body(table_name, run, database=self._database, delta_file=delta_file, s_min=s_min),
+                    epoch_change_body(
+                        table_name,
+                        run,
+                        database=self._database,
+                        delta_file=delta_file,
+                        s_min=s_min,
+                        cleanup_floor=cleanup_floor,
+                    ),
                 )
                 for tenant, group in _by_tenant(rows)
                 for run in changed_row_runs(table_name, group)

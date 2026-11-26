@@ -16,6 +16,13 @@ Nothing polls L3. ``LoadGate(epochs)`` (reports) is the same gate fed by ``Scope
 ``LoadGate.names_scopes`` says whether a quiet look names scopes; ``QuietCleanup`` refuses a versioned table with a gate
 that names none (``ValueError``).
 
+**Fixed:** a change-log gate heard the records of cleanup's own deletes as a load, so on the hub cleanup paused after
+every batch. A record now says it is cleanup's: ``EpochChange.cleanup_floor`` (stored as ``cleanup_floor``, after
+``s_min``; a reader built before it ignores it), the floor of the cleanup delete that wrote it. ``advance_recording``,
+``advance_for_write`` and ``EpochGenerationSource.advance_with_change`` take ``cleanup_floor=``: the broker passes the
+floor the request named (``CLEANUP_FLOOR_FIELD``); a direct pool's advance inside ``cleanup_deleting`` takes that
+block's floor. The change-log gate skips such a record; every other record still pauses cleanup.
+
 **Changed (breaking):** ``LoadGate.look()`` answers the scopes to clean (a ``frozenset``, empty from the change log) or None while
 loading, where it answered the ``EpochSnapshot``.
 

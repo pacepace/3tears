@@ -87,6 +87,7 @@ from threetears.core.backends.broker_generation import cleanup_deleting
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.schema_sql import key_array_type
 from threetears.core.collections.cleanup_progress import CLEANUP_PROGRESS_TABLE
+from threetears.core.collections.epoch_change import EpochChange
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -232,8 +233,11 @@ class _ChangeLogFeed:
     is quiet while no timer is armed, and the timer firing stirs it once more, so cleanup resumes then. Nothing is read
     from L3 to learn whether a load is on: the records are the load.
 
+    Cleanup's own deletes are no load: their records say so (``EpochChange.cleanup_floor``, from the delete's
+    ``CLEANUP_FLOOR_FIELD``) and are skipped, so cleanup does not pause itself after every batch it sends.
+
     :param on_record: subscribes a listener to the records this process hears (called on the loop with the record,
-        which the gate does not read), answering a call that removes it
+        an ``EpochChange``, which the gate reads only for whether it is cleanup's own), answering a call that removes it
     :ptype on_record: Callable[[Callable[..., None]], Callable[[], None]]
     :param quiet_after: seconds of silence after the last record heard before the gate is quiet
     :ptype quiet_after: float
@@ -269,14 +273,17 @@ class _ChangeLogFeed:
 
         return stop
 
-    def _heard(self, *_record: Any) -> None:
-        """a record heard: stir the gate at once (cleanup stops before its next batch) and re-arm the quiet timer.
+    def _heard(self, *record: Any) -> None:
+        """a record heard: stir the gate at once (cleanup stops before its next batch) and re-arm the quiet timer;
+        nothing for a record of cleanup's own delete.
 
-        :param _record: the record, unread
-        :ptype _record: Any
+        :param record: the record
+        :ptype record: Any
         :return: nothing
         :rtype: None
         """
+        if record and all(isinstance(each, EpochChange) and each.cleanup_floor is not None for each in record):
+            return
         self._stir()
         if self._timer is not None:
             self._timer.cancel()

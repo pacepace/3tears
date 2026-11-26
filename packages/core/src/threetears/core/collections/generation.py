@@ -1000,6 +1000,7 @@ async def advance_for_write(
     unconfirmed_writer: str | None = None,
     repair: bool = True,
     s_min: int | None = None,
+    cleanup_floor: int | None = None,
 ) -> str | None:
     """advance ``table_name`` after a write that ran in ``schema``, each record under the tenant its table declares.
 
@@ -1060,6 +1061,10 @@ async def advance_for_write(
         being settled in this context named (``naming_commit_s_min``); a write that joined no transaction, the lowest
         stamp its statements carried (``taken_statement_stamp``); none when none is named
     :ptype s_min: int | None
+    :param cleanup_floor: the write was quiet-time cleanup's own delete (``EpochChange.cleanup_floor``): the broker
+        passes the floor its request named (``CLEANUP_FLOOR_FIELD``); ``None`` takes the enclosing ``cleanup_deleting``
+        block's (``advance_recording``), none outside one
+    :ptype cleanup_floor: int | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
     :raises SchemaTenantUnknownError: when the table is declared per schema, the source records changes itself,
@@ -1106,6 +1111,7 @@ async def advance_for_write(
         unconfirmed_writer=unconfirmed_writer if unconfirmed is not None else None,
         repair=repair,
         s_min=lowest,
+        cleanup_floor=cleanup_floor,
     )
     if isinstance(token, str) and token:
         # a commit settling in this context collects it: a writer folds its delta files by the generation it wrote
