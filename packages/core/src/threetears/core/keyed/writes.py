@@ -27,6 +27,7 @@ from typing import Any
 from threetears.core.backends.broker_generation import stamping_write
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.ddl.row_epoch import stamp_of_values
+from threetears.core.ddl.tenant_moves import MoveRecord, move_record_of_values, with_moves_appended
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -127,13 +128,17 @@ async def update_keyed(
     :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table
     """
     refuse_in_place(conn, table, "update")
+    # an update that may move a row between tenants (a MoveStamp among its values, stamped_values) appends each move
+    # to the moves table in the same statement (tenant_moves): it returns what the append reads, and answers the
+    # caller's columns (or its count) from the rows it wrote
+    record = move_record_of_values(values)
     statements = update_keyed_statements(
         table,
         values=values,
         by=by,
         keys=keys,
         where=where,
-        returning=returning,
+        returning=returning if record is None else tuple(dict.fromkeys((*record.returned, *returning))),
         batch=batch,
         prefix=prefix,
         natively=binds_native_arrays(conn),
@@ -142,7 +147,42 @@ async def update_keyed(
     # a stamped table's update (its epoch a RisingStamp, stamped_values) says so on the wire with its stamp as s_min,
     # as every stamped write does; its stamp was noted as the statement's own when it was drawn (stamp_for)
     with stamping_write(stamp_of_values(values)):
-        return await _ran(conn, statements, returning)
+        if record is None:
+            return await _ran(conn, statements, returning)
+        return await _ran_moving(conn, statements, record, returning)
+
+
+async def _ran_moving(
+    conn: Any, statements: Sequence[tuple[str, list[Any]]], record: MoveRecord, returning: Sequence[str]
+) -> KeyedWrite:
+    """each update that may move a row run in turn on ``conn`` with its moves appended
+    (:func:`~threetears.core.ddl.tenant_moves.with_moves_appended`), its counts and the caller's returned rows summed.
+
+    WHY ``fetch`` even when the caller asks for no rows: the statement's main clause is the ``SELECT`` that answers it,
+    so its status tag names no write; its count is read as a row.
+
+    :param conn: the connection
+    :ptype conn: Any
+    :param statements: the updates, each returning :attr:`~threetears.core.ddl.tenant_moves.MoveRecord.returned`
+    :ptype statements: Sequence[tuple[str, list[Any]]]
+    :param record: the table's moves
+    :ptype record: MoveRecord
+    :param returning: the columns the caller asked of the written rows; none when empty
+    :ptype returning: Sequence[str]
+    :return: the count written, and the rows the caller asked for
+    :rtype: KeyedWrite
+    """
+    count = 0
+    rows: list[dict[str, Any]] = []
+    selected = [quote_identifier(column) for column in returning] or ["count(*) AS count"]
+    for sql, params in statements:
+        found = await conn.fetch(with_moves_appended(sql, record, selected), *params)
+        if returning:
+            rows += [dict(row) for row in found]
+            count += len(found)
+        else:
+            count += int(found[0]["count"]) if found else 0
+    return KeyedWrite(count=count, rows=rows)
 
 
 async def delete_keyed(

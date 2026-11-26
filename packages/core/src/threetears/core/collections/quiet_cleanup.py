@@ -44,7 +44,9 @@ written since, and a round whose floor has not moved reads no data at all.
 **Stamped tables too.** A stamped table (``ROW_STAMPED``: one row a key, updated in place) keeps no older versions;
 its delete marks its row gone in place. Its gone rows below F go by
 :func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`, a bucket at a time through its
-``(epoch_bucket, epoch)`` index, after the versioned tables, its progress one row under :data:`STAMPED_SCOPE`.
+``(epoch_bucket, epoch)`` index, after the versioned tables, its progress one row under :data:`STAMPED_SCOPE`; a
+stamped table a write moves between tenants has its moves below F deleted with them
+(:func:`~threetears.core.collections.tenant_moves.clear_moves`, one range of the moves table's key a bucket).
 
 **Only while nothing loads, and never in a writer's way.** :class:`LoadGate` is one gate with two feeds. Over the
 scope epochs table (reports) it listens to ``ScopeEpochs.on_change`` (this process's own writes and every peer's
@@ -96,6 +98,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
 from threetears.core.collections.stamped_cleanup import StampedSweep, clear_stamped_gone
+from threetears.core.collections.tenant_moves import clear_moves
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, cleanup_floor
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, TABLE_RESET_SCOPE
 from threetears.core.keyed import Fragment, KeyBatch, Sort, delete_before, delete_keyed, keyset_rows, read_keyed_arrow
@@ -630,6 +633,10 @@ class QuietCleanup:
             removed += sweep.removed
             _REMOVED.labels(table=schema.name, kind="stamped_gone").inc(sweep.removed)
             if sweep.finished:
+                # the table's moves below F too (tenant_moves): no restore reads them
+                moves = await clear_moves(self._pool, schema, floor)
+                removed += moves
+                _REMOVED.labels(table=schema.name, kind="tenant_moves").inc(moves)
                 await self._record(schema.name, STAMPED_SCOPE, floor)
                 _BACKLOG.labels(table=schema.name).set(0)
             elif self._gate.stirred:

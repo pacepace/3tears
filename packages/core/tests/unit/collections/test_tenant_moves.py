@@ -1,24 +1,27 @@
-"""A stamped row that moves between tenants records the tenant it left on itself, and both tenants hear of it.
+"""A stamped row that moves between tenants records the tenant it left, and both tenants hear of it.
 
-Pace's option A (2026-11-25, ``threetears.core.ddl.tenant_moves``): with the change-note ring retired, nothing but the
-row can tell the tenant a write moved it off that the row left. A ``moveable`` tenancy column carries the L3-only
+``threetears.core.ddl.tenant_moves`` (Pace, 2026-11-25): with the change-note ring retired, nothing but the write can
+tell the tenant a write moved a row off that the row left. A ``moveable`` tenancy column carries the L3-only
 ``<column>_moved_from`` and ``<column>_moved_epoch``, which the write that changes the column fills in the same
-statement; the write's epoch record names the old tenant beside the new one, and a restore of a lost log reads each
-moved row back for the tenant it left. Each test here flips on the code before it: no column, no SET term, one record,
-one tenant restored.
+statement; that same statement appends the move to the moves table (``threetears_tenant_moves``), one row a move, which
+a restore of a lost log reads every move since X from; and the write's epoch record names the old tenant beside the
+new one. Each test here flips on the code before it: no column, no SET term, no append, one record.
 
 The pools are stand-ins recording every statement; the statements' meaning on a real database (a move fills both
-columns, a write that does not move leaves them) is pinned by the SQL each one renders.
+columns and appends its row, a write that does not move leaves them) is pinned by the SQL each one renders, the append
+run on DuckDB below and the whole statement on PostgreSQL by the integration suite's ``test_tenant_moves_live``.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
+import duckdb
 import pytest
 import sqlalchemy as sa
 
@@ -26,6 +29,7 @@ from threetears.core.backends import schema_sql
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -38,8 +42,17 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, ROW_STAMPED
-from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_column, taken_moves
+from threetears.core.ddl.tenant_moves import (
+    TENANT_MOVES_TABLE,
+    MoveStamp,
+    moved_assignments,
+    moved_epoch_column,
+    moved_from_column,
+    taken_moves,
+    with_moves_appended,
+)
 from threetears.core.entities.base import BaseEntity
+from threetears.core.keyed import update_keyed
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import epoch_change_key, tenant_column, value_tenant
 from threetears.core.testing.kv import FakeNatsClient
@@ -182,7 +195,7 @@ def _store(returned: dict[str, Any] | None) -> tuple[SqlL3Backend, list[str]]:
 
     async def fetch(query: str, *_params: Any) -> list[dict[str, Any]]:
         sent.append(query)
-        return [] if returned is None or not query.startswith(("INSERT", "UPDATE")) else [dict(returned)]
+        return [] if returned is None or not query.startswith(("INSERT", "UPDATE", "WITH")) else [dict(returned)]
 
     async def fetchrow(query: str, *_params: Any) -> dict[str, Any] | None:
         sent.append(query)
@@ -218,8 +231,11 @@ async def test_a_write_that_moves_the_row_names_both_tenants_in_its_live_record(
         widgets.create({"id": "w1", _TENANT: _NEW, "label": "x", "rows": 1, "date_updated": datetime.now(UTC)})
     )
 
-    writes = [query for query in sent if query.startswith(("INSERT", "UPDATE"))]
-    assert len(writes) == 1 and writes[0].endswith(f" RETURNING epoch, {_MOVED_FROM}, {_MOVED_EPOCH}"), writes
+    writes = [query for query in sent if query.startswith(("INSERT", "UPDATE", "WITH"))]
+    assert len(writes) == 1, writes
+    assert writes[0].startswith(f"WITH threetears_moved AS (INSERT INTO {_TABLE} "), writes
+    assert f"INSERT INTO {TENANT_MOVES_TABLE} " in writes[0], "the move is appended by the write's own statement"
+    assert writes[0].endswith(f'SELECT "epoch", "{_MOVED_FROM}", "{_MOVED_EPOCH}" FROM threetears_moved'), writes
     keys = await _record_keys(bus)
     assert sorted(keys) == sorted(
         [epoch_change_key(_TABLE, value_tenant(_NEW)), epoch_change_key(_TABLE, value_tenant(_OLD))]
@@ -244,3 +260,134 @@ async def test_a_write_that_does_not_move_the_row_names_its_own_tenant_alone() -
     )
 
     assert await _record_keys(bus) == [epoch_change_key(_TABLE, value_tenant(_NEW))]
+
+
+#: a stamped table whose tenant column and office (a declared invalidation column) a write may change in place
+_RUNS = TableSchema(
+    name="moving_runs",
+    primary_key="run_id",
+    columns=[Column("run_id", STRING_TYPE), Column(_TENANT, STRING_TYPE), Column("office", STRING_TYPE)],
+    tenancy=tenant_column(_TENANT),
+    row_epoch=ROW_STAMPED,
+    moveable=(_TENANT, "office"),
+    invalidation_columns=("office",),
+    l1_eviction=Declared(Policy.EVICTABLE, "a test's stamped table whose rows move between tenants"),
+)
+
+
+def test_every_write_that_may_move_a_row_appends_its_move_in_the_same_statement() -> None:
+    """Flips if a write that sets a moveable column -- the single-row upsert, the bulk upsert, a keyed update of
+    ``stamped_values`` -- is not ONE statement that writes the row and appends its move to the moves table from the row
+    it returned, only where its ``moved_epoch`` is its new epoch, answering what its caller reads (the epoch and moved
+    columns, or the count); or if the moves table is not keyed by (table, bucket, epoch, key)."""
+    record = _RUNS.move_record
+    assert record is not None and record.moved == ("office", _TENANT) and record.columns == ("office", _TENANT)
+    row = {"run_id": "r1", _TENANT: "cb", "office": "gov", EPOCH_COLUMN: 7}
+    write = schema_sql.build_insert_sql(_RUNS, row)
+    sql = schema_sql.with_moves_returning(write, record, schema_sql.moving_columns(_RUNS, row))
+    assert sql.startswith(f"WITH threetears_moved AS ({write} RETURNING "), sql
+    append = f"INSERT INTO {TENANT_MOVES_TABLE} (table_name, scope, epoch, keys, tenant, columns) SELECT"
+    assert sql.count(append) == 1, sql
+    assert 'WHERE (t."office_moved_epoch" = t."epoch") OR (t."customer_id_moved_epoch" = t."epoch")' in sql, sql
+    assert sql.endswith(
+        'SELECT "epoch", "customer_id_moved_from", "customer_id_moved_epoch", "office_moved_from", '
+        '"office_moved_epoch" FROM threetears_moved'
+    ), sql
+
+    bulk = schema_sql.build_bulk_insert_sql(_RUNS, rows=2, columns=schema_sql.insert_columns_for_data(_RUNS, row))
+    assert bulk.startswith("WITH threetears_moved AS (INSERT INTO moving_runs ") and append in bulk, bulk
+    assert bulk.endswith("SELECT count(*) AS count FROM threetears_moved"), bulk
+
+    stamp = stamped_values(_RUNS, {_TENANT: "cb"})[moved_epoch_column(_TENANT)]
+    assert isinstance(stamp, MoveStamp) and stamp.record == record, "a keyed update learns its moves from its values"
+    assert (
+        _WIDGETS.move_record is not None
+        and TableSchema(
+            name="still_widgets",
+            primary_key="id",
+            columns=[Column("id", STRING_TYPE), Column(_TENANT, STRING_TYPE)],
+            tenancy=tenant_column(_TENANT),
+            row_epoch=ROW_STAMPED,
+            l1_eviction=Declared(Policy.EVICTABLE, "a test's stamped table nothing moves"),
+        ).move_record
+        is None
+    )
+    assert TENANT_MOVES_SCHEMA.pk_columns == ("table_name", "scope", "epoch", "keys")
+
+
+class _Updating:
+    """an asyncpg-shaped connection answering a keyed update's one statement: the rows it wrote, the count asked."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def fetch(self, query: str, *_params: Any) -> list[dict[str, Any]]:
+        self.sent.append(query)
+        return [{"count": 1}]
+
+    async def execute(self, query: str, *_params: Any) -> str:
+        self.sent.append(query)
+        return "UPDATE 1"
+
+
+async def test_a_keyed_update_that_may_move_a_row_appends_its_move_in_the_same_statement() -> None:
+    """Flips if ``update_keyed`` of ``stamped_values`` that set a moveable column runs the update without appending the
+    move (a second statement, or none), or answers a count other than the rows it wrote."""
+    conn = _Updating()
+    written = await update_keyed(
+        conn, "moving_runs", values=stamped_values(_RUNS, {_TENANT: "cb"}), by={"run_id": "r1"}
+    )
+    assert written.count == 1
+    [sql] = conn.sent
+    assert sql.startswith("WITH threetears_moved AS (UPDATE ") and f"INSERT INTO {TENANT_MOVES_TABLE} " in sql, sql
+    assert sql.endswith("SELECT count(*) AS count FROM threetears_moved"), sql
+
+
+@pytest.fixture
+def duck() -> Iterator[duckdb.DuckDBPyConnection]:
+    conn = duckdb.connect()
+    moved = ", ".join(f"{c}_moved_from TEXT, {c}_moved_epoch BIGINT" for c in (_TENANT, "office"))
+    conn.execute(
+        f"CREATE TABLE moving_runs (run_id TEXT PRIMARY KEY, {_TENANT} TEXT, office TEXT, {moved}, epoch BIGINT, "
+        "epoch_bucket SMALLINT)"
+    )
+    conn.execute(
+        f"CREATE TABLE {TENANT_MOVES_TABLE} (table_name TEXT, scope TEXT, epoch BIGINT, keys TEXT, tenant TEXT, columns TEXT)"
+    )
+    yield conn
+    conn.close()
+
+
+def _duck(query: str) -> str:
+    """PostgreSQL's spellings the append uses, as DuckDB spells them."""
+    for pattern, spelled in (
+        (r"encode\(sha256\(convert_to\((.+?), 'UTF8'\)\), 'hex'\)", r"sha256(\1)"),
+        (r"array_to_json\(ARRAY\[", "to_json(["),
+        (r"json_build_object\(", "json_object("),
+    ):
+        query = re.sub(pattern, spelled, query)
+    return query
+
+
+def test_the_append_names_the_key_and_the_tenant_and_values_the_row_left(duck: duckdb.DuckDBPyConnection) -> None:
+    """Flips if the moves row a write appends from the row it returned does not name the table, the row's bucket, the
+    write's epoch, the key as a record spells it, the tenant the row left and every invalidation column as the row left
+    it (a column the write did not move as the row holds it); or if a row the write did not move appends one."""
+    record = _RUNS.move_record
+    assert record is not None
+    duck.execute(
+        "INSERT INTO moving_runs (run_id, customer_id, office, epoch, epoch_bucket) VALUES ('r1', 'ca', 'gov', 5, 3)"
+    )
+    duck.execute(
+        "INSERT INTO moving_runs (run_id, customer_id, office, epoch, epoch_bucket) VALUES ('r2', 'ca', 'gov', 5, 9)"
+    )
+    terms = ", ".join(
+        moved_assignments(column, "'cb'" if column == _TENANT else "office", "9") for column in (_TENANT, "office")
+    )
+    duck.execute(f"UPDATE moving_runs SET {terms}, {_TENANT} = 'cb', epoch = 9 WHERE run_id = 'r1'")
+    duck.execute("UPDATE moving_runs SET office = 'sen', epoch = 9 WHERE run_id = 'r2'")
+    duck.execute(_duck(record.append_sql("moving_runs")))
+    [(table, scope, epoch, keys, tenant, columns)] = duck.execute(f"SELECT * FROM {TENANT_MOVES_TABLE}").fetchall()
+    assert (table, scope, epoch, tenant) == ("moving_runs", "3", 9, value_tenant("ca"))
+    assert json.loads(keys) == ["r1"] and json.loads(columns) == {"office": "gov", _TENANT: "ca"}
+    assert "UPDATE" in with_moves_appended("UPDATE x SET y = 1 RETURNING *", record, ["1"])
