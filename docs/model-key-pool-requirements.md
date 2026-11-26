@@ -169,8 +169,9 @@ Every requirement must be testable without a network (KP-L1).
   shared across one Anthropic organisation are exactly this case; without it, the pool would fail over from
   one key to another key that shares the same exhausted credit. (Rate limits shared across an organisation no
   longer need this: a rate limit records nothing. Amended 2026-11-26.)
-- **KP-C6.** The pool reads each key's breaker state without side effects. It never calls `check()` to decide
-  eligibility, because `check()` admits a probe. Per-key models keep both the credential breaker and the
+- **KP-C6.** The pool reads each key's credential breaker state without side effects; it doesn't read the
+  per-model rate-limit breaker, because a rate limit never moves a key (KP-H4; amended 2026-11-26). It never
+  calls `check()` to decide eligibility, because `check()` admits a probe. Per-key models keep both the credential breaker and the
   per-model rate-limit breaker that `create_chat_model` wires today. Meeting both rules needs a public way to
   give the factory a `CircuitBreakerRegistry` and to read state from it. Nothing outside `factory.py` may bind
   to `_DEFAULT_BREAKER_REGISTRY` (CLAUDE.md, leading underscores).
@@ -296,8 +297,9 @@ Every requirement must be testable without a network (KP-L1).
     `retry-after` up to the KP-C3 threshold, through its injected sleep and clock. These are not failovers.
 
   Retries of `not_key_related` failures on the same key keep today's count. Each key's per-model rate-limit breaker
-  (KP-C6) still counts rate limits, as on an `api_key=` model: repeated ones that open it make the key `tripped` for
-  that model in this process, which moves it (an inference kept from KP-C6, for the owner to confirm). *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*
+  (KP-C6) still counts rate limits, as on an `api_key=` model, and an open one fast-fails the call with
+  `CircuitOpenError`, which reaches the caller unchanged. It neither blocks the key in selection nor fails the call
+  over to another key: every key shares the same rates. Only the credential breaker's trip makes a key `tripped`. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*
 - **KP-H5.** Once any streamed output has reached the caller, the pool never retries. It records the key's
   state, settles per KP-E4, and raises the provider's error.
 

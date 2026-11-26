@@ -184,9 +184,10 @@ guard against provider daily caps, not a case expected often.
 one request costs more than the key's whole budget. The call skips that key, as a call too large for a key's room
 does, and the key stays `ok` and active.
 
-**Breakers still count rate limits.** Each key's model keeps the per-model rate-limit breaker an `api_key=` model has.
-Repeated rate limits that open it make the key `tripped` for that model in this process, and the pool moves off a
-tripped key as it does today.
+**Breakers still count rate limits, but never move a key.** Each key's model keeps the per-model rate-limit breaker
+an `api_key=` model has. When repeated rate limits open it, the call fails fast with `CircuitOpenError`, as it would
+with `api_key=`. The pool doesn't move off the key or try another, since every key shares the same rates. Only the
+credential breaker, which 5xx and connection failures open, makes a key `tripped`.
 
 ## Choosing a store
 

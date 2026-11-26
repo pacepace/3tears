@@ -28,6 +28,7 @@ from prometheus_client import CollectorRegistry
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelTier, ModelType
+from threetears.models.errors import CircuitOpenError
 from threetears.models.factory import create_chat_model
 from threetears.models.key_pool import (
     InMemoryKeyPoolStore,
@@ -171,6 +172,23 @@ class TestKeyMovingFailures:
 
 class TestFailuresThatAreNotTheKeys:
     """Not the key's: propagated unchanged, on the key it ran on, closed as the classifier says."""
+
+    def test_a_model_rate_limit_breaker_refusal_reaches_the_caller_and_tries_no_other_key(self) -> None:
+        """Every key shares the same rates (owner, 2026-11-26): the model's open rate-limit breaker
+        fast-fails the call as it does on an ``api_key=`` model, and the call is not moved."""
+        registry, _ = tripping_registry()
+        registry.get(PROVIDER, credential=secret_for("a"), model=MODEL_ID).record_failure()
+        store = FakeFlakyStore()
+        pool = make_pool(spec("a"), spec("b"), store=store, breaker_registry=registry)
+        wire = KeyedWire("a", "b")
+        with wire.serve() as url, pytest.raises(CircuitOpenError) as raised:
+            pooled_model(pool, url).invoke("hello")
+        assert raised.value.model_name == MODEL_ID
+        assert wire.labels_sent() == []
+        assert store.calls.count("release") == 1
+        assert pool.counters.moves == {}
+        a = asyncio.run(key_status(pool, "a"))
+        assert (a.state, a.active, a.reserved) == (KeyState.OK, True, Decimal(0))
 
     def test_a_server_error_propagates_and_keeps_its_reservation(self) -> None:
         pool = make_pool(spec("a"), spec("b"))

@@ -856,23 +856,21 @@ class KeyPool:
             blocks.append(_Block(KeyState.EXHAUSTED, exhausted_until))
         if any(scope in generation.get("forbidden", []) for scope in scopes):
             blocks.append(_Block(KeyState.FORBIDDEN, None))
-        wait = self._breaker_wait(key, model_id)
+        wait = self._breaker_wait(key)
         if wait > 0:
             blocks.append(_Block(KeyState.TRIPPED, now + timedelta(seconds=wait)))
         if generation.get("low_room") == period:
             blocks.append(_Block(KeyState.NO_ROOM, rollover))
         return blocks
 
-    def _breaker_wait(self, key: _Key, model_id: str | None) -> float:
-        """Seconds until the key's breakers admit a call, read with no side effects (KP-C6)."""
-        credential = key.spec.secret.reveal()
-        models = (None, model_id) if model_id is not None else (None,)
-        waits = [
-            breaker.seconds_until_admit()
-            for model in models
-            if (breaker := self._breakers.peek(self._provider, credential=credential, model=model)) is not None
-        ]
-        return max(waits, default=0.0)
+    def _breaker_wait(self, key: _Key) -> float:
+        """Seconds until the key's credential breaker admits a call, read with no side effects (KP-C6).
+
+        The per-model rate-limit breaker is not read: a rate limit never moves the active key, and every
+        key shares the same rates, so it fast-fails a call on the key that serves it and nothing more.
+        """
+        breaker = self._breakers.peek(self._provider, credential=key.spec.secret.reveal())
+        return breaker.seconds_until_admit() if breaker is not None else 0.0
 
     # -- reservations ----------------------------------------------------------------------------
 

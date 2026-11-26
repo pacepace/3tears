@@ -536,6 +536,10 @@ class _Call:
         if isinstance(exc, CircuitOpenError):
             # the key's breaker refused the call before it was sent: nothing to bill, and no verdict
             await lease.release()
+            if exc.model_name is not None:
+                # the model's rate-limit breaker: a rate limit never moves the call to another key, and
+                # every key shares the same rates, so it reaches the caller as on an ``api_key=`` model
+                return False
             self._tried.add(lease.label)
             self._refused = (lease.label, MoveReason.TRIPPED)
             return True

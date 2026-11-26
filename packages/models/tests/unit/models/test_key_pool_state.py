@@ -123,13 +123,20 @@ class TestLifetimes:
         monotonic.now += 30
         assert await _state(tripped, "a") is KeyState.OK
 
-    async def test_a_per_model_breaker_blocks_only_its_model(self) -> None:
+    async def test_a_per_model_rate_limit_breaker_neither_blocks_nor_moves_the_key(self) -> None:
+        """A rate limit never moves the active key (owner, 2026-11-26), so the model's rate-limit
+        breaker is the serving model's to fast-fail on, and the pool still chooses the key."""
         registry, _ = tripping_registry()
-        pool = make_pool(spec("a"), breaker_registry=registry)
+        pool = make_pool(spec("a"), spec("b"), breaker_registry=registry)
         registry.get(PROVIDER, credential=secret_for("a"), model=MODEL).record_failure()
-        with pytest.raises(NoKeyAvailableError):
-            await pool.acquire(MODEL, Decimal("0.01"))
-        assert await serve(pool, model_id=OTHER_MODEL) == "a"
+        assert await serve(pool, model_id=MODEL) == "a"
+        assert pool.counters.moves == {}
+
+    async def test_a_tripped_credential_breaker_still_moves_the_key(self) -> None:
+        registry, _ = tripping_registry()
+        pool = make_pool(spec("a"), spec("b"), breaker_registry=registry)
+        registry.get(PROVIDER, credential=secret_for("a")).record_failure()
+        assert await serve(pool, model_id=MODEL) == "b"
 
 
 class TestAccountScope:

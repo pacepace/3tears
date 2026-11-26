@@ -183,8 +183,9 @@ What must stay possible:
 - Rate-limit change: an `oversized` refusal (OpenRouter `weight_exceeds_budget`) counts as a `low_room` failover: it
   is a room refusal the provider reported, on the failover counter's existing axis. The failover reasons are
   exhausted, revoked, forbidden, tripped, low_room.
-- Rate-limit change: each key's per-model rate-limit breaker still counts rate limits (KP-C6, unchanged), so repeated
-  429s can trip a key for a model and move off it. Kept as an inference for the owner to confirm, not changed here.
+- Rate-limit change (main session, from the owner's ruling): each key's per-model rate-limit breaker still counts rate
+  limits (KP-C6), but the pool no longer reads it in selection, and its `CircuitOpenError` reaches the caller with no
+  failover. A rate limit never moves the key; only the credential breaker's trip makes a key `tripped`.
 - Rate-limit change: `_Call.abandoned`'s docstring now says what the code does: a cancelled call settles at the
   reported cost when every model run reported usage, else at no less than its reservation.
 
