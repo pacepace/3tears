@@ -161,8 +161,20 @@ class _PrefixSettling(Protocol):
         """
         ...
 
+    def key_prefix_of(self, constants: Mapping[str, Any]) -> dict[str, str]:
+        """the longest run of the key's leading columns ``constants`` names, as text: how a row appended beside the
+        table's run markers is named in the commit's reach.
+
+        :param constants: leading key columns and their values
+        :ptype constants: Mapping[str, Any]
+        :return: the prefix
+        :rtype: dict[str, str]
+        """
+        ...
+
     async def settle_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> None:
-        """settle every cache of the rows of ``prefixes`` once the transaction that deleted them has ended.
+        """settle every cache of the rows of ``prefixes`` once the transaction that deleted them has ended: the prefixes
+        it deleted, then, for a versioned table it also appended rows to after its run markers, those rows' prefixes.
 
         :param prefixes: each prefix, the key's leading columns and their values as text
         :ptype prefixes: Sequence[Mapping[str, str]]
@@ -232,12 +244,40 @@ def _enrollments(
     return enrolled
 
 
+#: the prefix shapes of each versioned table whose run markers a transaction wrote, by table: each shape the leading key
+#: columns one of its markers names, in key order
+type _MarkedShapes = Mapping[str, tuple[tuple[str, ...], ...]]
+
+#: what the rows appended beside a table's run markers reach, by table: each distinct (shape, its values in key order)
+type _BesideReach = Mapping[str, tuple[tuple[tuple[str, ...], tuple[Any, ...]], ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class _Beside:
+    """what a transaction appended beside versioned tables' run markers: the prefixes its rows fall in, and the
+    collection instances that wrote them.
+
+    :ivar reach: table -> each distinct (shape, values) its rows fall in (:func:`_beside_reach`)
+    :ivar writers: each collection instance that appended such rows, once
+    """
+
+    reach: _BesideReach
+    writers: tuple[BaseCollection[Any], ...] = ()
+
+
+_NOTHING_BESIDE: Final = _Beside(reach=MappingProxyType({}))
+
+
 def _grouped_enrollments(
     chunks: Sequence[tuple[_Enrollment, ...]],
     restated: Sequence[tuple[_Restatement, ...]],
     loop: asyncio.AbstractEventLoop | None = None,
-) -> tuple[list[_Enrollment], _ByCollection, dict[str, SharedAdvance]]:
+    marked: _MarkedShapes | None = None,
+) -> tuple[list[_Enrollment], _ByCollection, dict[str, SharedAdvance], _Beside]:
     """:func:`_enrollments`, then :func:`_grouped` of them, in one call; pure, so a thread may make them.
+
+    The rows appended beside a versioned table's run markers (``marked``) are not grouped: their table is settled once,
+    by its reach (:func:`_beside_reach`), never a key at a time beside it.
 
     :param chunks: the enrollments, oldest chunk first
     :ptype chunks: Sequence[tuple[_Enrollment, ...]]
@@ -245,12 +285,55 @@ def _grouped_enrollments(
     :ptype restated: Sequence[tuple[_Restatement, ...]]
     :param loop: the caller's event loop, handed the thread's turns; None on the loop itself
     :ptype loop: asyncio.AbstractEventLoop | None
-    :return: the enrollments, and their grouping as :func:`_grouped` makes it
-    :rtype: tuple[list[_Enrollment], _ByCollection, dict[str, SharedAdvance]]
+    :param marked: the prefix shapes of each table whose run markers the transaction wrote; None or empty for none
+    :ptype marked: Mapping[str, tuple[tuple[str, ...], ...]] | None
+    :return: the enrollments, their grouping as :func:`_grouped` makes it, and what was appended beside run markers
+    :rtype: tuple[list[_Enrollment], _ByCollection, dict[str, SharedAdvance], _Beside]
     """
     enrolled = _enrollments(chunks, restated, loop)
-    by_collection, shared = _grouped(enrolled, loop)
-    return enrolled, by_collection, shared
+    if not marked:
+        by_collection, shared = _grouped(enrolled, loop)
+        return enrolled, by_collection, shared, _NOTHING_BESIDE
+    keyed = [enrollment for enrollment in enrolled if enrollment[0].table_name not in marked]
+    by_collection, shared = _grouped(keyed, loop)
+    return enrolled, by_collection, shared, _beside_reach(enrolled, marked, loop)
+
+
+def _beside_reach(
+    enrolled: Sequence[_Enrollment], marked: _MarkedShapes, loop: asyncio.AbstractEventLoop | None = None
+) -> _Beside:
+    """the distinct prefixes the rows appended beside each table's run markers fall in, in each shape its markers name:
+    what the table's one record names beside the markers' own prefixes, so a follower reads them again as key ranges.
+    Pure, for a thread. Each distinct prefix once, in the order first seen: a run's thousands of rows are one prefix.
+
+    WHY the rows' prefixes and not their keys: the commit is recorded as ONE epoch of the table (the hub's broker records
+    one a commit), and a record names its rows or its prefixes, never both; prefixes, because the markers' are prefixes.
+
+    :param enrolled: the transaction's enrollments
+    :ptype enrolled: Sequence[_Enrollment]
+    :param marked: the prefix shapes of each table whose run markers the transaction wrote
+    :ptype marked: Mapping[str, tuple[tuple[str, ...], ...]]
+    :param loop: the caller's event loop, handed the thread's turns; None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: each distinct (shape, values) the rows of each table fall in, and the instances that wrote them
+    :rtype: _Beside
+    """
+    turns = LoopTurns(loop) if loop is not None else None
+    # function-local: each distinct prefix onto nothing, in the order first seen (a run's rows are one entry)
+    seen: dict[str, dict[tuple[tuple[str, ...], tuple[Any, ...]], None]] = {}
+    writers: dict[int, BaseCollection[Any]] = {}
+    for collection, entity_id, _ in enrolled if turns is None else stepped(enrolled, turns):
+        shapes = marked.get(collection.table_name)
+        if shapes is None:
+            continue
+        writers.setdefault(id(collection), collection)
+        key = entity_id if isinstance(entity_id, tuple) else (entity_id,)
+        found = seen.setdefault(collection.table_name, {})
+        for shape in shapes:
+            found.setdefault((shape, tuple(key[: len(shape)])), None)
+    return _Beside(
+        reach=MappingProxyType({table: tuple(found) for table, found in seen.items()}), writers=tuple(writers.values())
+    )
 
 
 def _mixed_writes(table: str) -> str:
@@ -263,7 +346,42 @@ def _mixed_writes(table: str) -> str:
     """
     return (
         f"{table}: one transaction both deleted key prefixes of the table and wrote rows of it by key; its commit is "
-        f"recorded as one epoch, which names rows or prefixes, never both. Write the rows in a transaction of their own"
+        f"recorded as one epoch, which names rows or prefixes, never both. Write the rows in a transaction of their own "
+        f"(only a versioned table takes both in one: its run markers first, then its appends, save_rows or save_arrow)"
+    )
+
+
+def _marker_after_rows(table: str) -> str:
+    """the refusal of a run marker of a versioned table written after the transaction appended rows of it.
+
+    :param table: the table
+    :ptype table: str
+    :return: the message
+    :rtype: str
+    """
+    return (
+        f"{table}: this transaction appended rows of the table before deleting key prefixes of it. A run marker hides "
+        f"every row under its prefix older than itself, so one written after the transaction's own rows would hide "
+        f"them. Delete the prefixes first, then append the rows"
+    )
+
+
+def _rows_before_marker(table: str, epoch: int, marker: int) -> str:
+    """the refusal of rows of a versioned table stamped before the transaction's run marker of it.
+
+    :param table: the table
+    :ptype table: str
+    :param epoch: the rows' epoch
+    :ptype epoch: int
+    :param marker: the newest run marker's epoch
+    :ptype marker: int
+    :return: the message
+    :rtype: str
+    """
+    return (
+        f"{table}: rows stamped at epoch {epoch} were enrolled after this transaction's run marker at epoch {marker}, "
+        f"which would hide them: their stamp was drawn before the marker's (a write begun before the delete). Append "
+        f"the rows once delete_prefixes has returned"
     )
 
 
@@ -364,6 +482,7 @@ class CallerTransaction:
         "_deltas",
         "_enrolled",
         "_enrolled_count",
+        "_marker_epochs",
         "_options",
         "_outermost",
         "_reaches",
@@ -408,6 +527,9 @@ class CallerTransaction:
         # the key prefixes deleted whole, a table's collection and prefixes each: settled by prefix, never a key at a
         # time. A tuple replaced whole: a transaction deletes the prefixes of a table or two, looked up by name
         self._reaches: tuple[tuple[_PrefixSettling, tuple[dict[str, str], ...]], ...] = ()
+        # the newest run marker's epoch of each versioned table whose prefixes the transaction deleted, by table: rows
+        # appended beside them are taken only stamped newer (enroll_all). Read-only, replaced whole
+        self._marker_epochs: Mapping[str, int] = MappingProxyType({})
         self._outermost: CallerTransaction | None = None
         self._token: Token[tuple[CallerTransaction, ...]] | None = None
         self._transaction: Any = None
@@ -675,17 +797,34 @@ class CallerTransaction:
         made = zip(repeat(collection, len(entity_ids)), entity_ids, rows, strict=True)
         return list(made if turns is None else stepped(made, turns))
 
-    def enroll_all(self, enrollments: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]) -> None:
+    def enroll_all(
+        self,
+        enrollments: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
+        *,
+        epoch: int | None = None,
+    ) -> None:
         """record every one of ``enrollments`` (:meth:`enrollments`), in order, as :meth:`enroll` records one.
+
+        **Appends beside run markers.** A versioned table whose run markers this transaction wrote
+        (:meth:`enroll_prefixes` with ``marker_epoch``) takes appends after them, in the same transaction, when the
+        write names the one epoch its rows carry (``epoch``) and it is newer than the table's newest marker: a marker
+        hides only rows older than itself, so the rows stay visible, and the commit replaces a run atomically (the
+        markers, then the run's new rows). The process clock gives every stamp drawn after the marker's a newer one
+        (``next_epoch``: ``max(last + 1, wall)``, one clock a process); the comparison here refuses a write whose stamp
+        was drawn before the marker's and enrolled after it, which ordering by enrollment alone would let through.
 
         :param enrollments: the enrollments
         :ptype enrollments: Sequence[tuple[BaseCollection, Any, dict[str, Any] | None]]
+        :param epoch: the epoch every row of the write carries, for a versioned table's append; None for any other
+            write, which a table whose prefixes the transaction deleted refuses
+        :ptype epoch: int | None
         :return: nothing
         :rtype: None
-        :raises ValueError: when the transaction deleted key prefixes of a table they name (:meth:`enroll_prefixes`)
+        :raises ValueError: when the transaction deleted key prefixes of a table they name (:meth:`enroll_prefixes`),
+            unless the table is versioned and ``epoch`` is newer than its run markers
         """
         if self._reaches:
-            self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments})
+            self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments}, epoch=epoch)
         self._enroll_chunk(tuple(enrollments))
 
     def _enroll_chunk(self, chunk: tuple[_Enrollment, ...]) -> None:
@@ -862,26 +1001,42 @@ class CallerTransaction:
         for step in steps:
             await step(self.conn, s_max)
 
-    def enroll_prefixes(self, collection: _PrefixSettling, prefixes: Sequence[Mapping[str, str]]) -> None:
+    def enroll_prefixes(
+        self,
+        collection: _PrefixSettling,
+        prefixes: Sequence[Mapping[str, str]],
+        *,
+        marker_epoch: int | None = None,
+    ) -> None:
         """record that ``collection`` deleted every row of ``prefixes`` in this transaction, to be settled by those
         prefixes when it ends: the table's caches dropped and its generation advanced once, its epoch naming the
         prefixes (a follower reads each as a key range), never a key at a time.
 
-        **One kind of write a table a transaction.** A table whose prefixes this transaction deletes takes no keyed
-        write in it, before or after, and the reverse: its commit is recorded as ONE epoch, which names either rows or
-        prefixes. Write the table's new rows in a transaction of their own.
+        **One kind of write a table a transaction**, but for a versioned table's run markers. A table whose prefixes
+        this transaction deletes takes no keyed write in it, before or after, and the reverse: its commit is recorded as
+        ONE epoch, which names either rows or prefixes. Write the table's new rows in a transaction of their own.
+
+        A versioned table's run markers (``marker_epoch``) may be followed by appends of the table in the same
+        transaction (:meth:`enroll_all`), never preceded: a marker after the transaction's own rows would hide them. The
+        commit is then recorded as one epoch naming the markers' prefixes and the prefixes the rows fall in, settled
+        once (:meth:`_settle`).
 
         :param collection: the collection that deleted them
         :ptype collection: _PrefixSettling
         :param prefixes: each prefix, the key's leading columns and their values as text
         :ptype prefixes: Sequence[Mapping[str, str]]
+        :param marker_epoch: for a versioned table, the epoch its run markers carry; None for a delete
+        :ptype marker_epoch: int | None
         :return: nothing
         :rtype: None
         :raises ValueError: when the transaction wrote keyed rows of the table
         """
         table = collection.table_name
         if any(enrolled.table_name == table for chunk in self._enrolled for enrolled, _, _ in chunk):
-            raise ValueError(_mixed_writes(table))
+            raise ValueError(_mixed_writes(table) if marker_epoch is None else _marker_after_rows(table))
+        if marker_epoch is not None:
+            newest = max(marker_epoch, self._marker_epochs.get(table, marker_epoch))
+            self._marker_epochs = MappingProxyType({**self._marker_epochs, table: newest})
         reaches = self._reaches
         at = next((index for index, (each, _) in enumerate(reaches) if each.table_name == table), None)
         owner, held = (collection, ()) if at is None else reaches[at]
@@ -893,19 +1048,27 @@ class CallerTransaction:
         entry = (owner, tuple(kept))
         self._reaches = (*reaches, entry) if at is None else (*reaches[:at], entry, *reaches[at + 1 :])
 
-    def _refuse_keyed_beside_prefixes(self, tables: Iterable[str]) -> None:
-        """refuse a keyed write of a table whose prefixes this transaction deleted (:meth:`enroll_prefixes`).
+    def _refuse_keyed_beside_prefixes(self, tables: Iterable[str], *, epoch: int | None = None) -> None:
+        """refuse a keyed write of a table whose prefixes this transaction deleted (:meth:`enroll_prefixes`), but for
+        an append of a versioned table stamped newer than its run markers (:meth:`enroll_all`).
 
         :param tables: the tables the keyed write names
         :ptype tables: Iterable[str]
+        :param epoch: the epoch the write's rows carry, for a versioned table's append; None for any other write
+        :ptype epoch: int | None
         :return: nothing
         :rtype: None
-        :raises ValueError: when one of them had prefixes deleted
+        :raises ValueError: when one of them had prefixes deleted, and the write is no append stamped after its markers
         """
         cleared = {collection.table_name for collection, _ in self._reaches}
         for table in tables:
-            if table in cleared:
+            if table not in cleared:
+                continue
+            marker = self._marker_epochs.get(table)
+            if marker is None or epoch is None:
                 raise ValueError(_mixed_writes(table))
+            if epoch <= marker:
+                raise ValueError(_rows_before_marker(table, epoch, marker))
 
     def restate(self, collection: BaseCollection[Any], entity_id: Any, *, row: dict[str, Any]) -> None:
         """replace the row ``collection``'s latest enrollment of ``entity_id`` carries, once the write knows it as stored.
@@ -1130,16 +1293,18 @@ class CallerTransaction:
         :rtype: GenerationUnavailableError | None
         """
         chunks, restated, reaches, count = self._enrolled, self._restated, self._reaches, self._enrolled_count
+        marked = _marked_shapes(reaches, self._marker_epochs)
         self._enrolled, self._restated, self._reaches, self._enrolled_count = (), (), (), 0
+        self._marker_epochs = MappingProxyType({})
         if count < _SETTLE_OFF_LOOP_ROWS:
-            enrolled, by_collection, shared = _grouped_enrollments(chunks, restated)
+            enrolled, by_collection, shared, beside = _grouped_enrollments(chunks, restated, None, marked)
         else:
             # a commit of 33,786 rows held the loop 41-71 ms here grouping its keys and building a change record
             # a key (the WD2 bench, 2026-11-16, 179 columns, save_rows and save_arrow alike); on a thread the loop
             # is handed a turn every half millisecond (LoopTurns). Pure work over this transaction's own list, awaited
             # before anything is settled, so the order every cache hears its keys in is unchanged
-            enrolled, by_collection, shared = await asyncio.to_thread(
-                _grouped_enrollments, chunks, restated, asyncio.get_running_loop()
+            enrolled, by_collection, shared, beside = await asyncio.to_thread(
+                _grouped_enrollments, chunks, restated, asyncio.get_running_loop(), marked
             )
         # the chunks no longer hold the rows alone: the enrollments do, freed off the loop below (_released)
         del chunks, restated
@@ -1148,13 +1313,24 @@ class CallerTransaction:
             failure = await self._settle_each(by_collection)
         finally:
             _SHARED.reset(sharing)
+        settled: dict[str, list[dict[str, str]]] = {}
         for collection, prefixes in reaches:
+            reach = _with_rows_reach(collection, prefixes, beside.reach.get(collection.table_name, ()))
+            settled[collection.table_name] = reach
             try:
-                await collection.settle_prefixes(prefixes)
+                # a versioned table appended to beside its run markers is settled here once, by the markers' prefixes
+                # and its rows': one epoch of the table, as the broker records the commit
+                await collection.settle_prefixes(reach)
             except GenerationUnavailableError as exc:
                 # logged where the advance failed; the table's caches were dropped
                 if failure is None:
                     failure = exc
+        settling = {id(collection) for collection, _ in reaches}
+        for writer in beside.writers:
+            if id(writer) not in settling:
+                # another instance that appended beside the markers drops its own cached rows of the reach; the one
+                # advance above is the table's
+                await writer.drop_cached_prefixes(settled[writer.table_name])
         if count >= _SETTLE_OFF_LOOP_ROWS:
             # the enrollments often hold the only reference to the rows a write sent: freeing 33,786 rows of 179
             # columns at once held the loop 25 ms (save_rows, the WD2 bench); freed a slice at a time on a thread
@@ -1189,6 +1365,55 @@ class CallerTransaction:
                 if failure is None:
                     failure = exc
         return failure
+
+
+def _marked_shapes(
+    reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]], marker_epochs: Mapping[str, int]
+) -> _MarkedShapes:
+    """the prefix shapes of each versioned table whose run markers a transaction wrote (``marker_epochs``), each once.
+
+    :param reaches: the key prefixes the transaction deleted, by collection
+    :ptype reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]]
+    :param marker_epochs: the newest run marker's epoch of each such table
+    :ptype marker_epochs: Mapping[str, int]
+    :return: table -> its markers' shapes, each the leading key columns in key order
+    :rtype: Mapping[str, tuple[tuple[str, ...], ...]]
+    """
+    shapes: dict[str, tuple[tuple[str, ...], ...]] = {}
+    for collection, prefixes in reaches:
+        if collection.table_name not in marker_epochs:
+            continue
+        named = shapes.get(collection.table_name, ())
+        for prefix in prefixes:
+            shape = tuple(prefix)
+            if shape not in named:
+                named = (*named, shape)
+        shapes[collection.table_name] = named
+    return MappingProxyType(shapes)
+
+
+def _with_rows_reach(
+    collection: _PrefixSettling,
+    prefixes: Sequence[Mapping[str, str]],
+    rows: Sequence[tuple[tuple[str, ...], tuple[Any, ...]]],
+) -> list[dict[str, str]]:
+    """``prefixes``, then each prefix the rows appended beside them fall in (:func:`_beside_reach`) as text, each once.
+
+    :param collection: the collection whose key names the prefixes' text
+    :ptype collection: _PrefixSettling
+    :param prefixes: the markers' prefixes, as text
+    :ptype prefixes: Sequence[Mapping[str, str]]
+    :param rows: each distinct (shape, values) the rows fall in
+    :ptype rows: Sequence[tuple[tuple[str, ...], tuple[Any, ...]]]
+    :return: the reach
+    :rtype: list[dict[str, str]]
+    """
+    reach = [dict(prefix) for prefix in prefixes]
+    for shape, values in rows:
+        prefix = collection.key_prefix_of(dict(zip(shape, values, strict=True)))
+        if prefix and prefix not in reach:
+            reach.append(prefix)
+    return reach
 
 
 def _commit_scopes(touched: frozenset[str], states: frozenset[str] | None) -> list[str]:

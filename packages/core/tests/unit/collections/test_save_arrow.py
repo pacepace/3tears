@@ -21,6 +21,7 @@ import json
 import threading
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from collections.abc import Mapping, Sequence
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -48,8 +49,9 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.schema_sql import build_bulk_insert_sql
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections import WRITE_GENERATION, schema_backed
 from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.collections import schema_backed
+from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -664,8 +666,8 @@ def _touched(hub: _Hub) -> list[list[Any]]:
     return [statement["params"][1] for statement in hub.statements() if "SET last_epoch" in statement["query"]]
 
 
-async def _on_rail(hub: _Hub, step: Any, *, version: int = 17) -> Any:
-    collection = _collection(_VERSIONED)
+async def _on_rail(hub: _Hub, step: Any, *, version: int = 17, collection: Any = None) -> Any:
+    collection = collection or _collection(_VERSIONED)
     proxy = hub.proxy()
     collection.l3_pool = proxy
     async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
@@ -726,6 +728,91 @@ async def test_a_whole_run_of_a_versioned_table_deleted_names_its_epoch_and_scop
     assert body["scope"] == "office_key"
     assert _fresh(body["epoch"])
     assert body["prefixes"] == [{"office_key": "sn_NC1"}]
+
+
+class _Changes:
+    """a generation source that records each advance's change record."""
+
+    def __init__(self) -> None:
+        self.changes: list[EpochChange] = []
+
+    async def current(self, table_name: str) -> str:
+        return f"inc:{len(self.changes)}"
+
+    async def advance(self, table_name: str) -> str:
+        return f"inc:{len(self.changes) + 1}"
+
+    async def advance_with_change(
+        self,
+        table_name: str,
+        rows: Sequence[ChangedRow] | None,
+        *,
+        keys_unknown: bool = False,
+        partition: Mapping[str, str] | None = None,
+        prefixes: Sequence[Mapping[str, str]] | None = None,
+        reason: str | None = None,
+    ) -> str:
+        token = f"inc:{len(self.changes) + 1}"
+        self.changes.append(
+            EpochChange(
+                table=table_name,
+                token=token,
+                whole_table=rows is None and not keys_unknown,
+                keys_unknown=keys_unknown,
+                rows=list(rows) if rows is not None else [],
+                partition=dict(partition) if partition else None,
+                prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
+                reason=reason,
+            )
+        )
+        return token
+
+
+def _run(office_key: str, count: int) -> pa.Table:
+    """``count`` rows of one run, the prefix ``office_key``."""
+    rows = _table(count)
+    return rows.set_column(0, "office_key", pa.array([office_key] * count, pa.large_string()))
+
+
+async def test_a_run_replaced_in_one_transaction_is_its_marker_then_its_new_rows_stamped_newer() -> None:
+    """Flips if a versioned table refuses its appends after its run marker in one transaction, if a row is stamped no
+    newer than the marker (the marker would hide it), or if the commit's touched scopes or its one change record leave
+    out the marker's scope or the rows'."""
+    hub = _Hub(write_arrow=True)
+    source = _Changes()
+    collection = _collection(_VERSIONED, write_generation=WRITE_GENERATION)
+    collection.registry.set_generation_source(source)
+
+    async def step(collection: Any, conn: Any) -> None:
+        assert await collection.delete_prefixes([{"office_key": "sn_NC1"}], conn=conn) == 1
+        await collection.save_arrow(_run("sn_NC2", 3), conn=conn)
+        await collection.save_rows([{"office_key": "sn_NC3", "geo_id": "00001", "votes": 1}], conn=conn)
+
+    await _on_rail(hub, step, collection=collection)
+    [marker] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.delete_prefixes")]
+    (_, arrow_rows, _), (_, python_rows, _) = hub.arrow_requests()
+    [arrow_epoch] = set(arrow_rows.column(EPOCH_COLUMN).to_pylist())
+    [python_epoch] = set(python_rows.column(EPOCH_COLUMN).to_pylist())
+    assert marker["epoch"] < arrow_epoch < python_epoch
+    # the marker's scope and the rows' touched in one statement before the COMMIT
+    assert _touched(hub) == [["sn_NC1", "sn_NC2", "sn_NC3"]]
+    # ONE epoch of the table: the marker's prefix, then each prefix the rows fall in, read again as key ranges
+    [change] = source.changes
+    assert change.whole_table and change.rows == []
+    assert change.prefixes == [{"office_key": "sn_NC1"}, {"office_key": "sn_NC2"}, {"office_key": "sn_NC3"}]
+
+
+async def test_a_run_marker_after_the_transaction_s_own_rows_of_the_table_is_refused() -> None:
+    """Flips if a run marker is written after the transaction appended rows of its table: it would hide them."""
+    hub = _Hub(write_arrow=True)
+
+    async def step(collection: Any, conn: Any) -> None:
+        await collection.save_arrow(_run("sn_NC2", 2), conn=conn)
+        await collection.delete_prefixes([{"office_key": "sn_NC2"}], conn=conn)
+
+    with pytest.raises(ValueError, match="would hide\\s+them"):
+        await _on_rail(hub, step)
+    assert not [subject for subject, _ in hub.raw if subject.endswith("tx.delete_prefixes")]
 
 
 def _fresh(epoch: int) -> bool:
