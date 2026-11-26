@@ -98,6 +98,8 @@ class WholeReads:
     :ptype expected: Collection[str]
     :param labels: the counter's labels beside ``why``
     :ptype labels: tuple[str, ...]
+    :param said: the log line each count says (``read whole``; a registry of reloads says so)
+    :ptype said: str
     :raises ValueError: when no why is named, or an expected why is not one of them
     """
 
@@ -109,6 +111,7 @@ class WholeReads:
         whys: Mapping[str, str],
         expected: Collection[str],
         labels: tuple[str, ...] = ("table",),
+        said: str = "read whole",
     ) -> None:
         if not whys:
             raise ValueError(f"{metric}: a whole-read registry names its whys")
@@ -120,6 +123,7 @@ class WholeReads:
         self._whys = dict(whys)
         self._expected = frozenset(expected)
         self._labels = labels
+        self._said = said
 
     @property
     def metric(self) -> str:
@@ -175,6 +179,6 @@ class WholeReads:
         self._counter().labels(**labels, why=why).inc()
         log.log(
             logging.INFO if why in self._expected else logging.WARNING,
-            "read whole",
+            self._said,
             extra={"extra_data": {"metric": self._metric, "why": why, "what": self._whys[why], **labels}},
         )

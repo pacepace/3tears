@@ -229,6 +229,12 @@ class _Log:
         )
         return token
 
+    def unfiled(self, table: str, prefixes: list[dict[str, str]]) -> str:
+        """an older writer's record of a load's key prefixes, naming no delta file."""
+        token = self._next(table)
+        self.records[(table, token)] = EpochChange(table=table, token=token, whole_table=True, prefixes=prefixes)
+        return token
+
     def reset(self, table: str) -> str:
         token = self._next(table)
         self.records[(table, token)] = EpochChange(table=table, token=token, whole_table=True, reason=RESET_REASON)
@@ -1672,3 +1678,167 @@ async def test_the_scopes_a_waiting_tables_many_keys_heard_name_are_found_in_the
     stamp = world.follower.status().stamp
     assert isinstance(stamp, PartialStamp), f"labelled {stamp!r} while a table waits"
     assert {"state:VA", "state:TX"} <= stamp.held
+
+
+# --- every whole reload counted by why, a recovery said at WARNING (Pace, 2026-11-27) --------------------------------
+
+#: every why ``collection_whole_reloads_total`` counts
+_RELOAD_WHYS = (
+    "cold_start",
+    "reset",
+    "schema_change",
+    "lost_log",
+    "lost_file",
+    "lost_writes",
+    "held_past_cap",
+    "partition_refused",
+)
+
+
+def _reloads(table: str = _RESET) -> dict[str, float]:
+    """``collection_whole_reloads_total`` of ``table``, by why."""
+    return {
+        why: REGISTRY.get_sample_value("collection_whole_reloads_total", {"table": table, "why": why}) or 0.0
+        for why in _RELOAD_WHYS
+    }
+
+
+def _counted(before: dict[str, float], table: str = _RESET) -> dict[str, float]:
+    """what ``collection_whole_reloads_total`` of ``table`` counted since ``before``, by why (none left out)."""
+    return {why: n - before[why] for why, n in _reloads(table).items() if n != before[why]}
+
+
+def _said_at_warning(caplog: pytest.LogCaptureFixture, why: str) -> list[str]:
+    """the tables each WARNING line of a whole reload for ``why`` names."""
+    return [
+        record.extra_data["table"]  # type: ignore[attr-defined]
+        for record in caplog.records
+        if record.levelname == "WARNING"
+        and getattr(record, "extra_data", {}).get("metric") == "collection_whole_reloads_total"
+        and record.extra_data.get("why") == why  # type: ignore[attr-defined]
+    ]
+
+
+async def test_a_copys_start_from_the_volume_counts_each_opted_in_table_as_a_cold_start_reload(_volume: Path) -> None:
+    """Flips if a copy's start from the writer's full on the volume does not count each opted-in table it loads under
+    ``collection_whole_reloads_total{why="cold_start"}``, counts one that is not opted in (read from L3 instead), or
+    counts it under any other why."""
+    before = {name: _reloads(name) for name in (_RESET, _OTHER, _PLAIN)}
+    world = _World(_volume)
+    await world.started()
+    assert _counted(before[_RESET], _RESET) == {"cold_start": 1}
+    assert _counted(before[_OTHER], _OTHER) == {"cold_start": 1}
+    assert _counted(before[_PLAIN], _PLAIN) == {}
+    world.follower.stop()
+
+
+async def test_a_reset_and_a_schema_change_of_an_opted_in_table_are_each_counted_once_by_their_own_why(
+    _volume: Path,
+) -> None:
+    """Flips if a reset or a schema change of an opted-in table (reloaded from the writer's full, never L3) is not
+    counted under its own why, is counted as a recovery, or a second reset while the first waits counts a second
+    reload (one full answers both)."""
+    world = _World(_volume)
+    await world.started()
+    before = _reloads()
+    world.l3.reset(_RESET, _AFTER_RESET)
+    world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL", "state:TX")
+    await world.follower.catch_up()
+    world.log.reset(_RESET)
+    world.lock.commit("state:VA")
+    await world.follower.catch_up()
+    assert _counted(before) == {"reset": 1}
+
+    other = _reloads(_OTHER)
+    world.follower.schema_changed(_OTHER)
+    assert await world.follower.catch_up()
+    assert _OTHER in world.follower.status().waiting_for_full
+    assert _counted(other, _OTHER) == {"schema_change": 1}
+    world.follower.stop()
+
+
+async def test_a_lost_epoch_log_is_counted_as_a_lost_log_reload_and_said_at_warning(
+    _volume: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Flips if a copy that can no longer walk an opted-in table's epoch log (replaced under a new incarnation, or a
+    record gone) waits for the writer's recovered full without counting it under ``why="lost_log"`` or saying so at
+    WARNING with the table: a recovery reload is never silent, and a replay fails on one."""
+    world = _World(_volume)
+    await world.started()
+    before, other = _reloads(), _reloads(_OTHER)
+    world.l3.put(_RESET, [("IL", 2, 222)])
+    world.log.lose(_RESET, "new")
+    with caplog.at_level("WARNING"):
+        await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    assert _counted(before) == {"lost_log": 1}
+    assert _said_at_warning(caplog, "lost_log") == [_RESET]
+
+    world.write(_OTHER, [("VA", 1, 111)])
+    world.write(_OTHER, [("VA", 1, 112)])
+    del world.log.records[(_OTHER, f"inc:{world.log.count[_OTHER]}")]
+    await world.follower.catch_up()
+    assert _OTHER in world.follower.status().waiting_for_full
+    assert _counted(other, _OTHER) == {"lost_log": 1}
+    world.follower.stop()
+
+
+@pytest.mark.parametrize("answer", [None, "covered"], ids=["lost", "covered"])
+async def test_a_lost_delta_file_is_counted_once_as_a_lost_file_reload_and_said_at_warning(
+    _volume: Path, caplog: pytest.LogCaptureFixture, answer: str | None
+) -> None:
+    """Flips if a copy whose delta file of a commit too big to list never comes (lost, or swept by a fold because the
+    full covers it: the writer answers ``covered``) waits for the full without counting it under ``why="lost_file"``
+    exactly once or saying so at WARNING with the table."""
+
+    async def answered(table: str, file: str, epoch: str) -> str:
+        return "covered"
+
+    world = _World(_volume, recreate=answered if answer == "covered" else None)
+    await world.started()
+    before = _reloads()
+    with caplog.at_level("WARNING"):
+        _too_big(world, _RESET, [("VA", 0, 300)], [], ["state:VA", EVERY_STATE_NAMED])
+        await world.follower.catch_up()
+        await asyncio.sleep(0.05)  # several looks at the file, and the writer's answer
+    assert _RESET in world.follower.status().waiting_for_full
+    assert _counted(before) == {"lost_file": 1}
+    assert _said_at_warning(caplog, "lost_file") == [_RESET]
+    world.follower.stop()
+
+
+async def test_a_table_holding_past_its_cap_while_a_file_waits_is_counted_as_a_held_past_cap_reload(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a table that stops holding changes past its cap while waiting for a delta file, and waits for the
+    writer's next full instead, is not counted under ``why="held_past_cap"``."""
+    monkeypatch.setattr(copy_follower, "HELD_WHILE_WAITING_CAP", 2)
+    world = _World(_volume)
+    await world.started()
+    before = _reloads()
+    world.write(_RESET, [("VA", 0, 900)])
+    lost = world.log.records[(_RESET, f"inc:{world.log.count[_RESET]}")].delta_file
+    assert lost is not None
+    (_volume / lost).unlink()
+    await world.follower.catch_up()
+    for geo in range(1, 4):
+        world.write(_RESET, [("VA", geo, 900 + geo)])
+        await world.follower.catch_up()
+    assert "held_past_cap" in world.follower.status().waiting_for_full[_RESET]
+    assert _counted(before) == {"held_past_cap": 1}
+    world.follower.stop()
+
+
+async def test_a_refused_prefix_record_naming_no_file_is_counted_as_a_partition_refused_reload(_volume: Path) -> None:
+    """Flips if a copy refusing an opted-in table's prefix record naming no delta file (an older writer's), waiting
+    for the writer's full instead, does not count it under ``why="partition_refused"``."""
+    world = _World(_volume)
+    await world.started()
+    before = _reloads()
+    world.log.unfiled(_RESET, [{"state": "VA"}])
+    world.lock.commit("state:VA")
+    await world.follower.catch_up()
+    assert _RESET in world.follower.status().waiting_for_full
+    assert _counted(before) == {"partition_refused": 1}
+    world.follower.stop()

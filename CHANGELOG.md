@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: every whole reload is counted by why, and a recovery reload is said at WARNING
+
+**Added:** ``collection_whole_reloads_total{table,why}`` (``threetears.core.collections.whole_reloads.WHOLE_RELOADS``)
+counts every table reloaded whole with no L3 read (Pace's ruling of 2026-11-27: recovery reloads stay, but are never
+silent). A copy starting from the delta-files volume counts each opted-in table it loads (``cold_start``); a copy
+waiting for the writer's full counts the reload as the wait begins, once a reload, by why: ``reset``,
+``schema_change``, ``lost_log`` (its epoch log replaced, a record gone, aged out), ``lost_file`` (a delta file lost,
+or swept by a fold because the full covers it), ``held_past_cap`` and ``partition_refused``. The lost-write
+backstop counts each whole change of a dead writer's window it records again (``lost_writes``); a migration run's own
+window is not counted. Every why but ``cold_start``, ``reset`` and ``schema_change`` is logged at WARNING with the
+table and is in ``WHOLE_RELOADS.gated``, which a replay holds at zero. ``WholeReads`` takes the log line it says
+(``said=``, ``read whole`` by default).
+
 ### core: an idle worker lets a superseded shared Arrow version go as the next is published
 
 **Changed:** a pool worker's kept mapping (``read_version``) is moved onto each newer version as soon as the store

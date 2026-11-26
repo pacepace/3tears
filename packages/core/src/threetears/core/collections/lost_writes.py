@@ -70,6 +70,7 @@ from threetears.core.ddl.write_marks import MARK_FUNCTION, WRITE_MARK_TRIGGER, W
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.recovery_tenants import recovery_tenants
 from threetears.core.collections.undeclared_tables import is_undeclared_table
+from threetears.core.collections.whole_reloads import LOST_WRITES, WHOLE_RELOADS
 from threetears.core.utils.write_ledger import CLOCK_SKEW, WRITE_GRACE, WriteLedger, process_write_ledger
 
 __all__ = [
@@ -502,6 +503,13 @@ async def announce_window(
         if done.tokens:
             advanced.append(table)
             _ANNOUNCED.labels(why=why).inc()
+            if why == "recovery":
+                # a dead writer's whole change recorded again: every copy reloads the table whole, a recovery never
+                # silent (counted and said at WARNING, a replay fails on it; Pace, 2026-11-27). A migration's window
+                # (and its retry, ``repair``) is the run's own write, not a lost one
+                for record in done.records:
+                    if record["whole"] is not None:
+                        WHOLE_RELOADS.count(LOST_WRITES, table=table)
             log.info(
                 "a table was advanced from the change notes of a lost write's window",
                 extra={
