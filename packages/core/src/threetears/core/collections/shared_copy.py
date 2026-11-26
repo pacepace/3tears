@@ -69,8 +69,11 @@ same apply turn. :class:`WholeHooks` adds ``derive_whole``: after a start that r
 :meth:`SharedCopyBackend.defer_hooks_until_whole` applies changes with no ``derive`` until
 :meth:`SharedCopyBackend.settle_whole` derives every scope at once, its let-go in the same publish.
 :class:`MergePolicy` picks a per-run table's tier merge (:class:`ByCount` by default; reports merges its LSF runs by
-their retention's ages), seeing each run's time and model from the table :class:`RunTimes` names. All are module-level
-objects, pickled to the worker by name.
+their retention's ages), seeing each run's time and model from the table :class:`RunTimes` names. :class:`ColumnHooks`
+(``compute``) runs in the worker before a change is written: it computes columns of a table's rows the copy holds and
+L3 does not (reports' snapshots' ``most_recent_ind``, the newest upload of each row), over the change's rows and the
+version's held rows (:meth:`AppliedTables.table`, mapped), and gives back the change's rows with them computed and any
+held row whose value moved, written with the change. All are module-level objects, pickled to the worker by name.
 
 **Parts follow the declared scope as tables grow.** Given ``declared`` (``copy_parts.PartDeclaration``), the copy sizes
 its tables after each change's publish and holds each by the rule its size names (``copy_parts.part_rules``): a table
@@ -152,6 +155,8 @@ __all__ = [
     "ApplyHooks",
     "ByCount",
     "ChangePage",
+    "ColumnHooks",
+    "ComputedRows",
     "DerivedPages",
     "LetGoRows",
     "LetGone",
@@ -421,6 +426,56 @@ class WholeHooks(ApplyHooks, Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ComputedRows:
+    """what :class:`ColumnHooks` computes of one table's change.
+
+    :ivar rows: the change's upserted rows (``AppliedTables.rows[table]``) one for one, in their order, with the
+        columns computed: every column of the table
+    :ivar held: rows the version holds whose computed value the change moves (another row of the same group came, or
+        went), with the value computed again: written with the change, as rows it upserts. None for none. A held row
+        naming a key the change writes or deletes is refused (the change's own row stands)
+    """
+
+    rows: pa.Table
+    held: pa.Table | None = None
+
+
+class ColumnHooks(Protocol):
+    """a product's columns computed over a change's rows before the change is written, in the apply worker (a
+    module-level object, pickled by name): columns the copy holds and L3 does not, so a row read from L3 lacks them
+    (reports' snapshots' ``most_recent_ind``: each row's upload ranked newest first among its group's, over the rows
+    the change brings and those the copy holds).
+
+    Run on every change to a table it names (:attr:`computed`): a change's, a reload's as it stages and as it publishes,
+    a derived table's, a whole settle's. A rows page may lack the computed columns (they are null until computed).
+    """
+
+    @property
+    def computed(self) -> Mapping[str, Collection[str]]:
+        """each table whose columns are computed, and those columns (never a key column)."""
+        ...
+
+    def compute(self, table: str, change: AppliedTables) -> ComputedRows:
+        """the columns of one table's change computed.
+
+        ``change`` is the change settled, before it is written: ``rows[table]`` its upserted rows (a key once, its
+        last row), ``deleted[table]`` its deleted keys, ``deleted_rows[table]`` the rows those keys name as the version
+        holds them (absent for none), ``touched`` the part names of the scope values it writes or deletes (a split
+        table's), ``whole`` the table when the change replaces it whole (its held rows go: compute over ``rows``
+        alone). ``table(name, scopes=)`` reads the version as it is before the change (``parts`` is empty), mapped:
+        the held rows of the groups the change touches, read by its touched scopes.
+
+        :param table: the table
+        :ptype table: str
+        :param change: the change, and the version before it (:meth:`AppliedTables.table`)
+        :ptype change: AppliedTables
+        :return: the change's rows computed, and the held rows whose value moved
+        :rtype: ComputedRows
+        """
+        ...
+
+
 #: a merge policy's view of a scope's held runs (:class:`RunTimes`): each run once, by run, with its newest time
 #: (seconds since the epoch) and the model it was made by (null for none)
 RUNS_SCHEMA: Final = pa.schema(
@@ -632,6 +687,7 @@ class ApplyPlan:
     :ivar canonical: each table and its key columns held as text in one spelling, with their SQL types
         (``arrow_keys.canonical_texts``)
     :ivar run_times: where the runs' times the merges see are held (:class:`RunTimes`); None for none
+    :ivar columns: the product's computed columns (:class:`ColumnHooks`); None for none
     """
 
     root: str
@@ -648,6 +704,7 @@ class ApplyPlan:
     unpacked: frozenset[str] = frozenset()
     canonical: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     run_times: RunTimes | None = None
+    columns: ColumnHooks | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,6 +786,12 @@ class _Tables:
     times: Mapping[str, pa.Table] | None = None
     #: where the runs' times are held; None for none
     run_times: RunTimes | None = None
+    #: the product's computed columns; None for none
+    columns: ColumnHooks | None = None
+
+    def unread(self, table: str) -> Collection[str]:
+        """``table``'s columns computed in the worker (:class:`ColumnHooks`), which a rows page may lack."""
+        return () if self.columns is None else self.columns.computed.get(table, ())
 
     def packing(self, table: str) -> bool:
         """whether ``table``'s small scopes are packed as it is cut."""
@@ -834,6 +897,7 @@ def _settled(
     pages: Sequence[tuple[str, pa.Table]],
     instants: Collection[str] = frozenset(),
     canonical: Mapping[str, str] = EMPTY,
+    unread: Collection[str] = (),
 ) -> _Settled:
     """a table's pages, in order, as the rows they leave upserted and the keys deleted: each key's last page wins.
 
@@ -851,6 +915,8 @@ def _settled(
     :ptype instants: Collection[str]
     :param canonical: its key columns held as text in one spelling, and their SQL types
     :ptype canonical: Mapping[str, str]
+    :param unread: its columns computed in the worker (:class:`ColumnHooks`): a rows page lacking one holds it null
+    :ptype unread: Collection[str]
     :return: the change settled
     :rtype: _Settled
     """
@@ -864,6 +930,9 @@ def _settled(
         page = _respelled(page, instants, canonical)
         keys = page.select(list(key)).cast(key_schema)
         if kind == ROWS:
+            for column in unread:
+                if column not in page.column_names:
+                    page = page.append_column(column, pa.nulls(page.num_rows, schema.field(column).type))
             rows.append(page.select(schema.names).cast(schema))
             at = pa.array(np.arange(offset, offset + page.num_rows, dtype=np.int64))
             offset += page.num_rows
@@ -1384,10 +1453,7 @@ def _apply_table(
     located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
     packed = f"{PACKED_PREFIX}{table}"
     index = _index_of(files, table) if rule.split else _INDEX.empty_table()
-    if table in locators:
-        locator = locators[table]
-    else:
-        locator = Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
+    locator = _locator_of(files, table, locators)
     named = change.named if change.named.num_rows else None
     written = change.rows if change.rows.num_rows else None
     after: dict[str, pa.Table] = {}
@@ -1521,8 +1587,12 @@ def _apply_pages(
     pages: Sequence[tuple[str, str, pa.Table]],
     result: _Result,
     locators: Mapping[str, Locator] = EMPTY,
+    *,
+    root: str = "",
+    version: str | None = None,
 ) -> tuple[Mapping[str, _Settled], Mapping[str, _TableApplied]]:
-    """each table's pages settled and applied into the result."""
+    """each table's pages settled, its computed columns computed (:class:`ColumnHooks`), and applied into the result.
+    ``root`` and ``version`` name the store and the version ``files`` are, as the column hooks see them."""
     by_table: dict[str, list[tuple[str, pa.Table]]] = {}
     for kind, table, rows in pages:
         if table not in tables.rules:
@@ -1539,16 +1609,108 @@ def _apply_pages(
                 table_pages,
                 tables.instants.get(table, frozenset()),
                 tables.canonical.get(table, EMPTY),
+                tables.unread(table),
             ),
         )
         for table, table_pages in sorted(by_table.items())
     )
+    if tables.columns is not None:
+        settled = _computing(tables, tables.columns, files, settled, locators, root, version)
     if tables.run_times is not None and tables.times is None and _routes_whole_runs(tables, files, settled):
         tables = replace(tables, times=_change_run_times(tables, files, settled))
     after = frozen(
         (table, _apply_table(tables, table, change, files, result, locators)) for table, change in settled.items()
     )
     return settled, after
+
+
+def _locator_of(files: Mapping[str, Any], table: str, locators: Mapping[str, Locator]) -> Locator:
+    """a table's locator: ``locators``' (a per-scope reload's), else the version's file's, else none."""
+    if table in locators:
+        return locators[table]
+    located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
+    return Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
+
+
+def _held_named(tables: _Tables, table: str, keys: pa.Table, files: Mapping[str, Any], locator: Locator) -> pa.Table:
+    """the rows the version holds of ``keys``: only the parts the keys' parts name mapped, each matched by one hash
+    match (:func:`_deleted_of`); empty for none."""
+    rule, schema = tables.rules[table], tables.schemas[table]
+    held = _parts_of(files, table)
+    if not keys.num_rows or not held:
+        return schema.empty_table()
+    index = _index_of(files, table) if rule.split else _INDEX.empty_table()
+    named = _key_parts(rule, keys, held, locator, index)
+    found: list[pa.Table] = []
+    for part in sorted(set(pc.unique(named.drop_null()).to_pylist()) & set(held)):
+        if (rows := _deleted_of(_map(held[part], schema), keys, rule.key)) is not None:
+            found.append(rows)
+    return _concat(schema, found)
+
+
+def _computing(
+    tables: _Tables,
+    hooks: ColumnHooks,
+    files: Mapping[str, Any],
+    settled: Mapping[str, _Settled],
+    locators: Mapping[str, Locator],
+    root: str,
+    version: str | None,
+) -> Mapping[str, _Settled]:
+    """each settled change to a table the hooks compute columns of, with them computed (:class:`ColumnHooks`): the
+    change's rows as the hooks give them back, and the held rows whose value moved upserted with them."""
+    computed = hooks.computed
+    done: list[tuple[str, _Settled]] = []
+    for table, change in settled.items():
+        if table not in computed or not change.named.num_rows:
+            done.append((table, change))
+            continue
+        rule, schema = tables.rules[table], tables.schemas[table]
+        whole = table in tables.whole
+        locator = _locator_of(files, table, locators)
+        named = change.named if change.named.num_rows else None
+        gone = schema.empty_table() if whole else _held_named(tables, table, change.deleted, files, locator)
+        view = AppliedTables(
+            root=root,
+            version=version,
+            rows=frozen([(table, change.rows)]),
+            deleted=frozen([(table, change.deleted)]),
+            parts=EMPTY,
+            deleted_rows=frozen([(table, gone)] if gone.num_rows else []),
+            whole=frozenset([table]) if whole else frozenset(),
+            touched=_touched(rule, change.rows, named, locator),
+            files=files,
+            rules=tables.rules,
+            schemas=tables.schemas,
+        )
+        done.append((table, _with_computed(table, schema, rule.key, change, hooks.compute(table, view))))
+    return frozen(done)
+
+
+def _with_computed(
+    table: str, schema: pa.Schema, key: Sequence[str], change: _Settled, computed: ComputedRows
+) -> _Settled:
+    """a settled change with its rows as the column hooks computed them, and the held rows they computed again
+    upserted beside them.
+
+    :raises ValueError: for rows that are not the change's one for one in its order, or held rows naming a key the
+        change writes or deletes
+    """
+    rows = computed.rows.select(schema.names).cast(schema)
+    if rows.num_rows != change.rows.num_rows or not rows.select(list(key)).equals(change.rows.select(list(key))):
+        raise ValueError(f"{table}'s computed columns must give back the change's rows one for one, in their order")
+    held = computed.held
+    if held is None or not held.num_rows:
+        return replace(change, rows=rows)
+    held = held.select(schema.names).cast(schema)
+    held = held.take(pa.array(last_rows(held, key)))
+    if len(rows_named(held, change.named, key)):
+        raise ValueError(f"{table}'s computed columns give back held rows of keys the change writes or deletes")
+    return _Settled(
+        rows=pa.concat_tables([rows, held]),
+        deleted=change.deleted,
+        named=pa.concat_tables([change.named, held.select(list(key))]),
+    )
 
 
 def _routes_whole_runs(tables: _Tables, files: Mapping[str, Any], settled: Mapping[str, _Settled]) -> bool:
@@ -1769,6 +1931,7 @@ def _tables_of(plan: ApplyPlan) -> _Tables:
         unpacked=plan.unpacked,
         canonical=frozen((table, frozen(columns)) for table, columns in plan.canonical),
         run_times=plan.run_times,
+        columns=plan.columns,
     )
 
 
@@ -1860,6 +2023,8 @@ def _settle_whole_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
             files,
             [(page.kind, page.table, page.rows) for page in derived.pages],
             result,
+            root=plan.root,
+            version=version,
         )
         lost = _let_go(tables, files, let_go, result)
         due = _pack_due(tables, files, result)
@@ -1902,7 +2067,9 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
         result = _Result(step, [])
         view = _reloaded(tables, base, plan.reloads, result)
         files = view.files
-        settled, after = _apply_pages(tables, files, [*view.pages, *pages], result, view.locators)
+        settled, after = _apply_pages(
+            tables, files, [*view.pages, *pages], result, view.locators, root=plan.root, version=version
+        )
         rows += sum(change.rows.num_rows for change in settled.values())
         if plan.hooks is not None:
             applied = _applied_tables(plan, version, tables, files, settled, after, view, result)
@@ -1910,7 +2077,15 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
             pages_derived = [(p.kind, p.table, p.rows) for p in derived.pages if p.table not in settled]
             replaced = frozenset(derived.whole) - frozenset(settled)
             if pages_derived or replaced:
-                more, _ = _apply_pages(replace(tables, whole=replaced), files, pages_derived, result, view.locators)
+                more, _ = _apply_pages(
+                    replace(tables, whole=replaced),
+                    files,
+                    pages_derived,
+                    result,
+                    view.locators,
+                    root=plan.root,
+                    version=version,
+                )
                 rows += sum(change.rows.num_rows for change in more.values())
             # held in the result for the let-go's own publish after this one, never a part of this version
             let_go = tuple((table, result.hold(gone)) for table, gone in _let_go_by_table(tables, derived.let_go))
@@ -2376,8 +2551,12 @@ class SharedCopyBackend:
         sizes its tables and holds each by the rule its size names now (a table crossing ``SPLIT_FLOOR_BYTES`` is cut
         by its scope from the next change to it). None keeps ``rules`` until :meth:`use_rules`
     :ptype declared: PartDeclaration | None
+    :param columns: columns computed over each change's rows in the apply worker before it is written
+        (:class:`ColumnHooks`); None for none
+    :ptype columns: ColumnHooks | None
     :raises ValueError: for a rule of a table with no schema, a schema missing a rule's column, an instant or canonical
-        column that is not a text key column of its table, or a canonical type with no one spelling
+        column that is not a text key column of its table, a canonical type with no one spelling, or a computed column
+        that is not a non-key column of a table the copy holds
     """
 
     def __init__(
@@ -2397,6 +2576,7 @@ class SharedCopyBackend:
         max_files: int = MAX_VERSION_FILES,
         run_times: RunTimes | None = None,
         declared: PartDeclaration | None = None,
+        columns: ColumnHooks | None = None,
     ) -> None:
         if pack_below < 0 or pack_target <= 0 or max_files <= 0:
             raise ValueError(f"pack bounds and a file bound are positive: {pack_below}, {pack_target}, {max_files}")
@@ -2414,13 +2594,16 @@ class SharedCopyBackend:
         self._merges = ByCount() if merges is None else merges
         if run_times is not None:
             spec = self._rules.get(run_times.table)
-            columns = [run_times.scope_column, run_times.run_column, run_times.time_column, run_times.model_column]
-            if spec is None or not {c for c in columns if c is not None} <= set(self._schemas[run_times.table].names):
+            named = [run_times.scope_column, run_times.run_column, run_times.time_column, run_times.model_column]
+            if spec is None or not {c for c in named if c is not None} <= set(self._schemas[run_times.table].names):
                 raise ValueError(
                     f"the runs' times are held in {run_times.table!r}: a table the copy holds, with its columns"
                 )
         self._run_times = run_times
         self._declared = declared
+        if columns is not None:
+            _check_computed(self._schemas, self._rules, columns)
+        self._columns = columns
         #: whether a whole settle is due (:meth:`defer_hooks_until_whole`): until it publishes, changes apply with no
         #: ``derive``
         self._whole_due = False
@@ -2492,6 +2675,7 @@ class SharedCopyBackend:
             pack_target=self._pack_target,
             canonical=self._canonical,
             run_times=self._run_times,
+            columns=self._columns,
         )
 
     async def apply(
@@ -2995,6 +3179,21 @@ def reload_piece_bytes(max_bytes: int, pages: Sequence[ChangePage]) -> int:
     wanted = largest + largest // _RELOAD_PIECE_SLACK_DIVISOR + _APPLY_PIECE_MINIMUM_BYTES
     bound = min(_APPLY_PIECE_BYTES, max(_APPLY_PIECE_MINIMUM_BYTES, max_bytes // _RELOAD_STORE_SHARE))
     return max(_APPLY_PIECE_MINIMUM_BYTES, min(wanted, bound))
+
+
+def _check_computed(schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule], columns: ColumnHooks) -> None:
+    """refuse computed columns that are not non-key columns of a table the copy holds.
+
+    :raises ValueError: for one
+    """
+    wrong = sorted(
+        f"{table}.{column}"
+        for table, names in columns.computed.items()
+        for column in names
+        if table not in rules or column not in schemas[table].names or column in rules[table].key
+    )
+    if wrong:
+        raise ValueError(f"computed columns must be non-key columns of tables the copy holds: {wrong}")
 
 
 def _checked(schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule]) -> Mapping[str, PartRule]:

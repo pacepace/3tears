@@ -38,18 +38,17 @@ import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import Final, Protocol
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
 from threetears.core.frozen_state import EMPTY, frozen
 
-if TYPE_CHECKING:
-    from threetears.core.collections.copy_follower import FollowedTable
-
 __all__ = [
     "PACK_BELOW_BYTES",
+    "DeclaredTable",
+    "TableShape",
     "PACK_TARGET_BYTES",
     "SPLIT_FLOOR_BYTES",
     "WHOLE_PART",
@@ -228,8 +227,49 @@ class Part:
     rows: pa.Table
 
 
+class TableShape(Protocol):
+    """what :func:`part_rules` reads of a table: its name, its key and its declared scope. A followed table
+    (``copy_follower.FollowedTable``) is one; a product's derived table, which L3 does not hold, is declared as a
+    :class:`DeclaredTable`."""
+
+    @property
+    def name(self) -> str:
+        """the table."""
+        ...
+
+    @property
+    def key(self) -> Sequence[str]:
+        """its key's columns."""
+        ...
+
+    @property
+    def scope(self) -> tuple[str, str] | None:
+        """its scope: ``(column, prefix)``, a row's scope being ``prefix + str(row[column])``; None for none."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredTable:
+    """a table declared by its shape alone (:class:`TableShape`): a product's derived table, which the copy holds and
+    L3 does not, so it has no L3 columns to follow.
+
+    :ivar name: the table
+    :ivar key: its key's columns
+    :ivar scope: its scope, ``(column, prefix)``; None for none (one part at every size)
+    """
+
+    name: str
+    key: tuple[str, ...]
+    scope: tuple[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", tuple(self.key))
+        if not self.key:
+            raise ValueError(f"{self.name}: a declared table needs a key")
+
+
 def part_rules(
-    tables: Sequence[FollowedTable],
+    tables: Sequence[TableShape],
     sizes: Mapping[str, int],
     *,
     locators: Mapping[str, str] = EMPTY,
@@ -243,8 +283,9 @@ def part_rules(
     A scoped table whose key lacks its scope column must be given a locator at every size, so a declaration missing
     one is refused when it is made, not when the table first grows past the floor.
 
-    :param tables: the copied tables, each with its declared scope (``FollowedTable.scope``)
-    :ptype tables: Sequence[FollowedTable]
+    :param tables: the copied tables, each with its declared scope (:class:`TableShape`: ``FollowedTable.scope``, a
+        :class:`DeclaredTable`'s)
+    :ptype tables: Sequence[TableShape]
     :param sizes: each table's bytes as the copy holds it (Arrow ``nbytes``); every table must be named
     :ptype sizes: Mapping[str, int]
     :param locators: each table keyed without its scope column, and the key column naming its scope value
@@ -296,13 +337,14 @@ class PartDeclaration:
     from the next change, rewritten whole in its new shape as that change lands. No table list is written by hand: a
     table is split by the scope it declares (``FollowedTable.scope``, ``delta_state_scope``).
 
-    :ivar tables: the copied tables (and a product's derived tables, declared alike: a name, a key, a scope)
+    :ivar tables: the copied tables and a product's derived tables, each by its shape (:class:`TableShape`: a name, a
+        key, a scope; a derived table a :class:`DeclaredTable`)
     :ivar locators: each table keyed without its scope column, and the key column naming its scope value
     :ivar runs: each per-run table and its run column
     :ivar floor: the bytes a table is split at
     """
 
-    tables: tuple[FollowedTable, ...]
+    tables: tuple[TableShape, ...]
     locators: Mapping[str, str] = EMPTY
     runs: Mapping[str, str] = EMPTY
     floor: int = SPLIT_FLOOR_BYTES

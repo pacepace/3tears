@@ -17,7 +17,14 @@ import pytest
 
 from packages.core.tests.unit.collections import copy_hooks
 from threetears.core.collections.copy_follower import FollowedTable
-from threetears.core.collections.copy_parts import WHOLE_PART, PartDeclaration, PartRule, is_pack, tier_part
+from threetears.core.collections.copy_parts import (
+    WHOLE_PART,
+    DeclaredTable,
+    PartDeclaration,
+    PartRule,
+    is_pack,
+    tier_part,
+)
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column
 from threetears.core.collections.shared_copy import (
     KEYS,
@@ -353,5 +360,30 @@ class TestRecutAsATableGrows:
             await backend.apply([ChangePage(ROWS, "results", _rows("GA", 1, votes=9))])
             assert sorted(_inodes(store, "results")) == sorted(_STATES)
             assert _held(store, "results", SCHEMA).num_rows == 20 + 1000 + 1
+        finally:
+            await backend.close()
+
+    async def test_a_derived_table_declared_by_its_shape_alone_is_cut_by_its_scope(
+        self, store: SharedArrowStore
+    ) -> None:
+        # the totals L3 does not hold: a name, a key and a scope, no L3 columns
+        totals = DeclaredTable(copy_hooks.TOTALS, ("state",), ("state", "state:"))
+        declared = PartDeclaration(tables=(_followed("results"), totals), floor=1)
+        backend = await _backend(
+            store,
+            [
+                ("results", SCHEMA, PartRule("results", _KEY)),
+                (copy_hooks.TOTALS, copy_hooks.TOTALS_SCHEMA, PartRule(copy_hooks.TOTALS, ("state",))),
+            ],
+            hooks=copy_hooks.WholeTotals(),
+            declared=declared,
+        )
+        try:
+            first = await backend.apply([ChangePage(ROWS, "results", _rows("VA", 5))])
+            assert copy_hooks.TOTALS in first.rules_changed
+            assert backend.rules[copy_hooks.TOTALS].scope_column == "state"
+            assert sorted(_inodes(store, copy_hooks.TOTALS)) == [WHOLE_PART]
+            await backend.apply([ChangePage(ROWS, "results", _rows("GA", 3))])
+            assert sorted(_inodes(store, copy_hooks.TOTALS)) == ["GA", "VA"]
         finally:
             await backend.close()
