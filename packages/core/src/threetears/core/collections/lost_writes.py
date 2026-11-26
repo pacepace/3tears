@@ -30,7 +30,7 @@ run marker, :mod:`~threetears.core.ddl.run_markers`) is re-recorded whole by its
 module records, and only for the window's own deletes.
 
 **What a table is switched on by.** Its epoch: every table whose writes advance a generation carries ``epoch BIGINT
-NOT NULL`` (:func:`tables_switched_by_trigger`), versioned or stamped, its restore index declaring it in the catalog
+NOT NULL`` (:func:`tables_switched_by_epoch`), versioned or stamped, its restore index declaring it in the catalog
 (:func:`~threetears.core.collections.table_restore.restored_tables`), which a writer that imports no class for the
 table (the hub's broker, committing a tool pod's write) reads. Until 0.95 the change-note row trigger was the switch,
 and before it the per-row write-mark trigger; the backstop takes down any write-mark trigger an older replica puts back
@@ -67,7 +67,7 @@ from threetears.core.collections.table_restore import (
 )
 from threetears.core.collections.generation import GenerationSource, tenancy_of_table, written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
-from threetears.core.ddl.change_notes import NOTE_TRIGGER, WHOLE_COPY_ROWS
+from threetears.core.ddl.change_notes import WHOLE_COPY_ROWS
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.epoch_catalog import tables_carrying_epoch
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -83,7 +83,7 @@ __all__ = [
     "WriteBackstop",
     "WriterBeats",
     "announce_window",
-    "tables_switched_by_trigger",
+    "tables_switched_by_epoch",
 ]
 
 log = get_logger(__name__)
@@ -160,25 +160,6 @@ class SqlPool(SqlConnection, Protocol):
         ...
 
 
-#: the tables of one schema carrying the change-note row trigger, among those named
-_SWITCHED_SQL: Final[str] = """
-SELECT c.relname::text AS table_name
-FROM pg_trigger g
-JOIN pg_class c ON c.oid = g.tgrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE g.tgname = $1 AND NOT g.tgisinternal AND n.nspname::text = $2 AND c.relname::text = ANY($3::text[])
-"""
-
-#: every table of the database carrying the change-note row trigger, with its schema
-_ALL_SWITCHED_SQL: Final[str] = """
-SELECT n.nspname::text AS table_schema, c.relname::text AS table_name
-FROM pg_trigger g
-JOIN pg_class c ON c.oid = g.tgrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE g.tgname = $1 AND NOT g.tgisinternal
-ORDER BY 1, 2
-"""
-
 #: every write-mark trigger whose function lives in the given schema, with its table
 _MARK_TRIGGERS_SQL: Final[str] = """
 SELECT n.nspname::text AS table_schema, c.relname::text AS table_name
@@ -197,18 +178,15 @@ WHERE p.proname::text = $1 AND n.nspname::text = $2
 """
 
 
-async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: Iterable[str]) -> frozenset[str]:
+async def tables_switched_by_epoch(pool: SqlConnection, schema: str, tables: Iterable[str]) -> frozenset[str]:
     """the named tables of ``schema`` switched on by the database itself: each carrying an epoch
-    (:func:`~threetears.core.ddl.epoch_catalog.tables_carrying_epoch`, ``epoch BIGINT NOT NULL``), or the change-note
-    row trigger. The epoch is the switch append-only L3 keeps (chunk 7); the trigger stays one while a table without
-    an epoch still has it, until the ring retires.
+    (:func:`~threetears.core.ddl.epoch_catalog.tables_carrying_epoch`, ``epoch BIGINT NOT NULL``), versioned or
+    stamped. The epoch is the switch append-only L3 keeps (chunk 7): every write stamps it, and every reader of what a
+    table changed reads it (:mod:`~threetears.core.collections.epoch_reads`). Until the ring retired the change-note
+    row trigger was the switch, and before it the write-mark trigger.
 
-    A table is switched on by its declaration (a collection class with ``write_generation``), and the migration that
-    creates it gives it its change-note triggers (:meth:`~threetears.core.data.migrations.registry.PackageMigrations
-    .mark_write_generation`). A writer that imports no class for the table -- the hub's broker, committing a tool
-    pod's write to the pod's own tables -- reads the switch here instead: the triggers are installed under the
-    database's DDL lock, so a pod cannot claim a table is switched on without it being so. A catalogue read: no DDL,
-    no lock. (Until 0.95 the write-mark trigger was the switch.)
+    A writer that imports no class for the table -- the hub's broker, committing a tool pod's write to the pod's own
+    tables -- reads the switch here. A catalogue read: no DDL, no lock.
 
     :param pool: the L3 pool, or one connection
     :ptype pool: SqlConnection
@@ -216,17 +194,13 @@ async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: I
     :ptype schema: str
     :param tables: the table names
     :ptype tables: Iterable[str]
-    :return: those that carry an epoch or the trigger
+    :return: those that carry an epoch
     :rtype: frozenset[str]
     """
     names = sorted(set(tables))
     if not names:
         return frozenset()
-    rows = await pool.fetch(_SWITCHED_SQL, NOTE_TRIGGER, schema, names)
-    triggered = frozenset(str(row["table_name"]) for row in rows)
-    # a table carrying an epoch is switched on by it: a versioned table carries no note trigger (append-only L3,
-    # decision 4), and its writes still advance a generation
-    return triggered | await tables_carrying_epoch(pool, schema, [name for name in names if name not in triggered])
+    return await tables_carrying_epoch(pool, schema, names)
 
 
 async def _switched_tables(pool: SqlConnection) -> dict[str, tuple[RestoredTable, ...]]:

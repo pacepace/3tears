@@ -1023,7 +1023,7 @@ async def advance_for_write(
     :ptype keys_unknown: bool
     :param tenancy: the table's tenancy, for a writer that knows it otherwise than by a class it imported: a table
         switched on by its trigger alone, which no class here declares, lives in the schema its write ran in
-        (:func:`~threetears.core.collections.lost_writes.tables_switched_by_trigger`), so it is
+        (:func:`~threetears.core.collections.lost_writes.tables_switched_by_epoch`), so it is
         :data:`~threetears.core.tenancy.TENANT_BY_SCHEMA`. ``None`` reads the classes (:func:`tenancy_of_table`)
     :ptype tenancy: Tenancy | None
     :param partition: for a whole-table change that is a load from files, the columns its rows hold and their values

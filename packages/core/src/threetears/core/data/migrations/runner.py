@@ -48,12 +48,7 @@ from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.ddl.session import MigrationSession
-from threetears.core.collections.generation import noted_tables
-from threetears.core.data.migrations.change_notes import (
-    give_noted_tables_their_note_trigger,
-    refuse_row_triggers_here,
-    switched_tables_without_notes,
-)
+from threetears.core.data.migrations.change_notes import refuse_row_triggers_here, switched_tables_without_epoch
 from threetears.core.data.store import DataStore
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
 from threetears.observe import contain, get_logger, traced
@@ -624,22 +619,13 @@ class MigrationRunner:
         for package in ordered:
             applied_count = await self._apply_package_pending(store, package, applied, target)
             count += applied_count
-        # still under the run's DDL lock: every switched-on table these packages create carries its change-note
-        # triggers from this run, where the ring is installed (the keeper's install gives them otherwise). The note
-        # trigger is the table's switch (threetears.core.collections.lost_writes.tables_switched_by_trigger) and the
-        # record a lost advance is announced from, so a declared table left without one is refused, naming why
+        # still under the run's DDL lock: every switched-on table these packages create carries its epoch, the
+        # table's switch (threetears.core.collections.lost_writes.tables_switched_by_epoch) and what every reader of
+        # what it changed reads (a restore, the writers' backstop, a keys-unknown page). One that does not is refused,
+        # naming why, once the refusal is on (epoch_catalog.REFUSE_TABLES_WITHOUT_EPOCH, held for 3tears' own tables)
         tables = sorted({name for package in ordered for name in package.write_generation_tables})
         if tables:
-            declared = set(tables)
-            noted = [each for each in noted_tables() if each.table in declared]
-            if noted:
-                await give_noted_tables_their_note_trigger(store, noted)
-            unnoted = await switched_tables_without_notes(store, tables, noted)
-            if unnoted:
-                raise MigrationError(
-                    "switched-on tables this run declares carry no change-note trigger, so a lost epoch advance of "
-                    f"theirs could never be announced: {unnoted}"
-                )
+            await switched_tables_without_epoch(store, tables)
         # every run, whatever it declares: no versioned (page-written) table of this schema may carry a per-row
         # trigger, so no migration, hand-written statement or older replica brings the slow path back (append-only
         # L3, decision 4; threetears.core.ddl.epoch_catalog)

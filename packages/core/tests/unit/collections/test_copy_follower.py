@@ -47,7 +47,7 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.registry import BEHIND_REASONS, CacheInvalidationMessage  # noqa: E402
 from threetears.core.collections.copy_checkpoint import Checkpoint, CopyCheckpoints  # noqa: E402
-from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER  # noqa: E402
+from threetears.core.backends.broker_generation import GENERATION_BY_EPOCH  # noqa: E402
 from threetears.core.collections.scope_epochs import ScopeEpochs  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
 from threetears.core.collections.copy_queries import CopyQueries, CopyVersion  # noqa: E402
@@ -63,7 +63,7 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     FollowerPhase,
     HubCapabilityMissingError,
     PartialStamp,
-    require_generation_by_trigger,
+    require_generation_by_epoch,
 )
 from threetears.core.collections.copy_stages import SharedCopyStages  # noqa: E402
 from threetears.core.testing.published_copy import PublishedCopy, SharedCopy, copy_rows  # noqa: E402
@@ -739,16 +739,16 @@ class _Hub:
 
 
 async def test_a_hub_that_does_not_advance_trigger_switched_tables_is_refused_by_name() -> None:
-    with pytest.raises(HubCapabilityMissingError, match=GENERATION_BY_TRIGGER):
-        await require_generation_by_trigger(_Hub(frozenset()))
+    with pytest.raises(HubCapabilityMissingError, match=GENERATION_BY_EPOCH):
+        await require_generation_by_epoch(_Hub(frozenset()))
 
 
 async def test_a_hub_that_announces_it_is_accepted() -> None:
-    await require_generation_by_trigger(_Hub(frozenset({GENERATION_BY_TRIGGER, "other"})))
+    await require_generation_by_epoch(_Hub(frozenset({GENERATION_BY_EPOCH, "other"})))
 
 
 async def test_an_l3_with_no_broker_between_is_not_asked() -> None:
-    await require_generation_by_trigger(_L3())
+    await require_generation_by_epoch(_L3())
 
 
 # --- a load's partition ----------------------------------------------------------------------------

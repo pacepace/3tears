@@ -29,7 +29,10 @@ from typing import Any, Final, Protocol
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK
 
 __all__ = [
+    "REFUSE_TABLES_WITHOUT_EPOCH",
     "PerRowTriggerError",
+    "TableWithoutEpochError",
+    "refuse_tables_without_epoch",
     "refuse_row_triggers",
     "row_triggers_on_versioned",
     "tables_carrying_epoch",
@@ -188,3 +191,50 @@ async def tables_carrying_epoch(conn: _Fetching, schema: str, tables: Iterable[s
         return frozenset()
     rows = await conn.fetch(_CARRYING_EPOCH_SQL, schema, names, EPOCH_COLUMN)
     return frozenset(str(row["table_name"]) for row in rows)
+
+
+#: TODO(work/0950-stamp-own-tables): set True once that branch has merged. A switched-on table (one whose writes
+#: advance a generation) that carries no epoch is refused at the migration run that declares it
+#: (:func:`refuse_tables_without_epoch`): with the change-note ring retired (append-only L3 chunk 7) nothing records
+#: its writes for a restore, the writers' backstop or a keys-unknown page, so a lost advance of it could never be
+#: announced. Held off only because 3tears' own ten tables do not declare ``ROW_STAMPED`` yet (that branch does it);
+#: ``tests/unit/ddl/test_tables_without_epoch_refused.py`` fails while this is False, so it cannot be forgotten
+REFUSE_TABLES_WITHOUT_EPOCH: Final = False
+
+
+class TableWithoutEpochError(RuntimeError):
+    """switched-on tables that carry no epoch: their writes would reach no reader of what changed.
+
+    :ivar tables: ``schema.table`` of each
+    """
+
+    def __init__(self, tables: Iterable[str]) -> None:
+        self.tables = tuple(sorted(tables))
+        super().__init__(
+            "switched-on tables carry no epoch, so a restore, the writers' backstop and a keys-unknown page would "
+            f"never hear their writes: {list(self.tables)}. How to fix: declare each table's row epoch in its "
+            "TableSchema, row_versions(scope, ...) for a page-written table or ROW_STAMPED for one row a key updated "
+            "in place, and migrate it (epoch BIGINT NOT NULL, its restore index); or stop declaring a write "
+            "generation for it"
+        )
+
+
+async def refuse_tables_without_epoch(conn: _Fetching, schema: str, tables: Iterable[str]) -> frozenset[str]:
+    """the switched-on ``tables`` of ``schema`` that carry no epoch; refused (:class:`TableWithoutEpochError`) once
+    :data:`REFUSE_TABLES_WITHOUT_EPOCH` is on. One catalogue read.
+
+    :param conn: a pool or a connection
+    :ptype conn: _Fetching
+    :param schema: the schema
+    :ptype schema: str
+    :param tables: the switched-on tables a run declares
+    :ptype tables: Iterable[str]
+    :return: those without an epoch (empty once refused, since a refusal raises)
+    :rtype: frozenset[str]
+    :raises TableWithoutEpochError: when one carries none and the refusal is on
+    """
+    names = frozenset(tables)
+    missing = names - await tables_carrying_epoch(conn, schema, names)
+    if missing and REFUSE_TABLES_WITHOUT_EPOCH:
+        raise TableWithoutEpochError(f"{schema}.{name}" for name in missing)
+    return missing

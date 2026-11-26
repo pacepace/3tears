@@ -213,7 +213,7 @@ from threetears.core.collections.schema_backed import (
     rail_text,
     sql_cast,
 )
-from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
+from threetears.core.backends.broker_generation import GENERATION_BY_EPOCH
 from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
@@ -247,7 +247,7 @@ __all__ = [
     "FollowerStages",
     "PreparesStaged",
     "is_reload_stage",
-    "require_generation_by_trigger",
+    "require_generation_by_epoch",
     "typed_text",
 ]
 
@@ -517,16 +517,17 @@ class HubCapabilityMissingError(RuntimeError):
         self.capability = capability
         super().__init__(
             f"the hub does not announce {capability!r}: it advances no generation for a pod's own tables switched on "
-            f"by their trigger, so a copy following them would never hear a change. Deploy the hub that announces it "
+            f"by their epoch, so a copy following them would never hear a change. Deploy the hub that announces it "
             f"before this pod; the pod stays not ready until then"
         )
 
 
-async def require_generation_by_trigger(l3: Any) -> None:
-    """refuse, before a copy follower serves, a hub whose broker does not advance trigger-switched tables.
+async def require_generation_by_epoch(l3: Any) -> None:
+    """refuse, before a copy follower serves, a hub whose broker does not advance the tables switched on by their
+    epoch (a pod's own tables, which no class the hub imports declares).
 
     An L3 reached through the hub's broker (anything with ``hub_capabilities``) must announce
-    :data:`~threetears.core.backends.broker_generation.GENERATION_BY_TRIGGER`. An L3 reached directly (a SQL pool, a
+    :data:`~threetears.core.backends.broker_generation.GENERATION_BY_EPOCH`. An L3 reached directly (a SQL pool, a
     test's) has no broker between: its writers advance their own generations, and nothing is asked.
 
     :param l3: the pod's L3
@@ -538,8 +539,8 @@ async def require_generation_by_trigger(l3: Any) -> None:
     probe = getattr(l3, "hub_capabilities", None)
     if probe is None:
         return
-    if GENERATION_BY_TRIGGER not in await probe():
-        raise HubCapabilityMissingError(GENERATION_BY_TRIGGER)
+    if GENERATION_BY_EPOCH not in await probe():
+        raise HubCapabilityMissingError(GENERATION_BY_EPOCH)
 
 
 #: the column of a batch of keys heard naming the epoch each key was heard at (null: heard with none)

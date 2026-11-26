@@ -27,7 +27,7 @@ import pytest
 
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
-from threetears.core.collections.lost_writes import WriteBackstop, tables_switched_by_trigger
+from threetears.core.collections.lost_writes import WriteBackstop, tables_switched_by_epoch
 from threetears.core.coordination.lease import KVLease
 from threetears.core.coordination.migrations import register as register_coordination
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
@@ -221,7 +221,7 @@ async def test_the_connection_class_keeps_each_write_s_start_until_it_ends(db: _
 
 async def test_a_table_switched_on_by_its_note_trigger_is_read_as_switched_on(db: _Db) -> None:
     await db.pool.execute(f"CREATE TABLE {db.schema}.plain_rows (id TEXT PRIMARY KEY)")
-    found = await tables_switched_by_trigger(db.pool, db.schema, [db.table, "plain_rows", "absent_rows"])
+    found = await tables_switched_by_epoch(db.pool, db.schema, [db.table, "plain_rows", "absent_rows"])
     assert found == frozenset({db.table})
 
 
