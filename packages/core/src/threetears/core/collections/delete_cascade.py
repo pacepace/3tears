@@ -276,12 +276,30 @@ async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any]) 
         if not values:
             continue
         # cache-bypass: whether a child still names the parent, read where the guard would have run (L3)
-        counted = await counts_by(
-            collection.l3_pool, restrict.child_table, column=restrict.child_column, values=AnyOf(values, cast=None)
-        )
-        held = sum(counted.values())
+        held = await _live_children(collection.l3_pool, restrict.child_table, restrict.child_column, values)
         if held:
             raise RestrictedDeleteError(collection.table_name, restrict.child_table, restrict.child_column, held)
+
+
+async def _live_children(pool: Any, table: str, column: str, values: Sequence[Any]) -> int:
+    """how many live rows of ``table`` name one of ``values`` in ``column``: one keyed ``GROUP BY`` through the
+    column's index (:func:`~threetears.core.keyed.counts_by`, a stamped child's gone rows left out by its live guard).
+
+    :param pool: the L3, an asyncpg-shaped ``fetch``
+    :ptype pool: Any
+    :param table: the child table, a declared identifier
+    :ptype table: str
+    :param column: the column naming the parent, a declared identifier
+    :ptype column: str
+    :param values: the parents' values
+    :ptype values: Sequence[Any]
+    :return: the rows
+    :rtype: int
+    """
+    # the table and column are one declared DeleteRestrict's pair, every one of them literal, so the no-whole-reads
+    # walk judges this read once per construction (its index on the child column), never as a run-time table
+    counted = await counts_by(pool, table, column=column, values=AnyOf(list(values), cast=None))
+    return sum(counted.values())
 
 
 def refuse_unappliable_cascade(collection: Any, cascaded: Sequence[CascadedRows]) -> None:

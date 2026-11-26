@@ -145,7 +145,7 @@ def _reads_prefix_scopes(newest: Any, keys: KeyBatch, yugabyte: bool) -> bool:
     """whether a keyed read is a batch of a versioned table's key prefixes on YugabyteDB, bound as arrays: each of
     its keys a scope of many keys (a state's geographies), whose batched ``DISTINCT ON`` sorts every version of the
     scopes it names. WHY bounded apart (2026-11-25): sized by keys like a batch of whole keys, its first statement
-    named :data:`~threetears.interfaces.keyed.keys.NEWEST_FIRST_KEYS` prefixes and sorted all their scopes' versions
+    named :data:`~threetears.interfaces.keyed.keys._NEWEST_FIRST_KEYS` prefixes and sorted all their scopes' versions
     in one statement, past any ``work_mem`` (pods have no scratch volume: no disk spill, by design)."""
     width = len(keys.columns)
     return (
@@ -315,7 +315,7 @@ async def _prefix_scope(
 ) -> tuple[list[dict[str, Any]], int] | None:
     """one prefix's rows read a range of its keys at a time, in the key's order
     (:func:`~threetears.core.keyed.page.newest_listing`: the prefix pinned and the cursor inside the ``DISTINCT ON``,
-    each statement's ``LIMIT`` the keys that hold :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ`
+    each statement's ``LIMIT`` the keys that hold :data:`~threetears.interfaces.keyed.keys._NEWEST_ROWS_A_READ`
     versions at the versions a key the one before read), so a scope of any size is read in bounded statements, each
     seeking past the pinned lead; and the versions read, which size the next batch."""
     rest = [column for column in newest.key if column not in pins]
@@ -381,9 +381,10 @@ _NEWEST_ROWS = frozenset({NEWEST_KEPT, NEWEST_LIVE, NEWEST_VERSIONS})
 
 
 class _NewestSizing:
-    """how many keys a versioned batch on YugabyteDB asks for: its first :data:`NEWEST_FIRST_KEYS` (the budget at the
-    measured worst, 50 versions a key), each later one as many as hold
-    :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the versions a key the one before read
+    """how many keys a versioned batch on YugabyteDB asks for: its first
+    :data:`~threetears.interfaces.keyed.keys._NEWEST_FIRST_KEYS` (the budget at the measured worst, 50 versions a key),
+    each later one as many as hold
+    :data:`~threetears.interfaces.keyed.keys._NEWEST_ROWS_A_READ` versions at the versions a key the one before read
     (:func:`~threetears.interfaces.keyed.keys.next_newest_keys`), so the batch's sort of every version of its keys
     never outgrows its ``work_mem``. Local to one read."""
 

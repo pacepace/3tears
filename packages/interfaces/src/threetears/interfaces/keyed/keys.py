@@ -1204,9 +1204,9 @@ def live_relation(declared: StampedTable, table: str) -> str:
     :return: the relation's ``SELECT``
     :rtype: str
     """
-    named = ".".join(f'"{part}"' for part in table.replace('"', "").split("."))
     columns = ", ".join(f'"{column}"' for column in declared.columns)
-    return f'SELECT {columns} FROM {named} WHERE NOT "{declared.gone}"'
+    # quoted as every keyed read quotes the table it is handed (filters.relation, newest_relation's read_as)
+    return f'SELECT {columns} FROM {quoted_table(table)} WHERE NOT "{declared.gone}"'
 
 
 def declared_columns(table: Any) -> tuple[str, ...] | None:

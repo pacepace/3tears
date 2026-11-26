@@ -213,7 +213,7 @@ async def newest_listing(
     (:func:`~threetears.interfaces.keyed.keys.newest_page_statement`: the pins on the key and the cursor inside the
     ``DISTINCT ON``, its ``LIMIT`` the keys read), until ``wanted`` rows are kept or the range ends; every key read
     stepped past, kept or not, each statement asking as many keys as hold
-    :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the versions a key the one before read
+    :data:`~threetears.interfaces.keyed.keys._NEWEST_ROWS_A_READ` versions at the versions a key the one before read
     (at most a page), each sent under the read's bounds (:func:`~threetears.core.keyed.newest_sent`). None for a
     listing in another order, read as a plain page over the newest relation.
 

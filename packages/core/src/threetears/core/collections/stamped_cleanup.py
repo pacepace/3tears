@@ -187,18 +187,17 @@ async def _delete_keys(pool: Any, schema: TableSchema, page: pa.Table, floor: in
     :return: the rows deleted
     :rtype: int
     """
-    keys = KeyBatch(
-        columns=tuple(schema.pk_columns),
-        keys=[page.column(name).combine_chunks() for name in schema.pk_columns],
-        casts=_casts(schema),
-    )
+    key = schema.pk_columns
+    columns = [page.column(name).combine_chunks() for name in key]
+    casts = _casts(schema)
     statements = delete_keyed_statements(
         schema.name,
-        keys=keys,
+        # the table's own key, written where the delete is so the key it binds is the one deleted by
+        keys=KeyBatch(key, keys=columns, casts=casts),
         where=(Fragment(f'"{GONE_COLUMN}"'), Fragment(f'"{EPOCH_COLUMN}" < $1', (floor,))),
         batch=max(1, page.num_rows),
         natively=binds_native_arrays(pool),
-        binder=binder_for(pool, keys),
+        binder=binder_for(pool, KeyBatch(key, keys=columns, casts=casts)),
     )
     deleted = 0
     for sql, params in statements:

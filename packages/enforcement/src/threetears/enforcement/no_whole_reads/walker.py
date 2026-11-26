@@ -77,6 +77,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
+from threetears.core.ddl.row_epoch import BUCKET_COLUMN, EPOCH_COLUMN
 from threetears.core.frozen_state import EMPTY, frozen, with_entry
 from threetears.enforcement.common import (
     dotted,
@@ -272,6 +273,49 @@ _QUOTING_CALLS: Final = frozenset({"quoted_table", "quote_identifier"})
 #: where 3tears' keyed helpers live: the runners in core, the pure builders in the dependency-free interfaces package; a
 #: helper there may declare its own parameter a change relation
 _KEYED_PACKAGES: Final = ("threetears/core/keyed/", "threetears/interfaces/keyed/")
+
+#: the reads in a table's place every shared keyed read asks (``threetears.core.keyed._filters``), each answering a
+#: relation over the table it is handed (``table``, second) with that table's key and indexes: a versioned table's
+#: newest live versions, a stamped one's live rows (``versions_read``, ``newest_read``); ``live_read`` answers that
+#: relation first of a pair, its filters with the live guard beside them second
+_LIVE_READS: Final = frozenset({"versions_read", "newest_read"})
+_LIVE_READ_PAIR: Final = "live_read"
+
+#: the builders of such a relation's text (``threetears.interfaces.keyed.keys``), onto the parameter naming the table
+#: it reads: each writes a relation over that table, judged where a read names it, as a keyed helper's relation is
+_RELATION_BUILDERS: Final[Mapping[str, str]] = {
+    "newest_relation": "read_as",
+    "newest_lateral": "read_as",
+    "live_relation": "table",
+}
+
+#: the module whose records name a row-epoch table as its restore declaration does (``VersionedTable``,
+#: ``StampedTable``, and ``RestoredTable`` either one), read from the declared index's comment, so every one names a
+#: table that carries the declaration's index
+_RESTORE_MODULE: Final = "threetears.core.collections.table_restore"
+
+#: each restore record onto the attributes naming its row-epoch index's leading column: a versioned table's scope
+#: (``row_versions``: its ``(scope, epoch, key...)`` index), a stamped table's bucket (``ROW_STAMPED``: its
+#: ``(epoch_bucket, epoch)`` index)
+_RESTORE_LEADS: Final[Mapping[str, frozenset[str]]] = {
+    "VersionedTable": frozenset({"scope"}),
+    "StampedTable": frozenset({"bucket"}),
+    "RestoredTable": frozenset({"scope", "bucket"}),
+}
+
+#: a filter bounding the epoch (``EPOCH_COLUMN``, the second column of both indexes) from below (``t."epoch" >= $1``):
+#: with the leading column pinned, the read starts at one place of the index and walks its range
+_EPOCH_LOWER_BOUND: Final = re.compile(rf'^\s*(?:t\.)?"?{EPOCH_COLUMN}"?\s*>=?\s*\$\d+\s*$')
+
+#: the reads of one range of an index, onto where each takes its relation, pins, order, filters, visibility clauses and
+#: columns: a position, or None where only its keyword names it (``page_statement`` is written positionally)
+_INDEX_RANGE_READS: Final[Mapping[str, tuple[int | None, ...]]] = {
+    **dict.fromkeys(("keyset_page", "keyset_rows", "copy_keyed"), (1, None, None, None, None, None)),
+    "page_statement": (0, 2, 3, 8, 7, 1),
+}
+
+#: the keywords of :data:`_INDEX_RANGE_READS`' arguments, in its order
+_INDEX_RANGE_ARGUMENTS: Final = ("table", "by", "order", "where", "visible", "columns")
 
 #: the modules 3tears' keyed helpers are imported from: core's (the runners, every builder re-exported) and the
 #: interfaces package's (the builders, for a package that may not depend on core)
@@ -1807,6 +1851,150 @@ def _relation_wrappers(tree: ast.Module) -> frozenset[str]:
     return frozenset(found)
 
 
+def _bound_once_in(function: ast.AST, name: str) -> ast.Assign | None:
+    """the one statement of ``function``'s own scope binding the local ``name``: an assignment with one target, the name
+    or a tuple holding it; None when the function binds it otherwise or more than once (a loop, a ``with``, an augmented
+    or annotated assignment, a walrus), or it is a parameter.
+
+    :param function: the function
+    :ptype function: ast.AST
+    :param name: the local
+    :ptype name: str
+    :return: the assignment, or None
+    :rtype: ast.Assign | None
+    """
+    if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+        return None
+    arguments = function.args
+    given = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]
+    if any(argument is not None and argument.arg == name for argument in given):
+        return None
+    found: list[ast.Assign] = []
+    for node in _own_nodes(function.body):
+        if isinstance(node, ast.Assign) and any(_target_binds(target, name) for target in node.targets):
+            if len(node.targets) != 1:
+                return None
+            found.append(node)
+        elif (isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr) and _target_binds(node.target, name)) or (
+            isinstance(node, ast.For | ast.AsyncFor | ast.With | ast.AsyncWith) and _binds_in(node, name)
+        ):
+            return None
+        elif isinstance(node, ast.comprehension) and _target_binds(node.target, name):
+            return None
+    return found[0] if len(found) == 1 else None
+
+
+def _wrapped_relation(node: ast.expr, function: ast.AST | None) -> ast.expr | None:
+    """the relation an expression reads in another's place, as the relation it is over: a read in a table's place
+    (:data:`_LIVE_READS`: ``versions_read(conn, table)``) is ``table``, with its key and indexes; and so is a local the
+    function binds once to one, or to the first of ``live_read``'s pair (``read_from, guarded = live_read(conn, table,
+    where)``), or to a keyed step of one relation over it (``heads = latest_per_key(rel, ...)``: the step reads it
+    whole, as every step reads its relation, judged at the step's own callers). None for anything else.
+
+    :param node: the expression
+    :ptype node: ast.expr
+    :param function: the function it is in
+    :ptype function: ast.AST | None
+    :return: the relation it is over, or None
+    :rtype: ast.expr | None
+    """
+    if isinstance(node, ast.Call) and _final(node) in _LIVE_READS:
+        return _bound_argument(node, "table", 1)
+    if not isinstance(node, ast.Name) or function is None:
+        return None
+    bound = _bound_once_in(function, node.id)
+    if bound is None or not isinstance(bound.value, ast.Call):
+        return None
+    target, value = bound.targets[0], bound.value
+    called = _final(value)
+    if isinstance(target, ast.Name):
+        if called in _LIVE_READS:
+            return _bound_argument(value, "table", 1)
+        relations = STEP_RELATIONS.get(called or "", ())
+        if called in STEP_CALLS and len(relations) == 1:
+            position, keyword = relations[0]
+            return _bound_argument(value, keyword, position)
+        return None
+    if (
+        called == _LIVE_READ_PAIR
+        and isinstance(target, ast.Tuple)
+        and len(target.elts) == 2
+        and isinstance(target.elts[0], ast.Name)
+        and target.elts[0].id == node.id
+    ):
+        return _bound_argument(value, "table", 1)
+    return None
+
+
+def _derived_over(node: ast.expr, function: ast.AST | None) -> ast.expr | None:
+    """the relation a derived relation's text reads, when ``node`` is a local the function binds once to an f-string
+    naming it through a :data:`_RELATION_CALLS` call right after ``FROM`` / ``JOIN`` (``chosen = f"(SELECT ... FROM
+    {quoted_table(read_as)} AS t ...) AS n"``): a relation over it, whose own text is judged where it is written.
+    None for anything else.
+
+    :param node: the expression
+    :ptype node: ast.expr
+    :param function: the function it is in
+    :ptype function: ast.AST | None
+    :return: the relation it reads, or None
+    :rtype: ast.expr | None
+    """
+    if not isinstance(node, ast.Name) or function is None:
+        return None
+    bound = _bound_once_in(function, node.id)
+    if bound is None or not isinstance(bound.targets[0], ast.Name) or not isinstance(bound.value, ast.JoinedStr):
+        return None
+    parts = bound.value.values
+    for place, part in enumerate(parts):
+        before = parts[place - 1] if place else None
+        if (
+            isinstance(part, ast.FormattedValue)
+            and isinstance(part.value, ast.Call)
+            and _final(part.value) in _RELATION_CALLS
+            and len(part.value.args) == 1
+            and isinstance(before, ast.Constant)
+            and isinstance(before.value, str)
+            and _RELATION_POSITION.search(before.value) is not None
+        ):
+            return part.value.args[0]
+    return None
+
+
+def _union_parts(annotation: ast.expr) -> list[ast.expr]:
+    """each type a union annotation names (``A | B``), in order; the annotation itself for any other.
+
+    :param annotation: the annotation
+    :ptype annotation: ast.expr
+    :return: its parts
+    :rtype: list[ast.expr]
+    """
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return [*_union_parts(annotation.left), *_union_parts(annotation.right)]
+    return [annotation]
+
+
+def _restore_records(tree: ast.Module, path: str) -> dict[str, str]:
+    """the names a module calls the restore records by (:data:`_RESTORE_LEADS`), each onto the record: those it imports
+    from :data:`_RESTORE_MODULE` (by the name it imports them as), or, in that module, its own.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param path: its repo-relative posix path
+    :ptype path: str
+    :return: each name onto the record it names
+    :rtype: dict[str, str]
+    """
+    if path.endswith(_RESTORE_MODULE.replace(".", "/") + ".py"):
+        return {name: name for name in _RESTORE_LEADS}
+    return {
+        alias.asname or alias.name: alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == _RESTORE_MODULE and not node.level
+        for alias in node.names
+        if alias.name in _RESTORE_LEADS
+    }
+
+
 def _bound_argument(call: ast.Call, name: str, position: int | None) -> ast.expr | None:
     """the argument a call binds a parameter to: by its keyword, else at its position (none past a ``*args``).
 
@@ -1849,6 +2037,10 @@ def _helper_relations(tree: ast.Module) -> tuple[dict[int, frozenset[str]], dict
             parameters[id(function)] = frozenset(
                 argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
             )
+        elif owner is None and function.name in _RELATION_BUILDERS:
+            # a builder of a relation over the table it is handed (``newest_relation(table, read_as)``): its text over
+            # that table is judged where a read names the relation it builds
+            parameters[id(function)] = frozenset({_RELATION_BUILDERS[function.name]})
     calls = [
         (function, owner, node)
         for function, owner in definitions
@@ -1858,7 +2050,13 @@ def _helper_relations(tree: ast.Module) -> tuple[dict[int, frozenset[str]], dict
 
     def holds(argument: ast.expr | None, function: ast.AST, owner: ast.ClassDef | None) -> bool:
         if isinstance(argument, ast.Name):
-            return argument.id in parameters.get(id(function), frozenset())
+            if argument.id in parameters.get(id(function), frozenset()):
+                return True
+            # a local reading a held relation in its place, or a derived relation's text over one: the relation it
+            # is over (:func:`_wrapped_relation`, :func:`_derived_over`)
+            over = _wrapped_relation(argument, function)
+            over = _derived_over(argument, function) if over is None else over
+            return over is not None and holds(over, function, owner)
         return (
             isinstance(argument, ast.Attribute)
             and isinstance(argument.value, ast.Name)
@@ -2331,6 +2529,8 @@ class _ModuleWalk(ast.NodeVisitor):
         )
         #: the module's functions that hand a step their one parameter as its relation (:func:`_relation_wrappers`)
         self._relation_wrappers = _relation_wrappers(tree)
+        #: the names the module calls the restore records by (:data:`_RESTORE_LEADS`), each onto the record
+        self._restore_records = _restore_records(tree, path)
         #: where each relation a step names comes from (:mod:`~threetears.enforcement.no_whole_reads.flow`): a change
         #: relation through a name, an attribute or a container; a forwarder's parameter, judged at its call sites
         self._flow = RelationFlow(
@@ -4252,6 +4452,9 @@ class _ModuleWalk(ast.NodeVisitor):
         :rtype: None
         """
         statement: HelperStatement
+        if self._schema_prefix_sweep(node):
+            # a sweep of a TableSchema parameter's table by its own key prefix: keyed whatever table it is
+            return
         hits: dict[str, str] = {}
         # a judged finding of a call one site's values make is that site's: recorded where the caller passes them
         passed: dict[tuple[str, int, str, str], str] = {}
@@ -4272,6 +4475,9 @@ class _ModuleWalk(ast.NodeVisitor):
                     hits.setdefault(*unique)
             if self._schema_key_prefix(located):
                 # a read of a TableSchema parameter's table by its own key prefix: keyed whatever table it is
+                continue
+            if self._epoch_index_range(located):
+                # one range of the row-epoch index the table's declaration gives it: keyed whatever table it is
                 continue
             for statement in self._helper_statements(located):
                 if statement.sql is UNSEEN or statement.sql is None:
@@ -4392,6 +4598,216 @@ class _ModuleWalk(ast.NodeVisitor):
             and pinned.slice.upper is not None
             and ast.dump(pinned.slice.upper) == place
             and key_columns(pinned.value)
+        )
+
+    def _schema_prefix_sweep(self, call: ast.Call) -> bool:
+        """whether a sweep (``delete_before``) deletes from a :class:`TableSchema` parameter's table by that schema's
+        own key prefix, so it is keyed whatever table the caller hands it, as :meth:`_schema_key_prefix` reads a count
+        of one: its table ``p.name``, the rows named by its own key (``key=p.pk_columns`` or ``p.stored_key``), and
+        ``by=dict(zip(p.pk_columns[:n], values, strict=True))`` with ``n`` at least one as written (a positive integer,
+        or ``max(<a positive integer>, ...)``): ``strict``, exactly ``n`` columns pinned, the first at least, or the
+        call raises. Written as the call is, every argument a keyword but the table, never a name bound elsewhere.
+
+        :param call: the call, as written
+        :ptype call: ast.Call
+        :return: whether it is
+        :rtype: bool
+        """
+        if _final(call) != "delete_before" or any(given.arg is None for given in call.keywords):
+            return False
+        table = _bound_argument(call, "table", 0)
+        found = None if table is None else self._row_epoch_parameter(table)
+        if found is None or found[1] or not isinstance(table, ast.Attribute) or table.attr != "name":
+            return False
+        schema = found[0]
+
+        def own(node: ast.expr | None, *attributes: str) -> bool:
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr in attributes
+                and isinstance(node.value, ast.Name)
+                and node.value.id == schema
+            )
+
+        def at_least_one(node: ast.expr | None) -> bool:
+            if isinstance(node, ast.Constant):
+                return type(node.value) is int and node.value >= 1
+            return (
+                isinstance(node, ast.Call)
+                and _final(node) == "max"
+                and not node.keywords
+                and any(at_least_one(argument) for argument in node.args)
+            )
+
+        keywords = {given.arg: given.value for given in call.keywords}
+        if not own(keywords.get("key"), "pk_columns", "stored_key"):
+            return False
+        by = keywords.get("by")
+        if not (isinstance(by, ast.Call) and _final(by) == "dict" and len(by.args) == 1 and not by.keywords):
+            return False
+        zipped = by.args[0]
+        if not (isinstance(zipped, ast.Call) and _final(zipped) == "zip" and len(zipped.args) == 2):
+            return False
+        strict = [given.value for given in zipped.keywords if given.arg == "strict"]
+        if len(zipped.keywords) != 1 or not (isinstance(strict[0], ast.Constant) and strict[0].value is True):
+            return False
+        pinned = zipped.args[0]
+        return (
+            isinstance(pinned, ast.Subscript)
+            and own(pinned.value, "pk_columns")
+            and isinstance(pinned.slice, ast.Slice)
+            and pinned.slice.lower is None
+            and pinned.slice.step is None
+            and at_least_one(pinned.slice.upper)
+        )
+
+    def _row_epoch_parameter(self, node: ast.expr) -> tuple[str, frozenset[str]] | None:
+        """the parameter a relation's record names, and the attributes naming its row-epoch index's leading column,
+        when ``node`` is ``p.relation`` for a parameter ``p`` the enclosing function never rebinds, annotated a restore
+        record (:data:`_RESTORE_LEADS`, or a union of them); ``p.name`` for one annotated ``TableSchema`` answers no
+        attribute (its lead is named through its declaration: :meth:`_epoch_lead`).
+
+        :param node: the relation a read names
+        :ptype node: ast.expr
+        :return: the parameter and its record's lead attributes, or None
+        :rtype: tuple[str, frozenset[str]] | None
+        """
+        function = self._function_node
+        if function is None or not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)):
+            return None
+        name = node.value.id
+        if name not in kept_for(function, _never_rebound):
+            return None
+        arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+        annotated = [argument.annotation for argument in arguments if argument.arg == name]
+        if len(annotated) != 1 or annotated[0] is None:
+            return None
+        if node.attr == "name":
+            return (name, frozenset()) if _annotated_class(annotated[0]) == "TableSchema" else None
+        if node.attr != "relation":
+            return None
+        named = [
+            self._restore_records.get(part.id) if isinstance(part, ast.Name) else None
+            for part in _union_parts(annotated[0])
+        ]
+        if not named or any(record is None for record in named):
+            return None
+        return name, frozenset(lead for record in named if record is not None for lead in _RESTORE_LEADS[record])
+
+    def _epoch_lead(self, relation: ast.expr, column: ast.expr) -> bool:
+        """whether ``column`` names the leading column of the row-epoch index the table ``relation`` names carries:
+        a restore record's own (``table.scope`` of a ``VersionedTable``, ``table.bucket`` of a ``StampedTable``); or,
+        for a ``TableSchema`` parameter, its declared restore scope (``schema.row_epoch.scope``, set only by
+        ``row_versions``) or the bucket column (``BUCKET_COLUMN``, stored only on a ``ROW_STAMPED`` table).
+
+        :param relation: the relation the read names
+        :ptype relation: ast.expr
+        :param column: a column it pins
+        :ptype column: ast.expr
+        :return: whether it is
+        :rtype: bool
+        """
+        found = self._row_epoch_parameter(relation)
+        if found is None:
+            return False
+        name, leads = found
+        if not leads:
+            if isinstance(column, ast.Constant):
+                return column.value == BUCKET_COLUMN
+            return (
+                isinstance(column, ast.Attribute)
+                and column.attr == "scope"
+                and isinstance(column.value, ast.Attribute)
+                and column.value.attr == "row_epoch"
+                and isinstance(column.value.value, ast.Name)
+                and column.value.value.id == name
+            )
+        return (
+            isinstance(column, ast.Attribute)
+            and column.attr in leads
+            and isinstance(column.value, ast.Name)
+            and column.value.id == name
+        )
+
+    def _index_range_arguments(self, call: ast.Call) -> dict[str, ast.expr | None] | None:
+        """an index range read's arguments by :data:`_INDEX_RANGE_ARGUMENTS`' keywords, wherever the call passes them;
+        None for any other call, or one spreading its arguments (``*args``, ``**options``).
+
+        :param call: the call, its arguments resolved
+        :ptype call: ast.Call
+        :return: each argument, None where the call passes none
+        :rtype: dict[str, ast.expr | None] | None
+        """
+        positions = _INDEX_RANGE_READS.get(_final(call) or "")
+        if positions is None or any(given.arg is None for given in call.keywords):
+            return None
+        if any(isinstance(argument, ast.Starred) for argument in call.args):
+            return None
+        return {
+            keyword: _bound_argument(call, keyword, position)
+            for keyword, position in zip(_INDEX_RANGE_ARGUMENTS, positions, strict=True)
+        }
+
+    def _epoch_index_range(self, call: ast.Call) -> bool:
+        """whether a read is one range of the row-epoch index the table it names carries: every versioned table
+        (``row_versions``) carries ``(scope, epoch, key...)``, every stamped one (``ROW_STAMPED``) ``(epoch_bucket,
+        epoch)``, both declared by that DDL. So a read naming such a table (:meth:`_row_epoch_parameter`), pinning the
+        index's leading column (:meth:`_epoch_lead`) to one value and nothing else, and bounding the epoch from below
+        (a ``where=`` fragment ``t."epoch" >= $n``: each fragment is ANDed in its own parentheses, so the rest only
+        narrow) reads one range of that index, keyed. Its order, when written, starts at the epoch (the index's own
+        order after the pin); it takes no visibility clause and selects no expression (``Selected``), whose reads of
+        other relations would be judged on their own.
+
+        A read of such a table pinning no lead, pinning more, or with no epoch bound stays unseen, as before.
+
+        :param call: a keyed helper call, its arguments resolved
+        :ptype call: ast.Call
+        :return: whether it is
+        :rtype: bool
+        """
+        given = self._index_range_arguments(call)
+        if given is None:
+            return False
+        relation, by = given["table"], given["by"]
+        if relation is None or not (isinstance(by, ast.Dict) and len(by.keys) == 1):
+            return False
+        lead, value = by.keys[0], by.values[0]
+        if lead is None or not self._epoch_lead(relation, lead):
+            return False
+        if (isinstance(value, ast.Constant) and value.value is None) or (
+            isinstance(value, ast.Call) and _final(value) == "AnyOf"
+        ):
+            return False
+        visible = given["visible"]
+        if visible is not None and not (isinstance(visible, ast.Tuple | ast.List) and not visible.elts):
+            return False
+        columns = given["columns"]
+        if columns is not None and any(
+            isinstance(node, ast.Call) and _final(node) == "Selected" for node in walk_tree(columns)
+        ):
+            return False
+        order = given["order"]
+        if isinstance(order, ast.Tuple | ast.List):
+            first = order.elts[0] if order.elts else None
+            if not (
+                isinstance(first, ast.Call)
+                and _final(first) == "Sort"
+                and first.args
+                and _constant_text(first.args[0], self._envs[-1]) == EPOCH_COLUMN
+                and not any(keyword.arg == "expression" for keyword in first.keywords)
+            ):
+                return False
+        where = given["where"]
+        if not isinstance(where, ast.Tuple | ast.List):
+            return False
+        return any(
+            isinstance(element, ast.Call)
+            and _final(element) == "Fragment"
+            and element.args
+            and isinstance(element.args[0], ast.Constant)
+            and isinstance(element.args[0].value, str)
+            and _EPOCH_LOWER_BOUND.fullmatch(element.args[0].value) is not None
+            for element in where.elts
         )
 
     def _source_bound(self, call: ast.Call, statement: HelperStatement, site: ast.Call) -> bool:
@@ -5096,7 +5512,7 @@ class _ModuleWalk(ast.NodeVisitor):
             return ast.Call(func=ast.Name("dict", ast.Load()), args=[ast.Name("pk", ast.Load())], keywords=[])
         if isinstance(by, ast.Dict):
             keys: list[ast.expr | None] = [
-                key if key is None or isinstance(key, ast.Constant | ast.Call) else self._key_column(key)
+                key if key is None or isinstance(key, ast.Constant | ast.Call) else self._pinned_column(key)
                 for key in by.keys
             ]
             return ast.Dict(keys=keys, values=by.values)
@@ -5110,6 +5526,26 @@ class _ModuleWalk(ast.NodeVisitor):
                 )
                 return ast.Call(func=by.func, args=[zipped], keywords=[])
         return by
+
+    def _pinned_column(self, column: ast.expr) -> ast.expr:
+        """a pin's column named at run time, as :meth:`_key_column` judges it; one it reads as unsourced that names a
+        row-epoch index's leading column (:meth:`_epoch_lead`: ``table.scope``, ``schema.row_epoch.scope``) kept as
+        written, so :meth:`_epoch_index_range` can tell it. Either way the helper's statement reads it as the
+        run-time column it is (a predicate the walk cannot see).
+
+        :param column: the column
+        :ptype column: ast.expr
+        :return: it, as judged
+        :rtype: ast.expr
+        """
+        judged = self._key_column(column)
+        if not (isinstance(judged, ast.Name) and judged.id == "unsourced" and isinstance(column, ast.Attribute)):
+            return judged
+        owner = column.value.value if isinstance(column.value, ast.Attribute) else column.value
+        if not isinstance(owner, ast.Name):
+            return judged
+        relation = ast.Attribute(value=owner, attr="name" if owner is not column.value else "relation", ctx=ast.Load())
+        return column if self._epoch_lead(relation, column) else judged
 
     def _bound_shape(self, name: str) -> ast.Dict | ast.Tuple | ast.List | ast.Call | ast.IfExp | None:
         """the literal mapping or sequence the enclosing function binds ``name`` to, if it binds it exactly once and
@@ -6299,9 +6735,19 @@ class _ModuleWalk(ast.NodeVisitor):
             callee = _final(node)
             if callee in _RELATION_CALLS:
                 named = True
+            elif callee in _LIVE_READS:
+                # a read in the table's place (``relation(versions_read(conn, table), "r")``): the table it is over
+                over = _wrapped_relation(node, function)
+                if over is None:
+                    break
+                node = over
+                continue
             elif not (callee in _NAME_QUOTERS and len(node.args) == 1):
                 break
             node = node.args[0]
+        if isinstance(node, ast.Name) and (over := _wrapped_relation(node, function)) is not None:
+            # a local bound once to a read in a table's place, or a step of one relation over it: the table it is over
+            node = over
         if named and isinstance(node, ast.Subscript):
             # one relation of a mapping the helper is handed (``relation(tables[label], "r")``)
             node = node.value
@@ -7532,11 +7978,14 @@ def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str
                 definitions.setdefault(node.name, [a.arg for a in [*node.args.posonlyargs, *node.args.args]])
     found: dict[tuple[str, str], list[tuple[str, bool]]] = {}
     for relative, tree in modules:
+        # a CTE named by a string the module binds once (``_MOVED_ROWS``), in the statement defining it and in the
+        # argument passing it, is that string in both
+        strings = _module_strings(tree)
         for caller in walk_tree(tree):
             if not isinstance(caller, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
                 continue
             body = caller.body
-            ctes = _function_ctes(body) | _formatted_ctes(body)
+            ctes = _function_ctes(body) | _formatted_ctes(body, strings)
             for call in _own_nodes(body):
                 if not isinstance(call, ast.Call):
                     continue
@@ -7547,7 +7996,13 @@ def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str
                 params = parameters[1:] if parameters[:1] in (["self"], ["cls"]) else parameters
                 passed = [*zip(params, call.args, strict=False), *((k.arg, k.value) for k in call.keywords if k.arg)]
                 for parameter, value in passed:
-                    literal = value.value if isinstance(value, ast.Constant) and isinstance(value.value, str) else None
+                    literal = (
+                        value.value
+                        if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                        else strings.get(value.id)
+                        if isinstance(value, ast.Name)
+                        else None
+                    )
                     site = f"{relative}:{call.lineno}"
                     found.setdefault((name, parameter), []).append(
                         (site, literal is not None and literal.lower() in ctes)
@@ -8930,11 +9385,14 @@ def _module_named[T](module: str, per_module: dict[str, dict[str, T]]) -> dict[s
     )
 
 
-def _formatted_ctes(body: list[ast.stmt]) -> frozenset[str]:
-    """the CTE names a function's f-strings define (``f"WITH runs AS ({...})"``).
+def _formatted_ctes(body: list[ast.stmt], strings: dict[str, str] | None = None) -> frozenset[str]:
+    """the CTE names a function's f-strings define (``f"WITH runs AS ({...})"``), a name its module binds to a string
+    read as that string (``f"WITH {_MOVED_ROWS} AS ({...})"``).
 
     :param body: the function's statements
     :ptype body: list[ast.stmt]
+    :param strings: the module's strings by name (:func:`_module_strings`); none when None
+    :ptype strings: dict[str, str] | None
     :return: the names, lower-cased
     :rtype: frozenset[str]
     """
@@ -8942,7 +9400,7 @@ def _formatted_ctes(body: list[ast.stmt]) -> frozenset[str]:
         match.group(1).lower()
         for node in _own_nodes(body)
         if isinstance(node, ast.JoinedStr)
-        for match in _CTE_DEFINED.finditer(_string_text(node, {}) or "")
+        for match in _CTE_DEFINED.finditer(_string_text(node, strings or {}) or "")
     )
 
 

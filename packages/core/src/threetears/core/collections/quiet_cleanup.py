@@ -74,7 +74,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final, Protocol, runtime_checkable
@@ -950,7 +950,7 @@ class QuietCleanup:
         stopped = False
         for marker in markers:
             text, epoch = str(marker["prefix"]), int(marker[EPOCH_COLUMN])
-            prefix = self._prefix_of(schema, text)
+            values = self._prefix_of(schema, text)
             swept_all = False
             while not (swept_all or self._gate.stirred):
                 # marked cleanup's with its floor: the broker takes a run's rows only below a marker under F
@@ -962,7 +962,9 @@ class QuietCleanup:
                         column=EPOCH_COLUMN,
                         before=epoch,
                         page=self._batch,
-                        by=prefix,
+                        # the run's rows by the key prefix its marker names: the key's leading columns, the first at
+                        # least (a marker's text splits to one value at least; max says so where the rule reads it)
+                        by=dict(zip(schema.pk_columns[: max(1, len(values))], values, strict=True)),
                         most_pages=1,
                         conn=self._pool,
                     )
@@ -983,21 +985,22 @@ class QuietCleanup:
         return not stopped, removed
 
     @staticmethod
-    def _prefix_of(schema: TableSchema, text: str) -> Mapping[str, Any]:
-        """a run marker's prefix as its key columns' values: its text split by the separator, each typed.
+    def _prefix_of(schema: TableSchema, text: str) -> list[Any]:
+        """a run marker's prefix as the values of its key's leading columns: its text split by the separator, each
+        typed as its column, in key order.
 
         :param schema: the table
         :ptype schema: TableSchema
         :param text: the marker's prefix
         :ptype text: str
-        :return: key column -> value, the key's leading columns
-        :rtype: Mapping[str, Any]
+        :return: the values, one at least
+        :rtype: list[Any]
         :raises ValueError: when the prefix names more values than the key has columns
         """
         parts = text.split(_PREFIX_SEPARATOR)
         if len(parts) > len(schema.pk_columns):
             raise ValueError(f"{schema.name}: run marker prefix {text!r} names more values than its key's columns")
-        return {
-            name: _decoded(schema.column(name).column_type, part)
+        return [
+            _decoded(schema.column(name).column_type, part)
             for name, part in zip(schema.pk_columns, parts, strict=False)
-        }
+        ]
