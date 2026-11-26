@@ -46,13 +46,13 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
         # a collection's declared-table writer, over the table its subclass declares (its base writes none of its
         # own since its reads went through the keyed helpers, 2026-11-14)
         f"{_CORE}/collections/declared_table.py",
-        # the log keeper, its keys-unknown readers and the scope epochs: the epoch machinery every keyed read is told
-        # its keys by
-        f"{_CORE}/collections/change_notes.py",
+        # the log keeper and the scope epochs: the epoch machinery every keyed read is told its keys by
         f"{_CORE}/collections/log_keeper.py",
         f"{_CORE}/collections/scope_epochs.py",
-        # the copy machinery: a follower, its checkpoint and a complete copy, over the copied tables it is handed
+        # the copy machinery: a follower, its reads of its copy, its checkpoint and a complete copy, over the copied
+        # tables it is handed
         f"{_CORE}/collections/copy_follower.py",
+        f"{_CORE}/collections/copy_reads.py",
         f"{_CORE}/collections/copy_checkpoint.py",
         f"{_CORE}/collections/complete_copy.py",
         # the writer's recreation of a lost delta file, over the opted-in table it is handed: that change's keys by key,
