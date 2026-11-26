@@ -9,9 +9,10 @@ it out of every statement while the hub's response echoed the value sent.
 What a fake cannot prove: that the generated INSERT and fenced UPDATE really write the column to
 Postgres, and that a replica with an empty L1 reads it back from L3 as written.
 
-The table below is ``platform.datasources`` as the hub's migrations leave it (v001, v037, v042,
-v046, v053, v076). The hub-owned columns this Collection deliberately does not declare (``spec``,
-``face_*``, ``geo``) are part of it so the tests also show a Collection save leaves them alone.
+The table is built from the Collection's declaration (:mod:`.declared_tables`), not a hand-written copy of
+the hub's: the copy drifted when the table became stamped (``epoch``, ``gone``) and every save failed on a
+column it never had. The hub-owned columns this Collection deliberately does not declare (``spec``,
+``face_*``, ``geo``) are added beside it so the tests also show a Collection save leaves them alone.
 
 Uses the session-scoped ``db_container`` fixture; a checkout without docker skips cleanly.
 """
@@ -35,35 +36,20 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.datasources.collections import CapabilitySourceCollection
 from threetears.datasources.entities import CapabilitySourceEntity
 
+from .declared_tables import create_declared
+
 pytestmark = pytest.mark.integration
 
-_DATASOURCES_DDL = """
-CREATE TABLE datasources (
-    id uuid NOT NULL PRIMARY KEY,
-    name character varying(255) NOT NULL,
-    datasource_type character varying(50),
-    connection_config text,
-    allowed_schemas jsonb DEFAULT '[]'::jsonb NOT NULL,
-    status character varying(20) NOT NULL,
-    date_created timestamp with time zone NOT NULL,
-    date_updated timestamp with time zone NOT NULL,
-    access_mode character varying(20) DEFAULT 'read'::character varying NOT NULL,
-    customer_id uuid,
-    owner_agent_id uuid,
-    schema_name character varying(255),
-    visibility text DEFAULT 'private'::text NOT NULL,
-    origin_datasource_id uuid,
-    kind character varying(50) NOT NULL DEFAULT 'datasource',
-    ingress_agent_id uuid,
-    spec text,
-    face_api boolean NOT NULL DEFAULT FALSE,
-    face_mcp boolean NOT NULL DEFAULT FALSE,
-    face_platform_tool boolean NOT NULL DEFAULT TRUE,
-    knowledge_required boolean NOT NULL DEFAULT FALSE,
-    geo jsonb,
-    require_documented_tables boolean DEFAULT FALSE NOT NULL
+#: the hub-owned columns of ``platform.datasources`` this Collection deliberately does not declare,
+#: added beside the declared table so a save is shown to leave them alone
+_HUB_OWNED_COLUMNS = (
+    "ALTER TABLE datasources"
+    " ADD COLUMN spec text,"
+    " ADD COLUMN face_api boolean NOT NULL DEFAULT FALSE,"
+    " ADD COLUMN face_mcp boolean NOT NULL DEFAULT FALSE,"
+    " ADD COLUMN face_platform_tool boolean NOT NULL DEFAULT TRUE,"
+    " ADD COLUMN geo jsonb"
 )
-"""
 
 
 @dataclass
@@ -111,7 +97,8 @@ async def sources(db_container: str) -> AsyncIterator[_Sources]:
     )
     assert pool is not None
     try:
-        await pool.execute(_DATASOURCES_DDL)
+        await create_declared(pool, CapabilitySourceCollection.schema)
+        await pool.execute(_HUB_OWNED_COLUMNS)
         yield _Sources(pool)
     finally:
         await pool.close()
