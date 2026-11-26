@@ -266,15 +266,15 @@ _REPAIR_TEMPLATE: Final = (
 _SENTENCE_BREAK: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
 
 #: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
-#: shown, so part of the identity.
+#: shown, so part of the identity. ``{kind}`` names what a quote was cut from: a passage, or a key fact.
 _FAULTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "twice": "it cites {refs} more than once; cite each piece of evidence once",
         "suspect": "it is marked suspect and cites evidence; suspect means no evidence given bears on the claim",
         "unknown_ref": "it cites {ref}, which is no evidence shown here; cite the refs listed under Evidence",
-        "no_quote": "its citation of {ref} quotes nothing; a passage is cited with the sentence or row that states it",
+        "no_quote": "its citation of {ref} quotes nothing; a {kind} is cited with the sentence or row that states it",
         "not_shown": (
-            "its quote of {ref} is not in passage {ref} as shown; a quote is one unbroken stretch of the passage it "
+            "its quote of {ref} is not in {kind} {ref} as shown; a quote is one unbroken stretch of the {kind} it "
             "cites, copied as it is written"
         ),
         "too_long": "its quote of {ref} runs {length} characters; a quote is one sentence or row of at most {cap}",
@@ -325,6 +325,9 @@ _STEPS: Final[tuple[_Step, ...]] = ("truth", "ground")
 type WebOutcome = Literal["true", "false", "inconclusive", "skipped_cap", "lost"]
 
 type Verdict = Literal["supported", "contradicted", "unverifiable", "true_ungrounded"]
+
+#: What a checked quote was cut from, as a failure names it to the model.
+type QuotedKind = Literal["passage", "key fact"]
 
 
 class _Cited(EvalBaseModel):
@@ -668,15 +671,16 @@ class _Shown:
     def passage(self, ref: str) -> _Passage | None:
         return next((passage for shown, passage in self.passages if shown == ref), None)
 
-    def quotable(self, ref: str) -> str:
-        """The text a citation of ``ref`` quotes: a key fact's line as shown after its ref, or a passage's text."""
+    def quotable(self, ref: str) -> tuple[str, QuotedKind]:
+        """The text a citation of ``ref`` quotes, and what it is: a key fact's line as shown after its ref, or a
+        passage's text."""
         fact = next(((entity, fact) for shown, entity, fact in self.facts if shown == ref), None)
         if fact is not None:
-            return _fact_line(*fact)
+            return _fact_line(*fact), "key fact"
         passage = self.passage(ref)
         if passage is None:
             raise KeyError(ref)
-        return passage.document.text[passage.start : passage.end]
+        return passage.document.text[passage.start : passage.end], "passage"
 
     def numbered(self) -> str:
         """The facts and passages as a verify prompt numbers them, one block each: evidence, not a tool's result."""
@@ -1333,7 +1337,7 @@ class ClaimVerifier:
                 continue
             # A key fact's citation is held to the quote a passage's is: its support reads supported before anything
             # else, so it must name, inside the fact, the words that state the value it is cited for.
-            citation, fault = _quoted_citation(ref, cited, shown.quotable(ref))
+            citation, fault = _quoted_citation(ref, cited, *shown.quotable(ref))
             if fault is not None:
                 faults.append(fault)
             elif citation is not None:
@@ -1481,13 +1485,15 @@ def _fact_line(entity: str, fact: ReferenceFact) -> str:
     return _FACT_LINE.format(entity=entity, claim=fact.claim)
 
 
-def _quoted_citation(ref: str, cited: _Cited, shown: str) -> tuple[ClaimCitation | None, str | None]:
+def _quoted_citation(ref: str, cited: _Cited, shown: str, kind: QuotedKind) -> tuple[ClaimCitation | None, str | None]:
     """A citation checked: its quote a stretch of the text shown under ``ref`` (a passage's, or a key fact's line),
     its subject and value inside that quote and in one sentence or row of it.
 
     :return: The stored citation, or the failure named.
     """
-    checked, fault = check_quote(ref, quote=cited.quote, subject=cited.subject, value=cited.value, shown=shown)
+    checked, fault = check_quote(
+        ref, quote=cited.quote, subject=cited.subject, value=cited.value, shown=shown, kind=kind
+    )
     if checked is None:
         return None, fault
     return (
@@ -1513,25 +1519,34 @@ class CheckedQuote:
 
 
 def check_quote(
-    ref: str, *, quote: str | None, subject: str | None, value: str | None, shown: str
+    ref: str,
+    *,
+    quote: str | None,
+    subject: str | None,
+    value: str | None,
+    shown: str,
+    kind: QuotedKind = "passage",
 ) -> tuple[CheckedQuote | None, str | None]:
     """Check one quote of a text a call was shown: one unbroken stretch of it, at most
     :data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, with its subject and value inside it and no
-    sentence or row break between them. The rule every quote a claim is decided by follows, a passage's or a web
-    window's.
+    sentence or row break between them. The rule every quote a claim is decided by follows: a passage's, a key fact's
+    (its line as the call was shown it after its ref, ``A key fact about <entity>: <fact>``) or a web window's.
 
-    :param ref: How the call cited the text (``S1``, ``W2``), for the failure named.
+    :param ref: How the call cited the text (``S1``, ``K1``, ``W2``), for the failure named.
     :param quote: The quote, as the model wrote it.
     :param subject: The words of it the model says name the claim's subject.
     :param value: The words of it the model says state the value.
-    :param shown: The text the call was shown under ``ref``, and nothing more of its document.
+    :param shown: The text the call was shown under ``ref``, and nothing more: a passage or window's text, never more
+        of its document, or a key fact's line.
+    :param kind: What ``shown`` is, as a failure names it: ``passage`` (a web window is named one too) or
+        ``key fact``.
     :return: The checked quote, or the failure named, as a repair tells it.
     """
     if quote is None or not quote.strip():
-        return None, _FAULTS["no_quote"].format(ref=ref)
+        return None, _FAULTS["no_quote"].format(ref=ref, kind=kind)
     span = verbatim_span(quote, shown)
     if span is None:
-        return None, _FAULTS["not_shown"].format(ref=ref)
+        return None, _FAULTS["not_shown"].format(ref=ref, kind=kind)
     held = shown[span[0] : span[1]]
     if len(held) > CLAIM_QUOTE_CHARS:
         return None, _FAULTS["too_long"].format(ref=ref, length=len(held), cap=CLAIM_QUOTE_CHARS)

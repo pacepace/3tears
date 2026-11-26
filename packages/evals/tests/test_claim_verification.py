@@ -1130,25 +1130,36 @@ _CONTRADICTED_BY_THE_KEY = _cite("K1", "contradicts", quote=_TOWN.fact, subject=
 @pytest.mark.parametrize(
     ("first", "failure"),
     [
-        (_cite("K1"), "its citation of K1 quotes nothing"),
+        (_cite("K1"), "its citation of K1 quotes nothing; a key fact is cited with the sentence or row"),
+        (
+            _cite("K1", quote="Tamsin Vell came from Saltmarsh.", subject=_TOWN.entity, value="Saltmarsh"),
+            "its quote of K1 is not in key fact K1 as shown; a quote is one unbroken stretch of the key fact it cites",
+        ),
         (_cite("K1", quote=_TOWN.fact, subject=_TOWN.entity), "its citation of K1 names no value"),
         (
             _cite("K1", quote=_TOWN.fact, subject=_TOWN.entity, value="Saltmarsh"),
             "its value for K1 is not in its quote",
         ),
     ],
-    ids=["quotes-nothing", "names-the-subject-only", "names-a-value-the-fact-does-not-state"],
+    ids=[
+        "quotes-nothing",
+        "quotes-what-the-fact-does-not-say",
+        "names-the-subject-only",
+        "names-a-value-the-fact-does-not-state",
+    ],
 )
 async def test_a_wrong_home_town_cited_as_the_keys_support_is_asked_again_and_reads_contradicted(
     first: dict[str, Any], failure: str
 ) -> None:
     """Support from a key fact names, inside the fact as shown, the words that state the value: a citation that quotes
-    nothing, names only the subject, or names the claim's own value where the fact states another is asked again."""
+    nothing, quotes what the fact does not say, names only the subject, or names the claim's own value where the fact
+    states another is asked again, its failure naming a key fact as one."""
     client = _FakeScriptedClient([_batch(_answer(0, first)), _repair(_CONTRADICTED_BY_THE_KEY)])
 
     verification = await _verify(client, (_TOWN.claim,), key=_TOWN.key, documents=())
 
     assert failure in client.calls[1]["user"]
+    assert "passage K1" not in client.calls[1]["user"], "a key fact is named as one, never as a passage"
     assert _grade((_TOWN.claim,), verification).claims[0].verdict == _TOWN.label == "contradicted"
     assert "A key fact (K) is quoted" in client.calls[0]["system"]
 
@@ -1564,7 +1575,7 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 #: the shipped prompts, schemas, selection and batch rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:fdeb461d61f3"
+_PINNED_IDENTITY = "scripted/verify|claimverify:4950ac981b78"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:
