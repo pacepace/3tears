@@ -67,6 +67,11 @@ from threetears.core.data.migrations.helpers import (
     replace_check_constraint,
     replace_primary_key,
 )
+from threetears.core.data.migrations.live_unique import (
+    LiveUniqueRefusedError,
+    make_unique_index_live_only,
+    make_unique_indexes_live_only,
+)
 from threetears.core.data.migrations.preview import (
     CapturedStatement,
     PreviewStore,
@@ -96,6 +101,7 @@ __all__ = [
     "DriftReport",
     "DuplicateVersionError",
     "InboundFk",
+    "LiveUniqueRefusedError",
     "LedgerMismatchError",
     "MigrationError",
     "MigrationFailedError",
@@ -112,6 +118,8 @@ __all__ = [
     "add_check_constraint",
     "add_column_with_backfill",
     "add_index",
+    "make_unique_index_live_only",
+    "make_unique_indexes_live_only",
     "add_partition_column",
     "database_ddl_lock",
     "ddl_lock_key",
