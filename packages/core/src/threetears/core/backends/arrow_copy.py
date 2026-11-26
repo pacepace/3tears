@@ -79,6 +79,7 @@ __all__ = [
     "arrow_copy_available",
     "arrow_python_columns",
     "arrow_python_rows",
+    "column_min",
     "copy_rows_arrow",
     "first_request_rows",
     "framed_copy_request",
@@ -529,6 +530,20 @@ def with_constant_columns(table: Any, values: Mapping[str, datetime | int]) -> A
         position = table.schema.get_field_index(name)
         table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)
     return table
+
+
+def column_min(table: Any, name: str) -> Any:
+    """the least value of one column of an Arrow table, read by Arrow (never a Python value a row): None for a table of
+    no rows or a column all null. How a write reads its rows' lowest row epoch, the stamp its request names.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param name: the column
+    :ptype name: str
+    :return: the least value, as Python, or None
+    :rtype: Any
+    """
+    return pc.min(table.column(name), memory_pool=_POOL).as_py()
 
 
 def planned_write_table(

@@ -85,6 +85,8 @@ __all__ = [
     "GENERATION_BY_TRIGGER",
     "GENERATION_UNAVAILABLE_ERROR_CODE",
     "HUB_CAPABILITIES_FIELD",
+    "STAMPS_EPOCH_FIELD",
+    "STAMP_S_MIN_FIELD",
     "BrokerGenerationSource",
     "GenerationReader",
     "collecting_advanced_generations",
@@ -107,6 +109,8 @@ __all__ = [
     "note_advanced_generation",
     "record_reply_generations",
     "reply_generations_since",
+    "stamp_fields",
+    "stamping_write",
 ]
 
 _logger = get_logger(__name__)
@@ -362,6 +366,66 @@ def named_commit_s_min() -> int | None:
     :rtype: int | None
     """
     return _COMMIT_S_MIN.get()
+
+
+#: the request field saying whether the write a request carries stamps row epochs: ``true`` for rows of a table that
+#: declares a row epoch (``TableSchema.stamps_epoch``: ``row_versions`` or ``ROW_STAMPED``), each carrying its write's
+#: stamp, ``false`` for every other request. Sent on every L3 request this backend makes (``l3.query``, ``l3.batch``,
+#: ``l3.load_files`` and every ``l3.tx.*`` statement, the copy and Arrow door and ``delete_prefixes`` among them):
+#: only 3tears knows which tables stamp, so it says so, and the broker reads it rather than guessing from the
+#: catalog (a column named ``epoch`` is no row epoch: ``scope_epochs`` holds one). The broker, for a request that
+#: says ``true``: rises a stamped table's epoch on its upsert (``rising_epoch_assignment``), marks its transaction
+#: stamped, so its commit must name :data:`COMMIT_S_MIN_FIELD`, and names :data:`STAMP_S_MIN_FIELD` on every epoch
+#: record of a write it commits itself (``l3.query``, ``l3.batch``, ``l3.load_files``). A request that carries an
+#: epoch and says neither is refused (the release is an outage-window cutover: no pod sends the older form). The hub
+#: imports this name.
+STAMPS_EPOCH_FIELD: Final = "stamps_epoch"
+
+#: beside :data:`STAMPS_EPOCH_FIELD` ``true``, the lowest row epoch the request's rows carry: one BIGINT. The same
+#: name as :data:`COMMIT_S_MIN_FIELD`, on purpose: on a request the broker commits itself it is that commit's
+#: ``s_min``; inside a transaction the commit's own (the transaction's lowest) is never above it. The hub imports
+#: this name.
+STAMP_S_MIN_FIELD: Final = "s_min"
+
+#: the lowest row epoch the write being sent in this context stamps (:func:`stamping_write`); None for a write that
+#: stamps none
+_STAMPED_WRITE: ContextVar[int | None] = ContextVar("threetears_stamped_write", default=None)
+
+
+@contextmanager
+def stamping_write(s_min: int | None) -> Iterator[None]:
+    """send every L3 request made inside this block as a stamped write whose rows' lowest row epoch is ``s_min``
+    (:data:`STAMPS_EPOCH_FIELD`, :data:`STAMP_S_MIN_FIELD`); None sends them unstamped. Replaces what an enclosing
+    block named. The one place a write says it stamps: the store's writes of a table that declares a row epoch enter
+    it around their requests (``SqlL3Backend``), and every request's payload reads it (:func:`stamp_fields`).
+
+    :param s_min: the lowest stamp the block's rows carry, a positive BIGINT; None when they carry none
+    :ptype s_min: int | None
+    :return: a context in which the requests say so
+    :rtype: Iterator[None]
+    :raises ValueError: when ``s_min`` is no row epoch
+    """
+    if s_min is not None and not 0 < s_min < 1 << 63:
+        raise ValueError(f"a stamped write's s_min is a row epoch, a positive BIGINT: got {s_min}")
+    token = _STAMPED_WRITE.set(s_min)
+    try:
+        yield
+    finally:
+        _STAMPED_WRITE.reset(token)
+
+
+def stamp_fields() -> dict[str, Any]:
+    """the fields every L3 request carries to say whether its write stamps row epochs, as the enclosing
+    :func:`stamping_write` named it: ``{stamps_epoch: false}``, or ``{stamps_epoch: true, s_min: <lowest>}``. A request
+    measured before it is sent (a bulk write's batches) is measured inside the same block, so it is sized exactly.
+
+    :return: the fields, a fresh dict the caller merges into its payload
+    :rtype: dict[str, Any]
+    """
+    s_min = _STAMPED_WRITE.get()
+    if s_min is None:
+        return {STAMPS_EPOCH_FIELD: False}
+    return {STAMPS_EPOCH_FIELD: True, STAMP_S_MIN_FIELD: s_min}
 
 
 #: where the advances made while a commit settles in this context note the token each wrote, by table
