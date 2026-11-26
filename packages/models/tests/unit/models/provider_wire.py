@@ -29,6 +29,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+import openrouter
+from threetears.models import DEFAULT_CHAT_MODEL
+from threetears.models.providers.anthropic import create_anthropic_chat
+from threetears.models.providers.openai import create_openai_chat
+from threetears.models.providers.openrouter import create_openrouter_chat
 
 __all__ = [
     "AnthropicMessagesWire",
@@ -191,8 +196,6 @@ def openai_model(wire: ChatCompletionsWire, model_name: str = "gpt-4o", **settin
     :return: the chat model
     :rtype: Any
     """
-    from threetears.models.providers.openai import create_openai_chat
-
     transport = httpx.MockTransport(wire.handle)
     return create_openai_chat(
         model_name,
@@ -218,10 +221,6 @@ def openrouter_model(
     :return: the chat model
     :rtype: Any
     """
-    import openrouter
-
-    from threetears.models.providers.openrouter import create_openrouter_chat
-
     transport = httpx.MockTransport(wire.handle)
     sdk = openrouter.OpenRouter(
         api_key="sk-or-test",
@@ -390,9 +389,6 @@ def anthropic_model(base_url: str, model_name: str | None = None, **settings: An
     :return: the chat model
     :rtype: Any
     """
-    from threetears.models import DEFAULT_CHAT_MODEL
-    from threetears.models.providers.anthropic import create_anthropic_chat
-
     return create_anthropic_chat(
         model_name or DEFAULT_CHAT_MODEL, "sk-ant-api03-test", base_url=base_url, max_retries=0, **settings
     )

@@ -32,19 +32,18 @@ which is what check 4 asks: the new facts arrive as additive
 
 from __future__ import annotations
 
-import json
 import ssl
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 import httpx
-from bs4 import BeautifulSoup
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 from threetears.agent.tools import ToolExecutor
 from threetears.agent.tools.builtin.web_fetch import create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import create_web_search_tool
+from threetears.core.process_workers import ProcessWorkers
 from threetears.models import LlmPurpose, create_chat_model
 from threetears.observe import contain, get_logger
 from threetears.search.aggregate import aggregate
@@ -57,6 +56,7 @@ from threetears.search.contracts import (
 )
 
 from .llm_retry import StructuredCallExhaustedError, bounded_retry_structured_call_or_raise
+from .page_structure import page_structure
 
 __all__ = [
     "DEFAULT_PAGE_FINDER_MODEL_ID",
@@ -86,7 +86,9 @@ _VERIFY_TIMEOUT_SECONDS = 15.0
 #: defect 7, which the gutting removed from ``web_fetch``; it survived here
 #: because this is scrape's own fetch rather than the leaf's.
 _VERIFY_MAX_BYTES = 2 * 1024 * 1024
-_DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".xlsx", ".csv")
+
+#: the worker a candidate page's structure is read in (:mod:`threetears.scrape.page_structure`): made at its first page
+_STRUCTURE_WORKERS: Final = ProcessWorkers(workers=1, name="page-finder page structure", process_name="3t-page-find")
 
 # Verified backends only -- a stateless structural check can't tell whether a page needs
 # JS rendering (camoufox) or an authenticated in-session XHR (network_capture), so this
@@ -374,8 +376,8 @@ def _all_notices(projections: list[SearchResultsMetadata]) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def _decode(raw: bytes, declared_charset: str | None) -> str:
-    """Decode a fetched body, tolerating a charset Python has never heard of.
+def _encoding(declared_charset: str | None) -> str:
+    """The codec to decode a fetched body with: its declared charset when Python knows it, UTF-8 otherwise.
 
     ``httpx`` hands back the ``charset=`` parameter verbatim; it never checks it
     against the codec registry. A server declaring ``charset=utf8mb4`` -- a real
@@ -388,21 +390,25 @@ def _decode(raw: bytes, declared_charset: str | None) -> str:
 
     An unknown charset falls back to UTF-8 rather than refusing: the caller
     wants to know whether the page has a table, and every marker that answers
-    that is ASCII.
+    that is ASCII. Looked up here, in the serving process, so the warning is in
+    its log; the decode itself is the worker's (:func:`page_structure`).
 
-    :param raw: the body bytes, already capped
-    :ptype raw: bytes
     :param declared_charset: the charset the response declared, if any
     :ptype declared_charset: str | None
-    :return: the decoded text, never raising
+    :return: a codec name :meth:`bytes.decode` accepts
     :rtype: str
     """
     if declared_charset:
         try:
-            return raw.decode(declared_charset, errors="replace")
+            # one byte decoded, as the body will be: LookupError for a name Python does not know and for a codec
+            # that is not a text encoding (``base64``, ``rot13``). Not an empty one: ``b"".decode`` answers ``""``
+            # without looking the codec up
+            b"a".decode(declared_charset, errors="replace")
         except LookupError:
             log.warning("page-finder ignoring unknown declared charset %r; decoding as utf-8", declared_charset)
-    return raw.decode("utf-8", errors="replace")
+        else:
+            return declared_charset
+    return "utf-8"
 
 
 def _unfetched(url: str, exc: Exception) -> tuple[bool, str, str]:
@@ -494,51 +500,13 @@ async def _verify_candidate_page(
     truncated = read > max_bytes
     raw = b"".join(chunks)[:max_bytes]
 
-    if "json" in content_type:
-        # A truncated body is not parseable JSON, so this correctly declines to
-        # call a cut-off document an API rather than guessing at the missing half.
-        try:
-            body = json.loads(raw)
-        except ValueError:
-            body = None
-        has_list = isinstance(body, list) or (
-            isinstance(body, dict) and any(isinstance(v, list) for v in body.values())
-        )
-        if has_list:
-            return True, "api", "response is JSON containing a list -- looks like a real API"
-
-    # Decoded with the charset the server declared, falling back to UTF-8, and
-    # never strictly: a page whose bytes do not match its declared charset (or
-    # that got cut mid-character at the cap) must still be inspectable for
-    # structure. It always is, because every marker below -- <table>, <tr>, href
-    # -- is ASCII, so structure detection survives text this cannot decode.
-    text = _decode(raw, declared_charset)
-    soup = BeautifulSoup(text, "html.parser")
-
-    # Table checked before document link: a real page can carry an incidental PDF link
-    # (privacy policy, a related-regulations reference) alongside its actual notices table --
-    # live-verified against Maryland's real WARN page, which has exactly this shape. A real
-    # table is the stronger, more specific signal of "this is the actual data source."
-    for table in soup.find_all("table"):
-        if len(table.find_all("tr")) >= 2:
-            return True, "nodriver", "found a real HTML table with multiple rows"
-
-    for link in soup.find_all("a", href=True):
-        href = str(link["href"]).lower()
-        if href.endswith(_DOCUMENT_EXTENSIONS):
-            return True, "document", f"found a document link ({href})"
-
-    # "Nothing in the part I read" is a weaker claim than "nothing on the page",
-    # and a note that conflated them would send the next reader looking for a
-    # structure bug that is really a size cap.
-    if truncated:
-        return (
-            False,
-            "nodriver",
-            f"no table, document link, or JSON list in the first {max_bytes} bytes "
-            "of the page, which was longer than the verification cap",
-        )
-    return False, "nodriver", "no table, document link, or JSON list found on the fetched page"
+    # the parse in a worker process: on the loop a 2 MiB page held it 2.4 s (page_structure's docstring). Always
+    # there, never inline for a small page: this runs once per candidate at discovery time, so the worker's round
+    # trip (a fraction of a millisecond, keyed/binding.py's measure) costs nothing anyone waits on.
+    verdict: tuple[bool, str, str] = await _STRUCTURE_WORKERS.run(
+        page_structure, raw, content_type, _encoding(declared_charset), truncated, max_bytes
+    )
+    return verdict
 
 
 async def find_target_page(

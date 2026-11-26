@@ -298,6 +298,11 @@ async def test_the_attempt_limiter_resets_a_lapsed_window_after_other_keys_write
 # --- cost: the store grows with its keys, never rebuilding everything per write ---
 
 
+#: operations a turn in the cost test: about 4 ms of loop at 4 us each, well under the stall limit; a yield
+#: costs microseconds, so one every thousand operations leaves the per-operation figure the store's own
+_OPS_A_TURN = 1_000
+
+
 async def test_fifty_thousand_puts_then_takes_stay_cheap_per_operation() -> None:
     """50,000 live keys written then taken: amortised well under 25 us per operation.
 
@@ -311,11 +316,17 @@ async def test_fifty_thousand_puts_then_takes_stay_cheap_per_operation() -> None
     keys = [f"state-{n}" for n in range(50_000)]
     payload = {"n": 1}
 
+    # The loop let go every _OPS_A_TURN operations, as a service's callers do (each request its own turn): the
+    # store never suspends, so 100,000 operations in one turn held the loop 0.65 s, past the stall guard's limit.
     started = time.perf_counter()
-    for key in keys:
+    for n, key in enumerate(keys, 1):
         await store.put(key, payload, ttl=ttl)
-    for key in keys:
+        if n % _OPS_A_TURN == 0:
+            await asyncio.sleep(0)
+    for n, key in enumerate(keys, 1):
         assert await store.take(key) == payload
+        if n % _OPS_A_TURN == 0:
+            await asyncio.sleep(0)
     per_op = (time.perf_counter() - started) / (2 * len(keys))
 
     assert await store.get(keys[0]) is None

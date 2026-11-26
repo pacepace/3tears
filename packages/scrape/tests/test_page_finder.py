@@ -1202,6 +1202,15 @@ class TestUnknownDeclaredCharset:
 
         assert result.verified is True
 
+    async def test_a_codec_that_is_not_a_text_encoding_falls_back_too(self) -> None:
+        # base64 is a codec Python knows, but not a text encoding: bytes.decode refuses it
+        # with LookupError like an unknown name, and the check that picks the decoding must too.
+        body = ("<html><body>" + _TABLE.format("data") + "</body></html>").encode()
+
+        result = await _verify(body, {"content-type": "text/html; charset=base64"})
+
+        assert result.verified is True
+
 
 class TestEverySearchFailed:
     """Whether an empty run is blamed on the provider, as the verification note reports it."""
