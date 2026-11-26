@@ -34,12 +34,12 @@ packages/conversations/src/threetears/conversations/folder_collection.py:folders
 packages/core/src/threetears/core/collections/base.py:_ABSENT_MARKER_TABLE EVICTABLE
 packages/core/src/threetears/core/collections/cleanup_progress.py:CLEANUP_PROGRESS_TABLE EVICTABLE
 packages/core/src/threetears/core/collections/flush.py:write_buffer KEEP
-packages/core/src/threetears/core/collections/run_markers.py:RUN_MARKERS_TABLE EVICTABLE
+packages/core/src/threetears/core/collections/run_markers.py:threetears_run_markers EVICTABLE
 packages/core/src/threetears/core/collections/scan_cache.py:_DEPS_TABLE KEEP
 packages/core/src/threetears/core/collections/scan_cache.py:collection_scan_cache EVICTABLE
 packages/core/src/threetears/core/collections/schema_backed.py:self.name PASSED_ON
 packages/core/src/threetears/core/collections/scope_epochs.py:name KEEP
-packages/core/src/threetears/core/collections/tenant_moves.py:TENANT_MOVES_TABLE EVICTABLE
+packages/core/src/threetears/core/collections/tenant_moves.py:threetears_tenant_moves EVICTABLE
 packages/core/src/threetears/core/collections/versioned_answers.py:table_name EVICTABLE
 packages/core/src/threetears/core/coordination/source_token.py:name EVICTABLE
 packages/core/src/threetears/core/coordination/tables.py:coordination_claims KEEP
