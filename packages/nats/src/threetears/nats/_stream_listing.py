@@ -8,8 +8,8 @@ listing is request and reply only:
 - :func:`stream_subjects` -- the stream's subjects matching a filter, each with its message count, from
   ``STREAM.INFO`` (one answer carries at most the server's cap of subjects; past it the next page is asked for by
   ``offset``, which nats-py's ``stream_info`` cannot ask, so that page is a request of its own);
-- :func:`latest_messages` -- each subject's latest message by a subject-carried ``DIRECT.GET``, a bounded number
-  in flight at once.
+- :func:`latest_messages` -- each subject's latest message by a subject-carried ``DIRECT.GET``, a fixed set of
+  workers each reading its share, so a bounded number is in flight at once.
 
 Both are verbs every bucket grant already carries (bind, and a read by subject), so a listing needs no consumer
 grant at all.
@@ -21,6 +21,7 @@ import asyncio
 import json
 from collections.abc import Callable, Iterable
 from datetime import timedelta
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
 from nats.js.errors import APIError, NotFoundError
@@ -175,27 +176,36 @@ async def latest_messages(
         ungranted read is never answered)
     """
     js = client.jetstream_context()
-    limit = asyncio.Semaphore(_READS_IN_FLIGHT)
 
-    async def _read(subject: str) -> RawStreamMsg | None:
-        async with limit:
+    async def _reads(share: list[str]) -> list[RawStreamMsg]:
+        """one worker's share of the subjects, read one at a time, its own list of what it read."""
+        found: list[RawStreamMsg] = []
+        for subject in share:
             try:
                 message: RawStreamMsg = await run_bounded(
-                    lambda: js.get_last_msg(stream, subject, direct=True),
+                    partial(js.get_last_msg, stream, subject, direct=True),
                     timeout=timeout_seconds,
                     what=f"direct read of {subject}",
                 )
             except NotFoundError:
                 # NOSILENT: the subject's messages went after it was listed; a listing leaves it out
-                return None
-            return message
+                continue
+            found.append(message)
+        return found
 
-    # every read runs to its own end (each is bounded), so a failure leaves none of them running behind the caller
-    read = await asyncio.gather(*(_read(subject) for subject in subjects), return_exceptions=True)
+    # WHY a fixed set of workers, never a task a subject (2026-11-26): a task a subject made a bucket's whole listing
+    # in one turn of the loop before the first read was sent; 100,003 keys held the loop 1.6 s creating them
+    # (test_kv_listing's test_keys_past_the_servers_subject_cap_are_read_from_the_next_page under the loop-stall
+    # check). Each worker reads its own share (every _READS_IN_FLIGHT-th subject), so at most that many reads are in
+    # flight and no state is shared between them. Every worker runs to its own end (each read is bounded), so a
+    # failure leaves none of them running behind the caller
+    listed = list(subjects)
+    shares = [listed[start::_READS_IN_FLIGHT] for start in range(min(_READS_IN_FLIGHT, len(listed)))]
+    read = await asyncio.gather(*(_reads(share) for share in shares), return_exceptions=True)
     failed = next((outcome for outcome in read if isinstance(outcome, BaseException)), None)
     if failed is not None:
         raise failed
     return sorted(
-        (message for message in read if message is not None and not isinstance(message, BaseException)),
+        (message for found in read if not isinstance(found, BaseException) for message in found),
         key=lambda message: int(message.seq or 0),
     )
