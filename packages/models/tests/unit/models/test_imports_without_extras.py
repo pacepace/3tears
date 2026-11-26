@@ -1,8 +1,8 @@
 """The package imports without its optional extras, and building a model that needs one names it.
 
 Every provider module imports its backend when it loads, an optional extra's under a guard. A host
-without the ``claude-cli`` or ``voyageai`` extra must still import :mod:`threetears.models`, and the
-first call that needs the missing extra must raise an ``ImportError`` saying which extra to install.
+without the ``claude-cli``, ``voyageai`` or ``prometheus`` extra must still import :mod:`threetears.models`,
+and the first call that needs the missing extra must raise an ``ImportError`` saying which extra to install.
 
 Each check runs in a fresh interpreter with the extra's modules refused at import, as an install
 without the extra refuses them.
@@ -78,6 +78,27 @@ def test_voyageai_embeddings_without_the_voyageai_extra_name_the_extra() -> None
             assert "3tears-models[voyageai]" in str(exc), str(exc)
         else:
             raise AssertionError("a VoyageAI embedding was built without the extra")
+        print("refused")
+        """,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "refused"
+
+
+def test_key_pool_metrics_without_the_prometheus_extra_name_the_extra() -> None:
+    result = _refusing(
+        ("prometheus_client",),
+        """
+        import threetears.models
+        from threetears.models.key_pool import KeyPoolMetrics
+
+        try:
+            KeyPoolMetrics()
+        except ImportError as exc:
+            assert "3tears-models[prometheus]" in str(exc), str(exc)
+        else:
+            raise AssertionError("key pool metrics were built without the extra")
         print("refused")
         """,
     )

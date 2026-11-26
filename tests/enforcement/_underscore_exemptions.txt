@@ -32,7 +32,10 @@
 # maintained in lockstep with ruff's per-file-ignores for SLF001, wherever
 # ruff reads them from -- the root pyproject.toml, and any nested ruff.toml,
 # which is a FULL override the root file cannot reach past. every exemption
-# here must have a matching ruff ignore so the two systems agree. no count of
+# here must have a matching ruff ignore so the two systems agree, except a
+# shape-J entry: a third-party private member a src class overrides or reads
+# through super(), which ruff cannot see, so it has no ruff ignore to match.
+# shape J's own findings are what those entries resolve against. no count of
 # what this file CURRENTLY holds, anywhere in this header: it promised "the five
 # sidecar ones" when the file had none, and again when it had eighty-nine.
 # Figures describing a past state are fine -- they report what was, and cannot
@@ -127,6 +130,29 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_proce
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: opentelemetry Once._done: the flag that guard reads; clearing it is the only way to let the next set_tracer_provider take effect
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_done
+
+# rationale: langchain-anthropic (verified 1.7.5) builds its anthropic SDK clients itself, from the private ChatAnthropic._client_params, and takes no middleware, transport or HTTP client from its caller. SdkMiddlewareChatAnthropic overrides it, reading super()._client_params, only to add the model's sdk_middleware (public anthropic.Middleware, anthropic 1.12.1): the hook the key pool's unretried-key-errors rule needs to see each HTTP attempt inside the SDK's retry loop. This module is the one owner of langchain-anthropic's private members; a release that renames _client_params fails packages/models/tests/unit/models/test_key_errors_unretried.py, which drives a quota 429 through a model built here and counts the requests.
+packages/models/src/threetears/models/providers/_langchain_anthropic_internals.py:SdkMiddlewareChatAnthropic._client_params#0:_client_params
+
+# rationale: langchain-claude-code (verified 0.1.0, the declared floor) assembles the CLI's ClaudeAgentOptions in the private ClaudeCodeChatModel._build_options and offers no public hook on them. The subscription model overrides it, reading super()._build_options, to force `tools` to its default-deny list (the base drops an undeclared field) and to cut the CLI off from the host's Claude config; test_claude_cli_builtin_tools_lockdown.py pins it. Not yet confined: the reach sits in claude_cli.py beside the rest of the subscription model rather than in a one-owner module for langchain-claude-code.
+packages/models/src/threetears/models/providers/claude_cli.py:_subscription_model_cls._SubscriptionChatModel._build_options#0:_build_options
+# rationale: langchain-claude-code (verified 0.1.0) renders a bound tool's argument schema in the private ClaudeCodeChatModel._get_tool_schema, from args_schema.model_json_schema(), which a JSON-Schema dict lacks, answering every failure with an empty schema. The override reads tool_call_schema, as the API route shows the model, and fails the bind on a schema it can't render; test_claude_cli_bound_tool_schema.py pins it. Not yet confined to a one-owner module for langchain-claude-code.
+packages/models/src/threetears/models/providers/claude_cli.py:_subscription_model_cls._SubscriptionChatModel._get_tool_schema#0:_get_tool_schema
+# rationale: langchain-claude-code (verified 0.1.0) builds the SDK tool the CLI lists for each bound tool in the private ClaudeCodeChatModel._wrap_langchain_tool, whose handler runs the tool. The override makes the schema self-contained and the handler inert, since the model hands every tool call back to its caller; test_claude_cli_bound_tool_schema.py pins it. Not yet confined to a one-owner module for langchain-claude-code.
+packages/models/src/threetears/models/providers/claude_cli.py:_subscription_model_cls._SubscriptionChatModel._wrap_langchain_tool#0:_wrap_langchain_tool
+# rationale: langchain-claude-code (verified 0.1.0) flattens LangChain messages into the CLI's query and system prompt in the private ClaudeCodeChatModel._convert_messages. The override keeps only the stable part of the system prompt as the system prompt and carries the rest in the query, so one running CLI can serve turn after turn; test_claude_cli_query_layout.py pins the layout. Not yet confined to a one-owner module for langchain-claude-code.
+packages/models/src/threetears/models/providers/claude_cli.py:_subscription_model_cls._SubscriptionChatModel._convert_messages#0:_convert_messages
+# rationale: langchain-claude-code (verified 0.1.0) runs its non-streaming query in the private ClaudeCodeChatModel._aquery, on a CLI it starts per call. The override runs it on a pooled CLI and hands tool calls back to the caller; test_claude_cli_pooled_chat.py and test_claude_cli_tool_calls_handed_back.py pin it. Not yet confined to a one-owner module for langchain-claude-code.
+packages/models/src/threetears/models/providers/claude_cli.py:_subscription_model_cls._SubscriptionChatModel._aquery#0:_aquery
+# rationale: langchain-claude-code (verified 0.1.0) builds each reply in the private ClaudeCodeChatModel._create_ai_message, moving tool calls into response_metadata so a caller won't rerun calls the CLI ran. None has run here, so the override keeps them as AIMessage.tool_calls with usage, as every chat model does; test_claude_cli_tool_calls_handed_back.py pins it. Not yet confined to a one-owner module for langchain-claude-code.
+packages/models/src/threetears/models/providers/claude_cli.py:_subscription_model_cls._SubscriptionChatModel._create_ai_message#0:_create_ai_message
+
+# rationale: langchain-openai (verified 1.6.7) turns a non-streamed answer into LangChain's result in the private BaseChatOpenAI._create_chat_result, dropping each tool call's provider fields (Gemini 3's thought signature, through OpenAI-compatible routes). The override reads super()._create_chat_result and keeps them; test_tool_call_provider_extra.py pins the round trip. Not yet confined: the reach sits in openai.py rather than a one-owner module for langchain-openai.
+packages/models/src/threetears/models/providers/openai.py:_NameTranslatingChatOpenAI._create_chat_result#0:_create_chat_result
+# rationale: langchain-openai (verified 1.6.7) converts each streamed chunk in the private BaseChatOpenAI._convert_chunk_to_generation_chunk, dropping tool-call fragments' provider fields. The override reads super()._convert_chunk_to_generation_chunk and stashes them for the stream's resolver; test_tool_call_provider_extra.py pins it (astream). Not yet confined to a one-owner module for langchain-openai.
+packages/models/src/threetears/models/providers/openai.py:_NameTranslatingChatOpenAI._convert_chunk_to_generation_chunk#0:_convert_chunk_to_generation_chunk
+# rationale: langchain-openai (verified 1.6.7) builds the request body in the private ChatOpenAI._get_request_payload, with no hook for per-tool-call fields. The override reads super()._get_request_payload and writes each replayed tool call's provider fields back, which the provider refuses the next request without; test_tool_call_provider_extra.py pins the round trip. Not yet confined to a one-owner module for langchain-openai.
+packages/models/src/threetears/models/providers/openai.py:_NameTranslatingChatOpenAI._get_request_payload#0:_get_request_payload
 
 # rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _asyncpg_internals to pin the one asyncpg private it owns, connect_utils._parse_connect_dsn_and_args (verified 0.31.0, present in the floor 0.30.0), against the installed asyncpg: a DSN whose port or query does not parse and an invalid sslmode are raised inside the parser, and a bad command_timeout is not. this test exists to fail when an asyncpg release moves that boundary; raised_while_parsing_connect_parameters has no public route, since create_pool_with_startup_timeout calls it from inside the package.
 packages/core/tests/unit/utils/test_asyncpg_internals.py:<module>#0:_asyncpg_internals

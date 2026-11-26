@@ -13,6 +13,10 @@ Provider resolution is driven by :func:`get_capabilities`: passing a
 ``model_id`` known to the capabilities registry tells the factory which
 provider's factory function to invoke. Unknown ids require the caller to
 pass an explicit ``provider`` kwarg (or to register capabilities first).
+
+A chat model runs on one ``api_key``, or on a :class:`~threetears.models.key_pool.KeyPool`'s keys
+(``key_pool=``): the pooled model reserves each call's estimate on the key serving it, fails over
+between keys, and settles each call's cost (:class:`~threetears.models.pooled.PooledChatModel`).
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ from threetears.observe import get_logger
 from threetears.models.capabilities import ModelCapabilities, get_capabilities
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitBreakerRegistry
 from threetears.models.enums import ModelType
+from threetears.models.pooled import PooledChatModel
+from threetears.models.pricing import UnpricedModelError
 from threetears.models.providers.anthropic import create_anthropic_chat
 from threetears.models.providers.openai import create_openai_chat, create_openai_embedding
 from threetears.models.providers.openrouter import create_openrouter_chat
@@ -36,6 +42,8 @@ if TYPE_CHECKING:
     from langchain_core.callbacks import BaseCallbackHandler
     from langchain_core.embeddings import Embeddings
     from langchain_core.language_models import BaseChatModel
+
+    from threetears.models.key_pool import KeyPool, KeySpec
 
 __all__ = [
     "create_chat_model",
@@ -133,8 +141,10 @@ def _build_callbacks(
     purpose: LlmPurpose,
     tracker: UsageTracker | None,
     breaker: CircuitBreaker | None,
+    breaker_registry: CircuitBreakerRegistry | None,
     api_key: str,
     extra_callbacks: list[BaseCallbackHandler] | None,
+    credential_label: str | None = None,
 ) -> list[BaseCallbackHandler]:
     """builds the default callback list (tracker + breaker + extras).
 
@@ -151,19 +161,23 @@ def _build_callbacks(
     :param breaker: circuit breaker (defaults to the shared registry's breaker
         for this provider and credential)
     :ptype breaker: CircuitBreaker | None
+    :param breaker_registry: registry the credential breaker and the per-model rate-limit
+        breaker come from (defaults to the module's own); not allowed with ``breaker``
+    :ptype breaker_registry: CircuitBreakerRegistry | None
     :param api_key: the credential the model calls with; scopes the default
         breaker, and is never stored or logged
     :ptype api_key: str
     :param extra_callbacks: additional callbacks the caller wants attached
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
+    :param credential_label: the key-pool key's label, carried on every usage record; ``None``
+        off a pool
+    :ptype credential_label: str | None
     :return: ordered list of callbacks to wire into the model
     :rtype: list[BaseCallbackHandler]
     """
     callbacks: list[BaseCallbackHandler] = []
 
     effective_tracker = tracker if tracker is not None else default_usage_tracker()
-    cost_in = capabilities.cost_per_input_token if capabilities is not None else None
-    cost_out = capabilities.cost_per_output_token if capabilities is not None else None
     tier = capabilities.model_tier if capabilities is not None else None
     callbacks.append(
         effective_tracker.make_callback(
@@ -171,20 +185,21 @@ def _build_callbacks(
             provider_name=provider_name,
             purpose=purpose,
             tier=tier,
-            cost_per_input_token=cost_in,
-            cost_per_output_token=cost_out,
+            cost_per_input_token=capabilities.cost_per_input_token if capabilities is not None else None,
+            cost_per_output_token=capabilities.cost_per_output_token if capabilities is not None else None,
+            # every price the capabilities carry, so the tracker's cost_usd prices cache reads and
+            # writes at their own rates rather than at the input rate
+            cost_per_cache_read_token=capabilities.cost_per_cache_read_token if capabilities is not None else None,
+            cost_per_cache_write_token=capabilities.cost_per_cache_write_token if capabilities is not None else None,
+            cost_per_request=capabilities.cost_per_request if capabilities is not None else None,
+            credential_label=credential_label,
         ),
     )
 
-    effective_breaker = (
-        breaker if breaker is not None else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key)
-    )
+    registry = breaker_registry if breaker_registry is not None else _DEFAULT_BREAKER_REGISTRY
+    effective_breaker = breaker if breaker is not None else registry.get(provider_name, credential=api_key)
     # a rate limit is one model's: it counts against this model's own breaker, not its provider's
-    rate_limit = (
-        None
-        if breaker is not None
-        else _DEFAULT_BREAKER_REGISTRY.get(provider_name, credential=api_key, model=model_id)
-    )
+    rate_limit = None if breaker is not None else registry.get(provider_name, credential=api_key, model=model_id)
     callbacks.append(effective_breaker.make_callback(rate_limit=rate_limit))
 
     if extra_callbacks:
@@ -196,11 +211,13 @@ def _build_callbacks(
 def create_chat_model(
     model_id: str,
     *,
-    api_key: str,
+    api_key: str | None = None,
+    key_pool: KeyPool | None = None,
     provider: str | None = None,
     purpose: LlmPurpose = LlmPurpose.CHAT,
     tracker: UsageTracker | None = None,
     breaker: CircuitBreaker | None = None,
+    breaker_registry: CircuitBreakerRegistry | None = None,
     extra_callbacks: list[BaseCallbackHandler] | None = None,
     **provider_kwargs: Any,
 ) -> BaseChatModel:
@@ -214,8 +231,17 @@ def create_chat_model(
 
     :param model_id: model identifier
     :ptype model_id: str
-    :param api_key: provider API key
-    :ptype api_key: str
+    :param api_key: provider API key. pass exactly one of ``api_key`` and ``key_pool``
+    :ptype api_key: str | None
+    :param key_pool: run the model on this pool's keys instead of one key (KP-J1): every call
+        reserves its estimate on the key that serves it, fails over to the next key when the
+        provider refuses that key, and settles the cost it reported. the pool's provider must be
+        the model's. each key's model takes its breakers from ``key_pool.breaker_registry``, so
+        ``breaker`` and ``breaker_registry`` are refused with it, and reaches the pool on a
+        key's refusal unretried (``unretried_key_errors``, the pool's rule), which the factory
+        sets; a rate limit is still retried as on an ``api_key=`` model. the model
+        must have an input and an output price registered
+    :ptype key_pool: KeyPool | None
     :param provider: optional explicit provider name (overrides registry)
     :ptype provider: str | None
     :param purpose: classification of invocation purpose for tracking
@@ -228,6 +254,10 @@ def create_chat_model(
         on the same provider; a process with one key has one breaker per
         provider, as before
     :ptype breaker: CircuitBreaker | None
+    :param breaker_registry: optional registry to take the credential breaker AND the per-model
+        rate-limit breaker from, in place of the module's own. unlike ``breaker``, it keeps the
+        per-model rate-limit breaker. passing both raises ``ValueError``
+    :ptype breaker_registry: CircuitBreakerRegistry | None
     :param extra_callbacks: optional extra callbacks to attach
     :ptype extra_callbacks: list[BaseCallbackHandler] | None
     :param provider_kwargs: additional keyword arguments forwarded to the provider factory. On the
@@ -244,8 +274,20 @@ def create_chat_model(
     :ptype provider_kwargs: Any
     :return: configured ``BaseChatModel`` instance with callbacks attached
     :rtype: BaseChatModel
-    :raises ValueError: when the provider cannot be resolved or model_type is wrong
+    :raises ValueError: when the provider cannot be resolved, model_type is wrong, both
+        ``breaker`` and ``breaker_registry`` are given, both or neither of ``api_key`` and
+        ``key_pool`` are given, or ``key_pool`` is for another provider or is given with a breaker
+        setting or ``unretried_key_errors``
+    :raises UnpricedModelError: when ``key_pool`` is given for a model with no input or no output
+        price registered (KP-A4)
     """
+    if api_key is not None and key_pool is not None:
+        raise ValueError("pass exactly one of api_key or key_pool, not both")
+    if api_key is None and key_pool is None:
+        raise ValueError("pass exactly one of api_key or key_pool")
+    if breaker is not None and breaker_registry is not None:
+        raise ValueError("pass breaker or breaker_registry, not both")
+
     capabilities = get_capabilities(model_id)
     provider_name = _resolve_provider(
         model_id,
@@ -258,6 +300,22 @@ def create_chat_model(
             f"Model '{model_id}' is registered as {capabilities.model_type}; "
             f"use create_embedding_model() or another factory.",
         )
+
+    if key_pool is not None:
+        return _pooled_chat_model(
+            model_id,
+            key_pool=key_pool,
+            provider_name=provider_name,
+            capabilities=capabilities,
+            purpose=purpose,
+            tracker=tracker,
+            breaker=breaker,
+            breaker_registry=breaker_registry,
+            extra_callbacks=extra_callbacks,
+            provider_kwargs=provider_kwargs,
+        )
+    # exactly one of the two was given, so with no pool there is a key
+    api_key = cast("str", api_key)
 
     model = _invoke_chat_factory(
         provider_name=provider_name,
@@ -273,6 +331,7 @@ def create_chat_model(
         purpose=purpose,
         tracker=tracker,
         breaker=breaker,
+        breaker_registry=breaker_registry,
         api_key=api_key,
         extra_callbacks=extra_callbacks,
     )
@@ -285,6 +344,106 @@ def create_chat_model(
     # that does in fact have it.
     configured = cast("BaseChatModel", _CallbacksKeptBinding(bound=model, config={"callbacks": callbacks}))
     return configured
+
+
+def _pooled_chat_model(
+    model_id: str,
+    *,
+    key_pool: KeyPool,
+    provider_name: str,
+    capabilities: ModelCapabilities | None,
+    purpose: LlmPurpose,
+    tracker: UsageTracker | None,
+    breaker: CircuitBreaker | None,
+    breaker_registry: CircuitBreakerRegistry | None,
+    extra_callbacks: list[BaseCallbackHandler] | None,
+    provider_kwargs: dict[str, Any],
+) -> BaseChatModel:
+    """builds the pooled model :func:`create_chat_model` returns for ``key_pool=``.
+
+    one model per key, each built as an ``api_key=`` model is -- the same provider settings,
+    tracker and extra callbacks -- with that key's breakers from the pool's registry, its label on
+    every usage record, and the pool's rule (``KeyPool.refuses_retry``) telling its SDK which
+    responses are the key's, so the pool sees each on its first occurrence while the SDK still
+    retries a rate limit (KP-H4).
+
+    :param model_id: model identifier
+    :ptype model_id: str
+    :param key_pool: the pool whose keys serve the calls
+    :ptype key_pool: KeyPool
+    :param provider_name: the provider resolved for ``model_id``
+    :ptype provider_name: str
+    :param capabilities: the model's capabilities, carrying its prices
+    :ptype capabilities: ModelCapabilities | None
+    :param purpose: classification of invocation purpose for tracking
+    :ptype purpose: LlmPurpose
+    :param tracker: the usage tracker every key's model records to
+    :ptype tracker: UsageTracker | None
+    :param breaker: refused: a pooled model's breakers are the pool's
+    :ptype breaker: CircuitBreaker | None
+    :param breaker_registry: refused: a pooled model's breakers are the pool's
+    :ptype breaker_registry: CircuitBreakerRegistry | None
+    :param extra_callbacks: callbacks every key's model runs
+    :ptype extra_callbacks: list[BaseCallbackHandler] | None
+    :param provider_kwargs: provider settings every key's model is built with
+    :ptype provider_kwargs: dict[str, Any]
+    :return: the pooled model
+    :rtype: BaseChatModel
+    :raises ValueError: for a pool of another provider, a breaker setting, or ``unretried_key_errors``
+    :raises UnpricedModelError: when the model has no input or no output price
+    """
+    if key_pool.provider != provider_name:
+        raise ValueError(
+            f"key pool {key_pool.name!r} holds {key_pool.provider} keys, but model {model_id!r} is served by "
+            f"{provider_name}"
+        )
+    if breaker is not None or breaker_registry is not None:
+        raise ValueError(
+            "a pooled model's breakers come from its key pool's breaker_registry, which the pool reads key "
+            "health from; pass neither breaker nor breaker_registry with key_pool"
+        )
+    if "unretried_key_errors" in provider_kwargs:
+        raise ValueError("a pooled model always runs with unretried_key_errors, so the pool sees a key's refusal")
+    if capabilities is None or capabilities.cost_per_input_token is None or capabilities.cost_per_output_token is None:
+        raise UnpricedModelError(
+            f"model {model_id!r} has no input and output price registered, so key pool {key_pool.name!r} can't "
+            "budget its calls; register its prices first"
+        )
+    # one tracker for every key's model, as one api_key= model has one
+    effective_tracker = tracker if tracker is not None else default_usage_tracker()
+
+    def key_model(spec: KeySpec) -> Runnable[Any, Any]:
+        secret = spec.secret.reveal()
+        model = _invoke_chat_factory(
+            provider_name=provider_name,
+            model_name=model_id,
+            api_key=secret,
+            provider_kwargs={**provider_kwargs, "unretried_key_errors": key_pool.refuses_retry},
+        )
+        callbacks = _build_callbacks(
+            model_id=model_id,
+            provider_name=provider_name,
+            capabilities=capabilities,
+            purpose=purpose,
+            tracker=effective_tracker,
+            breaker=None,
+            breaker_registry=key_pool.breaker_registry,
+            api_key=secret,
+            extra_callbacks=extra_callbacks,
+            credential_label=spec.label,
+        )
+        return _CallbacksKeptBinding(bound=model, config={"callbacks": callbacks})
+
+    pooled = PooledChatModel(
+        key_pool,
+        model_id,
+        capabilities,
+        {spec.label: key_model(spec) for spec in key_pool.keys},
+        max_tokens=provider_kwargs.get("max_tokens"),
+    )
+    # erased to BaseChatModel for the reason the api_key= model is: every chat-model method a
+    # caller uses is reached through the pooled model, re-bound on each key's model
+    return cast("BaseChatModel", pooled)
 
 
 def create_embedding_model(

@@ -120,6 +120,8 @@ Each table's columns live in its package's migrations and `TableSchema` declarat
 | `coordination_claims` | Idempotency claims and their stored outcome, write-behind | same |
 | `coordination_revocations` | Standing revocations, synchronous and negative-cached | same |
 | `coordination_redemptions` | Single-use redemption ledger, synchronous | same |
+| `coordination_ledger_accounts` | Budget ledger accounts: spend, open and orphaned reservations as Decimal and JSON text; synchronous, never expiring (`BudgetLedger`, migration v004) | same |
+| `coordination_documents` | Versioned JSON records the key pool keeps its active key and key states in; synchronous, never expiring | same |
 | collection write marks | One row per committed write on a switched-on table, drained by the reconciler | `packages/core/src/threetears/core/collections/write_marks.py`, `coordination/migrations/v003_create_collection_write_marks.py` |
 | `threetears_epoch_log` | L3 copy of L2-first epoch records, in a schema the host names | `docs/l2-first-operations.md` |
 

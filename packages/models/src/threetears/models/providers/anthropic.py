@@ -31,12 +31,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+import anthropic
 from anthropic import transform_schema
 from langchain_anthropic import ChatAnthropic
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.providers._key_errors_unretried import BODY_READ_STATUS, UnretriedRule, mark_unretried
+from threetears.models.providers._langchain_anthropic_internals import SdkMiddlewareChatAnthropic
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import StructuredOutputSchemaError
 from threetears.models.providers.claude_cli import create_subscription_chat, is_subscription_token
@@ -165,7 +168,7 @@ def anthropic_structured_output_kwargs(
     }
 
 
-class _NameTranslatingChatAnthropic(NameTranslatingChatMixin, ChatAnthropic):
+class _NameTranslatingChatAnthropic(NameTranslatingChatMixin, SdkMiddlewareChatAnthropic):
     """``ChatAnthropic`` with dot<->underscore tool-name translation at the
     wire boundary (Anthropic validates names against
     ``^[a-zA-Z0-9_-]{1,128}$`` and rejects the dot).
@@ -210,6 +213,56 @@ class _NameTranslatingChatAnthropic(NameTranslatingChatMixin, ChatAnthropic):
 _DEFAULT_MAX_RETRIES = 2
 
 
+class _KeyErrorsUnretried(anthropic.Middleware):
+    """Marks a response the key pool's rule says is the key's, so the SDK raises it on its first occurrence.
+
+    Runs inside the SDK's retry loop, once per HTTP attempt, and sees every response, error statuses
+    included; the SDK then reads the ``x-should-retry`` it set. A 429's body is read for the rule, and
+    no other response's: the SDK raises from the cached body. Both hooks, because one instance reaches
+    the model's sync and async clients alike.
+
+    :param rule: which responses to mark
+    :ptype rule: UnretriedRule
+    """
+
+    def __init__(self, rule: UnretriedRule) -> None:
+        self._rule = rule
+
+    def handle(self, request: anthropic.APIRequest, call_next: anthropic.CallNext) -> anthropic.APIResponse[Any]:
+        """send the attempt, and mark its response when it belongs to the key.
+
+        :param request: the attempt
+        :ptype request: anthropic.APIRequest
+        :param call_next: the rest of the chain
+        :ptype call_next: anthropic.CallNext
+        :return: the attempt's response
+        :rtype: anthropic.APIResponse[Any]
+        """
+        response = call_next(request)
+        http_response = response.http_response
+        body = http_response.read() if http_response.status_code == BODY_READ_STATUS else None
+        mark_unretried(self._rule, http_response.status_code, http_response.headers, body)
+        return response
+
+    async def handle_async(
+        self, request: anthropic.APIRequest, call_next: anthropic.AsyncCallNext
+    ) -> anthropic.AsyncAPIResponse[Any]:
+        """send the attempt, and mark its response when it belongs to the key.
+
+        :param request: the attempt
+        :ptype request: anthropic.APIRequest
+        :param call_next: the rest of the chain
+        :ptype call_next: anthropic.AsyncCallNext
+        :return: the attempt's response
+        :rtype: anthropic.AsyncAPIResponse[Any]
+        """
+        response = await call_next(request)
+        http_response = response.http_response
+        body = await http_response.aread() if http_response.status_code == BODY_READ_STATUS else None
+        mark_unretried(self._rule, http_response.status_code, http_response.headers, body)
+        return response
+
+
 def create_anthropic_chat(
     model_name: str,
     api_key: str,
@@ -217,6 +270,7 @@ def create_anthropic_chat(
     base_url: str | None = None,
     timeout: int = 120,
     max_retries: int | None = None,
+    unretried_key_errors: UnretriedRule | None = None,
     **extra_kwargs: Any,
 ) -> BaseChatModel:
     """creates a configured ``ChatAnthropic`` for Anthropic models.
@@ -240,17 +294,28 @@ def create_anthropic_chat(
         :data:`_DEFAULT_MAX_RETRIES`. On a subscription token it is forwarded only when set, as the
         Claude CLI's own retry count, so the CLI's default stands otherwise
     :ptype max_retries: int | None
+    :param unretried_key_errors: a rule naming the responses that belong to the key -- revoked, out of
+        credit, forbidden, a quota a 429 reports, a rate limit whose wait is too long -- which then
+        reach the caller on their first occurrence instead of being retried on the same key (a key
+        pool's mode, KP-H4; the pool's ``KeyPool.refuses_retry``). A rate limit the rule leaves, 5xx
+        and connection failures keep ``max_retries``. ``None``, the default, leaves the SDK's own retry
+        policy. Not available on a subscription token
+    :ptype unretried_key_errors: UnretriedRule | None
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatAnthropic``
     :ptype extra_kwargs: Any
     :return: configured ``ChatAnthropic`` (the name-translating subclass), or a Claude
         **subscription**-backed model when ``api_key`` is an OAuth token (``sk-ant-oat…``).
     :rtype: BaseChatModel
+    :raises ValueError: when ``unretried_key_errors`` is asked of a subscription token, whose retries
+        the Claude CLI makes
     """
     # A Claude subscription OAuth token (``claude setup-token``) routes to the CLI/Agent-SDK backend
     # instead of the HTTP API — the SAME Anthropic model ids, no separate provider. An API key
     # (``sk-ant-api…``) takes the ChatAnthropic path below. The subscription path needs the optional
     # ``claude-cli`` extra, and building that model without it raises an ImportError naming the extra.
     if is_subscription_token(api_key):
+        if unretried_key_errors is not None:
+            raise ValueError("unretried_key_errors needs an API key; a subscription token's retries are the CLI's")
         if max_retries is not None:
             extra_kwargs["max_retries"] = max_retries
         return create_subscription_chat(model_name, api_key, **extra_kwargs)
@@ -265,6 +330,8 @@ def create_anthropic_chat(
     }
     if cleaned_base_url is not None:
         kwargs["base_url"] = cleaned_base_url
+    if unretried_key_errors is not None:
+        kwargs["sdk_middleware"] = [_KeyErrorsUnretried(unretried_key_errors)]
     kwargs.update(extra_kwargs)
 
     model: ChatAnthropic = _NameTranslatingChatAnthropic(**kwargs)

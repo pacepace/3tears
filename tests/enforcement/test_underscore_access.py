@@ -4,7 +4,7 @@
 the underscore-access domain is universal: there are no per-repo
 allowlists, dictionaries, or configuration knobs. the consumer
 declares only the repo root and the exemptions file path; every
-shape walker (A through F), the rationale-required exemption
+shape walker (A through J), the rationale-required exemption
 parser, the mode resolver, the report emitter, and the ruff
 shell-out for shape B all live in the package.
 
@@ -40,6 +40,10 @@ class TestUnderscoreAccess:
 
     shape I scans ONLY the ``tests/`` trees: a test subclass reaching its production base's
     private state through ``self`` (a lock, a cache), which SLF001 exempts as the owner's access.
+
+    shape J scans src for a class overriding, or reading through ``super()``, a private member of a
+    third-party base -- a reach SLF001 can't see -- so each one takes an exemption entry naming the
+    library version it was verified against. It imports those bases' libraries to read their MROs.
     """
 
     def test_no_underscore_violations(self) -> None:

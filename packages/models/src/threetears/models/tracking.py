@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -40,6 +40,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from threetears.observe import BuildOnce, contain, get_logger
 
 from threetears.models.enums import ModelTier
+from threetears.models.pricing import TokenRates, cost_of_usage
 
 try:
     from prometheus_client import Counter, Histogram
@@ -182,6 +183,10 @@ class UsageRecord:
         join key tying a ``tool_llm`` row to its tool row). flows to OTel +
         sinks; never to Prometheus labels.
     :ptype origin_invocation_ref: UUID | None
+    :param credential_label: the label of the key-pool key the call ran on, ``None`` for a model
+        built with one ``api_key``. flows to OTel spans (``llm.credential_label``) and sinks, so an
+        audit sink can attribute spend per key; never to Prometheus labels.
+    :ptype credential_label: str | None
     """
 
     model_name: str
@@ -229,6 +234,9 @@ class UsageRecord:
     #: (``"estimated"``), or nowhere (``"unavailable"``). ``None`` when a record was built by hand
     #: without saying.
     token_source: TokenSource | None = None
+    #: the key-pool key the call ran on, by label; ``None`` off a pool. flows to OTel + sinks; never
+    #: to Prometheus labels (the locked instruments' label set is fixed).
+    credential_label: str | None = None
 
 
 #: where a record's token counts came from.
@@ -388,8 +396,8 @@ def _message_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
     return "".join(str(p) for p in parts)
 
 
-def _estimate_tokens(text: str) -> int:
-    """a rough token count for ``text`` (about four characters a token).
+def _estimate_text_tokens(text: str) -> int:
+    """a rough token count for ``text`` (about four characters a token); local, no network.
 
     :param text: the text
     :ptype text: str
@@ -397,6 +405,20 @@ def _estimate_tokens(text: str) -> int:
     :rtype: int
     """
     return max(1, round(len(text) / 4)) if text else 0
+
+
+def estimate_input_tokens(messages: Sequence[Any]) -> int:
+    """a rough token count for a prompt: its messages' text, about four characters a token each.
+
+    local and network-free, so a caller can reserve budget before the call. an estimate, never the
+    provider's count.
+
+    :param messages: the prompt's LangChain messages
+    :ptype messages: Sequence[Any]
+    :return: the estimated input tokens
+    :rtype: int
+    """
+    return sum(_estimate_text_tokens(_message_text(m)) for m in messages)
 
 
 def _reply_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
@@ -480,7 +502,7 @@ def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = No
                 batch_usages.append(usage)
             else:
                 emitted = _reply_text(message) if message is not None else str(getattr(generation, "text", ""))
-                estimated_output += _estimate_tokens(emitted)
+                estimated_output += _estimate_text_tokens(emitted)
         # within ONE prompt's choices, one call's usage repeated on every choice (ChatOpenAI, n > 1) is
         # counted once; separate prompts are separate calls, however alike their counts
         if len(batch_usages) > 1 and all(u == batch_usages[0] for u in batch_usages[1:]):
@@ -496,7 +518,7 @@ def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = No
     if estimated_output:
         out.source = "estimated"
         if not usages and prompt_messages:
-            out.input_tokens = sum(_estimate_tokens(_message_text(m)) for m in prompt_messages)
+            out.input_tokens = estimate_input_tokens(prompt_messages)
     elif usages:
         out.source = "reported"
     return out
@@ -924,6 +946,8 @@ class UsageTracker:
                 span.set_attribute("llm.bytes_out", usage.bytes_out)
             if usage.api_calls:
                 span.set_attribute("llm.api_calls", usage.api_calls)
+            if usage.credential_label is not None:
+                span.set_attribute("llm.credential_label", usage.credential_label)
 
     def make_callback(
         self,
@@ -934,6 +958,10 @@ class UsageTracker:
         tier: ModelTier | None = None,
         cost_per_input_token: Decimal | None = None,
         cost_per_output_token: Decimal | None = None,
+        cost_per_cache_read_token: Decimal | None = None,
+        cost_per_cache_write_token: Decimal | None = None,
+        cost_per_request: Decimal | None = None,
+        credential_label: str | None = None,
     ) -> BaseCallbackHandler:
         """builds a LangChain callback that records usage on every ``on_llm_end``.
 
@@ -949,6 +977,14 @@ class UsageTracker:
         :ptype cost_per_input_token: Decimal | None
         :param cost_per_output_token: USD per output token (used to derive cost_usd)
         :ptype cost_per_output_token: Decimal | None
+        :param cost_per_cache_read_token: USD per cache-read token; unset prices it at the input rate
+        :ptype cost_per_cache_read_token: Decimal | None
+        :param cost_per_cache_write_token: USD per cache-write token; unset prices it at the input rate
+        :ptype cost_per_cache_write_token: Decimal | None
+        :param cost_per_request: flat USD per call
+        :ptype cost_per_request: Decimal | None
+        :param credential_label: the key-pool key the model calls with, carried on every record
+        :ptype credential_label: str | None
         :return: callback handler suitable for ``model.with_config(callbacks=[...])``
         :rtype: BaseCallbackHandler
         """
@@ -960,6 +996,10 @@ class UsageTracker:
             tier=tier,
             cost_per_input_token=cost_per_input_token,
             cost_per_output_token=cost_per_output_token,
+            cost_per_cache_read_token=cost_per_cache_read_token,
+            cost_per_cache_write_token=cost_per_cache_write_token,
+            cost_per_request=cost_per_request,
+            credential_label=credential_label,
         )
 
 
@@ -987,6 +1027,10 @@ class UsageTrackingCallback(BaseCallbackHandler):
         tier: ModelTier | None = None,
         cost_per_input_token: Decimal | None = None,
         cost_per_output_token: Decimal | None = None,
+        cost_per_cache_read_token: Decimal | None = None,
+        cost_per_cache_write_token: Decimal | None = None,
+        cost_per_request: Decimal | None = None,
+        credential_label: str | None = None,
     ) -> None:
         """initialises the callback with the metadata needed for each record.
 
@@ -1004,16 +1048,30 @@ class UsageTrackingCallback(BaseCallbackHandler):
         :ptype cost_per_input_token: Decimal | None
         :param cost_per_output_token: USD per output token
         :ptype cost_per_output_token: Decimal | None
+        :param cost_per_cache_read_token: USD per cache-read token; unset prices it at the input rate
+        :ptype cost_per_cache_read_token: Decimal | None
+        :param cost_per_cache_write_token: USD per cache-write token; unset prices it at the input rate
+        :ptype cost_per_cache_write_token: Decimal | None
+        :param cost_per_request: flat USD per call
+        :ptype cost_per_request: Decimal | None
+        :param credential_label: the key-pool key the model calls with, carried on every record
+        :ptype credential_label: str | None
         """
         super().__init__()
         self.run_inline = True
+        self._credential_label = credential_label
         self._tracker = tracker
         self._model_name = model_name
         self._provider_name = provider_name
         self._purpose = purpose
         self._tier = tier
-        self._cost_per_input_token = cost_per_input_token
-        self._cost_per_output_token = cost_per_output_token
+        self._rates = TokenRates(
+            cost_per_input_token=cost_per_input_token,
+            cost_per_output_token=cost_per_output_token,
+            cost_per_cache_read_token=cost_per_cache_read_token,
+            cost_per_cache_write_token=cost_per_cache_write_token,
+            cost_per_request=cost_per_request,
+        )
         # run_id -> monotonic start timestamp for latency calculation
         self._starts: dict[Any, float] = {}
         # run_id -> (attribution fields, purpose) named by the run's metadata
@@ -1102,9 +1160,13 @@ class UsageTrackingCallback(BaseCallbackHandler):
         total_tokens = input_tokens + output_tokens
 
         cost_usd: Decimal | None = None
-        if self._cost_per_input_token is not None and self._cost_per_output_token is not None:
-            cost_usd = self._cost_per_input_token * Decimal(input_tokens) + self._cost_per_output_token * Decimal(
-                output_tokens
+        if self._rates.cost_per_input_token is not None and self._rates.cost_per_output_token is not None:
+            cost_usd = cost_of_usage(
+                self._rates,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=extracted.cache_read_tokens,
+                cache_write_tokens=extracted.cache_creation_tokens,
             )
 
         usage = UsageRecord(
@@ -1120,6 +1182,7 @@ class UsageTrackingCallback(BaseCallbackHandler):
             cache_read_tokens=extracted.cache_read_tokens,
             cache_creation_tokens=extracted.cache_creation_tokens,
             token_source=extracted.source,
+            credential_label=self._credential_label,
             **attribution,
         )
         logger.info(

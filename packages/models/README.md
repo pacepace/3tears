@@ -10,6 +10,7 @@ pip install 3tears-models
 
 - **Factories** -- `create_chat_model()` and `create_embedding_model()` return standard LangChain `BaseChatModel` / `Embeddings` instances. No custom runtime protocols to learn.
 - **Providers** -- Anthropic, OpenAI, OpenRouter, VoyageAI, Whisper, and image backends (OpenAI Images, HuggingFace, A1111, ModelsLab, ComfyUI), and clients for self-hosted ComfyUI and SwarmUI servers (`ComfyUIClient`, `SwarmUIClient`: your own graph or parameters, reads retried, work never sent twice).
+- **Key pool** -- `create_chat_model(key_pool=...)` runs a model on several API keys of one provider, each inside a budget, and moves to the next key only when one can't serve: out of credit, revoked, forbidden, or low on room. See the [model key pool guide](https://github.com/pacepace/3tears/blob/main/docs/model-key-pool.md).
 - **Capability registry** -- `get_capabilities()`, `register_capabilities()`, and per-model overrides describe context windows, vision support, tool support, and tier.
 - **Circuit breakers** -- `CircuitBreaker` and `CircuitBreakerRegistry` trip on repeated provider failures and recover on a timer. The factory's default breaker is per provider and per API key, so one caller's failing key never fast-fails another key on the same provider.
 - **Usage tracking** -- `UsageTracker.record()` emits an OpenTelemetry span plus Prometheus instruments, with optional per-application audit and counter sinks.

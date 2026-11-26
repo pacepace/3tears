@@ -5,6 +5,50 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26** (relayed by the Discodon session). On Discodon's no-spend diagnosis of discodon #3526: "Agreed on all
+recommendations". Two package issues are filed. One redesigns the claim extractor's `restates` pointer so it is
+verifiable, resolved by the quoted earlier excerpt rather than a list position, and scores the tag against the
+claim corpus's 35 `repeat_of` labels. The other covers a planted lie the truth step graded supported. Ruled in the
+same answer, host-side: back-announces ("That was X by Y") are not repetition under R4, which counts world claims
+only, while D9 grades them for order under R5; the runner's R2 follows the goals doc's definition; and the 6-claim
+per-cell web-check cap stays as it is for now.
+
+**2026-11-26.** On the model key pool's cumulative-review asks: "Yes to all recommendations". That covered:
+- R-2/R-3: a per-model forbid skips that key for the one call. It never moves or pulls back the pool's shared active
+  key; moves and pull-backs are decided on whole-key states only. This amends KP-D2 in
+  `docs/model-key-pool-requirements.md`.
+- R-6: the persisted formats are confirmed. Money is a Decimal stored as text, open reservations are a map inside the
+  account row, and migration v004 creates the two coordination tables. Hearsay is confirmed as the sole outside
+  consumer of `BudgetLedger` and `KeyPoolMetrics` (`tests/enforcement/_public_api_consumers.txt`). The fifth inferred
+  decision, the store Protocol in generic ledger terms, was not put to the owner. It stands as inferred because it
+  is a code surface, not a persisted format: changing it later takes no migration.
+- R-7 follow-up: file one issue to confine the 9 pre-existing third-party private reaches in
+  `providers/claude_cli.py` and `providers/openai.py` (underscore shape J) to one module per library.
+- The git-hygiene advisory: tidy the 369 merged local and 24 merged remote branches, from the dry run's list.
+
+**2026-11-26** (relayed by the Discodon session). On the four eval issues Discodon's triage found package-side
+(discodon #3465, #3470, #2755, #3082): "Yes to all recommendations". So each is filed as its own 3tears issue. For
+#3465, a name the reply mentions and declines is handled in the package by an opt-in offered/declined mark that
+`SetGrader` reads, with no host-side filter. In the same answer: the 954-claim agreement run (discodon #3526) is held
+until a no-spend diagnosis of its invented-detail and repetition controls lands, and story-set work leads.
+
+**2026-11-26.** On the three rate-limit follow-ups:
+- A rate limit whose wait exceeds a per-pool threshold (default 120 s) counts as exhaustion and moves to the next
+  key, holding the old one until its reset: "yes agreed but I don't think this is a real thing". So it is built as a
+  cheap guard against provider daily caps, not as a headline feature.
+- Pool-side retries of a rate limit (OpenRouter, whose SDK never retries a 429): "sounds good on 2 retries". That is
+  2 retries on the same key, honouring `retry-after` up to the threshold, then the error reaches the caller.
+- OpenRouter's `weight_exceeds_budget` 402 skips that key for this call only and marks nothing exhausted: "agreed".
+
+**2026-11-26.** On the model key pool, when asked whether a rate-limited key may get one more attempt after the
+pool's wait: "let's separate rate limiting from quota exhaustion. Assume all rates are the same. For now, rate limit
+means retry. Quota exhaustion means move to next key. Hopefully we can tell the two apart." So a rate limit never
+moves the active key and is never a per-key state. It is retried on the same key, as the provider SDK retries it
+today, honouring `retry-after`. After those retries it reaches the caller unchanged. Only quota or credit
+exhaustion (and revoked or forbidden keys) moves to the next key. This replaces the Q4 ruling above (wait for the
+earliest `until`, cap default 0), which no longer has a case, and the rate-limit parts of KP-C2, C3, D3, H4 and K1.
+Lands in `docs/model-key-pool-requirements.md` and the build plan.
+
 **2026-11-26.** On the seven security-model rules with no enforcement gate: "yes to all", as proposed. Rules
 1, 2, 5 and 7 (session token carries identity only; an admin grants only what they hold at every scope; tool-pod
 identity from a verified token; secrets by reference) are ratified Critic-only. Rules 4 and 6 are ratified
@@ -98,3 +142,20 @@ session marker, and the suite had run on that exact tree.
 cf1fb6585 plus the search extract fix, #1306) now, before a release carries #1306, the owner said: "Yes agreed". That
 moves search, interfaces, observe and models from PyPI 0.77.0 to that one git commit and replaces `media-contracts`
 with `interfaces`. In the same answer the owner agreed to push the 2026-11-24 rulings onto #1305's branch.
+
+**2026-11-26.** On the model key pool's open questions (`docs/model-key-pool-requirements.md` §6), the owner chose:
+- Q1, where the durable spend and state store lives: "Core primitive (Recommended)", a budget ledger in
+  `threetears.core.coordination`.
+- Q2, whether the tracker's `cost_usd` also prices cache reads and writes: "Yes, same release (Recommended)", with a
+  release note.
+- Q4, whether a call waits for the earliest retry-after when every key is only rate-limited: "Per-pool cap, default 0
+  (Recommended)".
+- Q3 ("spread" policy) was not asked; v1 follows the doc's recommendation and ships no "spread".
+On how to build it without governance loaded: "1305 has the prawduct onboarding. Should we switch to that branch,
+reload plugins, and build on top of that?" The key pool branch `feat/model-key-pool` stacks on #1305's branch. Landed in
+the requirements doc §6.
+
+**2026-11-26 (late evening).** Asked (1) whether Discodon runs the fresh paid story pass that measures the
+claim grader fixes (restate baseline 3/12, plant_lie 4/6) and (2) which filed evals issues go next, with the
+recommendation #1326, #1331, #1330 and #1332 built in parallel, the owner said: "yes to all. Of those next steps".
+The paid pass is Discodon's to run at evals/main 8a92fd132; the four issues build as one batch on evals/next.

@@ -7,9 +7,10 @@ log, or include raw tracebacks in output.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 __all__ = [
+    "NO_KEY_AVAILABLE_REASON",
     "ModelCallTimeout",
     "ModelProviderError",
     "ModelRateLimitError",
@@ -20,6 +21,11 @@ __all__ = [
     "is_provider_error",
     "is_rate_limit",
 ]
+
+
+#: The ``reason`` a key pool's ``NoKeyAvailableError`` carries, which :func:`friendly_api_error` answers
+#: with a fixed message: the error names every key's label and state, which is for an operator, not a user.
+NO_KEY_AVAILABLE_REASON: Final = "no_key_available"
 
 
 class ModelCallTimeout(TimeoutError):
@@ -290,7 +296,9 @@ def _friendly_reported_failure(exc: ModelProviderError) -> str:
     provider = exc.provider
     status = exc.status or 0
     message = f"{provider} returned an unexpected error. Please retry in a minute."
-    if isinstance(exc, ModelRateLimitError):
+    if exc.reason == NO_KEY_AVAILABLE_REASON:
+        message = f"No {provider} key can take this request right now. Please retry later or contact an administrator."
+    elif isinstance(exc, ModelRateLimitError):
         message = (
             f"{provider} has reached its usage limit. It resets {exc.resets}."
             if exc.resets

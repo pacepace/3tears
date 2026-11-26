@@ -1,8 +1,8 @@
 """pytest-friendly orchestration for underscore-access enforcement.
 
 a single :func:`run_underscore_enforcement` entry point lets each
-consumer's thin shell invoke any one of the six shapes (or all of
-them as a single combined pass). the runner is the policy point: it
+consumer's thin shell invoke any one of the shapes (or all of them
+as a single combined pass). the runner is the policy point: it
 resolves both root sets (``scan_roots`` for *where to look for
 violations* and ``inheritance_roots`` for *where to build the
 inheritance graph* used by shape A's ``same_package`` and shape D's
@@ -43,6 +43,7 @@ from threetears.enforcement.underscore_access.config import (
     UnderscoreAccessConfig,
 )
 from threetears.enforcement.underscore_access.ledger import MODULE_SCOPE, enclosing_scopes
+from threetears.enforcement.underscore_access.third_party_overrides import shape_j_violations
 from threetears.enforcement.underscore_access.walkers import (
     shape_a_violations,
     shape_b_violations,
@@ -75,6 +76,7 @@ _VALID_WALKERS: frozenset[str] = frozenset(
         "shape_e",
         "shape_f",
         "shape_i",
+        "shape_j",
         "all",
     }
 )
@@ -86,8 +88,11 @@ def run_underscore_enforcement(
 ) -> None:
     """run the named walker(s), apply exemptions, emit report, fail if strict.
 
-    accepted ``walker`` values: ``"shape_a"`` through ``"shape_f"``, ``"shape_i"``
-    or ``"all"`` to run every shape with a single combined report.
+    accepted ``walker`` values: ``"shape_a"`` through ``"shape_f"``, ``"shape_i"``,
+    ``"shape_j"`` or ``"all"`` to run every shape with a single combined report.
+
+    shape J imports the third-party modules that define the bases of the classes it
+    checks (:mod:`~threetears.enforcement.underscore_access.third_party_overrides`).
     raises :class:`ValueError` for any other value.
 
     shapes F and I also scan the ``tests/`` trees (shape I scans only them) --
@@ -123,8 +128,8 @@ def run_underscore_enforcement(
 
     :param config: per-repo enforcement config
     :ptype config: UnderscoreAccessConfig
-    :param walker: which walker to invoke (``shape_a``..``shape_f``, ``shape_i``
-        or ``all``)
+    :param walker: which walker to invoke (``shape_a``..``shape_f``, ``shape_i``,
+        ``shape_j`` or ``all``)
     :ptype walker: str
     :raises ValueError: ``walker`` is not in the accepted set
     :raises pytest.fail.Exception: in strict mode with violations
@@ -332,10 +337,11 @@ def _run_walker(
         "shape_e": lambda: shape_e_violations(scan_roots, config.repo_root),
         "shape_f": lambda: shape_f_violations((*scan_roots, *test_roots), config.repo_root),
         "shape_i": lambda: shape_i_violations(test_roots, config.repo_root, inheritance_roots),
+        "shape_j": lambda: shape_j_violations(scan_roots, config.repo_root),
     }
     if walker == "all":
         out: list[Violation] = []
-        for name in ("shape_a", "shape_b", "shape_c", "shape_d", "shape_e", "shape_f", "shape_i"):
+        for name in ("shape_a", "shape_b", "shape_c", "shape_d", "shape_e", "shape_f", "shape_i", "shape_j"):
             out.extend(runners[name]())
         return out
     return runners[walker]()

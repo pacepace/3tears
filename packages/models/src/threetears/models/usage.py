@@ -21,6 +21,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.outputs import LLMResult
 from langchain_core.runnables import RunnableBinding
 
+from threetears.models.pricing import TokenRates, cost_of_usage
 from threetears.models.tracking import TokenSource, extract_usage
 
 __all__ = ["UsageAccumulator", "attach_callbacks"]
@@ -50,10 +51,20 @@ class UsageAccumulator(BaseCallbackHandler):
     ``create_chat_model``), then read the totals. runs inline, so the totals are complete the
     moment a call returns.
 
+    Each call is priced as it ends, through :func:`~threetears.models.pricing.cost_of_usage`, so a
+    turn's total agrees with the tracker's ``cost_usd`` for the same calls: cache reads and writes at
+    their own rates, and ``cost_per_request`` once per call.
+
     :param cost_per_input_token: USD per input token, to total ``cost_usd``
     :ptype cost_per_input_token: Decimal | None
     :param cost_per_output_token: USD per output token
     :ptype cost_per_output_token: Decimal | None
+    :param cost_per_cache_read_token: USD per cache-read token; unset prices it at the input rate
+    :ptype cost_per_cache_read_token: Decimal | None
+    :param cost_per_cache_write_token: USD per cache-write token; unset prices it at the input rate
+    :ptype cost_per_cache_write_token: Decimal | None
+    :param cost_per_request: flat USD per call
+    :ptype cost_per_request: Decimal | None
     :ivar input_tokens: input tokens so far
     :ivar output_tokens: output tokens so far
     :ivar cache_read_tokens: prompt-cache reads so far
@@ -71,10 +82,19 @@ class UsageAccumulator(BaseCallbackHandler):
         *,
         cost_per_input_token: Decimal | None = None,
         cost_per_output_token: Decimal | None = None,
+        cost_per_cache_read_token: Decimal | None = None,
+        cost_per_cache_write_token: Decimal | None = None,
+        cost_per_request: Decimal | None = None,
     ) -> None:
         super().__init__()
-        self._cost_in = cost_per_input_token
-        self._cost_out = cost_per_output_token
+        self._rates = TokenRates(
+            cost_per_input_token=cost_per_input_token,
+            cost_per_output_token=cost_per_output_token,
+            cost_per_cache_read_token=cost_per_cache_read_token,
+            cost_per_cache_write_token=cost_per_cache_write_token,
+            cost_per_request=cost_per_request,
+        )
+        self._cost = Decimal(0)
         self.input_tokens = 0
         self.output_tokens = 0
         self.cache_read_tokens = 0
@@ -94,14 +114,23 @@ class UsageAccumulator(BaseCallbackHandler):
 
     @property
     def cost_usd(self) -> Decimal | None:
-        """the cost so far at the configured per-token prices; ``None`` without prices.
+        """the cost so far at the configured prices; ``None`` without an input and an output price.
 
         :return: the cost
         :rtype: Decimal | None
         """
-        if self._cost_in is None or self._cost_out is None:
+        if not self._priced:
             return None
-        return self._cost_in * Decimal(self.input_tokens) + self._cost_out * Decimal(self.output_tokens)
+        return self._cost
+
+    @property
+    def _priced(self) -> bool:
+        """whether calls can be priced: both an input and an output price are set.
+
+        :return: whether the accumulator prices calls
+        :rtype: bool
+        """
+        return self._rates.cost_per_input_token is not None and self._rates.cost_per_output_token is not None
 
     def on_chat_model_start(
         self, serialized: dict[str, Any], messages: list[list[Any]], *, run_id: UUID, **kwargs: Any
@@ -157,6 +186,14 @@ class UsageAccumulator(BaseCallbackHandler):
         self.output_tokens += extracted.output_tokens
         self.cache_read_tokens += extracted.cache_read_tokens
         self.cache_creation_tokens += extracted.cache_creation_tokens
+        if self._priced:
+            self._cost += cost_of_usage(
+                self._rates,
+                input_tokens=extracted.input_tokens,
+                output_tokens=extracted.output_tokens,
+                cache_read_tokens=extracted.cache_read_tokens,
+                cache_write_tokens=extracted.cache_creation_tokens,
+            )
         self.calls += 1
         self.token_source = _combine(self.token_source, extracted.source)
 

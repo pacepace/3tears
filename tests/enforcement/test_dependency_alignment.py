@@ -32,6 +32,36 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: "nothing" is unavailable and "these three" is the promise instead.
 _DEPENDENCY_FLOORS = (
     DependencyFloor(
+        package="packages/models",
+        allowed=(
+            "3tears-interfaces",
+            "3tears-observe",
+            "3tears-tool-schema",
+            "pydantic",
+            "langchain-core",
+            "anthropic",
+            "jsonschema",
+            "langchain-anthropic",
+            "langchain-openai",
+            "langchain-openrouter",
+            "openai",
+            "httpx",
+            "openrouter",
+            "uuid-utils",
+        ),
+        rationale=(
+            "every name is imported on the base install path, so none is trusted to arrive transitively: "
+            "langchain-core and pydantic are the chat-model surface the package is; each of the three "
+            "providers is its langchain binding plus the SDK it imports directly (anthropic for "
+            "transform_schema and its client middleware, openai for its error types and default HTTP "
+            "client, openrouter for the result types the factory extends); httpx's transport errors and "
+            "headers are read by the key pool's classifiers; jsonschema checks a structured-output schema "
+            "before it is sent; uuid-utils mints uuid7 ids for the CLI pool's messages and the key pool's "
+            "reservations; and three dependency-free family leaves carry the media contracts, logging, and "
+            "the tool input schema. Nothing optional (the CLI subscription, prometheus) is on it"
+        ),
+    ),
+    DependencyFloor(
         package="packages/search",
         allowed=("3tears-interfaces", "3tears-observe", "pydantic", "pydantic-core"),
         rationale=(
@@ -342,23 +372,6 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "asyncpg",
             "uuid-utils",
             "pydantic",
-        ),
-    ),
-    (
-        "packages/models",
-        (
-            "3tears-interfaces",
-            "3tears-observe",
-            "3tears-tool-schema",
-            "pydantic",
-            "langchain-core",
-            "anthropic",
-            "jsonschema",
-            "langchain-anthropic",
-            "langchain-openai",
-            "langchain-openrouter",
-            "openrouter",
-            "uuid-utils",
         ),
     ),
     (

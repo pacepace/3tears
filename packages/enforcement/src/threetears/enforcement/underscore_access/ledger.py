@@ -29,6 +29,7 @@ from typing import Final
 
 from threetears.enforcement.common import is_private_name, parse_python_file, parse_python_path
 from threetears.enforcement.underscore_access.ruff_config import all_exempted_files
+from threetears.enforcement.underscore_access.third_party_overrides import shape_j_file_violations
 
 __all__ = [
     "blanket_noqa_offenders",
@@ -435,6 +436,36 @@ def import_bindings(path: Path) -> dict[tuple[str, str, int], int]:
     return found
 
 
+def _third_party_override_keys(path: Path, repo_root: Path) -> dict[tuple[str, str, int], int]:
+    """every shape-J finding in *path*, keyed the way a ledger entry keys it.
+
+    ``(scope, symbol, occurrence) -> line``. The findings are the walker's own
+    (:func:`~threetears.enforcement.underscore_access.third_party_overrides.shape_j_file_violations`),
+    numbered by line within each ``(scope, symbol)``: the rule
+    :func:`~threetears.enforcement.common.exemptions.apply_exemptions` numbers the walker's violations
+    by, and ``scripts/regen-underscore-exemptions.py`` writes the entries by. An override is a
+    definition, not an attribute read, so :func:`scoped_accesses` cannot resolve its entry; this is
+    the population it resolves against, and an entry for a member the library no longer has stops
+    resolving.
+
+    :param path: source file to scan
+    :ptype path: Path
+    :param repo_root: the repo's root, whose src roots are its own namespace
+    :ptype repo_root: Path
+    :return: finding key to the line it was found on; empty for a file outside every src root
+    :rtype: dict[tuple[str, str, int], int]
+    """
+    violations = sorted(shape_j_file_violations(path, repo_root), key=lambda violation: violation.line)
+    scopes = enclosing_scopes(path) if violations else {}
+    counters: Counter[tuple[str, str]] = Counter()
+    found: dict[tuple[str, str, int], int] = {}
+    for violation in violations:
+        scope = scopes.get(violation.line, MODULE_SCOPE)
+        found[(scope, violation.symbol, counters[scope, violation.symbol])] = violation.line
+        counters[scope, violation.symbol] += 1
+    return found
+
+
 def ledger_scope_entries(exemptions_path: Path) -> list[tuple[str, str, str, int]]:
     """every SCOPE-keyed entry as ``(path, scope, symbol, occurrence)``.
 
@@ -478,9 +509,11 @@ def unresolved_entries(exemptions_path: Path, repo_root: Path) -> list[str]:
     not exist at all are skipped, so :func:`missing_files` reports them once instead
     of both checks counting the same entry.
 
-    An entry resolves against the file's attribute reads (:func:`scoped_accesses`) or
-    its private import bindings (:func:`import_bindings`), the record owner ruling 1
-    keeps for a confinement module's own test.
+    An entry resolves against the file's attribute reads (:func:`scoped_accesses`), its
+    private import bindings (:func:`import_bindings`), the record owner ruling 1 keeps
+    for a confinement module's own test, or its shape-J findings
+    (:func:`_third_party_override_keys`): a third-party private member it overrides or
+    reads through ``super()``.
     """
     unresolved: list[str] = []
     by_path: dict[str, dict[tuple[str, str, int], int]] = {}
@@ -489,7 +522,11 @@ def unresolved_entries(exemptions_path: Path, repo_root: Path) -> list[str]:
         if not source.exists():
             continue
         if path not in by_path:
-            by_path[path] = {**import_bindings(source), **scoped_accesses(source)}
+            by_path[path] = {
+                **import_bindings(source),
+                **scoped_accesses(source),
+                **_third_party_override_keys(source, repo_root),
+            }
         if (scope, symbol, occurrence) not in by_path[path]:
             unresolved.append(f"{path}:{scope}#{occurrence}:{symbol}")
     return unresolved

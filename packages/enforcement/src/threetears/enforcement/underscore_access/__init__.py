@@ -1,4 +1,4 @@
-"""underscore-access enforcement domain — six shape walkers.
+"""underscore-access enforcement domain — the shape walkers.
 
 the ``_name`` prefix in python is a stability contract, not merely a
 module-private scope marker. it declares: "this is implementation
@@ -17,6 +17,11 @@ that contract:
   ``parametrize``), or read out of a namespace (``vars(x)["_y"]``,
   ``x.__dict__["_y"]``) -- the spellings SLF001 cannot see. it scans the
   ``tests/`` trees as well as ``src``
+- shape I: a ``tests/`` subclass reaching its production base's private state
+- shape J: a ``src`` class that overrides, or reads through ``super()``, a
+  private member of a base from outside the repo's own namespace -- the
+  third-party reach SLF001 cannot see, which then takes a ledger entry
+  (:mod:`~threetears.enforcement.underscore_access.third_party_overrides`)
 
 per-repo configuration goes through :class:`UnderscoreAccessConfig`;
 :func:`run_underscore_enforcement` is the pytest-friendly entry point
@@ -105,6 +110,10 @@ from threetears.enforcement.underscore_access.ruff_config import (
 from threetears.enforcement.underscore_access.runner import (
     run_underscore_enforcement,
 )
+from threetears.enforcement.underscore_access.third_party_overrides import (
+    shape_j_file_violations,
+    shape_j_violations,
+)
 from threetears.enforcement.underscore_access.walkers import (
     package_id,
     same_package,
@@ -171,4 +180,6 @@ __all__ = [
     "shape_e_violations",
     "shape_f_violations",
     "shape_i_violations",
+    "shape_j_file_violations",
+    "shape_j_violations",
 ]

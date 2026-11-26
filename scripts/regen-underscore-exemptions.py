@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+from threetears.enforcement.common import find_local_src_roots
 from threetears.enforcement.underscore_access import (
     all_exempted_files,
     carry_forward_rationales,
@@ -36,6 +37,7 @@ from threetears.enforcement.underscore_access import (
     is_own_test_of,
     private_accesses,
     scanned_python_files,
+    shape_j_violations,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +73,7 @@ def main() -> int:
 
     out = _header()
     unmapped: list[str] = []
+    written: set[str] = set()
     for source in paths:
         rel = source.relative_to(_REPO_ROOT).as_posix()
         accesses = sorted(private_accesses(source))
@@ -93,7 +96,9 @@ def main() -> int:
                 reason = _PLACEHOLDER
             out.append(f"# rationale: {reason}")
             out.append(f"{rel}:{scope}#{occurrence}:{symbol}")
+            written.add(f"{rel}:{scope}#{occurrence}:{symbol}")
 
+    out += _third_party_override_entries(rationales, unmapped, written)
     out += _own_test_import_entries(rationales, unmapped)
 
     _LEDGER.write_text("\n".join(out) + "\n")
@@ -105,6 +110,47 @@ def main() -> int:
             print(f"  {item}")
         return 1
     return 0
+
+
+def _third_party_override_entries(
+    rationales: dict[tuple[str, str, str, int], str], unmapped: list[str], written: set[str]
+) -> list[str]:
+    """Shape J's entries: each third-party private member a src class overrides or reads through super().
+
+    Ruff's SLF001 sees neither spelling, so these files carry no per-file ignore and the loop above
+    never reaches them; without this every such record would be dropped on the next run and the
+    underscore gate would then report the reach it sanctioned. The walker's own findings, numbered by
+    line within each (scope, symbol) as the gate's matcher numbers them.
+
+    :param rationales: carried-forward rationales by ledger key
+    :param unmapped: accumulator for entries with no rationale to carry forward
+    :param written: keys the loop above already wrote, which are not written twice
+    :return: the ledger lines, rationale before each entry
+    """
+    out: list[str] = []
+    by_file: dict[Path, list[tuple[int, str]]] = {}
+    for violation in shape_j_violations(find_local_src_roots(_REPO_ROOT), _REPO_ROOT):
+        by_file.setdefault(violation.file, []).append((violation.line, violation.symbol))
+    for source in sorted(by_file):
+        rel = source.relative_to(_REPO_ROOT).as_posix()
+        scopes = enclosing_scopes(source)
+        seen: Counter[tuple[str, str]] = Counter()
+        lines: list[str] = []
+        for number, symbol in sorted(by_file[source]):
+            scope = scopes.get(number, MODULE_SCOPE)
+            occurrence = seen[scope, symbol]
+            seen[scope, symbol] += 1
+            entry = f"{rel}:{scope}#{occurrence}:{symbol}"
+            if entry in written:
+                continue
+            reason = rationales.get((rel, scope, symbol, occurrence))
+            if reason is None:
+                unmapped.append(f"{rel}:{number}:{symbol}")
+                reason = _PLACEHOLDER
+            lines += [f"# rationale: {reason}", entry]
+        if lines:
+            out += ["", *lines]
+    return out
 
 
 def _own_test_import_entries(rationales: dict[tuple[str, str, str, int], str], unmapped: list[str]) -> list[str]:
