@@ -523,6 +523,14 @@ def _names(names: list[str]) -> str:
     return ", ".join(short(name) for name in names)
 
 
+def _names_by_root(names: list[str]) -> str:
+    """Names grouped under their root, each root written once: ``schema: DocumentStore, StoreClock; run: ...``."""
+    by_root: dict[str, list[str]] = {}
+    for name in names:
+        by_root.setdefault(root_of(name), []).append(name.rsplit(".", 1)[1])
+    return "; ".join(f"{root}: {', '.join(each)}" for root, each in by_root.items())
+
+
 def _agent_lines(surface: Surface) -> Iterator[str]:
     by_rung = surface.typed_by_rung()
     first = surface.first_eval()
@@ -600,7 +608,7 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield f"EMBEDDING IT IN AN APP ({at_tag('docs/adopting-a-host.md')})"
     yield from _wrapped(
         f"A product builds one kernel.host.EvalHost and hands it to every entrypoint. The {len(ports)} ports a host "
-        f"may implement: {_names(ports)}.",
+        f"may implement, by root: {_names_by_root(ports)}.",
         "  ",
     )
     yield from _wrapped(f"Every declared name, with one line each: {at_tag('docs/surface.md')}", "  ")
