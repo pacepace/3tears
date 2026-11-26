@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, Literal
 
+import asyncpg
 import pytest
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
@@ -741,7 +742,11 @@ class _FlakyMembers(_SwitchedOnMembers):
     async def save_to_store(
         self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
     ) -> int:
-        if self.mode == "raise":
+        if self.mode == "refused":
+            # the database answered with its own error: the write did not land
+            raise asyncpg.SerializationError("could not serialize access due to concurrent update")
+        if self.mode == "lost":
+            # the reply never came: the write may have landed
             raise ConnectionError("L3 unreachable")
         if self.mode == "kept":
             return 0
@@ -772,7 +777,7 @@ class TestASubscriptWriteWithdrawnFromTheCaches:
     async def _l2_holds(self, bus: FakeNatsClient, members: _Members, entity_id: str) -> bool:
         return await (await bus.kv_bucket(name="collections")).get(key=members.l2_key(entity_id)) is not None
 
-    @pytest.mark.parametrize("mode", ["raise", "kept"])
+    @pytest.mark.parametrize("mode", ["refused", "kept"])
     async def test_a_write_that_did_not_land_is_withdrawn_and_advances_nothing(
         self, bus: FakeNatsClient, source: _CountingSource, mode: str
     ) -> None:
@@ -783,6 +788,19 @@ class TestASubscriptWriteWithdrawnFromTheCaches:
         (message,) = _messages(bus)
         assert message.ids == ["m1"]
         assert (message.generation, message.bump_rows) == (None, None)
+
+    async def test_a_write_whose_outcome_is_unknown_is_withdrawn_and_advances_once(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        """Flips if a write whose reply never came (it may have landed) is withdrawn with no advance: a pod that missed
+        the broadcast would never hear it (every epoch heard)."""
+        members = await self._assigned(bus, source, "lost")
+        assert source.counts == {_TABLE: 2}
+        assert not members.exists_in_cache_sync("m1")
+        assert not await self._l2_holds(bus, members, "m1")
+        (message,) = _messages(bus)
+        assert message.ids == ["m1"]
+        assert (message.generation, message.bump_rows) == ("inc:2", 1)
 
     async def test_a_committed_write_that_cannot_be_read_back_is_withdrawn_and_advances_once(
         self, bus: FakeNatsClient, source: _CountingSource

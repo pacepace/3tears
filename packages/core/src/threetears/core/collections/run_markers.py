@@ -23,7 +23,7 @@ __all__ = ["RUN_MARKERS_SCHEMA"]
 
 #: the run-marker table: the table a run of was deleted, the run's scope and key prefix as text, the delete's epoch
 RUN_MARKERS_SCHEMA: Final = TableSchema(
-    # the name and key spelled here, not by RUN_MARKERS_TABLE and RUN_MARKER_COLUMNS: the no-whole-reads walk reads a
+    # the name and key spelled here, not by RUN_MARKERS_TABLE and its column constant: the no-whole-reads walk reads a
     # declaration's names only from its own module, and judges every read of the table by this key
     # (test_run_markers_schema holds them equal)
     name="threetears_run_markers",

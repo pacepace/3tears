@@ -298,8 +298,6 @@ async def restored_tables(pool: Any) -> list[RestoredTable]:
     ]
 
 
-
-
 def _literal(text: str) -> str:
     """``text`` as a SQL string literal.
 

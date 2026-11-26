@@ -13,6 +13,21 @@ the helpers are pure SQL against ``conn``; they do no caching and no
 validation. they are the single sanctioned place a user-ownership column
 is rewritten, used by the per-collection ``repoint_user`` methods across
 the hub and the 3tears agent packages.
+
+**A repoint is a stamped write like any other.** a stamped table's
+(``ROW_STAMPED``) rows carry their last write's epoch, and a restore and the
+followers read a table's changes by it: an ``UPDATE`` that left the epoch
+where it was rewrote rows no restore and no follower would ever hear. so the
+repoint sets its values through ``stamped_values``, the shared helper every
+stamped keyed update goes through: the epoch risen past a fresh stamp (drawn
+from the caller's ``CallerTransaction`` when ``conn`` joins one, so its
+commit's ``s_min`` counts it), a moveable owner column's move recorded in the
+same statement, and the update sent as a stamped write. the table's schema is
+the one its collection class declares (``schema_of_table``), so every table
+is stamped by this one helper, none by its caller. a stamped table names no
+scopes (a versioned table's do, and a versioned table is never updated in
+place: ``update_keyed`` refuses it), so there is nothing else to touch before
+the COMMIT.
 """
 
 from __future__ import annotations
@@ -22,6 +37,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.collections.generation import schema_of_table
+from threetears.core.collections.schema_backed import stamped_values
 from threetears.core.keyed import update_keyed
 
 __all__ = ["repoint_user_rows"]
@@ -53,6 +70,9 @@ async def repoint_user_rows(
     index. the schema holds only that agent's rows, so it moves the rows the
     owner alone names.
 
+    a stamped table's rows are stamped (``stamped_values``): their epoch
+    rises, so a restore and every follower hear the repoint.
+
     cache-bypass: this is a deliberate bulk ownership rewrite for a user
     merge; ``user_column`` is immutable so it cannot ride the collection
     upsert path, and the move is one transactional UPDATE. the caller
@@ -82,6 +102,10 @@ async def repoint_user_rows(
     :rtype: list[tuple[Any, ...]]
     """
     values = _repointed_values(user_column, to_user_id, touch_column, now)
+    schema = schema_of_table(table)
+    if schema is not None:
+        # a stamped table's epoch rises with the repoint, as every stamped write's does (the module's docstring)
+        values = stamped_values(schema, values, conn=conn)
     by = {user_column: from_user_id} if agent_id is None else {"agent_id": agent_id, user_column: from_user_id}
     moved = await update_keyed(conn, table, values=values, by=by, returning=pk_columns)
     return [tuple(row[col] for col in pk_columns) for row in moved.rows]

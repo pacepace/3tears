@@ -11,6 +11,7 @@ against a real NATS server and Postgres is ``integration/test_checkpoint_l2_over
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -95,7 +96,13 @@ def _fresh(exc: Exception) -> Exception:
 
 
 class _DictL2Cache(CheckpointL2Cache):
-    """an exact-key L2 over a dict whose put and delete can be made to fail, recording every call."""
+    """an exact-key L2 over a dict whose put and delete can be made to fail, recording every call.
+
+    Every call suspends once before it answers, as a NATS round trip does. A double that answers without suspending
+    runs a test's thousands of failed writes in one event-loop turn, which no real cache can: the loop-stall guard
+    failed the 4,096-key bypass tests on that turn (2-3 s of CPU, the contained WARNINGs' tracebacks and the L3 reads
+    of 4,096+ writes in a row), not on any one write.
+    """
 
     def __init__(self) -> None:
         """start empty, with nothing failing.
@@ -119,6 +126,7 @@ class _DictL2Cache(CheckpointL2Cache):
         :return: stored bytes or None
         :rtype: bytes | None
         """
+        await asyncio.sleep(0)
         self.gets.append(key)
         return self.store.get(key)
 
@@ -135,6 +143,7 @@ class _DictL2Cache(CheckpointL2Cache):
         :rtype: None
         :raises Exception: the configured put failure
         """
+        await asyncio.sleep(0)
         self.puts.append(key)
         if self.fail_put is not None:
             raise _fresh(self.fail_put)
@@ -151,6 +160,7 @@ class _DictL2Cache(CheckpointL2Cache):
         :rtype: None
         :raises Exception: the configured delete failure
         """
+        await asyncio.sleep(0)
         if self.fail_delete is not None:
             raise _fresh(self.fail_delete)
         self.store.pop(key, None)
