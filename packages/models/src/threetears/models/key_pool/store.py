@@ -9,9 +9,10 @@ structurally.
 
 It has two parts.
 
-**Accounts.** An account is an opaque string the caller builds; the pool builds ``"<pool>/<label>/<period
-id>"``, so a key's spend is kept per billing period and a new period's account starts at zero spend the
-first time it is seen, with no rollover job. An account holds:
+**Accounts.** An account is an opaque string the caller builds; the pool builds
+``"<provider>/<pool>/<label>/<generation>/<period id>"``, where the generation changes when a label's secret
+does. So a key's spend is kept per secret and per billing period, and a new period's account starts at zero
+spend the first time it is seen, with no rollover job. An account holds:
 
 - ``spent``, the money settled into it;
 - its open reservations, each an id with an amount and an expiry;
