@@ -83,6 +83,13 @@ caller has nothing to do.
 guard is hinted to the live-only index over a whole one of the same lead (hub v198 made such pairs); a stream key
 listing reads with a fixed set of readers, never one task a subject.
 
+### core: a process can ask whether its declared collections were loaded
+
+`declared_collections_loaded()` (exported from `threetears.core.collections`) is True once
+`load_declared_collections()` has run in this process. A server whose own start runs the load before its event loop
+can refuse to start when it was launched some other way, instead of answering every table lookup from the fallback.
+The hub's lifespan uses it. No consumer action beyond that.
+
 ### core: the cleanup floor of a change log nothing was ever written to
 
 `held_window_floor` (under `log_window_floor`) read a stream with `first_seq=0, last_seq=0` as holding a record and

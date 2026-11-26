@@ -1767,7 +1767,7 @@ class _TableState:
         """
         return replace(self, heard=heard, heard_count=sum(batch.num_rows for batch in heard))
 
-    def read_whole(self, why: str | None) -> _TableState:
+    def covered_by_whole(self, why: str | None) -> _TableState:
         """this state with a whole read due (``why``; the first why stays) or taken (None): either way the read covers
         every key and partition heard before it, which are forgotten.
 
@@ -2738,7 +2738,7 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        self._put(table, self._states[table].read_whole(why))
+        self._put(table, self._states[table].covered_by_whole(why))
         self._poked.set()
 
     def _partition_heard(self, table: str, partition: Mapping[str, str]) -> None:
@@ -2914,7 +2914,7 @@ class CopyFollower:
             self._say_full_reach(table, after)
         else:
             # what was heard of the table the reset replaced is forgotten with its whole read, partitions and prefixes
-            self._put(table, replace(state.read_whole(None), cleared=(), full_after=after))
+            self._put(table, replace(state.covered_by_whole(None), cleared=(), full_after=after))
             self._say_full_reach(table, after)
             # the waits were for files of the table the reset replaced
             self._end_file_waits(table, "the table was reset or recreated: its full replaces it")
@@ -4876,7 +4876,7 @@ class CopyFollower:
                 if (writing or (held and table.scope is not None)) and why not in ("cold_start", "reset"):
                     continue
                 whole[name] = why
-                self._put(name, state.read_whole(None))
+                self._put(name, state.covered_by_whole(None))
                 # the whole read holds every file the table waited for
                 self._end_file_waits(name, f"the table is read whole ({why})")
                 continue
@@ -5294,7 +5294,7 @@ class CopyFollower:
                 self._reading = name
                 await self._forget_tables([name])
                 # a whole read covers every key and partition heard before it
-                self._put(name, self._states[name].read_whole(None))
+                self._put(name, self._states[name].covered_by_whole(None))
                 why = whole[name]
                 # the reason is known here: each is read by its own function, and declared as that situation
                 kind: WholeKind

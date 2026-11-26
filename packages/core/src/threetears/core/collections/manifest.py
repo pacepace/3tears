@@ -35,7 +35,7 @@ from threetears.core.collections.generation import table_named_by_class
 from threetears.core.collections.undeclared_tables import record_declared_tables
 from threetears.observe import BuildOnce, get_logger
 
-__all__ = ["load_declared_collections"]
+__all__ = ["declared_collections_loaded", "load_declared_collections"]
 
 log = get_logger(__name__)
 
@@ -192,3 +192,15 @@ def load_declared_collections() -> DeclaredCollections:
     :raises DeclaredCollectionsError: when a listed module cannot be imported
     """
     return _LOADED.get(None, _load)
+
+
+def declared_collections_loaded() -> bool:
+    """whether :func:`load_declared_collections` has run in this process.
+
+    For a server's start to refuse when the process was launched some other way than its own start, which runs the
+    load before the event loop: a process that never loaded answers every table lookup from the fallback.
+
+    :return: True once the load has run
+    :rtype: bool
+    """
+    return _LOADED.peek(None) is not None

@@ -86,6 +86,18 @@ print([r.extra_data["loader_ran"] for r in records])
     assert result.stdout.strip().splitlines()[-1] == "[False]"
 
 
+def test_a_process_can_ask_whether_the_loader_ran() -> None:
+    script = """
+from threetears.core.collections import declared_collections_loaded, load_declared_collections
+before = declared_collections_loaded()
+load_declared_collections()
+print(before, declared_collections_loaded())
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert result.stdout.strip().splitlines()[-1] == "False True"
+
+
 _FACTORY_MODULE = """
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
 from threetears.core.testing.l1_tables import TEST_L1_TABLE

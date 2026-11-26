@@ -182,7 +182,8 @@ async def test_a_large_commit_is_staged_by_key_without_holding_the_loop(world: A
     l3, log, scopes, backend, follower = world
     await follower.warm()
     assert await follower.catch_up()
-    await asyncio.to_thread(l3.put, _rows(2))
+    # the 600k rows are built on the thread too: building them on the loop held it 0.25 s on a slow pool machine
+    await asyncio.to_thread(lambda: l3.put(_rows(2)))
     await asyncio.to_thread(log.commit_every_key)
     scopes.commit()
     assert await follower.catch_up()
