@@ -27,6 +27,7 @@ from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Col
 from threetears.core.ddl.row_epoch import row_versions
 from threetears.core.keyed import KeyBatch, Sort, ThreadedDuckDB, counts_by, keyset_page, read_by, read_keyed
 from threetears.core.keyed import rows as keyed_rows
+from threetears.core.keyset import keyset_arrow_pages
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.interfaces.keyed.keys import (
     VersionedTable,
@@ -346,3 +347,63 @@ class TestThePinInsideIsSafe:
             )
             conn.close()
         assert differed > _TRIALS // 2
+
+
+class TestAPageInItsOwnOrder:
+    """a keyset read of a versioned table paging in an order of its own (a copy's whole read of a state: the state,
+    then the state index's columns, then the rest of the key), not the key's: each page's ``LIMIT`` inside the
+    ``DISTINCT ON`` must cut the keys in the page's order, the one its cursor steps in."""
+
+    @staticmethod
+    def _night(conn: duckdb.DuckDBPyConnection) -> dict[tuple[int, str], int]:
+        """40 keys, two geographies of 20 races, the races' states alternating, each key two versions (the newer
+        kept): the key's order (race, geography) and the page's (state, geography, race) differ at every step."""
+        values = []
+        for race in range(20):
+            state = "PA" if race % 2 == 0 else "OH"
+            for geo in ("a", "b"):
+                values += [f"({race}, '{geo}', '{state}', {race}, 10, false)"]
+                values += [f"({race}, '{geo}', '{state}', {race + 100}, 20, false)"]
+        conn.execute(f"INSERT INTO {_TABLE} (race_id, geo_id, state, v, epoch, gone) VALUES {', '.join(values)}")
+        return {(race, geo): race + 100 for race in range(20) for geo in ("a", "b")}
+
+    async def test_every_key_is_read_once_paging_by_the_scope_then_the_key(self) -> None:
+        """Flips if a page's LIMIT cuts the keys in the key's order while its cursor steps in its own: the second page
+        skipped every key past the first's last in the page's order but not the key's (reports' copy held 1,550 of a
+        state's 2,400 geography rows, 2026-11-26)."""
+        conn = duckdb.connect()
+        conn.execute(f"CREATE TABLE {_TABLE} {_DDL}")
+        conn.execute(
+            "CREATE TABLE threetears_run_markers (table_name VARCHAR, scope VARCHAR, prefix VARCHAR, epoch BIGINT)"
+        )
+        try:
+            expected = self._night(conn)
+            reader = _L3(conn)
+            types = {"race_id": pa.int32(), "geo_id": pa.string(), "state": pa.string(), "v": pa.int32()}
+            pages = [
+                page
+                async for page in keyset_arrow_pages(
+                    reader,
+                    f"SELECT race_id, geo_id, state, v FROM {_TABLE}",
+                    ["state", "geo_id", "race_id"],
+                    types=types,
+                    page_size=3,
+                    table=_TABLE,
+                )
+            ]
+            assert _read(pa.concat_tables(pages).to_pylist()) == expected
+            assert all('DISTINCT ON (t."state", t."geo_id", t."race_id")' in sql for sql in reader.statements[1:])
+        finally:
+            conn.close()
+
+    def test_an_order_past_the_key_and_the_fixed_columns_is_refused(self) -> None:
+        """Flips if a newest read may cut its keys by a column a key's versions may hold differently (two rows of one
+        key read), or by an order missing a key column (one key's versions read as two)."""
+        fixed = VersionedTable("t", ("race_id", "geo_id"), "epoch", "gone", fixed=("state",))
+        with pytest.raises(ValueError, match="orders by its key"):
+            newest_relation(fixed, "t", limit="10", order=("v", "race_id", "geo_id"))
+        with pytest.raises(ValueError, match="orders by its key"):
+            newest_relation(fixed, "t", limit="10", order=("state", "race_id"))
+        assert 'DISTINCT ON (t."state", t."race_id", t."geo_id")' in newest_relation(
+            fixed, "t", limit="10", order=("state", "race_id", "geo_id")
+        )

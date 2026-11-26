@@ -1107,6 +1107,7 @@ def newest_relation(
     limit: str | None = None,
     counted: bool = False,
     flagged: bool = False,
+    order: Sequence[str] | None = None,
 ) -> str:
     """the ``SELECT`` answering each key's newest live version of a versioned table, read in its place:
     ``DISTINCT ON (key...) ... ORDER BY key..., epoch DESC`` over the rows ``within`` names, then the gone flag and the
@@ -1139,10 +1140,26 @@ def newest_relation(
     :param flagged: answer every key read, its :data:`NEWEST_LIVE` saying whether it is kept, never dropping one (a
         fill page steps past every key it read)
     :ptype flagged: bool
+    :param order: the order a ``limit`` cuts the keys by: a read paging the table in its own order (a keyset page,
+        its cursor ``within``), every key column and any :attr:`VersionedTable.fixed` ones; the key's when None. WHY:
+        the ``LIMIT`` keeps the first keys in the ``DISTINCT ON`` order, and a page stepping its cursor in another
+        order skipped every key past the page's last one in its own order but not in the key's (a copy's whole read of
+        a state ordered by its index then the key held 1,550 of 2,400 rows, 2026-11-26). The fixed columns hold alike
+        of every version of a key, so naming them in ``DISTINCT ON`` keeps one row a key all the same
+    :ptype order: Sequence[str] | None
     :return: the ``SELECT``, its columns the table's (and those asked)
     :rtype: str
+    :raises ValueError: when ``order`` names a column past the key and the fixed ones, or not every key column
     """
+    if order is not None:
+        unknown = set(order) - {*table.key, *table.fixed}
+        if unknown or not set(table.key) <= set(order) or len(set(order)) != len(order):
+            raise ValueError(
+                f"a newest read of {table.name!r} orders by its key {table.key} and fixed columns {table.fixed} "
+                f"alone, each once, not {tuple(order)}"
+            )
     key = ", ".join(f"{alias}.{quote_identifier(column)}" for column in table.key)
+    distinct = key if order is None else ", ".join(f"{alias}.{quote_identifier(column)}" for column in order)
     epoch = f"{alias}.{quote_identifier(table.epoch)}"
     versions = (
         f", count(*) OVER (PARTITION BY {key} ORDER BY {epoch} DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED "
@@ -1153,8 +1170,8 @@ def newest_relation(
     where = f" WHERE {' AND '.join(within)}" if within else ""
     cut = f" LIMIT {limit}" if limit is not None else ""
     chosen = (
-        f"(SELECT DISTINCT ON ({key}) {alias}.*{versions} FROM {quoted_table(read_as)} AS {alias}{where} "
-        f"ORDER BY {key}, {epoch} DESC{cut}) AS n"
+        f"(SELECT DISTINCT ON ({distinct}) {alias}.*{versions} FROM {quoted_table(read_as)} AS {alias}{where} "
+        f"ORDER BY {distinct}, {epoch} DESC{cut}) AS n"
     )
     return _kept(table, read_as, chosen, flagged=flagged)
 
