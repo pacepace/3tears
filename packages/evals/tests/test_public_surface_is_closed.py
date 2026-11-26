@@ -44,6 +44,10 @@ from dataclasses import fields, is_dataclass
 from typing import Annotated, Any, TypeVar, get_args, get_origin
 
 import threetears.evals
+from threetears.evals.gen import ProposedDraft
+from threetears.evals.kernel import DefinitionStore
+from threetears.evals.run import create_rubric_dim
+from threetears.evals.schema import RubricProposal
 
 #: The public roots a host imports from: the package itself, whose ``__all__`` holds the quick path's names
 #: (``Eval``, ``Result``, ...), then the package's own tuple, which the package matrix test holds equal to the roots
@@ -251,7 +255,8 @@ class _Walk:
                 if field_name.startswith("_"):
                     continue
                 self._annotation(annotation, klass_namespace, f"{name}.{field_name}")
-        for member_name, member in vars(value).items():
+        # A copy: reading a member's signature may store the annotations it computes in the class's ``__dict__``.
+        for member_name, member in list(vars(value).items()):
             if member_name.startswith("_") and member_name not in ("__init__", "__call__"):
                 continue
             label = f"{name}.{member_name}"
@@ -295,3 +300,22 @@ def test_no_private_engine_type_is_reachable_from_a_public_name() -> None:
         if label.rsplit(".", 1)[-1].startswith("_")
     )
     assert not leaked, "a public signature hands a host a private engine type:\n  " + "\n  ".join(leaked)
+
+
+def test_the_walk_reads_a_signature_type_imported_only_for_the_type_checker() -> None:
+    # ``create_rubric_dim`` types its ``storage`` as a ``DefinitionStore`` its module imports only under
+    # ``if TYPE_CHECKING:``, so the module's own namespace never holds the name and only the checker-only read finds it.
+    assert "DefinitionStore" not in vars(sys.modules[create_rubric_dim.__module__]), (
+        "create_rubric_dim's module imports DefinitionStore at run time now: pin a signature whose type is checker-only"
+    )
+    assert id(DefinitionStore) in _walk().reached, "the walk did not reach a type a signature imports for the checker"
+
+
+def test_the_walk_reads_the_fields_of_a_named_tuple() -> None:
+    # A ``NamedTuple`` keeps its fields' annotations behind an annotate function, not in its ``__dict__``, so
+    # ``ProposedDraft.proposal`` is the only path to ``RubricProposal`` that reading the class's dict would miss.
+    assert tuple in ProposedDraft.__mro__ and "__annotations__" not in ProposedDraft.__dict__
+    assert (
+        "RubricProposal" in annotationlib.get_annotations(ProposedDraft, format=annotationlib.Format.STRING)["proposal"]
+    )
+    assert id(RubricProposal) in _walk().reached, "the walk did not reach a type named only in a NamedTuple's field"

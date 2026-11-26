@@ -5,10 +5,14 @@ The root serves its exports lazily through a module ``__getattr__``. A checker t
 and fail only at run time in the host. The root keeps the function out of the checker's sight and declares each name
 to it instead, ``__version__`` as a ``str``.
 
-This runs strict mypy, with the repository's configuration, over one program that imports every name of the root's
-``__all__``, imports a misspelt name, and assigns ``__version__`` to an ``int``. The two refusals must be exactly those
-two lines, so the test cannot pass on a checker that sees nothing: a root typed as ``Any`` refuses neither, and a
-root whose declarations are gone refuses the real names too. One mypy run, from a cold cache in a temporary directory.
+Each public root that serves its names this way is held the same: the package root and
+:mod:`~threetears.evals.providers`.
+
+This runs strict mypy, with the repository's configuration, over one program that imports every name of each such
+root's ``__all__``, imports one misspelt name from each, and assigns ``__version__`` to an ``int``. The refusals must be
+exactly those lines, so the test cannot pass on a checker that sees nothing: a root typed as ``Any`` refuses none of
+them, and a root whose declarations are gone refuses the real names too. One mypy run, from a cold cache in a
+temporary directory.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import pytest
 from mypy import api
 
 import threetears.evals
+import threetears.evals.providers
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -27,17 +32,21 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ERROR = re.compile(r"^[^:]+:(\d+): error: .*\[([a-z-]+)\]$", re.MULTILINE)
 
 
+#: Each root whose exports a module ``__getattr__`` serves, and a misspelling of one of its names.
+_LAZY_ROOTS = ((threetears.evals, "Evall"), (threetears.evals.providers, "ProviderErrorr"))
+
+
 def _program() -> tuple[str, dict[int, str]]:
     """The program mypy checks, and each line it must refuse mapped to the error code it must give."""
-    real = ", ".join(sorted(threetears.evals.__all__))
-    lines = [
-        f"from threetears.evals import {real}",
-        "from threetears.evals import Evall",
-        "",
-        "version: str = __version__",
-        "not_a_version: int = __version__",
-    ]
-    return "\n".join(lines) + "\n", {2: "attr-defined", 5: "assignment"}
+    lines: list[str] = []
+    refused: dict[int, str] = {}
+    for root, misspelt in _LAZY_ROOTS:
+        lines.append(f"from {root.__name__} import {', '.join(sorted(root.__all__))}")
+        lines.append(f"from {root.__name__} import {misspelt}")
+        refused[len(lines)] = "attr-defined"
+    lines += ["", "version: str = __version__", "not_a_version: int = __version__"]
+    refused[len(lines)] = "assignment"
+    return "\n".join(lines) + "\n", refused
 
 
 def test_a_misspelt_root_name_fails_strict_mypy_and_every_real_one_checks(

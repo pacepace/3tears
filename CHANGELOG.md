@@ -21,8 +21,10 @@ check could not see it; `DefinitionStore` was to leave `kernel` in this release 
 typed as its four keywords, `Literal["items", "properties", "additionalProperties", "anyOf"]`, rather than through an
 alias no root exported.
 
-**For hosts:** nothing to change. A host that typed one of these parameters as `kernel.EvalStorage` may keep it, or
-import the narrower protocol.
+**For hosts:** `kernel.DefinitionStore` was `host-contract` in v0.94.0 and is `provisional` from this release: it
+stays exported, but is promised nothing, so an import gate that refuses provisional names refuses it. Type the
+parameter as `kernel.EvalStorage`, which implements it, or keep the protocol knowing it may move in any release.
+`kernel.RunResultsStore` is new and `provisional`.
 
 ### evals: importing `ProviderError` loads none of the engine
 
