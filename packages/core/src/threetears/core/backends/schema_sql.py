@@ -28,6 +28,7 @@ from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, rising_epoch_assignment
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
@@ -60,6 +61,7 @@ __all__ = [
     "build_key_led_delete_sql",
     "build_led_by_select_sql",
     "build_ordered_upsert_sql",
+    "build_no_row_delete_sql",
     "build_prefix_delete_sql",
     "build_select_column_list",
     "build_where_pk",
@@ -617,12 +619,33 @@ def _update_set_clause(schema: TableSchema, mutable: Sequence[Column], named: Co
     :rtype: str
     """
     chosen = _named_set(mutable, named)
+    rising = _rises_epoch(schema)
     if chosen:
-        result = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in chosen)
+        # a stamped table's epoch never goes back, whichever process's clock stamped the write (row_epoch)
+        result = ", ".join(
+            rising_epoch_assignment(_conflict_target_ref(schema))
+            if rising and c.name == EPOCH_COLUMN
+            else f"{c.name} = EXCLUDED.{c.name}"
+            for c in chosen
+        )
     else:
         first = mutable[0].name
         result = f"{first} = {_conflict_target_ref(schema)}.{first}"
     return result
+
+
+def _rises_epoch(schema: TableSchema) -> bool:
+    """whether ``schema`` is a stamped table (``ROW_STAMPED``: one row a key, updated in place, carrying its last write's
+    epoch), whose update sets the epoch to ``GREATEST(epoch + 1, <new>)`` rather than the new stamp alone: each
+    writing process keeps its own clock (:mod:`~threetears.core.ddl.row_epoch`), so the new stamp may be behind the
+    row's.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :return: whether its epoch rises on update
+    :rtype: bool
+    """
+    return bool(getattr(schema, "stamps_epoch", False)) and not getattr(schema, "versioned", False)
 
 
 def _named_set(mutable: Sequence[Column], named: Collection[str] | None) -> list[Column]:
@@ -721,7 +744,11 @@ def _with_conflict_clause(
     :rtype: str
     """
     pk_cols = ", ".join(schema.pk_columns)
-    if schema.on_conflict == "raise":
+    if schema.on_conflict == "raise" or getattr(schema, "versioned", False):
+        # a versioned table is append-only (row_epoch.row_versions): a write appends the key's new version at its own
+        # epoch, which no older version holds, so it never conflicts and is never an upsert. WHY (append-only L3,
+        # chunk 2): an upsert into a table with a row trigger runs a read and a flush a row on YugabyteDB (its ON
+        # CONFLICT batching is off for such tables), 1.58 ms a row against 0.09 for a COPY
         result = sql
     elif schema.on_conflict == "ignore":
         result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
@@ -793,8 +820,15 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
     pk_where = " AND ".join(f"{col} = ${i + 1}" for i, col in enumerate(pk_cols))
     set_parts: list[str] = []
     next_idx = len(pk_cols) + 1
+    rising = _rises_epoch(schema)
     for col in mutable:
-        set_parts.append(f"{col.name} = {render_param(col, next_idx)}")
+        value = render_param(col, next_idx)
+        # a stamped table's epoch never goes back (row_epoch): GREATEST(epoch + 1, the new stamp)
+        set_parts.append(
+            f"{col.name} = GREATEST({col.name} + 1, {value})"
+            if rising and col.name == EPOCH_COLUMN
+            else f"{col.name} = {value}"
+        )
         next_idx += 1
     # final $ is the CAS fence value
     cas_idx = next_idx
@@ -976,6 +1010,20 @@ def build_whole_key_delete_sql(schema: TableSchema) -> str:
         f"DELETE /*+ YbBatchedNL(named doomed) */ FROM {schema.name} AS doomed "
         f"WHERE ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}) AS named)"
     )
+
+
+def build_no_row_delete_sql(schema: TableSchema) -> str:
+    """a ``DELETE`` of the table that no row passes: its statement triggers fire and no row goes. A versioned table's
+    whole run deleted is a run marker (``SqlL3Backend.delete_prefixes``), which deletes nothing of the table, so this
+    statement under the prefix marks fires its whole-write trigger: the one change note naming the prefixes today's
+    delete left (until the change-note ring retires, append-only L3 chunk 7).
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :return: the ``DELETE``
+    :rtype: str
+    """
+    return f"DELETE FROM {schema.name} WHERE FALSE"
 
 
 def build_prefix_delete_sql(schema: TableSchema, columns: KeyColumns, *, last_as_array: bool) -> str:

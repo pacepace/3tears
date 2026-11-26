@@ -31,7 +31,7 @@ import asyncio
 import io
 import json
 import os
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -71,6 +71,8 @@ from threetears.core.ddl.change_notes import (
     prefix_write_restore_sql,
 )
 from threetears.core.ddl.ddl_lock import database_ddl_lock
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, AppendOnlyWriteError, UnstampedWriteError
+from threetears.core.ddl.run_markers import run_marker_insert_sql
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyed.point import read_row
@@ -93,7 +95,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; a load of parqu
     _PARQUET = False
 
 if TYPE_CHECKING:
-    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.collections.schema_backed import Column, TableSchema
 
 __all__ = ["SqlL3Backend", "bound_request_connection"]
 
@@ -201,6 +203,117 @@ class _BoundConnCM:
 
     async def __aexit__(self, *exc: object) -> None:
         return None
+
+
+def _unstamped(table: str) -> UnstampedWriteError:
+    """the refusal of a write to a table that declares a row epoch, of a row that carries none.
+
+    :param table: the table
+    :ptype table: str
+    :return: the error
+    :rtype: UnstampedWriteError
+    """
+    return UnstampedWriteError(
+        f"{table} declares a row epoch: every row written carries the epoch of its write ({EPOCH_COLUMN!r}), and a row "
+        f"of this write has none. Write it through its collection on a transaction that took its write's turn "
+        f"(ScopeEpochs.touch), which stamps it; a load from files names its write's version (write_version)"
+    )
+
+
+def _refuse_unstamped_rows(schema: Any, table: str, rows: Iterable[Mapping[str, Any]]) -> None:
+    """refuse rows of a table that declares a row epoch when any carries none: before anything is sent, so a write
+    that would leave the newest version of a key unknowable never reaches L3.
+
+    :param schema: the table's registered schema
+    :ptype schema: TableSchema
+    :param table: the table
+    :ptype table: str
+    :param rows: the rows
+    :ptype rows: Iterable[Mapping[str, Any]]
+    :return: nothing
+    :rtype: None
+    :raises UnstampedWriteError: when a row carries no epoch
+    """
+    if getattr(schema, "row_epoch", None) is not None and any(row.get(EPOCH_COLUMN) is None for row in rows):
+        raise _unstamped(table)
+
+
+def _refuse_unstamped_arrow(schema: Any, table: str, rows: Any) -> None:
+    """:func:`_refuse_unstamped_rows` for rows in an Arrow table: its epoch column, read by Arrow's null count, never a
+    Python value a row.
+
+    :param schema: the table's registered schema
+    :ptype schema: TableSchema
+    :param table: the table
+    :ptype table: str
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :return: nothing
+    :rtype: None
+    :raises UnstampedWriteError: when the rows have no epoch column, or a row's is null
+    """
+    if getattr(schema, "row_epoch", None) is None:
+        return
+    if EPOCH_COLUMN not in rows.column_names or rows.column(EPOCH_COLUMN).null_count:
+        raise _unstamped(table)
+
+
+def _refuse_versioned_delete(schema: Any, table: str) -> None:
+    """refuse a ``DELETE`` of a versioned table (``TableSchema.versioned``) before anything is sent: it is append-only,
+    a delete of a key a "gone" marker (``SchemaBackedCollection.delete_rows``, :meth:`SqlL3Backend.mark_gone`), a whole
+    run's one run marker (:meth:`SqlL3Backend.delete_prefixes` with its ``epoch``).
+
+    :param schema: the table's registered schema, or None
+    :ptype schema: TableSchema | None
+    :param table: the table
+    :ptype table: str
+    :return: nothing
+    :rtype: None
+    :raises AppendOnlyWriteError: when the table is versioned
+    """
+    if getattr(schema, "versioned", False):
+        raise AppendOnlyWriteError(
+            f"{table} is versioned (row_versions): append-only, never deleted from. Delete its keys through the "
+            f"collection's delete_rows / delete_arrow (each a gone marker at the delete's epoch), or a whole run "
+            f"through delete_prefixes (one run marker)"
+        )
+
+
+def _gone_marker_rows(
+    schema: TableSchema, keys: Sequence[Sequence[Any]], *, scope: Any, epoch: int
+) -> tuple[list[Column], list[list[Any]]]:
+    """the "gone" markers of ``keys`` as rows of :meth:`SqlL3Backend.mark_gone`'s statements: the marker's columns
+    (``TableSchema.gone_marker_columns``) and each key's values bound as they are written; pure, for a thread.
+
+    :param schema: the versioned table's schema
+    :ptype schema: TableSchema
+    :param keys: each key's values, in the schema's key order
+    :ptype keys: Sequence[Sequence[Any]]
+    :param scope: the scope column's value for every marker, when the key does not name it; None when it does
+    :ptype scope: Any
+    :param epoch: the delete's epoch
+    :ptype epoch: int
+    :return: the columns, and each marker's values in their order
+    :rtype: tuple[list[Column], list[list[Any]]]
+    :raises ValueError: when a key is not as wide as the table's key, or the key names no scope and none is given
+    """
+    columns = [schema.column(name) for name in schema.gone_marker_columns]
+    width = len(schema.pk_columns)
+    tail: list[Any] = []
+    if len(columns) - width == 3:
+        if scope is None:
+            raise ValueError(
+                f"{schema.name}: its key does not name its scope column {columns[width].name!r}, and a gone marker "
+                f"carries it (a restore finds the marker by it): name the deletes' scope"
+            )
+        tail.append(schema_sql.normalize_write_value(columns[width], scope))
+    tail += [epoch, True]
+    rows: list[list[Any]] = []
+    for key in keys:
+        if len(key) != width:
+            raise ValueError(f"{schema.name}: key {tuple(key)!r} has {len(key)} values where the key has {width}")
+        rows.append([*(schema_sql.normalize_write_value(columns[i], key[i]) for i in range(width)), *tail])
+    return columns, rows
 
 
 def _quote_ident(name: str) -> str:
@@ -356,14 +469,19 @@ def _bulk_params(
     :return: the columns, and each row's parameters
     :rtype: tuple[list[Any], list[list[Any]]]
     :raises ValueError: when the rows disagree on which columns they supply
+    :raises UnstampedWriteError: when the table declares a row epoch and a row carries none
     """
     columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
     names = [c.name for c in columns]
     params: list[list[Any]] = []
+    # checked here, a row at a time on the building thread, never in a pass of its own on the loop
+    stamped = getattr(schema, "row_epoch", None) is not None
     for row in rows:
         if turns is not None:
             turns.take()
         data = dict(row)
+        if stamped and data.get(EPOCH_COLUMN) is None:
+            raise _unstamped(table)
         if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
             raise ValueError(
                 f"{table}: rows of one bulk {form} must supply the same columns; "
@@ -979,6 +1097,7 @@ class SqlL3Backend:
         """
         schema = self._schemas.get(table)
         if schema is not None:
+            _refuse_unstamped_rows(schema, table, (row,))
             return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
 
         if pk is None:
@@ -1090,6 +1209,7 @@ class SqlL3Backend:
         max_rows: int,
         max_bytes: int,
         conn: Any,
+        append: bool = False,
     ) -> int:
         """Insert many new rows of a schema-registered table with ``COPY``, on the caller's transaction.
 
@@ -1119,6 +1239,9 @@ class SqlL3Backend:
         :ptype max_bytes: int
         :param conn: the caller's connection, its transaction open
         :ptype conn: Any
+        :param append: the rows are a versioned table's new versions (append-only L3): never marked whole, so they are
+            noted a row each as the upsert they replace was; on the rail the request says so (``append``)
+        :ptype append: bool
         :return: rows written
         :rtype: int
         :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one,
@@ -1143,11 +1266,14 @@ class SqlL3Backend:
             conn=conn,
             loop=asyncio.get_running_loop(),
         )
-        if len(rows) >= WHOLE_COPY_ROWS and getattr(conn, "copy_request_bytes", None) is None:
+        rail = getattr(conn, "copy_request_bytes", None) is not None
+        if len(rows) >= WHOLE_COPY_ROWS and not rail and not append:
             await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
+        # on the rail an append says so, for the broker's own marking; a direct connection's copy takes no such word
+        appending: dict[str, bool] = {"append": True} if append and rail else {}
         written = 0
         for batch in batches:
-            await conn.copy_records_to_table(table, records=batch, columns=names)
+            await conn.copy_records_to_table(table, records=batch, columns=names, **appending)
             written += len(batch)
         # the records are this call's alone, freed on a thread as an upsert's parameters are (upsert_many)
         await asyncio.to_thread(emptied, [*batches, batches], asyncio.get_running_loop())
@@ -1160,7 +1286,7 @@ class SqlL3Backend:
         columns: Sequence[str],
         types: Sequence[Any],
         *,
-        kind: Literal["upsert", "copy", "delete"],
+        kind: Literal["upsert", "copy", "delete", "gone"],
         conn: Any,
     ) -> ArrowWritePlan | None:
         """how an Arrow table's rows are written to ``table`` through the hub's Arrow write door on ``conn``; None
@@ -1182,31 +1308,50 @@ class SqlL3Backend:
         :ptype columns: Sequence[str]
         :param types: each column's Arrow type, in the order of ``columns``
         :ptype types: Sequence[pyarrow.DataType]
-        :param kind: an upsert, a copy of new rows, or a delete of keys
-        :ptype kind: Literal["upsert", "copy", "delete"]
+        :param kind: an upsert, a copy of new rows, a delete of keys, or a versioned table's "gone" markers (the rows
+            its :attr:`~threetears.core.collections.schema_backed.TableSchema.gone_marker_columns`)
+        :ptype kind: Literal["upsert", "copy", "delete", "gone"]
         :param conn: the caller's connection, its transaction open
         :ptype conn: Any
+        **A versioned table** (``TableSchema.versioned``) is append-only: its upsert is planned as an ``"append"``
+        (the rows inserted as the key's new versions, no conflict clause; the hub copies them into the table) and its
+        "gone" markers likewise; a ``"delete"`` of it is refused.
+
         :return: the plan, or None
         :rtype: ArrowWritePlan | None
-        :raises ValueError: when no schema is registered for ``table``
-        :raises KeyError: when the rows lack a key column, or a required column of an upsert or a copy
+        :raises ValueError: when no schema is registered for ``table``, or the kind does not fit the table
+            (:class:`~threetears.core.ddl.row_epoch.AppendOnlyWriteError` for a delete of a versioned table)
+        :raises KeyError: when the rows lack a key column, a required column of an upsert or a copy, or a marker's
         """
         schema = self._schemas.get(table)
         if schema is None:
             raise ValueError(f"an Arrow write needs the schema of {table!r} registered")
+        versioned = schema.versioned
+        if kind == "delete":
+            _refuse_versioned_delete(schema, table)
+        if kind == "gone" and not versioned:
+            raise ValueError(f"{table}: gone markers are a versioned table's; it is not one (row_versions)")
         given = dict(zip(columns, types, strict=True))
         missing_key = [name for name in schema.pk_columns if name not in given]
         if missing_key:
             raise KeyError(f"{table}: the rows have no key column {missing_key[0]!r}")
         if getattr(conn, "write_arrow", False) is not True or not arrow_copy_available():
             return None
-        emitted = (
-            [column for name in schema.pk_columns if (column := schema.get_column(name)) is not None]
-            if kind == "delete"
-            else schema_sql.insert_columns_for_data(schema, given)
-        )
-        update = None if kind != "upsert" else schema_sql.bulk_update_columns(schema, emitted)
-        if (kind == "upsert" and update is None) or not all(schema_sql.copy_writes(column) for column in emitted):
+        if kind == "delete":
+            emitted = [column for name in schema.pk_columns if (column := schema.get_column(name)) is not None]
+        elif kind == "gone":
+            emitted = [schema.column(name) for name in schema.gone_marker_columns]
+            unmarked = [column.name for column in emitted if column.name not in given]
+            if unmarked:
+                raise KeyError(f"{table}: a gone marker carries {unmarked[0]!r}, and the rows have none")
+        else:
+            emitted = schema_sql.insert_columns_for_data(schema, given)
+        # a versioned table's write appends (no conflict clause, so no update list): its own epoch is a new version
+        appends = versioned and kind in ("upsert", "gone")
+        update = None if kind != "upsert" or appends else schema_sql.bulk_update_columns(schema, emitted)
+        if (kind == "upsert" and not appends and update is None) or not all(
+            schema_sql.copy_writes(column) for column in emitted
+        ):
             return None
         sent: list[tuple[str, str | None, Any]] = []
         for column in emitted:
@@ -1219,6 +1364,9 @@ class SqlL3Backend:
                 sent.append((column.name, None, None))
             else:
                 raise KeyError(f"{table}.save_to_store: required column {column.name!r} missing from data")
+        if appends or kind == "gone":
+            # "gone" is a versioned table's alone (refused above otherwise), so it always appends
+            return ArrowWritePlan(kind="append", columns=tuple(sent))
         return ArrowWritePlan(
             kind=kind,
             columns=tuple(sent),
@@ -1250,7 +1398,12 @@ class SqlL3Backend:
         """
         if not rows.num_rows:
             return 0
+        if plan.kind != "delete":
+            _refuse_unstamped_arrow(self._schemas.get(table), table, rows)
         planned = await asyncio.to_thread(planned_write_table, rows, plan.columns, sort_by=plan.sort_by)
+        # an append (a versioned table's versions or gone markers) says so, so the hub copies the rows into the table
+        # and notes them a row each, as the upsert they replace was noted; named only then, for a door that predates it
+        appending: dict[str, bool] = {"append": True} if plan.kind == "append" else {}
         written: int = await conn.write_arrow_rows(
             table,
             planned,
@@ -1258,6 +1411,7 @@ class SqlL3Backend:
             update_columns=plan.update_columns,
             delete=plan.kind == "delete",
             max_rows=max_rows,
+            **appending,
         )
         _logger.debug(
             "Arrow write", extra={"extra_data": {"table": table, "kind": plan.kind, "rows": int(rows.num_rows)}}
@@ -1417,6 +1571,8 @@ class SqlL3Backend:
             raise ValueError(
                 f"{table}: a load must supply every key column; {unkeyed[0]!r} is in no file and no constant"
             )
+        if schema.row_epoch is not None and EPOCH_COLUMN not in columns and constants.get(EPOCH_COLUMN) is None:
+            raise _unstamped(table)
         if isinstance(self._pool, LoadingStore):
             # the checks above are the schema's, so both paths refuse alike; what follows is this
             # path's own: the broker copies parquet with its own codecs (so a column a binary copy
@@ -1645,7 +1801,75 @@ class SqlL3Backend:
         )
         return found
 
-    async def delete_prefixes(self, table: str, prefixes: Sequence[Mapping[str, Any]], *, conn: Any) -> int:
+    async def mark_gone(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        epoch: int,
+        scope: Any,
+        max_rows: int,
+        conn: Any,
+    ) -> int:
+        """Append a "gone" marker for each of ``keys`` of a versioned table at ``epoch``: its delete, never a
+        ``DELETE``. Each marker is the key, the scope, the epoch and ``gone`` true
+        (:attr:`~threetears.core.collections.schema_backed.TableSchema.gone_marker_columns`); the table's other columns
+        are left out, required of a live version only (its ``CHECK``). ``max_rows`` markers a multi-row ``INSERT``
+        with no conflict clause, each within the bind-parameter limit; on ``conn`` a failing statement fails the
+        caller's transaction.
+
+        :param table: the versioned table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param keys: each key's values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param epoch: the delete's epoch
+        :ptype epoch: int
+        :param scope: the scope column's value of every key, when the key does not name it; None when it does
+        :ptype scope: Any
+        :param max_rows: the most markers one statement appends; at least one
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle
+        :ptype conn: Any
+        :return: the markers appended
+        :rtype: int
+        :raises ValueError: when no schema is registered, the table is not versioned, ``max_rows`` is under one, a
+            key is not as wide as the table's key, or the key names no scope and none is given
+        """
+        schema = self._schemas.get(table)
+        if schema is None or not schema.versioned:
+            raise ValueError(f"mark_gone needs the schema of versioned table {table!r} registered")
+        if max_rows < 1:
+            raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
+        if not keys:
+            return 0
+        # the markers' values bound on a thread past a few: a Python list a key, as a bulk upsert's parameters are
+        columns, rows = (
+            await asyncio.to_thread(_gone_marker_rows, schema, keys, scope=scope, epoch=epoch)
+            if len(keys) * len(schema.pk_columns) > _STATEMENT_ON_THREAD_PARAMS
+            else _gone_marker_rows(schema, keys, scope=scope, epoch=epoch)
+        )
+        width = len(columns)
+        per_statement = max(1, min(max_rows, schema_sql.MAX_STATEMENT_PARAMS // width))
+        names = ", ".join(column.name for column in columns)
+        for start in range(0, len(rows), per_statement):
+            batch = rows[start : start + per_statement]
+            values = ", ".join(
+                "("
+                + ", ".join(
+                    schema_sql.render_param(column, row * width + place + 1) for place, column in enumerate(columns)
+                )
+                + ")"
+                for row in range(len(batch))
+            )
+            await self._execute(
+                f"INSERT INTO {table} ({names}) VALUES {values}", *(value for row in batch for value in row), conn=conn
+            )
+        _logger.debug("gone markers appended", extra={"extra_data": {"table": table, "keys": len(rows)}})
+        return len(rows)
+
+    async def delete_prefixes(
+        self, table: str, prefixes: Sequence[Mapping[str, Any]], *, conn: Any, epoch: int | None = None
+    ) -> int:
         """Delete every row of a schema-registered table whose key leads with one of ``prefixes``, on ``conn``'s
         transaction, in statements whose count is the prefixes' and never the rows': nothing is read back.
 
@@ -1670,14 +1894,38 @@ class SqlL3Backend:
         :ptype prefixes: Sequence[Mapping[str, Any]]
         :param conn: the caller's connection, its transaction open
         :ptype conn: Any
-        :return: the rows deleted
+        :param epoch: a versioned table's delete epoch: each prefix is then ONE run marker
+            (:mod:`~threetears.core.ddl.run_markers`) and nothing is deleted. Required for a versioned table, refused for
+            any other
+        :ptype epoch: int | None
+        :return: the rows deleted; for a versioned table, the run markers written
         :rtype: int
-        :raises ValueError: when no schema is registered for ``table``, or a prefix is not a leading part of the key
+        :raises ValueError: when no schema is registered for ``table``, or a prefix is not a leading part of the key;
+            when ``epoch`` does not fit the table; when a versioned table's prefix does not name its scope column
         """
+        schema = self._schemas.get(table)
+        versioned = schema is not None and schema.versioned
+        if versioned and epoch is None:
+            raise UnstampedWriteError(
+                f"{table} is versioned (row_versions): a whole run deleted is a run marker at the delete's epoch; "
+                f"name it (epoch)"
+            )
+        if not versioned and epoch is not None:
+            raise ValueError(f"{table}: a run marker's epoch is a versioned table's; it is not one (row_versions)")
         if self._scope_aware:
-            deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes])
+            # the broker runs it, writing the run markers for a versioned table (the request names the epoch)
+            marking: dict[str, Any] = (
+                {}
+                if epoch is None or schema is None or schema.row_epoch is None
+                else {"epoch": epoch, "scope": schema.row_epoch.scope}
+            )
+            deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes], **marking)
             return int(deleted)
-        statements = self._prefix_deletes(table, prefixes)
+        statements = (
+            self._run_marker_statements(table, prefixes, epoch)
+            if versioned and epoch is not None
+            else self._prefix_deletes(table, prefixes)
+        )
         if not statements:
             return 0
         reach = note_reach_text(prefixes=prefixes)
@@ -1688,6 +1936,11 @@ class SqlL3Backend:
         deleted = 0
         for sql, args in statements:
             deleted += parse_rowcount(await self._execute(sql, *args, conn=conn))
+        if versioned:
+            # the run markers deleted no row of the table, so its whole-write trigger has not fired: a statement of no
+            # row fires it, the one note naming the prefixes today's delete left (until the ring retires, chunk 7)
+            assert schema is not None  # noqa: S101 -- narrowed by versioned
+            await self._execute(schema_sql.build_no_row_delete_sql(schema), conn=conn)
         await self._execute(
             prefix_write_restore_sql(),
             NOTE_WHOLE_SETTING,
@@ -1710,6 +1963,53 @@ class SqlL3Backend:
             },
         )
         return deleted
+
+    def _run_marker_statements(
+        self, table: str, prefixes: Sequence[Mapping[str, Any]], epoch: int
+    ) -> list[tuple[str, list[Any]]]:
+        """:meth:`delete_prefixes`' run markers of a versioned table, each prefix once: one ``INSERT`` a prefix
+        (:func:`~threetears.core.ddl.run_markers.run_marker_insert_sql`), its values bound with their columns' write
+        forms and cast to text by the database.
+
+        :param table: the versioned table
+        :ptype table: str
+        :param prefixes: each prefix, the key's leading columns and their values
+        :ptype prefixes: Sequence[Mapping[str, Any]]
+        :param epoch: the delete's epoch
+        :ptype epoch: int
+        :return: each statement and its arguments, in the prefixes' first-seen order
+        :rtype: list[tuple[str, list[Any]]]
+        :raises ValueError: when a prefix is not a leading part of the key, names no scope column, or a key column has
+            no type a marker can cast
+        """
+        schema = self._schemas[table]
+        assert schema.row_epoch is not None  # noqa: S101 -- a versioned table's
+        scope = schema.row_epoch.scope
+        statements: list[tuple[str, list[Any]]] = []
+        seen: list[list[Any]] = []
+        for prefix in prefixes:
+            columns = tuple(schema.pk_columns[: len(prefix)])
+            if not prefix or set(columns) != set(prefix):
+                raise ValueError(
+                    f"{table}: {dict(prefix)} is not a key prefix (the leading columns of {list(schema.pk_columns)})"
+                )
+            if scope not in columns:
+                raise ValueError(
+                    f"{table}: a run marker is found by the table's scope {scope!r}, and the prefix {dict(prefix)} "
+                    f"does not name it"
+                )
+            values = [schema_sql.normalize_write_value(schema.column(name), prefix[name]) for name in columns]
+            if values in seen:
+                continue
+            seen.append(values)
+            declared = []
+            for name in columns:
+                kind = schema_sql.key_array_type(schema, name)
+                if kind is None:
+                    raise ValueError(f"{table}: key column {name!r} has no type a run marker's prefix can cast")
+                declared.append(kind.removesuffix("[]"))
+            statements.append((run_marker_insert_sql(declared, columns.index(scope)), [table, epoch, *values]))
+        return statements
 
     def _prefix_deletes(self, table: str, prefixes: Sequence[Mapping[str, Any]]) -> list[tuple[str, list[Any]]]:
         """:meth:`delete_prefixes`' statements, each with its arguments: the prefixes grouped by their columns and
@@ -1765,6 +2065,7 @@ class SqlL3Backend:
         :raises ValueError: as :meth:`_keys_to_delete`, and when no key column has an array form
         """
         schema = self._schemas.get(table)
+        _refuse_versioned_delete(schema, table)
         if schema is not None and len(keys) * len(schema.pk_columns) > _STATEMENT_ON_THREAD_PARAMS:
             return await asyncio.to_thread(
                 self._delete_plan, table, keys, max_rows=max_rows, loop=asyncio.get_running_loop()
@@ -2086,6 +2387,7 @@ class SqlL3Backend:
             _quote_ident(table)  # a name holding a quote is refused, as it always was
             await delete_keyed(self if conn is None else conn, table, by=dict(pk))
             return
+        _refuse_versioned_delete(schema, table)
         coerced: list[Any] = [
             schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns
         ]

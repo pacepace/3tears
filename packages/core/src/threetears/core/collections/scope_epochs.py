@@ -77,6 +77,16 @@ is read whole again, counted (``scope_epochs_whole_reads_total``). A scope's row
 by hand below the version held, is not seen: nothing here does either. Whatever the read, the answer is the one a whole
 read gives.
 
+**Newest-wins across writers: ``last_epoch``** (append-only L3, ``design-append-only-l3.md`` decision 3). A row's epoch
+is its writing process's own hybrid logical clock (:mod:`~threetears.core.ddl.row_epoch`), with no counter the writers
+share, so two writers' clocks may disagree. The table carries the order across them: every data transaction that stamped
+a row epoch records the highest it stamped as ``last_epoch`` on the scopes it touched, just before its COMMIT
+(``CallerTransaction.before_commit``), rows its touch already holds, so no new row is contended. A commit folds the
+``last_epoch`` of every scope it settles into :data:`WHOLE`'s, and :meth:`ScopeEpochs.begin` reads :data:`WHOLE`'s and
+every pending scope's (a write superseded or dead before its commit) and moves this process's clock past the highest
+(:func:`~threetears.core.ddl.row_epoch.observe_epoch`). A data transaction of the previous write still open refuses the
+``begin`` (the fence), so every stamp it left is committed and read: the next write's versions always sort above it.
+
 **Scopes a write touched are recorded as it writes.** :meth:`ScopeEpochs.touch`, in the transaction
 of each data write, marks the scopes that write changed as pending. ``commit`` moves every pending
 scope, the ones an abandoned write left included: rows a write committed before it died are then
@@ -136,6 +146,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.coordination.lease import KVLease
+from threetears.core.ddl.row_epoch import observe_epoch
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import TENANT_BY_SCHEMA
@@ -230,6 +241,10 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
             Column("previous_epoch", BIGINT_TYPE, nullable=True),
             Column("writing", BIGINT_TYPE, nullable=True),
             Column("pending", BIGINT_TYPE, nullable=True),
+            # the highest row epoch a committed transaction stamped while it touched the scope (the module's
+            # "Newest-wins across writers"); WHOLE's folds those of every scope a commit settled. NULL until a write
+            # that stamps row epochs touches it
+            Column("last_epoch", BIGINT_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
@@ -246,7 +261,11 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
                 "scope",
                 where=_PENDING,
                 asc="scope",
-                purpose=(f"{_HERE}::ScopeEpochs.commit", f"{_HERE}::ScopeEpochs._read_changed"),
+                purpose=(
+                    f"{_HERE}::ScopeEpochs.commit",
+                    f"{_HERE}::ScopeEpochs._read_changed",
+                    f"{_HERE}::ScopeEpochs._observe_last_epochs",
+                ),
                 plan_test=f"{_PLANS}::test_the_pending_scopes_are_read_through_their_partial_index",
                 reason="the scopes a write touched and no commit moved, a few hundred among tens of thousands",
             ),
@@ -743,13 +762,60 @@ class ScopeEpochs:
             "VALUES ($1, 0, 1, now(), now()) "
             "ON CONFLICT (scope) DO UPDATE SET "
             f"writing = GREATEST({self._table}.epoch, COALESCE({self._table}.writing, 0)) + 1, date_updated = now() "
-            "RETURNING writing",
+            "RETURNING writing, last_epoch",
             WHOLE,
         )
         transaction.enroll(self._collection, WHOLE)
         version = int(row["writing"])
+        await self._observe_last_epochs(row["last_epoch"], conn=conn)
         log.info("write begun", extra={"extra_data": {"table": self._collection.table_name, "version": version}})
         return version
+
+    async def _observe_last_epochs(self, settled: int | None, *, conn: Any) -> None:
+        """move this process's clock past the highest row epoch any earlier write left (the module's "Newest-wins across
+        writers"): :data:`WHOLE`'s ``last_epoch`` (``settled``), and every pending scope's, read a keyset page at a time
+        through their partial index.
+
+        :param settled: :data:`WHOLE`'s ``last_epoch``, as ``begin`` read it under the row's lock; None when none
+        :ptype settled: int | None
+        :param conn: the caller's connection, holding :data:`WHOLE`'s lock
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        """
+        pending = await keyset_rows(
+            conn,
+            self.table_name,
+            columns=("scope", "last_epoch"),
+            by={},
+            order=[Sort("scope")],
+            page=DEFAULT_PAGE_SIZE,
+            where=[Fragment('t."pending" IS NOT NULL')],
+        )
+        highest = _highest_last_epoch(pending, settled)
+        if highest is not None:
+            observe_epoch(highest)
+
+    async def _raise_last_epoch(self, conn: Any, scopes: list[str], s_max: int) -> None:
+        """record ``s_max`` as ``last_epoch`` on ``scopes``, never lowering it: a step run just before the COMMIT of a
+        transaction that stamped row epochs (``CallerTransaction.before_commit``), on rows the transaction already holds.
+
+        :param conn: the transaction's connection
+        :ptype conn: Any
+        :param scopes: the scopes, distinct; :data:`WHOLE` only from a commit, which holds its row
+        :ptype scopes: list[str]
+        :param s_max: the highest row epoch the transaction stamped
+        :ptype s_max: int
+        :return: nothing
+        :rtype: None
+        """
+        for start in range(0, len(scopes), _TOUCH_BATCH):
+            await conn.execute(
+                f"UPDATE {self._table} SET last_epoch = GREATEST(COALESCE(last_epoch, 0), $1::bigint) "  # noqa: S608 - the owner's table name
+                "WHERE scope = ANY($2::text[])",
+                s_max,
+                scopes[start : start + _TOUCH_BATCH],
+            )
 
     async def touch(self, version: int, scopes: Iterable[str], *, conn: Any) -> None:
         """record, in the transaction of a data write, that the write changed ``scopes``.
@@ -795,6 +861,10 @@ class ScopeEpochs:
         # the transaction's delta files are named by this version (decision 53): a full then covers them exactly
         transaction.note_write_version(version)
         await self._mark_pending(version, named, conn=conn)
+        if named:
+            # the highest row epoch the transaction stamps, on the scopes it touched, just before its COMMIT: the next
+            # writer's begin moves its clock past it (the module's "Newest-wins across writers")
+            transaction.before_commit(lambda on, s_max: self._raise_last_epoch(on, named, s_max))
 
     async def _mark_pending(self, version: int, scopes: list[str], *, conn: Any) -> None:
         """mark ``scopes`` pending on the caller's transaction, a batch of statements at a time.
@@ -877,12 +947,19 @@ class ScopeEpochs:
         rows = await keyset_rows(
             conn,
             self.table_name,
-            columns=("scope", "epoch", "pending"),
+            columns=("scope", "epoch", "pending", "last_epoch"),
             by={},
             order=[Sort("scope")],
             page=DEFAULT_PAGE_SIZE,
             where=[Fragment('t."pending" IS NOT NULL')],
         )
+        # every pending scope's last_epoch folds into WHOLE's, which this transaction holds (the fence above), and so
+        # does the highest stamp this transaction itself writes, just before its COMMIT: a begin reads WHOLE's and the
+        # scopes still pending (the module's "Newest-wins across writers")
+        folded = _highest_last_epoch(rows, None)
+        if folded is not None:
+            await self._raise_last_epoch(conn, [WHOLE], folded)
+        transaction.before_commit(lambda on, s_max: self._raise_last_epoch(on, [WHOLE], s_max))
         # a negative pending is a scope an earlier commit withheld and no write has touched since: it stays withheld
         touched = [row for row in rows if str(row["scope"]) != WHOLE and int(row["pending"]) > 0]
         pending = [row for row in touched if str(row["scope"]) not in holding]
@@ -937,6 +1014,23 @@ class ScopeEpochs:
         :rtype: Callable[[], None]
         """
         return self._collection.add_l1_change_listener(lambda _scope: listener())
+
+
+def _highest_last_epoch(rows: Iterable[Mapping[str, Any]], highest: int | None) -> int | None:
+    """the highest ``last_epoch`` of ``rows`` and ``highest``.
+
+    :param rows: scope rows read with their ``last_epoch``
+    :ptype rows: Iterable[Mapping[str, Any]]
+    :param highest: a ``last_epoch`` already known; None when none
+    :ptype highest: int | None
+    :return: the highest; None when no row and no ``highest`` carries one
+    :rtype: int | None
+    """
+    for row in rows:
+        value = row["last_epoch"]
+        if value is not None and (highest is None or int(value) > highest):
+            highest = int(value)
+    return highest
 
 
 def _snapshot_of(rows: Iterable[Mapping[str, Any]], held: EpochSnapshot | None = None) -> EpochSnapshot:

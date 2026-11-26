@@ -16,6 +16,7 @@ What the pod sends is the contract the hub's broker implements (``WIRE.md``; the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from threetears.nats import Subject
 
 from threetears.core.backends import arrow_copy, nats_proxy, sql
 from threetears.core.backends.arrow_copy import (
+    APPEND_FIELD,
     CONFLICT_COLUMNS_FIELD,
     DELETE_FIELD,
     JSON_COLUMNS_FIELD,
@@ -41,6 +43,7 @@ from threetears.core.backends.arrow_copy import (
     rows_digest,
     split_copy_request,
 )
+from threetears.core.backends.broker_generation import COMMIT_S_MIN_FIELD
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.schema_sql import build_bulk_insert_sql
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -58,6 +61,15 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import (
+    EPOCH_COLUMN,
+    GONE_COLUMN,
+    UnstampedWriteError,
+    epoch_wall_ms,
+    next_epoch,
+    row_versions,
+    wall_clock_ms,
+)
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -579,3 +591,151 @@ async def test_the_arrow_work_runs_off_the_event_loop(monkeypatch: pytest.Monkey
     await _saved(_Hub(write_arrow=True), _table(3))
     assert set(ran) == {"slices", "plan", "stamps", "keys"}
     assert loop_thread not in ran.values()
+
+
+# -- the row epoch: every row of an Arrow write carries its write's epoch ---------------------------------------------
+
+_VERSIONED = TableSchema(
+    name="versioned_results",
+    primary_key=("office_key", "geo_id"),
+    columns=[
+        Column("office_key", STRING_TYPE),
+        Column("geo_id", STRING_TYPE),
+        Column("votes", INT_TYPE, nullable=True),
+        Column("share", NUMERIC_TYPE, nullable=True, precision=12, scale=4),
+        Column("called_at", DATETIMETZ_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+    row_epoch=row_versions("office_key"),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+
+@pytest.mark.parametrize("copy", [False, True])
+async def test_an_arrow_write_of_a_versioned_table_stamps_every_row_with_its_writes_epoch(copy: bool) -> None:
+    hub = _Hub(write_arrow=True)
+    collection = _collection(_VERSIONED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
+        transaction.note_write_version(17)
+        await collection.save_arrow(_table(3), conn=conn, copy=copy)
+        await collection.save_arrow(_table(3), conn=conn, copy=copy)
+    first, second = hub.arrow_requests()
+    epochs = []
+    for envelope, rows, _size in (first, second):
+        assert rows.schema.field(EPOCH_COLUMN).type == pa.int64()
+        [epoch] = set(rows.column(EPOCH_COLUMN).to_pylist())
+        assert _fresh(epoch)
+        epochs.append(epoch)
+        if not copy:
+            # append-only L3, chunk 2: a rewrite appends the key's new version, never an upsert
+            assert envelope[APPEND_FIELD] is True
+            assert ON_CONFLICT_FIELD not in envelope and CONFLICT_COLUMNS_FIELD not in envelope
+    # the same keys written twice in one version: the later write sorts newer
+    assert epochs[1] > epochs[0]
+
+
+async def test_an_arrow_write_of_a_versioned_table_on_a_transaction_that_took_no_turn_is_refused() -> None:
+    hub = _Hub(write_arrow=True)
+    collection = _collection(_VERSIONED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    with pytest.raises(UnstampedWriteError, match="took no write's turn"):
+        async with proxy.acquire() as conn, CallerTransaction(conn):
+            await collection.save_arrow(_table(3), conn=conn)
+    assert hub.arrow_requests() == []
+
+
+# -- append-only: a versioned table's writes append, its deletes are gone markers, a whole run one run marker ----------
+
+
+async def _on_rail(hub: _Hub, step: Any, *, version: int = 17) -> Any:
+    collection = _collection(_VERSIONED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
+        transaction.note_write_version(version)
+        return await step(collection, conn)
+
+
+async def test_a_rewrite_of_a_versioned_table_as_python_rows_is_a_copy_that_appends() -> None:
+    hub = _Hub(write_arrow=True)
+    rows = [{"office_key": "sn_NC1", "geo_id": f"{n:05d}", "votes": n} for n in range(40)]
+    await _on_rail(hub, lambda collection, conn: collection.save_rows(rows, conn=conn))
+    # no statement at all, so no ON CONFLICT: one copy request saying it appends
+    assert hub.statements() == []
+    [(envelope, sent, _size)] = hub.arrow_requests()
+    assert envelope[APPEND_FIELD] is True
+    assert ON_CONFLICT_FIELD not in envelope and DELETE_FIELD not in envelope
+    assert sent.num_rows == 40
+    assert _fresh(sent.column(EPOCH_COLUMN)[0].as_py())
+
+
+async def test_an_arrow_delete_of_a_versioned_table_appends_a_gone_marker_a_key_at_a_newer_epoch() -> None:
+    hub = _Hub(write_arrow=True)
+    keys = pa.table({"office_key": ["sn_NC1", "sn_NC1"], "geo_id": ["00001", "00002"]})
+
+    async def step(collection: Any, conn: Any) -> None:
+        await collection.save_arrow(_table(2), conn=conn)
+        assert await collection.delete_arrow(keys, conn=conn) == 2
+
+    await _on_rail(hub, step)
+    (_, written, _), (envelope, markers, _) = hub.arrow_requests()
+    assert hub.statements() == []
+    assert envelope[APPEND_FIELD] is True and DELETE_FIELD not in envelope
+    assert markers.column_names == ["office_key", "geo_id", EPOCH_COLUMN, GONE_COLUMN]
+    assert markers.column(GONE_COLUMN).to_pylist() == [True, True]
+    [epoch] = set(markers.column(EPOCH_COLUMN).to_pylist())
+    assert epoch > written.column(EPOCH_COLUMN)[0].as_py()
+
+
+async def test_a_delete_of_a_versioned_tables_keys_appends_gone_markers_and_deletes_nothing() -> None:
+    hub = _Hub(write_arrow=True)
+    await _on_rail(
+        hub, lambda collection, conn: collection.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00002")], conn=conn)
+    )
+    [statement] = hub.statements()
+    assert statement["query"].startswith("INSERT INTO versioned_results (office_key, geo_id, epoch, gone) VALUES")
+    assert "DELETE" not in statement["query"] and "ON CONFLICT" not in statement["query"]
+
+
+async def test_a_whole_run_of_a_versioned_table_deleted_names_its_epoch_and_scope_to_the_broker() -> None:
+    hub = _Hub(write_arrow=True)
+    await _on_rail(
+        hub, lambda collection, conn: collection.delete_prefixes([{"office_key": "sn_NC1"}], conn=conn), version=23
+    )
+    [body] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.delete_prefixes")]
+    assert body["scope"] == "office_key"
+    assert _fresh(body["epoch"])
+    assert body["prefixes"] == [{"office_key": "sn_NC1"}]
+
+
+def _fresh(epoch: int) -> bool:
+    """whether an epoch is a fresh stamp of this process's clock (``wall_ms << 15 | logical``): its wall part no more
+    than a minute behind the wall clock (the clock never goes back, so it may be ahead), and below the clock's next
+    stamp."""
+    return epoch_wall_ms(epoch) > wall_clock_ms() - 60_000 and epoch < next_epoch()
+
+
+async def test_a_commit_on_the_rail_names_the_lowest_epoch_its_transaction_stamped() -> None:
+    hub = _Hub(write_arrow=True)
+    keys = pa.table({"office_key": ["sn_NC1"], "geo_id": ["00001"]})
+
+    async def step(collection: Any, conn: Any) -> None:
+        await collection.save_arrow(_table(2), conn=conn)
+        await collection.delete_arrow(keys, conn=conn)
+
+    await _on_rail(hub, step)
+    (_, written, _), (_, markers, _) = hub.arrow_requests()
+    [commit] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.commit")]
+    assert commit[COMMIT_S_MIN_FIELD] == written.column(EPOCH_COLUMN)[0].as_py()
+    assert commit[COMMIT_S_MIN_FIELD] < markers.column(EPOCH_COLUMN)[0].as_py()
+
+
+async def test_a_commit_that_stamped_nothing_names_no_s_min() -> None:
+    hub = _Hub(write_arrow=True)
+    await _on_rail(hub, lambda collection, conn: asyncio.sleep(0))
+    [commit] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.commit")]
+    assert COMMIT_S_MIN_FIELD not in commit

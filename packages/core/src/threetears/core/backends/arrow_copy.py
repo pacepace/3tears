@@ -68,6 +68,7 @@ if _PYARROW:
 __all__ = [
     "CONFLICT_COLUMNS_FIELD",
     "COPY_ARROW_FIELD",
+    "APPEND_FIELD",
     "DELETE_FIELD",
     "JSON_COLUMNS_FIELD",
     "ON_CONFLICT_FIELD",
@@ -85,6 +86,7 @@ __all__ = [
     "rows_digest",
     "split_copy_request",
     "with_constant_columns",
+    "with_typed_constants",
     "write_request_rows",
     "write_type",
 ]
@@ -113,6 +115,11 @@ UPDATE_COLUMNS_FIELD: Final = "update_columns"
 
 #: the envelope's field making its rows keys to delete: the request's columns are exactly the table's primary key
 DELETE_FIELD: Final = "delete"
+
+#: the envelope's field making its rows a versioned table's appended versions (or "gone" markers): inserted with no
+#: conflict clause, as a copy is, but noted a row each as the upsert they replace was, never as a bulk copy's one
+#: whole-table note. Never with :data:`ON_CONFLICT_FIELD` or :data:`DELETE_FIELD`
+APPEND_FIELD: Final = "append"
 
 #: the envelope's field naming the rows' IPC stream's SHA-256, base64url without padding (:func:`rows_digest`)
 ROWS_DIGEST_FIELD: Final = "rows_sha256"
@@ -485,20 +492,40 @@ def write_type(arrow_type: Any, *, as_utc: bool = False) -> Any:
     return carried
 
 
-def with_constant_columns(table: Any, values: Mapping[str, datetime]) -> Any:
-    """``table`` with each of ``values`` as a column holding it in every row: replacing a column of that name, else
-    added after the rest. Laid out by Arrow, never a Python value a row. A write's stamps (``date_created``,
-    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``.
+def with_typed_constants(table: Any, values: Mapping[str, tuple[Any, Any]]) -> Any:
+    """``table`` with each of ``values`` as a column holding one value in every row, of the Arrow type named with it:
+    replacing a column of that name, else added after the rest. Laid out by Arrow, never a Python value a row, and
+    never a type inferred from the value. A versioned table's "gone" markers (the scope, the epoch, the flag).
 
     :param table: the rows
     :ptype table: pyarrow.Table
-    :param values: each column's one value, an aware datetime
-    :ptype values: Mapping[str, datetime]
+    :param values: each column's one value and its Arrow type
+    :ptype values: Mapping[str, tuple[Any, pyarrow.DataType]]
+    :return: the rows with them
+    :rtype: pyarrow.Table
+    """
+    for name, (value, kind) in values.items():
+        column = pa.repeat(pa.scalar(value, kind), table.num_rows, memory_pool=_POOL)
+        position = table.schema.get_field_index(name)
+        table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)
+    return table
+
+
+def with_constant_columns(table: Any, values: Mapping[str, datetime | int]) -> Any:
+    """``table`` with each of ``values`` as a column holding it in every row: replacing a column of that name, else
+    added after the rest. Laid out by Arrow, never a Python value a row. A write's stamps: its times (``date_created``,
+    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``; its epoch (``epoch``), an int, as ``int64``.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param values: each column's one value, an aware datetime or an int
+    :ptype values: Mapping[str, datetime | int]
     :return: the rows with them
     :rtype: pyarrow.Table
     """
     for name, value in values.items():
-        column = pa.repeat(pa.scalar(value, pa.timestamp("us", tz="UTC")), table.num_rows, memory_pool=_POOL)
+        kind = pa.int64() if isinstance(value, int) else pa.timestamp("us", tz="UTC")
+        column = pa.repeat(pa.scalar(value, kind), table.num_rows, memory_pool=_POOL)
         position = table.schema.get_field_index(name)
         table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)
     return table

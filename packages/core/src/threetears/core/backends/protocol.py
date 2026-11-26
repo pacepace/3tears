@@ -47,6 +47,7 @@ __all__ = [
     "CopyingStore",
     "DurableStore",
     "FileLoad",
+    "GoneMarkingStore",
     "KeyLedReadingStore",
     "L3AnswerCutError",
     "L3Backend",
@@ -381,6 +382,7 @@ class CopyingStore(Protocol):
         max_rows: int,
         max_bytes: int,
         conn: Any,
+        append: bool = False,
     ) -> int:
         """Insert every row of ``rows`` into ``table``; a key already held fails the write.
 
@@ -394,6 +396,9 @@ class CopyingStore(Protocol):
         :param conn: the caller's transaction handle the copies bind to. A failing copy fails that
             transaction whole
         :ptype conn: Any
+        :param append: the rows are a versioned table's new versions (``TableSchema.versioned``): copied alike, but
+            noted a row each as the upsert they replace was, never as a bulk copy's one whole-table note
+        :ptype append: bool
         :return: rows written
         :rtype: int
         """
@@ -405,7 +410,8 @@ class ArrowWritePlan:
     """how one Arrow table's rows are written through a store's Arrow write door (:class:`ArrowWritingStore`), decided
     from the table's schema and the rows' column types before any row is read.
 
-    :ivar kind: ``"upsert"``, ``"copy"`` (new rows, insert-only) or ``"delete"`` (the rows are keys)
+    :ivar kind: ``"upsert"``, ``"copy"`` (new rows, insert-only), ``"delete"`` (the rows are keys) or ``"append"`` (a
+        versioned table's new versions or "gone" markers, inserted with no conflict clause and noted a row each)
     :ivar columns: each column the request carries, in order: its name, the rows' column it is read from (None: every
         value null, a nullable column the rows leave out) and the Arrow type it is carried as (None with no column)
     :ivar conflict_columns: an upsert's conflict target, the table's primary key; empty for a copy or a delete
@@ -414,7 +420,7 @@ class ArrowWritePlan:
     :ivar sort_by: the columns the rows are ordered by before they are sent (a copy's key); empty keeps their order
     """
 
-    kind: Literal["upsert", "copy", "delete"]
+    kind: Literal["upsert", "copy", "delete", "append"]
     columns: tuple[tuple[str, str | None, Any], ...]
     conflict_columns: tuple[str, ...] = ()
     update_columns: tuple[str, ...] = ()
@@ -438,7 +444,7 @@ class ArrowWritingStore(Protocol):
         columns: Sequence[str],
         types: Sequence[Any],
         *,
-        kind: Literal["upsert", "copy", "delete"],
+        kind: Literal["upsert", "copy", "delete", "gone"],
         conn: Any,
     ) -> ArrowWritePlan | None:
         """how rows of these columns are written to ``table`` on ``conn``; None when this store cannot write them so.
@@ -449,8 +455,8 @@ class ArrowWritingStore(Protocol):
         :ptype columns: Sequence[str]
         :param types: each column's Arrow type, in the order of ``columns``
         :ptype types: Sequence[pyarrow.DataType]
-        :param kind: an upsert, a copy of new rows, or a delete of keys
-        :ptype kind: Literal["upsert", "copy", "delete"]
+        :param kind: an upsert, a copy of new rows, a delete of keys, or a versioned table's "gone" markers
+        :ptype kind: Literal["upsert", "copy", "delete", "gone"]
         :param conn: the caller's connection, its transaction open
         :ptype conn: Any
         :return: the plan, or None
@@ -915,8 +921,11 @@ class PrefixDeletingStore(Protocol):
         prefixes: Sequence[Mapping[str, Any]],
         *,
         conn: Any,
+        epoch: int | None = None,
     ) -> int:
-        """Delete every row of ``table`` whose key leads with one of ``prefixes``; return how many rows went.
+        """Delete every row of ``table`` whose key leads with one of ``prefixes``; return how many rows went. A
+        versioned table (``TableSchema.versioned``) is never deleted from: each prefix is ONE run marker at ``epoch``
+        (:mod:`~threetears.core.ddl.run_markers`), and the count returned is the markers written.
 
         :param table: the table; its schema registered with the store
         :ptype table: str
@@ -924,7 +933,47 @@ class PrefixDeletingStore(Protocol):
         :ptype prefixes: Sequence[Mapping[str, Any]]
         :param conn: the caller's transaction handle the delete binds to; a failing delete fails it whole
         :ptype conn: Any
-        :return: the rows deleted
+        :param epoch: a versioned table's delete epoch, required for one and refused for any other table
+        :ptype epoch: int | None
+        :return: the rows deleted, or the run markers written
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class GoneMarkingStore(Protocol):
+    """A durable store that deletes keys of a versioned table (``TableSchema.versioned``) by appending a "gone" marker
+    a key at the delete's epoch, on the caller's transaction: the seam
+    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_rows` deletes a versioned table's
+    keys through. No method takes SQL.
+    """
+
+    async def mark_gone(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        epoch: int,
+        scope: Any,
+        max_rows: int,
+        conn: Any,
+    ) -> int:
+        """Append a "gone" marker for each of ``keys`` at ``epoch``; return how many were appended.
+
+        :param table: the versioned table; its schema registered with the store
+        :ptype table: str
+        :param keys: each key's values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param epoch: the delete's epoch
+        :ptype epoch: int
+        :param scope: the scope column's value of every key, when the key does not name it; None when it does
+        :ptype scope: Any
+        :param max_rows: the most markers one statement appends
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; a failing append fails it whole
+        :ptype conn: Any
+        :return: the markers appended
         :rtype: int
         """
         ...
