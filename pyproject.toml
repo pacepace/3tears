@@ -725,6 +725,7 @@ module = [
     "packages.core.tests.unit.ddl.test_append_only_writes",
     "packages.core.tests.unit.test_keyed_newest_versions",
     "packages.core.tests.unit.test_keyed_newest_resets",
+    "packages.core.tests.unit.test_keyed_newest_scope_inside",
     "packages.core.tests.integration.test_reset_marker_reads_live",
     "packages.core.tests.unit.test_keyed_stamped_gone",
     "packages.core.tests.integration.test_reload_analyzed_live",
