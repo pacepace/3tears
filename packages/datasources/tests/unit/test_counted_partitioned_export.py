@@ -349,7 +349,8 @@ class _Hub:
 
     As on the bus, an export ask is a request: the caller's cancel stops only its wait, and the hub goes
     on writing the export and answers. A delete is a request too, held before it reaches the hub (the
-    client's send), and deletes what sits under the destination's prefix when it does.
+    client's send), and deletes what sits under the destination's prefix when it does -- or, asked while
+    the hub's UNLOAD still writes, is deferred, as the hub defers it, and runs when the UNLOAD ends.
     """
 
     def __init__(self, parts: dict[str, list[list[dict[str, Any]]]], *, pause: str | None = None) -> None:
@@ -365,6 +366,8 @@ class _Hub:
         self.fails: DatasourceQueryError | None = None
         self.deleted: list[str] = []
         self.running: asyncio.Future[DatasourceExportResult] | None = None
+        #: a delete asked while the UNLOAD wrote, run when it ends
+        self.pending: str | None = None
 
     async def _write(self) -> DatasourceExportResult:
         keys = list(self._export)  # the data files, then the manifest
@@ -381,22 +384,36 @@ class _Hub:
             row_count=self._rows, bucket=_BUCKET, object_prefix=_PREFIX, manifest_path=f"{_PREFIX}manifest"
         )
 
+    async def _written(self) -> DatasourceExportResult:
+        try:
+            return await self._write()
+        finally:
+            if self.pending is not None:
+                self._delete_now(self.pending)
+
     async def export(
         self, datasource_name: str, select: str, *, destination: str, partition_by: str | None = None
     ) -> DatasourceExportResult:
-        self.running = asyncio.ensure_future(self._write())
+        self.running = asyncio.ensure_future(self._written())
         return await asyncio.shield(self.running)
+
+    def _delete_now(self, destination: str) -> int:
+        prefix = f"exports/reports-warehouse/{destination}/"
+        gone = [key for key in self.objects if key.startswith(prefix)]
+        for key in gone:
+            del self.objects[key]
+        return len(gone)
 
     async def delete_export(self, datasource_name: str, *, destination: str) -> int:
         if self.hold_delete:
             self.deleting.set()
             await self.delete_resume.wait()
-        prefix = f"exports/reports-warehouse/{destination}/"
-        gone = [key for key in self.objects if key.startswith(prefix)]
-        for key in gone:
-            del self.objects[key]
         self.deleted.append(destination)
-        return len(gone)
+        if self.running is not None and not self.running.done():
+            # the hub's deferred delete: kept until the UNLOAD ends, then run by its destination
+            self.pending = destination
+            return 0
+        return self._delete_now(destination)
 
     async def finished(self) -> None:
         """the hub's export over, however it ended: what it leaves in the bucket is final."""
@@ -431,8 +448,8 @@ _COUNTS = {"TX": 3, "DE": 2}
 async def test_an_export_cancelled_at_any_point_leaves_no_export_behind(point: str) -> None:
     """Flips if a cancel landing while the export is asked (the hub still writing) or proven leaves its files.
 
-    The cancel is raised, never swallowed, and only once the hub has stopped writing and the export was
-    deleted: a delete sent while the hub still wrote would leave the files written after it.
+    The cancel is raised, never swallowed, once the delete was asked; the hub runs a delete asked while it
+    still wrote when its UNLOAD ends, so nothing written after it is left.
     """
     after_write = point.startswith("after")
     hub = _Hub(_PARTS, pause=None if after_write else point)
@@ -494,3 +511,45 @@ async def test_a_failed_ask_is_deleted_unless_the_hub_refused_it_before_anything
     assert hub.deleted == deleted
     if deleted:
         assert hub.objects == {}, "the files an UNLOAD wrote before it failed were left in the bucket"
+
+
+async def _settled(task: asyncio.Task[Any], *, turns: int = 100) -> bool:
+    """whether ``task`` ends within ``turns`` passes of the event loop while the hub stays held: no timer.
+
+    :param task: the caller
+    :ptype task: asyncio.Task[Any]
+    :param turns: the passes of the loop it is given
+    :ptype turns: int
+    :return: whether it ended
+    :rtype: bool
+    """
+    for _ in range(turns):
+        if task.done():
+            break
+        await asyncio.sleep(0)
+    return task.done()
+
+
+@pytest.mark.parametrize("point", ["before the write", "mid-write"])
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_export_is_asked_returns_without_waiting_for_the_unload(point: str) -> None:
+    """Flips if a caller cancelled while its export is asked waits for the hub's UNLOAD before its cancel is raised.
+
+    A pod's shutdown or rollout would otherwise wait out the warehouse's statement deadline. The delete is asked
+    at once, while the hub still writes, and the hub deletes the export when its UNLOAD ends: nothing is left.
+    """
+    hub = _Hub(_PARTS, pause=point)
+    task = asyncio.create_task(_counted(hub, _Store(hub.objects), _COUNTS))  # type: ignore[arg-type]
+    await hub.paused.wait()
+
+    task.cancel()
+    settled = await _settled(task)
+    asked_while_writing = list(hub.deleted)
+    hub.resume.set()  # the hub held until here, whatever the caller did
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await hub.finished()
+
+    assert settled, f"a cancel {point} waited for the hub's UNLOAD to end"
+    assert asked_while_writing == [_DESTINATION], "the delete was not asked while the hub still wrote"
+    assert hub.objects == {}, f"a cancel {point} left the export's files in the bucket"
