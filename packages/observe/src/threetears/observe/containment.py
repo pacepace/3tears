@@ -38,6 +38,7 @@ import inspect
 import logging
 import os
 import shutil
+import traceback
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from types import FrameType, TracebackType
@@ -45,7 +46,7 @@ from typing import Literal
 
 from threetears.observe.metrics import counter
 
-__all__ = ["ContainedLevel", "contain", "contained", "remove_tree"]
+__all__ = ["ContainedLevel", "contain", "contained", "frames_released", "remove_tree"]
 
 #: the levels a contained failure is logged at: nothing below WARNING, since a failure logged where
 #: nobody reads it is the silence this exists to end. named rather than numeric so a caller needs no
@@ -217,3 +218,41 @@ def remove_tree(path: str | os.PathLike[str], *, log: logging.Logger, what: str)
         contain(exc, log=log, what=f"{what} could not be removed", extra={"path": str(failed_path)})
 
     shutil.rmtree(path, onexc=_failed)
+
+
+def frames_released[E: BaseException](exc: E) -> E:
+    """``exc``, to be kept past its ``except`` block (on an object, in a list, for a later raise), let go of the frames
+    its traceback holds: where each frame was stays with it as a note, and the frames -- with every local they held --
+    go.
+
+    WHY: a traceback holds the frame that caught it, and that frame holds its locals, so an exception kept on an
+    object the catching frame holds (``result.error = exc``) is a reference cycle: object -> exception -> traceback ->
+    frame -> object. Reference counting never frees a cycle; only a full collection does, which walks the whole heap
+    with the interpreter lock held. Every local of every frame in the traceback is kept until then: on reports' pods
+    a state's exported rows (zero-copy Arrow over shared memory) were kept so (2026-11-01, 2.9 GiB pinned), and a pod
+    that runs no full collection (reports, 2026-11-25) would keep them for good. Clearing the frames where it is caught
+    does not do: the catching frame is still running, and every frame below it holds it as its caller.
+
+    The exception's cause and context (and an exception group's members) are released alike. Each gets its traceback
+    as text in a note (``traceback.format_tb``), so a later raise or log of it still says where it was raised.
+
+    :param exc: the exception caught
+    :ptype exc: BaseException
+    :return: the same exception, holding no frame
+    :rtype: BaseException
+    """
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        each = pending.pop()
+        if id(each) in seen:
+            continue
+        seen.add(id(each))
+        held = each.__traceback__
+        if held is not None:
+            each.add_note("raised at (its frames let go):\n" + "".join(traceback.format_tb(held)).rstrip())
+            each.__traceback__ = None
+        pending.extend(found for found in (each.__cause__, each.__context__) if found is not None)
+        if isinstance(each, BaseExceptionGroup):
+            pending.extend(each.exceptions)
+    return exc

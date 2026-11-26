@@ -141,6 +141,18 @@ run (reports' `_whole_tiers`); `ApplyPlan` carries `merges` and `instants`. A sc
 (a space, an apostrophe, non-ASCII, `all`, a tier-like name, over 96 characters) names its part escaped (`e.` and
 `.XX` bytes) or hashed (`h.`), never failing at publish: `copy_parts.part_name` and `scope_of_part`.
 
+### observe, core: a kept failure and the shared Arrow store make no reference cycle
+
+**Added:** `threetears.observe.frames_released(exc)`: an exception to be kept past its `except` block (on a result, in a
+list, on a future) let go of the frames its traceback holds, its cause's and context's too; where each was raised stays
+with it as a note. Kept with its traceback, such a failure is a reference cycle through the catching frame (object ->
+exception -> traceback -> frame -> object), and every local of every frame in it -- a state's rows, say -- is kept until
+a full collection. Reports' pod runs none (2026-11-25: one walked the whole heap with the interpreter lock held, up to
+0.94 s of the serving loop), so it frees only what reference counting frees.
+
+**Changed:** `SharedArrowStore`'s held-files tally calls the store back through a weak reference, not a bound method:
+the two were a reference cycle, so a store let go kept itself and its tally until a full collection.
+
 ### core: a write of many rows is one invalidation broadcast, its keys packed as Arrow (one cutover)
 
 **Changed (wire, one cutover: every process on the bus must run this release):** a write of many rows

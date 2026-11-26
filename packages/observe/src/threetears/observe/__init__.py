@@ -21,7 +21,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.observe.background import cancel_and_wait, spawn_background
 from threetears.observe.build_once import BuildOnce, WeakBuildOnce
-from threetears.observe.containment import ContainedLevel, contain, contained, remove_tree
+from threetears.observe.containment import ContainedLevel, contain, contained, frames_released, remove_tree
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.frozen_weak import FrozenWeakKeys, FrozenWeakSet, FrozenWeakValues
 from threetears.observe.periodic import NextDelay, PeriodicTask, TickResult
@@ -69,6 +69,7 @@ __all__ = [
     "cancel_and_wait",
     "contain",
     "contained",
+    "frames_released",
     "remove_tree",
     "counter",
     "gauge",

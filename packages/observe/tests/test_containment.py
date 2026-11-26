@@ -9,13 +9,16 @@ the task that was asked to stop.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
+import traceback
+import weakref
 from pathlib import Path
 
 import pytest
 from prometheus_client import REGISTRY
 
-from threetears.observe import contain, contained, get_logger, remove_tree
+from threetears.observe import contain, contained, frames_released, get_logger, remove_tree
 
 _log = get_logger(__name__)
 _MODULE = __name__
@@ -158,3 +161,53 @@ class TestRemoveTree:
             assert (locked / "stuck").exists() and not (tree / "free").exists()
         finally:
             locked.chmod(0o700)
+
+
+class _Holder:
+    """what keeps a caught failure past its except block, as a result keeps the error it hands on."""
+
+    error: BaseException | None = None
+
+
+class _Rows:
+    """a local the raising frames hold: what a reference cycle through them would keep."""
+
+
+def _raises(rows: _Rows) -> None:
+    try:
+        raise KeyError("the inner failure")
+    except KeyError as inner:
+        raise ValueError("the failure kept") from inner
+
+
+def _keeps(release: bool) -> tuple[_Holder, weakref.ref[_Rows], weakref.ref[_Holder]]:
+    holder, rows = _Holder(), _Rows()
+    try:
+        _raises(rows)
+    except ValueError as exc:
+        holder.error = frames_released(exc) if release else exc
+    return holder, weakref.ref(rows), weakref.ref(holder)
+
+
+def test_a_failure_kept_with_its_frames_released_makes_no_reference_cycle() -> None:
+    """a failure kept on an object its catching frame holds is a cycle (object -> failure -> traceback -> frame ->
+    object), freed only by a full collection, with every local of every frame in it. Released, reference counting
+    frees it all, and where it was raised -- its cause's too -- stays with it as text."""
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        holder, rows, held = _keeps(release=False)
+        del holder
+        assert rows() is not None and held() is not None, (
+            "the plain kept failure made no cycle: the test proves nothing"
+        )
+        gc.collect()
+        holder, rows, held = _keeps(release=True)
+        assert holder.error is not None and holder.error.__traceback__ is None
+        told = "".join(traceback.format_exception(holder.error))
+        assert "in _raises" in told and "the inner failure" in told and "in _keeps" in told
+        del holder
+        assert rows() is None and held() is None, "the released failure still held its frames"
+    finally:
+        if collecting:
+            gc.enable()
