@@ -75,7 +75,7 @@ from threetears.core.collections.schema_backed import rail_arrow_types
 from threetears.core.keyed import InlineDuckDB, read_state_arrow, run_inline
 
 if TYPE_CHECKING:
-    from threetears.core.collections.copy_follower import FollowedTable, FollowerBackend
+    from threetears.core.collections.copy_follower import FollowedTable, FollowerStages
     from threetears.core.collections.copy_reads import CopyReads
 
 try:
@@ -1001,7 +1001,7 @@ class VolumeFulls:
 
     async def stage(
         self,
-        backend: FollowerBackend,
+        backend: FollowerStages,
         *,
         manifest: FullManifest | None = None,
         stage_name: Callable[[str], str] | None = None,
@@ -1012,7 +1012,7 @@ class VolumeFulls:
         full is published, or the current one does not hold every table.
 
         :param backend: the copy
-        :ptype backend: FollowerBackend
+        :ptype backend: FollowerStages
         :param manifest: the manifest to load, read already; None reads the current one
         :ptype manifest: FullManifest | None
         :param stage_name: each table's stage name; None stages in the table's rows stage, as a start does. A running
@@ -1090,7 +1090,7 @@ class VolumeFulls:
 
     async def _stage_states(
         self,
-        backend: FollowerBackend,
+        backend: FollowerStages,
         reads: CopyReads,
         manifest: FullManifest,
         stage_name: Callable[[str], str] | None,
@@ -1151,7 +1151,7 @@ class VolumeFulls:
         )
         return StagedFull(manifest=manifest.name, versions=versions, marks=marks, changes=changes, rows=rows)
 
-    def _stage_part(self, backend: FollowerBackend, stage: str, table: FollowedTable, part: FullPart) -> int:
+    def _stage_part(self, backend: FollowerStages, stage: str, table: FollowedTable, part: FullPart) -> int:
         """one part read off the volume and staged, on the caller's worker thread.
 
         :return: the rows staged

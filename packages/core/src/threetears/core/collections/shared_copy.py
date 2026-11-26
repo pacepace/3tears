@@ -36,8 +36,12 @@ escaped, or hashed, for a value the store would refuse as a name.
 **A change** is pages in the order they were staged (:class:`ChangePage`): a rows page upserts its rows, a keys page
 deletes its keys, and a key's last page wins (a key named in a keys page after its rows page is gone, a rows page after
 it is back; a page naming a key twice keeps its last row): the semantics of the staging tables this was moved from
-(reports' ``follower_parts.Stages``), settled in Arrow (:func:`~threetears.core.arrow_keys.last_rows`). A table named
-in ``whole`` is replaced by the change's rows: every part it held is dropped or rewritten.
+(reports' ``follower_parts.Stages``), settled in Arrow (:func:`~threetears.core.arrow_keys.last_rows`). A leave page
+(:data:`LEAVE`) names keys the change leaves as the copy holds them: every earlier page's naming of them is void, a
+later page's stands (a follower's ``unstage_keys``, ``copy_stages``). A page may join several pages of a change
+(``ChangePage.places``: each run of its rows and its place among them): the worker slices it back into its places
+before settling, so a change staged as thousands of small pages crosses as a few. A table named in ``whole`` is
+replaced by the change's rows: every part it held is dropped or rewritten.
 
 **A part's rows** are its held rows but those whose keys the change names, plus the rows the change writes to it, in
 key order, so a row keeps its place and a column the change leaves alone keeps its column token (``shared_arrow.
@@ -143,6 +147,7 @@ from threetears.observe import contain, get_logger
 __all__ = [
     "INDEX_PREFIXES",
     "KEYS",
+    "LEAVE",
     "LOCATED_PREFIX",
     "MARK_TABLE",
     "MAX_VERSION_FILES",
@@ -182,6 +187,11 @@ log = get_logger(__name__)
 ROWS: Final = "rows"
 #: a page of keys to delete (:class:`ChangePage`)
 KEYS: Final = "keys"
+#: a page of keys the change leaves as the copy holds them: what an earlier page of the change said of each is void
+#: (:class:`ChangePage`). Why: a follower takes keys back out of a change it staged when their scope moved while it
+#: read (``copy_follower.CopyFollower._leave_out``); settled here, in the apply worker, so the serving process never
+#: filters the staged pages
+LEAVE: Final = "leave"
 
 #: between a table and its part in a version's file name, and the files' suffix: ``{table}@{part}.arrow``
 #: (``shared_arrow.version_files``' contract)
@@ -283,6 +293,9 @@ _VERSION: Final = re.compile(r"^c-(?P<n>\d+)$")
 #: a part's row's place among the rows of a change: its rows page's row, or none for a keys page's key
 _ROW: Final = "__row"
 
+#: whether a key's event is a leave page's (:data:`LEAVE`): a key whose last event is one is left as held
+_LEFT: Final = "__left"
+
 #: a scope value no key's locator names (a key the copy never held): its part is none
 _NO_SCOPE: Final = "\x00none"
 
@@ -291,18 +304,32 @@ _NO_SCOPE: Final = "\x00none"
 class ChangePage:
     """one page of a change, in the order staged.
 
-    :ivar kind: :data:`ROWS` (upsert its rows) or :data:`KEYS` (delete its keys)
+    :ivar kind: :data:`ROWS` (upsert its rows), :data:`KEYS` (delete its keys) or :data:`LEAVE` (leave its keys as
+        held: the change's earlier pages of them are void)
     :ivar table: the table
     :ivar rows: its rows (every column of the table) or its keys (the key's columns, as text or typed)
+    :ivar places: for a page joining several of its change's pages, each run of its rows, in row order: its place and
+        its rows. Neighbouring pages with places are one run of the change, applied in place order (a place given
+        once, rising across changes: ``copy_stages``); empty for a page applied where it stands
+
+    **Why places.** Each page crosses to the apply worker as a file of its own, and a follower stages a big change a
+    page of keys and a page of rows at a time, the two kinds alternating: a commit of 25,000 keys in pages of 50 was
+    some 1,900 files, past the process's open files. Joined by kind with their places, they cross as a few, and the
+    worker slices them back (zero-copy) into the order they were staged in.
     """
 
     kind: str
     table: str
     rows: pa.Table
+    places: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
-        if self.kind not in (ROWS, KEYS):
-            raise ValueError(f"a change's page is {ROWS!r} or {KEYS!r}, not {self.kind!r}")
+        if self.kind not in (ROWS, KEYS, LEAVE):
+            raise ValueError(f"a change's page is {ROWS!r}, {KEYS!r} or {LEAVE!r}, not {self.kind!r}")
+        if self.places and sum(rows for _place, rows in self.places) != self.rows.num_rows:
+            raise ValueError(
+                f"a page's places name {sum(r for _p, r in self.places)} rows; it holds {self.rows.num_rows}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -711,6 +738,7 @@ class ApplyPlan:
         (``arrow_keys.canonical_texts``)
     :ivar run_times: where the runs' times the merges see are held (:class:`RunTimes`); None for none
     :ivar columns: the product's computed columns (:class:`ColumnHooks`); None for none
+    :ivar places: each handed page's places (:attr:`ChangePage.places`), in order; empty when none has any
     """
 
     root: str
@@ -728,6 +756,7 @@ class ApplyPlan:
     canonical: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     run_times: RunTimes | None = None
     columns: ColumnHooks | None = None
+    places: tuple[tuple[tuple[int, int], ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -922,7 +951,8 @@ def _settled(
     canonical: Mapping[str, str] = EMPTY,
     unread: Collection[str] = (),
 ) -> _Settled:
-    """a table's pages, in order, as the rows they leave upserted and the keys deleted: each key's last page wins.
+    """a table's pages, in order, as the rows they leave upserted and the keys deleted: each key's last page wins, and
+    a key whose last page is a leave page (:data:`LEAVE`) is neither: the change leaves it as held.
 
     An instant in the key (``instants``) is kept in one spelling, of the rows and of the keys alike, so a key a change
     record names (``key_text``: ``2026-11-03T23:59:00.000000+00:00``) finds the row the rail wrote
@@ -961,12 +991,14 @@ def _settled(
             offset += page.num_rows
         else:
             at = pa.nulls(page.num_rows, pa.int64())
-        events.append(keys.append_column(_ROW, at))
+        left = pa.array(np.full(page.num_rows, kind == LEAVE, dtype=np.bool_))
+        events.append(keys.append_column(_ROW, at).append_column(_LEFT, left))
     if not events:
         empty = key_schema.empty_table()
         return _Settled(schema.empty_table(), empty, empty)
     happened = pa.concat_tables(events).combine_chunks()
     final = happened.take(pa.array(last_rows(happened, key)))
+    final = final.filter(pc.invert(final[_LEFT])).drop_columns([_LEFT])
     upserted = pc.is_valid(final[_ROW])
     written = pa.concat_tables(rows) if rows else schema.empty_table()
     return _Settled(
@@ -2062,6 +2094,39 @@ def _settle_whole_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     )
 
 
+def _as_staged(
+    pages: Sequence[tuple[str, str, pa.Table]], places: Sequence[tuple[tuple[int, int], ...]]
+) -> list[tuple[str, str, pa.Table]]:
+    """the pages as their change staged them: each run of neighbouring pages with places (:attr:`ChangePage.places`)
+    sliced back into its places (zero-copy) and put in place order; every other page where it stands.
+
+    :param pages: each handed page's kind, table and rows, in order
+    :ptype pages: Sequence[tuple[str, str, pa.Table]]
+    :param places: each page's places, in the same order
+    :ptype places: Sequence[tuple[tuple[int, int], ...]]
+    :return: the pages, in order
+    :rtype: list[tuple[str, str, pa.Table]]
+    """
+    ordered: list[tuple[str, str, pa.Table]] = []
+    run: list[tuple[int, str, str, pa.Table]] = []
+    for (kind, table, rows), held in zip(pages, places, strict=True):
+        if not held:
+            ordered.extend((kind, table, sliced) for _place, kind, table, sliced in sorted(run, key=_place_of))
+            run = []
+            ordered.append((kind, table, rows))
+            continue
+        offset = 0
+        for place, count in held:
+            run.append((place, kind, table, rows.slice(offset, count)))
+            offset += count
+    ordered.extend((kind, table, sliced) for _place, kind, table, sliced in sorted(run, key=_place_of))
+    return ordered
+
+
+def _place_of(placed: tuple[int, str, str, pa.Table]) -> int:
+    return placed[0]
+
+
 def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     """a change applied in the apply worker (:class:`SharedCopyBackend`): its pages mapped from the hand-off, the
     version it applies to mapped, and each part it rewrites written into the job's result, then the hooks' derived
@@ -2079,7 +2144,10 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     version = None if context.version is None else context.version.name
     base: Mapping[str, Any] = EMPTY if version is None else version_files(plan.root, version)
     mapped = EMPTY if context.tables is None else context.tables.tables
-    pages = [(kind, table, mapped[f"p{at}"]) for at, (kind, table) in enumerate(plan.pages)]
+    pages = _as_staged(
+        [(kind, table, mapped[f"p{at}"]) for at, (kind, table) in enumerate(plan.pages)],
+        plan.places or ((),) * len(plan.pages),
+    )
     tables = _tables_of(plan)
     slot = context.result
     if not isinstance(slot, (PiecedSlot, SegmentSlot)):
@@ -2652,6 +2720,15 @@ class SharedCopyBackend:
         """
         return self._rules
 
+    @property
+    def schemas(self) -> Mapping[str, pa.Schema]:
+        """each table's columns, read-only.
+
+        :return: table -> its schema
+        :rtype: Mapping[str, pa.Schema]
+        """
+        return self._schemas
+
     def use_rules(self, rules: Mapping[str, PartRule]) -> None:
         """hold the tables by these rules from the next change on: a table whose held parts are of another shape is
         rewritten whole in its new one as the change touching it lands.
@@ -2688,6 +2765,7 @@ class SharedCopyBackend:
             schemas=tuple(self._schemas.items()),
             rules=tuple(self._rules.items()),
             pages=tuple((page.kind, page.table) for page in pages),
+            places=tuple(page.places for page in pages) if any(page.places for page in pages) else (),
             whole=frozenset(whole),
             # a whole settle due derives every scope at once: a change's own derive before it is work thrown away
             hooks=None if self._whole_due else self._hooks,

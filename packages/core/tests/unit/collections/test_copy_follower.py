@@ -63,7 +63,8 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     PartialStamp,
     require_generation_by_trigger,
 )
-from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
+from threetears.core.collections.copy_stages import SharedCopyStages  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy, SharedCopy, copy_rows  # noqa: E402
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
 from threetears.core.collections.change_notes import NotedKeysCursor, NotedKeysPage  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
@@ -115,6 +116,27 @@ def _backend() -> DuckDBBackend:
     backend = DuckDBBackend()
     _OPENED.append(backend.reset)
     return backend
+
+
+#: a test's copy: the copy's worker backend (``copy_stages.SharedCopyStages``), or the in-process DuckDB a test that
+#: drives the DuckDB itself (patches its apply, reads its stages' tables) still runs over
+Copy = SharedCopyStages | DuckDBBackend
+
+
+def _copy_of(tables: Sequence[FollowedTable], *, duckdb: bool = False) -> tuple[Copy, Any, CopyQueries]:
+    """a test's copy of ``tables``: what the test inspects, the follower's backend, and its query pool.
+
+    The worker backend by default, as a pod keeps its copy: each change applied in its apply worker, a reload staged in
+    its reload worker. ``duckdb``: the in-process DuckDB, each applied state published (``PublishedCopy``), for a test
+    that drives the DuckDB itself.
+    """
+    if not duckdb:
+        shared = SharedCopy(tables)
+        return shared.copy, shared.copy, shared.queries
+    backend = _backend()
+    backend.initialize(_metadata())
+    published = PublishedCopy(backend)
+    return backend, published, published.queries
 
 
 @pytest.fixture(autouse=True)
@@ -256,17 +278,18 @@ def _world(
     retry_waits: tuple[float, float] = (1.0, 60.0),
     page_size: int = 50,
     workers: ProcessWorkers | None = None,
-) -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
+    *,
+    duckdb: bool = False,
+) -> tuple[tuple[_L3, _Log, _Seqlock, Any, CopyFollower], CollectionRegistry]:
     l3, log, lock = _L3(), _Log(), _Seqlock()
-    backend = _backend()
-    backend.initialize(_metadata())
+    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)]
+    backend, followed, queries = _copy_of(tables, duckdb=duckdb)
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
-    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
-        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS)],
-        published,
+        tables,
+        followed,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -274,13 +297,16 @@ def _world(
         page_size=page_size,
         retry_waits=retry_waits,
         drift_workers=_WORKERS if workers is None else workers,
-        queries=published.queries,
+        queries=queries,
     )
     follower.register()
     return (l3, log, lock, backend, follower), registry
 
 
-def _copy(backend: DuckDBBackend) -> list[tuple[Any, ...]]:
+def _copy(backend: Copy) -> list[tuple[Any, ...]]:
+    """what the copy holds now: the worker backend's current version, read in this process (Arrow), or the DuckDB's."""
+    if isinstance(backend, SharedCopyStages):
+        return copy_rows(backend.backend.store, _TABLE, ("state", "geo_id", "votes"))
     with backend.read_snapshot() as cursor:
         return sorted(cursor.execute(f"SELECT state, geo_id, votes FROM {_TABLE}").fetchall())
 
@@ -544,17 +570,17 @@ def _replica(
     part_rows: int = 40,
     notes: Any = None,
     delta_files: bool = False,
+    duckdb: bool = False,
     **stamps: Any,
-) -> tuple[DuckDBBackend, CopyFollower, Any]:
-    backend = _backend()
-    backend.initialize(_metadata())
+) -> tuple[Copy, CopyFollower, Any]:
     tables = [
         FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"), delta_files=delta_files)
     ]
+    backend, followed, queries = _copy_of(tables, duckdb=duckdb)
     checkpoints = CopyCheckpoints(
         name="votes",
         tables=tables,
-        backend=backend,
+        backend=followed,
         store=store,
         pointers=pointers,
         retire=store.retire,
@@ -565,11 +591,10 @@ def _replica(
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
     registry.set_noted_keys_reader(notes)
-    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
         tables,
-        published,
+        followed,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -578,7 +603,7 @@ def _replica(
         checkpoints=checkpoints,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
-        queries=published.queries,
+        queries=queries,
     )
     return backend, follower, checkpoints
 
@@ -1273,17 +1298,17 @@ def _scoped_world(
     page_size: int = 50,
     workers: ProcessWorkers | None = None,
     registry: CollectionRegistry | None = None,
-) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
+    duckdb: bool = False,
+) -> tuple[_L3, _Log, Any, CopyFollower]:
     l3, log = _L3(), _Log()
-    backend = _backend()
-    backend.initialize(_metadata())
+    tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
+    backend, followed, queries = _copy_of(tables, duckdb=duckdb)
     registry = CollectionRegistry() if registry is None else registry
     registry.follow_generation(_TABLE)
-    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
-        [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))],
-        published,
+        tables,
+        followed,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -1291,7 +1316,7 @@ def _scoped_world(
         page_size=page_size,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS if workers is None else workers,
-        queries=published.queries,
+        queries=queries,
     )
     follower.register()
     return l3, log, backend, follower
@@ -1808,18 +1833,17 @@ async def test_a_whole_read_kept_across_a_moved_stamp_still_reads_the_scopes_it_
     assert _copy(backend) == l3.held()
 
 
-def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
+def _office_world(lock: _Scopes) -> tuple[_L3, _Log, Any, CopyFollower]:
     """a table keyed by a column that leads without the scope (an office's key), its scope in the row only."""
     l3, log = _L3(), _Log()
-    backend = _backend()
-    backend.initialize(_metadata())
+    tables = [FollowedTable(name=_TABLE, key=("geo_id", "state"), columns=_COLUMNS, scope=("state", "state:"))]
+    backend, followed, queries = _copy_of(tables)
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
-    published = PublishedCopy(backend)
     follower = CopyFollower(
         registry,
-        [FollowedTable(name=_TABLE, key=("geo_id", "state"), columns=_COLUMNS, scope=("state", "state:"))],
-        published,
+        tables,
+        followed,
         l3,
         settled=lock.settled,
         generation=log.current,
@@ -1827,7 +1851,7 @@ def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower
         page_size=50,
         stamp_table="scope_epochs",
         drift_workers=_WORKERS,
-        queries=published.queries,
+        queries=queries,
     )
     follower.register()
     return l3, log, backend, follower
@@ -2136,16 +2160,18 @@ async def test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_chan
     assert _risen(counted) == {"reset": 1, "schema_change": 1, "legacy_whole_record": 1}
 
 
-def _recording_applies(backend: DuckDBBackend) -> list[str | None]:
+def _recording_applies(backend: Any) -> list[str | None]:
     """the whole kind of every whole change ``backend.apply_staged`` is handed, in order (None for one with none)."""
     kinds: list[str | None] = []
     real = backend.apply_staged
 
-    def apply_staged(changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+    def apply_staged(changes: Sequence[StagedChange], *, mark: int | None = None) -> Any:
+        # the real apply's answer as it is: the rows (the DuckDB's), or the coroutine the follower awaits (the worker
+        # backend's)
         kinds.extend(change.whole_kind for change in changes if change.whole)
         return real(changes, mark=mark)
 
-    backend.apply_staged = apply_staged  # type: ignore[method-assign]
+    backend.apply_staged = apply_staged
     return kinds
 
 

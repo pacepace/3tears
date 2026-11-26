@@ -243,6 +243,7 @@ __all__ = [
     "FileRecreate",
     "FollowerStatus",
     "PartialStamp",
+    "FollowerStages",
     "PreparesStaged",
     "is_reload_stage",
     "require_generation_by_trigger",
@@ -1840,19 +1841,18 @@ class PreparesStaged(Protocol):
     whole apply under the lock, as before.
     """
 
-    def prepare_staged(self, changes: Sequence[StagedChange]) -> None:
+    async def prepare_staged(self, changes: Sequence[StagedChange]) -> None:
         """do the heavy work of applying ``changes`` (staged under :func:`_reload_stage` names) beside the copy, so
         their :meth:`FollowerBackend.apply_staged` is a short swap; dropping their stages lets go what it prepared.
-        Raises ``LookupError`` when the stages are gone, as the apply does."""
+        Raises ``LookupError`` when the stages are gone, as the apply does. A coroutine on the event loop, as the
+        apply."""
         ...
 
 
-class FollowerBackend(Protocol):
-    """what a :class:`CopyFollower` keeps its copy in: a backend that stages a change beside the copy and applies
-    everything staged as one change in its apply worker, publishing each applied state as a version of the shared copy
-    (with the change's mark, ``shared_copy.MARK_TABLE``) that the follower's ``queries`` read. Each method is called on
-    a thread. It has no read: every read of the copy is a query worker's (``copy_reads``), never a cursor here
-    (``design-copy-worker-backend.md``, chunk 3T-8: the in-process DuckDB is no follower's backend).
+class FollowerStages(Protocol):
+    """the staging half of a :class:`FollowerBackend`: what a change is staged through beside the copy, page by page,
+    before its apply. A full's load from the volume stages through this alone (``volume_fulls.VolumeFulls.stage``).
+    Each method is called on a thread.
     """
 
     def stage_rows(self, stage: str, table: str, rows: Any, key: Sequence[str]) -> int:
@@ -1878,7 +1878,19 @@ class FollowerBackend(Protocol):
         """every stage held."""
         ...
 
-    def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+
+class FollowerBackend(FollowerStages, Protocol):
+    """what a :class:`CopyFollower` keeps its copy in: a backend that stages a change beside the copy and applies
+    everything staged as one change in its apply worker, publishing each applied state as a version of the shared copy
+    (with the change's mark, ``shared_copy.MARK_TABLE``) that the follower's ``queries`` read. The staging methods are
+    called on a thread; :meth:`apply_staged` is a coroutine awaited on the event loop, because the apply is the apply
+    worker's, reached through the copy's apply lane on the loop (``copy_stages.SharedCopyStages``): a thread parked on
+    it would hold one of the loop's threads while the lane's own publish needs one. It has no read: every read of the
+    copy is a query worker's (``copy_reads``), never a cursor here (``design-copy-worker-backend.md``, chunk 3T-8: the
+    in-process DuckDB is no follower's backend).
+    """
+
+    async def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
         """apply every change staged in one transaction, labelled with ``mark``; the rows applied. Raises
         ``LookupError`` when the stages are gone (the worker holding them died; nothing applied): the follower then
         reads the change again. Any other failure keeps the stages for the apply to be tried again."""
@@ -2938,7 +2950,7 @@ class CopyFollower:
         swapped = False
         try:
             if isinstance(self._backend, PreparesStaged):
-                await asyncio.to_thread(self._backend.prepare_staged, found.changes)
+                await self._backend.prepare_staged(found.changes)
             async with self._lock:
                 if states is None:
                     swapped, done = await self._swap_in_full(table, found, after)
@@ -3047,7 +3059,7 @@ class CopyFollower:
             return self._stale_full(table, found)
         self._mark += 1
         mark = self._mark
-        rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
+        rows = await self._backend.apply_staged(found.changes, mark=mark)
         # the reload's own bookkeeping, before anything that arrived during the apply is judged
         self._applied_mark = mark
         self._registry.generation_marks.adopt_generation(table, floor)
@@ -3144,7 +3156,7 @@ class CopyFollower:
             return False, False
         self._mark += 1
         mark = self._mark
-        rows = await asyncio.to_thread(self._backend.apply_staged, found.changes, mark=mark)
+        rows = await self._backend.apply_staged(found.changes, mark=mark)
         self._applied_mark = mark
         held = self._state_versions.get(table)
         if held is not None:
@@ -3704,7 +3716,7 @@ class CopyFollower:
             return False
         followed_missing = {name: why for name, why in staged.missing.items() if name in self._tables}
         self._mark += 1
-        await asyncio.to_thread(self._backend.apply_staged, staged.changes, mark=self._mark)
+        await self._backend.apply_staged(staged.changes, mark=self._mark)
         self._applied_mark = self._mark
         # the loaded tables' marks alone: a table still to be read whole has no mark a checkpoint may record
         self._stamp(self._mark, staged.stamp, staged.marks)
@@ -3767,7 +3779,7 @@ class CopyFollower:
             if name not in marks
         }
         self._mark += 1
-        await asyncio.to_thread(self._backend.apply_staged, changes, mark=self._mark)
+        await self._backend.apply_staged(changes, mark=self._mark)
         self._applied_mark = self._mark
         self._stamp(self._mark, None, marks)
         self._current_marks = frozen(marks)
@@ -4122,7 +4134,7 @@ class CopyFollower:
             # stages died with the worker holding them: then the change is read again
             try:
                 try:
-                    rows = await asyncio.to_thread(self._backend.apply_staged, list(self._staged.values()), mark=mark)
+                    rows = await self._backend.apply_staged(list(self._staged.values()), mark=mark)
                 except BaseException:
                     if touching is not None:
                         touching.cancel()

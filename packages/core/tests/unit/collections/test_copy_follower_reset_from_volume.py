@@ -53,7 +53,7 @@ from threetears.core.collections.copy_follower import (  # noqa: E402
     PreparesStaged,
     is_reload_stage,
 )
-from threetears.core.testing.published_copy import PublishedCopy  # noqa: E402
+from threetears.core.testing.published_copy import PublishedCopy, SharedCopy, copy_rows  # noqa: E402
 from threetears.core.collections.copy_queries import CopyQueries  # noqa: E402
 from threetears.core.collections.delta_copy_beats import CopyBeats  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
@@ -290,20 +290,33 @@ class _World:
         beats: CopyBeats | None = None,
         fulls: VolumeFulls | None = None,
         recreate: Any = None,
+        shared: bool = False,
     ) -> None:
+        """``shared``: the copy is the copy's worker backend (``copy_stages.SharedCopyStages``: each change applied in
+        its apply worker, a reload staged in its reload worker), not the in-process DuckDB published as shared Arrow."""
         self.volume = volume
         self.l3, self.log, self.lock = _L3(), _Log(), _Scopes()
-        self.backend = DuckDBBackend()
-        _OPENED.append(self.backend.reset)
-        self.backend.initialize(_metadata())
+        tables = [_followed(_RESET), _followed(_OTHER), _followed(_PLAIN)]
+        self.shared: SharedCopy | None = None
+        self.backend: Any
+        self.published: Any
+        if shared:
+            self.shared = SharedCopy(tables)
+            self.backend = self.published = self.shared.copy
+            queries = self.shared.queries
+        else:
+            self.backend = DuckDBBackend()
+            _OPENED.append(self.backend.reset)
+            self.backend.initialize(_metadata())
+            self.published = PublishedCopy(self.backend)
+            queries = self.published.queries
         self.registry = CollectionRegistry()
         for name in (_RESET, _OTHER, _PLAIN):
             self.registry.follow_generation(name)
-        self.published = published = PublishedCopy(self.backend)
         self.follower = CopyFollower(
             self.registry,
-            [_followed(_RESET), _followed(_OTHER), _followed(_PLAIN)],
-            published,
+            tables,
+            self.published,
             self.l3,
             settled=self.lock.settled,
             generation=self.log.current,
@@ -315,7 +328,7 @@ class _World:
             recreate=recreate,
             file_poll_seconds=0.01 if recreate is not None else None,
             drift_workers=COPY_WORKERS,
-            queries=published.queries,
+            queries=queries,
         )
         self.writes = 0
 
@@ -357,6 +370,8 @@ class _World:
         return token
 
     def copy(self, table: str) -> list[tuple[Any, ...]]:
+        if self.shared is not None:
+            return copy_rows(self.shared.store, table, _NAMES)
         with self.backend.read_snapshot() as cursor:
             return sorted(cursor.execute(f"SELECT {', '.join(_NAMES)} FROM {table}").fetchall())  # noqa: S608
 
@@ -446,15 +461,16 @@ async def _held_past_a_gone_file(
     return epoch, va
 
 
+@pytest.mark.parametrize("shared", [False, True], ids=["duckdb", "worker_backend"])
 async def test_a_gone_covered_file_reloads_only_its_commits_states_from_the_full_and_reads_no_l3(
-    _volume: Path, monkeypatch: pytest.MonkeyPatch
+    _volume: Path, monkeypatch: pytest.MonkeyPatch, shared: bool
 ) -> None:
     """Flips if a copy finding a covered delta file gone (the writer answers ``covered``: a fold that deletes took it,
     decision 54) reloads the whole table from the full, reads L3, or stops serving: its commit's record named every
     state it wrote (VA, marked complete), so only VA's part is loaded (decision 54 (c)). VA's rows the copy held and
     the full does not leave; the VA change heard while it waited that the part holds is not applied over it, while
     the later VA change and the IL change apply from their files, ending equal to L3 with no file still waited for."""
-    world = _World(_volume, recreate=_covered)
+    world = _World(_volume, recreate=_covered, shared=shared)
     read = _parts_read(monkeypatch)
     await _held_past_a_gone_file(world, ["state:VA", EVERY_STATE_NAMED], read)
 
@@ -528,7 +544,7 @@ async def test_a_failed_swap_of_some_states_leaves_the_copy_as_it_was_and_drops_
                 failed.append(list(changes))
                 raise RuntimeError("the swap failed")
             release.wait(5)
-        return real_apply(changes, **kwargs)
+        return int(real_apply(changes, **kwargs))
 
     def drop(*stages: str) -> None:
         if failed and not dropped:
@@ -639,15 +655,17 @@ async def test_a_copy_with_a_beat_says_starting_while_it_loads_then_beats_its_ma
 _AFTER_RESET = [("VA", i, 100 + i) for i in range(3)] + [("TX", 1, 500)]
 
 
+@pytest.mark.parametrize("shared", [False, True], ids=["duckdb", "worker_backend"])
 async def test_a_running_copy_hearing_a_reset_of_an_opted_in_table_reads_no_l3_and_reloads_it_from_the_full(
-    _volume: Path,
+    _volume: Path, shared: bool
 ) -> None:
     """Flips if a running copy reads an opted-in table from L3 when it hears the table reset (the old ``_on_reset``
     read it whole from L3: decisions 12 and 14 say the writer rebuilds it once and copies wait); if it takes the full
     from before the reset; if it stops following the other tables while it waits; or if, once the writer publishes the
     reset table's full, it does not reload that table alone from it and apply the later deltas from their files,
-    ending equal to L3."""
-    world = _World(_volume)
+    ending equal to L3. On the worker backend the reload stages in its reload worker and publishes through its apply
+    lane (``SharedCopyStages.prepare_staged``)."""
+    world = _World(_volume, shared=shared)
     await world.started()
     old = world.copy(_RESET)
     world.l3.reset(_RESET, _AFTER_RESET)
@@ -683,6 +701,9 @@ async def test_a_running_copy_hearing_a_reset_of_an_opted_in_table_reads_no_l3_a
     assert world.l3.statements[_RESET] == 0
     assert world.l3.statements[_OTHER] == 0
     assert world.registry.generation_marks.recorded(_RESET) == f"inc:{world.log.count[_RESET]}"
+    if world.shared is not None:
+        # the reload staged in the reload worker and published through the apply lane, once
+        assert world.shared.copy.reloads.status().reloads == 1
 
 
 async def test_a_table_waiting_for_a_file_holds_changes_up_to_its_cap_then_waits_for_the_full(
@@ -1104,7 +1125,7 @@ class _SlowFull:
             if table == _RESET and rows.num_rows:
                 self.entered.set()
                 self.release.wait(timeout=30)
-            return stage_rows(stage, table, rows, key, **kwargs)
+            return int(stage_rows(stage, table, rows, key, **kwargs))
 
         monkeypatch.setattr(world.backend, "stage_rows", staged)
 
@@ -1173,14 +1194,15 @@ async def test_another_tables_change_applies_while_a_reset_table_stages_its_full
     assert world.l3.statements[_RESET] == 0
 
 
+@pytest.mark.parametrize("shared", [False, True], ids=["duckdb", "worker_backend"])
 async def test_a_change_to_the_reset_table_heard_while_its_full_stages_is_applied_after_the_swap(
-    _volume: Path, monkeypatch: pytest.MonkeyPatch
+    _volume: Path, monkeypatch: pytest.MonkeyPatch, shared: bool
 ) -> None:
     """Flips if a change to the reloading table heard while its full stages is lost, applied to the table the reset
     replaced, or waits with every other table for the reload (decision 52). While the full stages a pass runs (within
     the bound) and applies the other table's change, never the reset table's: its change stays held, in order, and
     once the full swaps in it is applied over it, none lost."""
-    world = _World(_volume)
+    world = _World(_volume, shared=shared)
     await world.started()
     old = await _waiting_for_full(world)
     slow = _SlowFull(world, monkeypatch)
@@ -1201,6 +1223,8 @@ async def test_a_change_to_the_reset_table_heard_while_its_full_stages_is_applie
     assert ("VA", 1, 9292) in world.copy(_RESET)
     assert ("IL", 3, 33) in world.copy(_RESET)
     assert world.l3.statements[_RESET] == 0
+    if world.shared is not None:
+        assert world.shared.copy.reloads.status().reloads == 1
 
 
 async def test_a_backend_that_prepares_a_reload_does_it_outside_the_pass_lock_on_the_reload_s_own_stage(
@@ -1215,10 +1239,10 @@ async def test_a_backend_that_prepares_a_reload_does_it_outside_the_pass_lock_on
     entered, release = threading.Event(), threading.Event()
     prepared: list[list[str | None]] = []
 
-    def prepare_staged(changes: Any) -> None:
+    async def prepare_staged(changes: Any) -> None:
         prepared.append([change.rows for change in changes])
         entered.set()
-        release.wait(timeout=30)
+        await asyncio.to_thread(release.wait, 30)
 
     monkeypatch.setattr(world.published, "prepare_staged", prepare_staged, raising=False)
     assert isinstance(world.published, PreparesStaged)
@@ -1261,7 +1285,7 @@ async def test_a_reset_heard_while_a_pass_leaves_scopes_out_applies_every_other_
     reset = _on_the_loop(lambda: _reset_now(world, _AFTER_RESET))
 
     def unstaged(stages: Any, table: str, key: Any, keys: Any) -> int:
-        left = unstage(stages, table, key, keys)
+        left = int(unstage(stages, table, key, keys))
         if table == _RESET:
             reset()
         return left
@@ -1290,7 +1314,7 @@ async def test_a_reset_heard_while_a_pass_stages_the_table_never_applies_its_sta
     reset = _on_the_loop(lambda: _reset_now(world, _AFTER_RESET))
 
     def staged(stage: str, table: str, rows: Any, key: Any) -> int:
-        count = stage_rows(stage, table, rows, key)
+        count = int(stage_rows(stage, table, rows, key))
         if table == _RESET:
             reset()
         return count
