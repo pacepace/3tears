@@ -1,6 +1,6 @@
-"""Key state: each verdict's state and lifetime, account scope, rate-limit holds, reservations and their
-settlement, the orphan sweep, fingerprints, configured budgets, operator reset and ``status()``
-(KP-A5, KP-B2, KP-C3 to C5, KP-E2 to E5, KP-K2)."""
+"""Key state: each verdict's state and lifetime, account scope, a rate limit that is no state at all,
+reservations and their settlement, the orphan sweep, fingerprints, configured budgets, operator reset
+and ``status()`` (KP-A5, KP-B2, KP-C3 to C5, KP-E2 to E5, KP-K2)."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from .key_pool_support import (
     lines,
     make_pool,
     not_key_related,
+    oversized,
     rate_limited,
     revoked,
     secret_for,
@@ -78,7 +79,7 @@ class TestLifetimes:
         await pool.reset("a")
         assert await _state(pool, "a") is KeyState.OK
 
-    @pytest.mark.parametrize("verdict", [exhausted(), revoked(), forbidden(VerdictScope.KEY), rate_limited()])
+    @pytest.mark.parametrize("verdict", [exhausted(), revoked(), forbidden(VerdictScope.KEY)])
     async def test_every_stored_state_ends_when_the_labels_secret_changes(self, verdict: object) -> None:
         store = InMemoryKeyPoolStore()
         old = make_pool(spec("a"), store=store)
@@ -87,13 +88,25 @@ class TestLifetimes:
         assert await _state(new, "a") is KeyState.OK
         assert await serve(new) == "a"
 
-    async def test_a_rate_limit_ends_at_its_until(self) -> None:
+    async def test_an_exhaustion_the_provider_named_a_reset_for_ends_at_the_reset(self) -> None:
         clock = ManualClock()
         pool = make_pool(spec("a"), clock=clock)
-        await fail_on(pool, rate_limited(until=clock.now + timedelta(seconds=45)))
-        clock.advance(seconds=44)
-        assert await _state(pool, "a") is KeyState.RATE_LIMITED
-        clock.advance(seconds=1)
+        reset = clock.now + timedelta(hours=3)
+        await fail_on(pool, exhausted(until=reset))
+        assert (await _state(pool, "a"), await _until(pool, "a")) == (KeyState.EXHAUSTED, reset)
+        clock.now = reset - timedelta(seconds=1)
+        assert await _state(pool, "a") is KeyState.EXHAUSTED
+        clock.now = reset
+        assert await _state(pool, "a") is KeyState.OK
+
+    async def test_a_reset_past_the_rollover_holds_the_key_past_it(self) -> None:
+        clock = ManualClock()
+        pool = make_pool(spec("a"), clock=clock)
+        reset = datetime(2026, 12, 7, tzinfo=UTC)  # a weekly budget window, past the 1 December rollover
+        await fail_on(pool, exhausted(until=reset))
+        clock.now = datetime(2026, 12, 2, tzinfo=UTC)
+        assert (await _state(pool, "a"), await _until(pool, "a")) == (KeyState.EXHAUSTED, reset)
+        clock.now = reset
         assert await _state(pool, "a") is KeyState.OK
 
     async def test_a_tripped_breaker_is_read_live_and_never_stored(self) -> None:
@@ -135,10 +148,12 @@ class TestAccountScope:
         assert await _state(pool, "b") is KeyState.OK
         assert await serve(pool) == "b"
 
-    async def test_an_account_rate_limit_holds_every_key_in_it(self) -> None:
-        pool = make_pool(spec("a", account="org"), spec("b", account="org"), spec("c"))
-        await fail_on(pool, rate_limited(scope=VerdictScope.ACCOUNT))
-        assert await _state(pool, "b") is KeyState.RATE_LIMITED
+    async def test_an_account_exhaustion_with_a_reset_holds_every_key_in_it_until_then(self) -> None:
+        clock = ManualClock()
+        pool = make_pool(spec("a", account="org"), spec("b", account="org"), spec("c"), clock=clock)
+        reset = clock.now + timedelta(hours=1)
+        await fail_on(pool, exhausted(VerdictScope.ACCOUNT, until=reset))
+        assert (await _state(pool, "b"), await _until(pool, "b")) == (KeyState.EXHAUSTED, reset)
         assert await serve(pool) == "c"
 
     async def test_keys_with_no_account_are_each_their_own(self) -> None:
@@ -147,73 +162,47 @@ class TestAccountScope:
         assert await _state(pool, "b") is KeyState.OK
 
 
-class TestHolds:
-    """KP-C3: a floor when the provider names no wait, doubling for a key held again soon, a cap."""
+class TestARateLimitIsNoState:
+    """Owner, 2026-11-26: a rate limit means retry. It never moves the key and is never a key's state."""
 
-    async def test_the_floor_holds_a_key_the_provider_named_no_wait_for(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock)
-        await fail_on(pool, rate_limited())
-        assert await _until(pool, "a") == clock.now + timedelta(seconds=30)
-
-    async def test_a_configured_floor(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock, rate_limit_floor=timedelta(seconds=5))
-        await fail_on(pool, rate_limited())
-        assert await _until(pool, "a") == clock.now + timedelta(seconds=5)
-
-    async def test_the_providers_wait_is_kept_even_below_the_floor(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock)
-        await fail_on(pool, rate_limited(until=clock.now + timedelta(seconds=3)))
-        assert await _until(pool, "a") == clock.now + timedelta(seconds=3)
-
-    async def test_a_key_held_again_within_the_window_is_held_twice_as_long_up_to_the_cap(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock)
-        holds: list[float] = []
-        for _ in range(8):
-            await fail_on(pool, rate_limited())
-            until = await _until(pool, "a")
-            assert until is not None
-            holds.append((until - clock.now).total_seconds())
-            clock.now = until + timedelta(minutes=1)
-        assert holds == [30, 60, 120, 240, 480, 900, 900, 900]
-
-    async def test_a_key_held_again_after_the_window_starts_over_at_the_floor(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock)
-        await fail_on(pool, rate_limited())
-        clock.advance(seconds=30 + 11 * 60)
-        await fail_on(pool, rate_limited())
-        assert await _until(pool, "a") == clock.now + timedelta(seconds=30)
-
-    async def test_a_providers_wait_past_the_cap_is_kept(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock)
-        until = clock.now + timedelta(hours=1)
-        await fail_on(pool, rate_limited(until=until))
-        assert await _until(pool, "a") == until
-
-    async def test_a_second_limit_during_a_hold_does_not_double_it(self) -> None:
+    @pytest.mark.parametrize("scope", list(VerdictScope))
+    async def test_a_rate_limit_changes_nothing_about_any_key(self, scope: VerdictScope) -> None:
         clock = ManualClock()
         store = InMemoryKeyPoolStore()
-        first, second = make_pool(spec("a"), store=store, clock=clock), make_pool(spec("a"), store=store, clock=clock)
-        one, two = await first.acquire(MODEL, Decimal("0.01")), await second.acquire(MODEL, Decimal("0.01"))
-        await one.fail(rate_limited())
-        await two.fail(rate_limited())
-        assert await _until(second, "a") == clock.now + timedelta(seconds=30)
+        pool = make_pool(spec("a", account="org"), spec("b", account="org"), store=store, clock=clock)
+        await serve(pool)
+        before = await store.read_record(f"key-pool/{PROVIDER}/{POOL}")
+        assert await fail_on(pool, rate_limited(until=clock.now + timedelta(seconds=17), scope=scope)) == "a"
+        assert await store.read_record(f"key-pool/{PROVIDER}/{POOL}") == before
+        status = await pool.status()
+        assert [(key.label, key.state, key.until) for key in status.keys] == [
+            ("a", KeyState.OK, None),
+            ("b", KeyState.OK, None),
+        ]
+        assert status.active == "a"
+        assert pool.counters.moves == {}
+        assert await serve(pool) == "a"
 
-    async def test_a_key_and_model_hold_is_for_that_model_only(self) -> None:
-        clock = ManualClock()
-        pool = make_pool(spec("a"), clock=clock)
-        await fail_on(pool, rate_limited(scope=VerdictScope.KEY_AND_MODEL), model_id=MODEL)
-        with pytest.raises(NoKeyAvailableError):
-            await pool.acquire(MODEL, Decimal("0.01"))
-        assert await serve(pool, model_id=OTHER_MODEL) == "a"
-        status = (await pool.status()).keys[0]
-        assert status.state is KeyState.OK
-        assert status.rate_limited_models == ((MODEL, clock.now + timedelta(seconds=30)),)
+    async def test_a_rate_limit_releases_its_reservation(self) -> None:
+        pool = make_pool(spec("a", "10"))
+        lease = await pool.acquire(MODEL, Decimal("1"))
+        await lease.fail(rate_limited())
+        key = (await pool.status()).keys[0]
+        assert (key.spent, key.reserved) == (Decimal(0), Decimal(0))
+
+    async def test_an_oversized_request_changes_nothing_about_the_key(self) -> None:
+        store = InMemoryKeyPoolStore()
+        pool = make_pool(spec("a"), spec("b"), store=store)
+        await serve(pool)
+        before = await store.read_record(f"key-pool/{PROVIDER}/{POOL}")
+        await fail_on(pool, oversized())
+        assert await store.read_record(f"key-pool/{PROVIDER}/{POOL}") == before
+        assert (await pool.status()).active == "a"
+        assert await _state(pool, "a") is KeyState.OK
+
+    def test_no_key_state_names_a_rate_limit(self) -> None:
+        assert "rate_limited" not in {str(state) for state in KeyState}
+        assert "rate_limited" not in {str(reason) for reason in MoveReason}
 
     async def test_forbidden_per_model_shows_in_status(self) -> None:
         pool = make_pool(spec("a"))
@@ -416,13 +405,14 @@ class TestResetAndStatus:
         with pytest.raises(ValueError, match="no key labelled"):
             await make_pool(spec("a")).reset("missing")
 
-    async def test_reset_clears_holds_and_per_model_forbids(self) -> None:
-        pool = make_pool(spec("a"))
+    async def test_reset_clears_per_model_forbids_and_a_named_reset(self) -> None:
+        clock = ManualClock()
+        pool = make_pool(spec("a"), clock=clock)
         await fail_on(pool, forbidden(), model_id=MODEL)
-        await fail_on(pool, rate_limited(), model_id=OTHER_MODEL)
+        await fail_on(pool, exhausted(until=clock.now + timedelta(days=3)), model_id=OTHER_MODEL)
         await pool.reset("a")
         status = (await pool.status()).keys[0]
-        assert (status.state, status.forbidden_models, status.rate_limited_models) == (KeyState.OK, (), ())
+        assert (status.state, status.until, status.forbidden_models) == (KeyState.OK, None, ())
 
     async def test_reset_resets_the_keys_breakers(self) -> None:
         registry, _ = tripping_registry()

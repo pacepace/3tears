@@ -1,27 +1,40 @@
-"""A pooled chat model failing over between keys, by the classifier's verdict (KP-H, KP-E4, Q4).
+"""A pooled chat model failing over between keys, by the classifier's verdict (KP-H, KP-E4).
 
 A refusal that is the key's moves the call to the next key, once per key; any other failure propagates
-unchanged; a stream that has handed the caller a chunk is never retried; and a call whose keys are only
-rate-limited waits for the earliest hold, up to the pool's cap, under an injected clock. Each failover is
-counted by reason (KP-K1). Every refusal is a recorded provider response, served to the real provider
-model on loopback.
+unchanged; a stream that has handed the caller a chunk is never retried. A rate limit means retry
+(owner, 2026-11-26): the SDK retries it on the same key, or the pool does where the SDK never does
+(OpenRouter), and then it reaches the caller unchanged, with nothing about the key changed. A rate limit
+asking a wait past the pool's threshold moves on as exhaustion. Each failover is counted by reason
+(KP-K1). Every refusal is a recorded provider response, served to the real provider model on loopback.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from datetime import timedelta
+import json
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import anthropic
+import httpx
+import openrouter.errors
 import pytest
 from langchain_core.messages import HumanMessage
 from prometheus_client import CollectorRegistry
 
+from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.enums import ModelTier, ModelType
+from threetears.models.factory import create_chat_model
 from threetears.models.key_pool import (
+    InMemoryKeyPoolStore,
     KeyPool,
     KeyPoolMetrics,
+    KeySpec,
+    Secret,
     KeyState,
     KeyStatus,
     MoveReason,
@@ -29,10 +42,11 @@ from threetears.models.key_pool import (
     reservation_estimate,
 )
 from threetears.models.pricing import cost_of_usage
-from threetears.models.tracking import estimate_input_tokens
+from threetears.models.tracking import UsageTracker, estimate_input_tokens
 
 from . import key_error_fixtures as fx
 from .key_pool_support import (
+    NOW,
     POOL,
     PROVIDER,
     FakeFlakyStore,
@@ -52,6 +66,7 @@ from .pooled_chat_support import (
     pooled_model,
     refusal,
 )
+from .provider_wire import ChatCompletionsWire, serve_http_handler
 
 
 def _reservation(prompt: str = "hello") -> Decimal:
@@ -71,6 +86,15 @@ def _in(state: KeyState) -> Callable[[KeyStatus], bool]:
     return lambda status: status.state is state
 
 
+def _exhausted_until(until: datetime) -> Callable[[KeyStatus], bool]:
+    return lambda status: (status.state, status.until) == (KeyState.EXHAUSTED, until)
+
+
+def _quick(recorded: fx.RecordedError) -> fx.RecordedError:
+    """``recorded`` with a one-millisecond ``retry-after-ms``, which the SDK sleeps on instead of its backoff."""
+    return fx.RecordedError(recorded.status, recorded.body, headers={**recorded.headers, "retry-after-ms": "1"})
+
+
 class TestKeyMovingFailures:
     """A refusal that is the key's is recorded on it, released, and the call served by the next key."""
 
@@ -80,9 +104,14 @@ class TestKeyMovingFailures:
             pytest.param(fx.ANTHROPIC_BILLING_402, _in(KeyState.EXHAUSTED), id="exhausted-402"),
             pytest.param(fx.ANTHROPIC_CREDIT_TOO_LOW_400, _in(KeyState.EXHAUSTED), id="exhausted-credit"),
             pytest.param(fx.ANTHROPIC_SPEND_CAP_429, _in(KeyState.EXHAUSTED), id="exhausted-spend-cap"),
+            pytest.param(fx.ANTHROPIC_CONTRACT_SPEND_LIMIT_429, _in(KeyState.EXHAUSTED), id="exhausted-contract"),
+            pytest.param(
+                fx.ANTHROPIC_RATE_LIMIT_429_LONG_WAIT,
+                _exhausted_until(NOW + timedelta(hours=1)),
+                id="exhausted-until-a-long-waits-end",
+            ),
             pytest.param(fx.ANTHROPIC_AUTHENTICATION_401, _in(KeyState.REVOKED), id="revoked"),
             pytest.param(fx.ANTHROPIC_PERMISSION_403, _forbidden_for_the_model, id="forbidden"),
-            pytest.param(fx.ANTHROPIC_RATE_LIMIT_429, _in(KeyState.RATE_LIMITED), id="rate-limited"),
         ],
     )
     def test_the_call_moves_to_the_next_key(
@@ -195,7 +224,7 @@ class TestStreams:
     def test_a_refusal_before_the_first_chunk_fails_over(self) -> None:
         pool = make_pool(spec("a"), spec("b"))
         wire = KeyedWire("a", "b")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        wire.script("a", refusal(fx.ANTHROPIC_BILLING_402))
         with wire.serve() as url:
             text = "".join(str(chunk.content) for chunk in pooled_model(pool, url).stream("hello"))
         assert text == "ok"
@@ -212,8 +241,8 @@ class TestStreams:
         assert "par" in received
         assert wire.labels_sent() == ["a"]
         a = asyncio.run(key_status(pool, "a"))
-        # the key's state is still recorded, and a stream that began may have been billed: in full
-        assert (a.state, a.spent, a.reserved) == (KeyState.RATE_LIMITED, _reservation(), Decimal(0))
+        # a rate limit is no state of the key, and a stream that began may have been billed: in full
+        assert (a.state, a.active, a.spent, a.reserved) == (KeyState.OK, True, _reservation(), Decimal(0))
 
     async def test_nothing_is_retried_once_an_async_chunk_reached_the_caller(self) -> None:
         pool = make_pool(spec("a"), spec("b"))
@@ -225,7 +254,7 @@ class TestStreams:
                 received.append(str(chunk.content))
         assert "par" in received
         assert wire.labels_sent() == ["a"]
-        assert (await key_status(pool, "a")).state is KeyState.RATE_LIMITED
+        assert (await key_status(pool, "a")).state is KeyState.OK
 
     def test_a_stream_its_caller_stops_reading_settles_its_reservation(self) -> None:
         pool = make_pool(spec("a"))
@@ -238,66 +267,219 @@ class TestStreams:
         assert (a.spent, a.reserved) == (_reservation(), Decimal(0))
 
 
-class TestRateLimitWait:
-    """Q4: a call whose keys are only rate-limited waits for the earliest hold, up to the pool's cap."""
+class TestRateLimits:
+    """A rate limit means retry, on the same key; it never moves the key or changes its state."""
 
-    def test_with_the_default_cap_of_zero_the_call_raises_at_once(self) -> None:
-        clock = ManualClock()
-        sleep = RecordingSleep(clock)
-        pool = make_pool(spec("a"), clock=clock, sleep=sleep)
-        wire = KeyedWire("a")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
-        with wire.serve() as url, pytest.raises(NoKeyAvailableError) as raised:
-            pooled_model(pool, url).invoke("hello")
-        assert wire.labels_sent() == ["a"]
-        assert sleep.waits == []
-        assert isinstance(raised.value.__cause__, anthropic.RateLimitError)
-        assert raised.value.keys[0].state is KeyState.RATE_LIMITED
-
-    def test_under_a_positive_cap_the_call_waits_out_the_hold_on_the_same_key(self) -> None:
-        clock = ManualClock()
-        sleep = RecordingSleep(clock)
-        pool = make_pool(spec("a"), clock=clock, sleep=sleep, max_rate_limit_wait=timedelta(seconds=60))
-        wire = KeyedWire("a")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))  # retry-after: 17
+    def test_after_the_sdks_retries_a_rate_limit_reaches_the_caller_unchanged(self) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), spec("b"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b")
+        wire.script("a", *[refusal(_quick(fx.ANTHROPIC_RATE_LIMIT_429))] * 3)
+        with wire.serve() as url, pytest.raises(anthropic.RateLimitError) as raised:
+            pooled_model(pool, url, max_retries=2).invoke("hello")
+        assert raised.value.body == fx.ANTHROPIC_RATE_LIMIT_429.body
+        assert wire.labels_sent() == ["a", "a", "a"]  # the SDK's two retries, on the same key
+        a = asyncio.run(key_status(pool, "a"))
+        assert (a.state, a.until, a.active, a.spent, a.reserved) == (KeyState.OK, None, True, Decimal(0), Decimal(0))
+        assert not pool.counters.moves
+        assert _no_failovers(pool, registry)
         with wire.serve() as url:
-            answer = pooled_model(pool, url).invoke("hello")
+            assert pooled_model(pool, url).invoke("hello").content == "ok"
+        assert wire.labels_sent()[-1] == "a"
+
+    async def test_the_sdk_retry_that_answers_serves_the_call_on_the_same_key(self) -> None:
+        pool = make_pool(spec("a"), spec("b"))
+        wire = KeyedWire("a", "b")
+        wire.script("a", refusal(_quick(fx.ANTHROPIC_RATE_LIMIT_429)))
+        with wire.serve() as url:
+            answer = await pooled_model(pool, url, max_retries=2).ainvoke("hello")
         assert answer.content == "ok"
         assert wire.labels_sent() == ["a", "a"]
-        assert sleep.waits == [17.0]
+        assert (await key_status(pool, "a")).spent == _cost()
 
-    async def test_a_key_rate_limited_again_after_its_wait_is_not_tried_a_third_time(self) -> None:
-        clock = ManualClock()
-        sleep = RecordingSleep(clock)
-        pool = make_pool(spec("a"), clock=clock, sleep=sleep, max_rate_limit_wait=timedelta(seconds=60))
-        wire = KeyedWire("a")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429), refusal(fx.ANTHROPIC_RATE_LIMIT_429))
-        with wire.serve() as url, pytest.raises(NoKeyAvailableError):
-            await pooled_model(pool, url).ainvoke("hello")
-        assert wire.labels_sent() == ["a", "a"]
-        assert sleep.waits == [17.0]
-
-    def test_a_hold_longer_than_the_cap_raises_without_waiting(self) -> None:
-        clock = ManualClock()
-        sleep = RecordingSleep(clock)
-        pool = make_pool(spec("a"), clock=clock, sleep=sleep, max_rate_limit_wait=timedelta(seconds=10))
-        wire = KeyedWire("a")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
-        with wire.serve() as url, pytest.raises(NoKeyAvailableError):
-            pooled_model(pool, url).invoke("hello")
-        assert wire.labels_sent() == ["a"]
-        assert sleep.waits == []
-
-    def test_another_key_serves_before_any_wait(self) -> None:
-        clock = ManualClock()
-        sleep = RecordingSleep(clock)
-        pool = make_pool(spec("a"), spec("b"), clock=clock, sleep=sleep, max_rate_limit_wait=timedelta(seconds=60))
+    def test_a_quota_429_is_not_retried_by_the_sdk_and_moves_to_the_next_key(self) -> None:
+        pool = make_pool(spec("a"), spec("b"))
         wire = KeyedWire("a", "b")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        wire.script("a", *[refusal(_quick(fx.ANTHROPIC_SPEND_CAP_429))] * 3)
         with wire.serve() as url:
-            pooled_model(pool, url).invoke("hello")
+            assert pooled_model(pool, url, max_retries=2).invoke("hello").content == "ok"
         assert wire.labels_sent() == ["a", "b"]
-        assert sleep.waits == []
+        assert asyncio.run(key_status(pool, "a")).state is KeyState.EXHAUSTED
+
+    def test_a_long_wait_is_not_slept_on_and_holds_the_key_until_it_ends(self) -> None:
+        clock = ManualClock()
+        # a one-second threshold, so an SDK that slept on the 2 s wait would cost seconds, not an hour
+        pool = make_pool(
+            spec("a", priority=1),
+            spec("b", priority=2),
+            clock=clock,
+            rate_limit_exhaustion_wait=timedelta(seconds=1),
+        )
+        wire = KeyedWire("a", "b")
+        long_wait = fx.RecordedError(429, fx.ANTHROPIC_RATE_LIMIT_429.body, headers={"retry-after": "2"})
+        wire.script("a", refusal(long_wait))
+        with wire.serve() as url:
+            model = pooled_model(pool, url, max_retries=2)
+            assert model.invoke("hello").content == "ok"
+            assert wire.labels_sent() == ["a", "b"]  # the SDK did not sleep on a and retry it
+            assert pool.counters.failovers == {MoveReason.EXHAUSTED: 1}
+            a = asyncio.run(key_status(pool, "a"))
+            assert (a.state, a.until) == (KeyState.EXHAUSTED, NOW + timedelta(seconds=2))
+            clock.advance(seconds=2)
+            model.invoke("hello")
+        assert wire.labels_sent()[-1] == "a"  # back on the preferred key once the wait is over
+
+    def test_a_one_key_pool_keeps_the_sdks_retry_after_wait(self) -> None:
+        pool = make_pool(spec("only"))
+        wire = KeyedWire("only")
+        wire.script("only", refusal(_quick(fx.ANTHROPIC_RATE_LIMIT_429)))
+        with wire.serve() as url:
+            assert pooled_model(pool, url, max_retries=2).invoke("hello").content == "ok"
+        assert wire.labels_sent() == ["only", "only"]
+
+
+# -- openrouter: the pool's own retries, an oversized request, a 403 budget -------------------------
+
+#: A model only these tests register: priced, with a bounded output, served by openrouter.
+_OR_MODEL = "pool-test-openrouter/scripted"
+
+register_capabilities(
+    _OR_MODEL,
+    ModelCapabilities(
+        model_name=_OR_MODEL,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.SMALL,
+        provider_name="openrouter",
+        max_output_tokens=1000,
+        cost_per_input_token=Decimal("0.000001"),
+        cost_per_output_token=Decimal("0.000002"),
+    ),
+)
+
+
+def _or_secret(label: str) -> str:
+    return f"sk-or-v1-{label}-0123456789abcdef"
+
+
+@dataclass
+class _OpenRouterWire:
+    """The OpenRouter chat API, answering each key's requests from that key's script, in order; a key
+    whose script has run out gets an answer. Every request is kept, by the key that sent it."""
+
+    labels: tuple[str, ...]
+    scripts: dict[str, list[fx.RecordedError]] = field(default_factory=dict)
+    sent: list[str] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def script(self, label: str, *answers: fx.RecordedError) -> None:
+        self.scripts.setdefault(label, []).extend(answers)
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        token = request.headers["authorization"].removeprefix("Bearer ")
+        label = next(label for label in self.labels if _or_secret(label) == token)
+        with self._lock:
+            self.sent.append(label)
+            script = self.scripts.get(label, [])
+            recorded = script.pop(0) if script else None
+        if recorded is not None:
+            return recorded.response()
+        json.loads(request.content)  # a real request body, as the SDK sent it
+        return ChatCompletionsWire().handle(request)
+
+    @contextmanager
+    def serve(self) -> Iterator[str]:
+        with serve_http_handler(self.handle) as base_url:
+            yield base_url
+
+
+def _or_pool(*labels: str, clock: ManualClock, sleep: RecordingSleep) -> KeyPool:
+    keys = [KeySpec(Secret(_or_secret(label)), label, Decimal("10")) for label in labels]
+    return KeyPool("openrouter", POOL, keys, InMemoryKeyPoolStore(), clock=clock, sleep=sleep)
+
+
+def _or_model(pool: KeyPool, url: str) -> object:
+    return create_chat_model(_OR_MODEL, key_pool=pool, tracker=UsageTracker(), base_url=url)
+
+
+def _or_status(pool: KeyPool, label: str) -> KeyStatus:
+    return asyncio.run(key_status(pool, label))
+
+
+class TestOpenRouter:
+    """OpenRouter's SDK never retries a 429, so the pool does: twice on the same key, then the error."""
+
+    def test_a_rate_limit_is_retried_twice_on_the_same_key_then_reaches_the_caller(self) -> None:
+        clock = ManualClock()
+        sleep = RecordingSleep(clock)
+        pool = _or_pool("a", "b", clock=clock, sleep=sleep)
+        wire = _OpenRouterWire(("a", "b"))
+        limited = fx.RecordedError(429, fx.OPENROUTER_RATE_LIMIT_429.body, headers={"retry-after": "3"})
+        wire.script("a", limited, limited, limited)
+        with wire.serve() as url, pytest.raises(openrouter.errors.TooManyRequestsResponseError):
+            _or_model(pool, url).invoke("hello")  # type: ignore[attr-defined]
+        assert wire.sent == ["a", "a", "a"]
+        assert sleep.waits == [3.0, 3.0]
+        a = _or_status(pool, "a")
+        assert (a.state, a.active, a.spent, a.reserved) == (KeyState.OK, True, Decimal(0), Decimal(0))
+        assert not pool.counters.moves and not pool.counters.failovers
+
+    def test_a_retry_that_answers_serves_the_call(self) -> None:
+        clock = ManualClock()
+        sleep = RecordingSleep(clock)
+        pool = _or_pool("a", "b", clock=clock, sleep=sleep)
+        wire = _OpenRouterWire(("a", "b"))
+        wire.script("a", fx.OPENROUTER_RATE_LIMIT_429_RESET_ONLY)  # X-RateLimit-Reset: 12:00:45
+        with wire.serve() as url:
+            answer = _or_model(pool, url).invoke("hello")  # type: ignore[attr-defined]
+        assert answer.content == "ok"
+        assert wire.sent == ["a", "a"]
+        assert sleep.waits == [45.0]
+        assert not pool.counters.failovers
+
+    def test_a_request_too_large_for_the_key_skips_it_for_this_call_only(self) -> None:
+        clock = ManualClock()
+        pool = _or_pool("a", "b", clock=clock, sleep=RecordingSleep(clock))
+        wire = _OpenRouterWire(("a", "b"))
+        wire.script("a", fx.OPENROUTER_WEIGHT_EXCEEDS_BUDGET_402)
+        with wire.serve() as url:
+            model = _or_model(pool, url)
+            assert model.invoke("hello").content == "ok"  # type: ignore[attr-defined]
+            assert wire.sent == ["a", "b"]
+            a = _or_status(pool, "a")
+            assert (a.state, a.active, a.spent) == (KeyState.OK, True, Decimal(0))
+            assert not pool.counters.moves
+            assert pool.counters.failovers == {MoveReason.LOW_ROOM: 1}
+            model.invoke("hello")  # type: ignore[attr-defined]
+        assert wire.sent[-1] == "a"  # the next call starts on a again
+
+    def test_a_403_budget_holds_the_key_until_its_reset(self) -> None:
+        clock = ManualClock()
+        pool = _or_pool("a", "b", clock=clock, sleep=RecordingSleep(clock))
+        wire = _OpenRouterWire(("a", "b"))
+        wire.script("a", fx.OPENROUTER_KEY_BUDGET_403)
+        with wire.serve() as url:
+            assert _or_model(pool, url).invoke("hello").content == "ok"  # type: ignore[attr-defined]
+        assert wire.sent == ["a", "b"]
+        a = _or_status(pool, "a")
+        assert (a.state, a.until) == (KeyState.EXHAUSTED, datetime(2026, 11, 27, tzinfo=UTC))
+        assert pool.counters.moves == {("a", "b", MoveReason.EXHAUSTED): 1}
+
+    @pytest.mark.parametrize(
+        "recorded",
+        [
+            pytest.param(fx.OPENROUTER_CONTENT_POLICY_403, id="content_policy_violation"),
+            pytest.param(fx.OPENROUTER_REFUSAL_403, id="refusal"),
+        ],
+    )
+    def test_a_content_refusal_reaches_the_caller_and_leaves_the_key(self, recorded: fx.RecordedError) -> None:
+        clock = ManualClock()
+        pool = _or_pool("a", "b", clock=clock, sleep=RecordingSleep(clock))
+        wire = _OpenRouterWire(("a", "b"))
+        wire.script("a", recorded)
+        with wire.serve() as url, pytest.raises(openrouter.errors.OpenRouterError):
+            _or_model(pool, url).invoke("hello")  # type: ignore[attr-defined]
+        assert wire.sent == ["a"]
+        assert _or_status(pool, "a").state is KeyState.OK
 
 
 def _failovers(registry: CollectorRegistry, reason: MoveReason) -> float | None:
@@ -318,7 +500,7 @@ class TestFailoverCounter:
             pytest.param(fx.ANTHROPIC_BILLING_402, MoveReason.EXHAUSTED, id="exhausted"),
             pytest.param(fx.ANTHROPIC_AUTHENTICATION_401, MoveReason.REVOKED, id="revoked"),
             pytest.param(fx.ANTHROPIC_PERMISSION_403, MoveReason.FORBIDDEN, id="forbidden"),
-            pytest.param(fx.ANTHROPIC_RATE_LIMIT_429, MoveReason.RATE_LIMITED, id="rate-limited"),
+            pytest.param(fx.ANTHROPIC_RATE_LIMIT_429_LONG_WAIT, MoveReason.EXHAUSTED, id="long-wait"),
         ],
     )
     async def test_each_key_moving_verdict_counts_one_failover_by_its_kind(
@@ -357,13 +539,13 @@ class TestFailoverCounter:
         registry = CollectorRegistry()
         pool = make_pool(spec("a"), spec("b"), spec("c"), observer=KeyPoolMetrics(registry))
         wire = KeyedWire("a", "b", "c")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        wire.script("a", refusal(fx.ANTHROPIC_BILLING_402))
         wire.script("b", refusal(fx.ANTHROPIC_AUTHENTICATION_401))
         with wire.serve() as url:
             await pooled_model(pool, url).ainvoke("hello")
         assert wire.labels_sent() == ["a", "b", "c"]
-        assert pool.counters.failovers == {MoveReason.RATE_LIMITED: 1, MoveReason.REVOKED: 1}
-        assert _failovers(registry, MoveReason.RATE_LIMITED) == _failovers(registry, MoveReason.REVOKED) == 1
+        assert pool.counters.failovers == {MoveReason.EXHAUSTED: 1, MoveReason.REVOKED: 1}
+        assert _failovers(registry, MoveReason.EXHAUSTED) == _failovers(registry, MoveReason.REVOKED) == 1
 
     async def test_a_failure_that_is_not_the_keys_counts_no_failover(self) -> None:
         registry = CollectorRegistry()
@@ -394,19 +576,22 @@ class TestFailoverCounter:
             await pooled_model(pool, url).ainvoke("hello")
         assert _no_failovers(pool, registry)
 
-    def test_a_retry_on_the_same_key_after_its_hold_is_not_a_failover(self) -> None:
-        clock = ManualClock()
+    def test_a_rate_limit_retried_on_the_same_key_is_not_a_failover(self) -> None:
         registry = CollectorRegistry()
-        pool = make_pool(
-            spec("a"),
-            clock=clock,
-            sleep=RecordingSleep(clock),
-            max_rate_limit_wait=timedelta(seconds=60),
-            observer=KeyPoolMetrics(registry),
-        )
-        wire = KeyedWire("a")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        pool = make_pool(spec("a"), spec("b"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b")
+        wire.script("a", refusal(_quick(fx.ANTHROPIC_RATE_LIMIT_429)))
         with wire.serve() as url:
-            pooled_model(pool, url).invoke("hello")
+            pooled_model(pool, url, max_retries=2).invoke("hello")
         assert wire.labels_sent() == ["a", "a"]
+        assert _no_failovers(pool, registry)
+
+    def test_a_rate_limit_that_reaches_the_caller_is_not_a_failover(self) -> None:
+        registry = CollectorRegistry()
+        pool = make_pool(spec("a"), spec("b"), observer=KeyPoolMetrics(registry))
+        wire = KeyedWire("a", "b")
+        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        with wire.serve() as url, pytest.raises(anthropic.RateLimitError):
+            pooled_model(pool, url).invoke("hello")
+        assert wire.labels_sent() == ["a"]
         assert _no_failovers(pool, registry)

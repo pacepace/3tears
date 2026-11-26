@@ -20,16 +20,15 @@ class KeyState(enum.StrEnum):
 
     #: the key can serve
     OK = "ok"
-    #: the provider said the key's (or its account's) credit or spend limit is used up; it ends when
-    #: the billing period rolls over, the label's secret changes, or an operator resets it
+    #: the provider said the key's (or its account's) credit, spend limit or quota is used up; it ends
+    #: at the reset the provider named, else when the billing period rolls over, and at once when the
+    #: label's secret changes or an operator resets it
     EXHAUSTED = "exhausted"
     #: the provider no longer accepts the key; it ends when the label's secret changes or an operator
     #: resets it
     REVOKED = "revoked"
     #: the key may not use the model (or any model); it ends as :attr:`REVOKED` does
     FORBIDDEN = "forbidden"
-    #: the provider rate-limited the key until a time
-    RATE_LIMITED = "rate_limited"
     #: the key's circuit breaker is open in this process
     TRIPPED = "tripped"
     #: the key's room for this period is below the pool's ``min_headroom``, or too small for the call
@@ -45,16 +44,15 @@ class KeyStatus:
 
     :ivar label: the key's label
     :ivar state: whether it can serve, and if not, the worst reason why
-    :ivar until: when ``state`` ends, where it ends at a known time (a rate limit, a breaker, the
-        period's rollover for an exhausted key or one with no room); ``None`` otherwise
+    :ivar until: when ``state`` ends, where it ends at a known time (a breaker; an exhausted key's
+        reset, or the period's rollover for an exhausted key the provider named none for and for one
+        with no room); ``None`` otherwise
     :ivar spent: money settled this period, orphaned reservations included
     :ivar reserved: money held by calls in flight this period
     :ivar remaining: ``budget - spent - reserved``, never below zero
     :ivar budget: the key's budget for the period, as this process configures it
     :ivar active: whether it is the pool's active key
     :ivar forbidden_models: models the key is forbidden for, when it is forbidden per model
-    :ivar rate_limited_models: models the key is rate-limited for, each until when, when it is held
-        per model
     """
 
     label: str
@@ -66,18 +64,17 @@ class KeyStatus:
     budget: Decimal
     active: bool
     forbidden_models: tuple[str, ...] = ()
-    rate_limited_models: tuple[tuple[str, datetime], ...] = ()
 
     def describe(self) -> str:
         """The state in a few words, as :class:`NoKeyAvailableError` names it.
 
-        :return: ``exhausted``, ``revoked``, ``forbidden``, ``rate_limited until T``, ``tripped until
-            T``, ``no room: R of B``, ``tried`` or ``ok``
+        :return: ``exhausted``, ``revoked``, ``forbidden``, ``tripped until T``, ``no room: R of B``,
+            ``tried`` or ``ok``
         :rtype: str
         """
         if self.state is KeyState.NO_ROOM:
             return f"no room: {_money(self.remaining)} of {_money(self.budget)}"
-        if self.state in (KeyState.RATE_LIMITED, KeyState.TRIPPED) and self.until is not None:
+        if self.state is KeyState.TRIPPED and self.until is not None:
             return f"{self.state} until {self.until.isoformat()}"
         return str(self.state)
 

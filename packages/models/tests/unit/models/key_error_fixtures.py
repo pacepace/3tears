@@ -19,37 +19,52 @@ __all__ = [
     "ANTHROPIC_API_ERROR_500",
     "ANTHROPIC_AUTHENTICATION_401",
     "ANTHROPIC_BILLING_402",
+    "ANTHROPIC_CONTRACT_SPEND_LIMIT_429",
     "ANTHROPIC_CREDIT_TOO_LOW_400",
     "ANTHROPIC_INVALID_REQUEST_400",
     "ANTHROPIC_MID_STREAM_OVERLOADED",
     "ANTHROPIC_MID_STREAM_RATE_LIMIT",
     "ANTHROPIC_OVERLOADED_529",
     "ANTHROPIC_PERMISSION_403",
+    "ANTHROPIC_RAMP_LIMIT_429",
     "ANTHROPIC_RATE_LIMIT_429",
+    "ANTHROPIC_RATE_LIMIT_429_LONG_WAIT",
     "ANTHROPIC_RATE_LIMIT_429_RESET_ONLY",
     "ANTHROPIC_SPEND_CAP_429",
     "ANTHROPIC_SPEND_LIMIT_400",
     "ANTHROPIC_WORKSPACE_SPEND_LIMIT_400",
+    "OPENAI_BILLING_HARD_LIMIT_429",
     "OPENAI_COMPATIBLE_BALANCE_402",
     "OPENAI_CREDIT_BALANCE_EXHAUSTED_429",
     "OPENAI_INSUFFICIENT_QUOTA_429",
     "OPENAI_INVALID_API_KEY_401",
     "OPENAI_MID_STREAM_QUOTA",
+    "OPENAI_MID_STREAM_RATE_LIMIT",
+    "OPENAI_ORGANIZATION_SPEND_LIMIT_429",
+    "OPENAI_ORGANIZATION_USAGE_LIMIT_429",
     "OPENAI_PROJECT_SPEND_LIMIT_429",
     "OPENAI_RATE_LIMIT_429",
     "OPENAI_RATE_LIMIT_429_RESET_ONLY",
+    "OPENAI_SLOW_DOWN_429",
     "OPENAI_REGION_403",
     "OPENAI_SERVER_500",
     "OPENROUTER_BARE_402",
+    "OPENROUTER_CONTENT_POLICY_403",
     "OPENROUTER_CREDITS_402",
     "OPENROUTER_FORBIDDEN_403",
+    "OPENROUTER_GUARDRAIL_BUDGET_403",
     "OPENROUTER_IN_FLIGHT_402",
+    "OPENROUTER_IN_FLIGHT_402_NO_RETRY_AFTER",
     "OPENROUTER_INVALID_KEY_401",
+    "OPENROUTER_KEY_BUDGET_403",
     "OPENROUTER_KEY_LIMIT_402",
     "OPENROUTER_MID_STREAM_RATE_LIMIT",
     "OPENROUTER_MODERATION_403",
     "OPENROUTER_RATE_LIMIT_429",
+    "OPENROUTER_RATE_LIMIT_429_RESET_ONLY",
+    "OPENROUTER_REFUSAL_403",
     "OPENROUTER_UPSTREAM_502",
+    "OPENROUTER_WEIGHT_EXCEEDS_BUDGET_402",
     "RecordedError",
     "RecordedStream",
 ]
@@ -156,6 +171,29 @@ ANTHROPIC_SPEND_CAP_429 = RecordedError(
     ),
 )
 
+#: Claude API errors page, "Error codes": ``contract_spend_limit_reached`` on a 429 -- a contract's spend
+#: limit is used up. Message: inferred.
+ANTHROPIC_CONTRACT_SPEND_LIMIT_429 = RecordedError(
+    429,
+    _anthropic(
+        "rate_limit_error",
+        "Your organization has reached its contracted spend limit.",
+        details={"error_code": "contract_spend_limit_reached"},
+    ),
+)
+
+#: Claude API errors page, "Error codes": ``ramp_limit_exceeded`` on a 429 -- traffic rose faster than
+#: the organisation's ramp allows. A rate, not a quota. Message and ``retry-after``: inferred.
+ANTHROPIC_RAMP_LIMIT_429 = RecordedError(
+    429,
+    _anthropic(
+        "rate_limit_error",
+        "Your organization's usage increased too quickly; please ramp up gradually.",
+        details={"error_code": "ramp_limit_exceeded"},
+    ),
+    headers={"retry-after": "5"},
+)
+
 #: Claude API errors page: "401 - authentication_error". Message: inferred.
 ANTHROPIC_AUTHENTICATION_401 = RecordedError(401, _anthropic("authentication_error", "invalid x-api-key"))
 
@@ -176,6 +214,14 @@ ANTHROPIC_RATE_LIMIT_429 = RecordedError(
         "anthropic-ratelimit-input-tokens-remaining": "0",
         "anthropic-ratelimit-input-tokens-reset": "2026-11-26T12:00:40Z",
     },
+)
+
+#: The same 429 asking for an hour's wait: past the pool's two-minute threshold, so it counts as
+#: exhaustion. That such a wait comes: inferred (the owner doubts it is real; a guard, not a case).
+ANTHROPIC_RATE_LIMIT_429_LONG_WAIT = RecordedError(
+    429,
+    _anthropic("rate_limit_error", "Number of request tokens has exceeded your per-minute rate limit"),
+    headers={"retry-after": "3600"},
 )
 
 #: The same 429 with no ``retry-after`` (the rate-limits page: "Not every 429 carries it"): two limits at
@@ -268,6 +314,26 @@ OPENAI_PROJECT_SPEND_LIMIT_429 = RecordedError(
     429, _openai("Project spend limit reached.", "insufficient_quota", "project_spend_limit_exceeded")
 )
 
+#: OpenAI error-codes page's 429 rows: an organisation's spend limit, its usage limit, and a billing
+#: hard limit. Codes from the page; messages and the ``insufficient_quota`` type: inferred.
+OPENAI_ORGANIZATION_SPEND_LIMIT_429 = RecordedError(
+    429, _openai("Organization spend limit reached.", "insufficient_quota", "organization_spend_limit_exceeded")
+)
+OPENAI_ORGANIZATION_USAGE_LIMIT_429 = RecordedError(
+    429, _openai("Organization usage limit reached.", "insufficient_quota", "organization_usage_limit_exceeded")
+)
+OPENAI_BILLING_HARD_LIMIT_429 = RecordedError(
+    429, _openai("Billing hard limit has been reached.", "insufficient_quota", "billing_hard_limit_reached")
+)
+
+#: OpenAI error-codes page: "429 - Slow down" (code ``slow_down``): a sudden rise in traffic, a rate.
+#: Message and type: inferred.
+OPENAI_SLOW_DOWN_429 = RecordedError(
+    429,
+    _openai("Please reduce your rate of requests.", "rate_limit_error", "slow_down"),
+    headers={"retry-after": "2"},
+)
+
 #: OpenAI error-codes page: "429 - Rate limit reached for requests"; rate-limits guide: ``Retry-After``
 #: and the ``x-ratelimit-*`` headers with their sample values. Code ``rate_limit_exceeded`` and type
 #: ``requests``: inferred.
@@ -337,6 +403,25 @@ OPENAI_MID_STREAM_QUOTA = RecordedStream(
 )
 
 
+#: A rate-limit error inside a 200 stream, carrying the ``rate_limit_error`` type and no code. That
+#: OpenAI sends one this way: inferred.
+OPENAI_MID_STREAM_RATE_LIMIT = RecordedStream(
+    b"data: "
+    + json.dumps(
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "created": 1790000000,
+            "model": "gpt-4o",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hel"}, "finish_reason": None}],
+        }
+    ).encode()
+    + b"\n\ndata: "
+    + json.dumps(_openai("Rate limit reached.", "rate_limit_error", None)).encode()
+    + b"\n\n"
+)
+
+
 # -- openrouter ----------------------------------------------------------------------------------
 
 
@@ -376,6 +461,22 @@ OPENROUTER_IN_FLIGHT_402 = RecordedError(
     headers={"retry-after": "3"},
 )
 
+#: The same 402 without the ``Retry-After`` (errors page: "A 402 without the header is not a
+#: wait-and-retry case").
+OPENROUTER_IN_FLIGHT_402_NO_RETRY_AFTER = RecordedError(402, OPENROUTER_IN_FLIGHT_402.body)
+
+#: OpenRouter limits page: ``"reason": "weight_exceeds_budget"`` with ``"limit_source":
+#: "openrouter_credits"`` -- "this single request's estimated cost is larger than your whole budget, so
+#: retrying will not help". The page shows no body; the message: inferred.
+OPENROUTER_WEIGHT_EXCEEDS_BUDGET_402 = RecordedError(
+    402,
+    _openrouter(
+        402,
+        "This request's estimated cost exceeds your available budget.",
+        {"reason": "weight_exceeds_budget", "limit_source": "openrouter_credits"},
+    ),
+)
+
 #: OpenRouter errors page: "402: Your account or API key has insufficient credits", with no metadata.
 OPENROUTER_BARE_402 = RecordedError(
     402, _openrouter(402, "Your account or API key has insufficient credits. Add more credits and retry the request.")
@@ -396,12 +497,74 @@ OPENROUTER_MODERATION_403 = RecordedError(
 #: moderation metadata. Message: inferred.
 OPENROUTER_FORBIDDEN_403 = RecordedError(403, _openrouter(403, "This model is not allowed by your guardrail."))
 
+#: Verbatim from the OpenRouter errors page's guardrail budget 403 (no ``Retry-After``: "the wait is
+#: usually hours or days"). Its ``scope`` is a workspace's default member, so the account's.
+OPENROUTER_GUARDRAIL_BUDGET_403 = RecordedError(
+    403,
+    _openrouter(
+        403,
+        "Budget limit exceeded (weekly limit). Contact your org admin. $52.00 of $50.00 used; "
+        "resets 2026-10-12T00:00:00.000Z.",
+        {
+            "limit_source": "openrouter_guardrail_budget",
+            "remedy_hint": "Wait for the budget window to reset (see metadata.resets_at), "
+            "or ask your org admin to raise the guardrail budget.",
+            "scope": "workspace_default_member",
+            "limit_usd": 50,
+            "spend_usd": 52,
+            "resets_at": "2026-10-12T00:00:00.000Z",
+        },
+    ),
+)
+
+#: The same shape for a key's own budget window: ``limit_source`` ``openrouter_key_limit``, ``scope``
+#: ``key_limit`` (both named on the limits page). The values and message: inferred.
+OPENROUTER_KEY_BUDGET_403 = RecordedError(
+    403,
+    _openrouter(
+        403,
+        "Budget limit exceeded (daily limit). $5.10 of $5.00 used; resets 2026-11-27T00:00:00.000Z.",
+        {
+            "limit_source": "openrouter_key_limit",
+            "scope": "key_limit",
+            "limit_usd": 5,
+            "spend_usd": 5.1,
+            "resets_at": "2026-11-27T00:00:00.000Z",
+        },
+    ),
+)
+
+#: OpenRouter errors page: ``content_policy_violation`` (403, "flagged by a content filter") and
+#: ``refusal`` (403, "a model refusal as an error"), each in ``error.metadata.error_type``. The page
+#: shows neither body; messages and the other metadata: inferred.
+OPENROUTER_CONTENT_POLICY_403 = RecordedError(
+    403,
+    _openrouter(
+        403,
+        "The input was flagged by the provider's content filter.",
+        {"error_type": "content_policy_violation", "provider_name": "Scripted"},
+    ),
+)
+OPENROUTER_REFUSAL_403 = RecordedError(
+    403,
+    _openrouter(403, "The model declined to answer.", {"error_type": "refusal", "provider_name": "Scripted"}),
+)
+
 #: OpenRouter errors page: "429: You are being rate limited", and ``Retry-After`` on a 429. The header as
 #: an HTTP date, and the message: inferred.
 OPENROUTER_RATE_LIMIT_429 = RecordedError(
     429,
     _openrouter(429, "Rate limit exceeded", {"error_type": "rate_limit_exceeded"}),
     headers={"retry-after": "Thu, 26 Nov 2026 12:01:30 GMT"},
+)
+
+#: An OpenRouter key-management 429 with no ``Retry-After``: the limits page's ``X-RateLimit-*`` headers,
+#: ``X-RateLimit-Reset`` "the reset time in milliseconds since the Unix epoch". Values: inferred (the
+#: reset is 2026-11-26T12:00:45Z).
+OPENROUTER_RATE_LIMIT_429_RESET_ONLY = RecordedError(
+    429,
+    _openrouter(429, "Rate limit exceeded", {"error_type": "rate_limit_exceeded"}),
+    headers={"X-RateLimit-Limit": "20", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1795694445000"},
 )
 
 #: OpenRouter errors page: "502: Your chosen model is down or we received an invalid response from it".

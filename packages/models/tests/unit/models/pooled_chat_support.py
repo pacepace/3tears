@@ -213,14 +213,19 @@ class EventLog(BaseCallbackHandler):
         self.events.append(f"error:{type(error).__name__}")
 
 
-def pooled_model(pool: KeyPool, base_url: str, *, tracker: UsageTracker | None = None, **settings: Any) -> Any:  # noqa: ANN401
-    """The pooled model ``create_chat_model`` builds for ``pool``, every key's model on the wire."""
+def pooled_model(
+    pool: KeyPool, base_url: str, *, tracker: UsageTracker | None = None, max_retries: int = 0, **settings: Any
+) -> Any:  # noqa: ANN401
+    """The pooled model ``create_chat_model`` builds for ``pool``, every key's model on the wire.
+
+    :param max_retries: each key's SDK retries; none by default, so a test counts one request per attempt
+    """
     return create_chat_model(
         MODEL_ID,
         key_pool=pool,
         tracker=tracker if tracker is not None else UsageTracker(),
         base_url=base_url,
-        max_retries=0,
+        max_retries=max_retries,
         **settings,
     )
 

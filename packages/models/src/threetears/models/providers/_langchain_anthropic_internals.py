@@ -3,8 +3,8 @@
 ``ChatAnthropic`` builds its ``anthropic`` SDK clients itself, from a private ``_client_params``
 dict, and takes no middleware, transport or HTTP client from its caller. The SDK's client does
 take ``middleware=`` (public: ``anthropic.Middleware``), which is the hook a model needs to see each
-HTTP attempt's response inside the SDK's retry loop -- the key pool's 429-unretried mode
-(``providers/_key_errors_unretried.py``). This module is the only place in ``threetears.models``
+HTTP attempt's response inside the SDK's retry loop -- the key pool's unretried mode, which stops
+the SDK retrying a response that is the key's (``providers/_key_errors_unretried.py``). This module is the only place in ``threetears.models``
 that names a ``langchain-anthropic`` member with a leading underscore: it overrides
 ``_client_params`` to add the model's ``sdk_middleware``, and nothing else.
 
@@ -13,8 +13,8 @@ that names a ``langchain-anthropic`` member with a leading underscore: it overri
 ``anthropic.Client`` / ``anthropic.AsyncClient``; ``anthropic/_client.py`` and ``_middleware.py``:
 the ``middleware`` argument, and a ``Middleware`` subclass passing both the sync and the async
 client's validation when it implements ``handle`` and ``handle_async``). A release that renames
-``_client_params`` fails ``tests/unit/models/test_key_errors_unretried.py``, which drives a 429
-through a model built here and counts the requests.
+``_client_params`` fails ``tests/unit/models/test_key_errors_unretried.py``, which drives a quota
+429 through a model built here and counts the requests.
 """
 
 from __future__ import annotations

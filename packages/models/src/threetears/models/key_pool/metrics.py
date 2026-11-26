@@ -49,14 +49,16 @@ _KEY = ("pool", "key")
 #: that already tried the key, so it is never a key's state in a snapshot and gets no series.
 _SNAPSHOT_STATES = tuple(state for state in KeyState if state is not KeyState.TRIED)
 
-#: the reasons a call can fail over for: the four key-moving verdicts, and a breaker that refused the
-#: call after the pool chose its key. The other move reasons are the pool's own decisions between calls.
+#: the reasons a call can fail over for: the three key-moving verdicts, a breaker that refused the
+#: call after the pool chose its key, and a request too large for the key (``low_room``). A rate limit
+#: is retried on the same key, so it is none. The other move reasons are the pool's own decisions
+#: between calls.
 _FAILOVER_REASONS = (
     MoveReason.EXHAUSTED,
     MoveReason.REVOKED,
     MoveReason.FORBIDDEN,
-    MoveReason.RATE_LIMITED,
     MoveReason.TRIPPED,
+    MoveReason.LOW_ROOM,
 )
 
 #: the store methods a failure is counted by: every method of the ``KeyPoolStore`` Protocol.
