@@ -50,6 +50,9 @@ _CREATED = 1790000000
 #: second after its last request.
 _SHUTDOWN_POLL_S = 0.01
 
+#: The headers :func:`serve_http_handler` writes itself rather than copying from the handler's response.
+_FRAMING_HEADERS = frozenset({"content-type", "content-length", "transfer-encoding"})
+
 
 def text_deltas(*parts: str) -> list[dict[str, Any]]:
     """the chat-completions deltas that stream ``parts`` as assistant text, one delta per part.
@@ -405,7 +408,7 @@ def serve_http_handler(handler: Callable[[httpx.Request], httpx.Response]) -> It
     For a provider that accepts no transport (``ChatAnthropic``): the model is pointed at the
     yielded URL through its public ``base_url``, the SDK sends the request it really would, and
     each POST is handed to ``handler`` as an :class:`httpx.Request` whose answer is written back
-    verbatim -- status, content type and body.
+    verbatim -- status, headers and body.
 
     :param handler: answers one request
     :ptype handler: Callable[[httpx.Request], httpx.Response]
@@ -424,6 +427,9 @@ def serve_http_handler(handler: Callable[[httpx.Request], httpx.Response]) -> It
             self.send_response(response.status_code)
             self.send_header("content-type", response.headers.get("content-type", "application/json"))
             self.send_header("content-length", str(len(payload)))
+            for name, value in response.headers.items():
+                if name.lower() not in _FRAMING_HEADERS:
+                    self.send_header(name, value)
             self.end_headers()
             self.wfile.write(payload)
 
