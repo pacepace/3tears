@@ -43,7 +43,28 @@ One family version covers all three (`docs/releasing.md`). Two smaller surfaces 
 | `threetears.agent.tools` | `TearsTool`, `ToolResult`, `ToolServer`, `ToolRouter`, `ToolExecutor`, `parse_document` | `packages/agent/tools/README.md` |
 | `threetears.registry` | `ToolCatalog`, `CallProxy`, `ToolCallClient`, `RbacEvaluatorAuthorizer` | `packages/registry/README.md` |
 | `threetears.agent.audit` | `AuditEvent`, `publish_audit` | `packages/agent/audit/README.md` |
+| `threetears.models` key pool | `KeyPool`, `KeySpec`, `Secret`, `KeyPool.status`/`reset`/`reserve`, `create_chat_model(model_id, key_pool=)` | `docs/model-key-pool.md`; [Model key pool surface](#model-key-pool-surface) |
 | Every other package | the tables in `README.md` "Packages" and each package README | `README.md` |
+
+### Model key pool surface
+
+Added on `feat/model-key-pool`, unreleased; it ships in a minor (`docs/model-key-pool-requirements.md`, the closing
+line). Operator guide: `docs/model-key-pool.md`.
+
+| Where | Public names | For |
+|---|---|---|
+| `threetears.models` | `KeyPool`, `KeyPoolLease`, `KeySpec`, `Secret`, `KeyPoolStore`, `InMemoryKeyPoolStore`, `KeyPoolStoreError`, `NoKeyAvailableError`, `NoOutputLimitError`, `reservation_estimate` | building a pool, reserving on it, and its errors |
+| `threetears.models.key_pool` | the names above, plus `KeyPoolStatus`, `KeyStatus`, `KeyState`; `KeyPoolObserver`, `KeyPoolCounters`, `MoveReason`; `AccountSnapshot`, `ReservationSnapshot`, `ReservationNotFound`, `ReservationAlreadyOpen`; `SelectionPolicy`, `StickySelection`, `KeyCandidate`; `KeyErrorClassifier`, `Verdict`, `VerdictKind`, `VerdictScope`, `classifier_for`; `period_bounds`, `period_id` | `status()`; the event hook metrics export through; the store Protocol's plain types; the policy and classifier seams; billing periods |
+| `threetears.models` (`pricing`) | `cost_of_usage`, `TokenRates`, `UnpricedModelError` | the one place usage is priced: cache reads and writes at their own rates, falling back to the input rate, plus `cost_per_request` |
+| `threetears.models` (`tracking`) | `estimate_input_tokens` | a local, network-free prompt estimate for a reservation |
+| `threetears.models.errors` | `NO_KEY_AVAILABLE_REASON` | the `reason` `NoKeyAvailableError` carries, which `friendly_api_error()` maps to a fixed message |
+| `threetears.models` (`UsageTracker.make_callback`, `UsageTrackingCallback`, `UsageAccumulator`) | new keyword arguments `cost_per_cache_read_token`, `cost_per_cache_write_token`, `cost_per_request` | the tracker and accumulator price through `cost_of_usage` |
+| `create_chat_model` | new keyword argument `breaker_registry=`; passing it with `breaker=` raises `ValueError` | the breaker registry seam: keeps both the credential and the per-model rate-limit breaker, unlike `breaker=` |
+| `threetears.models.circuit_breaker` | `CircuitBreaker.seconds_until_admit()`, `CircuitBreakerRegistry.peek()` | reading a breaker with no side effects: never admits a probe, and `peek` never creates a breaker or marks one used |
+| `threetears.models.providers.anthropic`, `.openai`, `.openrouter` | `create_anthropic_chat`, `create_openai_chat`, `create_openrouter_chat` gain `unretried_key_errors=False` | `True` makes 401, 402, 403 and 429 reach the caller on their first occurrence; 5xx and connection retries keep `max_retries`. On OpenRouter it changes nothing, since that SDK never retries those. Refused on a Claude subscription token |
+| `threetears.core.coordination` | `BudgetLedger` | the durable store: satisfies `KeyPoolStore` structurally, with no import of `threetears.models`; refuses a registry with no L2 or no L3 |
+| `threetears.core.coordination.tables` | `CoordinationLedgerAccountsCollection`, `CoordinationDocumentsCollection`, `LEDGER_TABLE_SCHEMAS` | the ledger's two tables, created by coordination migration v004 |
+| `create_chat_model` | `key_pool=`, exactly one of `api_key` and `key_pool` <!-- chunk 07: filled at integration --> | the pooled chat model (KP-J1) |
 
 Safety: reads are safe. `save()` is guarded by optimistic locking and raises on a stale `date_updated` (`docs/integration-guide.md` §4). Migrations are idempotent and keyed by `(version, package)` (§9).
 
@@ -86,6 +107,7 @@ Safety: reads are safe. `save()` is guarded by optimistic locking and raises on 
 |---|---|---|---|
 | Library | exceptions; a failure reaches the caller or is recorded through `contain()` | per-package hierarchies, e.g. `ConcurrentModificationError`, `DataLayerUnavailableError`, `L2LostError`, `L2ScopeNotConfiguredError`; `NatsClientError` with `KvError`, `RequestTimeoutError` and peers | `docs/exceptions.md`; `packages/core/src/threetears/core/exceptions.py`; `packages/nats/src/threetears/nats/errors.py` |
 | Missing extra | `ImportError` naming the extra | — | `packages/core/README.md` |
+| Model key pool | exceptions; the pool fails closed and never returns `None` | `NoKeyAvailableError` (a `ModelProviderError`, reason `no_key_available`, naming every key's label and state); `KeyPoolStoreError`, with its subclasses `ReservationNotFound` (also a `LookupError`) and `ReservationAlreadyOpen` (also a `ValueError`); `UnpricedModelError` and `NoOutputLimitError` (both `ValueError`). `BudgetLedger` raises by builtin base (`LookupError`, `ValueError`, `TypeError`) and lets storage failures propagate for the pool to wrap | `packages/models/src/threetears/models/key_pool/errors.py`; `key_pool/store.py`; `packages/core/src/threetears/core/coordination/budget_ledger.py` |
 | Tool result | `ToolResult.error_code`, copied to `CallResponse` and `ProxyCallResponse` | closed `TOOL_RESULT_ERROR_CODES` (`CONFLICT`, `MALFORMED_REQUEST`, `TOOL_NOT_READY`); upper case; `ValueError` at construction otherwise | `packages/agent/tools/README.md` |
 | Registration | `RegistrationResponse.error_code`, `RefusedTool.code` | `RefusalCode` StrEnum | `packages/registry/src/threetears/registry/ownership.py` |
 | Call path | `ProxyCallResponse.error_code`; `ToolCallError.error_code` on the client | codes such as `TOOL_TIMEOUT`, `TOOL_UNAVAILABLE`, `TOOL_NOT_AUTHORIZED`, `TOOL_AUTHORIZATION_UNAVAILABLE`, `REGISTRY_INTERNAL_ERROR` | `packages/registry/src/threetears/registry/proxy.py`; `packages/registry/README.md` |
@@ -146,6 +168,7 @@ Tier meanings here: `stable` means no breaking change inside one minor line, and
 - `threetears.langgraph` — stable
 - `threetears.mcp` — stable
 - `threetears.models` — stable
+- `threetears.models.key_pool` — stable (new, unreleased)
 - `threetears.channels` — stable
 - `threetears.search` — stable
 - `threetears.scrape` — stable
