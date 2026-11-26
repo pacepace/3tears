@@ -138,6 +138,8 @@ SAFE_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "duration_ms",  # tool.call (3tears)
         "elapsed_ms",  # schema.introspect_refresh (hub)
         "error_count",  # admin.action pii_rotation (hub)
+        "exports_deferred",  # exports left to delete as their UNLOAD ends, tool_pod.delete, datasource_export.withdraw (hub)
+        "exports_deleted",  # exports deleted, files and record, tool_pod.delete, datasource_export.withdraw (hub)
         "files_changed",  # workspace.create / reset / rollback (3tears)
         "gained_count",  # rbac.introspect.dry_run (hub)
         "group_memberships_deduped",  # user.merge (hub)
@@ -543,8 +545,10 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         # a registered provider's name (hub)
         "gateway.provider.create": frozenset({"provider_name"}),
         # a tool pod's warehouse export and its deletion: the rows written, the versions deleted,
-        # and the destination the pod composed (a generated id, its table and a state code) (hub)
-        "datasource.export": frozenset({"row_count", "versions_deleted", "destination"}),
+        # the destination the pod composed (a generated id, its table and a state code), and
+        # whether the delete waits for an UNLOAD still writing (a boolean, datasource.export.delete
+        # and .clear) (hub)
+        "datasource.export": frozenset({"row_count", "versions_deleted", "destination", "deferred"}),
         # a tool pod changing an agent's data under its grant: the tables the statement
         # names (developer-declared names from the agent's table list, never customer
         # typed), the affected-row count, and the broker-minted transaction id (hub)
