@@ -63,7 +63,7 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
         f"{_CORE}/collections/copy_checkpoint.py",
         f"{_CORE}/collections/complete_copy.py",
         # the writer's recreation of a lost delta file, over the opted-in table it is handed: that change's keys by key,
-        # its key prefixes a page at a time by the prefix (decision 29 of design-pod-delta-files)
+        # its key prefixes a page at a time by the prefix (decision 29 of docs/design-pod-delta-files.md)
         f"{_CORE}/collections/delta_recreate.py",
         # a table's fingerprint, over the table its caller names
         f"{_CORE}/fingerprint.py",

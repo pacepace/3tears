@@ -306,7 +306,7 @@ async def test_a_dead_writer_s_whole_change_recorded_again_is_counted_as_a_lost_
 ) -> None:
     """Flips if the backstop records a dead writer's whole change again (every copy then reloads the table whole)
     without counting it under ``collection_whole_reloads_total{why="lost_writes"}`` with its table, or without saying
-    so at WARNING (Pace, 2026-11-27: a recovery reload is never silent, and a replay fails on one); or if a migration
+    so at WARNING (Pace, 2026-11-26: a recovery reload is never silent, and a replay fails on one); or if a migration
     run's own whole change, announced from its window, is counted as one."""
     nats, pool, source = FakeNatsClient(), _RunDeletedPool(), _WholeSource()
     clock = _Clock()
@@ -333,7 +333,7 @@ async def test_a_dead_writer_s_whole_change_recorded_again_is_counted_as_a_lost_
 
 
 async def test_only_a_lost_writes_window_reaches_the_whole_changes_and_a_live_writer_never_does() -> None:
-    """the proving test of the whole changes declared in lost_writes._changes_of (kind recovery, Pace 2026-11-27): only
+    """the proving test of the whole changes declared in lost_writes._changes_of (kind recovery, Pace 2026-11-26): only
     a lost write's window reaches it, a dead writer's (the recovery pass) or a migration run's (its announcement);
     a recovery pass that finds every writer live reads no window and records nothing whole. Seen at the database: a
     window is _changes_of's read of the table's rows in it, and its whole changes its read of the run markers. Flips if

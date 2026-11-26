@@ -160,7 +160,7 @@ CHANGED_ROWS_FIELD: Final = "changed_rows"
 #: directory (:mod:`~threetears.core.collections.delta_files`). Sent on ``l3.tx.commit``, and on ``l3.load_files``
 #: for a load of a table that opts in (each request names its own file, holding that request's rows), so the broker
 #: that advances each table's generation names the file in every epoch record it writes for the commit or the request
-#: (``EpochChange.delta_file``; ``design-pod-delta-files.md``, decisions 4 and 17). A load request that fails after
+#: (``EpochChange.delta_file``; ``docs/design-pod-delta-files.md``, decisions 4 and 17). A load request that fails after
 #: committing some of its rows names its file unconfirmed (``unconfirmed_delta_file``, ruling C of 2026-11-23): the file
 #: may hold rows L3 did not take, so no copy applies it until the writer has written it again from L3. A broker built
 #: before it ignores it, and its records name no file. The hub imports this name.
@@ -244,7 +244,7 @@ def named_commit_generation(table_name: str) -> str | None:
 #: commit saved a delta file: a list of at most ``_EPOCH_SCOPES_MAX`` strings (``recordable_scopes``), none past it.
 #: A broker that records the commit keys unknown (its rows too many to name) names them on each such table's record
 #: (``EpochChange.scopes``), so the writer can recover the commit's rows by those states should its delta file be lost
-#: past the change notes' window (``design-pod-delta-files.md``, decision 31). A broker built before it ignores it,
+#: past the change notes' window (``docs/design-pod-delta-files.md``, decision 31). A broker built before it ignores it,
 #: and its records name none. The hub imports this name.
 COMMIT_SCOPES_FIELD: Final = "scopes"
 

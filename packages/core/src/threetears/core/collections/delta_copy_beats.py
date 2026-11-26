@@ -1,6 +1,6 @@
 """each pod copy's position, published for the writer's fold: which delta files no copy can still need.
 
-**Why** (``design-pod-delta-files.md`` decision 54). A fold that deletes its delta files (``retention="delete"``) once
+**Why** (``docs/design-pod-delta-files.md`` decision 54). A fold that deletes its delta files (``retention="delete"``) once
 deleted each file the moment a new full covered it, with no input about copies: on the 2026-11-24 replay copies lagging
 their writer by a median 7.7 s found 536 files gone, each a lost file, and 91 whole-table reloads followed. So each copy
 says how far it has applied each table, and the fold deletes a covered file only once every live copy is past it.

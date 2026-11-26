@@ -1,7 +1,7 @@
 """a copy follower applies a table that opts in to delta files from the file each epoch's record names, never L3.
 
 Election night failed with L3 on the hot path: every pod copy read each change's rows back from L3
-(``design-pod-delta-files.md``). The registry, the follower and the delta files are the real ones; L3 is a DuckDB that
+(``docs/design-pod-delta-files.md``). The registry, the follower and the delta files are the real ones; L3 is a DuckDB that
 counts every statement it answers, kept equal to what the writes would leave in L3, so "the copy equals L3" and "no
 statement reached L3" are both checked. The contract this pins:
 
@@ -488,7 +488,7 @@ async def _warmed(world: tuple[_L3, _Log, _Scopes, DuckDBBackend, CopyFollower])
 
 async def test_an_opted_in_tables_change_is_applied_from_its_file_with_no_l3_statement(_volume: Path) -> None:
     """Flips if a copy of an opted-in table reads a change's rows from L3: election night failed because every pod
-    copy did, so L3's read load grew with the pods (design-pod-delta-files.md, decision 3)."""
+    copy did, so L3's read load grew with the pods (docs/design-pod-delta-files.md, decision 3)."""
     world = _world()
     l3, log, lock, backend, follower = world
     await _warmed(world)
@@ -1631,7 +1631,7 @@ async def test_a_copy_lagging_its_writer_applies_every_delta_file_a_published_fu
     _volume: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Flips if the writer's fold deletes a delta file once its full covers it while the fold keeps its delta files
-    (``retention="keep"``, design-pod-delta-files decision 51): a copy lagging its writer (a median 7.7 s on the
+    (``retention="keep"``, docs/design-pod-delta-files.md decision 51): a copy lagging its writer (a median 7.7 s on the
     2026-11-24 replay) then finds its next epoch's file gone, waits on it as lost, and the table is reloaded whole (536
     files, 91 reloads of 339k rows). Kept, every file is still on the volume after the publish and the lagging copy
     applies each from its file: no L3 statement, no file waited for, no fallback."""

@@ -4,7 +4,7 @@
 (:mod:`~threetears.core.collections.delta_files`). Until now a copy that found that file missing read the change's
 keys from L3 itself, so a lost or damaged file sent every pod to L3 at once: the load that failed election night. Now
 the copy reads nothing from L3, holds the table and asks the writer; the writer reads that one change's rows from L3 by
-key, once, and writes the file back under the same name (``design-pod-delta-files.md``, decision 29, which amends 3).
+key, once, and writes the file back under the same name (``docs/design-pod-delta-files.md``, decision 29, which amends 3).
 
 **The request** rides 3tears' owner-routed forward (:func:`threetears.nats.forward.forward` /
 :func:`~threetears.nats.forward.serve_owner`) in the ``delta-files`` family

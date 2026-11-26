@@ -6,7 +6,59 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### enforcement, core: two gate facts (Pace 2026-11-27): a migration's stamped write is heard; a reload's call is covered by what it reaches
+### What a consumer must do at this release (agent-acl's migrations, cleanup records, the retry helper, the replay)
+
+**The hub repeats agent-acl v007-v011 in its own migrations.** A deployment whose own migrations create the access
+tables (the hub) runs no agent-acl migration, so it takes each step itself. A deployment with no hub runs agent-acl's
+migrations and has nothing to do. The hub's chain on ``work/hub-line`` already takes every step:
+
+| agent-acl | what it does | the hub's step |
+| --- | --- | --- |
+| v007 | ``namespaces`` keyed by ``namespace_id`` alone, ``row_scope`` moveable, ``threetears_tenant_moves`` | v187 (the moves table), v190 step 3 (``rekey_namespaces``) |
+| v008 | group and role names hold live rows only | v191 (``LIVE_UNIQUE_INDEXES``) |
+| v009 | the grant indexes take the hub's shape and names | none: 3tears takes the hub's own indexes (its v163, v1001) |
+| v010 | live pages read live-only indexes | v195 step 3 (``THREETEARS_LIVE_INDEXES``) |
+| v011 | ``owner_namespace_id``, backfilled; ``idx_namespaces_owner_namespace`` dropped | v199 (``ADD_OWNER_ID_SQL``, ``backfill_owner_namespace_ids``) |
+
+**The hub's broker holds its sessions to the cleanup rules.** A copy now marks a cleanup-floor record applied without
+reading it (``CollectionRegistry.catch_up_generation``). That is safe only while every write such a record names is
+quiet-time cleanup's delete alone. The pod holds its own writes to it: a ``CallerTransaction`` mixing cleanup's delete
+with another write raises the new public ``CleanupMixedWriteError`` (``cleanup_mix_refusal``), and a cleanup-marked
+request that writes by anything but a delete is refused (``cleanup_write_refusal``). The hub's broker must hold its
+sessions to both. It does on ``work/hub-line``: ``aibots.hub.broker.proxy._refuse_cleanup_mix`` calls
+``cleanup_mix_refusal`` and ``_refuse_cleanup_non_delete`` calls ``cleanup_write_refusal``. Do not run a hub without
+them beside pods of this release.
+
+**``retry_serialization_conflicts`` retries deadlocks (40P01) as well as conflicts (40001), for every caller.** Each
+of today's callers (role-assignment ensure, namespace ensure, ``testing.schemas``' ``DROP SCHEMA``) re-runs a whole
+unit on the pool, so a retry is safe. Never call it inside a ``CallerTransaction``: an aborted transaction's statement
+cannot be retried.
+
+**A replay fails on a recovery reload.** It reads the pod's ``whole_reloads`` (``collection_whole_reloads_total``)
+against ``WHOLE_RELOADS.gated``, imported rather than copied. Reports' replay does this on ``work/reports-fold``
+(``replay_night``).
+
+**Reports drops its ``CountedCopyBackend`` wrapper.** The shared copy counts what its hooks let go
+(``shared_copy_let_go_rows_total{table}``, ``SharedCopyBackend.let_go``).
+
+**Also changed:** a versioned table's new version keeps the ``date_created`` its row carries; a keyed read with a live
+guard is hinted to the live-only index over a whole one of the same lead (hub v198 made such pairs); a stream key
+listing reads with a fixed set of readers, never one task a subject.
+
+### agent-acl, core: racing revives of a gone namespace; a statement form for a declared whole read
+
+**Fixed:** ``NamespaceCollection.ensure_namespace`` raised "a unique value it carries ... is already taken by a row
+with another id" in every replica but one when several re-ensured a namespace a delete had marked gone. One replica's
+revive made the row live, and every other replica's revive (``UPDATE ... WHERE gone``) matched nothing, so it skipped
+the read-back. The row is now read back whatever the revive returned, and refused only if it is still missing
+(``test_racing_revives_of_a_gone_namespace_never_raise``, PostgreSQL and YugabyteDB).
+
+**Added:** ``threetears.core.declared.whole_read_block``, the statement form of ``whole_read``. Its ``with`` body is the
+declared read and it takes the same arguments, so a statement returning nothing (``whole.add(table)``) is declared
+without handing ``None`` through an expression and a ``# type: ignore[func-returns-value]``. Both gates read it
+(no_whole_reads, epoch_discipline). ``SharedCopyStages.apply_staged`` and ``lost_writes._changes_of`` use it.
+
+### enforcement, core: two gate facts (Pace 2026-11-26): a migration's stamped write is heard; a reload's call is covered by what it reaches
 
 **Changed (epoch-bypass):** a keyed update (``update_keyed`` / ``update_before``) in a module the migration runner runs
 (``EpochDisciplineConfig.migration_modules``; 3tears names ``packages/*/migrations/v*.py``) that sets ``epoch`` from the
@@ -29,21 +81,18 @@ test at 100,000 rows. The gate is at zero.
 
 ### core, enforcement: a recovery is a declared whole-read kind; three of the gate's four findings declared
 
-**Added:** ``whole_read(kind="recovery")`` (Pace 2026-11-27: recovery reloads stay, but are never silent): its call
+**Added:** ``whole_read(kind="recovery")`` (Pace 2026-11-26: recovery reloads stay, but are never silent): its call
 into a reload from the writer's full, or the change it marks whole; never an L3 read. The lost-write backstop's whole
 changes of a lost window are declared under it (``lost_writes._changes_of``). The shared copy's apply marks a table
 whole under the kind that staged its change, as the in-process copy's apply empties it (``SharedCopyStages
 .apply_staged``: ``cold_start``, ``schema_change`` and ``rolling_upgrade`` now admit ``marks-whole``). The whole settle
-after a start not wholly from a checkpoint is a ``cold_start`` (``shared_copy._settle_whole_job``; Pace 2026-11-27: a
-pod start from the volume counts as a cold start), with its proof and a speed test at 100,000 rows. Still open: the
-copy's reload from the volume (``CopyFollower._reload_when_published``'s call into ``_reload_from_volume``), whose
-whole apply is two calls down in ``DuckDBBackend.apply_staged`` under three kinds, so no one kind can be declared at
-the call.
+after a start not wholly from a checkpoint is a ``cold_start`` (``shared_copy._settle_whole_job``; Pace 2026-11-26: a
+pod start from the volume counts as a cold start), with its proof and a speed test at 100,000 rows.
 
 ### core: every whole reload is counted by why, and a recovery reload is said at WARNING
 
 **Added:** ``collection_whole_reloads_total{table,why}`` (``threetears.core.collections.whole_reloads.WHOLE_RELOADS``)
-counts every table reloaded whole with no L3 read (Pace's ruling of 2026-11-27: recovery reloads stay, but are never
+counts every table reloaded whole with no L3 read (Pace's ruling of 2026-11-26: recovery reloads stay, but are never
 silent). A copy starting from the delta-files volume counts each opted-in table it loads (``cold_start``); a copy
 waiting for the writer's full counts the reload as the wait begins, once a reload, by why: ``reset``,
 ``schema_change``, ``lost_log`` (its epoch log replaced, a record gone, aged out), ``lost_file`` (a delta file lost,

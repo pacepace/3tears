@@ -1,29 +1,26 @@
 """A complete copy of collection tables in DuckDB, kept current by the keys each epoch changed.
 
-**Why.** A pod that answers analytic queries over whole tables holds every row of them in a DuckDB L1
-(:mod:`~threetears.core.collections.complete_copy`). :class:`~threetears.core.collections.complete_copy.CompleteCopy`
-is voided by any change and warmed whole again, so a change costs the size of the table. A copy kept by
-:class:`CopyFollower` costs what changed: it hears the keys of every committed write of its tables through the
-registry's standard path (each row broadcast, and each epoch's change record a catch-up applies:
-:meth:`~threetears.core.collections.registry.CollectionRegistry.register_derived_cache`), reads exactly those keys'
-rows from L3, and swaps them in. Nothing here is a side system: the keys come from the epoch change log, the rows
-from L3, and the copy is the registry's L1 backend's own tables.
+**Why.** A pod that answers analytic queries over whole tables holds every row of them in a DuckDB L1. A copy kept by
+:class:`CopyFollower` costs what changed, never the size of the table: it hears the keys of every committed write of its
+tables through the registry's standard path (each row broadcast, and each epoch's change record a catch-up applies:
+:meth:`~threetears.core.collections.registry.CollectionRegistry.register_derived_cache`), reads exactly those keys' rows
+from L3, and swaps them in. Nothing here is a side system: the keys come from the epoch change log, the rows from L3,
+and the copy is the registry's L1 backend's own tables.
 
-**One state of every table.** A change is applied only at a settled stamp of the writer's seqlock (``settled``, as
-:class:`~threetears.core.collections.complete_copy.BufferedCopies` takes it; on the reports pod ``ScopeEpochs``): the
-stamp is read, every table is caught up to its generation read AFTER it, the keys heard are read from L3 and staged
-beside the copy (:meth:`FollowerBackend.stage_rows`), the stamp is read again, and only when it has not moved is
-everything staged applied in ONE change (:meth:`FollowerBackend.apply_staged`, in the backend's apply worker, published
-as one version of the shared copy) and the copy labelled with the stamp. A stamp that
-moved, or a write in progress, keeps every key pending for the next pass and the copy as it was: stale, never mixed.
-The label is exact when the writer's seqlock commit comes after the generation advances of the data it covers (a
-writer whose last data transaction commits the stamp itself races that transaction's advance).
+**One state of every table.** A change is applied only at a settled stamp of the writer's seqlock (``settled``; on the
+reports pod ``ScopeEpochs``): the stamp is read, every table is caught up to its generation read AFTER it, the keys
+heard are read from L3 and staged beside the copy (:meth:`FollowerBackend.stage_rows`), the stamp is read again, and
+only when it has not moved is everything staged applied in ONE change (:meth:`FollowerBackend.apply_staged`, in the
+backend's apply worker, published as one version of the shared copy) and the copy labelled with the stamp. A stamp that
+moved, or a write in progress, keeps every key pending for the next pass and the copy as it was: stale, never mixed. The
+label is exact when the writer's seqlock commit comes after the generation advances of the data it covers (a writer
+whose last data transaction commits the stamp itself races that transaction's advance).
 
 **From delta files, for a table that opts in** (:attr:`FollowedTable.delta_files`). Each key heard keeps the epoch
 it was heard at; the epoch's record names the commit's delta file (``EpochChange.delta_file``), read off the shared
 volume (``THREETEARS_DELTA_FILES_DIR``), and the key's row is the row the copy holds with each of its epochs' changes
 applied in order, merged as L3 merged them (:func:`~threetears.core.testing.delta_files.apply_delta_row`): no
-statement reaches L3, however many pods follow (``design-pod-delta-files.md``, decisions 3, 4 and 19). The scope rules
+statement reaches L3, however many pods follow (``docs/design-pod-delta-files.md``, decisions 3, 4 and 19). The scope rules
 are the same: a key left out of a change keeps its epochs and is staged again from its files. A key whose epoch names
 no file (an older writer's record) is read from L3 by key as for any table, counted by why
 (``copy_follower_delta_file_fallback_keys_total``). A commit too big to list its rows (a keys-unknown record) that
@@ -111,7 +108,7 @@ from collections.abc import Set as AbstractSet
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Annotated, Any, Final, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import Annotated, Any, Final, Literal, Protocol, TYPE_CHECKING, runtime_checkable
 
 from threetears.interfaces.keyed.keys import versioned_table
 from threetears.interfaces.keyed.rows import DeclaredKey, DeclaredScope, KeyColumns
@@ -288,20 +285,33 @@ _NOTES_CANNOT: Final = frozenset({"notes_unavailable", "notes_not_covered", "not
 #: is decision 29's, not a lost log
 _LOG_LOST: Final = frozenset({"replaced", "record_missing", "record_lost", "aged_out"})
 
-#: each why a copy waits for the writer's full under (:attr:`_FullAfter.why`), onto the why its whole reload is
-#: counted under (``collection_whole_reloads_total``, :data:`~threetears.core.collections.whole_reloads
-#: .WHOLE_RELOADS`): a lost file and one a fold swept because a full covers it are both a file that never comes
-_RELOAD_WHYS: Final[Mapping[str, str]] = frozen(
-    {
-        "lost epoch log": LOST_LOG,
-        "reset": "reset",
-        "schema_change": "schema_change",
-        "file_lost": LOST_FILE,
-        "file_covered": LOST_FILE,
-        "held_past_cap": "held_past_cap",
-        "partition_refused": "partition_refused",
-    }
-)
+#: each why a copy waits for the writer's full under (:attr:`_FullAfter.why`): a reset, a schema change, a lost epoch
+#: log, a lost delta file or one a fold swept because a full covers it, more held than the cap while a table waited for
+#: a file, a partition the copy refused
+_ReloadWhy = Literal[
+    "lost epoch log", "reset", "schema_change", "file_lost", "file_covered", "held_past_cap", "partition_refused"
+]
+
+
+def _counted_why(why: _ReloadWhy) -> str:
+    """the why a wait's whole reload is counted under (``collection_whole_reloads_total``,
+    :data:`~threetears.core.collections.whole_reloads.WHOLE_RELOADS`): a lost file and one a fold swept because a full
+    covers it are both a file that never comes. Exhaustive over :data:`_ReloadWhy`: a why it does not answer is a
+    type error (a missing return), never a lookup that fails in the follower's message handling.
+
+    :param why: what the table waits for
+    :ptype why: _ReloadWhy
+    :return: the counted why
+    :rtype: str
+    """
+    match why:
+        case "lost epoch log":
+            return LOST_LOG
+        case "file_lost" | "file_covered":
+            return LOST_FILE
+        case "reset" | "schema_change" | "held_past_cap" | "partition_refused":
+            return why
+
 
 #: the most values of a key prefix's last column one partition read names
 _PREFIX_BATCH: Final = 1000
@@ -1277,7 +1287,7 @@ class FollowedTable:
     scope: Annotated[tuple[str, str] | None, DeclaredScope] = None
     #: the table opts in to delta files (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`):
     #: each epoch's changes are applied from the file its record names, read off the shared volume, merged onto the
-    #: row the copy holds, never read from L3 (``design-pod-delta-files.md``, decisions 3, 4 and 19). A missing or
+    #: row the copy holds, never read from L3 (``docs/design-pod-delta-files.md``, decisions 3, 4 and 19). A missing or
     #: unreadable file is waited for while the writer recreates it, never read from L3 (decision 29)
     delta_files: bool = False
 
@@ -1596,7 +1606,7 @@ class _FullAfter:
     once and publishes it; a copy never reads it from L3). A full from before the reset holds the table the reset
     replaced, so it is never taken.
 
-    :ivar why: ``reset`` or ``schema_change``
+    :ivar why: what it waits for (:data:`_ReloadWhy`)
     :ivar token: the reset's generation token when the record named it; else the newest generation the copy had heard
         of the table, which the reset came after (a reset in this process is told before its advance is written);
         None when the copy had heard none
@@ -1610,7 +1620,7 @@ class _FullAfter:
         change, a lost log): the full is then the whole table's
     """
 
-    why: str
+    why: _ReloadWhy
     token: str | None
     inclusive: bool
     incarnation: str | None = None
@@ -1809,7 +1819,7 @@ class _ReloadHeard:
     """
 
     table: str
-    why: str
+    why: Literal["reset", "schema_change"]
     token: str | None
     bar: str | None
 
@@ -2706,7 +2716,7 @@ class CopyFollower:
     def _wait_for_reload(
         self,
         table: str,
-        why: str,
+        why: _ReloadWhy,
         token: str | None,
         *,
         keep: bool = False,
@@ -2721,9 +2731,9 @@ class CopyFollower:
 
         :param table: the table
         :ptype table: str
-        :param why: ``reset``, ``schema_change``, ``file_lost`` or ``held_past_cap`` (a table waiting for a file held
-            more changes than :data:`HELD_WHILE_WAITING_CAP`: the full at or past the newest heard holds them all)
-        :ptype why: str
+        :param why: what it waits for (:data:`_ReloadWhy`; ``held_past_cap``: a table waiting for a file held more
+            changes than :data:`HELD_WHILE_WAITING_CAP`, and the full at or past the newest heard holds them all)
+        :ptype why: _ReloadWhy
         :param token: the reset's generation token, when the record named it
         :ptype token: str | None
         :param keep: keep what the copy heard of the table and has not applied, to apply over the full (``file_lost``:
@@ -2826,9 +2836,9 @@ class CopyFollower:
         self._whole = without_entry(self._whole, table)
         self._look_for_full(table, after.why)
 
-    def _count_reload(self, table: str, why: str) -> None:
+    def _count_reload(self, table: str, why: _ReloadWhy) -> None:
         """count the whole reload a wait for ``table``'s full makes (``collection_whole_reloads_total``), said at
-        WARNING for a recovery (Pace, 2026-11-27: a recovery reload is never silent, and a replay fails on one).
+        WARNING for a recovery (Pace, 2026-11-26: a recovery reload is never silent, and a replay fails on one).
 
         Counted as the wait begins, so a reload still waiting when a replay ends is seen. One count a reload: a why
         joining a wait already counted under the same why (a second lost file, a second reset) is the same reload; one
@@ -2837,13 +2847,13 @@ class CopyFollower:
         :param table: the table
         :ptype table: str
         :param why: what it waits for (:attr:`_FullAfter.why`)
-        :ptype why: str
+        :ptype why: _ReloadWhy
         :return: nothing
         :rtype: None
         """
-        counted = _RELOAD_WHYS[why]
+        counted = _counted_why(why)
         waiting = self._full_after.get(table)
-        if waiting is None or _RELOAD_WHYS[waiting.why] != counted:
+        if waiting is None or _counted_why(waiting.why) != counted:
             WHOLE_RELOADS.count(counted, table=table)
 
     def _set_full_after(self, table: str, after: _FullAfter | None) -> None:
@@ -2937,7 +2947,7 @@ class CopyFollower:
                     self._reload_from_volume(table, fulls, manifest),
                     kind="recovery",
                     reason="a table waiting for the writer's full (a reset, a schema change, a lost epoch log or delta file) is reloaded whole from the full on the volume, never from L3",
-                    ruling="Pace 2026-11-27: recovery reloads stay, but are never silent (each counted, collection_whole_reloads_total{why}, said at WARNING; a replay fails on any)",
+                    ruling="Pace 2026-11-26: recovery reloads stay, but are never silent (each counted, collection_whole_reloads_total{why}, said at WARNING; a replay fails on any)",
                     proof="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_its_full",
                     speed="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_keeps_its_budget",
                 )
@@ -2962,7 +2972,7 @@ class CopyFollower:
         from there, applying each later epoch from its file), and what was heard of it while it waited judged against
         the full: only the changes the full does not hold are kept, to be applied over it.
 
-        **Staged outside the pass lock; only the swap holds it** (decision 52 of ``design-pod-delta-files.md``). The
+        **Staged outside the pass lock; only the swap holds it** (decision 52 of ``docs/design-pod-delta-files.md``). The
         parts are read off the volume and staged (:func:`_reload_stage`), and a backend that prepares a change
         (:class:`PreparesStaged`) rewrites the table's parts, with no lock held: every other table's pass keeps
         applying and publishing meanwhile. Why: the reload held the lock through its stage and apply, so every table's
@@ -5827,7 +5837,7 @@ class CopyFollower:
         L3 (a query worker's, never a cursor here).
 
         Why the copy's: an upsert keeps every column its write left out, and the row's ``date_created``, from the row
-        L3 held, which is the row the copy holds before the change (``design-pod-delta-files.md``, decision 19).
+        L3 held, which is the row the copy holds before the change (``docs/design-pod-delta-files.md``, decision 19).
 
         :param table: the table
         :ptype table: FollowedTable

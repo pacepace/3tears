@@ -1,7 +1,7 @@
 """The copy's reload lane: a whole-table (or per-scope) reload staged in a worker process of its own, beside the
 apply lane, and published through it in order.
 
-**Why** (``design-copy-worker-backend.md``, decision 3; reports' ``design-pod-delta-files.md``, decision 52). One
+**Why** (``design-copy-worker-backend.md``, decision 3; reports' ``docs/design-pod-delta-files.md``, decision 52). One
 apply worker took reload, merge and change one after another, so a ready table's change waited out a reload's rewrite:
 on a local burst replay (2026-11-24) commit to publish was a median 0.5 s with no reload between and a median 9.4 s,
 up to 45 s, with one. Here a reload's rewrite runs in the reload worker (one process, named ``copy-reload``, its own
@@ -93,7 +93,7 @@ _MAX_RELOADS: Final = 4
 
 #: bytes of the pages of reloads waiting or staging (Arrow ``nbytes``): reports' hand-off of one change is bounded at
 #: 1.25 GiB (``.devops/chart/values.yaml``); the biggest reloaded table on a replay was 296 MB as Arrow
-#: (``design-pod-delta-files.md``, LSF ``feed_why_sources``), so 512 MiB holds one beside a small one
+#: (``docs/design-pod-delta-files.md``, LSF ``feed_why_sources``), so 512 MiB holds one beside a small one
 _MAX_BYTES: Final = 512 << 20
 
 #: bytes of the changes kept to apply over one reload as it publishes. A busy night's change is a few MiB and a big

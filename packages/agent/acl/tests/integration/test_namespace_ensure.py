@@ -167,6 +167,47 @@ async def test_racing_ensures_never_raise_under_load(
         await pool.close()
 
 
+#: rounds of racing re-ensures of a namespace a delete marked gone
+_REVIVE_ROUNDS = 20
+
+
+async def test_racing_revives_of_a_gone_namespace_never_raise(
+    pg_pool: asyncpg.Pool, db_container: str, _module_schema: str
+) -> None:
+    """Flips if a racing revive's loser reads its empty revive as a unique value taken by another id.
+
+    Every replica re-ensures a namespace a delete marked gone at once. One replica's revive makes the row live; every
+    other's keyed ``UPDATE ... WHERE gone`` then matches nothing (on PostgreSQL it waits on the winner's lock and
+    re-checks ``gone``; on YugabyteDB it is retried after a conflict and finds the row live). A loser that skipped the
+    read-back raised "already taken by a row with another id" for a row that is live under its own id.
+    """
+    customer, agent = uuid.uuid4(), uuid.uuid4()
+    owner = await _owner_row(pg_pool, "agent-owner", customer)
+    pool = await access_pool(db_container, _module_schema, max_size=_RACERS)
+    try:
+        for _ in range(_REVIVE_ROUNDS):
+            namespace_id = uuid.uuid4()
+            fields = _fields(customer, agent, namespace_id, owner)
+            fields["name"] = f"ns-{namespace_id.hex}"
+            await _collection(pool).ensure_namespace(**fields)  # type: ignore[arg-type]
+            # a delete marks the row gone, never deletes it (ROW_STAMPED)
+            await pool.execute(
+                "UPDATE namespaces SET gone = true, epoch = $2 WHERE namespace_id = $1", namespace_id, next_epoch()
+            )
+            pods = [_collection(pool) for _ in range(_RACERS)]
+            results = await asyncio.gather(
+                *(pod.ensure_namespace(**fields) for pod in pods),  # type: ignore[arg-type]
+                return_exceptions=True,
+            )
+            errors = [r for r in results if isinstance(r, BaseException)]
+            assert errors == [], errors[:1]
+            assert {r.id for r in results if not isinstance(r, BaseException)} == {namespace_id}
+            live = await pool.fetchval("SELECT NOT gone FROM namespaces WHERE namespace_id = $1", namespace_id)
+            assert live is True
+    finally:
+        await pool.close()
+
+
 async def test_ensure_refuses_a_row_whose_other_fields_disagree(pg_pool: asyncpg.Pool) -> None:
     customer, agent, namespace_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     owner = await _owner_row(pg_pool, "agent-owner", customer)

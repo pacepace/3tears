@@ -516,3 +516,25 @@ def test_a_migration_glob_naming_no_module_fails(tmp_path: Path) -> None:
     """a migration glob that matches nothing is stale, and says so."""
     config = _config(tmp_path, "x = 1\n", migration_modules=("src/gone/migrations/v*.py",))
     assert any("matches no module" in finding for finding in epoch_discipline_findings(config, RULE_EPOCH_BYPASS))
+
+
+def test_a_block_declaration_lets_its_body_through_and_nothing_after_it(tmp_path: Path) -> None:
+    """Flips if the statement form (``with whole_read_block(...):``) does not cover a whole select in its body, or
+    covers one after it: both gates read it as no_whole_reads reads it."""
+    source = (
+        _DECLARED.replace("KIND", "cold_start")
+        .replace("import whole_read\n", "import whole_read, whole_read_block\n")
+        .replace(
+            "    return await whole_read(\n        pool.fetch('SELECT id, body FROM items'),\n",
+            "    with whole_read_block(\n",
+        )
+        .replace(
+            '        speed="tests/test_proof.py::test_fill_speed",\n    )\n\n\nclass',
+            '        speed="tests/test_proof.py::test_fill_speed",\n    ):\n'
+            "        rows = await pool.fetch('SELECT id, body FROM items')\n"
+            "    await pool.fetch('SELECT * FROM others')\n    return rows\n\n\nclass",
+        )
+    )
+    assert "with whole_read_block(" in source and "SELECT * FROM others" in source, source
+    findings = _declared_findings(tmp_path, source)
+    assert len(findings) == 1 and "in fill: SELECT others" in findings[0], findings

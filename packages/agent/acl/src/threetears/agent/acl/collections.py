@@ -3045,25 +3045,27 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # drops the table on every follower
             await self.invalidate_cache_many([namespace_id], rows=[{"row_scope": row_scope}])
             existing = await self.find_by_id(namespace_id)
-            # the revive races as the insert does (racing writes of one row, _ENSURE_ATTEMPTS); tried again, it
-            # finds the row the winner made live and writes nothing
-            if existing is None and await retry_serialization_conflicts(
-                lambda: self._revive_gone_namespace(
-                    namespace_id,
-                    name=name,
-                    namespace_type=namespace_type,
-                    owner_agent_id=owner_agent_id,
-                    owner_namespace=owner_namespace,
-                    owner_namespace_id=owner_namespace_id,
-                    customer_id=customer_id,
-                    schema_name=schema_name,
-                    metadata=metadata,
-                    now=now,
-                ),
-                attempts=_ENSURE_ATTEMPTS,
-                first_wait=_ENSURE_FIRST_WAIT,
-            ):
-                # the revive announced its row (_revive_gone_namespace)
+            # the revive races as the insert does (racing writes of one row, _ENSURE_ATTEMPTS). A racing replica's revive
+            # may make the row live first; this one's then writes nothing (its UPDATE is of a gone row only), so the
+            # row is read back whatever the revive returned, and refused below only if it is still missing
+            if existing is None:
+                await retry_serialization_conflicts(
+                    lambda: self._revive_gone_namespace(
+                        namespace_id,
+                        name=name,
+                        namespace_type=namespace_type,
+                        owner_agent_id=owner_agent_id,
+                        owner_namespace=owner_namespace,
+                        owner_namespace_id=owner_namespace_id,
+                        customer_id=customer_id,
+                        schema_name=schema_name,
+                        metadata=metadata,
+                        now=now,
+                    ),
+                    attempts=_ENSURE_ATTEMPTS,
+                    first_wait=_ENSURE_FIRST_WAIT,
+                )
+                # a revive that wrote announced its row (_revive_gone_namespace); the winner's announced its own
                 existing = await self.find_by_id(namespace_id)
             if existing is None:
                 # absorbed by a unique index other than the id's -- the name, or any unique column the

@@ -1,4 +1,4 @@
-"""The writer's fold (:mod:`threetears.core.collections.delta_fold`, ``design-pod-delta-files.md`` decisions 8, 9, 10,
+"""The writer's fold (:mod:`threetears.core.collections.delta_fold`, ``docs/design-pod-delta-files.md`` decisions 8, 9, 10,
 13, 15, 16 and 19): after each commit, off the serving process, each state whose deltas since its last fold reach half
 its part gets a new part (old part plus deltas, merged as L3 merged them, then the table's keep rule), published in a
 manifest at the writer's term; covered deltas and files no manifest in use names are deleted.
@@ -747,7 +747,7 @@ def test_a_fold_that_deletes_refuses_to_start_without_the_copies_positions(tmp_p
 async def test_a_fold_that_keeps_deletes_no_delta_file_and_still_drops_the_fulls_old_files(
     tmp_path: Path, workers: ProcessWorkers
 ) -> None:
-    """Flips if a fold that keeps its delta files (``retention="keep"``, design-pod-delta-files decision 51) deletes
+    """Flips if a fold that keeps its delta files (``retention="keep"``, docs/design-pod-delta-files.md decision 51) deletes
     any: a delta a full covers, one a manifest named as a part and no longer names, or an orphan whose commit did not
     land (a commit whose reply was lost may have landed); or if it stops dropping its own scratch: the parts and
     manifests no manifest in use names, and an orphan's temporary file."""

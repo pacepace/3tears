@@ -1,4 +1,4 @@
-"""a table's keep rule: which of its folded rows a full keeps (``design-pod-delta-files.md``, decision 13).
+"""a table's keep rule: which of its folded rows a full keeps (``docs/design-pod-delta-files.md``, decision 13).
 
 **Why.** A full on the delta-files volume (:mod:`~threetears.core.collections.volume_fulls`) holds what a pod copy
 holds, never more: a table whose copy keeps only some of its rows (LSF runs thinned to every run for two hours, then

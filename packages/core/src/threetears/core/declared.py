@@ -23,14 +23,21 @@ enclosing function that proves the statement is reached only in that situation; 
 our own tables at size) is a speed test calling ``budget_problem``. A call into a function holding a declared read is
 still a whole read unless that call is declared with the same kind, so a chain is declared at each level. The gate
 prints every declaration it accepts.
+
+A statement that returns nothing (a mark, ``whole.add(table)``) is declared by :func:`whole_read_block`, the statement
+form: its ``with`` body is the declared read, its arguments the same as :func:`whole_read`'s::
+
+    with whole_read_block(kind="schema_change", reason=..., ruling=..., proof=..., speed=...):
+        whole.add(change.table)
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from typing import Final, Literal, TypeVar
 
-__all__ = ["sentinel_templates", "whole_read"]
+__all__ = ["sentinel_templates", "whole_read", "whole_read_block"]
 
 _T = TypeVar("_T")
 
@@ -48,7 +55,7 @@ WholeReadKind = Literal[
     # emptying a process's own L1 copy of a table whole when the table is dropped (Pace 2026-11-15); the gate admits
     # one DELETE with no WHERE of a relation no declared L3 table is
     "l1_table_drop",
-    # a recovery (Pace 2026-11-27: recovery reloads stay, but are never silent): a copy reloading a table from the
+    # a recovery (Pace 2026-11-26: recovery reloads stay, but are never silent): a copy reloading a table from the
     # writer's full on the delta-files volume after a lost epoch log or a lost delta file, and the lost-write
     # backstop recording a lost window's whole change again; each counted (collection_whole_reloads_total), said at
     # WARNING, and a replay fails on any
@@ -108,6 +115,62 @@ def whole_read(
     :raises ValueError: when the kind is unknown, or the reason, ruling or proof is missing, or ``until`` is missing
         from a ``rolling_upgrade`` or given to any other kind
     """
+    _check_declaration(kind, reason, ruling, proof, until)
+    return value
+
+
+def whole_read_block(
+    *,
+    kind: WholeReadKind,
+    reason: str,
+    ruling: str,
+    proof: str,
+    speed: str = "",
+    until: str = "",
+) -> AbstractContextManager[None]:
+    """declare the statements of a ``with`` body a read whole by nature: :func:`whole_read`'s statement form, for a
+    statement that returns nothing (``whole.add(table)``), so no ``None`` is handed through an expression. The gate
+    covers the body's lines as it covers a wrapped expression's, and checks the same arguments.
+
+    :param kind: the situation it reads whole in
+    :ptype kind: WholeReadKind
+    :param reason: which situation, and why nothing narrower answers it (30+ characters)
+    :ptype reason: str
+    :param ruling: Pace's ruling allowing it, with its date (``"Pace 2026-11-12: ..."``)
+    :ptype ruling: str
+    :param proof: ``<test file>::<test function>``, as for :func:`whole_read`
+    :ptype proof: str
+    :param speed: the speed test, as for :func:`whole_read`
+    :ptype speed: str
+    :param until: for ``rolling_upgrade`` only, the release the read is gone by
+    :ptype until: str
+    :return: a context that does nothing
+    :rtype: AbstractContextManager[None]
+    :raises ValueError: when the kind is unknown, or the reason, ruling or proof is missing, or ``until`` is missing
+        from a ``rolling_upgrade`` or given to any other kind
+    """
+    _check_declaration(kind, reason, ruling, proof, until)
+    return nullcontext()
+
+
+def _check_declaration(kind: str, reason: str, ruling: str, proof: str, until: str) -> None:
+    """refuse a declaration missing what :func:`whole_read` and :func:`whole_read_block` require.
+
+    :param kind: the declared kind
+    :ptype kind: str
+    :param reason: the reason
+    :ptype reason: str
+    :param ruling: the ruling
+    :ptype ruling: str
+    :param proof: the proof test
+    :ptype proof: str
+    :param until: the release a ``rolling_upgrade`` read is gone by
+    :ptype until: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when the kind is unknown, or the reason, ruling or proof is missing, or ``until`` is missing
+        from a ``rolling_upgrade`` or given to any other kind
+    """
     if (kind == "rolling_upgrade") != bool(until.strip()):
         raise ValueError("a rolling_upgrade read names until=<the release it is gone by>; no other kind takes until")
     if kind not in _KINDS or not reason.strip() or not ruling.strip() or "::" not in proof:
@@ -115,7 +178,6 @@ def whole_read(
             f"a whole read declares a kind of {sorted(_KINDS)}, a reason, Pace's ruling and a proof "
             "<test file>::<test function>"
         )
-    return value
 
 
 #: a sentinel: a name a template holds in place of a table or column it is filled with at run time (``__table__``)

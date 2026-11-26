@@ -1,4 +1,4 @@
-"""copies' positions for a test of a fold that deletes (``retention="delete"``, ``design-pod-delta-files.md`` decision
+"""copies' positions for a test of a fold that deletes (``retention="delete"``, ``docs/design-pod-delta-files.md`` decision
 54): none at all, or beats a test sets and counts the reads of."""
 
 from __future__ import annotations

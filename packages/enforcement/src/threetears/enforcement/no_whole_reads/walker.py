@@ -157,6 +157,7 @@ __all__ = [
     "DECLARED_SPEED_KINDS",
     "DEFAULT_NARROWING_KEYWORDS",
     "DEFAULT_PAGER_CALLS",
+    "DECLARATION_BLOCK",
     "DECLARATION_CALL",
     "DeclaredWhole",
     "OperatorMark",
@@ -610,6 +611,9 @@ _ENTRY_ONLY_MARKS: Final[frozenset[str]] = frozenset({"operator_reset", "operato
 #: the call declaring a read whole by nature (:func:`threetears.core.declared.whole_read`)
 DECLARATION_CALL: Final[str] = "whole_read"
 
+#: its statement form, a ``with`` whose body is the declared read (:func:`threetears.core.declared.whole_read_block`)
+DECLARATION_BLOCK: Final[str] = "whole_read_block"
+
 #: each kind a read may be declared whole in (Pace, 2026-11-12) onto the hit kinds it lets through inside the wrapped
 #: expression; anything else there is still reported. A new kind is a rule change Pace approves.
 DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
@@ -629,7 +633,7 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "whole-read",
             "whole-call",
             "calls-whole-read",
-            # (coordinator 2026-11-27) the shared copy's apply marking a table its whole change replaces, as the
+            # (coordinator 2026-11-26) the shared copy's apply marking a table its whole change replaces, as the
             # in-process copy's apply empties it (DuckDBBackend.apply_staged): under the kind that staged the change
             "marks-whole",
         }
@@ -714,11 +718,11 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "marks-whole",
         }
     ),
-    # (Pace 2026-11-27: recovery reloads stay, but are never silent) a copy reloading a table from the writer's full on
+    # (Pace 2026-11-26: recovery reloads stay, but are never silent) a copy reloading a table from the writer's full on
     # the delta-files volume, reading nothing from L3, after a lost epoch log or a lost delta file; and the lost-write
     # backstop recording a lost window's whole change (a reset, a run deleted) again. Each is counted
     # (collection_whole_reloads_total{why}), said at WARNING, and fails a replay. Never a read of L3 whole: its call
-    # into the reload, or the change it marks whole; and (Pace 2026-11-27) the reload's apply emptying the in-process
+    # into the reload, or the change it marks whole; and (Pace 2026-11-26) the reload's apply emptying the in-process
     # copy's table its full then replaces (DuckDBBackend.apply_staged under the kind that staged the change, as
     # cold_start, schema_change and rolling_upgrade): one bare DELETE of a relation no declared L3 table is
     # (DECLARED_L1_DELETE_KINDS guards it)
@@ -1063,22 +1067,32 @@ class DeclaredWhole:
         return function == "<module>" and any(first <= line <= last for _, first, last in self.constants)
 
 
-def declared_whole_read(path: str, function: str, node: ast.Call) -> DeclaredWhole:
+def declared_whole_read(
+    path: str, function: str, node: ast.Call, body: Sequence[ast.stmt] | None = None
+) -> DeclaredWhole:
     """a ``whole_read(<read>, kind=..., ...)`` declaration as written: the wrapped expression's lines and the literal
-    arguments (one not a literal reads empty, and the gate refuses it). The one reading every gate judging a declared
-    read uses (no_whole_reads; epoch_discipline's whole-reread). Spans of a module constant or a local the wrapped
-    expression names are the caller's to add.
+    arguments (one not a literal reads empty, and the gate refuses it); or, given ``body``, a ``with
+    whole_read_block(kind=..., ...):`` declaration, its body's lines the declared read. The one reading every gate
+    judging a declared read uses (no_whole_reads; epoch_discipline's whole-reread). Spans of a module constant or a
+    local the declared read names are the caller's to add.
 
     :param path: repo-relative posix path of the module
     :ptype path: str
     :param function: qualified name of the enclosing function
     :ptype function: str
-    :param node: the ``whole_read`` call
+    :param node: the ``whole_read`` or ``whole_read_block`` call
     :ptype node: ast.Call
+    :param body: the ``with`` body a ``whole_read_block`` declares; None for ``whole_read``
+    :ptype body: Sequence[ast.stmt] | None
     :return: the declaration
     :rtype: DeclaredWhole
     """
-    wrapped = node.args[0] if node.args else None
+    wrapped: ast.AST | None = node.args[0] if node.args and body is None else None
+    first, last = node.lineno, node.lineno
+    if body:
+        first, last = body[0].lineno, max(statement.end_lineno or statement.lineno for statement in body)
+    elif wrapped is not None:
+        first, last = wrapped.lineno, wrapped.end_lineno or wrapped.lineno
     literal = {
         k.arg: k.value.value
         for k in node.keywords
@@ -1088,8 +1102,8 @@ def declared_whole_read(path: str, function: str, node: ast.Call) -> DeclaredWho
         path,
         function,
         node.lineno,
-        wrapped.lineno if wrapped is not None else node.lineno,
-        (wrapped.end_lineno or wrapped.lineno) if wrapped is not None else node.lineno,
+        first,
+        last,
         literal.get("kind", ""),
         literal.get("reason", ""),
         literal.get("ruling", ""),
@@ -3472,7 +3486,7 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         name = _final(node)
         if name == DECLARATION_CALL:
-            self._declare(node)
+            self._declare(node, node.args[:1])
         if name is not None:
             self._judge_call(node, name)
             self._judge_helper(node)
@@ -3588,21 +3602,64 @@ class _ModuleWalk(ast.NodeVisitor):
         self.constants.add(name)
         return name
 
-    def _declare(self, node: ast.Call) -> None:
-        """record a read declared whole by nature: ``whole_read(<read>, kind=..., reason=..., ruling=..., proof=...,
-        speed=...)``. Its arguments are read as written (literals); the gate judges them.
+    def visit_With(self, node: ast.With) -> None:
+        """record each ``whole_read_block`` declaration the ``with`` opens, then walk it.
 
-        :param node: the declaration
-        :ptype node: ast.Call
+        :param node: the statement
+        :ptype node: ast.With
         :return: nothing
         :rtype: None
         """
-        wrapped = node.args[0] if node.args else None
+        self._declare_blocks(node)
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        """record each ``whole_read_block`` declaration the ``async with`` opens, then walk it.
+
+        :param node: the statement
+        :ptype node: ast.AsyncWith
+        :return: nothing
+        :rtype: None
+        """
+        self._declare_blocks(node)
+        self.generic_visit(node)
+
+    def _declare_blocks(self, node: ast.With | ast.AsyncWith) -> None:
+        """record the statement form of a declaration: ``with whole_read_block(kind=..., ...):``, its body the read.
+
+        :param node: the statement
+        :ptype node: ast.With | ast.AsyncWith
+        :return: nothing
+        :rtype: None
+        """
+        for item in node.items:
+            if isinstance(item.context_expr, ast.Call) and _final(item.context_expr) == DECLARATION_BLOCK:
+                self._declare(item.context_expr, node.body, block=True)
+
+    def _declare(self, node: ast.Call, region: Sequence[ast.AST], *, block: bool = False) -> None:
+        """record a read declared whole by nature: ``whole_read(<read>, kind=..., reason=..., ruling=..., proof=...,
+        speed=...)``, or its statement form ``with whole_read_block(kind=..., ...):``. Its arguments are read as
+        written (literals); the gate judges them.
+
+        :param node: the declaration
+        :ptype node: ast.Call
+        :param region: the declared read: the wrapped expression (none when the call wraps nothing), or the body
+        :ptype region: Sequence[ast.AST]
+        :param block: whether it is the statement form, ``region`` its ``with`` body
+        :ptype block: bool
+        :return: nothing
+        :rtype: None
+        """
         if self._string_constants is None:
             self._string_constants = module_constant_spans(self._tree)
         constants: list[tuple[str, int, int]] = []
-        if wrapped is not None:
-            inside = [n.id for n in walk_tree(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        if region:
+            inside = [
+                n.id
+                for part in region
+                for n in walk_tree(part)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            ]
             everywhere = [
                 n.id for n in walk_tree(self._tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
             ]
@@ -3611,19 +3668,20 @@ class _ModuleWalk(ast.NodeVisitor):
                 # a constant named anywhere else in the module is not this declaration's alone
                 if span is not None and everywhere.count(name) == inside.count(name):
                     constants.append((name, *span))
-        own = self._declared_locals(node, wrapped) if wrapped is not None else ()
+        own = self._declared_locals(node, region) if region else ()
+        body = [part for part in region if isinstance(part, ast.stmt)] if block else None
         self.declarations.append(
-            replace(declared_whole_read(self.path, self._function, node), constants=tuple(constants), locals=own)
+            replace(declared_whole_read(self.path, self._function, node, body), constants=tuple(constants), locals=own)
         )
 
-    def _declared_locals(self, node: ast.Call, wrapped: ast.expr) -> tuple[tuple[str, int, int], ...]:
-        """the locals of the declaration's enclosing function the wrapped expression names: each bound once there and
+    def _declared_locals(self, node: ast.Call, region: Sequence[ast.AST]) -> tuple[tuple[str, int, int], ...]:
+        """the locals of the declaration's enclosing function the declared read names: each bound once there and
         named nowhere else in it, with its value's lines.
 
         :param node: the declaration
         :ptype node: ast.Call
-        :param wrapped: the wrapped read
-        :ptype wrapped: ast.expr
+        :param region: the declared read (the wrapped expression, or a ``with`` body)
+        :ptype region: Sequence[ast.AST]
         :return: ``(name, first, last)`` each
         :rtype: tuple[tuple[str, int, int], ...]
         """
@@ -3636,7 +3694,9 @@ class _ModuleWalk(ast.NodeVisitor):
         if not enclosing:
             return ()
         function = max(enclosing, key=lambda found: found.lineno)
-        inside = [n.id for n in walk_tree(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        inside = [
+            n.id for part in region for n in walk_tree(part) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        ]
         loads = [n.id for n in walk_tree(function) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
         bound: dict[str, list[ast.stmt]] = {}
         for statement in walk_tree(function):
@@ -4168,7 +4228,7 @@ class _ModuleWalk(ast.NodeVisitor):
         """judge a read of the states a declared state column names: a local copy's read of one state
         (:func:`threetears.core.keyed.read_state_arrow`) or L3's keyset read of a set of them
         (:func:`threetears.core.keyset.keyset_scope_pages`). Bounded when its ``scope_column`` flows from a declared
-        state-column source (``DeclaredScope``: the table's own declaration, decision 36 of design-pod-delta-files);
+        state-column source (``DeclaredScope``: the table's own declaration, decision 36 of docs/design-pod-delta-files.md);
         any other column is judged as the ``read_by_statement`` it sends, ``WHERE t.<column> = $1``, a predicate the
         rule cannot see, exactly as a hand-written read would be.
 
@@ -6254,7 +6314,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for value in [*node.args[1:], *(k.value for k in node.keywords)]
         )
         whole_named = (
-            name != DECLARATION_CALL
+            name not in {DECLARATION_CALL, DECLARATION_BLOCK}
             and name not in self._pagers
             and name not in self._always_whole
             and _WHOLE_CALL.search(name.lower()) is not None

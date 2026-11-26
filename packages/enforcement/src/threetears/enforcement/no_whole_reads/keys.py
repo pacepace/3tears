@@ -56,7 +56,7 @@ THREETEARS_KEY_SOURCES: Final[frozenset[str]] = frozenset(
 
 #: the annotation that declares a table's state column (``Annotated[str, DeclaredScope]``): a SCOPE source, never a key
 #: source. It bounds only :func:`threetears.core.keyed.read_state_arrow`, a local copy's read of one state (Pace,
-#: 2026-11-24, decision 36 of design-pod-delta-files); a column it names pins nothing anywhere else
+#: 2026-11-24, decision 36 of docs/design-pod-delta-files.md); a column it names pins nothing anywhere else
 _SCOPE_TYPES: Final[frozenset[str]] = frozenset({"DeclaredScope"})
 
 

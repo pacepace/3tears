@@ -4,7 +4,7 @@
 saves every commit's rows as a file a pod copy applies (:mod:`~threetears.core.collections.delta_files`), and a copy
 starts from the full on the same volume (:mod:`~threetears.core.collections.volume_fulls`). Nothing expires on a timer,
 so without a fold a restarted copy would apply every delta since the full was first written, and the volume would hold
-every one. The writing load folds them: a change is kept until a newer full covers it (``design-pod-delta-files.md``,
+every one. The writing load folds them: a change is kept until a newer full covers it (``docs/design-pod-delta-files.md``,
 decisions 2, 8, 9, 10, 13, 15, 16, 19 and "How it works", the writer's step 3).
 
 **When a state folds** (decision 10). :meth:`DeltaFolds.committed` is told each commit's delta files after the commit.
@@ -48,7 +48,7 @@ whose commit has not ended. Versions, never times: no clock is compared. A file 
 never covered (read as before; decision 53's expand step).
 
 **Kept or deleted after the publish: the fold's ``retention``** (:data:`~threetears.core.collections.delta_files.
-DeltaRetention`, required, no default; ``design-pod-delta-files.md`` decision 51). Always deleted: the fulls' own old
+DeltaRetention`, required, no default; ``docs/design-pod-delta-files.md`` decision 51). Always deleted: the fulls' own old
 files, every part and manifest no current or previous manifest names (a reader holds one of those two; a part is
 written only for the next manifest of the one writer of the term) and a temporary file a write that died left, and the
 rebuild's and recovery's work files beside the fulls. With ``"keep"`` (the reports pod's) nothing else: no delta file
@@ -2814,7 +2814,7 @@ def _declared_pages(
             reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "
             "full",
             ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
-            "one read of it from L3 (design-pod-delta-files decision 12)",
+            "one read of it from L3 (docs/design-pod-delta-files.md decision 12)",
             proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
             speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
         )
@@ -2824,7 +2824,7 @@ def _declared_pages(
         reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
         "reads it once and publishes its full; copies wait for that, never reading L3 whole",
         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
-        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14); Pace 2026-11-25: several tables and states read at once",
+        "rebuilds the full, once (docs/design-pod-delta-files.md decisions 12 and 14); Pace 2026-11-25: several tables and states read at once",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
         speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
     )
@@ -2930,7 +2930,7 @@ def _cold_start_pages(
         reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
         "reads it once and publishes its full; copies wait for that, never reading L3 whole",
         ruling="Pace 2026-11-12: the one full load is a true no-data cold start; Pace 2026-11-23: with only L3 left the writer "
-        "rebuilds the full, once (design-pod-delta-files decisions 12 and 14); Pace 2026-11-25: several tables and states read at once",
+        "rebuilds the full, once (docs/design-pod-delta-files.md decisions 12 and 14); Pace 2026-11-25: several tables and states read at once",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
         speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
     )
@@ -2965,7 +2965,7 @@ def _schema_change_pages(
         reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "
         "full",
         ruling="Pace 2026-11-12: reset, schema change, rolling upgrade; Pace 2026-11-23: a schema change starts the table fresh, "
-        "one read of it from L3 (design-pod-delta-files decision 12)",
+        "one read of it from L3 (docs/design-pod-delta-files.md decision 12)",
         proof="packages/core/tests/unit/collections/test_delta_fold.py::test_the_writer_reads_l3_whole_only_for_a_table_owed_a_rebuild",
         speed="packages/core/tests/integration/test_delta_fold_rebuild_streams_live.py::test_rebuild_streams_speed_at_real_size",
     )

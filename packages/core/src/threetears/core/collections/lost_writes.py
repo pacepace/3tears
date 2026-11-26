@@ -71,7 +71,7 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.recovery_tenants import recovery_tenants
 from threetears.core.collections.undeclared_tables import is_undeclared_table
 from threetears.core.collections.whole_reloads import LOST_WRITES, WHOLE_RELOADS
-from threetears.core.declared import whole_read
+from threetears.core.declared import whole_read_block
 from threetears.core.utils.write_ledger import CLOCK_SKEW, WRITE_GRACE, WriteLedger, process_write_ledger
 
 __all__ = [
@@ -313,15 +313,15 @@ async def _changes_of(
             if len(named) > _MAX_NOTED_ROWS:
                 too_many = True
                 break
-        # a reset, a run deleted: whole changes no key names, read by the run-marker table's key. The mark is the
-        # declared expression itself (the gate covers what whole_read wraps), so its None is handed through
-        whole_read(
-            whole.extend(await whole_changes(pool, relation, floor, ceiling)),  # type: ignore[func-returns-value]
+        # a reset, a run deleted: whole changes no key names, read by the run-marker table's key. The read is the
+        # declared statement itself (the gate covers a whole_read_block's body)
+        with whole_read_block(
             kind="recovery",
             reason="a lost write's window (a dead writer's, or a migration run's) held a reset or a run deleted: each is recorded whole again, as it was written",
-            ruling="Pace 2026-11-27: recovery reloads stay, but are never silent (a dead writer's whole change is counted, collection_whole_reloads_total{why=lost_writes})",
+            ruling="Pace 2026-11-26: recovery reloads stay, but are never silent (a dead writer's whole change is counted, collection_whole_reloads_total{why=lost_writes})",
             proof="packages/core/tests/unit/collections/test_lost_writes.py::test_only_a_lost_writes_window_reaches_the_whole_changes_and_a_live_writer_never_does",
-        )
+        ):
+            whole.extend(await whole_changes(pool, relation, floor, ceiling))
         if too_many:
             break
     if not too_many:
@@ -513,7 +513,7 @@ async def announce_window(
             _ANNOUNCED.labels(why=why).inc()
             if why == "recovery":
                 # a dead writer's whole change recorded again: every copy reloads the table whole, a recovery never
-                # silent (counted and said at WARNING, a replay fails on it; Pace, 2026-11-27). A migration's window
+                # silent (counted and said at WARNING, a replay fails on it; Pace, 2026-11-26). A migration's window
                 # (and its retry, ``repair``) is the run's own write, not a lost one
                 for record in done.records:
                     if record["whole"] is not None:

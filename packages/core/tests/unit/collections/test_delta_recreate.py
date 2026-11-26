@@ -1,7 +1,7 @@
 """a missing or unreadable delta file: copies wait and read nothing from L3; the writer recreates it once, by key.
 
 Election night failed with every pod copy reading L3; a lost delta file used to send every copy back to L3 for its
-change. Decision 29 (``design-pod-delta-files.md``, amending decision 3) makes the copy hold that table and ask the
+change. Decision 29 (``docs/design-pod-delta-files.md``, amending decision 3) makes the copy hold that table and ask the
 writer, which reads that one change's keys from L3 and writes the file again under its name. The registry, the
 follower, the delta files, the writer's recreation and the owner-routed forward are the real ones; L3 is a DuckDB that
 counts the statements each side sends, the copy's and the writer's apart; NATS is an in-memory bus carrying a request

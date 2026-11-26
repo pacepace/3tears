@@ -138,7 +138,7 @@ _STAGE_MARK_TABLE: Final = "__staged_mark__"
 #: the declared whole reads (:func:`threetears.core.declared.whole_read`) a whole change is staged under: a table read
 #: whole at a cold start (a first start, from L3 or a checkpoint, or an operator's reset), a schema change, or a writer
 #: older than a rolling upgrade's whole record, or a running copy's reload of one table from the writer's full on the
-#: delta-files volume (a recovery: Pace 2026-11-27). The change carries the kind that staged it, so its apply empties
+#: delta-files volume (a recovery: Pace 2026-11-26). The change carries the kind that staged it, so its apply empties
 #: the table under the same declaration (:meth:`DuckDBBackend.apply_staged`)
 WholeKind = Literal["cold_start", "schema_change", "rolling_upgrade", "recovery"]
 
@@ -1966,7 +1966,7 @@ class DuckDBBackend:
                             self._db.execute(f"DELETE FROM {statement}"),  # noqa: S608
                             kind="recovery",
                             reason="a running copy's reload of one table from the writer's full on the volume replaces the in-process copy, so the table is emptied first",
-                            ruling="Pace 2026-11-27: recovery reloads stay, but are never silent; the reload's apply empties the L1 table under the same kind",
+                            ruling="Pace 2026-11-26: recovery reloads stay, but are never silent; the reload's apply empties the L1 table under the same kind",
                             proof="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_its_full",
                             speed="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_keeps_its_budget",
                         )

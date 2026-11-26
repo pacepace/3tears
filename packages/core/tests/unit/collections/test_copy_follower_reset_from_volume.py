@@ -1,6 +1,6 @@
 """a running copy that hears a reset or a schema change of a table that opts in to delta files never reads it from L3.
 
-Decisions 12 and 14 of ``design-pod-delta-files.md``: on a reset or a schema change the writer rebuilds that table's
+Decisions 12 and 14 of ``docs/design-pod-delta-files.md``: on a reset or a schema change the writer rebuilds that table's
 full once from L3 and publishes it; copies wait for it. Election night failed with L3 on the hot path, and a reset read
 back whole by every pod copy is the worst of it. The registry, the follower, the delta files and the fulls are the real
 ones; L3 is a DuckDB that counts the statements it answers for each table, kept equal to what the writes leave in L3,
@@ -1681,7 +1681,7 @@ async def test_the_scopes_a_waiting_tables_many_keys_heard_name_are_found_in_the
     assert {"state:VA", "state:TX"} <= stamp.held
 
 
-# --- every whole reload counted by why, a recovery said at WARNING (Pace, 2026-11-27) --------------------------------
+# --- every whole reload counted by why, a recovery said at WARNING (Pace, 2026-11-26) --------------------------------
 
 #: every why ``collection_whole_reloads_total`` counts
 _RELOAD_WHYS = (
@@ -1845,7 +1845,7 @@ async def test_a_refused_prefix_record_naming_no_file_is_counted_as_a_partition_
     world.follower.stop()
 
 
-# --- the reload from the volume: reached only while a table waits, within its budget (Pace 2026-11-27) --------------
+# --- the reload from the volume: reached only while a table waits, within its budget (Pace 2026-11-26) --------------
 
 
 async def test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_its_full(

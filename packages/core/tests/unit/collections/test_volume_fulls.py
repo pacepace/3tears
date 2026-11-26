@@ -1,6 +1,6 @@
 """a full on the delta-files volume: parts and a manifest published by rename, fenced by term, and a copy's start.
 
-The contract this pins (:mod:`threetears.core.collections.volume_fulls`, ``design-pod-delta-files.md`` decisions 8, 14,
+The contract this pins (:mod:`threetears.core.collections.volume_fulls`, ``docs/design-pod-delta-files.md`` decisions 8, 14,
 15 and 16):
 
 - a manifest is seen whole or not at all: one being written is never read;

@@ -1,6 +1,6 @@
 """a full part's fingerprint: one vectorised definition the fold's part write and a copy's drift check share.
 
-The contract this pins (:func:`threetears.core.collections.volume_fulls.rows_fingerprint`, ``design-pod-delta-files.md``
+The contract this pins (:func:`threetears.core.collections.volume_fulls.rows_fingerprint`, ``docs/design-pod-delta-files.md``
 decision 32, check A):
 
 - the same rows fingerprint equal whether held as the part holds them (the L3 rail's Arrow types) or as a copy's DuckDB

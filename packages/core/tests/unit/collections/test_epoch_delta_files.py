@@ -1,4 +1,4 @@
-"""An epoch record names its commit's delta file (``design-pod-delta-files.md``, decision 4).
+"""An epoch record names its commit's delta file (``docs/design-pod-delta-files.md``, decision 4).
 
 - the record carries the file's name and reads it back; one naming none is stored byte for byte as before, and a
   reader built before the field reads a new record as before;

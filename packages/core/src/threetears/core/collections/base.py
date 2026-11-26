@@ -208,7 +208,7 @@ _REFUSED_CHANGE_LOG_SAID: BuildOnce[str, bool] = BuildOnce()
 
 class PrefixNotLeadingError(ValueError):
     """a slice clear named a key prefix that does not lead the table's key (an older writer's partition): refused,
-    never walked (decision 34 of ``design-pod-delta-files.md``: old and new versions never run side by side, so no
+    never walked (decision 34 of ``docs/design-pod-delta-files.md``: old and new versions never run side by side, so no
     writer names one). L1 has no index to read such a prefix by; walking every key it holds was a whole read.
 
     :param table: the table
@@ -3820,7 +3820,7 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def drop_cached_prefixes(self, prefixes: Sequence[Mapping[str, str]]) -> int:
         """drop from this process's caches every row under each of ``prefixes``, and no other: the keyed form of
         :meth:`drop_cached_table` for a change that names the key slices it reached (a load from files, a key-prefix
-        delete, decision 23 of ``design-pod-delta-files.md``).
+        delete, decision 23 of ``docs/design-pod-delta-files.md``).
 
         Why not the whole table: a load of one state's slice dropped every state's cached rows in every process, so
         each read after it went to L3 for rows no write touched. Now the keys L1 holds under each prefix are read from

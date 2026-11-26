@@ -1,4 +1,4 @@
-"""A keys-unknown epoch record names the scopes (states) its commit touched (``design-pod-delta-files.md``, decision 31).
+"""A keys-unknown epoch record names the scopes (states) its commit touched (``docs/design-pod-delta-files.md``, decision 31).
 
 - the record carries them and reads them back; a record naming none is stored as before, and a reader built before the
   field reads a new record as before;

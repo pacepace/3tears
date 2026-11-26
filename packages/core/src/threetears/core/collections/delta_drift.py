@@ -1,5 +1,5 @@
 """the writer's drift sample: a few hundred random keys of each opted-in table read from L3 by key and compared with
-its full on the volume (``design-pod-delta-files.md``, decision 32, check B).
+its full on the volume (``docs/design-pod-delta-files.md``, decision 32, check B).
 
 **Why.** A pod copy checks itself against the full (:meth:`~threetears.core.collections.copy_follower.CopyFollower
 .check_drift`), never against L3, so a full that drifted from L3 (a fold's bug, a delta file that lied) would pass every

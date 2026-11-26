@@ -38,6 +38,7 @@ from typing import Final
 
 from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
 from threetears.enforcement.no_whole_reads.walker import (
+    DECLARATION_BLOCK,
     DECLARATION_CALL,
     DECLARED_KINDS,
     DeclaredWhole,
@@ -720,7 +721,8 @@ class _ModuleWalk(ast.NodeVisitor):
         self._visit_function(node)
 
     def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
-        """walk a ``with``, noting whether it opens a cache-bypassing write.
+        """walk a ``with``, noting whether it opens a cache-bypassing write, and walking the body of a
+        ``whole_read_block`` declaration inside it as a wrapped read is walked inside ``whole_read``.
 
         :param node: the statement
         :ptype node: ast.With | ast.AsyncWith
@@ -731,8 +733,18 @@ class _ModuleWalk(ast.NodeVisitor):
             isinstance(item.context_expr, ast.Call) and _final_name(item.context_expr) == _BYPASSING_WRITE
             for item in node.items
         )
+        blocks = [
+            declared_whole_read(self.path, self._function, item.context_expr, node.body)
+            for item in node.items
+            if isinstance(item.context_expr, ast.Call) and _final_name(item.context_expr) == DECLARATION_BLOCK
+        ]
         self._bypassing += int(opens)
-        self.generic_visit(node)
+        for item in node.items:
+            self.visit(item)
+        self._declared.extend(blocks)
+        for statement in node.body:
+            self.visit(statement)
+        del self._declared[len(self._declared) - len(blocks) :]
         self._bypassing -= int(opens)
 
     def visit_With(self, node: ast.With) -> None:
