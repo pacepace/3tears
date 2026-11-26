@@ -215,8 +215,38 @@ server = McpServer(
 
 Tool names must be unique in each answer. If the provider raises, or returns two tools with one name, a
 `tools/call` answers `TOOLS_UNAVAILABLE` and logs an error, and a `tools/list` fails with a JSON-RPC
-error. The server does not send `notifications/tools/list_changed`, because a stateless HTTP transport
-has no session to push it on. Clients see a changed set on their next `tools/list`.
+error. When the set changes, `await server.notify_tools_changed()` tells the clients that can be told
+(stateful mode, below); every other client sees the changed set on its next `tools/list`.
+
+## Stateful mode
+
+Stateless is the default: each HTTP request is a connection of its own. `stateless=False` (on
+`build_http_app`, `build_http_transport` and `serve_http`) serves stateful sessions on the handshake-era
+protocols: the client keeps an `Mcp-Session-Id` across requests and a standalone stream the server can
+push to.
+
+```python
+app = server.build_http_app(stateless=False, json_response=False)
+...
+await server.notify_tools_changed()            # notifications/tools/list_changed to every client that can take it
+```
+
+| | stateless (default) | stateful |
+|---|---|---|
+| the bearer | resolved for every message | resolved for every message: a token revoked while a session is open is refused (`IDENTITY_UNAVAILABLE`) on the session's next message, and no tool runs |
+| `tools.listChanged` capability (handshake era) | not declared | declared |
+| `notify_tools_changed()` | reaches no handshake-era client (it lists again on its next request) | sent on each open session's standalone stream |
+| cancellation (`notifications/cancelled`, the client deleting its session, a dropped stream) | cancels the handler with an SSE transport (the progress table above) | cancels the handler, and `ctx.cancelled` is set |
+
+On 2026-07-28 there are no sessions in either mode: a client asks for change notifications with a
+`subscriptions/listen` request, whose response stream the server keeps open, and `notify_tools_changed()`
+reaches each such stream too. stdio is one connection for the server's life, and is pushed to as a stateful
+session is.
+
+The bearer of each message is the one its own HTTP request carried: the SDK runs each message's handler in the
+contextvars of the request that delivered it, so `current_bearer_token()` answers that message's token even on a
+session opened by an earlier request (`tests/unit/test_stateful_mode.py` holds the SDK to it). A message without a
+bearer is resolved as having none, never as an earlier message's caller.
 
 ## Embedding the HTTP transport in a host app
 

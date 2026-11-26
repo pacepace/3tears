@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: stateful mode pushes list changes, and resolves the bearer for every message
+
+**Added:** `McpServer.notify_tools_changed()`: `notifications/tools/list_changed` to every handshake-era connection
+that outlives its requests (a stateful Streamable-HTTP session, stdio), kept until it closes, and to every
+2026-07-28 `subscriptions/listen` stream that asked for it (the server now serves `subscriptions/listen`). The
+handshake-era `tools.listChanged` capability is declared where it is delivered: in stateful mode and on stdio,
+not in stateless mode. `threetears.mcp.http_server.current_transport_pushes()` says which.
+
+**Changed:** `stateless=False` is no longer documented as unsafe for bearer identity: each message on a stateful
+session is resolved as the caller its own HTTP request names, so a token revoked while the session is open is
+refused (`IDENTITY_UNAVAILABLE`) on its next message and no tool runs. Tests pin it, with cancellation
+(`notifications/cancelled`, the client deleting its session) reaching the call context in stateful mode.
+
 ### mcp: an authorizer that sees the call
 
 **Added:** `ToolCall(tool_name, arguments, required_permission)`, `Refusal(code, message, argument=None)` and the

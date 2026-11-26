@@ -91,6 +91,9 @@ packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0
 # rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_transport
 
+# rationale: mcp 2.x (verified 2.3.0) hands a lowlevel handler a per-request ServerSession and keeps the connection's Connection private behind it (ServerSession._connection); the Connection's standalone channel and teardown stack (exit_stack, which the SDK documents for handlers to push cleanup onto) are the only way to push tools/list_changed and resource updates to a stateful session and to drop it when it closes. this module is its one owner; tests/unit/test_stateful_mode.py and test_resources.py run it against the installed SDK.
+packages/mcp/src/threetears/mcp/_mcp_sdk_internals.py:connection_of#0:_connection
+
 # rationale: mcp 2.x (verified 2.3.0) keeps Server request handlers in the private _request_handlers table behind public get/add_request_handler, with no public way to copy it; copy.copy(server) shares it, so the CLI pool's per-borrower copy must get its own table before add_request_handler rebinds tools/call, or the rebinding lands on the original every borrower shares. this module is its one owner; the pool's context-binding tests run it against the installed SDK.
 packages/models/src/threetears/models/_mcp_sdk_internals.py:give_own_request_handlers#0:_request_handlers
 # rationale: the write half of the same copy (see #0): the copy's own table replaces the one copy.copy shared with the original, so add_request_handler on the copy cannot rebind the original's tools/call. mcp 2.x offers no public setter.

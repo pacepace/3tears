@@ -8,16 +8,16 @@ its wired ``self._sdk_server``; this module only changes how bytes reach
 that server object -- it runs the SAME SDK server over the official MCP
 SDK's Streamable-HTTP transport instead of stdio.
 
-per-request bearer identity: the Streamable-HTTP transport is stateless
-(a fresh transport + server task per request) so each request re-resolves
-the caller. a small ASGI middleware extracts the ``Authorization: Bearer``
-token from the request scope into a request-scoped contextvar; the copy
-that the SDK's per-request server task takes carries that value into
-:meth:`McpServer._dispatch`, where
-:class:`~threetears.mcp.auth.BearerTokenIdentityProvider` reads it back
-via :func:`current_bearer_token`. stateless mode is what makes the
-contextvar-per-request model correct -- a persistent (stateful) session
-task would capture only the first request's token.
+per-message bearer identity: the endpoint reads the ``Authorization: Bearer``
+token of each HTTP request into a request-scoped contextvar, which
+:class:`~threetears.mcp.auth.BearerTokenIdentityProvider` reads back via
+:func:`current_bearer_token`. in stateless mode each request has its own server
+task; in stateful mode the session's task serves every message, and the SDK
+(2.x) runs each message's handler in the contextvars of the HTTP request that
+carried it (it snapshots them as the message is handed to the session), so
+every message is resolved as its own caller in either mode, and a token revoked
+since the session opened is refused on its next message.
+``tests/unit/test_stateful_mode.py`` holds the SDK to that.
 
 logging discipline: like every ``threetears.mcp`` module, this one never
 writes to stdout / stderr; all logging goes through
@@ -45,6 +45,7 @@ __all__ = [
     "build_mcp_http_app",
     "current_bearer_token",
     "current_request_streams",
+    "current_transport_pushes",
     "serve_mcp_http",
 ]
 
@@ -70,6 +71,29 @@ set by :class:`_BearerTokenAsgiEndpoint` for each request from its transport's `
 the default, ``True``, is every transport that is not this one (stdio sends each message as it goes).
 :func:`current_request_streams` is the public reader.
 """
+
+
+_PUSHES_CONTEXT: ContextVar[bool] = ContextVar("threetears_mcp_transport_pushes", default=True)
+"""whether the current connection can be sent a notification the server starts (outside any request of its own).
+
+set by :class:`_BearerTokenAsgiEndpoint` for each request from its transport's ``stateless``: a stateful
+session keeps a standalone stream for them, a stateless request has none. the default, ``True``, is every
+transport that is not this one (stdio carries them). :func:`current_transport_pushes` is the public reader.
+"""
+
+
+def current_transport_pushes() -> bool:
+    """whether the connection being served can be sent ``notifications/tools/list_changed`` and the like.
+
+    ``False`` for a request served by a stateless Streamable-HTTP transport on the handshake-era protocols: the
+    request is a connection of its own and ends with its response, so there is nothing to push to later. ``True``
+    for a stateful transport, for stdio, and outside a request. (On 2026-07-28 a client asks for them on a
+    ``subscriptions/listen`` stream instead, which works in either mode.)
+
+    :return: whether the server can push to this connection
+    :rtype: bool
+    """
+    return _PUSHES_CONTEXT.get()
 
 
 def current_request_streams() -> bool:
@@ -144,18 +168,21 @@ class _BearerTokenAsgiEndpoint:
     :ptype json_response: bool
     """
 
-    def __init__(self, session_manager: StreamableHTTPSessionManager, *, json_response: bool) -> None:
+    def __init__(self, session_manager: StreamableHTTPSessionManager, *, json_response: bool, stateless: bool) -> None:
         """capture the session manager and how it answers.
 
         :param session_manager: SDK Streamable-HTTP session manager
         :ptype session_manager: StreamableHTTPSessionManager
         :param json_response: whether it answers in plain JSON
         :ptype json_response: bool
+        :param stateless: whether each request is a connection of its own (:func:`current_transport_pushes`)
+        :ptype stateless: bool
         :return: nothing
         :rtype: None
         """
         self._session_manager = session_manager
         self._json_response = json_response
+        self._stateless = stateless
         # set by McpHttpTransport.lifespan while the session manager runs
         self.running = False
 
@@ -192,9 +219,11 @@ class _BearerTokenAsgiEndpoint:
         token = _extract_bearer_token(scope) if scope.get("type") == "http" else None
         reset = _BEARER_TOKEN_CONTEXT.set(token)
         reset_streams = _STREAMS_CONTEXT.set(not self._json_response)
+        reset_pushes = _PUSHES_CONTEXT.set(not self._stateless)
         try:
             await self._session_manager.handle_request(scope, receive, send)
         finally:
+            _PUSHES_CONTEXT.reset(reset_pushes)
             _STREAMS_CONTEXT.reset(reset_streams)
             _BEARER_TOKEN_CONTEXT.reset(reset)
 
@@ -224,8 +253,9 @@ class McpHttpTransport:
     :ptype sdk_server: mcp.server.Server[Any]
     :param path: URL path :attr:`routes` serves the endpoint at
     :ptype path: str
-    :param stateless: run the transport statelessly (fresh transport + server task per request);
-        required for correct per-request bearer identity
+    :param stateless: run the transport statelessly (fresh transport + server task per request, the
+        default); ``False`` serves stateful sessions, which the server can push notifications to. the
+        bearer is resolved for every message either way
     :ptype stateless: bool
     :param json_response: return plain JSON responses instead of SSE streams; a call's progress
         and log notifications then cannot reach the client (they need an SSE stream)
@@ -261,7 +291,9 @@ class McpHttpTransport:
             stateless=stateless,
             json_response=json_response,
         )
-        self._endpoint = _BearerTokenAsgiEndpoint(self._session_manager, json_response=json_response)
+        self._endpoint = _BearerTokenAsgiEndpoint(
+            self._session_manager, json_response=json_response, stateless=stateless
+        )
 
     @property
     def endpoint(self) -> Any:
@@ -328,8 +360,8 @@ def build_mcp_http_app(
     :param path: URL path the MCP endpoint is served at
     :ptype path: str
     :param stateless: run the transport statelessly (fresh transport +
-        server task per request); required for correct per-request
-        bearer identity
+        server task per request, the default); ``False`` serves stateful
+        sessions. the bearer is resolved for every message either way
     :ptype stateless: bool
     :param json_response: return plain JSON responses instead of SSE
         streams; a call's progress and log notifications then cannot

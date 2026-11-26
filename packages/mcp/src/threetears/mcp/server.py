@@ -44,7 +44,9 @@ import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
 from mcp.server.connection import allowed_log_levels
 from mcp.server.context import ServerRequestContext
+from mcp.server.context import CallNext, HandlerResult
 from mcp.server.stdio import stdio_server as _stdio_server
+from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPDeprecationWarning
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 from threetears.observe import contain, get_logger
@@ -78,8 +80,10 @@ from threetears.mcp.http_server import (
     McpHttpTransport,
     build_mcp_http_app,
     current_request_streams,
+    current_transport_pushes,
     serve_mcp_http,
 )
+from threetears.mcp.push import Pushes
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
 
 if TYPE_CHECKING:
@@ -128,7 +132,17 @@ class _HandshakeLoggingServer(_SdkServer[Any]):
         capabilities = super().get_capabilities(*args, **kwargs)
         if kwargs.get("protocol_version") in MODERN_PROTOCOL_VERSIONS:
             return capabilities.model_copy(update={"logging": None})
-        return capabilities
+        # a list change is pushed to a connection that outlives its requests (a stateful session, stdio); a stateless
+        # request has nothing to push to, so it is not told to expect them
+        pushes = current_transport_pushes()
+        update: dict[str, Any] = {}
+        if capabilities.tools is not None:
+            update["tools"] = capabilities.tools.model_copy(update={"list_changed": pushes})
+        if capabilities.resources is not None:
+            update["resources"] = capabilities.resources.model_copy(
+                update={"list_changed": pushes, "subscribe": pushes}
+            )
+        return capabilities.model_copy(update=update)
 
 
 class McpServer:
@@ -228,6 +242,8 @@ class McpServer:
         # a closed connection's entry is dropped by a weakref finalizer, which runs on whatever thread collects its
         # parameters: each change of the mapping is made whole under this lock, so neither change loses the other
         self._log_levels_lock = threading.Lock()
+        # the connections and listen streams this server's change notifications go to
+        self._pushes = Pushes()
         self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
@@ -279,12 +295,45 @@ class McpServer:
         # is the specification's, and _HandshakeLoggingServer leaves it out of the later ones
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", MCPDeprecationWarning)
-            return _HandshakeLoggingServer(
+            sdk_server = _HandshakeLoggingServer(
                 name,
                 on_list_tools=_on_list_tools,
                 on_call_tool=_on_call_tool,
                 on_set_logging_level=_on_set_logging_level,
+                on_subscriptions_listen=ListenHandler(self._pushes.bus),
             )
+        sdk_server.middleware.append(self._track_connection)
+        return sdk_server
+
+    async def _track_connection(self, ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+        """keep the connection every inbound message arrives on, when it is one the server can push to.
+
+        a handshake-era connection that outlives its requests is kept until it closes, for
+        :meth:`notify_tools_changed` and the like.
+
+        :param ctx: the SDK's context for the message
+        :ptype ctx: mcp.server.context.ServerRequestContext
+        :param call_next: the rest of the SDK's chain
+        :ptype call_next: mcp.server.context.CallNext
+        :return: what the chain answers
+        :rtype: mcp.server.context.HandlerResult
+        """
+        if current_transport_pushes() and ctx.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+            self._pushes.track(ctx.session)
+        return await call_next(ctx)
+
+    async def notify_tools_changed(self) -> None:
+        """tell every connected client that the tool list changed, so it lists the tools again.
+
+        sends ``notifications/tools/list_changed`` to each handshake-era connection that outlives its requests (a
+        stateful Streamable-HTTP session, stdio) and on each 2026-07-28 ``subscriptions/listen`` stream that asked
+        for it. a stateless request has nothing to push to: its client sees the change on its next ``tools/list``.
+        never raises for a client that cannot be reached; that is logged.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self._pushes.tools_changed()
 
     def _set_log_level(self, ctx: ServerRequestContext[Any, Any], level: LogLevel) -> None:
         """remember the level a connection asked for, for the log entries its later calls send.
@@ -789,8 +838,9 @@ class McpServer:
 
         :param path: URL path the MCP endpoint is served at
         :ptype path: str
-        :param stateless: run the transport statelessly (required for
-            correct per-request bearer identity)
+        :param stateless: run the transport statelessly (the default); ``False`` serves stateful
+            sessions, which can be pushed ``tools/list_changed`` and resource updates. the bearer is
+            resolved for every message either way
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
             SSE streams; a call's progress and log notifications then cannot
@@ -830,8 +880,9 @@ class McpServer:
 
         :param path: URL path of the endpoint in the transport's routes
         :ptype path: str
-        :param stateless: run the transport statelessly (required for
-            correct per-request bearer identity)
+        :param stateless: run the transport statelessly (the default); ``False`` serves stateful
+            sessions, which can be pushed ``tools/list_changed`` and resource updates. the bearer is
+            resolved for every message either way
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
             SSE streams; a call's progress and log notifications then cannot
@@ -876,8 +927,9 @@ class McpServer:
         :ptype port: int
         :param path: URL path the MCP endpoint is served at
         :ptype path: str
-        :param stateless: run the transport statelessly (required for
-            correct per-request bearer identity)
+        :param stateless: run the transport statelessly (the default); ``False`` serves stateful
+            sessions, which can be pushed ``tools/list_changed`` and resource updates. the bearer is
+            resolved for every message either way
         :ptype stateless: bool
         :param json_response: return plain JSON responses instead of
             SSE streams; a call's progress and log notifications then cannot

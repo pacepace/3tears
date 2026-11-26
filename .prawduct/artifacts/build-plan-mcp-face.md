@@ -86,11 +86,13 @@ question and is not built.
   in place of `allows` when the authorizer has it | an existing `Authorizer` keeps its one method; a consumer's
   gate answers with its own code (a tainted session, an out-of-scope session), which `PERMISSION_DENIED` would
   lose]
-- [DECISION: the bearer token of each message is read from the HTTP request that carried it (the SDK hands it
-  to the handler as `ServerRequestContext.request`) and bound for the identity provider for that message |
-  in stateful mode the session's task runs with the context of the request that opened it, so the
-  request-scoped token was the first request's for the session's life; the per-message request is the
-  transport's own record of who sent this message]
+- [DECISION: the bearer is resolved for every message from the request-scoped token the endpoint binds, in both
+  modes, with no binding of 3tears' own per message | measured 2026-11-26: the SDK (2.3) snapshots the contextvars
+  of the HTTP request that hands each message to a stateful session and runs that message's handler in them, so the
+  endpoint's binding is each message's own (the stale belief, from the SDK 1.x era, was that a stateful session saw
+  only its first request's token). A per-message binding of 3tears' own passed the same tests with it removed, so
+  it was redundant and is not kept; the tests (a revoked token refused on the next message, a changed token served
+  as the new caller, a dropped header refused) hold the SDK to the behaviour]
 - [DECISION: the server keeps the handshake-era connections that can be pushed to (stateful HTTP sessions,
   stdio), each until its connection closes, reaching the SDK's per-connection `Connection` through
   `ServerSession._connection` in one module (`_mcp_sdk_internals.py`, exempted, checked against the installed
@@ -155,7 +157,8 @@ question and is not built.
 
 ## Chunk 03: stateful mode (U06)
 
-- `http_server.py`: the per-message bearer binding; whether the transport can push.
+- `http_server.py`: whether the transport can push (`current_transport_pushes`); the per-message bearer, documented
+  as the SDK's per-message contextvars carry it.
 - `_mcp_sdk_internals.py`, `notifications.py` (the connections a server pushes to, the subscription bus),
   `server.py` (`notify_tools_changed`, capabilities, the listen handler).
 - Tests: `packages/mcp/tests/unit/test_stateful_mode.py`: a revoked token refused on the next message of an

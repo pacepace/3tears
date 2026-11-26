@@ -342,6 +342,9 @@ ignore = ["N818", "N811"]
 # the one owner of the mcp SDK private member the CLI pool needs (a copied server's own handler
 # table under mcp 2.x); its entries are in tests/enforcement/_underscore_exemptions.txt
 "packages/models/src/threetears/models/_mcp_sdk_internals.py" = ["SLF001"]
+# the one owner of the mcp SDK private member 3tears-mcp needs (a request session's connection, for
+# pushing list changes and dropping a closed session); its entry is in tests/enforcement/_underscore_exemptions.txt
+"packages/mcp/src/threetears/mcp/_mcp_sdk_internals.py" = ["SLF001"]
 # NOT a per-file ignore for the sidecar: `packages/scrape/sidecar/ruff.toml` is a
 # nested config and therefore a FULL override, so ruff never reads a root key for a
 # path beneath it. The key that used to sit here was inert from the moment that file
