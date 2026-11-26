@@ -852,9 +852,9 @@ async def _each(changes: Sequence[NotedChange] | AsyncIterable[NotedChange]) -> 
 class EpochGenerationSource(_ChangeLogReading):
     """advances collection write generations by appending each epoch's change to the change log.
 
-    **A lost log has one owner.** In a deployment that runs the change-note keeper
-    (:class:`~threetears.core.collections.change_note_keeper.ChangeNoteKeeper`), the keeper puts a lost log back
-    from the L3 change notes, so every process's source there is built with ``restored_from_l3=True``: it
+    **A lost log has one owner.** In a deployment that runs the log keeper
+    (:class:`~threetears.core.collections.log_keeper.LogKeeper`), the keeper puts a lost log back
+    from the tables' own epochs in L3, so every process's source there is built with ``restored_from_l3=True``: it
     never declares a log. While the log is absent a write waits up to ``restore_wait`` for the keeper, then
     fails (its rows and their notes committed, its epoch not appended, logged and counted as any refused
     append); a read of the generation fails at once, so its caller asks L3. The keeper alone starts the log

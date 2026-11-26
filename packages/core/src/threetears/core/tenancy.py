@@ -140,8 +140,8 @@ def no_tenant(reason: str) -> Tenancy:
 def _token(prefix: str, value: str) -> str:
     """``{prefix}-{value}`` when that is one subject token, otherwise ``h-`` and a digest of ``value``.
 
-    The same rule as the change-note trigger's (:func:`threetears.core.ddl.change_notes.tenant_sql`), so a
-    note's tenant and a record's agree.
+    The same rule the change-note trigger used until the ring retired, so a restored record's tenant and a written
+    record's agree.
 
     :param prefix: the token's kind
     :ptype prefix: str

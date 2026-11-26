@@ -29,7 +29,6 @@ if TYPE_CHECKING:
         redact_dsn,
         resolve_pool_connect_timeout,
     )
-    from threetears.core.utils.change_note_slot import ChangeNoteSlot, change_note_slot_connection_class
     from threetears.core.utils.serialization_retry import retry_serialization_conflicts
     from threetears.core.utils.session_settings import session_settings_connection_class
     from threetears.core.utils.write_ledger import (
@@ -77,11 +76,6 @@ _LAZY: dict[str, tuple[str, str]] = {
     "log_pool_created": ("threetears.core.utils.pg_pool_kwargs", "log_pool_created"),
     "redact_dsn": ("threetears.core.utils.pg_pool_kwargs", "redact_dsn"),
     "resolve_pool_connect_timeout": ("threetears.core.utils.pg_pool_kwargs", "resolve_pool_connect_timeout"),
-    "ChangeNoteSlot": ("threetears.core.utils.change_note_slot", "ChangeNoteSlot"),
-    "change_note_slot_connection_class": (
-        "threetears.core.utils.change_note_slot",
-        "change_note_slot_connection_class",
-    ),
     "retry_serialization_conflicts": ("threetears.core.utils.serialization_retry", "retry_serialization_conflicts"),
     "session_settings_connection_class": (
         "threetears.core.utils.session_settings",
@@ -114,13 +108,11 @@ __all__ = [
     "YUGABYTE_RPC_TIMEOUT",
     "YUGABYTE_RPC_TIMEOUT_MESSAGE_PREFIX",
     "YUGABYTE_STALE_TABLE_SHAPE",
-    "ChangeNoteSlot",
     "PoolExpiryTrigger",
     "PoolStartupTimeoutError",
     "YugabytePoolRecycler",
     "atomic_write",
     "atomic_write_sync",
-    "change_note_slot_connection_class",
     "create_pool_with_startup_timeout",
     "get_pg_pool_kwargs",
     "is_yugabyte_rpc_timeout",

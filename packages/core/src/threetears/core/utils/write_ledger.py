@@ -294,8 +294,8 @@ def write_ledger_connection_class(
     """a connection class that keeps the ledger of its writes: each transaction's start, and each statement's outside
     one, ended when the transaction (or the statement) ends.
 
-    Wraps any connection class (``session_settings_connection_class(...)``, ``change_note_slot_connection_class(...)``)
-    so the three compose: pass the result as ``connection_class`` to ``asyncpg.create_pool``. A transaction is seen by
+    Wraps any connection class (``session_settings_connection_class(...)``)
+    so the two compose: pass the result as ``connection_class`` to ``asyncpg.create_pool``. A transaction is seen by
     the statement that opens it (``BEGIN``, through ``execute``) and ended by the first statement after which the
     connection is outside one (``COMMIT``, ``ROLLBACK``, a pool's reset), or by the connection closing. Every public
     statement method is tracked: ``execute``, ``executemany``, the ``fetch`` family and the ``copy`` family. A

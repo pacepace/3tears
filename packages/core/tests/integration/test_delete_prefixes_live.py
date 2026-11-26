@@ -2,11 +2,10 @@
 
 Reports drops the LSF runs the warehouse no longer has (a state's runs relabelled 'test'): 23 runs, 1.44M rows deleted
 row by row after 1.64M were read back, took 794 s on the 2026-11-02 replay. ``delete_prefixes`` deletes a prefix's
-rows in one key-led statement and reads none back; its change note is one for the table naming the prefixes; and a
-copy follower reads each prefix again as a key range, never the table. These check, on a real database:
+rows in one key-led statement and reads none back; and a copy follower reads each prefix again as a key range, never
+the table. These check, on a real database:
 
 - the statements sent and the rows read back are the same for a prefix of 1,000 rows and one of 100,000;
-- the delete leaves one change note naming the prefixes, and the transaction's next write is noted a row each again;
 - a copy follower (DuckDB) learns the delete from its epoch and drops exactly the prefix's rows, with no whole read.
 
 Against the session ``db_container`` (Postgres); set ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run them
@@ -15,7 +14,6 @@ there.
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -38,10 +36,8 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.change_notes import note_table, note_trigger_sql, trigger_function_sql
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
-from threetears.core.testing.note_ring import install_note_ring
 
 duckdb = pytest.importorskip("duckdb")
 pytest.importorskip("pyarrow")
@@ -163,21 +159,15 @@ class _Counting:
 
 @pytest.fixture
 async def db(db_container: str) -> AsyncIterator[_Db]:
-    """the runs table carrying the change-note trigger, its ring beside it."""
+    """the runs table."""
     schema = f"prefixdel_{uuid.uuid4().hex[:8]}"
     conn = await asyncpg.connect(db_container, command_timeout=600)
     try:
         await conn.execute(f"CREATE SCHEMA {schema}")
-        await install_note_ring(conn, schema)
         await conn.execute(
             f"CREATE TABLE {schema}.{_TABLE} (state TEXT, run_id BIGINT, geo TEXT, votes BIGINT, "
             "PRIMARY KEY (state, run_id, geo))"
         )
-        await conn.execute(
-            trigger_function_sql(notes_schema=schema, table_schema=schema, table=_TABLE, keys=_KEY, columns=())
-        )
-        for statement in note_trigger_sql(notes_schema=schema, table_schema=schema, table=_TABLE).values():
-            await conn.execute(statement)
         pool = await asyncpg.create_pool(
             db_container, min_size=1, max_size=4, command_timeout=600, server_settings={"search_path": schema}
         )
@@ -191,9 +181,8 @@ async def db(db_container: str) -> AsyncIterator[_Db]:
 
 
 async def _fill(db: _Db, gone_rows: int) -> None:
-    """the gone run's rows, and the kept runs' rows: written as a load writes them, marked whole (one note)."""
+    """the gone run's rows, and the kept runs' rows."""
     async with db.pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT set_config('threetears.note_whole', '1', true)")
         await conn.execute(f"DELETE FROM {_TABLE}")  # noqa: S608 - the test's own table, emptied between fills
         await conn.execute(
             f"INSERT INTO {_TABLE} SELECT 'PA', 7, 'g' || g, g FROM generate_series(1, $1::int) g",  # noqa: S608
@@ -204,7 +193,6 @@ async def _fill(db: _Db, gone_rows: int) -> None:
             "generate_series(1, $1::int) g",
             _KEPT_ROWS,
         )
-        await conn.execute(f"DELETE FROM {db.schema}.{note_table(0)}")  # noqa: S608 - the fill's own note
 
 
 def _collection(db: _Db, log: _Log | None = None) -> Any:
@@ -234,24 +222,6 @@ async def test_the_statements_and_the_rows_read_are_the_same_for_1k_and_100k_row
         assert await _counts(db) == {("PA", 6): _KEPT_ROWS, ("OH", 7): _KEPT_ROWS}
     # the marks' one row, the delete, the marks put back: nothing of the table read
     assert costs[0] == costs[1] == (3, 1)
-
-
-async def test_the_delete_is_one_note_naming_its_prefixes_and_the_next_write_is_noted_a_row(db: _Db) -> None:
-    """Flips if the delete notes a row each, names no prefix, or leaves the transaction marked whole after it."""
-    await _fill(db, 2_000)
-    collection = _collection(db)
-    async with db.pool.acquire() as conn, CallerTransaction(conn):
-        await collection.delete_prefixes([_GONE, {"state": "OH"}], conn=conn)
-        await conn.execute(f"UPDATE {_TABLE} SET votes = -1 WHERE state = 'PA' AND run_id = 6 AND geo = 'g1'")  # noqa: S608
-    notes = await db.pool.fetch(
-        f"SELECT keys, columns FROM {db.schema}.{note_table(0)} WHERE table_name = $1",  # noqa: S608
-        _TABLE,
-    )
-    whole = [json.loads(note["columns"]) for note in notes if note["keys"] is None]
-    keyed = [list(note["keys"]) for note in notes if note["keys"] is not None]
-    assert whole == [{"prefixes": [{"state": "PA", "run_id": "7"}, {"state": "OH"}]}]
-    assert keyed == [["PA", "6", "g1"]]  # the update's row, its key unchanged
-    assert await _counts(db) == {("PA", 6): _KEPT_ROWS}
 
 
 def _metadata() -> MetaData:

@@ -295,7 +295,7 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "pyyaml",
             "pydantic-core",
             # pyarrow is NOT here (Pace 2026-11-15): it is the arrow / snapshot extras' only. A lost change log's
-            # restore folds as Arrow (core.change_note_fold), so the keeper lives in core.collections.change_note_keeper,
+            # restore folds as Arrow (core.change_note_fold), so the keeper lives in core.collections.log_keeper,
             # apart from the readers every epoch follower imports; test_core_imports_without_arrow.py holds it
         ),
     ),

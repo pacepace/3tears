@@ -112,7 +112,6 @@ from threetears.enforcement.no_whole_reads.walker import (
     DECLARED_KINDS,
     DECLARED_L1_KINDS,
     DECLARED_OUTSIDE_KINDS,
-    DECLARED_RING_KINDS,
     DECLARED_SPEED_KINDS,
     DEFAULT_NARROWING_KEYWORDS,
     DEFAULT_PAGER_CALLS,
@@ -123,7 +122,6 @@ from threetears.enforcement.no_whole_reads.walker import (
     WrittenStatement,
     produced_relation,
     scan_whole_reads,
-    RING_NOTE_TABLE,
 )
 
 __all__ = [
@@ -890,8 +888,6 @@ class _Declared:
         """
         if hit.kind not in DECLARED_KINDS[declared.kind]:
             return False
-        if declared.kind in DECLARED_RING_KINDS and hit.kind != "calls-whole-read":
-            return _over_the_ring(declared.kind, hit)
         if declared.kind in DECLARED_L1_KINDS:
             return _BARE_DELETE.match(hit.statement) is not None and _declared_relation_outside(hit, schema)
         if declared.kind in DECLARED_OUTSIDE_KINDS and hit.kind != "calls-whole-read":
@@ -899,36 +895,9 @@ class _Declared:
         return True
 
 
-#: a statement deleting, past any leading planner hint
-_LEADING_DELETE: Final = re.compile(r"^\s*(?:/\*.*?\*/\s*)?DELETE\b", re.IGNORECASE | re.DOTALL)
-
 #: a ``DELETE FROM`` one relation and nothing after it (no ``WHERE``, no ``RETURNING``): the one statement an
 #: ``l1_table_drop`` may hold
 _BARE_DELETE: Final = re.compile(r"^\s*DELETE\s+FROM\s+[^\s;]+\s*;?\s*$", re.IGNORECASE)
-
-#: a plain ``VACUUM`` (no ``FULL``, no ``ANALYZE``) of one table: the one maintenance a ``ring_empty`` may hold
-_PLAIN_VACUUM: Final = re.compile(r"^\s*VACUUM\s+(?!\(|FULL\b|ANALYZE\b|VERBOSE\b|FREEZE\b)", re.IGNORECASE)
-
-
-def _over_the_ring(kind: str, hit: WholeReadHit) -> bool:
-    """whether a ring kind's hit is over a change-note ring slot alone (Pace 2026-11-14): a ``ring_empty`` a DELETE of
-    one, or (Pace 2026-11-15) the plain VACUUM of one on Postgres; a ``restore`` a read of the ring's slots, never any
-    other table's.
-
-    :param kind: the declared kind
-    :ptype kind: str
-    :param hit: the hit it wraps
-    :ptype hit: WholeReadHit
-    :return: whether it is
-    :rtype: bool
-    """
-    table = hit.symbol.split(" ", 1)[-1]
-    if RING_NOTE_TABLE.search(table) is None:
-        return False
-    if hit.kind == "whole-maintenance":
-        return kind == "ring_empty" and _PLAIN_VACUUM.match(hit.statement) is not None
-    deletes = _LEADING_DELETE.match(hit.statement) is not None
-    return deletes if kind == "ring_empty" else not deletes
 
 
 class _Settled:

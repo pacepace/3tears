@@ -4,7 +4,7 @@ Append-only L3 chunk 7 (``design-append-only-l3.md`` decision 4). A versioned ta
 reads it back through its ``(scope, epoch)`` index, so it is given no change note and no trigger; a per-row trigger on
 it switches off YugabyteDB's write batching (1.58 ms a row against 0.43 without, 2026-11-25). These tests hold:
 
-- its DDL creates no trigger, the noted tables leave it out, and the migration run gives it none;
+- its DDL creates no trigger, and no migration run gives one (``test_keeper_marks_ddl``: the ring's step is gone);
 - a per-row trigger found on one is refused at the end of every migration run, with a how-to-fix error;
 - "switched on" counts it by the epoch it carries (``test_switched_by_trigger``).
 
@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from threetears.core.collections.generation import WRITE_GENERATION, NotedTable, noted_tables
+from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     STRING_TYPE,
@@ -26,8 +26,6 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
-from threetears.core.data.migrations.change_notes import give_noted_tables_their_note_trigger
-from threetears.core.ddl.change_notes import NOTE_PUT_FUNCTION
 from threetears.core.ddl.epoch_catalog import PerRowTriggerError, refuse_row_triggers
 from threetears.core.ddl.row_epoch import row_versions
 from threetears.core.entities.base import BaseEntity
@@ -67,15 +65,13 @@ def test_a_versioned_table_s_ddl_creates_no_trigger() -> None:
     assert not [each for each in statements if "CREATE TRIGGER" in each.upper()]
 
 
-def test_the_noted_tables_leave_a_versioned_table_out() -> None:
-    """Flips if a versioned, switched-on table is still noted: the migration run and the keeper's install would give
-    it the change-note trigger, the per-row slow path the design removes."""
+def test_a_versioned_table_is_switched_on_by_its_class() -> None:
+    """Flips if the versioned table's class stops switching it on: the refusals below judge a switched-on table."""
     assert _Results.write_generation is WRITE_GENERATION
-    assert _TABLE not in {each.table for each in noted_tables()}
 
 
 class _Catalog(FakeDataStore):
-    """a run's store over a schema holding the ring, one versioned table, and the triggers given."""
+    """a run's store over a schema holding one versioned table, and the triggers given."""
 
     def __init__(self, *, triggers: tuple[tuple[str, str, str], ...] = ()) -> None:
         super().__init__(schema="rpt")
@@ -90,10 +86,6 @@ class _Catalog(FakeDataStore):
             # the versioned tables among those named (epoch_catalog._VERSIONED_AMONG_SQL)
             self.queried.append((sql, params))
             return [{"table_name": _TABLE}] if _TABLE in params[3] else []
-        if "pg_proc" in sql and params and params[0] == NOTE_PUT_FUNCTION:
-            # the ring is installed in the run's own schema
-            self.queried.append((sql, params))
-            return [{"schema": "rpt"}]
         if "information_schema.tables" in sql:
             self.queried.append((sql, params))
             return [{"table_name": name} for name in params[0]]
@@ -101,19 +93,6 @@ class _Catalog(FakeDataStore):
             self.queried.append((sql, params))
             return [{"schema": "rpt"}]
         return await super().query(sql, *params)
-
-
-async def test_the_migration_run_gives_a_versioned_table_no_note_trigger() -> None:
-    """Flips if the run's note step gives a versioned table its change-note function or trigger, even when a class
-    (an older one, another process's) still names it as noted."""
-    store = _Catalog()
-    given = await give_noted_tables_their_note_trigger(store, [NotedTable(table=_TABLE, keys=(_SCOPE, "candidate"))])
-    assert given == []
-    assert not [
-        sql
-        for sql, _ in store.executed
-        if "CREATE TRIGGER" in sql.upper() or "CREATE OR REPLACE FUNCTION" in sql.upper()
-    ]
 
 
 async def test_a_per_row_trigger_on_a_versioned_table_is_refused_by_the_migration_run() -> None:

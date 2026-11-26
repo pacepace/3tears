@@ -26,11 +26,11 @@ _OWNER_ONLY: Final = {
     (
         "epoch/src/threetears/epoch/generation.py",
         "EpochGenerationSource.epoch_at",
-    ): "the owner's scrub read, called only from ChangeNoteKeeper._epochs_between",
+    ): "the owner's scrub read, called only from LogKeeper._epochs_between",
     (
-        "core/src/threetears/core/collections/change_note_keeper.py",
-        "ChangeNoteKeeper._epochs_between",
-    ): "runs only under keeps_log=True, the hub's ring; a ring beside the log scrubs by changes_after",
+        "core/src/threetears/core/collections/log_keeper.py",
+        "LogKeeper._epochs_between",
+    ): "runs only under keeps_log=True, the hub's keeper; a keeper beside the log scrubs by changes_after",
 }
 
 #: methods that read the log by sequence whatever their receiver

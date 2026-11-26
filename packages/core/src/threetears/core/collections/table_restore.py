@@ -77,7 +77,7 @@ __all__ = [
 log = get_logger(__name__)
 
 #: the bytes of a scope's ``COPY`` text handed to the worker at once: well under a MiB, so the loop's copy of a page
-#: stays far inside a turn (the change-note restore's measure, ``change_note_keeper._RESTORE_PAGE_BYTES``)
+#: stays far inside a turn (measured for the change-note restore this read replaced, 2026-11-15, L1: 1 MiB a page)
 _PAGE_BYTES: Final = 1 << 20
 
 #: distinct rows of one table a change holds before it may be cut (as the change-note restore's)
