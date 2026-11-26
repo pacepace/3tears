@@ -27,6 +27,7 @@ from threetears.agent.tools.platform_migrations import register as register_tool
 from threetears.core.collections.delete_cascade import read_delete_cascade
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, next_epoch
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.interfaces.keyed import AnyOf, Sort, delete_keyed_statements, read_by_statement
@@ -98,7 +99,9 @@ _BY_TYPE: dict[str, str] = {
 
 
 async def _seed(conn: asyncpg.Connection, table: str, rows: int = _ROWS, **values: str) -> None:
-    """seed ``rows`` rows into ``table``, then ANALYZE it, so the planner prices it at size.
+    """seed ``rows`` rows into ``table``, then ANALYZE it, so the planner prices it at size. Every acl table is
+    ``ROW_STAMPED`` (v006): the rows are stamped as a write of them leaves them, one fresh epoch the statement
+    (:func:`~threetears.core.ddl.row_epoch.next_epoch`), and the stored bucket is left to the database.
 
     :param conn: the connection
     :ptype conn: asyncpg.Connection
@@ -107,13 +110,13 @@ async def _seed(conn: asyncpg.Connection, table: str, rows: int = _ROWS, **value
     :param rows: how many
     :ptype rows: int
     :param values: a SQL expression of the series row ``g`` per column; every other NOT NULL column with no
-        default gets one by its type
+        default gets one by its type, the epoch its stamp; a generated column none
     :ptype values: str
     :return: nothing
     :rtype: None
     """
     columns = await conn.fetch(
-        "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns"
+        "SELECT column_name, data_type, is_nullable, column_default, is_generated FROM information_schema.columns"
         " WHERE table_schema = current_schema() AND table_name = $1",
         table,
     )
@@ -121,7 +124,12 @@ async def _seed(conn: asyncpg.Connection, table: str, rows: int = _ROWS, **value
     exprs: list[str] = []
     for column in columns:
         name = column["column_name"]
-        if name in values:
+        if column["is_generated"] == "ALWAYS":
+            continue
+        if name == EPOCH_COLUMN and name not in values:
+            names.append(name)
+            exprs.append(f"{next_epoch()}::bigint")
+        elif name in values:
             names.append(name)
             exprs.append(values[name])
         elif column["is_nullable"] == "NO" and column["column_default"] is None:
@@ -138,10 +146,11 @@ async def test_members_reverse(conn: asyncpg.Connection) -> None:
     await _seed(conn, "groups", 50, row_scope="'platform'", customer_id="NULL", name="'g' || g")
     groups = [row["group_id"] for row in await conn.fetch("SELECT group_id FROM groups")]
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id)"
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
         " SELECT gen_random_uuid(), ($1::uuid[])[1 + g % 50], CASE WHEN g % 2 = 0 THEN 'user' ELSE 'agent' END,"
-        " gen_random_uuid() FROM generate_series(1, 5000) g",
+        " gen_random_uuid(), $2 FROM generate_series(1, 5000) g",
         groups,
+        next_epoch(),
     )
     await conn.execute("ANALYZE group_members")
     plan = await _planned(conn, acl.GroupMemberCollection, lambda members: members.load_for_user(uuid.uuid4()))
@@ -153,20 +162,23 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
     await _seed(conn, "groups", 500, row_scope="'platform'", customer_id="NULL", name="'g' || g")
     await _seed(conn, "roles", 1, name="'r'", description="'r'", permissions="'[]'::jsonb")
     await conn.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type)"
-        " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'type_customer'"
-        " FROM groups, generate_series(1, 10)"
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, epoch)"
+        " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'type_customer', $1"
+        " FROM groups, generate_series(1, 10)",
+        next_epoch(),
     )
     # and namespace grants of some groups on one namespace, so the scope types the reads bind both hold rows
     granted = await conn.fetchval(
-        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated)"
-        " VALUES ('platform', gen_random_uuid(), 'tool.granted', 'tool', now(), now()) RETURNING namespace_id"
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated, epoch)"
+        " VALUES ('platform', gen_random_uuid(), 'tool.granted', 'tool', now(), now(), $1) RETURNING namespace_id",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id)"
-        " SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'namespace', $1"
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
+        " epoch) SELECT 'platform', gen_random_uuid(), (SELECT role_id FROM roles), group_id, 'namespace', $1, $2"
         " FROM groups LIMIT 100",
         granted,
+        next_epoch(),
     )
     await conn.execute("ANALYZE role_assignments")
     plan = await _planned(conn, acl.RoleAssignmentCollection, lambda held: held.load_for_groups([uuid.uuid4()]))
@@ -186,14 +198,16 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
     # the ensure reads a namespace grant in the customer row scope: some groups hold one on a customer's namespace
     held_on = await conn.fetchval(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created,"
-        " date_updated) VALUES ('customer', gen_random_uuid(), 'tool.held', 'tool', gen_random_uuid(), now(), now())"
-        " RETURNING namespace_id"
+        " date_updated, epoch) VALUES ('customer', gen_random_uuid(), 'tool.held', 'tool', gen_random_uuid(), now(),"
+        " now(), $1) RETURNING namespace_id",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id)"
-        " SELECT 'customer', gen_random_uuid(), $2, group_id, 'namespace', $1 FROM groups",
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
+        " epoch) SELECT 'customer', gen_random_uuid(), $2, group_id, 'namespace', $1, $3 FROM groups",
         held_on,
         role,
+        next_epoch(),
     )
     await conn.execute("ANALYZE role_assignments")
     for scope, namespace in (("namespace", held_on), ("all", None)):
@@ -293,14 +307,16 @@ async def _seed_namespaces(conn: asyncpg.Connection) -> None:
     """
     await conn.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, customer_id,"
-        " schema_name, owner_namespace, date_created, date_updated)"
+        " schema_name, owner_namespace, date_created, date_updated, epoch)"
         " SELECT 'customer', gen_random_uuid(), 'agent.a' || g, (ARRAY['agent', 'workspace', 'tool'])[1 + g % 3],"
         " gen_random_uuid(), ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid,"
-        " 'agent_s' || g, 'agent.o' || (g % 2000), now(), now() FROM generate_series(1, 6000) g"
+        " 'agent_s' || g, 'agent.o' || (g % 2000), now(), now(), $1 FROM generate_series(1, 6000) g",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated)"
-        " SELECT 'platform', gen_random_uuid(), 'tool.p' || g, 'tool', now(), now() FROM generate_series(1, 3000) g"
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated, epoch)"
+        " SELECT 'platform', gen_random_uuid(), 'tool.p' || g, 'tool', now(), now(), $1 FROM generate_series(1, 3000) g",
+        next_epoch(),
     )
     await conn.execute("ANALYZE namespaces")
 
@@ -326,17 +342,19 @@ async def test_namespaces_tool_flags(conn: asyncpg.Connection) -> None:
     idx_namespaces_tool_flags: among 20,000 agents and workspaces, 300 tools, a third of them in the catalog."""
     await conn.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, customer_id,"
-        " date_created, date_updated)"
+        " date_created, date_updated, epoch)"
         " SELECT 'customer', gen_random_uuid(), 'agent.f' || g, (ARRAY['agent', 'workspace'])[1 + g % 2],"
-        " gen_random_uuid(), ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid, now(), now()"
-        " FROM generate_series(1, 20000) g"
+        " gen_random_uuid(), ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid, now(), now(), $1"
+        " FROM generate_series(1, 20000) g",
+        next_epoch(),
     )
     await conn.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, skill_eligible,"
-        " date_created, date_updated)"
+        " date_created, date_updated, epoch)"
         " SELECT (ARRAY['platform', 'customer'])[1 + g % 2], gen_random_uuid(), 'tool.f' || g, 'tool',"
         " CASE WHEN g % 2 = 1 THEN ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid END,"
-        " g % 3 = 0, now(), now() FROM generate_series(1, 300) g"
+        " g % 3 = 0, now(), now(), $1 FROM generate_series(1, 300) g",
+        next_epoch(),
     )
     await conn.execute("ANALYZE namespaces")
     # each flag's listing as the collection sends it, its first statement (the evaluator's decisions come after)
@@ -415,9 +433,9 @@ async def test_the_names_beneath_a_node_are_its_subtree_whatever_the_collation(c
     names a linguistic collation orders between them, ``.`` and ``-`` sorting as ignorable."""
     names = ("a.b", "a.b.c", "a.b.c.d", "a.bc", "a.b-c", "a.b/c", "a.b_c", "ab.c", "a.a.z", "a.c")
     await conn.executemany(
-        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated)"
-        " VALUES ('platform', gen_random_uuid(), $1, 'tool', now(), now())",
-        [(name,) for name in names],
+        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, date_created, date_updated, epoch)"
+        " VALUES ('platform', gen_random_uuid(), $1, 'tool', now(), now(), $2)",
+        [(name, next_epoch()) for name in names],
     )
     namespaces = _collection(acl.NamespaceCollection, conn)
     ids = await namespaces.list_ids_under_name("a.b")
@@ -522,9 +540,10 @@ async def test_groups_by_name(conn: asyncpg.Connection) -> None:
     # a customer's pages of groups by name: GroupCollection.page_by_customer's own statements, first page and after
     owner = await conn.fetchval("SELECT customer_id FROM groups WHERE customer_id IS NOT NULL LIMIT 1")
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name, date_created, date_updated)"
-        " SELECT 'customer', gen_random_uuid(), $1, 'o' || g, now(), now() FROM generate_series(1, 5) g",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, date_created, date_updated, epoch)"
+        " SELECT 'customer', gen_random_uuid(), $1, 'o' || g, now(), now(), $2 FROM generate_series(1, 5) g",
         owner,
+        next_epoch(),
     )
     recorder = PlanRecorder(conn)
     groups = _collection(acl.GroupCollection, recorder)
@@ -562,7 +581,7 @@ async def _rolled_back(conn: asyncpg.Connection) -> AsyncIterator[None]:
 
 _NAMESPACE_INSERT = (
     "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, schema_name,"
-    " date_created, date_updated) VALUES ('customer', gen_random_uuid(), $1, $2, $3, $4, now(), now())"
+    " date_created, date_updated, epoch) VALUES ('customer', gen_random_uuid(), $1, $2, $3, $4, now(), now(), $5)"
 )
 
 
@@ -571,11 +590,11 @@ async def test_namespaces_schema_name_non_workspace_refuses_a_duplicate(conn: as
     refuses the second, while workspace rows still share their agent's schema."""
     customer = uuid.uuid4()
     async with _rolled_back(conn):
-        await conn.execute(_NAMESPACE_INSERT, "a", "agent", customer, "agent_s1")
+        await conn.execute(_NAMESPACE_INSERT, "a", "agent", customer, "agent_s1", next_epoch())
         with pytest.raises(asyncpg.UniqueViolationError, match="uq_namespaces_schema_name_non_workspace"):
-            await conn.execute(_NAMESPACE_INSERT, "a", "agent", customer, "agent_s1")
+            await conn.execute(_NAMESPACE_INSERT, "a", "agent", customer, "agent_s1", next_epoch())
     for name in ("w1", "w2"):
-        await conn.execute(_NAMESPACE_INSERT, name, "workspace", customer, "agent_s2")
+        await conn.execute(_NAMESPACE_INSERT, name, "workspace", customer, "agent_s2", next_epoch())
 
 
 async def test_roles_customer_name_refuses_a_duplicate(conn: asyncpg.Connection) -> None:
@@ -583,15 +602,17 @@ async def test_roles_customer_name_refuses_a_duplicate(conn: asyncpg.Connection)
     customer = uuid.uuid4()
     async with _rolled_back(conn):
         await conn.execute(
-            "INSERT INTO roles (role_id, name, description, permissions, customer_id)"
-            " VALUES (gen_random_uuid(), 'Field Manager', 'r', '[]'::jsonb, $1)",
+            "INSERT INTO roles (role_id, name, description, permissions, customer_id, epoch)"
+            " VALUES (gen_random_uuid(), 'Field Manager', 'r', '[]'::jsonb, $1, $2)",
             customer,
+            next_epoch(),
         )
         with pytest.raises(asyncpg.UniqueViolationError, match="uq_roles_customer_name"):
             await conn.execute(
-                "INSERT INTO roles (role_id, name, description, permissions, customer_id)"
-                " VALUES (gen_random_uuid(), 'Field Manager', 'r', '[]'::jsonb, $1)",
+                "INSERT INTO roles (role_id, name, description, permissions, customer_id, epoch)"
+                " VALUES (gen_random_uuid(), 'Field Manager', 'r', '[]'::jsonb, $1, $2)",
                 customer,
+                next_epoch(),
             )
 
 
@@ -604,9 +625,13 @@ async def _group_and_role(conn: asyncpg.Connection) -> tuple[uuid.UUID, uuid.UUI
     :rtype: tuple[uuid.UUID, uuid.UUID]
     """
     group, role = uuid.uuid4(), uuid.uuid4()
-    await conn.execute("INSERT INTO groups (row_scope, group_id, name) VALUES ('platform', $1, 'g')", group)
     await conn.execute(
-        "INSERT INTO roles (role_id, name, description, permissions) VALUES ($1, 'r', 'r', '[]'::jsonb)", role
+        "INSERT INTO groups (row_scope, group_id, name, epoch) VALUES ('platform', $1, 'g', $2)", group, next_epoch()
+    )
+    await conn.execute(
+        "INSERT INTO roles (role_id, name, description, permissions, epoch) VALUES ($1, 'r', 'r', '[]'::jsonb, $2)",
+        role,
+        next_epoch(),
     )
     return group, role
 
@@ -615,22 +640,26 @@ async def test_namespace_grant_refuses_a_duplicate(conn: asyncpg.Connection) -> 
     """Flips if a group may hold one role on one namespace twice from one provenance:
     uq_role_assignments_namespace_grant refuses the second (ensure_group_role_assignment's ON CONFLICT relies on it)."""
     group, role = await _group_and_role(conn)
-    namespace = await conn.fetchval(_NAMESPACE_INSERT + " RETURNING namespace_id", "n", "agent", uuid.uuid4(), None)
+    namespace = await conn.fetchval(
+        _NAMESPACE_INSERT + " RETURNING namespace_id", "n", "agent", uuid.uuid4(), None, next_epoch()
+    )
     async with _rolled_back(conn):
         await conn.execute(
-            "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id)"
-            " VALUES ('customer', gen_random_uuid(), $1, $2, 'namespace', $3)",
+            "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
+            " epoch) VALUES ('customer', gen_random_uuid(), $1, $2, 'namespace', $3, $4)",
             role,
             group,
             namespace,
+            next_epoch(),
         )
         with pytest.raises(asyncpg.UniqueViolationError, match="uq_role_assignments_namespace_grant"):
             await conn.execute(
-                "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id)"
-                " VALUES ('customer', gen_random_uuid(), $1, $2, 'namespace', $3)",
+                "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type,"
+                " scope_namespace_id, epoch) VALUES ('customer', gen_random_uuid(), $1, $2, 'namespace', $3, $4)",
                 role,
                 group,
                 namespace,
+                next_epoch(),
             )
 
 
@@ -640,17 +669,19 @@ async def test_all_grant_refuses_a_duplicate(conn: asyncpg.Connection) -> None:
     group, role = await _group_and_role(conn)
     async with _rolled_back(conn):
         await conn.execute(
-            "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type)"
-            " VALUES ('platform', gen_random_uuid(), $1, $2, 'all')",
+            "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, epoch)"
+            " VALUES ('platform', gen_random_uuid(), $1, $2, 'all', $3)",
             role,
             group,
+            next_epoch(),
         )
         with pytest.raises(asyncpg.UniqueViolationError, match="uq_role_assignments_all_grant"):
             await conn.execute(
-                "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type)"
-                " VALUES ('platform', gen_random_uuid(), $1, $2, 'all')",
+                "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, epoch)"
+                " VALUES ('platform', gen_random_uuid(), $1, $2, 'all', $3)",
                 role,
                 group,
+                next_epoch(),
             )
 
 
@@ -706,17 +737,18 @@ async def _seed_assignments(conn: asyncpg.Connection) -> list[uuid.UUID]:
     namespaces = [row["namespace_id"] for row in await conn.fetch("SELECT namespace_id FROM namespaces")]
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
-        " scope_namespace_type, scope_customer_id, customer_id, managed_by)"
+        " scope_namespace_type, scope_customer_id, customer_id, managed_by, epoch)"
         " SELECT 'customer', gen_random_uuid(), (array_agg_r)[1 + s % 50], (array_agg_g)[1 + s % 500],"
         " (ARRAY['namespace', 'type_customer', 'all'])[1 + s % 3],"
         " CASE WHEN s % 3 = 0 THEN ($1::uuid[])[1 + s % 500] END,"
         " CASE WHEN s % 3 = 1 THEN 't' || (s % 20) END,"
         # a type grant's customer (acl v005) is its scope's
         " CASE WHEN s % 3 = 1 THEN md5(s::text)::uuid END, CASE WHEN s % 3 = 1 THEN md5(s::text)::uuid END,"
-        " 'm' || s"
+        " 'm' || s, $2"
         " FROM (SELECT array_agg(role_id) AS array_agg_r FROM roles) r,"
         " (SELECT array_agg(group_id) AS array_agg_g FROM groups) g, generate_series(1, 5000) s",
         namespaces,
+        next_epoch(),
     )
     await conn.execute("ANALYZE role_assignments")
     return namespaces
@@ -727,10 +759,11 @@ async def test_members_of_groups(conn: asyncpg.Connection) -> None:
     await _seed(conn, "groups", 500, row_scope="'platform'", customer_id="NULL", name="'g' || g")
     groups = [row["group_id"] for row in await conn.fetch("SELECT group_id FROM groups")]
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id)"
-        " SELECT gen_random_uuid(), ($1::uuid[])[1 + g % 500], 'user', gen_random_uuid()"
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch)"
+        " SELECT gen_random_uuid(), ($1::uuid[])[1 + g % 500], 'user', gen_random_uuid(), $2"
         " FROM generate_series(1, 5000) g",
         groups,
+        next_epoch(),
     )
     await conn.execute("ANALYZE group_members")
     members, recorder = _recorded(acl.GroupMemberCollection, conn)
