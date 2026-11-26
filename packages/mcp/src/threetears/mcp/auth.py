@@ -42,6 +42,8 @@ from uuid import UUID
 
 from threetears.observe import PeriodicTask, cancel_and_wait, contain, get_logger, spawn_background
 
+from threetears.mcp.errors import ErrorCode
+
 # LocalGrantAuthorizer's collaborators come from the ``grants`` extra. Nothing else in this module
 # needs them, and a server with its own Authorizer must import this module without them, so their
 # absence is recorded here and LocalGrantAuthorizer refuses to build, naming the extra.
@@ -143,13 +145,16 @@ __all__ = [
     "Authorizer",
     "BearerTokenIdentityProvider",
     "BearerTokenResolver",
+    "CallAuthorizer",
     "EnvVarIdentityProvider",
     "GrantCacheUnavailableError",
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
     "PrincipalType",
+    "Refusal",
     "TokenSource",
+    "ToolCall",
 ]
 
 log = get_logger(__name__)
@@ -439,6 +444,60 @@ class Authorizer(Protocol):
 
         :return: nothing
         :rtype: None
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """one tool call as an authorizer that asks for it sees it, before the handler runs.
+
+    :ivar tool_name: the tool the call names
+    :ivar arguments: the call's arguments, already checked against the tool's input schema; read-only
+    :ivar required_permission: the permission the tool requires
+    """
+
+    tool_name: str
+    arguments: Mapping[str, Any]
+    required_permission: str
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """an authorizer's refusal of a call with a code of its own, in place of ``PERMISSION_DENIED``.
+
+    :ivar code: a code of the server's :class:`~threetears.mcp.errors.ErrorCodes`, or its name; a name the server
+        never registered answers ``PERMISSION_DENIED`` and is logged
+    :ivar message: why the call is refused, for the caller
+    :ivar argument: the argument the refusal is about, when one is
+    """
+
+    code: ErrorCode | str
+    message: str
+    argument: str | None = None
+
+
+@runtime_checkable
+class CallAuthorizer(Authorizer, Protocol):
+    """an :class:`Authorizer` that decides on the whole call: the tool, its arguments and its permission.
+
+    :class:`~threetears.mcp.server.McpServer` calls :meth:`authorize_call` in place of
+    :meth:`Authorizer.allows` for every ``tools/call`` when its authorizer's class defines it, after the arguments
+    are checked against the input schema and before the handler runs. a gate that depends on an argument (a
+    session the caller may not reach, a target in a state that refuses the call) is an authorizer, then, rather
+    than a check inside each tool. an authorizer without it is called as before.
+    """
+
+    async def authorize_call(self, identity: Identity, call: ToolCall) -> bool | Refusal:
+        """decide whether ``identity`` may make ``call``.
+
+        :param identity: the caller
+        :ptype identity: Identity
+        :param call: the call
+        :ptype call: ToolCall
+        :return: ``True`` to run it, ``False`` to refuse it with ``PERMISSION_DENIED``, or a :class:`Refusal` to
+            refuse it with a code of its own
+        :rtype: bool | Refusal
         """
         ...
 

@@ -18,6 +18,7 @@ uvicorn only. Everything below that needs the rest of the family -- `LocalGrantA
 | Module | Responsibility |
 |---|---|
 | `server` | `McpServer` -- wraps the official `mcp.server.Server`. Owns tool registration, RBAC gating before handler dispatch, structured error mapping per the MCP spec. `tool_error` builds a tool-execution error a handler returns. |
+| `errors` | The error model: `ErrorCode`, `ErrorCodes` (a server's closed code set and the exceptions it maps), `McpToolError`, the built-in codes, `ERROR_META_KEY`. |
 | `tool` | `McpTool` dataclass (name, description, input_schema, required_permission, handler, and optional output_schema, title, annotations), `McpToolAnnotations`, `ToolRegistry`, `ToolProvider`, and the `register_tool` decorator. |
 | `context` | `CallContext`, the per-call context a handler asks for by signature: the progress token and reporter, a log channel to the client, and a cancellation signal. |
 | `http_server` | The Streamable-HTTP transport: `McpHttpTransport` for a host app to embed, `build_mcp_http_app` / `serve_mcp_http` to serve standalone, `current_bearer_token` for `BearerTokenIdentityProvider`. |
@@ -63,23 +64,63 @@ What a handler returns becomes the call's result:
 | an `mcp.types.CallToolResult` | that result, passed through unchanged |
 
 `tool_error` is for the spec's *tool-execution error*: the tool ran, and the call failed in a way the
-caller can read and act on:
+caller can read and act on. Its content is the tool's own (a JSON object, which also rides as
+`structuredContent`, or text), and `code=` names the failure:
 
 ```python
-from threetears.mcp import tool_error
+from threetears.mcp import ErrorCode, ErrorCodes, McpServer, tool_error
+
+NOT_FOUND = ErrorCode("NOT_FOUND", "no such runner")
 
 async def get_runner(runner_id: str) -> dict:
     runner = registry.find(runner_id)
     if runner is None:
-        return tool_error({"code": "NOT_FOUND", "message": f"no runner {runner_id!r}", "retryable": False, "field": "runner_id"})
+        return tool_error({"ok": False, "error": f"no runner {runner_id!r}"}, code=NOT_FOUND, argument="runner_id")
     return {"runner": runner.describe()}
+
+server = McpServer(..., error_codes=ErrorCodes([NOT_FOUND]))
 ```
 
-A tool error is not logged, it is not mapped to one of the framework's codes, and `output_schema`
-doesn't apply to it. The framework's own refusals (`UNKNOWN_TOOL`, `PERMISSION_DENIED`,
-`IDENTITY_UNAVAILABLE`, `AUTHZ_ERROR`, `HANDLER_ERROR`, `OUTPUT_VALIDATION_ERROR`, `TOOLS_UNAVAILABLE`)
-are also `isError: true`, but they carry `{"tool_name": ..., "error": {"code": ..., "message": ...}}` in
-a text block and no `structuredContent`. A handler that raises still gets `HANDLER_ERROR`.
+A tool error is not logged, and `output_schema` doesn't apply to it. A handler that raises still gets
+`HANDLER_ERROR`, unless it raises `McpToolError(code, message, argument=...)` or an exception the server mapped.
+
+## Error codes
+
+Every failed `tools/call` carries its error on the protocol result, under `_meta["threetears.mcp/error"]`
+(`ERROR_META_KEY`):
+
+```json
+{"code": "INVALID_ARGUMENTS", "message": "'name' is a required property", "retryable": false, "argument": "name"}
+```
+
+`retryable` says whether the same call, unchanged, can succeed later. `argument` names the argument at fault,
+when one is. The content stays what it was: the framework's own refusals carry
+`{"tool_name": ..., "error": {"code", "message", "retryable", "argument"?}}` in a text block (and no
+`structuredContent`), an argument-validation failure keeps the SDK's `Input validation error: ...` text, and a
+tool's failure keeps the tool's content. So a client that reads only the text is unaffected, and one that branches
+on the code reads it from `_meta`.
+
+The codes are a closed set, `McpServer.error_codes` (an `ErrorCodes`). The built-in ones:
+
+| Code | Retryable | When |
+|---|---|---|
+| `UNKNOWN_TOOL` | no | no tool of that name is served |
+| `TOOLS_UNAVAILABLE` | yes | the tool provider failed |
+| `INVALID_ARGUMENTS` | no | the arguments do not match the input schema; `argument` names the one at fault |
+| `IDENTITY_UNAVAILABLE` | no | the caller's identity could not be resolved |
+| `PERMISSION_DENIED` | no | the caller may not call the tool (or may not have what it asked for) |
+| `AUTHZ_ERROR` | yes | the authorizer failed, or its grant cache is reloading |
+| `HANDLER_ERROR` | no | the handler raised something it did not name, or named a code the server never registered |
+| `OUTPUT_VALIDATION_ERROR` | no | a successful result breaks the tool's `output_schema` |
+| `TOOL_ERROR` | no | the tool returned a failure (`isError`) and named no code |
+| `UNKNOWN_RESOURCE` | no | no resource or template matches a URI (resources, below) |
+| `CONFLICT`, `MALFORMED_REQUEST`, `TOOL_AUTHORIZATION_UNAVAILABLE`, `TOOL_NOT_READY` | yes, no, yes, yes | a `ToolResult`'s codes from 3tears-agent-tools, with their meaning there |
+
+A server adds its own with `ErrorCodes([...])` or `register(code)`. A code is a letter followed by letters, digits
+and underscores; lower case is allowed, but not a code that differs from another only in case. `map_exception(
+KeyError, NOT_FOUND)` answers a code when a handler raises that type (the most specific mapping wins). A failure
+that names a code the server never registered answers `HANDLER_ERROR` and logs an error once per code, since the
+server is missing a registration.
 
 ## The call context
 
@@ -229,6 +270,40 @@ Per-tool, default-deny. Each `McpTool` declares a `required_permission` string (
 The configured admin identity (env-var creds in the stdio impl) is **auto-granted in memory at server startup**. The grant is logged but NOT written to `mcp_tool_grants`. This keeps the table truthful (only operator-added grants live there).
 
 Grant changes propagate cross-pod via the `mcp.rbac` epoch broadcast. `LocalGrantAuthorizer` subscribes to `Subjects.mcp_rbac_epoch()` via an `EpochListener`; on bump it reloads the grant cache from L3. Cold-start primes from `EpochClient.current(...)`. Missed broadcasts recover via the standard pull-on-stale path.
+
+### An authorizer that sees the call
+
+`allows(identity, permission)` sees no arguments, so a gate that depends on one (a session the caller may not
+reach, a target whose state refuses the call) cannot be written as it. An authorizer whose class also defines
+`authorize_call(identity, call)` is given the whole call, as a `ToolCall(tool_name, arguments,
+required_permission)`, in place of `allows`. It runs after the arguments pass the input schema and before the
+handler, and answers `True`, `False` (`PERMISSION_DENIED`) or a `Refusal(code, message, argument=None)` to refuse
+with a code of the server's set:
+
+```python
+from threetears.mcp import ErrorCode, ErrorCodes, Refusal, ToolCall
+
+TAINTED = ErrorCode("tainted", "the session is tainted")
+
+class SessionGate:
+    async def allows(self, identity, permission):
+        return True
+
+    async def authorize_call(self, identity, call: ToolCall) -> bool | Refusal:
+        session = call.arguments.get("session")
+        if session in tainted_sessions:
+            return Refusal(TAINTED, f"session {session!r} is tainted", argument="session")
+        return True
+
+    async def start(self): ...
+    async def stop(self): ...
+
+server = McpServer(..., authorizer=SessionGate(), error_codes=ErrorCodes([TAINTED]))
+```
+
+`call.arguments` is read-only. A refusal naming a code the server never registered answers `PERMISSION_DENIED`
+and logs an error once per code. An authorizer that raises denies with `AUTHZ_ERROR`, as `allows` does. The
+`CallAuthorizer` protocol states the shape; an authorizer with `allows` alone is called exactly as before.
 
 ## Identity in v1
 

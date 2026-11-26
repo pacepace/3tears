@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: an authorizer that sees the call
+
+**Added:** `ToolCall(tool_name, arguments, required_permission)`, `Refusal(code, message, argument=None)` and the
+`CallAuthorizer` protocol (`threetears.mcp.auth`, exported from `threetears.mcp`). An authorizer whose class
+defines `authorize_call(identity, call) -> bool | Refusal` is given the call, its arguments checked and read-only,
+in place of `allows`, before the handler runs; a `Refusal` answers its own code. An authorizer with `allows` alone
+is called as before.
+
+### mcp: a failed call carries a code of a closed set on its protocol result
+
+**Added:** `threetears.mcp.errors`: `ErrorCode(code, description, retryable)`, `ErrorCodes` (a server's closed code
+set: the built-in codes plus the server's own, `register`, `map_exception`, `get`, `for_exception`, `all`),
+`McpToolError(code, message, argument=...)` for a handler to raise, the built-in codes and `ERROR_META_KEY`.
+`McpServer(error_codes=...)` and `McpServer.error_codes`. Every failed `tools/call` now carries
+`{code, message, retryable, argument?}` under `_meta["threetears.mcp/error"]`, and each framework refusal has its
+own code: an argument-validation failure is `INVALID_ARGUMENTS` naming the argument at fault (it had no code), and
+a returned failure that names none is `TOOL_ERROR`. The built-in set holds the five `ToolResult` codes of
+3tears-agent-tools with their meaning. `tool_error` takes `code=`, `message=` and `argument=`, and text as well as
+a mapping. A failure naming a code the server never registered answers `HANDLER_ERROR` and logs an error once per
+code.
+
+**Changed:** the framework's refusal text gains `retryable` beside `code` and `message` in its `error` object (and
+`argument` when one is named); a client reading only `code` and `message` is unaffected.
+
 ### core (git store): an adopted hand edit gets a new version, so a stale copy cannot save over it
 
 **Fixed:** `GitRepo.commit_paths` adopted a hand-edited row file as it was. A person rarely changes

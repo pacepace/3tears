@@ -37,7 +37,7 @@ import warnings
 import weakref
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import jsonschema
 import mcp.types as mcp_types
@@ -49,8 +49,31 @@ from mcp.shared.exceptions import MCPDeprecationWarning
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 from threetears.observe import contain, get_logger
 
-from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
+from threetears.mcp.auth import (
+    Authorizer,
+    CallAuthorizer,
+    GrantCacheUnavailableError,
+    IdentityProvider,
+    Refusal,
+    ToolCall,
+)
 from threetears.mcp.context import CallContext, LogLevel
+from threetears.mcp.errors import (
+    AUTHZ_ERROR,
+    ERROR_META_KEY,
+    HANDLER_ERROR,
+    IDENTITY_UNAVAILABLE,
+    INVALID_ARGUMENTS,
+    OUTPUT_VALIDATION_ERROR,
+    PERMISSION_DENIED,
+    TOOL_ERROR,
+    TOOLS_UNAVAILABLE,
+    UNKNOWN_TOOL,
+    ErrorCode,
+    ErrorCodes,
+    McpToolError,
+    error_detail,
+)
 from threetears.mcp.http_server import (
     McpHttpTransport,
     build_mcp_http_app,
@@ -75,6 +98,10 @@ _TOOLS_UNAVAILABLE_MESSAGE = "the server's tool set could not be read"
 #: how much of a refused result's structured content the refusal's log line keeps: enough for an
 #: operator to see what the call returned, without one oversized result flooding the log
 _MAX_LOGGED_STRUCTURED_CHARS = 4000
+
+
+#: how much of a tool's own failure text a failure that named no code carries as its error message
+_MAX_TOOL_ERROR_MESSAGE_CHARS = 500
 
 
 #: the protocol's log levels, least severe first: a client's ``logging/setLevel`` asks for its level and every one after it
@@ -133,6 +160,9 @@ class McpServer:
         ``tools/call`` for the tools as they stand, for a tool set that
         follows a live registry; in place of ``registry``
     :ptype tool_provider: ToolProvider | None
+    :param error_codes: the server's closed set of error codes and the exceptions mapped to them; the
+        built-in codes alone when not given
+    :ptype error_codes: ErrorCodes | None
     """
 
     def __init__(
@@ -143,6 +173,7 @@ class McpServer:
         authorizer: Authorizer,
         registry: ToolRegistry | None = None,
         tool_provider: ToolProvider | None = None,
+        error_codes: ErrorCodes | None = None,
     ) -> None:
         """capture deps; no I/O until :meth:`serve_stdio`.
 
@@ -156,6 +187,8 @@ class McpServer:
         :ptype registry: ToolRegistry | None
         :param tool_provider: the live tool set, in place of ``registry``
         :ptype tool_provider: ToolProvider | None
+        :param error_codes: the server's error codes
+        :ptype error_codes: ErrorCodes | None
         :return: nothing
         :rtype: None
         :raises ValueError: when ``name`` is empty, or not exactly one of
@@ -173,6 +206,14 @@ class McpServer:
         self._name = name
         self._identity_provider = identity_provider
         self._authorizer = authorizer
+        # an authorizer whose class defines authorize_call is given the whole call; read from the class, so a
+        # stand-in that answers any attribute is not taken for one
+        self._call_authorizer: CallAuthorizer | None = (
+            cast("CallAuthorizer", authorizer) if callable(getattr(type(authorizer), "authorize_call", None)) else None
+        )
+        self._error_codes = error_codes if error_codes is not None else ErrorCodes()
+        # a failure naming a code the set does not hold is logged once per code: every such call is the same bug
+        self._unregistered_codes_logged: frozenset[str] = frozenset()
         self._started = False
         # one ERROR per grant-cache outage, not one traceback per refused call: the authorizer
         # already logged the failed reload with its traceback, and an outage refuses every call.
@@ -197,6 +238,15 @@ class McpServer:
         :rtype: str
         """
         return self._name
+
+    @property
+    def error_codes(self) -> ErrorCodes:
+        """the server's closed set of error codes: what a failed call's ``_meta`` error may name.
+
+        :return: the set
+        :rtype: ErrorCodes
+        """
+        return self._error_codes
 
     def _build_sdk_server(self, name: str) -> _SdkServer[Any]:
         """build the SDK server with this server's ``tools/list`` + ``tools/call`` handlers.
@@ -363,20 +413,14 @@ class McpServer:
                 extra={"tool_name": tool_name},
                 level="error",
             )
-            return self._error_result(
-                tool_name=tool_name,
-                code="TOOLS_UNAVAILABLE",
-                message=_TOOLS_UNAVAILABLE_MESSAGE,
-            )
+            return _error_result(tool_name=tool_name, code=TOOLS_UNAVAILABLE, message=_TOOLS_UNAVAILABLE_MESSAGE)
         if tool is None:
             log.warning(
                 "MCP dispatch: unknown tool",
                 extra={"extra_data": {"tool_name": tool_name}},
             )
-            return self._error_result(
-                tool_name=tool_name,
-                code="UNKNOWN_TOOL",
-                message=f"no tool named {tool_name!r} registered",
+            return _error_result(
+                tool_name=tool_name, code=UNKNOWN_TOOL, message=f"no tool named {tool_name!r} registered"
             )
 
         # the SDK's low-level server does not check arguments against the tool's inputSchema: checked
@@ -384,11 +428,11 @@ class McpServer:
         try:
             jsonschema.validate(instance=arguments, schema=tool.input_schema)
         except jsonschema.ValidationError as exc:
-            return _plain_error_result(f"Input validation error: {exc.message}")
+            return _invalid_arguments_result(exc.message, _argument_at_fault(exc))
         if tool.context_parameter is not None and tool.context_parameter in arguments:
             # a schema that admits extra properties let through an argument named as the context
-            return _plain_error_result(
-                f"Input validation error: {tool.context_parameter!r} is not an argument of this tool",
+            return _invalid_arguments_result(
+                f"{tool.context_parameter!r} is not an argument of this tool", tool.context_parameter
             )
 
         try:
@@ -401,14 +445,20 @@ class McpServer:
                 what="MCP dispatch: identity resolution failed",
                 extra={"tool_name": tool_name},
             )
-            return self._error_result(
-                tool_name=tool_name,
-                code="IDENTITY_UNAVAILABLE",
-                message="caller identity could not be resolved",
+            return _error_result(
+                tool_name=tool_name, code=IDENTITY_UNAVAILABLE, message="caller identity could not be resolved"
             )
 
         try:
-            allowed = await self._authorizer.allows(identity, tool.required_permission)
+            if self._call_authorizer is not None:
+                call = ToolCall(
+                    tool_name=tool_name,
+                    arguments=MappingProxyType(dict(arguments)),
+                    required_permission=tool.required_permission,
+                )
+                decision: bool | Refusal = await self._call_authorizer.authorize_call(identity, call)
+            else:
+                decision = await self._authorizer.allows(identity, tool.required_permission)
         except GrantCacheUnavailableError:
             if not self._grant_cache_outage_logged:
                 self._grant_cache_outage_logged = True
@@ -416,9 +466,9 @@ class McpServer:
                     "MCP dispatch: the grant cache is not current; refusing non-admin calls until it reloads",
                     extra={"extra_data": {"tool_name": tool_name, "required_permission": tool.required_permission}},
                 )
-            return self._error_result(
+            return _error_result(
                 tool_name=tool_name,
-                code="AUTHZ_ERROR",
+                code=AUTHZ_ERROR,
                 message="authorization is temporarily unavailable (the grant cache is reloading); retry",
             )
         except Exception as exc:
@@ -432,17 +482,32 @@ class McpServer:
                     "required_permission": tool.required_permission,
                 },
             )
-            return self._error_result(
-                tool_name=tool_name,
-                code="AUTHZ_ERROR",
-                message="authorizer evaluation failed",
-            )
+            return _error_result(tool_name=tool_name, code=AUTHZ_ERROR, message="authorizer evaluation failed")
 
         if self._grant_cache_outage_logged and not identity.is_admin:
             # an admin's call never reads the cache, so only a non-admin answer ends the outage
             self._grant_cache_outage_logged = False
             log.info("MCP dispatch: the grant cache answers again; calls are being authorized")
-        if not allowed:
+        if isinstance(decision, Refusal):
+            refused = decision.code.code if isinstance(decision.code, ErrorCode) else decision.code
+            code = self._registered(refused, tool_name, fallback=PERMISSION_DENIED)
+            log.info(
+                "MCP dispatch: refused by the call authorizer",
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "principal_id": str(identity.principal_id),
+                        "code": code.code,
+                    }
+                },
+            )
+            return _error_result(
+                tool_name=tool_name,
+                code=code,
+                message=decision.message if code.code == refused else f"refused: {decision.message}",
+                argument=decision.argument,
+            )
+        if decision is not True:
             log.info(
                 "MCP dispatch: denied",
                 extra={
@@ -453,10 +518,10 @@ class McpServer:
                     }
                 },
             )
-            return self._error_result(
+            return _error_result(
                 tool_name=tool_name,
-                code="PERMISSION_DENIED",
-                message=(f"identity lacks required permission {tool.required_permission!r}"),
+                code=PERMISSION_DENIED,
+                message=f"identity lacks required permission {tool.required_permission!r}",
             )
 
         cancelled = asyncio.Event()
@@ -470,7 +535,20 @@ class McpServer:
             # sees it through the context
             cancelled.set()
             raise
+        except McpToolError as exc:
+            # the handler named its failure: not a bug, so not logged as one
+            code = self._registered(exc.code, tool_name)
+            message = exc.message if code is not HANDLER_ERROR else f"{type(exc).__name__}: {exc}"
+            return _error_result(tool_name=tool_name, code=code, message=message, argument=exc.argument)
         except Exception as exc:
+            mapped = self._error_codes.for_exception(exc)
+            if mapped is not None:
+                # a failure the server mapped to a code of its own: an expected condition, logged as one
+                log.info(
+                    "MCP dispatch: handler raised a mapped exception",
+                    extra={"extra_data": {"tool_name": tool_name, "code": mapped.code, "type": type(exc).__name__}},
+                )
+                return _error_result(tool_name=tool_name, code=mapped, message=str(exc) or type(exc).__name__)
             contain(
                 exc,
                 log=log,
@@ -480,13 +558,11 @@ class McpServer:
                     "principal_id": str(identity.principal_id),
                 },
             )
-            return self._error_result(
-                tool_name=tool_name,
-                code="HANDLER_ERROR",
-                message=f"{type(exc).__name__}: {exc}",
-            )
+            return _error_result(tool_name=tool_name, code=HANDLER_ERROR, message=f"{type(exc).__name__}: {exc}")
 
         call_result = _as_call_tool_result(result)
+        if call_result.is_error:
+            return self._with_error_code(call_result, tool_name)
         if tool.output_schema is not None:
             # the result as the client receives it: the SDK sends it in JSON mode, where a UUID or a
             # datetime is a string
@@ -505,7 +581,7 @@ class McpServer:
                         }
                     },
                 )
-                return self._error_result(tool_name=tool_name, code="OUTPUT_VALIDATION_ERROR", message=refusal)
+                return _error_result(tool_name=tool_name, code=OUTPUT_VALIDATION_ERROR, message=refusal)
         return call_result
 
     def _call_context(
@@ -588,40 +664,60 @@ class McpServer:
             extra={"extra_data": {"tool_name": tool_name, "kind": kind}},
         )
 
-    @staticmethod
-    def _error_result(
-        *,
-        tool_name: str,
-        code: str,
-        message: str,
-    ) -> mcp_types.CallToolResult:
-        """build the protocol-level error result for a denied / failed dispatch.
+    def _registered(self, code: str, tool_name: str, *, fallback: ErrorCode = HANDLER_ERROR) -> ErrorCode:
+        """the set's code of that name; ``fallback`` for a name the set does not hold, logged once per name.
 
-        returns a :class:`CallToolResult` with ``isError=True`` so
-        the MCP client sees the failure via the protocol envelope,
-        not via a text-content JSON body. the structured detail
-        (``code`` + ``tool_name``) is preserved in the inner content
-        as JSON so callers that want machine-readable error codes
-        can parse; clients that only check ``isError`` see the
-        failure regardless.
-
-        :param tool_name: tool name the dispatch targeted
-        :ptype tool_name: str
-        :param code: machine-readable error code
+        :param code: the code a handler or an authorizer named
         :ptype code: str
-        :param message: human-readable error message
-        :ptype message: str
-        :return: :class:`CallToolResult` with ``isError=True``
+        :param tool_name: the tool whose call named it
+        :ptype tool_name: str
+        :param fallback: what the call answers when the set does not hold the name
+        :ptype fallback: ErrorCode
+        :return: the code the call answers with
+        :rtype: ErrorCode
+        """
+        known = self._error_codes.get(code)
+        if known is not None:
+            return known
+        if code not in self._unregistered_codes_logged:
+            self._unregistered_codes_logged = self._unregistered_codes_logged | {code}
+            log.error(
+                "MCP dispatch: a call failed with an error code the server never registered; answering %s. "
+                "Register it in the server's ErrorCodes. Logged once per code.",
+                fallback.code,
+                extra={"extra_data": {"tool_name": tool_name, "code": code}},
+            )
+        return fallback
+
+    def _with_error_code(self, result: mcp_types.CallToolResult, tool_name: str) -> mcp_types.CallToolResult:
+        """a failed result a handler returned, carrying its error under ``_meta`` from the server's set.
+
+        the result's content and structured content stay the tool's. a result naming a code (as
+        :func:`tool_error` writes one) keeps it, with ``retryable`` the set's; one naming a code the set does not
+        hold answers ``HANDLER_ERROR``; one naming none is ``TOOL_ERROR``, its message the tool's own text.
+
+        :param result: the failed result
+        :ptype result: mcp_types.CallToolResult
+        :param tool_name: the tool that returned it
+        :ptype tool_name: str
+        :return: the result with its error
         :rtype: mcp_types.CallToolResult
         """
-        envelope = {
-            "tool_name": tool_name,
-            "error": {"code": code, "message": message},
-        }
-        return _call_tool_result(
-            content=[mcp_types.TextContent(type="text", text=json.dumps(envelope, indent=2))],
-            is_error=True,
-        )
+        meta = dict(result.meta or {})
+        named = meta.get(ERROR_META_KEY)
+        if isinstance(named, Mapping) and isinstance(named.get("code"), str):
+            code = self._registered(named["code"], tool_name)
+            message = named.get("message")
+            argument = named.get("argument")
+            detail = error_detail(
+                code,
+                message if isinstance(message, str) and message else code.description,
+                argument if isinstance(argument, str) else None,
+            )
+        else:
+            detail = error_detail(TOOL_ERROR, _failure_text(result) or TOOL_ERROR.description)
+        meta[ERROR_META_KEY] = detail
+        return result.model_copy(update={"meta": meta})
 
     async def start(self) -> None:
         """initialize background state (authorizer cache prime + subscribe).
@@ -821,39 +917,148 @@ def _call_tool_result(
     return mcp_types.CallToolResult(content=list(content), is_error=is_error, structured_content=structured)
 
 
-def _plain_error_result(message: str) -> mcp_types.CallToolResult:
-    """a bare-text error result, for a call refused before its tool ran (its arguments).
+def _error_result(
+    *,
+    tool_name: str,
+    code: ErrorCode,
+    message: str,
+    argument: str | None = None,
+) -> mcp_types.CallToolResult:
+    """the result of a call the framework refused or a handler failed with a code.
 
-    :param message: the error text
+    ``isError`` set, so a client that only checks the flag sees the failure; the error as JSON in a text block
+    (``{"tool_name", "error": {"code", "message", "retryable", "argument"?}}``) for a client that reads the text;
+    and the same error under ``_meta`` (:data:`~threetears.mcp.errors.ERROR_META_KEY`) for one that branches on
+    the code.
+
+    :param tool_name: the tool the call named
+    :ptype tool_name: str
+    :param code: the error's code
+    :ptype code: ErrorCode
+    :param message: what went wrong
     :ptype message: str
-    :return: an ``isError`` result carrying ``message``
+    :param argument: the argument at fault, when one is
+    :ptype argument: str | None
+    :return: the failed result
     :rtype: mcp_types.CallToolResult
     """
-    return _call_tool_result(content=[mcp_types.TextContent(type="text", text=message)], is_error=True)
+    detail = error_detail(code, message, argument)
+    envelope = {"tool_name": tool_name, "error": detail}
+    return mcp_types.CallToolResult(
+        content=[mcp_types.TextContent(type="text", text=json.dumps(envelope, indent=2))],
+        is_error=True,
+    ).model_copy(update={"meta": {ERROR_META_KEY: detail}})
 
 
-def tool_error(error: Mapping[str, Any]) -> mcp_types.CallToolResult:
-    """a tool-execution error a handler returns: ``isError`` set, ``error`` in both faces.
+def _invalid_arguments_result(message: str, argument: str | None) -> mcp_types.CallToolResult:
+    """the result of a call whose arguments its tool's input schema refused, before the tool ran.
 
-    the spec's tool-execution error -- the tool ran and the call failed, as opposed to a protocol
-    error -- with the payload as ``structuredContent`` and as its serialized JSON in a text
-    block, the same two faces a successful structured result has. :class:`McpServer` passes it
-    through as the call's result; it is not logged, nor mapped to a framework error code, and a
-    tool's ``output_schema`` does not apply to it::
+    the text is the SDK's own form, ``Input validation error: ...``, which clients already read; the code and the
+    argument at fault ride ``_meta``.
 
-        return tool_error({"code": "NOT_FOUND", "message": "no runner 'r1'", "retryable": False})
+    :param message: why the arguments were refused
+    :ptype message: str
+    :param argument: the argument at fault, when one is
+    :ptype argument: str | None
+    :return: the failed result
+    :rtype: mcp_types.CallToolResult
+    """
+    return mcp_types.CallToolResult(
+        content=[mcp_types.TextContent(type="text", text=f"Input validation error: {message}")],
+        is_error=True,
+    ).model_copy(update={"meta": {ERROR_META_KEY: error_detail(INVALID_ARGUMENTS, message, argument)}})
 
-    :param error: the structured error, a JSON object
-    :ptype error: Mapping[str, Any]
+
+def _argument_at_fault(exc: jsonschema.ValidationError) -> str | None:
+    """the top-level argument a schema refusal is about, when it is about one.
+
+    a refusal inside an argument's value has that argument first on its path; a missing required argument and an
+    argument the schema does not admit are named by the refusal's instance and schema, not its path.
+
+    :param exc: the refusal
+    :ptype exc: jsonschema.ValidationError
+    :return: the argument's name, or ``None`` when the refusal is about the arguments as a whole
+    :rtype: str | None
+    """
+    path = list(exc.absolute_path)
+    if path and isinstance(path[0], str):
+        return path[0]
+    if path or not isinstance(exc.instance, dict):
+        return None
+    if exc.validator == "required" and isinstance(exc.validator_value, list):
+        missing = [name for name in exc.validator_value if name not in exc.instance]
+        return str(missing[0]) if missing else None
+    if exc.validator == "additionalProperties":
+        properties = exc.schema.get("properties") if isinstance(exc.schema, dict) else None
+        admitted = set(properties) if isinstance(properties, dict) else set()
+        extra = [name for name in exc.instance if name not in admitted]
+        return str(extra[0]) if len(extra) == 1 else None
+    return None
+
+
+def _failure_text(result: mcp_types.CallToolResult) -> str | None:
+    """the text of a failed result's first text block, cut to a message's length.
+
+    :param result: the failed result
+    :ptype result: mcp_types.CallToolResult
+    :return: the text, or ``None`` when it has none
+    :rtype: str | None
+    """
+    for block in result.content:
+        if isinstance(block, mcp_types.TextContent) and block.text:
+            text = block.text
+            if len(text) > _MAX_TOOL_ERROR_MESSAGE_CHARS:
+                return f"{text[:_MAX_TOOL_ERROR_MESSAGE_CHARS]}...[truncated]"
+            return text
+    return None
+
+
+def tool_error(
+    error: Mapping[str, Any] | str,
+    *,
+    code: ErrorCode | str | None = None,
+    message: str | None = None,
+    argument: str | None = None,
+) -> mcp_types.CallToolResult:
+    """a tool-execution error a handler returns: ``isError`` set, the tool's own content, and its code.
+
+    the spec's tool-execution error -- the tool ran and the call failed, as opposed to a protocol error. a mapping
+    rides as ``structuredContent`` and as its serialized JSON in a text block, the same two faces a successful
+    structured result has; a string is the text block alone. :class:`McpServer` passes the content through as the
+    call's result, puts the error under ``_meta`` (:data:`~threetears.mcp.errors.ERROR_META_KEY`) with
+    ``retryable`` from its set, and does not log it; a tool's ``output_schema`` does not apply to it::
+
+        return tool_error({"ok": False, "error": "no runner 'r1'"}, code=NOT_FOUND, argument="runner_id")
+
+    :param error: the tool's content for the failure: a JSON object, or text
+    :ptype error: Mapping[str, Any] | str
+    :param code: a code of the server's set, or its name; ``TOOL_ERROR`` when not given. a name the server never
+        registered answers ``HANDLER_ERROR``
+    :ptype code: ErrorCode | str | None
+    :param message: the error's message; the mapping's ``message`` (or the text) when not given
+    :ptype message: str | None
+    :param argument: the argument at fault, when one is
+    :ptype argument: str | None
     :return: the call's result
     :rtype: mcp_types.CallToolResult
     """
-    structured = dict(error)
-    return _call_tool_result(
-        content=[mcp_types.TextContent(type="text", text=json.dumps(structured, default=str, indent=2))],
-        structured=structured,
-        is_error=True,
+    if isinstance(error, str):
+        text = error
+        structured: dict[str, Any] | None = None
+        fallback: str | None = error
+    else:
+        structured = dict(error)
+        text = json.dumps(structured, default=str, indent=2)
+        stated = structured.get("message")
+        fallback = stated if isinstance(stated, str) else None
+    named = TOOL_ERROR.code if code is None else (code.code if isinstance(code, ErrorCode) else code)
+    detail: dict[str, Any] = {"code": named, "message": message or fallback or ""}
+    if argument is not None:
+        detail["argument"] = argument
+    result = _call_tool_result(
+        content=[mcp_types.TextContent(type="text", text=text)], structured=structured, is_error=True
     )
+    return result.model_copy(update={"meta": {ERROR_META_KEY: detail}})
 
 
 def _listed_tool(tool: McpTool) -> mcp_types.Tool:

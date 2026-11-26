@@ -15,6 +15,9 @@ modules:
   HTTP
 - :mod:`threetears.mcp.context` -- :class:`CallContext`, the per-call context a
   handler asks for by signature (progress, a client log channel, cancellation)
+- :mod:`threetears.mcp.errors` -- the error model: :class:`ErrorCode`,
+  :class:`ErrorCodes` (a server's closed code set and its exception mapping),
+  :class:`McpToolError`, the built-in codes and :data:`ERROR_META_KEY`
 - :mod:`threetears.mcp.tool` -- :class:`McpTool`, :class:`McpToolAnnotations`,
   :class:`ToolRegistry`, :data:`ToolProvider`, :func:`register_tool` decorator
 - :mod:`threetears.mcp.http_client` -- :class:`PlatformHttpClient`
@@ -59,14 +62,18 @@ from threetears.mcp.auth import (
     Authorizer,
     BearerTokenIdentityProvider,
     BearerTokenResolver,
+    CallAuthorizer,
     EnvVarIdentityProvider,
     Identity,
     IdentityProvider,
     LocalGrantAuthorizer,
     PrincipalType,
+    Refusal,
     TokenSource,
+    ToolCall,
 )
 from threetears.mcp.context import CallContext, LogLevel
+from threetears.mcp.errors import ERROR_META_KEY, ErrorCode, ErrorCodes, McpToolError
 from threetears.mcp.http_client import PlatformHttpClient, PlatformHttpError
 from threetears.mcp.http_server import (
     McpHttpTransport,
@@ -99,11 +106,15 @@ except ImportError as _exc:  # NOSILENT: the grants extra is optional; __getattr
 _GRANT_STORE_NAMES = frozenset({"McpToolGrantCollection", "McpToolGrantEntity", "mcp_tool_grants_table"})
 
 __all__ = [
+    "ERROR_META_KEY",
     "Authorizer",
     "BearerTokenIdentityProvider",
     "BearerTokenResolver",
+    "CallAuthorizer",
     "CallContext",
     "EnvVarIdentityProvider",
+    "ErrorCode",
+    "ErrorCodes",
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
@@ -112,13 +123,16 @@ __all__ = [
     "McpServer",
     "McpTool",
     "McpToolAnnotations",
+    "McpToolError",
     "McpToolGrantCollection",
     "McpToolGrantEntity",
     "PlatformHttpClient",
     "PlatformHttpError",
     "PrincipalType",
+    "Refusal",
     "TokenSource",
     "ToolHandler",
+    "ToolCall",
     "ToolProvider",
     "ToolRegistry",
     "build_mcp_http_app",
