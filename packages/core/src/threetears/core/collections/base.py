@@ -4349,7 +4349,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
             before = await self._l2_revision_before_write(entity_id)
             try:
-                with self._naming_changed([self.changed_row(entity_id, data)]):
+                # a write whose outcome is unknown (it may have landed) is withdrawn from L1 and L2 and announced in
+                # one advance before its error reaches the handler below (_write_heard)
+                async with self._write_heard([entity_id], [data]):
                     rows_affected = await self.save_to_store(data)
             # BaseException, not Exception: a cancelled write's outcome is as unknown as a failed
             # one's, and CancelledError is not an Exception. Only an Exception is swallowed: this
@@ -4366,8 +4368,10 @@ class BaseCollection(ABC, Generic[EntityT]):
                     },
                 )
                 # L1 took this row synchronously at the assignment; withdraw it from every tier
-                # so every reader goes to L3.
-                await self._withdraw_from_caches(entity_id)
+                # so every reader goes to L3. A write whose outcome is unknown was withdrawn and announced, with an
+                # advance, by _write_heard; one the database refused did not land and advances nothing
+                if _outcome_known(exc):
+                    await self._withdraw_from_caches(entity_id)
                 if not isinstance(exc, Exception):
                     raise
                 return
