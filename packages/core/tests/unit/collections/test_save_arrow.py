@@ -64,6 +64,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     GONE_COLUMN,
+    ROW_STAMPED,
     UnstampedWriteError,
     epoch_wall_ms,
     next_epoch,
@@ -753,3 +754,68 @@ async def test_a_commit_that_stamped_nothing_names_no_s_min() -> None:
     await _on_rail(hub, lambda collection, conn: asyncio.sleep(0))
     [commit] = [json.loads(data) for subject, data in hub.raw if subject.endswith("tx.commit")]
     assert COMMIT_S_MIN_FIELD not in commit
+
+
+# -- a stamped table: every write stamps its rows live, a delete marks them gone in place, never a DELETE --------------
+
+_STAMPED = TableSchema(
+    name="stamped_results",
+    primary_key=("office_key", "geo_id"),
+    columns=[
+        Column("office_key", STRING_TYPE),
+        Column("geo_id", STRING_TYPE),
+        Column("votes", INT_TYPE, nullable=True),
+        Column("share", NUMERIC_TYPE, nullable=True, precision=12, scale=4),
+        Column("called_at", DATETIMETZ_TYPE, nullable=True),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+    row_epoch=ROW_STAMPED,
+    l1_eviction=TEST_L1_TABLE,
+)
+
+
+async def _stamped_on_rail(hub: _Hub, step: Any) -> Any:
+    collection = _collection(_STAMPED)
+    proxy = hub.proxy()
+    collection.l3_pool = proxy
+    async with proxy.acquire() as conn, CallerTransaction(conn) as transaction:
+        transaction.note_write_version(17)
+        return await step(collection, conn)
+
+
+async def test_a_write_of_a_stamped_table_stamps_its_rows_live_so_a_gone_key_comes_back() -> None:
+    """Flips if a stamped table's write leaves a key its delete marked gone still gone: the rows carry the flag false
+    and the upsert sets it."""
+    hub = _Hub(write_arrow=True)
+    await _stamped_on_rail(hub, lambda collection, conn: collection.save_arrow(_table(2), conn=conn))
+    [(envelope, rows, _size)] = hub.arrow_requests()
+    assert rows.column(GONE_COLUMN).to_pylist() == [False, False]
+    assert GONE_COLUMN in envelope[UPDATE_COLUMNS_FIELD] and EPOCH_COLUMN in envelope[UPDATE_COLUMNS_FIELD]
+
+
+@pytest.mark.parametrize("arrow", [False, True])
+async def test_a_delete_of_a_stamped_tables_keys_marks_their_rows_gone_in_place_and_deletes_nothing(
+    arrow: bool,
+) -> None:
+    """Flips if a stamped table's delete (by rows or by Arrow keys) sends a DELETE, or is not one keyed UPDATE setting
+    the flag and raising the epoch past the delete's stamp."""
+    hub = _Hub(write_arrow=True)
+    keys = [("sn_NC1", "00001"), ("sn_NC1", "00002")]
+
+    async def step(collection: Any, conn: Any) -> int:
+        if arrow:
+            table = pa.table({"office_key": [k[0] for k in keys], "geo_id": [k[1] for k in keys]})
+            return int(await collection.delete_arrow(table, conn=conn))
+        return int(await collection.delete_rows(keys, conn=conn))
+
+    assert await _stamped_on_rail(hub, step) == 2
+    assert hub.arrow_requests() == []
+    [statement] = hub.statements()
+    query = statement["query"]
+    assert query.startswith(
+        f'UPDATE "stamped_results" SET "{GONE_COLUMN}" = $1, "{EPOCH_COLUMN}" = GREATEST("{EPOCH_COLUMN}" + 1, '
+    ), query
+    assert "DELETE" not in query and f'NOT "{GONE_COLUMN}"' in query
+    params = statement["params"]
+    assert params[0] is True and _fresh(int(params[1]))

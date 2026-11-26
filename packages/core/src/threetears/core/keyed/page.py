@@ -45,7 +45,7 @@ from threetears.core.keyed._filters import (
     Fragment,
     Lock,
     Selected,
-    newest_read,
+    live_read,
     reads_l3,
     sent_by,
     yugabyte_index_hint,
@@ -53,7 +53,7 @@ from threetears.core.keyed._filters import (
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
-from threetears.interfaces.keyed.keys import refuse_non_unique_order
+from threetears.interfaces.keyed.keys import declared_columns, refuse_non_unique_order
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -130,10 +130,13 @@ async def keyset_page(
         registered keys (:func:`~threetears.interfaces.keyed.keys.refuse_non_unique_order`)
     :raises CursorError: when ``cursor`` is not one this sort issued
     """
+    # every column of a stamped table is its declared ones, never its L3 restore bucket (keys.declared_columns)
+    columns = declared_columns(table) if columns is None else columns
     check_page(table, columns, order, limit)
     # a versioned table's rows are its keys' newest live versions alone, read in its place: its key is then unique
-    # among them; the pins and the cursor's range on the key are pushed into its DISTINCT ON by the planner
-    read_from = newest_read(conn, table, lock=lock)
+    # among them; the pins and the cursor's range on the key are pushed into its DISTINCT ON by the planner. A stamped
+    # table's rows are its live ones alone (live_read)
+    read_from, where = live_read(conn, table, where, lock=lock)
     if cursor is not None:
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
         refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
@@ -245,7 +248,8 @@ async def keyset_rows(
     :raises ValueError: as :func:`keyset_page`
     """
     check_page(table, columns, order, page)
-    read_from = newest_read(conn, table)
+    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone
+    read_from, where = live_read(conn, table, where)
     # every statement after the first starts past the last row read: the order must hold a key
     refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     rows: list[dict[str, Any]] = []
@@ -289,6 +293,7 @@ async def copy_keyed(
     order: Sequence[Sort],
     where: Sequence[Fragment] = (),
     force_quote: Sequence[str] = (),
+    with_gone: bool = False,
 ) -> bytes:
     """every row of ``table`` that ``by`` names, in ``order``, as PostgreSQL ``COPY`` CSV text (no header): the read
     :func:`keyset_rows` makes, streamed as the server writes it, never a row decoded here.
@@ -312,13 +317,19 @@ async def copy_keyed(
     :ptype where: Sequence[Fragment]
     :param force_quote: the columns (by their names) always quoted
     :ptype force_quote: Sequence[str]
+    :param with_gone: read the table as stored (:func:`~threetears.core.keyed.live_read` left out): a stamped table's
+        gone rows too, a versioned one's every version and gone marker. A restore of a lost change log, which hears
+        each delete by its gone row or marker. Every other read sees live rows alone
+    :ptype with_gone: bool
     :return: the text, a line per row
     :rtype: bytes
     :raises ValueError: as :func:`keyset_page`
     """
     # no cursor is made from the rows, so a sort column need not be read (a time sorted by, read as its text)
     check_page(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
-    sql, params = page_statement(newest_read(conn, table), columns, by, order, 1, None, False, (), where, None)
+    # a restore reads the table as stored (every version, every gone row); every other read its live rows alone
+    read_from, read = (table, tuple(where)) if with_gone else live_read(conn, table, where)
+    sql, params = page_statement(read_from, columns, by, order, 1, None, False, (), read, None)
     sql = sql.removesuffix(" LIMIT 1")
     chunks: list[bytes] = []
 

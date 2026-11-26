@@ -39,7 +39,6 @@ from typing import Any
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import parse_rowcount
-from threetears.core.ddl.row_epoch import AppendOnlyWriteError
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -47,6 +46,7 @@ from threetears.core.keyed._filters import (
     narrowing,
     quoted_table,
     reads_l3,
+    refuse_in_place,
     renumbered,
     selected_column,
     sent_by,
@@ -55,7 +55,7 @@ from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort
 from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
-from threetears.interfaces.keyed.keys import versioned_table
+from threetears.interfaces.keyed.keys import default_projection, versioned_table
 from threetears.interfaces.keyed.steps import Match, Quoted, Rel, Step, change_relation
 
 __all__ = [
@@ -153,9 +153,12 @@ def _runs(conn: Any, *steps: Step) -> None:
         )
 
 
-def _columns(columns: Sequence[str | Selected] | None, alias: str = "t") -> str:
+def _columns(columns: Sequence[str | Selected] | None, alias: str = "t", rel: Rel | None = None) -> str:
+    """a step's select list: ``columns``, or every column of ``rel`` read as ``alias`` when None (``<alias>.*``; a
+    stamped table's declared columns, never its L3 restore bucket: :func:`~threetears.interfaces.keyed.keys.
+    default_projection`)."""
     if columns is None:
-        return f"{alias}.*"
+        return f"{alias}.*" if rel is None else default_projection(rel, alias)
     if not columns:
         raise ValueError("a step selects at least one column (None selects every one)")
     return ", ".join(selected_column(column, alias) for column in columns)
@@ -180,7 +183,7 @@ def scan(rel: Rel, columns: Sequence[str | Selected] | None = None, *, where: Se
     statement = _Statement()
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
-    return statement.step(f"SELECT {_columns(columns)} FROM {source}{_where(conditions)}")
+    return statement.step(f"SELECT {_columns(columns, rel=rel)} FROM {source}{_where(conditions)}")
 
 
 def _matched(
@@ -201,7 +204,7 @@ def _matched(
     inner = [match.condition("t", "k") for match in on] + statement.fragments(also)
     exists = f"{'' if present else 'NOT '}EXISTS (SELECT 1 FROM {other} WHERE {' AND '.join(inner)})"
     conditions = [exists, *statement.fragments(where)]
-    return statement.step(f"SELECT {_columns(columns)} FROM {source}{_where(conditions)}")
+    return statement.step(f"SELECT {_columns(columns, rel=rel)} FROM {source}{_where(conditions)}")
 
 
 def semi(
@@ -297,7 +300,7 @@ def joined(
     conditions = statement.fragments(where)
     kind = "LEFT JOIN" if left else "JOIN"
     return statement.step(
-        f"SELECT {_columns(columns)} FROM {source} {kind} {joined_to} ON {' AND '.join(matched)}{_where(conditions)}"
+        f"SELECT {_columns(columns, rel=rel)} FROM {source} {kind} {joined_to} ON {' AND '.join(matched)}{_where(conditions)}"
     )
 
 
@@ -331,7 +334,7 @@ def distinct(
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
     after = _where(conditions) + (" OFFSET 0" if fenced else "")
-    return statement.step(f"SELECT DISTINCT {_columns(columns)} FROM {source}{after}")
+    return statement.step(f"SELECT DISTINCT {_columns(columns, rel=rel)} FROM {source}{after}")
 
 
 def largest(column: str, *, cast: str | None = None, default: str | None = None, alias: str | None = None) -> Selected:
@@ -507,7 +510,7 @@ def latest_per_key(
         ]
     )
     return statement.step(
-        f"SELECT DISTINCT ON ({keyed}) {_columns(columns)} FROM {source}{_where(conditions)} ORDER BY {ordered}"
+        f"SELECT DISTINCT ON ({keyed}) {_columns(columns, rel=rel)} FROM {source}{_where(conditions)} ORDER BY {ordered}"
     )
 
 
@@ -812,14 +815,12 @@ async def delete_matching(
     :return: the rows deleted
     :rtype: int
     :raises ValueError: when nothing is matched on
+    :raises AppendOnlyWriteError: when ``table`` is a versioned or stamped L3 table
     """
     if not on:
         raise ValueError(f"a delete from {table} by a change relation matches on its key")
-    if reads_l3(conn) and versioned_table(table, l3=True) is not None:
-        raise AppendOnlyWriteError(
-            f"{table} is versioned (append-only): a delete would remove versions in place; delete each key as a gone "
-            "marker through its collection or the L3 backend"
-        )
+    # a versioned table's versions, or a stamped table's rows, are never deleted in place: a restore would hear nothing
+    refuse_in_place(conn, table, "delete")
     statement = _Statement()
     other = statement.source(keys, "k")
     _runs(conn, statement.step(""))
@@ -917,7 +918,7 @@ def windowed(
     statement = _Statement()
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
-    inner = ", ".join(["t.*", *(selected_column(window) for window in windows)])
+    inner = ", ".join([_columns(None, rel=rel), *(selected_column(window) for window in windows)])
     kept = statement.fragments(keep)
     if columns is None:
         hidden = ", ".join(quote_identifier(window.alias) for window in windows)

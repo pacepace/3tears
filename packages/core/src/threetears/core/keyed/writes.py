@@ -32,15 +32,13 @@ from threetears.core.keyed._filters import (
     by_conditions,
     quoted_table,
     narrowing,
-    reads_l3,
+    refuse_in_place,
 )
-from threetears.core.ddl.row_epoch import AppendOnlyWriteError
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.binding import binder_for
 from threetears.core.keyed.rows import DEFAULT_KEY_BATCH, KeyBatch
 from threetears.core.keyed.steps import Step, change_relation
 from threetears.core.sql_fragments import quote_identifier
-from threetears.interfaces.keyed.keys import versioned_table
 from threetears.interfaces.keyed.writes import (
     Increment,
     KeyedWrite,
@@ -60,28 +58,6 @@ __all__ = [
     "update_from",
     "update_keyed",
 ]
-
-
-def _refuse_in_place(conn: Any, table: Any, write: str) -> None:
-    """refuse an in-place write of a versioned L3 table: its rows are versions, a write appends the key's new version
-    and a delete a "gone" marker (``SqlL3Backend``, the collection's save and delete), never an ``UPDATE`` or a
-    ``DELETE`` of a version a read may be seeing (``threetears.interfaces.keyed.keys.newest_relation``).
-
-    :param conn: the connection the write would run on
-    :ptype conn: Any
-    :param table: the table written
-    :ptype table: Any
-    :param write: which write (``update`` / ``delete``), for the refusal
-    :ptype write: str
-    :return: nothing
-    :rtype: None
-    :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table
-    """
-    if versioned_table(table, l3=reads_l3(conn)) is not None:
-        raise AppendOnlyWriteError(
-            f"{table} is versioned (append-only): a keyed {write} would change a version in place; save the key's new "
-            "version, or delete it as a gone marker, through its collection or the L3 backend"
-        )
 
 
 async def _run(conn: Any, sql: str, params: Sequence[Any], returning: Sequence[str]) -> KeyedWrite:
@@ -148,7 +124,7 @@ async def update_keyed(
         is empty or not text
     :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table
     """
-    _refuse_in_place(conn, table, "update")
+    refuse_in_place(conn, table, "update")
     statements = update_keyed_statements(
         table,
         values=values,
@@ -196,9 +172,9 @@ async def delete_keyed(
     :return: the count deleted, and the rows returned
     :rtype: KeyedWrite
     :raises ValueError: when neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix is empty or not text
-    :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table
+    :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table, or a stamped one (its keys are marked gone)
     """
-    _refuse_in_place(conn, table, "delete")
+    refuse_in_place(conn, table, "delete")
     statements = delete_keyed_statements(
         table,
         by=by,

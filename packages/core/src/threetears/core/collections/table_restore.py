@@ -32,12 +32,15 @@ may hold.
 
 **Stamped tables, a bucket at a time.** A stamped table (``ROW_STAMPED``: one row a key, updated in place, its epoch
 risen on every write) keeps no versions and no scope: its rows written since X are those whose epoch is at or above X,
-gone markers aside (it has none; see below). Its ``(bucket, epoch)`` index carries a stamped declaration
+the rows its deletes marked gone among them. Its ``(bucket, epoch)`` index carries a stamped declaration
 (:func:`~threetears.core.ddl.row_epoch.stamped_restore_declaration`); the bucket is a stored column the database derives
 from the key's hash, one of :data:`~threetears.core.ddl.row_epoch.RESTORE_BUCKETS`. A restore reads each bucket's
 ``epoch >= X`` as one range of that index (:func:`_bucket_rows`), every bucket whatever changed (no table says which
 did): :data:`~threetears.core.ddl.row_epoch.RESTORE_BUCKETS` statements a table, folded in the same worker, every record
-naming X as its ``s_min``. A row deleted from a stamped table leaves nothing to read: the restore hears no delete of one.
+naming X as its ``s_min``. A delete of a stamped table's key marks its row gone in place, its epoch risen past the
+delete's stamp (``SqlL3Backend.mark_gone``; a real ``DELETE`` of one is refused), so the bucket read finds it like any
+other write (``copy_keyed(with_gone=True)``, where every other read skips it) and the key comes back: a follower
+evicts it.
 """
 
 from __future__ import annotations
@@ -361,6 +364,8 @@ async def _scope_versions(pool: Any, table: VersionedTable, value: str, floor: i
         order=[Sort(EPOCH_COLUMN, cast="bigint")],
         where=[Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,))],
         force_quote=_FOLD_COLUMNS[:3],
+        # every version and gone marker is a change the restore hears: read as stored, never the newest relation
+        with_gone=True,
     )
 
 
@@ -388,6 +393,8 @@ async def _bucket_rows(pool: Any, table: StampedTable, bucket: int, floor: int) 
         order=[Sort(EPOCH_COLUMN, cast="bigint")],
         where=[Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,))],
         force_quote=_FOLD_COLUMNS[:3],
+        # a gone row is a delete the restore hears: read with the live ones
+        with_gone=True,
     )
 
 

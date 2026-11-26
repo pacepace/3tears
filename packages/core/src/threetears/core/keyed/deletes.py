@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from threetears.core.keyed._filters import by_conditions, quoted_table, sent_by
+from threetears.core.keyed._filters import by_conditions, quoted_table, refuse_in_place, sent_by
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.core.sql_fragments import quote_identifier
@@ -73,11 +73,13 @@ async def delete_before(
     :rtype: SweptRows
     :raises ValueError: when ``key`` is empty or ``page`` / ``most_pages`` is under one
     :raises TypeError: when neither a collection nor a connection is given
+    :raises AppendOnlyWriteError: when ``table`` is a versioned or stamped L3 table (its keys are marked gone, never deleted)
     """
     if not key:
         raise ValueError(f"a sweep of {table} names its key")
     if page < 1 or (most_pages is not None and most_pages < 1):
         raise ValueError(f"a sweep of {table} deletes at least one row in at least one page")
+    refuse_in_place(conn, table, "delete")
     sql, params = delete_before_statement(table, key=key, column=column, before=before, page=page, by=by)
     return await _paged(collection, conn, table, key, page, sql, params, most_pages)
 

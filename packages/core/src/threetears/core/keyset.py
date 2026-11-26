@@ -71,7 +71,7 @@ from typing import Annotated, Any, Final
 from threetears.core.backends.arrow_reply import counted_type, flag_type, l3_fetch_arrow, without_counted
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import L3Page
-from threetears.core.keyed._filters import Fragment, narrowing, newest_of, newest_sent
+from threetears.core.keyed._filters import Fragment, live_only, narrowing, newest_of, newest_sent
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.interfaces.keyed.keys import (
     NEWEST_LIVE,
@@ -206,7 +206,9 @@ async def read_keyset_pages(
     :ptype lead_array: str | None
     :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
         (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
-        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); None reads every row named
+        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); where it is a
+        stamped one (``ROW_STAMPED``), only its live rows (:func:`_live_conditions`); None reads every row named (refused
+        for a select naming a versioned or stamped L3 table)
     :ptype table: str | None
     :return: the rows and the statement count (a hashed lead's walk counts the pages it read, not its reads of the
         lead's values)
@@ -286,14 +288,24 @@ async def keyset_pages(
     :ptype lead_array: str | None
     :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
         (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
-        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); None reads every row named
+        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); where it is a
+        stamped one (``ROW_STAMPED``), only its live rows (:func:`_live_conditions`); None reads every row named (refused
+        for a select naming a versioned or stamped L3 table)
     :ptype table: str | None
     :return: the pages, as they are read
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one
     """
     shape = _ReadShape(
-        select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table, select_from)
+        select_from,
+        key,
+        where,
+        where_any,
+        page_size,
+        quote,
+        mark,
+        _live_conditions(l3, table, select_from, conditions),
+        _newest(l3, table, select_from),
     )
     reads = _DictReads(l3, page_size)
     pinned = await _pinned_lead(l3, shape, lead_array)
@@ -367,14 +379,24 @@ async def keyset_arrow_pages(
     :ptype lead_array: str | None
     :param table: the table ``select_from`` reads (with no alias), as it names it: where it is a versioned L3 table
         (``TableSchema(row_epoch=row_versions(...))``) every page holds only its keys' newest live versions, so the
-        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); None reads every row named
+        cursor's key is unique among them (:func:`~threetears.interfaces.keyed.keys.newest_relation`); where it is a
+        stamped one (``ROW_STAMPED``), only its live rows (:func:`_live_conditions`); None reads every row named (refused
+        for a select naming a versioned or stamped L3 table)
     :ptype table: str | None
     :return: the pages, as they are read, each a ``pyarrow.Table``
     :rtype: AsyncGenerator[pyarrow.Table, None]
     :raises ValueError: when ``page_size`` is under one
     """
     shape = _ReadShape(
-        select_from, key, where, where_any, page_size, quote, mark, conditions, _newest(l3, table, select_from)
+        select_from,
+        key,
+        where,
+        where_any,
+        page_size,
+        quote,
+        mark,
+        _live_conditions(l3, table, select_from, conditions),
+        _newest(l3, table, select_from),
     )
     reads = _ArrowReads(l3, page_size, types)
     pinned = await _pinned_lead(l3, shape, lead_array)
@@ -592,6 +614,44 @@ class _Newest:
     read_as: str
     projection: str
     alias: str
+
+
+def _source(select_from: str) -> str:
+    """the relation ``SELECT <projection> FROM <table>`` reads, unquoted; empty for any other spelling."""
+    spelled = select_from.strip()
+    cut = spelled.upper().rfind(" FROM ")
+    return spelled[cut + len(" FROM ") :].strip().replace('"', "") if cut > 0 else ""
+
+
+def _live_conditions(
+    l3: Any, table: str | None, select_from: str, conditions: Sequence[Fragment]
+) -> tuple[Fragment, ...]:
+    """a keyset read's filters, with a stamped L3 table's live guard beside them when it names that table
+    (``table=``), so every page holds only its live rows, never one its delete marked gone
+    (:func:`~threetears.core.keyed._filters.live_only`): the stamped half of the pager's ``table=``, its versioned
+    half :func:`_newest`.
+
+    :param l3: the reader
+    :ptype l3: Any
+    :param table: the table ``select_from`` reads, as it names it; None for a read of every row named
+    :ptype table: str | None
+    :param select_from: ``SELECT <projection> FROM <table>``
+    :ptype select_from: str
+    :param conditions: the read's own filters
+    :ptype conditions: Sequence[Fragment]
+    :return: the filters to read by
+    :rtype: tuple[Fragment, ...]
+    :raises ValueError: when a read naming a stamped L3 table does not name it (``table=``): it would page its gone rows
+    """
+    if table is None:
+        source = _source(select_from)
+        # a read naming a stamped L3 table with no table= would page its gone rows: refused, as a versioned one is
+        if source and live_only(l3, source, row=None):
+            raise ValueError(
+                f"a keyset read of the stamped table {source} names it (table=), so it reads its live rows"
+            )
+        return tuple(conditions)
+    return live_only(l3, table, conditions, row=None)
 
 
 def _newest(l3: Any, table: str | None, select_from: str) -> _Newest | None:

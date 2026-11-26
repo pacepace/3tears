@@ -82,6 +82,7 @@ from threetears.core.ddl.change_notes import (
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
+    GONE_COLUMN,
     AppendOnlyWriteError,
     RowEpoch,
     UnstampedWriteError,
@@ -91,7 +92,9 @@ from threetears.core.ddl.run_markers import run_marker_insert_sql
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
 from threetears.core.keyed.point import read_row
-from threetears.core.keyed.writes import delete_keyed
+from threetears.core.keyed.rows import KeyBatch
+from threetears.core.keyed.writes import delete_keyed, update_keyed
+from threetears.interfaces.keyed.filters import Fragment
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.sql_fragments import as_written, quote_identifier
 
@@ -464,10 +467,26 @@ def _arrow_touched(schema: Any, rows: Any, lowest: int | None) -> StampedScopes 
     return _touched(declared, rows.column(declared.scope), lowest, int(column_max(rows, EPOCH_COLUMN)))
 
 
+def _stamped_table(schema: Any) -> bool:
+    """whether ``schema`` declares a stamped table (``ROW_STAMPED``: one row a key, updated in place). Read duck-typed,
+    as this module reads a schema.
+
+    :param schema: the table's registered schema, or None
+    :ptype schema: TableSchema | None
+    :return: whether it does
+    :rtype: bool
+    """
+    return _stamps(schema) and not getattr(schema, "versioned", False)
+
+
 def _refuse_versioned_delete(schema: Any, table: str) -> None:
-    """refuse a ``DELETE`` of a versioned table (``TableSchema.versioned``) before anything is sent: it is append-only,
-    a delete of a key a "gone" marker (``SchemaBackedCollection.delete_rows``, :meth:`SqlL3Backend.mark_gone`), a whole
-    run's one run marker (:meth:`SqlL3Backend.delete_prefixes` with its ``epoch``).
+    """refuse a ``DELETE`` of a table that declares a row epoch before anything is sent. A versioned table
+    (``TableSchema.versioned``) is append-only: a delete of a key is a "gone" marker (``SchemaBackedCollection.
+    delete_rows``, :meth:`SqlL3Backend.mark_gone`), a whole run's one run marker (:meth:`SqlL3Backend.delete_prefixes`
+    with its ``epoch``). A stamped one (``ROW_STAMPED``) marks a key's row gone in place (:meth:`SqlL3Backend.mark_gone`
+    too): a real delete leaves nothing for a restore of a lost change log to find (append-only L3, decision 2). Only
+    quiet-time cleanup deletes from it, below the restore window
+    (:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`).
 
     :param schema: the table's registered schema, or None
     :ptype schema: TableSchema | None
@@ -475,13 +494,18 @@ def _refuse_versioned_delete(schema: Any, table: str) -> None:
     :ptype table: str
     :return: nothing
     :rtype: None
-    :raises AppendOnlyWriteError: when the table is versioned
+    :raises AppendOnlyWriteError: when the table is versioned or stamped
     """
     if getattr(schema, "versioned", False):
         raise AppendOnlyWriteError(
             f"{table} is versioned (row_versions): append-only, never deleted from. Delete its keys through the "
             f"collection's delete_rows / delete_arrow (each a gone marker at the delete's epoch), or a whole run "
             f"through delete_prefixes (one run marker)"
+        )
+    if _stamped_table(schema):
+        raise AppendOnlyWriteError(
+            f"{table} is stamped (ROW_STAMPED): a delete marks a key's row gone in place, so a restore hears it; never "
+            f"a DELETE. Delete its keys through the collection's delete_rows / delete_arrow (the store's mark_gone)"
         )
 
 
@@ -1138,6 +1162,7 @@ class _LedRead:
             page_size=row_cap - 1,
             quote=as_written,
             mark=lambda column, index: schema_sql.render_param(self.schema.column(column), index),
+            # a versioned table's newest live versions, a stamped one's live rows alone (the pager's table=)
             table=self.schema.name,
         )
         self.statements += read.statements
@@ -2157,36 +2182,42 @@ class SqlL3Backend:
         conn: Any,
     ) -> int:
         """Append a "gone" marker for each of ``keys`` of a versioned table at ``epoch``: its delete, never a
-        ``DELETE``. Each marker is the key, the scope, the epoch and ``gone`` true
+        ``DELETE``; for a stamped table (``ROW_STAMPED``), mark each key's row gone in place
+        (:meth:`_mark_stamped_gone`). Each versioned marker is the key, the scope, the epoch and ``gone`` true
         (:attr:`~threetears.core.collections.schema_backed.TableSchema.gone_marker_columns`); the table's other columns
         are left out, required of a live version only (its ``CHECK``). ``max_rows`` markers a multi-row ``INSERT``
         with no conflict clause, each within the bind-parameter limit; on ``conn`` a failing statement fails the
         caller's transaction.
 
-        :param table: the versioned table; its schema must be registered (:meth:`register_schema`)
+        :param table: the versioned or stamped table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
         :param keys: each key's values, in the schema's key order
         :ptype keys: Sequence[Sequence[Any]]
         :param epoch: the delete's epoch
         :ptype epoch: int
-        :param scope: the scope column's value of every key, when the key does not name it; None when it does
+        :param scope: the scope column's value of every key, when the key does not name it; None when it does (and
+            always for a stamped table, which has no scope)
         :ptype scope: Any
         :param max_rows: the most markers one statement appends; at least one
         :ptype max_rows: int
         :param conn: the caller's transaction handle
         :ptype conn: Any
-        :return: the markers appended
+        :return: the markers appended (for a stamped table, the keys named)
         :rtype: int
-        :raises ValueError: when no schema is registered, the table is not versioned, ``max_rows`` is under one, a
-            key is not as wide as the table's key, or the key names no scope and none is given
+        :raises ValueError: when no schema is registered, the table is neither versioned nor stamped, ``max_rows`` is
+            under one, a key is not as wide as the table's key, or the key names no scope and none is given
         """
         schema = self._schemas.get(table)
-        if schema is None or not schema.versioned:
-            raise ValueError(f"mark_gone needs the schema of versioned table {table!r} registered")
+        if schema is None or not (schema.versioned or _stamped_table(schema)):
+            raise ValueError(f"mark_gone needs the schema of versioned or stamped table {table!r} registered")
         if max_rows < 1:
             raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
         if not keys:
             return 0
+        if not schema.versioned:
+            if scope is not None:
+                raise ValueError(f"{table} is stamped (ROW_STAMPED): it has no scope; give none")
+            return await self._mark_stamped_gone(schema, keys, epoch=epoch, max_rows=max_rows, conn=conn)
         # the markers' values bound on a thread past a few: a Python list a key, as a bulk upsert's parameters are
         columns, rows, touched = (
             await asyncio.to_thread(_gone_markers, schema, keys, scope=scope, epoch=epoch)
@@ -2216,6 +2247,80 @@ class SqlL3Backend:
                 )
         _logger.debug("gone markers appended", extra={"extra_data": {"table": table, "keys": len(rows)}})
         return len(rows)
+
+    async def _mark_stamped_gone(
+        self, schema: TableSchema, keys: Sequence[Sequence[Any]], *, epoch: int, max_rows: int, conn: Any
+    ) -> int:
+        """mark each of ``keys`` of a stamped table gone in place: one keyed ``UPDATE`` a batch of ``max_rows`` keys,
+        each key's row its ``gone`` flag set and its epoch risen past its own (``GREATEST(epoch + 1, <the delete's
+        stamp>)``, as a stamped upsert's), so the restore's bucket read (``epoch >= X``) hears the delete. One row a
+        key, as before; a row already gone is left as it is (``NOT gone``). Never a ``DELETE``
+        (:func:`_refuse_versioned_delete`).
+
+        :param schema: the stamped table's schema
+        :ptype schema: TableSchema
+        :param keys: each key's values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param epoch: the delete's stamp
+        :ptype epoch: int
+        :param max_rows: the most keys one statement names
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; a failing statement fails it whole
+        :ptype conn: Any
+        :return: the keys named
+        :rtype: int
+        :raises ValueError: when a key is not as wide as the table's key, or a key column has no array type a batch
+            binds it by
+        """
+        table = schema.name
+        casts: list[str] = []
+        for name in schema.pk_columns:
+            kind = schema_sql.key_array_type(schema, name)
+            if kind is None:
+                raise ValueError(f"{table}: key column {name!r} has no array type a gone mark binds a batch of keys by")
+            casts.append(kind.removesuffix("[]"))
+        # the keys bound as a delete binds them and laid out a column each, on a thread past a few (as _planned_delete
+        # binds them): never on the loop for a large delete
+        columns = (
+            await asyncio.to_thread(self._gone_key_columns, table, keys, max_rows)
+            if len(keys) * len(schema.pk_columns) > _STATEMENT_ON_THREAD_PARAMS
+            else self._gone_key_columns(table, keys, max_rows)
+        )
+        batch = KeyBatch(columns=tuple(schema.pk_columns), keys=columns, casts=tuple(casts))
+        epoch_column = quote_identifier(EPOCH_COLUMN)
+        gone = quote_identifier(GONE_COLUMN)
+        # every row carries the delete's one stamp, and each statement says so
+        with stamping_write(_stamp_of(schema, epoch)):
+            await update_keyed(
+                self._pool if conn is None else conn,
+                table,
+                values={
+                    GONE_COLUMN: True,
+                    EPOCH_COLUMN: Fragment(f"GREATEST({epoch_column} + 1, $1::bigint)", (epoch,)),
+                },
+                keys=batch,
+                where=[Fragment(f"NOT {gone}")],
+                batch=max_rows,
+            )
+        _logger.debug("stamped rows marked gone", extra={"extra_data": {"table": table, "keys": len(keys)}})
+        return len(keys)
+
+    def _gone_key_columns(self, table: str, keys: Sequence[Sequence[Any]], max_rows: int) -> list[list[Any]]:
+        """:meth:`_mark_stamped_gone`'s keys bound as a delete binds them (:meth:`_keys_to_delete`), one list a key
+        column (a key batch is column-major); pure, for a thread.
+
+        :param table: the table
+        :ptype table: str
+        :param keys: each key's values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement names
+        :ptype max_rows: int
+        :return: each key column's values, in ``keys``' order
+        :rtype: list[list[Any]]
+        :raises ValueError: as :meth:`_keys_to_delete`
+        """
+        schema, named = self._keys_to_delete(table, keys, max_rows=max_rows)
+        return [list(column) for column in zip(*named, strict=True)] if named else [[] for _ in schema.pk_columns]
 
     async def delete_prefixes(
         self, table: str, prefixes: Sequence[Mapping[str, Any]], *, conn: Any, epoch: int | None = None
@@ -2252,6 +2357,7 @@ class SqlL3Backend:
         :rtype: int
         :raises ValueError: when no schema is registered for ``table``, or a prefix is not a leading part of the key;
             when ``epoch`` does not fit the table; when a versioned table's prefix does not name its scope column
+        :raises AppendOnlyWriteError: for a stamped table, whose keys are marked gone (:meth:`mark_gone`)
         """
         schema = self._schemas.get(table)
         versioned = schema is not None and schema.versioned
@@ -2262,6 +2368,9 @@ class SqlL3Backend:
             )
         if not versioned and epoch is not None:
             raise ValueError(f"{table}: a run marker's epoch is a versioned table's; it is not one (row_versions)")
+        if _stamped_table(schema):
+            # a prefix's rows deleted would leave nothing for a restore to find: a stamped table's keys are marked gone
+            _refuse_versioned_delete(schema, table)
         # a versioned table's run markers touch the scopes their prefixes name, in the transaction that commits them
         touched = (
             None
@@ -2781,9 +2890,13 @@ class SqlL3Backend:
             raise ValueError(f"SqlL3Backend.scan: {table!r} has no column {unknown[0]!r} to filter on")
         cap = self.rows_per_statement
         order = schema.keyset_order(filters or {})
+        # a table that declares a row epoch is read by its declared columns, never its gone flag nor a stamped table's
+        # L3 restore bucket (schema_sql.build_select_column_list); the pager's table= then reads a versioned table's
+        # newest live versions, a stamped one's live rows alone
+        projection = schema_sql.build_select_column_list(schema) if schema.row_epoch is not None else "*"
         read = await read_keyset_pages(
             self,
-            f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
+            f"SELECT {projection} FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
             list(order),
             where=dict(filters or {}),
             # a page asks one row past its size to see the next page (keyset.py), so it stays under the cap

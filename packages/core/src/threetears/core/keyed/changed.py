@@ -42,7 +42,7 @@ from typing import Any, Final
 from threetears.core.backends.arrow_reply import _rail_arrow_table
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed import _filters
-from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, narrowing, newest_read, sent_by
+from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, live_read, narrowing, sent_by
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
 from threetears.core.keyed.held import hash_bytes as _hash_bytes
@@ -929,9 +929,11 @@ async def _group_hash_rows(
     ordered = ", ".join(f"s.{alias} NULLS FIRST" for _, _, alias in levels)
     found: list[Mapping[str, Any]] = []
     last: Sequence[Any] | None = None
+    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone
+    read_from, guarded = live_read(conn, relation, where)
     while True:
         conditions, params = by_conditions(by, alias="t")
-        for fragment in where:
+        for fragment in guarded:
             conditions.append(narrowing(fragment, len(params)))
             params.extend(fragment.params)
         if last is not None:
@@ -942,7 +944,7 @@ async def _group_hash_rows(
         # fenced, each row is hashed once below the aggregate. Every dialect here accepts it; the answer is the same.
         sql = (
             f"SELECT {outer}, {items} FROM (SELECT {inner}, "
-            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_filters.relation(newest_read(conn, relation), 't', params)}{filtered}"
+            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_filters.relation(read_from, 't', params)}{filtered}"
             f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
         rows = await sent_by(conn).fetch(sql, *params)

@@ -59,10 +59,12 @@ from sqlalchemy.sql.elements import TextClause, UnaryExpression
 
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
+    StampedTable,
     TableKey,
     not_null_predicate,
     null_predicate,
     register_partial_predicates,
+    register_stamped_table,
     register_table_indexes,
     register_table_keys,
     register_versioned_table,
@@ -1657,6 +1659,16 @@ class TableSchema:
         # the texts its partial indexes' predicates name, which a keyed read pinning them writes as literals, so a
         # generic plan can prove the predicate (keys.register_partial_predicates)
         register_partial_predicates(self.name, (index.where for index in self.indexes if index.where is not None))
+        if self._stamped():
+            # every shared keyed read of it answers its live rows alone and its declared columns, never its L3 restore
+            # bucket (keys.StampedTable): a delete marks a row gone in place, so a restore hears it
+            register_stamped_table(
+                StampedTable(
+                    self.name,
+                    GONE_COLUMN,
+                    tuple(column.name for column in self.columns if column.name != GONE_COLUMN),
+                )
+            )
 
     def _declare_row_epoch(self) -> None:
         """give a table that declares a row epoch its epoch column where not declared, and a versioned one its
@@ -1696,6 +1708,7 @@ class TableSchema:
                 f"immutable on a versioned table"
             )
         if not versions:
+            self._declare_stamped_gone()
             self._declare_bucket_index()
             return
         # the "gone" marker's flag: a delete appends the key's version at its epoch with it set (append-only L3, chunk 2)
@@ -1739,6 +1752,33 @@ class TableSchema:
                 reason="a lost change log is rebuilt from each scope's versions since the keeper's mark",
             )
             object.__setattr__(self, "indexes", (*self.indexes, restore))
+
+    def _declare_stamped_gone(self) -> None:
+        """give a stamped table its "gone" flag: a delete of a key updates its row in place, the flag set and the epoch
+        risen (``GREATEST(epoch + 1, <the delete's stamp>)``), never a ``DELETE`` (append-only L3, decision 2: "deletes
+        become markers everywhere, because a real delete leaves nothing for a restore to find"). One row a key, as
+        before: the restore's bucket read (:mod:`~threetears.core.collections.table_restore`) finds it, every shared
+        keyed read skips it (``keys.StampedTable``), every write of the key sets it false again
+        (:meth:`SchemaBackedCollection._epoch_stamp`), and quiet-time cleanup removes it, by key, once it is below the
+        restore window (:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`).
+
+        ``BOOLEAN NOT NULL DEFAULT false``, mutable. WHY no ``CHECK`` beside it (a versioned table's ``<table>_live``):
+        a gone row keeps every column its last write left, so no required column is ever missing from one; the
+        versioned table's marker is a new row carrying the key alone.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the table declares a ``gone`` column of another shape
+        """
+        gone = Column(GONE_COLUMN, BOOL_TYPE, nullable=False, server_default="false")
+        held = next((column for column in self.columns if column.name == GONE_COLUMN), None)
+        if held is None:
+            object.__setattr__(self, "columns", [*self.columns, gone])
+        elif held != gone:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): its {GONE_COLUMN!r} column must be {gone!r} (or left out, and it "
+                f"is added so): a delete marks the key's row gone in place, and every write of the key sets it false"
+            )
 
     def _declare_bucket_index(self) -> None:
         """give a stamped table its ``(bucket, epoch)`` index, the read a restore of a lost change log makes of it a
@@ -3129,13 +3169,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     def _epoch_stamp(self, conn: Any, writer: str) -> dict[str, int]:
         """the epoch column one write statement stamps its rows with, for a table that declares a row epoch: a fresh
         epoch of the write the caller's transaction took its turn at (:meth:`CallerTransaction.row_epoch`). Empty for
-        any other table.
+        any other table. A stamped table's rows are stamped live too (its ``gone`` flag false): a write of a key a
+        delete marked gone brings it back, its upsert's ``SET`` naming the flag (``TableSchema._declare_stamped_gone``).
 
         :param conn: the connection the write joins, or None
         :ptype conn: Any
         :param writer: the call writing, for the refusal
         :ptype writer: str
-        :return: ``{"epoch": ...}``, or nothing
+        :return: ``{"epoch": ...}`` (and ``{"gone": False}`` for a stamped table), or nothing
         :rtype: dict[str, int]
         :raises UnstampedWriteError: when the table declares a row epoch and the write joins no transaction that took
             its write's turn
@@ -3149,7 +3190,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"write's epoch, and this one joins no transaction to take it from: write it on a CallerTransaction "
                 f"that took its write's turn (ScopeEpochs.touch)"
             )
-        return {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
+        stamp = {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
+        return stamp if self.schema.versioned else {**stamp, GONE_COLUMN: False}
 
     def _record_one(self, data: dict[str, Any], conn: Any, writer: str, *, fenced: bool = False) -> None:
         """record one row a store write sends, and the columns its statement sets in a row already held
@@ -4780,6 +4822,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         **A versioned table** (:attr:`TableSchema.versioned`) is never deleted from: each key is a "gone" marker
         appended at the delete's epoch (the store's ``mark_gone``), carrying the key, the table's scope and the epoch.
+        **A stamped table** (``ROW_STAMPED``) is never deleted from either: each key's row is marked gone in place, its
+        epoch risen past the delete's stamp (the store's ``mark_gone``), so a restore of a lost change log hears it.
 
         The other half of :meth:`save_rows`, for a load that makes a table match a source: the rows
         the source no longer holds leave in a few multi-row ``DELETE`` statements, not one round trip
@@ -4842,10 +4886,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         # each key named is a delete marker in the table's delta file, whichever way it is enrolled below
         transaction.record_deletes(self, named, scope=delta_scope)
-        # a versioned table is never deleted from (its "gone" markers are appended below), so never DELETE ... RETURNING
+        # a versioned table is never deleted from (its "gone" markers are appended below), nor a stamped one (its rows
+        # marked gone in place), so never DELETE ... RETURNING
         versioned = self.schema.versioned
+        marks = self.schema.stamps_epoch
         marker_scope = self._marker_scope(delta_scope, scope) if versioned else None
-        if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore) and not versioned:
+        if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore) and not marks:
             return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
         # a collection whose row messages carry columns reads each row before it goes, on the caller's
         # transaction, so the message can say whose it was: a statement a batch of keys where the store reads
@@ -4875,12 +4921,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         deleted = 0
-        if versioned and named:
-            # append-only: a "gone" marker a key at the delete's epoch, never a DELETE (TableSchema.versioned)
+        if marks and named:
+            # a "gone" marker a key at the delete's epoch (versioned: appended; stamped: the row marked in place), never
+            # a DELETE: a real delete leaves nothing for a restore to find (append-only L3, decision 2)
             if not isinstance(store, GoneMarkingStore):
                 raise ValueError(
-                    f"{type(self).__name__}.delete_rows: {self.table_name} is versioned, and its store cannot append "
-                    f"gone markers"
+                    f"{type(self).__name__}.delete_rows: {self.table_name} declares a row epoch, and its store cannot "
+                    f"mark keys gone"
                 )
             deleted = await store.mark_gone(
                 self.table_name,
@@ -5057,7 +5104,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         named, entity_keys, enrollments = await asyncio.to_thread(
             self._arrow_delete_enrollments, keys, asyncio.get_running_loop()
         )
-        arrow_store = store if isinstance(store, ArrowWritingStore) and not self.invalidation_columns else None
+        # a stamped table's keys are marked gone in place by keyed UPDATEs (delete_rows), never the door's DELETE
+        stamped = self.schema.stamps_epoch and not self.schema.versioned
+        arrow_store = (
+            store if isinstance(store, ArrowWritingStore) and not self.invalidation_columns and not stamped else None
+        )
         sent = keys
         if arrow_store is not None and self.schema.versioned:
             # append-only: the keys become "gone" markers at the delete's epoch, appended (TableSchema.versioned)

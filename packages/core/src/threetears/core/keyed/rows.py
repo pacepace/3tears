@@ -49,9 +49,10 @@ from threetears.core.keyed._filters import (
     Selected,
     binds_native_arrays,
     by_conditions,
+    live_only,
+    live_read,
     narrowing,
     newest_of,
-    newest_read,
     newest_sent,
     reads_yugabyte,
     relation,
@@ -278,7 +279,10 @@ async def read_keyed(
     """
     binder = binder_for(conn, keys)
     newest = newest_of(conn, table)
-    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder, newest)
+    # a versioned table's newest live versions (the statement's newest form), a stamped one's live rows alone
+    statement = keyed_read_statement(
+        table, columns, keys, by or {}, lock, live_only(conn, table, where), binder, newest
+    )
     natively = binds_native_arrays(conn)
     # asked only where it changes the statement: a batch of several key columns (its bounds, PostgreSQL's alone), or
     # any batch of a versioned table (a batched DISTINCT ON on YugabyteDB, a LATERAL seek a key on PostgreSQL)
@@ -355,7 +359,14 @@ async def read_keyed_arrow(
     binder = binder_for(conn, keys)
     newest = newest_of(conn, table)
     statement = keyed_read_statement(
-        table, list(types) if columns is None else columns, keys, by or {}, None, where, binder, newest
+        table,
+        list(types) if columns is None else columns,
+        keys,
+        by or {},
+        None,
+        live_only(conn, table, where),
+        binder,
+        newest,
     )
     natively = binds_native_arrays(conn)
     # asked only where it changes the statement, as read_keyed asks it
@@ -491,12 +502,13 @@ async def any_rows(
     if not columns:
         raise ValueError(f"a bounded look of {table} reads at least one column")
     conditions, params = by_conditions(by or {}, alias="t")
-    for fragment in where:
+    read_from, guarded = live_read(conn, table, where)
+    for fragment in guarded:
         conditions.append(narrowing(fragment, len(params)))
         params += list(fragment.params)
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
     rows = await sent_by(conn).fetch(
-        f"SELECT {selected} FROM {relation(newest_read(conn, table), 't', params)}{clause} LIMIT {limit}", *params
+        f"SELECT {selected} FROM {relation(read_from, 't', params)}{clause} LIMIT {limit}", *params
     )
     return [dict(row) for row in rows]

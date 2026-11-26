@@ -32,7 +32,7 @@ from threetears.interfaces.keyed.filters import (
     renumbered,
     selected_column,
 )
-from threetears.interfaces.keyed.keys import primary_key, stated_literals
+from threetears.interfaces.keyed.keys import default_projection, primary_key, stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
 from threetears.interfaces.keyed.steps import Step
 
@@ -86,7 +86,8 @@ def _clauses(
         raise ValueError(f"a point read of {table} pins at least one column; with none it reads the table whole")
     if columns is not None and not columns:
         raise ValueError(f"a point read of {table} names the columns it reads, or None for every column")
-    selected = "t.*" if columns is None else ", ".join(selected_column(column) for column in columns)
+    # every column of a stamped table is its declared ones, never its L3 restore bucket (keys.default_projection)
+    selected = default_projection(table) if columns is None else ", ".join(selected_column(c) for c in columns)
     if also:
         selected = f"{selected}, {also}"
     # a text a declared partial index's predicate names is written as its literal (keys.stated_literals)
@@ -258,8 +259,8 @@ def read_row_beside_statement(
         with the ring's five columns: the statement's best 1.58 -> 1.33 ms, its median 2.08 -> 1.64 ms, 2026-11-16).
         ``None`` repeats them on every row
     :ptype first: str | None
-    :param where: guards on the row beside its pins, each a fragment written as ``t."col"`` from ``$1`` (a versioned
-        table's newest-version guard); none when empty
+    :param where: guards on the row beside its pins, each a fragment written as ``t."col"`` from ``$1`` (a stamped
+        table's live guard; a versioned table is read through its newest relation, ``table`` derived); none when empty
     :ptype where: Sequence[Fragment]
     :return: the statement, and its binds: the pins', the guards', the step's, then ``limit``
     :rtype: tuple[str, list[Any]]

@@ -111,7 +111,6 @@ __all__ = [
     "key_hash_sql",
     "restore_declaration",
     "declared_versions",
-
     "stamped_restore_declaration",
     "restore_floor",
     "scope_epoch_index_name",

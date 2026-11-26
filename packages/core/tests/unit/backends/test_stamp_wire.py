@@ -35,6 +35,7 @@ from threetears.core.collections.scope_epochs import scope_epochs_schema
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     ROW_STAMPED,
+    AppendOnlyWriteError,
     UnstampedWriteError,
     row_versions,
     wall_clock_ms,
@@ -231,13 +232,14 @@ async def test_a_run_marker_names_the_deletes_stamp_on_delete_prefixes() -> None
     assert touch["params"] == [_LOW, ["NC"]]
 
 
-async def test_a_prefix_delete_of_a_stamped_table_stamps_nothing() -> None:
+async def test_a_prefix_delete_of_a_stamped_table_is_refused_before_anything_is_sent() -> None:
+    # a stamped table's keys are marked gone in place, never deleted, so a restore hears them (test_stamped_gone)
     broker = _Broker(_BEGIN, _DONE, _COMMIT)
     proxy = broker.proxy()
     async with proxy.transaction() as conn:
-        await _store(proxy).delete_prefixes("runs", [{"run_id": "r1"}], conn=conn)
-    [body] = broker.bodies("l3.tx.delete_prefixes")
-    assert _stamp(body) == (False, None)
+        with pytest.raises(AppendOnlyWriteError, match="stamped"):
+            await _store(proxy).delete_prefixes("runs", [{"run_id": "r1"}], conn=conn)
+    assert broker.bodies("l3.tx.delete_prefixes") == []
 
 
 async def test_every_other_transaction_statement_says_it_stamps_nothing() -> None:

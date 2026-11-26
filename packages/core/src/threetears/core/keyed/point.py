@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, overload
 
-from threetears.core.keyed._filters import Fragment, Lock, Selected, newest_read, reads_l3, refuse_versioned, sent_by
+from threetears.core.keyed._filters import Fragment, Lock, Selected, live_read, reads_l3, refuse_versioned, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import yugabyte_index_hint
@@ -36,7 +36,7 @@ from threetears.interfaces.keyed.filters import (
     relation,
     selected_column,
 )
-from threetears.interfaces.keyed.keys import stated_literals
+from threetears.interfaces.keyed.keys import default_projection, stated_literals
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.point import (
     Nearest,
@@ -127,9 +127,8 @@ async def read_by(
     :rtype: list[dict[str, Any]] | list[Any]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = read_by_statement(
-        newest_read(conn, table, lock=lock), by=by, columns=columns, lock=lock, where=where, order=order
-    )
+    read_from, where = live_read(conn, table, where, lock=lock)
+    sql, params = read_by_statement(read_from, by=by, columns=columns, lock=lock, where=where, order=order)
     # on YugabyteDB, a read names the declared index that serves its pins and order (unordered: binds the most pins)
     sql = (await yugabyte_index_hint(conn, table, by, order, where=where)) + sql
     rows = list(await sent_by(conn).fetch(sql, *params))
@@ -200,9 +199,8 @@ async def read_row(
     :rtype: dict[str, Any] | Any | None
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    sql, params = read_row_statement(
-        newest_read(conn, table, lock=lock), by=by, columns=columns, lock=lock, where=where, beside=beside
-    )
+    read_from, where = live_read(conn, table, where, lock=lock)
+    sql, params = read_row_statement(read_from, by=by, columns=columns, lock=lock, where=where, beside=beside)
     rows = list(await sent_by(conn).fetch(sql, *params))
     if not rows:
         return None
@@ -247,14 +245,16 @@ async def read_row_beside(
     :rtype: list[Any]
     :raises ValueError: when nothing is pinned, or for a limit under one row
     """
+    read_from, where = live_read(conn, table)
     sql, params = read_row_beside_statement(
-        newest_read(conn, table),
+        read_from,
         by=by,
         columns=columns,
         beside=beside,
         limit=limit,
         present=present,
         first=first,
+        where=where,
     )
     return list(await sent_by(conn).fetch(sql, *params))
 
@@ -279,7 +279,8 @@ async def read_value(
     :rtype: Any
     :raises ValueError: when nothing is pinned
     """
-    sql, params = read_row_statement(newest_read(conn, table), by=by, columns=(column,), where=where)
+    read_from, where = live_read(conn, table, where)
+    sql, params = read_row_statement(read_from, by=by, columns=(column,), where=where)
     rows = list(await sent_by(conn).fetch(sql, *params))
     return rows[0][column] if rows else None
 
@@ -341,9 +342,9 @@ async def read_nearest(
     :raises ValueError: when nothing is pinned, ``columns`` is empty, ``limit`` is negative, or a join is an inner
         one or names nothing to join on
     """
-    # a versioned table's newest live versions, read in its place; a joined table is joined inside the statement,
-    # where no newest relation reads it, so a versioned one is refused
-    read_from = newest_read(conn, table)
+    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone; a joined table is
+    # joined inside the statement, where no newest relation reads it, so a versioned one is refused
+    read_from, where = live_read(conn, table, where)
     refuse_versioned(conn, [join.table for join in joins], f"a ranked read of {table} joining")
     if isinstance(nearest, PatternCount):
         sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins)
@@ -430,7 +431,7 @@ def _pattern_count_statement(
         params += list(fragment.params)
     qualifier: dict[str, str] = {}
     joined: list[str] = []
-    selected = ["t.*"] if columns is None else [selected_column(column) for column in columns]
+    selected = [default_projection(table)] if columns is None else [selected_column(column) for column in columns]
     for number, join in enumerate(joins, start=1):
         alias = f"j{number}"
         on = [

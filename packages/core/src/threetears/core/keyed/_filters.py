@@ -13,16 +13,19 @@ from typing import Any, Final
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.ddl.row_epoch import AppendOnlyWriteError
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.interfaces.keyed.keys import (
     VersionedTable,
     index_hint,
+    live_guard,
     newest_relation,
     newest_settings,
     not_null_guards,
     serving_index,
+    stamped_table,
     versioned_table,
 )
 from threetears.interfaces.keyed.page import Sort
@@ -70,12 +73,15 @@ __all__ = [
     "reads_yugabyte",
     "selected_column",
     "relation",
+    "live_only",
+    "live_read",
     "narrowing",
     "newest_of",
     "newest_read",
     "newest_sent",
     "refuse_versioned",
     "one_use_each",
+    "refuse_in_place",
     "renumbered",
     "sent_by",
     "yugabyte_index_hint",
@@ -328,6 +334,104 @@ def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool, *, bat
     if newest is not None and isinstance(conn, asyncpg.Connection | PoolConnectionProxy | asyncpg.Pool):
         return _NewestSettings(conn, newest_settings(yugabyte=yugabyte, batch=batch))
     return sent_by(conn)
+
+
+def live_only(conn: Any, table: Any, where: Sequence[Fragment] = (), *, row: str | None = "t") -> tuple[Fragment, ...]:
+    """a keyed read's filters, with a stamped L3 table's live guard beside them: the read then answers only live
+    rows, never one a delete marked gone (:func:`~threetears.interfaces.keyed.keys.live_guard`). Unchanged for a read
+    that does not go to L3 (a local copy holds only live rows), a derived relation, or a table no stamped declaration
+    names.
+
+    The stamped half of :func:`live_read`, the one place a shared keyed read asks both: a versioned table is read
+    through its newest relation (:func:`newest_read`), a stamped one by this guard, so no read answers a gone row.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: Any
+    :param where: the read's own filters
+    :ptype where: Sequence[Fragment]
+    :param row: how the statement names the row read: its alias, the quoted relation where it has none, or None for
+        a statement naming its columns unqualified
+    :ptype row: str | None
+    :return: the filters to read by
+    :rtype: tuple[Fragment, ...]
+    """
+    declared = stamped_table(table, l3=reads_l3(conn))
+    if declared is None:
+        return tuple(where)
+    return (*where, Fragment(live_guard(declared, row)))
+
+
+def live_read(
+    conn: Any,
+    table: str | Derived,
+    where: Sequence[Fragment] = (),
+    *,
+    lock: Lock | None = None,
+    row: str | None = "t",
+) -> tuple[str | Derived, tuple[Fragment, ...]]:
+    """what a shared keyed read of ``table`` on ``conn`` reads, and the filters it reads by, so it answers only live
+    rows: a versioned L3 table's newest live versions in its place (:func:`newest_read`: one row a key, never an older
+    version, a "gone" marker or a key under a newer run marker), a stamped one by its live guard beside ``where``
+    (:func:`live_only`: never a row its delete marked gone). ``table`` and ``where`` as given for a read that does not
+    go to L3 (a local copy holds only live rows), a derived relation, or a table neither declaration names.
+
+    The one mechanism every shared keyed read asks (append-only L3: a delete is a marker everywhere, so a restore of a
+    lost change log hears it, and no read sees one). A table is versioned or stamped, never both.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: str | Derived
+    :param where: the read's own filters
+    :ptype where: Sequence[Fragment]
+    :param lock: the row lock the read takes; a versioned table's versions are never locked
+    :ptype lock: Lock | None
+    :param row: how the statement names the row read (:func:`live_only`)
+    :ptype row: str | None
+    :return: the relation to read, and the filters to read it by
+    :rtype: tuple[str | Derived, tuple[Fragment, ...]]
+    :raises ValueError: when a read of a versioned table takes a row lock (:func:`newest_read`)
+    """
+    return newest_read(conn, table, lock=lock), live_only(conn, table, where, row=row)
+
+
+def refuse_in_place(conn: Any, table: Any, write: str) -> None:
+    """refuse a keyed in-place write of an append-only L3 table, so a restore of a lost change log loses nothing
+    (append-only L3, decision 2: "a real delete leaves nothing for a restore to find"):
+
+    - a versioned table (``row_versions``): its rows are versions; a write appends the key's new version and a delete
+      a "gone" marker (``SqlL3Backend``, the collection's save and delete), never an ``UPDATE`` or a ``DELETE`` of a
+      version a read may be seeing (``threetears.interfaces.keyed.keys.newest_relation``);
+    - a stamped table (``ROW_STAMPED``): a delete of one of its keys marks its row gone in place
+      (``SqlL3Backend.mark_gone``, the collection's ``delete_rows``); an update in place is its own write. Only
+      quiet-time cleanup deletes from it, below the restore window, through its own statements
+      (:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`).
+
+    A local copy's writes are its own.
+
+    :param conn: the connection the write would run on; None for a collection's own L3 pool
+    :ptype conn: Any
+    :param table: the table written
+    :ptype table: Any
+    :param write: which write (``update`` / ``delete``), for the refusal
+    :ptype write: str
+    :return: nothing
+    :rtype: None
+    :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table, or a stamped one a delete names
+    """
+    l3 = conn is None or reads_l3(conn)
+    if versioned_table(table, l3=l3) is not None:
+        raise AppendOnlyWriteError(
+            f"{table} is versioned (append-only): a keyed {write} would change a version in place; save the key's new "
+            "version, or delete it as a gone marker, through its collection or the L3 backend"
+        )
+    if write == "delete" and stamped_table(table, l3=l3) is not None:
+        raise AppendOnlyWriteError(
+            f"{table} is stamped (ROW_STAMPED): a keyed delete would leave nothing for a restore to find; delete its "
+            "keys as gone marks through its collection (delete_rows) or the L3 backend (mark_gone)"
+        )
 
 
 async def reads_yugabyte(conn: Any) -> bool:

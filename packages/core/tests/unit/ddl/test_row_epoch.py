@@ -120,7 +120,7 @@ def test_a_versioned_table_is_stored_by_its_key_then_the_epoch() -> None:
     )
     # its (scope, epoch) index, which a restore of a lost change log reads it by (append-only chunk 5)
     [index] = schema.indexes
-    assert (index.name, tuple(index.columns)) == ("results_scope_epoch", ("join_state_code", EPOCH_COLUMN))
+    assert (index.name, tuple(index.columns)) == ("ve_results_scope_epoch", ("join_state_code", EPOCH_COLUMN))
     assert "packages/core/src/threetears/core/collections/table_restore.py::_scope_versions" in str(index.purpose)
     # never in an upsert's SET: it is part of the stored key
     assert EPOCH_COLUMN not in [column.name for column in schema.mutable_columns()]
@@ -147,8 +147,8 @@ def test_a_table_that_declares_no_epoch_is_as_before() -> None:
 
 def test_a_versioned_table_on_yugabyte_hashes_its_first_key_column_and_orders_the_epoch_newest_first() -> None:
     create, index, comment = _versioned().create_statements(yugabyte=True)
-    assert index.strip() == "CREATE INDEX results_scope_epoch ON results (join_state_code, epoch)"
-    assert comment.startswith('COMMENT ON INDEX "results_scope_epoch" IS \'{"threetears_restore":1,')
+    assert index.strip() == "CREATE INDEX ve_results_scope_epoch ON ve_results (join_state_code, epoch)"
+    assert comment.startswith('COMMENT ON INDEX "ve_results_scope_epoch" IS \'{"threetears_restore":1,')
     assert "epoch BIGINT NOT NULL" in create
     assert "PRIMARY KEY ((office_key) HASH, candidate ASC, epoch DESC)" in create
 
