@@ -40,7 +40,6 @@ from threetears.interfaces.keyed.filters import (
 from threetears.interfaces.keyed.keys import (
     NEWEST_VERSIONS,
     VersionedTable,
-    key_only,
     newest_lateral,
     newest_relation,
 )
@@ -544,7 +543,7 @@ class _KeyedRead:
         index's) reads its keys' versions through the keys it names: ``(key) IN (SELECT key ... WHERE <named>)``."""
         newest = self.newest
         assert newest is not None and isinstance(self.table, str)
-        inside = [condition for condition in conditions if key_only(condition, newest.key, alias="t")]
+        inside = [condition for condition in conditions if newest.judged_within(condition, alias="t")]
         outside = [condition for condition in conditions if condition not in inside] + list(guards)
         width = len(self.keys.columns)
         leading = newest.key[:width] == tuple(self.keys.columns)
