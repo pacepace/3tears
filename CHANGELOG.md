@@ -59,6 +59,49 @@ The method must be defined on the factory's class: the engine found it with `get
 Such a host defines `model_listing` on the wrapper and forwards it by name. A factory that defines the method on its
 class already is a `ModelListingReader`, and one without it keeps working unchecked. Nothing stored changes.
 
+### evals: a doubted claim a key fact about its subject contradicts reads contradicted, with or without the web
+
+**Fixed (#1326):** the truth call is shown every key fact, but no check can make the model cite one. A world claim it
+answered with no citation and marked suspect, though a key fact contradicted it, went to the web, which is never shown
+the key: with the web off, past the cell's web budget or inconclusive, a planted false claim read `unverifiable`, not
+`contradicted`, understating the false rate. Every such claim that names a key entity is now asked again before the
+web, all of them in one call per cell (the re-ask), each listed with the refs of its own entities' facts and checked
+against those alone, with every check a truth answer takes. The re-ask has its own prompt: it asks whether any listed
+fact states the claim true or false, and says nothing of the earlier answer. A cited contradiction reads
+`contradicted`, a cited support `supported`, both graded against the case; an answer citing nothing leaves the claim
+nominated for the web as before. Code decides which facts a claim is listed with: those of each key entity whose name,
+or one of its aliases, stands in the claim's proposition or a restatement's as whole words in order. So a key entity
+whose name only shares words with the subject (an entity "Ann Lee's brother", "Annabel Lee" or "Lee Ann", against
+"Ann Lee moved to York") is never listed. A restatement takes its original's outcome.
+
+The known limits. The match reads the key entity, never the fact: a fact filed under Ann Lee's own entry that is about
+someone else ("Her brother moved to York.") is listed for "Ann Lee moved to York", and cited as support it passes every
+code check, so only the model's reading stands between it and a false `supported`. Likewise a fact about another
+attribute of the subject ("Ann Lee was born in Leeds", against "Ann Lee lives in York") cited as a contradiction reads
+`contradicted`. The re-ask's prompt says such facts bear on nothing. A claim naming its subject only by a pronoun or
+an unlisted description, or in a script written without spaces, is asked nothing again; a short name or alias inside a
+longer one ("Lee" for Ann Lee) matches every claim naming the longer.
+
+**Fixed:** a "!" followed by spaces and then "(" or a lower-case letter, or a "?" followed by spaces and a lower-case
+letter, no longer ends a sentence, so a key fact such as "Revolting Cocks were a Wax Trax! (Chicago) act." keeps its
+subject and value in one sentence and needs no repair. Before a capitalised word, a digit or a line break either still
+does ("He left! Then ...", "He left? No."), and so does a "?" before a bracket ("Did Ann Lee stay? (Her brother moved
+to York.)"). The accepted cost: an exclamation before a bracketed sentence reads as one sentence with it ("Wow! (Her
+brother moved to York.)"). Separately, a sentence end followed by closing quotes or brackets (`."`, `.)`, `!'`) is now
+a sentence end, so 'Ann Lee said, "I stay in Leeds." Her brother moved to York.' no longer binds Ann Lee to York; an
+abbreviation inside quotes or brackets ("the U.S.", "(Dr.) John") keeps the abbreviation rule.
+
+**Changed:** the re-ask adds one truth call per cell whose key states a fact, asked again in full only when its reply
+cannot be read (at most three calls), whatever the number of claims doubted; the price ceiling prices it so, at every
+key fact. Its failing items are repaired within the truth step's `max_items_per_cell`, as a truth batch's are, so
+`RepairBudget`'s arithmetic is unchanged. A re-ask reply cut short, unreadable in its attempts, failed by the provider
+or breaking the protocol fails the claims criterion as any truth call does, never as an `unverifiable` claim. The re-ask
+rule, its prompt and the sentence rule (now `sentences-v3`) enter the claim verifier's identity and the web step's, so
+every claims criterion's fingerprint moves, and grades made before and after this never pool. No stored shape changes.
+
+**For hosts:** nothing to change in code. A claims criterion over a case key is priced one call higher (three attempts)
+per cell. Re-judging stored cells gives a new fingerprint.
+
 ### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
 
 **Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it
