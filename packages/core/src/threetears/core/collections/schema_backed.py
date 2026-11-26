@@ -171,6 +171,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; rail_arrow_type
 
 __all__ = [
     "register_sa_table_indexes",
+    "stamped_values",
     "rail_text",
     "sql_cast",
     "BIGINT_TYPE",
@@ -384,6 +385,38 @@ _BUCKET_HASH_KINDS: Final[Mapping[str, str]] = {
     BYTES_TYPE: "bytea",
     JSONB_TYPE: "jsonb",
 }
+
+
+def stamped_values(schema: TableSchema, values: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any]:
+    """``values`` for a keyed ``UPDATE`` of ``schema``'s table (``threetears.core.keyed.update_keyed``), stamped: a
+    stamped table's (``ROW_STAMPED``) epoch set to ``GREATEST(epoch + 1, <a fresh stamp>)``, as its upsert sets it
+    (``rising_epoch_assignment``), so the row a restore reads by its ``(bucket, epoch)`` index is never one an update
+    left at its older stamp. The stamp is drawn from the caller's transaction when ``conn`` is in one
+    (``CallerTransaction.in_place_epoch``, counted in its ``s_min``), else from the process clock (one statement, its
+    own commit). Unchanged for a table that declares no row epoch.
+
+    WHY a helper, not the keyed layer: ``update_keyed`` knows a table by its name alone, and only the schema says it is
+    stamped; an update that left the epoch alone would succeed and be invisible to a restore.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param values: column -> its new value, as ``update_keyed`` takes them
+    :ptype values: Mapping[str, Any]
+    :param conn: the connection the update runs on, or None for the pool
+    :ptype conn: Any
+    :return: the values, the epoch's term added for a stamped table
+    :rtype: dict[str, Any]
+    :raises AppendOnlyWriteError: when the table is versioned (append-only: never updated in place)
+    """
+    declared = schema.row_epoch
+    if declared is None:
+        return dict(values)
+    if declared.versions:
+        raise AppendOnlyWriteError(f"stamped_values: {schema.name} is versioned (append-only), never updated in place")
+    transaction = None if conn is None else CallerTransaction.enclosing(conn)
+    stamp = next_epoch() if transaction is None else transaction.in_place_epoch()
+    quoted = quote_identifier(EPOCH_COLUMN)
+    return {**values, EPOCH_COLUMN: Fragment(f"GREATEST({quoted} + 1, $1::bigint)", (stamp,))}
 
 
 def sql_cast(column_type: str) -> str:
@@ -3127,14 +3160,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
 
     def stamped_values(self, values: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any]:
-        """``values`` for a keyed ``UPDATE`` of this table (``threetears.core.keyed.update_keyed``), stamped: a
-        stamped table's (``ROW_STAMPED``) epoch set to ``GREATEST(epoch + 1, <a fresh stamp>)``, as its upsert sets it
-        (``rising_epoch_assignment``), so the row a restore reads by its ``(bucket, epoch)`` index is never one an
-        update left at its older stamp. The stamp is drawn as :meth:`_epoch_stamp` draws it (the caller's transaction
-        when ``conn`` is in one). Unchanged for a table that declares no row epoch.
-
-        WHY a helper, not the keyed layer: ``update_keyed`` knows a table by its name alone, and only the schema says
-        it is stamped; an update that left the epoch alone would succeed and be invisible to a restore.
+        """``values`` for a keyed ``UPDATE`` of this table, stamped (:func:`stamped_values`).
 
         :param values: column -> its new value, as ``update_keyed`` takes them
         :ptype values: Mapping[str, Any]
@@ -3144,16 +3170,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: dict[str, Any]
         :raises AppendOnlyWriteError: when the table is versioned (append-only: never updated in place)
         """
-        if self.schema.row_epoch is None:
-            return dict(values)
-        if self.schema.versioned:
-            raise AppendOnlyWriteError(
-                f"{type(self).__name__}.stamped_values: {self.table_name} is versioned (append-only), never updated in "
-                f"place"
-            )
-        stamp = self._epoch_stamp(conn, "stamped_values")[EPOCH_COLUMN]
-        quoted = quote_identifier(EPOCH_COLUMN)
-        return {**values, EPOCH_COLUMN: Fragment(f"GREATEST({quoted} + 1, $1::bigint)", (stamp,))}
+        return stamped_values(self.schema, values, conn=conn)
 
     def _record_one(self, data: dict[str, Any], conn: Any, writer: str, *, fenced: bool = False) -> None:
         """record one row a store write sends, and the columns its statement sets in a row already held

@@ -44,6 +44,7 @@ from threetears.core.collections.schema_backed import (
     check_declared_row_types,
     schema_datetime_columns,
     schema_field_types,
+    stamped_values,
 )
 from threetears.core.ddl.row_epoch import AppendOnlyWriteError, EPOCH_COLUMN, next_epoch, rising_epoch_assignment
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -323,6 +324,19 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
             for name in self.insert_columns
             if name not in carried and not self._column(name).nullable and self._column(name).server_default is None
         ]
+
+    def stamped_values(self, values: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any]:
+        """``values`` for a keyed ``UPDATE`` of this table, stamped (``schema_backed.stamped_values``).
+
+        :param values: column -> its new value, as ``update_keyed`` takes them
+        :ptype values: Mapping[str, Any]
+        :param conn: the connection the update runs on, or None for the pool
+        :ptype conn: Any
+        :return: the values, the epoch's term added for a stamped table
+        :rtype: dict[str, Any]
+        :raises AppendOnlyWriteError: when the table is versioned
+        """
+        return stamped_values(self.schema, values, conn=conn)
 
     def _rises_epoch(self) -> bool:
         """whether this is a stamped table (``ROW_STAMPED``: one row a key, updated in place), whose write sets its epoch
