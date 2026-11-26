@@ -74,6 +74,7 @@ __all__ = [
     "newest_of",
     "newest_read",
     "newest_sent",
+    "refuse_versioned",
     "one_use_each",
     "renumbered",
     "sent_by",
@@ -215,6 +216,28 @@ def newest_of(conn: Any, table: Any) -> VersionedTable | None:
     :rtype: VersionedTable | None
     """
     return versioned_table(table, l3=reads_l3(conn))
+
+
+def refuse_versioned(conn: Any, tables: Sequence[Any], read: str) -> None:
+    """refuse a read on L3 that names a versioned table in a shape no newest relation reads (a recursive walk, a join
+    inside one statement): it would read every version of the table. A local copy (one row a key) is read as held.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param tables: the tables the read names
+    :ptype tables: Sequence[Any]
+    :param read: what the read is, for the refusal
+    :ptype read: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when one of them is a versioned L3 table
+    """
+    named = [table for table in tables if newest_of(conn, table) is not None]
+    if named:
+        raise ValueError(
+            f"{read} names the versioned table(s) {', '.join(map(str, named))}, every version of which it would read: "
+            "read them by keyed reads (read_keyed, read_by), which see each key's newest live version"
+        )
 
 
 def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | Derived:

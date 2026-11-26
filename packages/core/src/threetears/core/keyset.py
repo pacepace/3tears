@@ -609,14 +609,18 @@ def _newest(l3: Any, table: str | None, select_from: str) -> _Newest | None:
     :raises ValueError: when ``select_from`` is not ``SELECT <projection> FROM <table>`` of that one table, or selects
         ``*`` (a versioned table's rows carry its epoch and gone flag, never a read's columns)
     """
+    spelled = select_from.strip()
+    cut = spelled.upper().rfind(" FROM ")
+    source = spelled[cut + len(" FROM ") :].strip() if cut > 0 else ""
     if table is None:
+        # a read naming a versioned L3 table with no table= would page every version of it: refused, so no caller
+        # reads one unknowingly (copy_follower, delta_fold, delta_recreate name theirs)
+        if source and newest_of(l3, source.replace('"', "")) is not None:
+            raise ValueError(f"a keyset read of the versioned table {source} names it (table=), so it reads its newest")
         return None
     versioned = newest_of(l3, table)
     if versioned is None:
         return None
-    spelled = select_from.strip()
-    cut = spelled.upper().rfind(" FROM ")
-    source = spelled[cut + len(" FROM ") :].strip() if cut > 0 else ""
     if not spelled.upper().startswith("SELECT ") or source.replace('"', "") != table.replace('"', ""):
         raise ValueError(
             f"a keyset read of the versioned table {table} names it as SELECT <projection> FROM <table>, "

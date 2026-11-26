@@ -37,6 +37,7 @@ from threetears.core.keyed import (
     AnyOf,
     Count,
     KeyBatch,
+    Lock,
     Sort,
     Sum,
     ThreadedDuckDB,
@@ -44,22 +45,32 @@ from threetears.core.keyed import (
     count_at_most,
     counts_by,
     delete_keyed,
+    delete_matching,
     empty_tables,
     holds_any,
     keyset_page,
     keyset_rows,
+    Match,
     latest_per_key,
+    newest_read,
+    read_after,
     read_by,
     read_keyed,
     read_keyed_arrow,
+    read_link_chain,
+    read_past_marks,
+    read_reached,
     read_row,
     read_step,
     read_value,
+    scan,
+    semi,
     update_keyed,
 )
-from threetears.core.keyset import keyset_scope_pages, keyset_scope_values, read_keyset_pages
+from threetears.core.keyed import rows as keyed_rows
+from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages, keyset_scope_values, read_keyset_pages
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
-from threetears.interfaces.keyed.keys import versioned_table
+from threetears.interfaces.keyed.keys import NEWEST_ROWS_A_READ, next_newest_keys, versioned_table
 
 _TABLE = "nv_results"
 _GONE_ONLY = "nv_gone_only"
@@ -331,4 +342,134 @@ class TestInPlaceWrites:
             await update_keyed(reader, _TABLE, values={"v": 9}, by={"state": "CA", "id": 1})
         with pytest.raises(AppendOnlyWriteError):
             await delete_keyed(reader, _TABLE, by={"state": "CA", "id": 1})
+        assert reader.statements == []
+
+
+class TestEngineForms:
+    """the keyed batch's two forms (YugabyteDB's batched DISTINCT ON, PostgreSQL's LATERAL seek a key) answer alike;
+    the in-process DuckDB answers both."""
+
+    @pytest.mark.parametrize("yugabyte", [True, False])
+    async def test_read_keyed_answers_the_newest_in_either_engine_s_form(
+        self, db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch, yugabyte: bool
+    ) -> None:
+        """Flips if a batch in either form answers an older version, a gone key or a key under a run marker, or
+        leaves the versions count it sizes its next batch by among the row's columns."""
+
+        async def engine(conn: Any) -> bool:
+            return yugabyte
+
+        monkeypatch.setattr(keyed_rows, "reads_yugabyte", engine)
+        reader = _L3(db)
+        rows = await read_keyed(reader, _TABLE, keys=_every_key(), columns=["state", "id", "v"])
+        assert _read(rows) == _NEWEST
+        assert all(set(row) == {"state", "id", "v"} for row in rows)
+        assert ("DISTINCT ON" in reader.statements[-1]) is yugabyte
+        assert ("LATERAL" in reader.statements[-1]) is not yugabyte
+        types = {"state": pa.string(), "id": pa.int32(), "v": pa.int32()}
+        tables = await read_keyed_arrow(reader, _TABLE, keys=_every_key(), types=types)
+        assert _read(pa.concat_tables(tables).to_pylist()) == _NEWEST
+        assert tables[0].column_names == ["state", "id", "v"]
+
+    async def test_a_prefix_batch_answers_each_of_its_keys_newest(
+        self, db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a batch of a prefix of the key (states) answers one row a prefix, or an older version."""
+
+        async def postgres(conn: Any) -> bool:
+            return False
+
+        monkeypatch.setattr(keyed_rows, "reads_yugabyte", postgres)
+        keys = KeyBatch(("state",), [["CA", "NV", "OR", "TX"]], ("text",))
+        assert _read(await read_keyed(_L3(db), _TABLE, keys=keys, columns=["state", "id", "v"])) == _NEWEST
+
+    def test_a_batch_is_sized_by_the_versions_its_last_read(self) -> None:
+        """Flips if a batch's keys are not sized by the versions the batch before read a key."""
+        assert next_newest_keys(0, 0, 5_000) == NEWEST_ROWS_A_READ // 50
+        assert next_newest_keys(5_000, 250_000, 5_000) == NEWEST_ROWS_A_READ // 50
+        assert next_newest_keys(1_000, 1_000, 5_000) == 5_000
+        assert next_newest_keys(10, 10 * NEWEST_ROWS_A_READ, 5_000) == 1
+
+
+class TestFillPages:
+    async def test_a_filter_past_the_key_is_judged_on_the_newest_version(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a fill's filter on a column past the key picks an older version that matched it (v = 2 is CA 1's
+        middle version), or loses the newest that does."""
+        select = f"SELECT state, id, v FROM {_TABLE}"
+        older = await read_keyset_pages(_L3(db), select, ["state", "id"], where={"v": 2}, page_size=1, table=_TABLE)
+        assert older.rows == []
+        newest = await read_keyset_pages(_L3(db), select, ["state", "id"], where={"v": 3}, page_size=1, table=_TABLE)
+        assert _read(newest.rows) == {("CA", 1): 3}
+
+    async def test_arrow_pages_step_past_keys_they_keep_none_of(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if an Arrow fill stops at a page whose keys are all gone (TX, OR), answers an older version, or
+        hands over its own columns."""
+        types = {"state": pa.string(), "id": pa.int32(), "v": pa.int32()}
+        pages = [
+            page
+            async for page in keyset_arrow_pages(
+                _L3(db), f"SELECT state, id, v FROM {_TABLE}", ["state", "id"], types=types, page_size=1, table=_TABLE
+            )
+        ]
+        assert all(page.column_names == ["state", "id", "v"] for page in pages)
+        assert _read(pa.concat_tables(pages).to_pylist()) == _NEWEST
+
+    async def test_a_pager_naming_a_versioned_table_without_table_is_refused(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a keyset read of a versioned L3 table that does not name it (table=) pages every version."""
+        with pytest.raises(ValueError, match="versioned"):
+            await read_keyset_pages(_L3(db), f"SELECT state, id, v FROM {_TABLE}", ["state", "id"], page_size=1)
+
+
+class TestNewlyCoveredReaders:
+    async def test_read_past_marks_answers_the_newest_of_the_keys_past_the_mark(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a read past a mark answers an older version, a gone key, or a key under a newer run marker."""
+        read = await read_past_marks(_L3(db), _TABLE, columns=["state", "id", "v", "epoch"], marks={"epoch": 0})
+        assert _read(read.rows) == _NEWEST
+        moved = await read_past_marks(_L3(db), _TABLE, columns=["state", "id", "v", "epoch"], marks={"epoch": 25})
+        assert _read(moved.rows) == {("CA", 1): 3}
+
+    async def test_read_after_answers_newest_live_versions(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a read after an id answers an older version or a gone key."""
+        page = await read_after(
+            _L3(db), _TABLE, columns=["state", "id", "v"], id_column="id", after=0, limit=10, by={"state": "CA"}
+        )
+        assert _read(page.rows) == {("CA", 1): 3, ("CA", 3): 30}
+
+    async def test_a_step_over_a_versioned_table_on_l3_is_refused_or_reads_its_newest(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a step naming a versioned L3 table as a plain relation reads every version, if a step over a
+        local copy is refused, or if a step over the table's newest relation answers an older version."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="newest_read"):
+            await read_step(reader, scan(_TABLE, ["state", "id", "v"]))
+        keys = scan(_TABLE, ["state", "id"])
+        with pytest.raises(ValueError, match="newest_read"):
+            await read_step(reader, semi(_GONE_ONLY, keys, on=[Match("state"), Match("id")]))
+        assert len(await read_step(ThreadedDuckDB(db), scan(_TABLE, ["v"]))) == 11
+        rows = await read_step(reader, scan(newest_read(reader, _TABLE), ["state", "id", "v"]))
+        assert _read(rows) == _NEWEST
+
+    async def test_walks_and_chains_of_a_versioned_table_are_refused(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a recursive walk or link chain of a versioned L3 table runs (it would read every version)."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="versioned"):
+            await read_link_chain(reader, _TABLE, key="id", link="v", start=1, most=3, columns=["v"])
+        with pytest.raises(ValueError, match="versioned"):
+            await read_reached(reader, _TABLE, start={"state": "CA"}, on="id", to="v", columns=["v"], depth=2)
+        assert reader.statements == []
+
+    async def test_a_lock_or_a_delete_by_relation_of_a_versioned_table_is_refused(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a read locks a versioned table's versions or a delete by a change relation removes them."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="versioned"):
+            await read_by(reader, _TABLE, by={"state": "CA"}, columns=["v"], lock=Lock.UPDATE)
+        with pytest.raises(AppendOnlyWriteError):
+            await delete_matching(reader, _TABLE, "other", on=[Match("id")])
         assert reader.statements == []

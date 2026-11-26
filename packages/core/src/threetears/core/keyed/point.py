@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, overload
 
-from threetears.core.keyed._filters import Fragment, Lock, Selected, newest_read, reads_l3, sent_by
+from threetears.core.keyed._filters import Fragment, Lock, Selected, newest_read, reads_l3, refuse_versioned, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import yugabyte_index_hint
@@ -341,8 +341,10 @@ async def read_nearest(
     :raises ValueError: when nothing is pinned, ``columns`` is empty, ``limit`` is negative, or a join is an inner
         one or names nothing to join on
     """
-    # a versioned table's newest live versions, read in its place: the ranked read and its joins see no older one
+    # a versioned table's newest live versions, read in its place; a joined table is joined inside the statement,
+    # where no newest relation reads it, so a versioned one is refused
     read_from = newest_read(conn, table)
+    refuse_versioned(conn, [join.table for join in joins], f"a ranked read of {table} joining")
     if isinstance(nearest, PatternCount):
         sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins)
         rows = list(await sent_by(conn).fetch(sql, *params))

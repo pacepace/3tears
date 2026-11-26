@@ -720,6 +720,7 @@ class DeltaRecreator:
                 where={column: typed_text(table.kind(column), prefix[column]) for column in columns[:-1]} or None,
                 where_any={last: (f"{sql_cast(table.kind(last))}[]", [typed_text(table.kind(last), prefix[last])])},
                 page_size=self._page_size,
+                table=table.name,
             )
             async for page in pages:
                 delta.arrow(page, every)

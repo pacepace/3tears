@@ -22,10 +22,16 @@ class Step:
     :ptype sql: str
     :param params: its parameters, ``$1`` first
     :ptype params: tuple[Any, ...]
+    :param versioned: the versioned L3 tables it names as plain relations (``threetears.interfaces.keyed.keys``'s
+        registry): a step is written with no reader in hand, so a reader that goes to L3 refuses to run one (each
+        table's every version would be read), and a step reads such a table through its newest relation instead
+        (``threetears.core.keyed.newest_read``, a derived relation)
+    :ptype versioned: tuple[str, ...]
     """
 
     sql: str
     params: tuple[Any, ...] = ()
+    versioned: tuple[str, ...] = ()
 
 
 #: a relation name as SQL writes it: identifiers, each bare or double-quoted, joined by dots (``"report"."lsf_rows"``)

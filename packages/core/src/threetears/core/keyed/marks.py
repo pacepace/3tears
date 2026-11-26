@@ -25,11 +25,47 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
-from threetears.core.keyed._filters import Derived, Fragment, by_conditions, narrowing, relation, sent_by
+from threetears.core.keyed._filters import (
+    Derived,
+    Fragment,
+    by_conditions,
+    narrowing,
+    newest_of,
+    newest_read,
+    quoted_table,
+    relation,
+    sent_by,
+)
+from threetears.interfaces.keyed.keys import newest_relation
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.marks import MarkedRead, PageAfter
 
 __all__ = ["MarkedRead", "PageAfter", "read_after", "read_past_marks"]
+
+
+def _past_source(conn: Any, relation: str, quote: Callable[[str], str], clause: str) -> str:
+    """what a read past marks names in its ``FROM``: the relation, or a versioned L3 table's newest live versions of
+    the keys holding a version past the marks (``(key) IN (SELECT key ... WHERE <clause>)`` inside the newest
+    relation, the read's stamp index serving the candidates), the clause judged again on each key's newest version.
+
+    :param conn: the reader
+    :ptype conn: Any
+    :param relation: the relation, as the read names it
+    :ptype relation: str
+    :param quote: how the read spells a name
+    :ptype quote: Callable[[str], str]
+    :param clause: the read's conditions, unqualified
+    :ptype clause: str
+    :return: the ``FROM`` item
+    :rtype: str
+    """
+    newest = newest_of(conn, relation)
+    if newest is None:
+        return quote(relation)
+    key = ", ".join(quote_identifier(column) for column in newest.key)
+    candidates = f"({key}) IN (SELECT {key} FROM {quoted_table(relation)} WHERE {clause})"
+    bare = quote_identifier(relation.replace('"', "").rsplit(".", 1)[-1])
+    return f"({newest_relation(newest, relation, within=(candidates,))}) AS {bare}"
 
 
 async def read_past_marks(
@@ -108,7 +144,7 @@ async def read_past_marks(
     moved = " OR ".join(conditions)
     clause = " AND ".join([*pinned, f"({moved})"]) if pinned else moved
     selected = ", ".join(quote(column) for column in columns)
-    sql = f"SELECT {selected} FROM {quote(relation)} WHERE {clause}"
+    sql = f"SELECT {selected} FROM {_past_source(conn, relation, quote, clause)} WHERE {clause}"
     if types is not None:
         table = await l3_fetch_arrow(sent_by(conn), sql, *params, types=types)
         newest = dict(marks)
@@ -172,7 +208,7 @@ async def read_after(
     params.append(after)
     selected = ", ".join(quote_identifier(column) for column in columns)
     sql = (
-        f"SELECT {selected} FROM {relation(table, 'r', params)} WHERE {' AND '.join(conditions)} "
+        f"SELECT {selected} FROM {relation(newest_read(conn, table), 'r', params)} WHERE {' AND '.join(conditions)} "
         f"ORDER BY {quote_identifier(id_column)} LIMIT {limit}"
     )
     rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
