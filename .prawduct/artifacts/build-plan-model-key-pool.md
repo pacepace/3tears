@@ -114,6 +114,9 @@ What must stay possible:
   ship public names with no caller and fail CI's caller gate. The branch ships as one PR, with one `cumulative` review
   at chunk 08, which also matches the maintainer's preference for fewer, larger PRs (main session, 2026-11-26). `ReservationAlreadyOpen` and `ReservationSnapshot` have no
   caller here (third-party stores raise the one, and snapshot readers read the other), so they are ledgered.
+- Chunk 07 delegated (opus, isolated worktree) from the fix commit after 251d99ed0, for the same reason as chunk 06.
+  The main session integrates it, records the suite, then runs one `verify-resolutions` pass over chunks 06 and 07 and
+  the fix commit: the open caller blocker pins every other inner review to the whole branch.
 - Chunk 08's consumer note must say: anthropic's floor moves from 0.116 to 1.12, and openai and httpx are now direct
   dependencies of models.
 - Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
