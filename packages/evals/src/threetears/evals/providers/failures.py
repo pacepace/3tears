@@ -103,6 +103,11 @@ def _metadata(error: Mapping[str, object]) -> Mapping[str, object]:
     return metadata if isinstance(metadata, Mapping) else {}
 
 
+def _router_403(provider: Provider, status: int) -> bool:
+    """Whether the answer is a 403 from the router, the one provider whose 403 its body must tell apart."""
+    return provider == "openrouter" and status == 403
+
+
 def _router_content_block(provider: Provider, status: int, error: Mapping[str, object]) -> bool:
     """Whether the answer is OpenRouter's 403 for the request's content: a guardrail's or moderation's block.
 
@@ -116,7 +121,7 @@ def _router_content_block(provider: Provider, status: int, error: Mapping[str, o
     :param error: The body's error object.
     :return: True for a 403 OpenRouter answered with such metadata; False for any other answer.
     """
-    if provider != "openrouter" or status != 403:
+    if not _router_403(provider, status):
         return False
     metadata = _metadata(error)
     if metadata.get(_ROUTER_LIMIT_SOURCE) is not None:
@@ -136,7 +141,7 @@ def _router_budget_resets(provider: Provider, status: int, error: Mapping[str, o
     :param error: The body's error object.
     :return: The instant the budget resets, in UTC.
     """
-    if provider != "openrouter" or status != 403:
+    if not _router_403(provider, status):
         return None
     metadata = _metadata(error)
     resets = metadata.get(_ROUTER_RESETS_AT)
@@ -204,7 +209,7 @@ class ProviderError(Exception):
         ``content_policy_violation`` or ``refusal``; and everything else, a 500 and a 502 among it.
     :ivar credit_spent: Whether the answer says the key's prepaid credit or its own limit is spent: Anthropic's 400
         credit-balance notice, a 402 (OpenRouter's insufficient credits), or OpenRouter's 403 naming the key's own
-        spent limit (``limit_source`` ``openrouter_key_limit``). An ``account`` failure that another key may not meet,
+        spent limit (``limit_source`` :data:`_ROUTER_KEY_LIMIT`). An ``account`` failure that another key may not meet,
         so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``). A guardrail's or a
         workspace's spent budget is not: every key under the account meets it.
     :ivar resets_at: When the spent budget rolls over, in UTC, for OpenRouter's 403 naming a spent guardrail,
@@ -247,11 +252,7 @@ class ProviderError(Exception):
             if _model_unserved(provider, status, error, message)
             else "candidate"
         )
-        key_limit = (
-            provider == "openrouter"
-            and status == 403
-            and _metadata(error).get(_ROUTER_LIMIT_SOURCE) == _ROUTER_KEY_LIMIT
-        )
+        key_limit = _router_403(provider, status) and _metadata(error).get(_ROUTER_LIMIT_SOURCE) == _ROUTER_KEY_LIMIT
         self.credit_spent = credit or status == 402 or key_limit
         self.resets_at = _router_budget_resets(provider, status, error)
         said = f": {self.message}" if self.message else " (the response carried no message)"
