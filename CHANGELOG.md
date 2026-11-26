@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an abbreviation between a citation's subject and its value ends no sentence
+
+**Fixed (#1300):** the claim verifier read every full stop before a space as a sentence end, so a passage or key-fact
+quote with an abbreviation between the claim's subject and its value ("U.S.", "Vol. 2", "St. Louis", "No. 5", "Dr.
+John", "J. R. R. Tolkien") was asked again as subject and value in different sentences, costing a repair round and,
+repeated, the criterion. A full stop now ends no sentence after initials or a dotted acronym, or after a capitalised
+token of at most three letters followed by a capitalised word or a digit. A number before a full stop always ends a
+sentence, so "The pamphlet appeared in 1931. The bound volume followed in 1932." still parts the bound volume from
+1931. The rule is English-shaped: case is read in any cased script, but the shapes are how English abbreviates. Its
+known false accept: a real sentence ending on a single letter, an acronym or a short capitalised word before a
+capitalised word or a digit ("printed in May. The bound volume followed in 1932") reads as one sentence, its binding
+left to the model as within any sentence. `!`, `?`, line breaks and the semicolon rule are unchanged.
+
+**Changed:** the rule enters the claim verifier's identity and the web step's, so every claims criterion's fingerprint
+moves, and grades made before and after this never pool.
+
+**For hosts:** nothing to change; a host re-judging stored cells with a claims criterion gets a new fingerprint.
+
 ### evals: a key fact supports a claim only by naming the value it states
 
 **Fixed (#1322):** the truth step read a planted false claim (an artist's wrong home town) `supported` against the

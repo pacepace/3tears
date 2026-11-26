@@ -6,7 +6,7 @@ documents (``S1..``) and never a document the candidate fetched; the ground step
 sees only those documents. Code derives every verdict: case support always reads supported, case contradiction
 contradicted, and only a claim no case evidence bears on that the model doubts is nominated for the web. Each
 citation's quote is a stretch of the evidence shown, a passage or a key fact's line, with its subject and value found
-inside it and no sentence end or line break between them: that narrows a neighbouring value to one sentence or row (a
+inside it and no sentence end or line break between them (a full stop after an abbreviation is none): that narrows a neighbouring value to one sentence or row (a
 semicolon joins clauses of one sentence), keeps a key fact from supporting a value it does not state, and what one
 sentence leaves to the model calibration measures. A case document may override others: a
 citation an overriding document's opposite stance meets is overruled, the call is shown which document overrides
@@ -415,6 +415,110 @@ async def test_a_semicolon_joins_clauses_of_one_sentence_and_a_full_stop_still_p
         assert len(client.calls) == 1, "no repair call"
         (citation,) = grade.claims[0].truth_citations
         assert (citation.quote, grade.claims[0].verdict) == (text, "supported")
+
+
+#: Quotes with an abbreviation between the claim's subject and its value, each one sentence: the text, its subject and
+#: its value. A value may start at the word after the abbreviation, which the rule reads too.
+_ABBREVIATED = {
+    "dotted-acronym": ("The treaty was signed in the U.S. capital in 1931.", "The treaty", "1931"),
+    "volume-number": ("The bound volume was reissued as Vol. 2 of the series.", "The bound volume", "2"),
+    "saint-place": ("The bound volume was printed in St. Louis in 1931.", "The bound volume", "1931"),
+    "number-sign": ("The bound volume was listed as No. 5 in 1931.", "The bound volume", "1931"),
+    "title-name": ("The bound volume was edited by Dr. John Hale.", "The bound volume", "John Hale"),
+    "initials": ("The bound volume was illustrated by J. R. R. Tolkien.", "The bound volume", "Tolkien"),
+}
+
+_ABBREVIATED_CLAIM = _claim(
+    (Segment(text="The bound volume was printed in 1931.", unit=0),),
+    0,
+    "The bound volume was printed in 1931.",
+    "The bound volume was printed in 1931",
+)
+
+
+def _as_passage_or_key_fact(kind: str, text: str) -> dict[str, Any]:
+    """The evidence options a verify call takes that show ``text`` as one case passage, or as a key fact's claim."""
+    if kind == "passage":
+        return {"key": None, "documents": (EvidenceDocument(id="doc", provenance="case", title="Doc", text=text),)}
+    fact = ReferenceFact(claim=text, source_url="https://example.org/fact")
+    return {"key": ReferenceKey(core=(ReferenceEntity(name="Harrow Tales", facts=(fact,)),)), "documents": ()}
+
+
+@pytest.mark.parametrize("kind", ["passage", "key fact"])
+@pytest.mark.parametrize("shape", list(_ABBREVIATED))
+async def test_an_abbreviation_between_subject_and_value_ends_no_sentence(shape: str, kind: str) -> None:
+    """A full stop after initials, a dotted acronym or a short capitalised token before a capitalised word or a digit
+    marks an abbreviation, so a subject and value either side of one stand in one sentence and need no repair, in a
+    passage and in a key fact's line alike."""
+    text, subject, value = _ABBREVIATED[shape]
+    ref = "S1" if kind == "passage" else "K1"
+    client = _FakeScriptedClient([_batch(_answer(0, _cite(ref, quote=text, subject=subject, value=value)))])
+
+    verification = await _verify(client, (_ABBREVIATED_CLAIM,), **_as_passage_or_key_fact(kind, text))
+
+    assert len(client.calls) == 1, "no repair call"
+    (citation,) = _grade((_ABBREVIATED_CLAIM,), verification).claims[0].truth_citations
+    assert (citation.ref, citation.quote) == (ref, text)
+
+
+async def test_a_key_fact_lines_abbreviated_entity_and_an_abbreviation_in_its_fact_end_no_sentence() -> None:
+    key = ReferenceKey(
+        core=(
+            ReferenceEntity(
+                name="Dr. John Hale",
+                facts=(ReferenceFact(claim="Born in St. Louis in 1931.", source_url="https://example.org/hale"),),
+            ),
+        )
+    )
+    line = "A key fact about Dr. John Hale: Born in St. Louis in 1931."
+    client = _FakeScriptedClient([_batch(_answer(0, _cite("K1", quote=line, subject="Dr. John Hale", value="1931")))])
+
+    verification = await _verify(client, (_ABBREVIATED_CLAIM,), key=key, documents=())
+
+    assert len(client.calls) == 1, "no repair call"
+    (citation,) = _grade((_ABBREVIATED_CLAIM,), verification).claims[0].truth_citations
+    assert citation.quote == line
+
+
+@pytest.mark.parametrize("kind", ["passage", "key fact"])
+@pytest.mark.parametrize(
+    ("text", "subject", "value", "repaired"),
+    [
+        ("The pamphlet appeared in 1931. The bound volume followed in 1932.", "bound volume", "1931", True),
+        ("The bound volume appeared in 1931. The pamphlet followed in 1932.", "bound volume", "1932", True),
+        ("The bound volume was printed in Leeds. The pamphlet followed in 1932.", "bound volume", "1932", True),
+        ("The bound volume was printed in the U.S. The pamphlet followed in 1932.", "bound volume", "1932", False),
+        ("The bound volume was printed in May. The pamphlet followed in 1932.", "bound volume", "1932", False),
+    ],
+    ids=[
+        "value-before-subject-parted",
+        "subject-before-value-parted",
+        "long-word-ends-a-sentence",
+        "acronym-ending-a-sentence-reads-as-one",
+        "short-capitalised-word-ending-a-sentence-reads-as-one",
+    ],
+)
+async def test_a_number_or_a_long_word_still_ends_a_sentence_and_an_abbreviation_shape_never_does(
+    text: str, subject: str, value: str, repaired: bool, kind: str
+) -> None:
+    """A full stop after a year or a long word parts two sentences, so a neighbouring value is still asked again, the
+    subject before or after it. The accepted trade-off, since each break costs a repair round: a real sentence that
+    ends on an abbreviation shape before a capitalised word reads as one sentence with the next, and the neighbour's
+    value passes every code check, its binding left to the model as within any sentence."""
+    ref = "S1" if kind == "passage" else "K1"
+    client = _FakeScriptedClient([_batch(_answer(0, _cite(ref, quote=text, subject=subject, value=value))), _repair()])
+
+    grade = _grade(
+        (_ABBREVIATED_CLAIM,), await _verify(client, (_ABBREVIATED_CLAIM,), **_as_passage_or_key_fact(kind, text))
+    )
+
+    if repaired:
+        assert len(client.calls) == 2
+        assert f"its subject and value for {ref} stand in different sentences or rows" in client.calls[1]["user"]
+        assert grade.claims[0].verdict == "unverifiable"
+    else:
+        assert len(client.calls) == 1, "no repair call"
+        assert grade.claims[0].verdict == "supported", "a misbinding across an abbreviation shape passes every check"
 
 
 async def test_a_misbinding_across_a_semicolon_passes_every_code_check_and_is_left_to_the_model() -> None:
@@ -1572,10 +1676,10 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 
 
 #: The identity of :func:`_verifier` over a client of :data:`_MODEL`, with :data:`_WHOLE` and :data:`_REPAIRS`, from
-#: the shipped prompts, schemas, selection and batch rules, quote cap, attempts and fold. Produced by
+#: the shipped prompts, schemas, selection, batch and sentence-break rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:4950ac981b78"
+_PINNED_IDENTITY = "scripted/verify|claimverify:37ed43c946bb"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:

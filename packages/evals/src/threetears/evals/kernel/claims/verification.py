@@ -27,7 +27,15 @@ passage (never elsewhere in its document), or a key fact's line as shown after i
 the words that name the claim's subject and the words that state the value. Both are found inside the stored quote,
 and no sentence end (``.``, ``!`` or ``?`` before a space or the end) or line break may lie between them. That
 narrows the neighbouring-value error, a value taken from the sentence or row next to the one about this subject, to
-one sentence or row. Clauses joined by a semicolon count as one
+one sentence or row. A full stop after an abbreviation ends no sentence: after initials or a dotted acronym ("J. R.
+R. Tolkien", "the U.S. capital"), or after a capitalised token of at most three letters followed by a capitalised word
+or a digit ("Dr. John", "St. Louis", "Vol. 2", "No. 5"). Each break costs a repair round, so the rule takes the
+cheaper error: a real sentence that ends in one of those shapes before a capitalised word or a digit ("printed in
+May. The bound volume followed in 1932", "in the U.S. The ...") is read as one sentence, and its binding is left to
+the model, as within any sentence. The rule is English-shaped: case is read in any cased script, but the shapes are
+how English abbreviates, and a language that capitalises nouns ends more sentences on a short capitalised word. A
+year or any other number before the full stop is always a sentence end, so "The pamphlet appeared in 1931. The bound
+volume followed in 1932." still parts the bound volume from 1931. Clauses joined by a semicolon count as one
 sentence, so a subject and a value either side of one ("members may renew a loan once; doing so costs two dollars")
 pass with no repair; binding across the semicolon is not proved by code. That is the accepted trade-off: fewer forced
 repairs on rule-style sentences, for a weaker code check. Nor does the check prove the value belongs to that subject
@@ -261,9 +269,30 @@ _REPAIR_TEMPLATE: Final = (
 )
 
 #: What breaks one sentence or table row from the next, between a citation's subject and its value: a sentence end
-#: (``.``, ``!`` or ``?`` before a space or the end) or a line break. A semicolon joins clauses of one sentence, and
-#: is no break.
-_SENTENCE_BREAK: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
+#: (``.``, ``!`` or ``?`` before a space or the end) or a line break, unless :func:`_ends_no_sentence` says a full
+#: stop marks an abbreviation. A semicolon joins clauses of one sentence, and is no break.
+_SENTENCE_END: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
+
+#: The token a full stop follows: the letters, and full stops between them, up to it.
+_TOKEN_BEFORE: Final = re.compile(r"[^\W\d_](?:[^\W\d_]|\.)*\Z")
+
+#: Initials and dotted acronyms, the full stop after the last letter aside: ``J``, ``U.S``, ``e.g``.
+_INITIALS: Final = re.compile(r"(?:[^\W\d_]\.)*[^\W\d_]")
+
+#: The first character of the word after a full stop and its spaces.
+_NEXT_WORD: Final = re.compile(r"\s+(\S)")
+
+#: The most letters a capitalised abbreviation (``No``, ``St``, ``Vol``) holds.
+_ABBREVIATION_LETTERS: Final = 3
+
+#: The sentence-break rule, by revision and in words: part of the identity, raised with any change to
+#: :func:`_ends_no_sentence` or the patterns above.
+_SENTENCE_RULE: Final = (
+    "sentences-v2: a break is a '.', '!' or '?' before a space or the end, or a line break; a '.' is no break after "
+    "initials or a dotted acronym (single letters, each but the last followed by '.'), whatever follows, nor after a "
+    "token of 2 to 3 letters, the first upper case and the rest lower case, followed by spaces and an upper-case "
+    "letter or a digit"
+)
 
 #: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
 #: shown, so part of the identity. ``{kind}`` names what a quote was cut from: a passage, or a key fact.
@@ -971,7 +1000,7 @@ class ClaimVerifier:
                 ],
                 "pages": self.pages.model_dump(mode="json"),
                 "faults": dict(_FAULTS),
-                "sentence_break": _SENTENCE_BREAK.pattern,
+                "sentence_break": _sentence_break_definition(),
                 "selection": [_SELECTION_RULE, _ANCHOR_MIN_CHARS, _WORD.pattern],
                 "batches": _BATCH_RULE,
                 "repairs": self.repairs.model_dump(mode="json"),
@@ -1560,9 +1589,52 @@ def check_quote(
         spans[what] = TextSpan(start=found[0], end=found[1])
     first, second = sorted((spans["subject"], spans["value"]), key=lambda found: found.start)
     # The quote is the shown text's own, not a model's: where its sentences break is structure, read by position.
-    if second.start > first.end and _SENTENCE_BREAK.search(held[first.end : second.start]):
+    if _breaks_between(held, first.end, second.start):
         return None, _FAULTS["apart"].format(ref=ref)
     return CheckedQuote(quote=held, subject=spans["subject"], value=spans["value"]), None
+
+
+def _breaks_between(text: str, start: int, end: int) -> bool:
+    """Whether a sentence or row break starts in ``text[start:end]``. Each is read in the whole of ``text``, since
+    what follows a full stop, and whether it marks an abbreviation, may stand in the subject or value span on either
+    side ("Vol. 2", with the value ``2``)."""
+    for found in _SENTENCE_END.finditer(text, start):
+        if found.start() >= end:
+            return False
+        if found.group() != "." or not _ends_no_sentence(text, found.start()):
+            return True
+    return False
+
+
+def _ends_no_sentence(text: str, at: int) -> bool:
+    """Whether the full stop at ``text[at]`` marks an abbreviation rather than a sentence end: it follows initials or
+    a dotted acronym ("J. R. R. Tolkien", "the U.S. capital"), or a capitalised token of at most
+    :data:`_ABBREVIATION_LETTERS` letters before a capitalised word or a digit ("Dr. John", "St. Louis", "Vol. 2",
+    "No. 5"). Case is read by :meth:`str.isupper`, so any cased script takes the rule; the shapes themselves are
+    those of English and the languages that abbreviate as it does. It accepts a real sentence end of the same shapes
+    too: one that ends on a single letter, an acronym or a short capitalised word ("in May. The pamphlet ...")."""
+    token = _TOKEN_BEFORE.search(text, 0, at)
+    if token is None:
+        return False
+    word = token.group()
+    if _INITIALS.fullmatch(word):
+        return True
+    if not (word.isalpha() and len(word) <= _ABBREVIATION_LETTERS and word[0].isupper() and word[1:].islower()):
+        return False
+    after = _NEXT_WORD.match(text, at + 1)
+    return after is not None and (after.group(1).isupper() or after.group(1).isdigit())
+
+
+def _sentence_break_definition() -> list[Any]:
+    """The sentence-break rule as an identity reads it: its revision in words, and the patterns and length it uses."""
+    return [
+        _SENTENCE_RULE,
+        _SENTENCE_END.pattern,
+        _TOKEN_BEFORE.pattern,
+        _INITIALS.pattern,
+        _NEXT_WORD.pattern,
+        _ABBREVIATION_LETTERS,
+    ]
 
 
 def quote_check_definition() -> dict[str, Any]:
@@ -1570,7 +1642,7 @@ def quote_check_definition() -> dict[str, Any]:
     sentence-break rule, the quote cap and the verbatim fold's identity."""
     return {
         "faults": dict(_FAULTS),
-        "sentence_break": _SENTENCE_BREAK.pattern,
+        "sentence_break": _sentence_break_definition(),
         "quote_chars": CLAIM_QUOTE_CHARS,
         "fold": VERBATIM_FOLD.identity,
     }
