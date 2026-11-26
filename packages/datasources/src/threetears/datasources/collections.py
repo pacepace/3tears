@@ -124,13 +124,18 @@ _DATASOURCE_TABLES_SCHEMA = TableSchema(
         Column("column_hash", STRING_TYPE, nullable=True),
         Column("coverage_dimension", STRING_TYPE, nullable=True),
     ],
-    # the hub's unique index on the natural key (hub v001): a table by its datasource, schema and name
-    unique_constraints=(
-        UniqueConstraint(
-            "datasource_tables_datasource_id_schema_name_table_name_key", "datasource_id", "schema_name", "table_name"
-        ),
-    ),
     indexes=(
+        # the hub's unique index on the natural key (hub v001), among live rows only (LIVE_UNIQUE_INDEXES, Pace
+        # 2026-11-25): a table by its datasource, schema and name; a gone table keeps its name until cleanup without
+        # refusing a re-create, which is a new row with a new id
+        Index(
+            "datasource_tables_datasource_id_schema_name_table_name_key",
+            "datasource_id",
+            "schema_name",
+            "table_name",
+            unique=True,
+            where="NOT gone",
+        ),
         # hub v146: the tables bound to a template. Declared here too because 3tears reads by it: a template's delete
         # reads the tables its ON DELETE SET NULL unbinds (DeleteCascade on TableTemplateCollection), through
         # read_delete_cascade's keyset read by template_id. The hub's own read keeps its place in the purpose (the
@@ -394,9 +399,11 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
-        # the hub's unique index on the name (hub v001): a datasource by its name
-        unique_constraints=(UniqueConstraint("idx_datasources_name", "name"),),
         indexes=(
+            # the hub's unique index on the name (hub v001), among live rows only (LIVE_UNIQUE_INDEXES, Pace
+            # 2026-11-25): a datasource by its name; a gone datasource keeps its name until cleanup without refusing a
+            # re-create, which is a new row with a new id
+            Index("idx_datasources_name", "name", unique=True, where="NOT gone"),
             # hub v001: the rows of one status (``USING lsm (status HASH)`` on YugabyteDB). Declared here because 3tears
             # reads by it: the scheduler sweep's active ids (iter_active_ids), run on its own by the hub's introspect
             # scheduler. The hub's migration stays the one that builds the index

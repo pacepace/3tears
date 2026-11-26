@@ -85,9 +85,14 @@ CREATE TABLE datasources (
     face_platform_tool boolean NOT NULL DEFAULT TRUE,
     knowledge_required boolean NOT NULL DEFAULT FALSE,
     geo jsonb,
-    require_documented_tables boolean DEFAULT FALSE NOT NULL
+    require_documented_tables boolean DEFAULT FALSE NOT NULL,
+    epoch bigint NOT NULL,
+    gone boolean NOT NULL DEFAULT false
 )
 """
+
+# the hub's v001 name key, among live rows only since the hub made it so (datasources' LIVE_UNIQUE_INDEXES)
+_DATASOURCES_INDEXES = ("CREATE UNIQUE INDEX idx_datasources_name ON datasources (name) WHERE NOT gone",)
 
 # ``platform.datasource_tables`` after hub v001, v006, v010, v033.
 _DATASOURCE_TABLES_DDL = """
@@ -107,10 +112,16 @@ CREATE TABLE datasource_tables (
     date_updated timestamp with time zone NOT NULL,
     column_hash text,
     coverage_dimension text,
-    CONSTRAINT datasource_tables_datasource_id_schema_name_table_name_key
-        UNIQUE (datasource_id, schema_name, table_name)
+    epoch bigint NOT NULL,
+    gone boolean NOT NULL DEFAULT false
 )
 """
+
+# the hub's v001 natural key, among live rows only since the hub made it so (datasources' LIVE_UNIQUE_INDEXES)
+_DATASOURCE_TABLES_INDEXES = (
+    "CREATE UNIQUE INDEX datasource_tables_datasource_id_schema_name_table_name_key "
+    "ON datasource_tables (datasource_id, schema_name, table_name) WHERE NOT gone",
+)
 
 # ``platform.datasource_columns`` after hub v001, v006.
 _DATASOURCE_COLUMNS_DDL = """
@@ -172,6 +183,8 @@ CREATE TABLE table_templates (
     origin_template_id uuid REFERENCES table_templates(id) ON DELETE SET NULL,
     date_created timestamp with time zone NOT NULL,
     date_updated timestamp with time zone NOT NULL,
+    epoch bigint NOT NULL,
+    gone boolean NOT NULL DEFAULT false,
     CONSTRAINT table_templates_visibility_check
         CHECK (visibility IN ('private', 'public', 'restricted')),
     CONSTRAINT table_templates_visibility_customer_check
@@ -181,7 +194,7 @@ CREATE TABLE table_templates (
 """
 
 _TABLE_TEMPLATES_INDEXES = (
-    "CREATE UNIQUE INDEX table_templates_customer_id_name_key ON table_templates (customer_id, name)",
+    "CREATE UNIQUE INDEX table_templates_customer_id_name_key ON table_templates (customer_id, name) WHERE NOT gone",
 )
 
 # ``platform.datasource_schema_digests`` after hub v029.
@@ -198,7 +211,9 @@ CREATE TABLE datasource_schema_digests (
 
 _ALL_DDL: tuple[str, ...] = (
     _DATASOURCES_DDL,
+    *_DATASOURCES_INDEXES,
     _DATASOURCE_TABLES_DDL,
+    *_DATASOURCE_TABLES_INDEXES,
     _DATASOURCE_COLUMNS_DDL,
     _DATASOURCE_RELATIONS_DDL,
     *_DATASOURCE_RELATIONS_INDEXES,
@@ -209,6 +224,9 @@ _ALL_DDL: tuple[str, ...] = (
 
 #: columns a save stamps itself, so a case cannot choose their value
 _STAMPED: frozenset[str] = frozenset({"date_created", "date_updated"})
+
+#: the stamp a ``ROW_STAMPED`` table's every write carries (its epoch rising, its gone flag), the collection's own
+_ROW_STAMP: frozenset[str] = frozenset({"epoch", "gone"})
 
 
 def _when(days: int) -> datetime:
@@ -672,6 +690,8 @@ async def test_every_table_column_is_owned_by_the_collection_or_listed_as_hub_ow
     }
     assert table_columns, f"no columns found for {case.table}, so this check would pass vacuously"
     accounted = set(case.row()) | set(case.hub_owned) | _STAMPED
+    if getattr(case.collection, "schema").row_epoch is not None:  # noqa: B009 - a declared collection's schema
+        accounted |= _ROW_STAMP
     assert accounted == table_columns
 
 
@@ -790,10 +810,14 @@ async def test_a_save_of_a_partial_row_writes_only_the_columns_it_carries(
 
     after = await store.stored(case, key)
     assert after[column] == value
-    untouched = {name for name in before if name not in partial}
+    # a stamped row's epoch rises on every write: it is the write's, not a column the partial row leaves alone
+    untouched = {name for name in before if name not in partial and name != "epoch"}
     assert {name: after[name] for name in untouched} == {name: before[name] for name in untouched}
-    # the handle holds the row as L3 holds it, not the partial row it sent.
-    assert {name: entity.to_dict()[name] for name in after} == after
+    # the handle holds the row as L3 holds it, not the partial row it sent (a live row's gone flag is no field of it)
+    assert after.get("gone") in (None, False)
+    assert {name: entity.to_dict()[name] for name in after if name != "gone"} == {
+        name: value for name, value in after.items() if name != "gone"
+    }
 
 
 #: what each partial row of ``_PARTIAL_UPDATES`` lacks for an insert, in declared column order

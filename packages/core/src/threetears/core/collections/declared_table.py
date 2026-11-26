@@ -382,6 +382,22 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         declared = self.schema.row_epoch
         return declared is not None and not declared.versions
 
+    def _live_arbiter(self) -> str:
+        """the predicate an upsert on a stamped table's natural key names after its conflict columns: ``WHERE NOT gone``.
+
+        Pace 2026-11-25: a stamped table's unique names hold its live rows only (``UNIQUE (...) WHERE NOT gone``,
+        :mod:`threetears.core.data.migrations.live_unique`), so a gone row keeps its name until cleanup without
+        refusing a re-create. PostgreSQL infers such a partial index as the arbiter only from a predicate implying its
+        own, and a whole index satisfies the same clause, so the clause holds before and after the index is made
+        live-only. The primary key stays whole: a write on it revives a gone row in place (:meth:`_stamped_row`).
+
+        :return: `` WHERE NOT gone`` for a stamped table upserting on a natural key; empty otherwise
+        :rtype: str
+        """
+        if self._rises_epoch() and tuple(self.conflict_columns) != tuple(self.schema.pk_columns):
+            return f" WHERE NOT {GONE_COLUMN}"
+        return ""
+
     def _stamped_row(self, data: dict[str, Any], conn: Any) -> dict[str, Any]:
         """``data`` with its write's epoch, for a table that declares a row epoch: a stamped table's write carries a
         fresh stamp, from the caller's transaction when ``conn`` is in one (``CallerTransaction.in_place_epoch``, so its
@@ -450,7 +466,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
                 action = "DO NOTHING"
             sql = (
                 f"INSERT INTO {table} ({', '.join(carried)}) VALUES ({placeholders}) "  # noqa: S608 - declared names
-                f"ON CONFLICT ({', '.join(conflict)}) {action}"
+                f"ON CONFLICT ({', '.join(conflict)}){self._live_arbiter()} {action}"
             )
             bound = list(carried)
         else:
@@ -469,6 +485,9 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
                 f"{name} = {render_param(self._column(name), index)}"
                 for index, name in enumerate(conflict, start=len(updated) + 1)
             )
+            if self._live_arbiter():
+                # a natural key holds its live rows only: a gone row of the same name is another row, never this one
+                keys = f"{keys} AND NOT {GONE_COLUMN}"
             sql = f"UPDATE {table} SET {assignments} WHERE {keys}"  # noqa: S608 - declared names
             bound = [*updated, *conflict]
         if returning:

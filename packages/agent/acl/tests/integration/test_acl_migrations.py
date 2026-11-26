@@ -21,6 +21,7 @@ from threetears.agent.acl import RoleAssignmentCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.collections import init_connection
+from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -57,8 +58,12 @@ async def acl_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     try:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
-        # acl v001-v005 and agent-tools platform v001-v004
-        assert await _runner().apply_for_platform_schema(_Store(conn)) == 9
+        # namespaces is moveable (row_scope, v007): its schema holds the moves table its moving writes append to, which
+        # the deployment creates (the runner refuses the schema without it: epoch_catalog.refuse_moveable_without_moves)
+        for statement in TENANT_MOVES_SCHEMA.create_statements(yugabyte=False):
+            await conn.execute(statement)
+        # acl v001-v008 and agent-tools platform v001-v004
+        assert await _runner().apply_for_platform_schema(_Store(conn)) == 12
     finally:
         await conn.close()
     pool: asyncpg.Pool = await asyncpg.create_pool(
@@ -82,7 +87,7 @@ async def acl_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
 async def _group(pool: asyncpg.Pool, name: str, customer: uuid.UUID | None) -> uuid.UUID:
     group_id = uuid.uuid4()
     await pool.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ($1, $2, $3, $4, 1)",
         "platform" if customer is None else "customer",
         group_id,
         customer,
@@ -94,7 +99,8 @@ async def _group(pool: asyncpg.Pool, name: str, customer: uuid.UUID | None) -> u
 async def _role(pool: asyncpg.Pool, name: str, customer: uuid.UUID | None = None) -> uuid.UUID:
     role_id = uuid.uuid4()
     await pool.execute(
-        "INSERT INTO roles (role_id, name, description, permissions, customer_id) VALUES ($1, $2, 'r', '[]', $3)",
+        "INSERT INTO roles (role_id, name, description, permissions, customer_id, epoch) "
+        "VALUES ($1, $2, 'r', '[]', $3, 1)",
         role_id,
         name,
         customer,
@@ -107,7 +113,7 @@ async def _namespace(pool: asyncpg.Pool, name: str, **over: Any) -> uuid.UUID:
     namespace_id = uuid.uuid4()
     await pool.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, schema_name, "
-        "owner_namespace, date_created, date_updated) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())",
+        "owner_namespace, date_created, date_updated, epoch) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now(), 1)",
         row["row_scope"],
         namespace_id,
         name,
@@ -149,6 +155,24 @@ async def test_names_are_unique_within_their_scope(acl_pool: asyncpg.Pool) -> No
     await _namespace(acl_pool, "tools/a")
 
 
+async def test_a_gone_name_is_created_again_as_a_new_row(acl_pool: asyncpg.Pool) -> None:
+    """v008: a group's and a role's name holds its live rows only, so a deleted (gone) name is created again."""
+    customer = uuid.uuid4()
+    for scope in (None, customer):
+        first_group = await _group(acl_pool, "editors", scope)
+        await acl_pool.execute("UPDATE groups SET gone = true WHERE group_id = $1", first_group)
+        again = await _group(acl_pool, "editors", scope)
+        assert again != first_group
+        # two live groups of one name in one scope are still refused
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await _group(acl_pool, "editors", scope)
+        first_role = await _role(acl_pool, "reader", scope)
+        await acl_pool.execute("UPDATE roles SET gone = true WHERE role_id = $1", first_role)
+        assert await _role(acl_pool, "reader", scope) != first_role
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await _role(acl_pool, "reader", scope)
+
+
 async def test_namespace_rows_keep_the_platform_rules(acl_pool: asyncpg.Pool) -> None:
     customer = uuid.uuid4()
     await _namespace(
@@ -169,8 +193,8 @@ async def test_namespace_rows_keep_the_platform_rules(acl_pool: asyncpg.Pool) ->
 async def test_an_unstamped_grant_is_manual(acl_pool: asyncpg.Pool) -> None:
     group_id, role_id = await _group(acl_pool, "g", None), await _role(acl_pool, "r")
     await acl_pool.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type) "
-        "VALUES ('platform', $1, $2, $3, 'all')",
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, epoch) "
+        "VALUES ('platform', $1, $2, $3, 'all', 1)",
         uuid.uuid4(),
         role_id,
         group_id,
