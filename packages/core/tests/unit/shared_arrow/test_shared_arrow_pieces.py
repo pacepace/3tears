@@ -4,7 +4,9 @@ The contracts (reports #53, ``SPEC-from-reports53-slot.md``): (a) a store with l
 the change, applies the change; (b) a result several pieces big is written in pieces and published as one version, a
 lease on the old version still seeing the old rows, no piece left open once it is claimed; (c) a store with no room
 for the next piece fails the whole result loudly -- refused counted, every piece discarded, nothing published -- and
-a later result that fits applies. A part bigger than one piece is the only hard failure, named with its bytes.
+a later result that fits applies. A part bigger than one piece is the only hard failure, named with its bytes;
+(d) a slot that may grow (``grow_to``) is reserved at what its job expects, and a part bigger than its piece grows the
+piece in place, the store's room checked again, failing only past ``grow_to`` or the room.
 """
 
 from __future__ import annotations
@@ -174,6 +176,54 @@ class TestABigResult:
         store.discard(slot)
         assert store.segments() == ()
         assert store.status()["slots_open"] == 0
+
+
+class TestAPieceThatGrows:
+    def test_a_part_bigger_than_its_piece_grows_it(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=24 << 20)
+        slot = store.reserve_pieces(1 << 20, minimum=1 << 20, grow_to=8 << 20)
+        huge = _part(1, rows=4 * PART_ROWS)
+        assert huge.nbytes > 1 << 20
+        with slot.writing() as write:
+            write({TABLE: Parts(schema=_part(0).schema, parts={"small": _part(0, rows=10), "huge": huge})})
+        segment = store.claim(slot)
+        assert segment is not None
+        try:
+            assert segment.tables[TABLE].num_rows == 10 + 4 * PART_ROWS
+        finally:
+            segment.close()
+        assert store.status()["pieces_grown"] >= 1
+        assert store.refused == 0
+        assert store.status()["slots_open"] == 0
+
+    def test_a_part_past_grow_to_fails_naming_it(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=24 << 20)
+        slot = store.reserve_pieces(1 << 20, minimum=1 << 20, grow_to=2 << 20)
+        with pytest.raises(SharedArrowFullError, match=r"part 'huge'.* bytes"):
+            with slot.writing() as write:
+                write({TABLE: Parts(schema=_part(0).schema, parts={"huge": _part(1, rows=4 * PART_ROWS)})})
+        store.discard(slot)
+        assert store.segments() == ()
+        assert store.status()["pieces_grown"] == 0
+
+    def test_no_room_to_grow_fails_counted(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=12 << 20)
+        store.publish("v1", {TABLE: Parts(schema=_part(0).schema, parts={"p0": _part(0, rows=400_000)})})
+        refused = store.refused
+        # ~5.6 MB held of 12 MiB: a part of ~9 MB passes the room there is, however far the piece may grow
+        slot = store.reserve_pieces(1 << 20, minimum=1 << 20, grow_to=64 << 20)
+        with pytest.raises(SharedArrowFullError, match="no room to grow"):
+            with slot.writing() as write:
+                write({TABLE: Parts(schema=_part(0).schema, parts={"huge": _part(1, rows=12 * PART_ROWS)})})
+        store.discard(slot)
+        assert store.refused == refused + 1
+        assert store.segments() == ()
+        assert store.status()["slots_open"] == 0
+
+    def test_grow_to_under_the_piece_is_refused(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=24 << 20)
+        with pytest.raises(ValueError, match="grow_to"):
+            store.reserve_pieces(2 << 20, minimum=1 << 20, grow_to=1 << 20)
 
 
 class TestAFullStore:
