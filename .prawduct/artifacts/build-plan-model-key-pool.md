@@ -84,7 +84,8 @@ What must stay possible:
 - [DECISION: the work ships as two PRs from this branch. Part 1 is chunks 01-05, the foundations, each useful on its
   own. Part 2 is chunks 06-08, the pool itself. Each part ends in its own `cumulative` review. | Why: one review over
   the whole diff spans several risk surfaces and well over 12 judgeable files, which the roster rule says one pass
-  can't hold | owner can veto]
+  can't hold | owner can veto] *Superseded mid-build by one PR; see chunk 06's integration line below. The review-size
+  concern stays: the boundary review runs the three-reviewer roster, scoped by risk surface.*
 
 **Decisions made mid-build:** *(appended while building, one line each)*
 - Chunk 01: `UsageAccumulator` prices through `cost_of_usage` too, per call, so a turn's total agrees with the tracker
@@ -99,6 +100,22 @@ What must stay possible:
 - Chunk 06 delegated (opus, isolated worktree) instead of built by the main session: the main session's context was
   spent integrating wave 1, and a fresh builder with the merged APIs in its brief builds it better. The main session
   still integrates and governs it. Partition otherwise unchanged.
+- Chunk 03: `KeyErrorClassifier`, `VerdictScope` and `classifier_for` join the caller-test red; chunk 06's pool is
+  their caller (rev-20261126T022714Z-c4a71301 R-1 rides chunk 06 with the earlier two).
+- Chunk 03: `httpx` declared as a base dependency of models; `classify.py` imports it on the base path (same review, R-2).
+- Chunk 03: `providers/_langchain_anthropic_internals.py` overrides langchain-anthropic's private `_client_params`
+  through `super()`, the one route to hand the SDK client a `Middleware`. Ruff's SLF001 does not flag `super()._x`, so
+  `_underscore_exemptions.txt` would carry a stale line; the module docstring records the override and the version it
+  is verified against.
+- Chunk 06 integrated (merge 251d99ed0). It gives callers to every earlier red name but `estimate_input_tokens`.
+  The red now holds `KeyPool`, `KeyPoolLease`, `reservation_estimate` and `estimate_input_tokens`. Chunk 07's
+  pooled model is their production caller (it takes the pool, reserves a lease per attempt and prices the estimate),
+  so the red, and the open caller findings, ride chunk 07. That retires the two-PR split above: Part 1 alone would
+  ship public names with no caller and fail CI's caller gate. The branch ships as one PR, with one `cumulative` review
+  at chunk 08, which also matches the maintainer's preference for fewer, larger PRs (main session, 2026-11-26). `ReservationAlreadyOpen` and `ReservationSnapshot` have no
+  caller here (third-party stores raise the one, and snapshot readers read the other), so they are ledgered.
+- Chunk 08's consumer note must say: anthropic's floor moves from 0.116 to 1.12, and openai and httpx are now direct
+  dependencies of models.
 - Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
   every table in that tuple and would fail where it runs before v004 creates them. Money and JSON are TEXT: no float
   before the budget compare, and JSONB would reorder the reservations the sweep reports in order.
@@ -250,8 +267,8 @@ exhausted, and its `status()` and log lines are read as an operator would read t
   0. verify-api: read `BaseCollection.l2_cas_mutate` and the synchronous persist path, and confirm the won result is
      in L3 before the call returns
   1. Acceptance criteria met and tests pass
-  2. Committed, then `/prawduct:critic cumulative` run over Part 1 and blocking findings resolved
-- **Critic mode:** cumulative
+  2. `/prawduct:critic` run and blocking findings resolved (the one `cumulative` review is chunk 08's, over the branch)
+  3. Committed
 
 ### Chunk 06: The pool core
 
@@ -330,4 +347,4 @@ exhausted, and its `status()` and log lines are read as an operator would read t
 - **Type:** cumulative-final
 - **Done when:**
   1. Acceptance criteria met and tests pass
-  2. Committed, then `/prawduct:critic cumulative` run over Part 2 and blocking findings resolved
+  2. Committed, then `/prawduct:critic cumulative` run over the branch and blocking findings resolved

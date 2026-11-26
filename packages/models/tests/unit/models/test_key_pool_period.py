@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from threetears.models.key_pool.period import period_bounds, period_id
@@ -89,6 +89,9 @@ class TestAnchorDay:
             period_id(datetime(2026, 11, 26), 1)
 
 
+# Hypothesis's timing checks measure the host, not the property, and the shared test pool includes a slow host.
+_NO_TIMING_CHECKS = settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+
 _INSTANTS = st.datetimes(
     min_value=datetime(2000, 1, 1),
     max_value=datetime(2200, 12, 31),
@@ -99,6 +102,7 @@ _INSTANTS = st.datetimes(
 class TestPeriodProperties:
     """what holds for every instant and anchor."""
 
+    @_NO_TIMING_CHECKS
     @given(now=_INSTANTS, anchor_day=st.integers(min_value=1, max_value=28))
     def test_bounds_contain_now_and_start_on_the_anchor(self, now: datetime, anchor_day: int) -> None:
         start, rollover = period_bounds(now, anchor_day)
@@ -108,12 +112,14 @@ class TestPeriodProperties:
         months_apart = (rollover.year - start.year) * 12 + rollover.month - start.month
         assert months_apart == 1
 
+    @_NO_TIMING_CHECKS
     @given(now=_INSTANTS, anchor_day=st.integers(min_value=1, max_value=28))
     def test_the_rollover_starts_the_next_period(self, now: datetime, anchor_day: int) -> None:
         start, rollover = period_bounds(now, anchor_day)
         assert period_bounds(rollover, anchor_day)[0] == rollover
         assert period_bounds(rollover - timedelta(microseconds=1), anchor_day)[0] == start
 
+    @_NO_TIMING_CHECKS
     @given(now=_INSTANTS, anchor_day=st.integers(min_value=1, max_value=28))
     def test_ids_are_stable_within_a_period_and_sort_in_order(self, now: datetime, anchor_day: int) -> None:
         start, rollover = period_bounds(now, anchor_day)
