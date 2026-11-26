@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a type checker refuses a misspelt name from the package root
+
+**Fixed:** `from threetears.evals import Evall` passed strict mypy, typed `Any`, because the root's module
+`__getattr__`, which serves its exports on first use, was visible to the checker. The checker no longer sees it, as
+on `threetears.evals.providers`: it sees each exported name's real type, and `__version__` as a `str`, and refuses a
+name the root does not export. The runtime surface and `__all__` are unchanged.
+
+**Changed:** two protocols a public signature already names are exported from `threetears.evals.kernel`,
+`provisional`: `DefinitionStore` (the `storage` of `run.create_rubric_dim`, `update_rubric_dim`,
+`create_judge_config` and the other definition authoring functions) and `RunResultsStore` (the `storage` of
+`run.list_results`). Each was imported in its signature's module only for the type checker, where the closed-surface
+check could not see it; `DefinitionStore` was to leave `kernel` in this release and stays. `NestedSchema.keyword` is
+typed as its four keywords, `Literal["items", "properties", "additionalProperties", "anyOf"]`, rather than through an
+alias no root exported.
+
+**For hosts:** `kernel.DefinitionStore` was `host-contract` in v0.94.0 and is `provisional` from this release: it
+stays exported, but is promised nothing, so an import gate that refuses provisional names refuses it. Type the
+parameter as `kernel.EvalStorage`, which implements it, or keep the protocol knowing it may move in any release.
+`kernel.RunResultsStore` is new and `provisional`.
+
 ### evals: importing `Model` loads no action or operation
 
 **Fixed (#1334):** `from threetears.evals.providers import Model` took about 1.4s cold, since the client takes its
@@ -2019,7 +2039,7 @@ cut-over with no shim (owner ruling, 2026-11-15). The host guide (its stability 
 the README, the reference and `MIGRATIONS.toml`'s header said a deprecation cycle; they no longer do.
 
 **Removed:** names no production code uses, from their public roots: `kernel.CassetteStore`,
-`kernel.DefinitionStore`, `kernel.RunRecordStore`, `kernel.production_replicating_cost`,
+`kernel.RunRecordStore`, `kernel.production_replicating_cost`,
 `schema.sent_settings_of`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
 `schema.utc_now_iso`, `analysis.lint_prose`, `analysis.check_names` and `analysis.host_declarations_digest`. The
 engine still uses each inside; `MIGRATIONS.toml` records each released one with its port. `Log`, `quick.measure` and
@@ -2029,8 +2049,8 @@ measures with `@measure`.
 **For hosts:** a single cut-over, with no deprecated re-export: an import of a removed name fails at once. Check your
 imports against this map:
 
-- `kernel.CassetteStore`, `kernel.DefinitionStore`: type the parameter as `kernel.EvalStorage`. `RunStore`,
-  `ResultStore` and `JobStore` hold no cassette or definition method.
+- `kernel.CassetteStore`: type the parameter as `kernel.EvalStorage`. `RunStore`, `ResultStore` and `JobStore` hold
+  no cassette method.
 - `kernel.RunRecordStore`: `kernel.EvalStorage`, or `kernel.RunStore` where only runs are read and
   `kernel.ResultStore` where only results are.
 - `schema.sent_settings_of`: `getattr(completion, "sent_settings", None)`.

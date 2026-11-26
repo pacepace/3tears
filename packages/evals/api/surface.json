@@ -2046,6 +2046,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.DefinitionStore": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.DeliveryOutcome": {
       "kind": "literal",
       "signature": "",
@@ -2898,6 +2903,11 @@
     },
     "threetears.evals.kernel.RunIndexEntry": {
       "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.RunResultsStore": {
+      "kind": "protocol",
       "signature": "",
       "tier": "provisional"
     },

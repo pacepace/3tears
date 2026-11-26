@@ -17,10 +17,12 @@ engine type found:
 * every exception named in a ``:raises`` field of a public docstring.
 
 An annotation token counts when it resolves to a class, or a module-level type alias, defined
-under ``threetears.evals``. Exempt, because a host never needs the name: a ``TypeVar``, and an
-``Annotated`` alias over builtins (``ModelProse`` is a ``str`` to every reader; its metadata is a
-validator). A PRIVATE engine class reachable from a public signature fails as a leak — it cannot be
-exported, so the signature has to change.
+under ``threetears.evals``. It resolves against the namespace of the module that wrote it, together with the
+engine names that module imports only under ``if TYPE_CHECKING:``: a type a signature names is the host's to name
+however its module imports it, so a checker-only import hides nothing from the walk. Exempt, because a host never
+needs the name: a ``TypeVar``, and an ``Annotated`` alias over builtins (``ModelProse`` is a ``str`` to every
+reader; its metadata is a validator). A PRIVATE engine class reachable from a public signature fails as a leak — it
+cannot be exported, so the signature has to change.
 
 **What this cannot see.** A type that appears only inside a function body, a ``dict[str, Any]`` a
 lens returns (its keys are not types), and a type named only in prose outside a ``:raises`` field.
@@ -28,8 +30,10 @@ lens returns (its keys are not types), and a type named only in prose outside a 
 
 from __future__ import annotations
 
+import annotationlib
 import ast
 import importlib
+import importlib.util
 import inspect
 import pkgutil
 import re
@@ -40,6 +44,10 @@ from dataclasses import fields, is_dataclass
 from typing import Annotated, Any, TypeVar, get_args, get_origin
 
 import threetears.evals
+from threetears.evals.gen import ProposedDraft
+from threetears.evals.kernel import DefinitionStore
+from threetears.evals.run import create_rubric_dim
+from threetears.evals.schema import RubricProposal
 
 #: The public roots a host imports from: the package itself, whose ``__all__`` holds the quick path's names
 #: (``Eval``, ``Result``, ...), then the package's own tuple, which the package matrix test holds equal to the roots
@@ -75,6 +83,43 @@ def _module_level_aliases() -> dict[int, tuple[str, str]]:
                 if _is_type_alias(value):
                     aliases.setdefault(id(value), (module.__name__, name))
     return aliases
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    """``TYPE_CHECKING`` or ``typing.TYPE_CHECKING``: the test of a block only a type checker reads."""
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _checker_only_names(module: Any) -> dict[str, Any]:
+    """Each engine name ``module`` imports under ``if TYPE_CHECKING:``, resolved to what the import would bind.
+
+    Only imports from ``threetears.evals`` are resolved: an annotation token counts only when it names an engine
+    class or alias, so a third-party name a module imports for its checker can never be one.
+    """
+    names: dict[str, Any] = {}
+    for node in ast.walk(ast.parse(inspect.getsource(module))):
+        if not (isinstance(node, ast.If) and _is_type_checking(node.test)):
+            continue
+        for statement in node.body:
+            if isinstance(statement, ast.ImportFrom):
+                source_name = importlib.util.resolve_name(
+                    "." * statement.level + (statement.module or ""), module.__package__
+                )
+                if not source_name.startswith("threetears.evals"):
+                    continue
+                source = importlib.import_module(source_name)
+                for alias in statement.names:
+                    bound = getattr(source, alias.name, None)
+                    if bound is None:
+                        bound = importlib.import_module(f"{source_name}.{alias.name}")
+                    names[alias.asname or alias.name] = bound
+            elif isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    if alias.name.startswith("threetears.evals") and alias.asname is not None:
+                        names[alias.asname] = importlib.import_module(alias.name)
+    return names
 
 
 def _is_type_alias(value: object) -> bool:
@@ -115,6 +160,17 @@ class _Walk:
         self.reached: dict[int, tuple[str, str]] = {}
         self._queue: list[tuple[str, object]] = []
         self._visited: set[int] = set()
+        self._namespaces: dict[str, dict[str, Any]] = {}
+
+    def _namespace(self, module_name: str) -> dict[str, Any]:
+        """The names an annotation written in ``module_name`` resolves against: its globals, over its checker-only
+        imports when it is an engine module (empty for a module that is not loaded)."""
+        if module_name not in self._namespaces:
+            module = sys.modules.get(module_name)
+            engine = module_name == "threetears.evals" or module_name.startswith("threetears.evals.")
+            checker_only = _checker_only_names(module) if module and engine else {}
+            self._namespaces[module_name] = {**checker_only, **vars(module)} if module else {}
+        return self._namespaces[module_name]
 
     def run(self) -> None:
         for root in PUBLIC_ROOTS:
@@ -159,7 +215,7 @@ class _Walk:
 
     def _callable(self, label: str, function: Any, namespace: dict[str, Any]) -> None:
         try:
-            signature = inspect.signature(function)
+            signature = inspect.signature(function, annotation_format=annotationlib.Format.STRING)
         except TypeError, ValueError:
             return
         for parameter in signature.parameters.values():
@@ -180,8 +236,7 @@ class _Walk:
         # An alias's own ``__module__`` names where its ORIGIN lives (``collections.abc`` for a
         # ``Callable``), so its tokens are resolved where the engine defined it.
         home = self.aliases[id(value)][0] if id(value) in self.aliases else getattr(value, "__module__", "")
-        module = sys.modules.get(home or "")
-        namespace = dict(vars(module)) if module else {}
+        namespace = self._namespace(home or "")
         if not inspect.isclass(value):
             if callable(value) and not _is_type_alias(value):
                 self._callable(name, value, namespace)
@@ -191,12 +246,17 @@ class _Walk:
         for klass in value.__mro__:
             if not klass.__module__.startswith("threetears.evals"):
                 continue
-            klass_namespace = dict(vars(sys.modules[klass.__module__]))
-            for field_name, annotation in klass.__dict__.get("__annotations__", {}).items():
+            klass_namespace = self._namespace(klass.__module__)
+            # Read through ``annotationlib`` as strings: a ``NamedTuple``, and any class whose module does not defer
+            # its annotations, keeps them behind an annotate function rather than in its ``__dict__``, and a
+            # checker-only name cannot be evaluated.
+            own_annotations = annotationlib.get_annotations(klass, format=annotationlib.Format.STRING)
+            for field_name, annotation in own_annotations.items():
                 if field_name.startswith("_"):
                     continue
                 self._annotation(annotation, klass_namespace, f"{name}.{field_name}")
-        for member_name, member in vars(value).items():
+        # A copy: reading a member's signature may store the annotations it computes in the class's ``__dict__``.
+        for member_name, member in list(vars(value).items()):
             if member_name.startswith("_") and member_name not in ("__init__", "__call__"):
                 continue
             label = f"{name}.{member_name}"
@@ -240,3 +300,22 @@ def test_no_private_engine_type_is_reachable_from_a_public_name() -> None:
         if label.rsplit(".", 1)[-1].startswith("_")
     )
     assert not leaked, "a public signature hands a host a private engine type:\n  " + "\n  ".join(leaked)
+
+
+def test_the_walk_reads_a_signature_type_imported_only_for_the_type_checker() -> None:
+    # ``create_rubric_dim`` types its ``storage`` as a ``DefinitionStore`` its module imports only under
+    # ``if TYPE_CHECKING:``, so the module's own namespace never holds the name and only the checker-only read finds it.
+    assert "DefinitionStore" not in vars(sys.modules[create_rubric_dim.__module__]), (
+        "create_rubric_dim's module imports DefinitionStore at run time now: pin a signature whose type is checker-only"
+    )
+    assert id(DefinitionStore) in _walk().reached, "the walk did not reach a type a signature imports for the checker"
+
+
+def test_the_walk_reads_the_fields_of_a_named_tuple() -> None:
+    # A ``NamedTuple`` keeps its fields' annotations behind an annotate function, not in its ``__dict__``, so
+    # ``ProposedDraft.proposal`` is the only path to ``RubricProposal`` that reading the class's dict would miss.
+    assert tuple in ProposedDraft.__mro__ and "__annotations__" not in ProposedDraft.__dict__
+    assert (
+        "RubricProposal" in annotationlib.get_annotations(ProposedDraft, format=annotationlib.Format.STRING)["proposal"]
+    )
+    assert id(RubricProposal) in _walk().reached, "the walk did not reach a type named only in a NamedTuple's field"
