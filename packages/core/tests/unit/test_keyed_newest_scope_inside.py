@@ -93,6 +93,10 @@ class _L3:
         self.statements.append(query)
         return await self._inner.fetch(query, *params)
 
+    async def fetchrow(self, query: str, *params: Any) -> Any:
+        rows = await self.fetch(query, *params)
+        return rows[0] if rows else None
+
 
 def _chosen(statement: str) -> str:
     """the newest relation's ``DISTINCT ON`` select of ``statement``: what is judged before each key's newest version
