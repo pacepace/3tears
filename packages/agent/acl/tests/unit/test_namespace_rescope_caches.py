@@ -54,6 +54,7 @@ from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.table_restore import StampedTable, TableChanges, restored_tables
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import next_epoch
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 
 from .fake_loaders import FakeStore, make_cache
 
@@ -91,7 +92,8 @@ class _Pool:
         if folded.startswith("SELECT"):
             assert self.namespace_id in params, params
             return [{"row_scope": "customer", "customer_id": _CUSTOMER}]
-        assert folded.startswith('UPDATE "namespaces"'), folded
+        # the move appends its row to the moves table in the same statement (threetears.core.ddl.tenant_moves)
+        assert folded.startswith('WITH threetears_moved AS (UPDATE "namespaces"'), folded
         return [{"namespace_id": self.namespace_id}]
 
 
@@ -248,10 +250,12 @@ async def test_a_live_rescope_drops_the_stale_permissions_and_answers_from_the_n
     await _assert_the_move_was_heard(
         acl, callers, caller, store, user=user, group_id=group_id, namespace_id=namespace_id, other_id=other_id
     )
-    # the move is recorded in the write itself, from the row as it was: the scope it left and the move's epoch
-    [update] = [sql for sql, _ in pool.sent if sql.startswith("UPDATE")]
+    # the move is recorded in the write itself, from the row as it was: the scope it left and the move's epoch, and a
+    # row of the moves table naming the key and the scope it left
+    [update] = [sql for sql, _ in pool.sent if sql.startswith("WITH threetears_moved")]
     assert '"row_scope_moved_from" = CASE WHEN "row_scope" IS DISTINCT FROM' in update, update
     assert '"row_scope_moved_epoch" = CASE WHEN "row_scope" IS DISTINCT FROM' in update, update
+    assert "INSERT INTO threetears_tenant_moves" in update and "'row_scope', (CASE WHEN" in update, update
     # the key once with the scope it joined and once with the scope it left
     assert heard == [
         ([f"{namespace_id}"], {"row_scope": "platform"}),
@@ -290,8 +294,9 @@ class _Catalog:
 async def _restored_rows(before: dict[str, Any], after: dict[str, Any]) -> list[ChangedRow]:
     """the rows a restore of a lost log puts back for a namespace that moved since X, as its reads name them: the
     bucket's read names the row's key and invalidation columns as the row holds them now; a moveable table's moves read
-    names it again, each moved column as the move left it. Each read's shape is checked against the SQL the restore
-    sends, so the rows are the ones the database would answer.
+    (the moves table, by its key) names it again, each moved column as the move left it, as the rescope's own statement
+    appended it. Each read's shape is checked against the SQL the restore sends, so the rows are the ones the database
+    would answer.
 
     :param before: the row before the move
     :ptype before: dict[str, Any]
@@ -305,9 +310,9 @@ async def _restored_rows(before: dict[str, Any], after: dict[str, Any]) -> list[
     assert isinstance(table, StampedTable), table
     floor = next_epoch()
     assert [change async for change in TableChanges(pool, [table], floor, MagicMock(), None)] == []
-    reads = [query for query, _ in pool.sent if " AS t " in query]
+    reads = [query for query, _ in pool.sent if '"namespaces" AS t ' in query]
     keys = "ARRAY[" + ", ".join(f't."{column}"::text' for column in table.keys) + "]"
-    assert all(keys in query for query in reads), reads[:2]
+    assert reads and all(keys in query for query in reads), reads[:2]
     rows = [
         ChangedRow(
             ids=[str(after[column]) for column in table.keys],
@@ -315,10 +320,13 @@ async def _restored_rows(before: dict[str, Any], after: dict[str, Any]) -> list[
         )
     ]
     if table.moved_columns:
-        moves = [query for query in reads if "_moved_from" in query]
-        assert moves, "a moveable table is read again for its moved rows"
-        for column in table.moved_columns:
-            assert all(f't."{column}_moved_from"::text' in query for query in moves), moves[0]
+        moves = [(query, args) for query, args in pool.sent if f'"{TENANT_MOVES_TABLE}" AS t ' in query]
+        assert moves, "a moveable table's moves are read from the moves table"
+        for query, args in moves:
+            # the moves row's key and the columns as the move left them, by the moves table's key
+            assert 't."keys"' in query and 't."columns"' in query, query
+            assert 't."table_name" = $1' in query and 't."scope" = $2' in query, query
+            assert args[0] == "namespaces" and args[2] == floor, args
         rows.append(
             ChangedRow(
                 ids=[str(after[column]) for column in table.keys],

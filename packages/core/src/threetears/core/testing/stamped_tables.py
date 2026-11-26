@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 from threetears.core.collections.table_restore import StampedTable, TableChanges, restored_tables
 from threetears.core.data.migrations.stamp_tables import StampingTable, bucket_statements, stamping_table_of
-from threetears.core.ddl.tenant_moves import moved_columns
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 from threetears.core.ddl.row_epoch import (
     BUCKET_COLUMN,
     EPOCH_COLUMN,
@@ -272,8 +272,9 @@ class _Catalog:
 async def assert_restore_reads_every_bucket(schemas: Sequence[Any]) -> None:
     """a restore of a lost change log finds each of ``schemas`` from the catalog's comments alone and reads each one's
     16 buckets since X, one keyed statement a bucket binding ``(bucket, X)``: one range of its ``(bucket, epoch)``
-    index. A table whose rows a write may move (``TableSchema.moveable``) is read a second time a bucket, within the
-    same range, for the rows moved since X (:mod:`~threetears.core.ddl.tenant_moves`).
+    index. A table whose rows a write may move (``TableSchema.moveable``) has its moves since X read too, a bucket at a
+    time, from the moves table by its key ``(table_name, scope = the bucket, epoch >= X)``
+    (:mod:`~threetears.core.ddl.tenant_moves`).
 
     :param schemas: the stamped tables' declarations
     :ptype schemas: Sequence[TableSchema]
@@ -291,16 +292,20 @@ async def assert_restore_reads_every_bucket(schemas: Sequence[Any]) -> None:
     assert changes.buckets == RESTORE_BUCKETS * (len(tables) + len(moving))
     for table in tables:
         reads = [(query, args) for query, args in pool.sent if f'."{table.table}" AS t' in query]
-        moved = [
-            epoch_column for column in getattr(table, "moved_columns", ()) for epoch_column in moved_columns(column)
-        ]
-        moves = [(query, args) for query, args in reads if any(f'"{name}"' in query for name in moved)]
-        plain = [(query, args) for query, args in reads if (query, args) not in moves]
-        assert sorted(args for _, args in plain) == [(bucket, floor) for bucket in range(RESTORE_BUCKETS)], table.table
-        # a moves read a bucket for a moveable table, binding X again for each moved column's epoch; none for another
-        expected = (
-            [(bucket, floor, *(floor,) * (len(moved) // 2)) for bucket in range(RESTORE_BUCKETS)] if moved else []
-        )
-        assert sorted(args for _, args in moves) == expected, table.table
+        assert sorted(args for _, args in reads) == [(bucket, floor) for bucket in range(RESTORE_BUCKETS)], table.table
         for query, _ in reads:
             assert f't."{BUCKET_COLUMN}" = $1' in query and f't."{EPOCH_COLUMN}" >= $2' in query, query
+        # a moves read a bucket for a moveable table, by the moves table's key; none for another
+        moves = [
+            (query, args)
+            for query, args in pool.sent
+            if f'"{TENANT_MOVES_TABLE}" AS t' in query and args[0] == table.table
+        ]
+        expected = (
+            [(table.table, str(bucket), floor) for bucket in range(RESTORE_BUCKETS)]
+            if getattr(table, "moved_columns", ())
+            else []
+        )
+        assert sorted(args for _, args in moves) == sorted(expected), table.table
+        for query, _ in moves:
+            assert 't."table_name" = $1' in query and 't."scope" = $2' in query and 't."epoch" >= $3' in query, query

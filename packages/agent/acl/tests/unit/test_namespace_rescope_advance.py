@@ -31,8 +31,12 @@ class _Pool:
         if sql.startswith('SELECT t."row_scope", t."customer_id" FROM "namespaces"'):
             assert params[0] == self.namespace_id, params
             return [{"row_scope": "platform", "customer_id": None}]
-        # the move: a keyed write (threetears.core.keyed.update_keyed) returning the row it moved
-        assert sql.startswith('UPDATE "namespaces"') and sql.endswith('RETURNING "namespace_id"'), sql
+        # the move: a keyed write (threetears.core.keyed.update_keyed) returning the row it moved, appending its move to
+        # the moves table in the same statement (threetears.core.ddl.tenant_moves)
+        assert sql.startswith('WITH threetears_moved AS (UPDATE "namespaces"'), sql
+        assert "INSERT INTO threetears_tenant_moves" in sql and sql.endswith(
+            'SELECT "namespace_id" FROM threetears_moved'
+        )
         return [{"namespace_id": self.namespace_id}]
 
 
