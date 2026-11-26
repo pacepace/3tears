@@ -58,6 +58,7 @@ __all__ = [
     "L2_WRITE_GENERATION",
     "WRITE_GENERATION",
     "WRITE_GENERATION_UNDECLARED",
+    "is_versioned_class",
     "GenerationMarks",
     "GenerationSource",
     "GenerationVerdict",
@@ -1149,13 +1150,29 @@ def _declared_key(cls: type) -> tuple[str, ...] | None:
     return None
 
 
+def is_versioned_class(cls: type) -> bool:
+    """whether a collection class's table is versioned (``TableSchema(row_epoch=row_versions(...))``): a page-written
+    table, append-only, its own change record. It is given no change note and no per-row trigger (append-only L3,
+    decisions 3 and 4; :mod:`~threetears.core.ddl.epoch_catalog`): a restore reads it back through its
+    ``(scope, epoch)`` index.
+
+    :param cls: a collection class
+    :ptype cls: type
+    :return: whether its schema declares versions
+    :rtype: bool
+    """
+    declared = getattr(getattr(cls, "schema", None), "row_epoch", None)
+    return bool(getattr(declared, "versions", False))
+
+
 def noted_tables() -> tuple[NotedTable, ...]:
     """every table whose epochs go into the change log, with the key and columns its change note names.
 
     The tables of every class this process defined that carries a write generation, caches absences
     (:func:`tables_with_write_generation`) or commits L2-first (:func:`written_l2_first`): each of
     their L3 writes leaves a note in its own transaction
-    (:mod:`~threetears.core.collections.change_notes`). A table two classes name with different keys, or
+    (:mod:`~threetears.core.collections.change_notes`). A versioned table (:func:`is_versioned_class`) is left out:
+    it is its own change record and carries no per-row trigger. A table two classes name with different keys, or
     whose class names it per instance, is left out: no one trigger can name its rows. Two classes naming
     one table with one key carry every invalidation column either declares.
 
@@ -1168,7 +1185,7 @@ def noted_tables() -> tuple[NotedTable, ...]:
     for cls in [*list(_GENERATION_CLASSES), *list(_L2_FIRST_CLASSES)]:
         name = table_named_by_class(cls)
         keys = _declared_key(cls)
-        if name is None or keys is None:
+        if name is None or keys is None or is_versioned_class(cls):
             continue
         keys_of.setdefault(name, set()).add(keys)
         tenancy = getattr(cls, "tenancy", None)
@@ -1205,12 +1222,16 @@ def switched_tables_not_noted() -> dict[str, str]:
     """
     noted = {entry.table for entry in noted_tables()}
     keys_of: dict[str, dict[str, tuple[str, ...] | None]] = {}
+    versioned: set[str] = set()
     for cls in [*list(_GENERATION_CLASSES), *list(_L2_FIRST_CLASSES)]:
         name = table_named_by_class(cls)
         if name is not None:
             keys_of.setdefault(name, {})[f"{cls.__module__}.{cls.__qualname__}"] = _declared_key(cls)
+            if is_versioned_class(cls):
+                versioned.add(name)
     found: dict[str, str] = {}
-    for table in sorted(tables_with_write_generation() - noted):
+    # a versioned table needs no note: it is its own change record (is_versioned_class)
+    for table in sorted(tables_with_write_generation() - noted - versioned):
         declared = keys_of.get(table, {})
         keys = {key for key in declared.values() if key is not None}
         if len(keys) > 1:

@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from threetears.core.collections.generation import NotedTable
+from threetears.core.ddl.epoch_catalog import refuse_row_triggers, versioned_among
 from threetears.core.ddl.change_notes import (
     NOTE_PUT_FUNCTION,
     NOTE_TRIGGER,
@@ -33,9 +34,44 @@ from threetears.core.ddl.change_notes import (
 )
 from threetears.observe import get_logger
 
-__all__ = ["give_noted_tables_their_note_trigger", "switched_tables_without_notes"]
+__all__ = [
+    "give_noted_tables_their_note_trigger",
+    "refuse_row_triggers_here",
+    "switched_tables_without_notes",
+]
 
 log = get_logger(__name__)
+
+
+class _Fetched:
+    """a run's ``DataStore`` read as the catalog reads of :mod:`~threetears.core.ddl.epoch_catalog` take it: its
+    ``query`` is their ``fetch``."""
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        """rows of ``query``, by the store's ``query``."""
+        rows: list[Any] = await self._store.query(query, *args)
+        return rows
+
+
+async def refuse_row_triggers_here(store: Any) -> None:
+    """refuse a per-row trigger on any versioned table of the run's schema (:mod:`~threetears.core.ddl.epoch_catalog`):
+    called at the end of every run, under its DDL lock, so no migration leaves the slow path behind.
+
+    :param store: the run's locked ``DataStore``, bound to the target schema
+    :ptype store: Any
+    :return: nothing
+    :rtype: None
+    :raises PerRowTriggerError: when one is found, naming each
+    """
+    rows = await store.query("SELECT current_schema() AS schema_name")
+    if not rows:
+        # a shim that is no database (a preview's): it holds no table to judge
+        return
+    await refuse_row_triggers(_Fetched(store), str(rows[0]["schema_name"]))
+
 
 _RING_SCHEMAS = """
 SELECT n.nspname AS schema FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -96,6 +132,9 @@ async def give_noted_tables_their_note_trigger(store: Any, tables: Sequence[Note
             )
         return []
     present = [str(row["table_name"]) for row in await store.query(_TABLES_HERE, sorted(noted))]
+    # a versioned table is never given a note trigger, whatever a class of it says: it is its own change record
+    versioned = await versioned_among(_Fetched(store), here, present)
+    present = [table for table in present if table not in versioned]
     if not present:
         return []
     triggers = {
@@ -158,7 +197,8 @@ async def switched_tables_without_notes(
 
     The note trigger is a switched table's switch and the only record its lost advance is announced from
     (:mod:`threetears.core.collections.lost_writes`): a table without one would have its writes followed by nothing when
-    an advance is lost. Judged only where the ring is installed (the run's schema, or the one schema holding it); before
+    an advance is lost. A versioned table is never judged: it carries no note trigger by design (append-only L3,
+    decision 4). Judged only where the ring is installed (the run's schema, or the one schema holding it); before
     it is, the keeper's install gives the triggers and nothing is judged.
 
     :param store: the run's locked ``DataStore``, bound to the target schema
@@ -175,6 +215,9 @@ async def switched_tables_without_notes(
     if here not in holders and len(holders) != 1:
         return {}
     present = [str(row["table_name"]) for row in await store.query(_TABLES_HERE, sorted(set(tables)))]
+    # a versioned table needs no note: a restore reads it back from its own versions (table_restore)
+    versioned = await versioned_among(_Fetched(store), here, present)
+    present = [table for table in present if table not in versioned]
     if not present:
         return {}
     carrying = {

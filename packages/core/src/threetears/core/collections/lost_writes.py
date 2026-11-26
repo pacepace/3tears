@@ -57,6 +57,7 @@ from threetears.core.collections.generation import GenerationSource, tenancy_of_
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.change_notes import NOTE_TRIGGER, WHOLE_COPY_ROWS
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.epoch_catalog import tables_carrying_epoch
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.exceptions import GenerationUnavailableError
@@ -185,7 +186,10 @@ WHERE p.proname::text = $1 AND n.nspname::text = $2
 
 
 async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: Iterable[str]) -> frozenset[str]:
-    """the named tables of ``schema`` that carry the change-note row trigger: switched on by the database itself.
+    """the named tables of ``schema`` switched on by the database itself: each carrying an epoch
+    (:func:`~threetears.core.ddl.epoch_catalog.tables_carrying_epoch`, ``epoch BIGINT NOT NULL``), or the change-note
+    row trigger. The epoch is the switch append-only L3 keeps (chunk 7); the trigger stays one while a table without
+    an epoch still has it, until the ring retires.
 
     A table is switched on by its declaration (a collection class with ``write_generation``), and the migration that
     creates it gives it its change-note triggers (:meth:`~threetears.core.data.migrations.registry.PackageMigrations
@@ -200,14 +204,17 @@ async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: I
     :ptype schema: str
     :param tables: the table names
     :ptype tables: Iterable[str]
-    :return: those that carry the trigger
+    :return: those that carry an epoch or the trigger
     :rtype: frozenset[str]
     """
     names = sorted(set(tables))
     if not names:
         return frozenset()
     rows = await pool.fetch(_SWITCHED_SQL, NOTE_TRIGGER, schema, names)
-    return frozenset(str(row["table_name"]) for row in rows)
+    triggered = frozenset(str(row["table_name"]) for row in rows)
+    # a table carrying an epoch is switched on by it: a versioned table carries no note trigger (append-only L3,
+    # decision 4), and its writes still advance a generation
+    return triggered | await tables_carrying_epoch(pool, schema, [name for name in names if name not in triggered])
 
 
 async def _switched_tables(pool: SqlConnection) -> dict[str, tuple[str, ...]]:

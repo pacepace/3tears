@@ -29,6 +29,7 @@ from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.lost_writes import announce_window, tables_switched_by_trigger
 from threetears.core.ddl.change_notes import NOTE_TRIGGER
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN
 from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant
 
 _TABLE = "switched_by_trigger_only_rows"
@@ -37,8 +38,9 @@ _TABLE = "switched_by_trigger_only_rows"
 class _Catalogue:
     """the catalogue as the lookup reads it: which tables of which schema carry the trigger."""
 
-    def __init__(self, triggered: set[tuple[str, str]]) -> None:
+    def __init__(self, triggered: set[tuple[str, str]], epoch: set[tuple[str, str]] | None = None) -> None:
         self.triggered = triggered
+        self.epoch = epoch or set()
         self.asked: list[tuple[str, tuple[Any, ...]]] = []
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
@@ -46,6 +48,11 @@ class _Catalogue:
         if "current_ring" in query:
             # no change-note ring here
             return []
+        if "pg_attribute" in query:
+            # the tables carrying the epoch column (threetears.core.ddl.epoch_catalog)
+            schema, names, column = args
+            assert column == EPOCH_COLUMN
+            return [{"table_name": table} for s, table in sorted(self.epoch) if s == schema and table in names]
         trigger, schema, names = args
         assert trigger == NOTE_TRIGGER
         return [{"table_name": table} for s, table in sorted(self.triggered) if s == schema and table in names]
@@ -85,6 +92,15 @@ async def test_the_catalogue_read_answers_the_tables_of_the_schema_that_carry_th
     (query, args), *_ = catalogue.asked
     assert "pg_trigger" in query
     assert args == (NOTE_TRIGGER, "agent_reports", ["other_rows", "plain_rows", _TABLE])
+
+
+async def test_a_table_carrying_an_epoch_is_switched_on_without_any_trigger() -> None:
+    """Flips if "switched on" still means "carries the change-note trigger" alone: a versioned table carries no
+    per-row trigger (append-only L3 chunk 7), so the broker would advance nothing for it and its copies would never
+    hear a write."""
+    catalogue = _Catalogue({("agent_reports", _TABLE)}, epoch={("agent_reports", "versioned_rows")})
+    switched = await tables_switched_by_trigger(catalogue, "agent_reports", [_TABLE, "versioned_rows", "plain_rows"])
+    assert switched == frozenset({_TABLE, "versioned_rows"})
 
 
 async def test_no_tables_reads_nothing() -> None:

@@ -51,6 +51,7 @@ from threetears.core.ddl.session import MigrationSession
 from threetears.core.collections.generation import noted_tables
 from threetears.core.data.migrations.change_notes import (
     give_noted_tables_their_note_trigger,
+    refuse_row_triggers_here,
     switched_tables_without_notes,
 )
 from threetears.core.data.store import DataStore
@@ -639,6 +640,10 @@ class MigrationRunner:
                     "switched-on tables this run declares carry no change-note trigger, so a lost epoch advance of "
                     f"theirs could never be announced: {unnoted}"
                 )
+        # every run, whatever it declares: no versioned (page-written) table of this schema may carry a per-row
+        # trigger, so no migration, hand-written statement or older replica brings the slow path back (append-only
+        # L3, decision 4; threetears.core.ddl.epoch_catalog)
+        await refuse_row_triggers_here(store)
         return count
 
     async def _announce_run(self, store: DataStore, began: datetime | None, count: int) -> None:
