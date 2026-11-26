@@ -14,7 +14,7 @@ import weakref
 from collections.abc import Iterator
 from pathlib import Path
 
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from threetears.core.shared_arrow import SharedArrowStore

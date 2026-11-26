@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a follower stopped while it writes a checkpoint makes no reference cycle
+
+**Fixed:** `CopyFollower` lets go of its checkpoint's write once the write is done. Cancelled by `stop()`, the write's
+task kept the `CancelledError` that left its coroutine, whose traceback held the write's frame, which held the follower:
+follower -> task -> error -> traceback -> frame -> follower. A stopped follower, with its copy and the version it held
+mapped, was freed only by a full collection, which reports' pod never runs.
+
 ### observe, core: a kept failure and the shared Arrow store make no reference cycle
 
 **Added:** `threetears.observe.frames_released(exc)`: an exception to be kept past its `except` block (on a result, in a

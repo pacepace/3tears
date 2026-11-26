@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import bisect
 import asyncio
+import gc
 import json
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
@@ -75,7 +77,7 @@ from threetears.core.collections.invalidation_rows import invalidation_batches  
 from prometheus_client import REGISTRY  # noqa: E402
 from threetears.core.testing.keyed_statements import as_lists  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
-from threetears.core.shared_arrow import SharedArrowStore  # noqa: E402
+from threetears.core.shared_arrow import MappedTables, SharedArrowStore  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -3120,3 +3122,71 @@ async def test_a_checkpoints_fresh_read_takes_no_slot_on_the_loop(
     assert _slots_held(reader) == (0, 0)
     writer.stop()
     reader.close()
+
+
+class _HeldStore(_Store):
+    """:class:`_Store` whose puts wait until let go: a checkpoint's write held part way."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.holding = False
+        self.entered = asyncio.Event()
+        self.go = asyncio.Event()
+
+    async def put(self, name: str, data: bytes) -> None:
+        if self.holding:
+            self.entered.set()
+            await self.go.wait()
+        await super().put(name, data)
+
+
+@pytest.fixture
+def _collector_off() -> Iterator[None]:
+    """the cycle collector off for the test: only reference counting frees anything."""
+    was = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was:
+            gc.enable()
+
+
+@pytest.mark.usefixtures("_collector_off")
+async def test_a_follower_stopped_while_it_writes_a_checkpoint_is_freed_by_reference_counting(tmp_path: Path) -> None:
+    """Flips if a follower stopped while it writes a checkpoint is left in a reference cycle: the cancelled write's
+    task keeps the CancelledError that left its coroutine, whose traceback holds the write's frame, which holds the
+    follower (follower -> task -> error -> traceback -> frame -> follower). Only a full collection freed it, and with
+    it the version it held mapped: a pod that runs none (reports' ``pod.interpreter``, 2026-11-25) kept both for good.
+    With the collector off, the stopped follower goes when let go, and its mapped version with it."""
+    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _HeldStore(), _Pointers()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    _, writer, checkpoints = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
+    shared = SharedArrowStore(tmp_path / "shm", max_bytes=8 << 20)
+    shared.publish("v1", {"t": pa.table({"a": list(range(100))})})
+    # the version the follower holds mapped, as a copy published as shared Arrow does: a table lent past its
+    # mapping's close keeps its files mapped, and the version's lock held, until the last buffer over them is freed
+    with MappedTables("v1", shared.root / "versions" / "v1", lock=False, pin=True) as mapped:
+        setattr(writer, "_mapped_version", mapped.tables["t"])
+    del mapped
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    store.holding = True
+    l3.put([("VA", 7, 70)])
+    log.commit([("VA", 7)])
+    lock.version += 1
+    assert await writer.catch_up()
+    await asyncio.wait_for(store.entered.wait(), timeout=10)
+    writer.stop()
+    await writer.checkpointed()
+    for _ in range(3):
+        await asyncio.sleep(0)  # the write's end runs its callbacks
+
+    gone = weakref.ref(writer)
+    del writer, checkpoints
+    assert gone() is None, "the stopped follower was left in a reference cycle"
+    shared.publish("v2", {"t": pa.table({"a": [1]})})
+    shared.settle()
+    assert "v1" not in shared.versions(), "the stopped follower's mapped version is still mapped"
