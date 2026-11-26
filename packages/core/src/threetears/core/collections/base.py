@@ -83,6 +83,7 @@ from threetears.core.collections.generation import (
     WriteGenerationDeclaration,
     advance_for_write,
     note_generation_class,
+    note_schema_class,
     note_l2_first_class,
     note_tenancy_class,
     source_reads,
@@ -860,6 +861,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             note_generation_class(cls)
         if cls.tenancy.kind != "undeclared":
             note_tenancy_class(cls)
+        if isinstance(getattr(getattr(cls, "schema", None), "name", None), str):
+            note_schema_class(cls)
 
     @classmethod
     def _refuse_unsound_l2_first(cls) -> None:
