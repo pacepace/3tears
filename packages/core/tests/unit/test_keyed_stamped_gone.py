@@ -64,6 +64,7 @@ from threetears.core.keyed import (
     read_by,
     read_by_joined,
     read_link_chain,
+    read_live_rows,
     read_nearest,
     read_past_marks,
     read_reached,
@@ -558,3 +559,30 @@ class TestStatementReaders:
         )
         assert arrow.table is not None
         assert _read(arrow.table.to_pylist()) == _LIVE
+
+
+# -- a cold start's fill from a stamped table's live rows ------------------------------------------------------------
+
+
+class TestReadLiveRows:
+    async def test_a_cold_fill_reads_the_live_rows_alone_in_one_statement(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if the cold fill answers a row its delete marked gone, filters it in Python rather than in the
+        statement, or pages."""
+        reader = _L3(db)
+        rows = await read_live_rows(reader, _TABLE, ("state", "run_id", "rows"))
+        assert _read(rows) == _LIVE
+        [statement] = reader.statements
+        assert statement == f"SELECT state, run_id, rows FROM {_TABLE} WHERE NOT gone", statement
+
+    async def test_a_table_no_stamped_declaration_names_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if the helper filters on a gone flag a table never declared: its deleted rows are not marked by it."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="not a stamped L3 table"):
+            await read_live_rows(reader, "sg_undeclared", ("state",))
+        assert reader.statements == []
+
+    async def test_a_name_that_is_no_plain_identifier_is_refused(self, db: duckdb.DuckDBPyConnection) -> None:
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="plain identifier"):
+            await read_live_rows(reader, _TABLE, ("state; DROP TABLE x",))
+        assert reader.statements == []

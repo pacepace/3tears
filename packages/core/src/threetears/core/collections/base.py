@@ -4943,7 +4943,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         committed = EpochChange(table=self.table_name, token=token, rows=[changed])
         bump = _Bump(token=token, rows=1)
         if self.waits_for_l3:
-            cascaded = await read_delete_cascade(self, [entity_id])
+            cascaded = await self.delete_cascaded([entity_id])
             try:
                 await self.delete_from_store(entity_id)
             except BaseException as exc:
@@ -5638,7 +5638,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         # read before it goes, and only when the message must carry columns of it
         row = await self._row_before_delete(entity_id)
         # the rows the database's foreign-key actions will rewrite, read while they still name it
-        cascaded = await read_delete_cascade(self, [entity_id])
+        cascaded = await self.delete_cascaded([entity_id])
         # a stamped table's delete marks its row gone in place: no foreign-key action runs in the database, so 3tears
         # takes each declared one itself (refused before anything is written, when one cannot be taken)
         gone_mark = self._marks_gone()
@@ -5715,6 +5715,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises NotImplementedError: on a collection whose table is not stamped
         """
         raise NotImplementedError(f"{type(self).__name__}: {self.table_name} is not stamped (ROW_STAMPED)")
+
+    async def delete_cascaded(self, entity_ids: Sequence[Any]) -> list[CascadedRows]:
+        """the rows of other tables a delete of ``entity_ids`` reaches, read before it: what the database's foreign-key
+        actions would take, so a stamped delete (a gone mark, an ``UPDATE`` no foreign key fires on) takes each itself,
+        children before the parent in one transaction (:meth:`_mark_gone_after_cascades`), and announces each
+        (``announce_delete_cascade``). By default the collection's declared actions (:attr:`delete_cascades`,
+        ``read_delete_cascade``); a collection that reads its cascade its own way (``GroupCollection``) answers it here.
+
+        :param entity_ids: the keys about to be deleted
+        :ptype entity_ids: Sequence[Any]
+        :return: the rows reached, one entry per (action, table)
+        :rtype: list[CascadedRows]
+        """
+        return await read_delete_cascade(self, entity_ids)
 
     def _marks_gone(self) -> bool:
         """whether this collection's delete marks its row gone in place (a stamped table, ``ROW_STAMPED``) rather than
@@ -6653,7 +6667,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             raise bump.failure
 
     @asynccontextmanager
-    async def bypassing_write(self, *entity_ids: Any, conn: Any = None) -> AsyncIterator[BypassingWrite]:
+    async def bypassing_write(
+        self, *entity_ids: Any, conn: Any = None, rows: Sequence[dict[str, Any] | None] | None = None
+    ) -> AsyncIterator[BypassingWrite]:
         """run a write that bypasses :meth:`save_entity`, then settle every cache of the rows it touched.
 
         The one owner of the rule for a targeted UPDATE or DELETE on a table :meth:`get` serves: the
@@ -6683,6 +6699,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype entity_ids: Any
         :param conn: the caller's connection the write joins, or ``None`` for the collection's pool
         :ptype conn: Any
+        :param rows: the row each of ``entity_ids`` was written as, in their order, for the broadcast's invalidation
+            columns (a cache derived from the table evicts what each row reaches); None when none was seen
+        :ptype rows: Sequence[dict[str, Any] | None] | None
         :return: the write's handle
         :rtype: AsyncIterator[BypassingWrite]
         :raises ValueError: when ``conn`` is given and its transaction was not opened by
@@ -6708,7 +6727,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             None if conn is None else CallerTransaction.join(conn, writer=f"{type(self).__name__}.bypassing_write")
         )
         write = BypassingWrite(self, transaction)
-        write.touches(*entity_ids)
+        write.touches(*entity_ids, rows=rows)
         completed = False
         try:
             yield write
@@ -6716,23 +6735,31 @@ class BaseCollection(ABC, Generic[EntityT]):
         finally:
             if transaction is None and not (completed and write.is_unchanged):
                 try:
-                    await asyncio.shield(self._evict_every(write.keys))
+                    await asyncio.shield(self._evict_every(write.keys, write.rows))
                 except GenerationUnavailableError:
                     # already logged where the advance failed, and every row was still evicted.
                     # Raised only when the body ended cleanly: one that raised keeps its own error.
                     if completed:
                         raise
 
-    async def _evict_every(self, entity_ids: tuple[Any, ...]) -> None:
+    async def _evict_every(self, entity_ids: tuple[Any, ...], rows: tuple[dict[str, Any] | None, ...]) -> None:
         """evict every row in ``entity_ids`` from L1 and L2 and broadcast it, in one call
-        (:meth:`invalidate_cache_many`), as a caller's transaction settles its rows.
+        (:meth:`invalidate_cache_many`), as a caller's transaction settles its rows: with the rows the write named, for
+        a collection that declares invalidation columns and a write that named any.
 
         :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
         :ptype entity_ids: tuple[Any, ...]
+        :param rows: the row each key's write saw, in their order (None where none was named)
+        :ptype rows: tuple[dict[str, Any] | None, ...]
         :return: nothing
         :rtype: None
         """
-        await self.invalidate_cache_many(entity_ids)
+        if self.invalidation_columns and any(row is not None for row in rows):
+            await self.invalidate_cache_many(list(entity_ids), rows=list(rows))
+        else:
+            # the call every collection has always been given, so one that overrides it without the keyword is
+            # still settled (as CallerTransaction settles)
+            await self.invalidate_cache_many(entity_ids)
 
     def create(self, data: dict[str, Any]) -> EntityT:
         """Create new entity (not persisted until save)."""

@@ -67,6 +67,7 @@ from threetears.agent.acl.types import (
 from threetears.agent.acl.types import Namespace as AclNamespace
 from threetears.core import keyed as k
 from threetears.core.collections import DeleteCascade, DeleteRestrict
+from threetears.core.collections.delete_cascade import CascadedRows
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
@@ -81,7 +82,6 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
-    stamped_values,
 )
 from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.exceptions import GenerationUnavailableError
@@ -306,8 +306,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             # assignments; the group is the key, and the rows are read only to be announced
             "read_cascade",
             "announce_cascade",
-            # rationale: the same cascade's rows marked gone, each by its full primary key
-            "mark_cascade_gone",
+            # rationale: the same cascade's rows, read by the group across both partitions for the delete to mark gone
+            "delete_cascaded",
             # rationale: deletes by its full primary key, which carries the partition
             "delete",
         }
@@ -398,38 +398,61 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             }
         return super().create(data)
 
-    async def delete(self, entity_id: Any) -> bool:
-        """delete one group, then announce every membership and assignment its cascade removed.
+    async def delete_cascaded(self, entity_ids: Sequence[Any]) -> list[CascadedRows]:
+        """the memberships and grants a group delete reaches (:meth:`read_cascade`), for the framework's delete to take.
 
-        :param entity_id: the group's primary key, ``(row_scope, group_id)``
-        :ptype entity_id: Any
-        :return: what the framework's own ``delete`` returns
-        :rtype: bool
-        :raises GenerationUnavailableError: when a cascaded table's write generation could not be
-            advanced; every row was still evicted and broadcast
+        A group is stamped (``ROW_STAMPED``): its delete marks it gone in place, an ``UPDATE`` the database's ``ON
+        DELETE CASCADE`` from ``group_members`` and ``role_assignments`` never fires on. So the framework's delete marks
+        these rows gone itself, children before the group in one transaction (``_mark_gone_after_cascades``: every
+        child's stamp at most its parent's, and never a group gone with its grants still granting, nor grants gone under
+        a live group), refuses first when a child table has no collection here to announce it through, and announces
+        each row once the transaction commits, naming what it reaches (a membership its member, a grant its group).
+
+        :param entity_ids: the groups about to be deleted, each ``(row_scope, group_id)``
+        :ptype entity_ids: Sequence[Any]
+        :return: the memberships and the grants, an entry each when any
+        :rtype: list[CascadedRows]
         """
-        group_id = UUID(f"{self.normalize_pk(entity_id)[self.primary_key_columns.index('group_id')]}")
-        cascade = await self.read_cascade(group_id)
-        deletion_failure: GenerationUnavailableError | None = None
-        deleted = True
-        try:
-            deleted = await super().delete(entity_id)
-        except GenerationUnavailableError as exc:
-            # the group is gone; only the groups table's advance failed. Its cascade is announced
-            # all the same, and the failure raised once it has been.
-            deletion_failure = exc
-        # the group is marked gone in place (ROW_STAMPED), so the database's ON DELETE CASCADE never runs: its
-        # memberships and grants are marked gone here, or a deleted group's members would keep its roles
-        await self.mark_cascade_gone(cascade)
-        try:
-            await self.announce_cascade(cascade)
-        except GenerationUnavailableError:
-            # the first failure is the one raised; this one was logged where it happened
-            if deletion_failure is None:
-                raise
-        if deletion_failure is not None:
-            raise deletion_failure
-        return deleted
+        found: list[CascadedRows] = []
+        place = self.primary_key_columns.index("group_id")
+        for entity_id in entity_ids:
+            cascade = await self.read_cascade(UUID(f"{self.normalize_pk(entity_id)[place]}"))
+            if cascade.members:
+                found.append(
+                    CascadedRows(
+                        GroupMemberCollection.schema.name,
+                        tuple((cascade.group_id, row["id"]) for row in cascade.members),
+                        rows=tuple(
+                            {
+                                "group_id": cascade.group_id,
+                                "id": row["id"],
+                                "member_type": row["member_type"],
+                                "member_id": row["member_id"],
+                            }
+                            for row in cascade.members
+                        ),
+                        action="CASCADE",
+                        column="group_id",
+                    )
+                )
+            if cascade.assignments:
+                found.append(
+                    CascadedRows(
+                        RoleAssignmentCollection.schema.name,
+                        tuple((row["row_scope"], row["assignment_id"]) for row in cascade.assignments),
+                        rows=tuple(
+                            {
+                                "row_scope": row["row_scope"],
+                                "assignment_id": row["assignment_id"],
+                                "group_id": cascade.group_id,
+                            }
+                            for row in cascade.assignments
+                        ),
+                        action="CASCADE",
+                        column="group_id",
+                    )
+                )
+        return found
 
     async def read_cascade(self, group_id: UUID) -> GroupCascade:
         """the memberships and assignments deleting ``group_id`` will cascade away, read before the delete.
@@ -479,57 +502,14 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             assignments=tuple(dict(row) for row in assignments),
         )
 
-    async def mark_cascade_gone(self, cascade: GroupCascade) -> None:
-        """mark gone in place the memberships and grants a group delete reaches: the group is stamped (``ROW_STAMPED``)
-        and marked gone, never deleted, so the database's ``ON DELETE CASCADE`` from ``group_members`` and
-        ``role_assignments`` never fires. Each table one keyed ``UPDATE`` a batch of keys, the gone flag set and the
-        epoch risen past a fresh stamp (``stamped_values``), so a restore of a lost change log hears each, as it hears
-        the group's own. A row already gone is left as it is.
-
-        :param cascade: what :meth:`read_cascade` read before the delete
-        :ptype cascade: GroupCascade
-        :return: nothing
-        :rtype: None
-        """
-        pool = self.l3_pool
-        if pool is None:
-            return
-        gone = Fragment('NOT "gone"')
-        if cascade.members:
-            await update_keyed(
-                pool,
-                "group_members",
-                values=stamped_values(GroupMemberCollection.schema, {"gone": True}),
-                keys=k.KeyBatch(
-                    ("group_id", "id"),
-                    [[cascade.group_id for _ in cascade.members], [row["id"] for row in cascade.members]],
-                    casts=("uuid", "uuid"),
-                ),
-                where=[gone],
-            )
-        if cascade.assignments:
-            await update_keyed(
-                pool,
-                "role_assignments",
-                values=stamped_values(RoleAssignmentCollection.schema, {"gone": True}),
-                keys=k.KeyBatch(
-                    ("row_scope", "assignment_id"),
-                    [
-                        [row["row_scope"] for row in cascade.assignments],
-                        [row["assignment_id"] for row in cascade.assignments],
-                    ],
-                    casts=("text", "uuid"),
-                ),
-                where=[gone],
-            )
-
     async def announce_cascade(self, cascade: GroupCascade) -> None:
         """evict the rows a group delete cascaded away, each table in one advance, naming what each reaches.
 
         Through the registry's ``group_members`` and ``role_assignments`` collections: a membership
         row names its member, an assignment row its group, so a cache derived from those tables
-        evicts exactly what they reached, and a pod following them hears the change. A subclass
-        that announces the cascade on another channel too extends this and calls it.
+        evicts exactly what they reached, and a pod following them hears the change. :meth:`delete` no longer calls
+        it: the framework's delete marks the cascade gone and announces it (:meth:`delete_cascaded`); this announces a
+        cascade again, for a caller that must.
 
         :param cascade: what :meth:`read_cascade` read before the delete
         :ptype cascade: GroupCascade
@@ -2149,26 +2129,29 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :return: the revived row's ``assignment_id`` and ``row_scope``; None when no gone row holds the grant
         :rtype: tuple[UUID, str] | None
         """
-        row = (
-            await update_keyed(
-                self.required_l3_pool,
-                "role_assignments",
-                values=self.stamped_values({"gone": False, "date_granted": granted, "customer_id": customer_id}),
-                by={
-                    "row_scope": k.AnyOf(("platform", "customer"), cast=None),
-                    "group_id": group_id,
-                    "role_id": role_id,
-                    "scope_type": scope_type,
-                    "scope_namespace_id": scope_id,
-                    "managed_by": managed_by,
-                },
-                where=[Fragment('"gone"')],
-                returning=("assignment_id", "row_scope"),
-            )
-        ).row
-        if row is None:
-            return None
-        await self._announce_rows(((row["row_scope"], row["assignment_id"]),), group_id)
+        # the revived row, named once the statement says which it is, evicted and announced with its group
+        async with self.bypassing_write() as write:
+            row = (
+                await update_keyed(
+                    self.required_l3_pool,
+                    "role_assignments",
+                    values=self.stamped_values({"gone": False, "date_granted": granted, "customer_id": customer_id}),
+                    by={
+                        "row_scope": k.AnyOf(("platform", "customer"), cast=None),
+                        "group_id": group_id,
+                        "role_id": role_id,
+                        "scope_type": scope_type,
+                        "scope_namespace_id": scope_id,
+                        "managed_by": managed_by,
+                    },
+                    where=[Fragment('"gone"')],
+                    returning=("assignment_id", "row_scope"),
+                )
+            ).row
+            if row is None:
+                write.unchanged()
+                return None
+            write.touches((row["row_scope"], row["assignment_id"]), rows=[{"group_id": group_id}])
         return row["assignment_id"], row["row_scope"]
 
     async def grant_winner(
@@ -2294,30 +2277,33 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 columns=("assignment_id",),
             )
             if matching:
-                # marked gone in place, never deleted (ROW_STAMPED): a restore of a lost change log hears the revoke
-                deleted = (
-                    await k.update_keyed(
-                        self.l3_pool,
-                        "role_assignments",
-                        values=self.stamped_values({"gone": True}),
-                        by={
-                            "row_scope": row_scope,
-                            "group_id": group_id,
-                            "scope_type": scope_type,
-                            "scope_namespace_id": scope_id,
-                            **({} if managed_by is None else {"managed_by": managed_by}),
-                        },
-                        where=[Fragment('NOT "gone"')],
-                        returning=("assignment_id",),
-                    )
-                ).rows
-                result = len(deleted)
-                keys = dict.fromkeys(
-                    [(row_scope, row["assignment_id"]) for row in matching]
-                    + [(row_scope, row["assignment_id"]) for row in deleted]
-                )
-                # every row the DELETE may have removed, carrying the group, in one advance
-                await self._announce_rows(tuple(keys), group_id)
+                named = [(row_scope, row["assignment_id"]) for row in matching]
+                # every row the revoke may change, carrying the group, evicted and announced in one advance however
+                # the statement ends (a statement that raised may still have reached L3)
+                async with self.bypassing_write(*named, rows=[{"group_id": group_id} for _ in named]) as write:
+                    # marked gone in place, never deleted (ROW_STAMPED): a restore of a lost change log hears the revoke
+                    deleted = (
+                        await k.update_keyed(
+                            self.l3_pool,
+                            "role_assignments",
+                            values=self.stamped_values({"gone": True}),
+                            by={
+                                "row_scope": row_scope,
+                                "group_id": group_id,
+                                "scope_type": scope_type,
+                                "scope_namespace_id": scope_id,
+                                **({} if managed_by is None else {"managed_by": managed_by}),
+                            },
+                            where=[Fragment('NOT "gone"')],
+                            returning=("assignment_id",),
+                        )
+                    ).rows
+                    result = len(deleted)
+                    # a row a concurrent grant added between the read and the statement, named once it is known
+                    known = set(named)
+                    added = [key for key in dict.fromkeys((row_scope, row["assignment_id"]) for row in deleted)]
+                    added = [key for key in added if key not in known]
+                    write.touches(*added, rows=[{"group_id": group_id} for _ in added])
         return result
 
 
@@ -2814,33 +2800,40 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         set from the new customer like every other column, and a scope it changes is recorded as a move (``row_scope``
         is moveable), so a restore hears the scope it left.
 
+        Evicted and announced with its scope however the statement ends (one that raised may still have reached L3);
+        nothing when no gone row held the id.
+
         :return: whether a gone row was made live
         :rtype: bool
         """
-        row = (
-            await update_keyed(
-                self.required_l3_pool,
-                "namespaces",
-                values=self.stamped_values(
-                    {
-                        "gone": False,
-                        "row_scope": row_scope_for_customer(customer_id),
-                        "name": name,
-                        "namespace_type": namespace_type,
-                        "owner_agent_id": owner_agent_id,
-                        "owner_namespace": owner_namespace,
-                        "customer_id": customer_id,
-                        "schema_name": schema_name,
-                        "metadata": Fragment("$1::text::jsonb", (_json.dumps(dict(metadata or {})),)),
-                        "date_created": now,
-                        "date_updated": now,
-                    }
-                ),
-                by={"namespace_id": namespace_id},
-                where=[Fragment('"gone"')],
-                returning=("namespace_id",),
-            )
-        ).row
+        row_scope = row_scope_for_customer(customer_id)
+        async with self.bypassing_write(namespace_id, rows=[{"row_scope": row_scope}]) as write:
+            row = (
+                await update_keyed(
+                    self.required_l3_pool,
+                    "namespaces",
+                    values=self.stamped_values(
+                        {
+                            "gone": False,
+                            "row_scope": row_scope,
+                            "name": name,
+                            "namespace_type": namespace_type,
+                            "owner_agent_id": owner_agent_id,
+                            "owner_namespace": owner_namespace,
+                            "customer_id": customer_id,
+                            "schema_name": schema_name,
+                            "metadata": Fragment("$1::text::jsonb", (_json.dumps(dict(metadata or {})),)),
+                            "date_created": now,
+                            "date_updated": now,
+                        }
+                    ),
+                    by={"namespace_id": namespace_id},
+                    where=[Fragment('"gone"')],
+                    returning=("namespace_id",),
+                )
+            ).row
+            if row is None:
+                write.unchanged()
         return row is not None
 
     async def ensure_namespace(
@@ -2936,7 +2929,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 metadata=metadata,
                 now=now,
             ):
-                await self.invalidate_cache_many([namespace_id], rows=[{"row_scope": row_scope}])
+                # the revive announced its row (_revive_gone_namespace)
                 existing = await self.find_by_id(namespace_id)
             if existing is None:
                 # absorbed by a unique index other than the id's -- the name, or any unique column the

@@ -120,6 +120,10 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         # :func:`threetears.datasources.query_client.read_counted`: the part of a warehouse relation its filters name,
         # paged by its key (reports #61 R4: judged by those filters against the relation's declared keys)
         "read_counted",
+        # :func:`threetears.core.keyed.read_live_rows`: a stamped table's live rows, whole, its gone filter in the
+        # database; its body judged at its callers, each an unnarrowed pager (walker.DEFAULT_PAGER_CALLS) a cold start
+        # declares, as read_counted is
+        "read_live_rows",
         "update_before",
         "apply_stage",
         "update_from",

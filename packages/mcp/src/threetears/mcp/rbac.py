@@ -46,7 +46,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.declared import whole_read
 from threetears.core.entities.base import BaseEntity
-from threetears.core.keyed import Fragment, Sort, keyset_page, read_row
+from threetears.core.keyed import Fragment, Sort, keyset_page, read_live_rows, read_row
 from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
 from uuid_utils import uuid7
@@ -312,10 +312,11 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
                 "calling load_all_grants",
             )
         rows = await whole_read(
-            self.l3_pool.fetch(
-                # live grants alone: a revoked grant is marked gone in place (ROW_STAMPED), never deleted
-                "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
-                "WHERE NOT gone",
+            # live grants alone, filtered in the database: a revoked grant is marked gone in place (ROW_STAMPED)
+            read_live_rows(
+                self.l3_pool,
+                "mcp_tool_grants",
+                ("grant_id", "principal_type", "principal_id", "tool_name", "permission", "date_created"),
             ),
             kind="cold_start",
             reason="LocalGrantAuthorizer fills its empty grant cache once at start, and again only when a write changed "
