@@ -55,7 +55,7 @@ from threetears.core.ddl.row_epoch import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, TABLE_RESET_SCOPE
-from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_column
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE, moved_epoch_column, moved_from_column
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant, tenant_column, value_tenant
@@ -626,8 +626,8 @@ _MOVING = TableSchema(
 
 async def test_a_restore_reads_back_each_moved_row_for_the_tenant_it_left() -> None:
     """Flips if a restore of a lost log reads a moveable stamped table's rows back only for their current tenant (the
-    tenant a row left since X keeps it), reads the moves outside the bucket's (bucket, epoch) range, or reads a row
-    whose move is older than X back for the tenant it left long ago."""
+    tenant a row left since X keeps it), reads the moves other than by the moves table's key a bucket (the table, the
+    bucket, the epoch from X), or reads a row whose move is older than X back for the tenant it left long ago."""
     bus, source, lost = await _lost_log()
     now = datetime.now(UTC)
     mark_at = now - timedelta(minutes=1)
@@ -643,15 +643,18 @@ async def test_a_restore_reads_back_each_moved_row_for_the_tenant_it_left() -> N
 
     async def copy_from_query(query: str, *args: Any, output: Any, **_: Any) -> str:
         pool.sent.append((query, args))
-        bucket = next(arg for arg in args if isinstance(arg, int) and arg < RESTORE_BUCKETS)
+        moves = TENANT_MOVES_TABLE in query
+        # a bucket read binds the bucket; a moves read the table, then the bucket as its scope's text
+        bucket = int(args[1]) if moves else next(arg for arg in args if isinstance(arg, int) and arg < RESTORE_BUCKETS)
         for key, held, epoch, tenant, left, moved_at in rows:
-            if held != bucket or epoch < floor:
-                continue
             named: str | None = tenant
-            if _MOVING_FROM in query:
-                if moved_at is None or moved_at < floor:
+            if moves:
+                # the moves table holds a row a move, at the move's epoch
+                if held != bucket or moved_at is None or moved_at < floor:
                     continue
                 named = left
+            elif held != bucket or epoch < floor:
+                continue
             held_by = None if named is None else value_tenant(named)
             fields = (json.dumps(_MOVING_TABLE), json.dumps(held_by), json.dumps([key]))
             await output((",".join('"' + field.replace('"', '""') + '"' for field in fields) + ",\n").encode())
@@ -678,10 +681,11 @@ async def test_a_restore_reads_back_each_moved_row_for_the_tenant_it_left() -> N
             (value_tenant(_JOINED), "never-moved"),
         ]
     ), heard
-    moves = [query for query, _ in pool.sent if f'"{_MOVING_TABLE}"' in query and _MOVING_FROM in query]
-    plain = [query for query, _ in pool.sent if f'"{_MOVING_TABLE}"' in query and _MOVING_FROM not in query]
+    moves = [(query, args) for query, args in pool.sent if TENANT_MOVES_TABLE in query]
+    plain = [query for query, _ in pool.sent if f'"{_MOVING_TABLE}"' in query]
     # the keeper reads the tables once to size the restore and once to restore: a moves read beside each bucket read
     assert plain and len(moves) == len(plain) and len(moves) % RESTORE_BUCKETS == 0, "one moves read a bucket"
-    for query in moves:
-        assert 't."epoch_bucket" = $1' in query and 't."epoch" >= $2' in query, query
-        assert f't."{_MOVING_EPOCH}" >= $3' in query, query
+    for query, args in moves:
+        assert 't."table_name" = $1' in query and 't."scope" = $2' in query and 't."epoch" >= $3' in query, query
+        assert args[0] == _MOVING_TABLE and args[2] == floor, args
+        assert _MOVING_FROM not in query and _MOVING_EPOCH not in query, "the row's last move is not what is read"

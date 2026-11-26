@@ -31,7 +31,13 @@ from threetears.interfaces.keyed.filters import quote_identifier
 from threetears.interfaces.keyed.keys import newest_relation, versioned_table
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, rising_epoch_assignment
-from threetears.core.ddl.tenant_moves import moved_assignments, moved_returning
+from threetears.core.ddl.tenant_moves import (
+    MoveRecord,
+    moved_assignments,
+    moved_columns,
+    moved_returning,
+    with_moves_appended,
+)
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
@@ -52,6 +58,7 @@ __all__ = [
     "MAX_STATEMENT_PARAMS",
     "PGVECTOR_TYPES",
     "build_bulk_insert_sql",
+    "bulk_moves",
     "returning_rows_sql",
     "build_cas_params",
     "build_cas_update_sql",
@@ -90,6 +97,7 @@ __all__ = [
     "key_array_type",
     "moving_columns",
     "moving_returning",
+    "with_moves_returning",
     "normalize_read_value",
     "normalize_write_value",
     "pull_value",
@@ -693,6 +701,44 @@ def moving_returning(columns: Sequence[str]) -> str:
     return moved_returning(columns)
 
 
+def with_moves_returning(sql: str, record: MoveRecord, columns: Sequence[str]) -> str:
+    """a single-row write that sets the moveable ``columns`` (:func:`moving_columns`) as one statement that also
+    appends its move to the moves table (:func:`~threetears.core.ddl.tenant_moves.with_moves_appended`), answering
+    what :func:`moving_returning` answers: the row's epoch and each column's ``moved_from`` and ``moved_epoch``.
+
+    :param sql: the write, without a ``RETURNING``
+    :ptype sql: str
+    :param record: the table's moves (``TableSchema.move_record``)
+    :ptype record: MoveRecord
+    :param columns: the moveable columns the write sets
+    :ptype columns: Sequence[str]
+    :return: the statement
+    :rtype: str
+    """
+    answered = [EPOCH_COLUMN, *(name for column in columns for name in moved_columns(column))]
+    returned = tuple(dict.fromkeys((*record.returned, *answered)))
+    statement = f"{sql} RETURNING {', '.join(quote_identifier(name) for name in returned)}"
+    return with_moves_appended(statement, record, [quote_identifier(name) for name in answered])
+
+
+def bulk_moves(schema: TableSchema, cols: Sequence[Column]) -> MoveRecord | None:
+    """the moves a bulk upsert of ``cols`` (:func:`build_bulk_insert_sql`) may make: the table's moves record when its
+    ``DO UPDATE`` sets a moveable column a record carries; None otherwise.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param cols: the columns every row supplies
+    :ptype cols: Sequence[Column]
+    :return: the record, or None
+    :rtype: MoveRecord | None
+    """
+    record: MoveRecord | None = getattr(schema, "move_record", None)
+    if record is None:
+        return None
+    updated = bulk_update_columns(schema, cols) or []
+    return record if set(updated) & set(record.moved) else None
+
+
 def _rises_epoch(schema: TableSchema) -> bool:
     """whether ``schema`` is a stamped table (``ROW_STAMPED``: one row a key, updated in place, carrying its last write's
     epoch), whose update sets the epoch to ``GREATEST(epoch + 1, <new>)`` rather than the new stamp alone: each
@@ -968,7 +1014,14 @@ def _bulk_insert_sql(schema: TableSchema, cols: list[Column], values: str) -> st
     :rtype: str
     """
     col_names = ", ".join(c.name for c in cols)
-    return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
+    sql = _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
+    record = bulk_moves(schema, cols)
+    if record is not None:
+        # a row the upsert moves between tenants appends its move to the moves table in this same statement
+        # (tenant_moves); the statement answers how many rows it wrote
+        returned = ", ".join(quote_identifier(name) for name in record.returned)
+        sql = with_moves_appended(f"{sql} RETURNING {returned}", record, ["count(*) AS count"])
+    return sql
 
 
 #: column type tag -> the Postgres type of an array of its values, for a key-led ``= ANY($1::t[])``.

@@ -35,7 +35,8 @@ class NotedKeysCursor:
     """where a paged read of a bracket's changed keys goes on (:func:`~threetears.core.collections.epoch_reads
     .epoch_keys_page`): the relation, the index range in it, and the keyset place in that range.
 
-    :ivar slot: a stamped table's bucket (``0`` to ``RESTORE_BUCKETS - 1``); ``0`` for a versioned table's scope
+    :ivar slot: a stamped table's bucket (``0`` to ``RESTORE_BUCKETS - 1``), or ``RESTORE_BUCKETS`` past it for that
+        bucket's moves (``tenant_moves``); ``0`` for a versioned table's scope
     :ivar schema: the schema of the relation the next page reads
     :ivar scope: a versioned table's scope value the next page reads; ``None`` for a stamped table
     :ivar after: the keyset cursor of the last row read in that range (``"past"`` once it is read to its end);

@@ -13,7 +13,9 @@ read the same thing with a ceiling too, through the same indexes: no new mechani
   (:mod:`~threetears.core.ddl.run_markers`) is read by the marker table's key
   (:func:`~threetears.core.collections.table_restore.run_marker_changes`).
 - **Stamped tables, a bucket at a time.** Each of the :data:`~threetears.core.ddl.row_epoch.RESTORE_BUCKETS` ranges of
-  the ``(epoch_bucket, epoch)`` index, every bucket whatever changed, the gone rows included.
+  the ``(epoch_bucket, epoch)`` index, every bucket whatever changed, the gone rows included; then, for a table whose
+  rows a write moves (``TableSchema.moveable``), each bucket's range of the moves table's key
+  (:mod:`~threetears.core.ddl.tenant_moves`), as further ranges of the walk.
 
 **A bracket on the database's clock becomes an epoch range** (:func:`epoch_range`): every row a write in the bracket
 stamped lies in ``[since << 15, ((until + 1 ms) << 15) - 1]``. A writer's clock is never behind the bracket by more
@@ -31,9 +33,10 @@ platform schema). Or every tenant's (an operator's check, a platform process tha
 
 **What a row carries.** Its key's values as text (a ``timestamptz`` as its UTC instant), and every declared
 invalidation column its restore declaration names (a column tenancy's tenant column among them): what the restore's
-records carry (:func:`~threetears.core.collections.table_restore.TableChanges`), as the change notes did. A stamped
-row a write moved in the range (``TableSchema.moveable``) is read once more with the values it left, under the tenant it
-left: the followers of the old tenant and the old values hear it, as the ring's old-row note had them.
+records carry (:func:`~threetears.core.collections.table_restore.TableChanges`), as the change notes did. Each move of a
+stamped row in the range (``TableSchema.moveable``) is a row of the moves table naming the key with the values and the
+tenant the row left: the followers of each old tenant and old value hear it, as the ring's old-row note had them, a row
+moved twice in the range once for each tenant it left.
 
 **A reset in the range is the whole table** (:func:`whole_changes`): a ``TRUNCATE`` leaves no row, so its reset marker
 (:func:`~threetears.core.collections.table_restore.table_resets`) says so, under every tenant of the table.
@@ -44,6 +47,7 @@ each; never a table whole.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -59,7 +63,9 @@ from threetears.core.collections.table_restore import (
     changed_scopes,
     column_value_sql,
     key_term,
-    moved_since,
+    moved_tenant_sql,
+    moves_by,
+    moves_relation,
     restored_tables,
     run_marker_changes,
     table_resets,
@@ -92,14 +98,8 @@ _TENANT: Final = "_tenant"
 #: the text column a row's invalidation column ``i`` (its restore declaration's ``columns[i]``) is read under
 _COLUMN_TEXT: Final = "_column_text_{}"
 
-#: whether a write moved a stamped row in the range, read under this column
-_MOVED: Final = "_moved"
-
-#: the tenant a moved row left, read under this column
-_LEFT_TENANT: Final = "_left_tenant"
-
-#: the value invalidation column ``i`` of a moved row left, read under this column
-_LEFT_COLUMN: Final = "_left_column_{}"
+#: a moves page's order: the moves table's key after its bound table and bucket (tenant_moves)
+_MOVES_ORDER: Final = (Sort(EPOCH_COLUMN, cast="bigint"), Sort("keys"))
 
 #: a row's key column types, from the catalog: what a keyset cursor's text is cast back to
 _KEY_TYPES_SQL: Final = """
@@ -164,10 +164,10 @@ def tenant_of_relation(table: RestoredTable, platform_schema: str) -> str | None
 
 
 def _asked(
-    table: RestoredTable, platform_schema: str, tenant: str | None, every: bool, floor: int
-) -> tuple[bool, tuple[Fragment, ...]]:
-    """whether a read of ``tenant``'s rows reads ``table``, and the filter on its rows that keeps them to the tenant's:
-    its own, and those a write moved off it at ``floor`` or later.
+    table: RestoredTable, platform_schema: str, tenant: str | None, every: bool
+) -> tuple[bool, tuple[Fragment, ...], tuple[Fragment, ...]]:
+    """whether a read of ``tenant``'s rows reads ``table``, the filter on its rows that keeps them to the tenant's, and
+    the filter on its moves that keeps them to those that left the tenant.
 
     :param table: the relation
     :ptype table: RestoredTable
@@ -177,45 +177,17 @@ def _asked(
     :ptype tenant: str | None
     :param every: every tenant's rows
     :ptype every: bool
-    :param floor: the range's floor
-    :ptype floor: int
-    :return: ``(read, filters)``
-    :rtype: tuple[bool, tuple[Fragment, ...]]
+    :return: ``(read, filters, move_filters)``
+    :rtype: tuple[bool, tuple[Fragment, ...], tuple[Fragment, ...]]
     """
     if every:
-        return True, ()
+        return True, (), ()
     if table.tenancy.kind == "column":
         named = column_tenant_sql(str(table.tenancy.column))
-        if not isinstance(table, StampedTable) or not _tenant_moves(table):
-            if tenant is None:
-                return True, (Fragment(f"{named} IS NULL", ()),)
-            return True, (Fragment(f"{named} = $1", (tenant,)),)
-        # a row moved off the tenant in the range is the tenant's too: the tenant it left hears it
-        left = tenant_value_sql(table, floor)
-        moved = moved_since(table, floor)
         if tenant is None:
-            own, left_is, params = f"{named} IS NULL", f"{left} IS NULL", moved.params
-        else:
-            bound = f"${len(moved.params) + 1}"
-            own, left_is, params = f"{named} = {bound}", f"{left} = {bound}", (*moved.params, tenant)
-        return True, (Fragment(f"({own} OR ({moved.sql} AND {left_is}))", params),)
-    return tenant_of_relation(table, platform_schema) == tenant, ()
-
-
-def _tenant_moves(table: RestoredTable) -> bool:
-    """whether a write may move ``table``'s rows between tenants: a stamped table whose moveable columns hold its
-    tenant column.
-
-    :param table: the relation
-    :ptype table: RestoredTable
-    :return: whether
-    :rtype: bool
-    """
-    return (
-        isinstance(table, StampedTable)
-        and table.tenancy.kind == "column"
-        and str(table.tenancy.column) in table.moved_columns
-    )
+            return True, (Fragment(f"{named} IS NULL", ()),), (Fragment('t."tenant" IS NULL', ()),)
+        return True, (Fragment(f"{named} = $1", (tenant,)),), (Fragment('t."tenant" = $1', (tenant,)),)
+    return tenant_of_relation(table, platform_schema) == tenant, (), ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,15 +205,12 @@ class RangeRow:
     columns: dict[str, str | None] | None
 
 
-def _columns(table: RestoredTable, floor: int) -> list[str | Selected]:
+def _columns(table: RestoredTable) -> list[str | Selected]:
     """what a range page reads: the sort columns as stored (the cursor's), each key's text, the row's tenant and every
-    declared invalidation column's text; for a stamped table whose rows a write moves, whether one moved at ``floor`` or
-    later and the tenant and values it left.
+    declared invalidation column's text.
 
     :param table: the relation
     :ptype table: RestoredTable
-    :param floor: the range's floor
-    :ptype floor: int
     :return: the columns
     :rtype: list[str | Selected]
     """
@@ -252,19 +221,19 @@ def _columns(table: RestoredTable, floor: int) -> list[str | Selected]:
         Selected(column_value_sql(table, column), _COLUMN_TEXT.format(index))
         for index, column in enumerate(table.columns)
     )
-    if isinstance(table, StampedTable) and table.moved_columns:
-        moved = moved_since(table, floor)
-        # the floor is an integer the reader computed, never a caller's text: written into the select list as a literal
-        flag = moved.sql
-        for index, value in enumerate(moved.params):
-            flag = flag.replace(f"${index + 1}", str(int(value)), 1)
-        read.append(Selected(f"({flag})", _MOVED))
-        read.append(Selected(tenant_value_sql(table, floor), _LEFT_TENANT))
-        read.extend(
-            Selected(column_value_sql(table, column, floor), _LEFT_COLUMN.format(index))
-            for index, column in enumerate(table.columns)
-        )
     return read
+
+
+def _move_columns(table: StampedTable) -> list[str | Selected]:
+    """what a moves page reads (:mod:`~threetears.core.ddl.tenant_moves`): the sort columns as stored (the cursor's),
+    the tenant the move left, and the key and the invalidation columns as it left them, each its JSON text.
+
+    :param table: the moved table
+    :ptype table: StampedTable
+    :return: the columns
+    :rtype: list[str | Selected]
+    """
+    return [EPOCH_COLUMN, "keys", Selected(moved_tenant_sql(table), _TENANT), "columns"]
 
 
 async def _key_types(pool: Any, table: RestoredTable) -> dict[str, str]:
@@ -309,38 +278,56 @@ async def _stations(pool: Any, table: RestoredTable, floor: int) -> list[tuple[i
     :rtype: list[tuple[int, str | None]]
     """
     if isinstance(table, StampedTable):
-        return [(bucket, None) for bucket in range(table.buckets)]
+        # each bucket's rows, then (a table a write moves) each bucket's moves: slot ``buckets + b`` is bucket b's
+        moved = range(table.buckets, 2 * table.buckets) if table.moved_columns else range(0)
+        return [(slot, None) for slot in (*range(table.buckets), *moved)]
     prefix = table.scope_prefix
     scopes = await changed_scopes(pool, table.schema, table.epochs, floor)
     return [(0, value) for value in sorted({scope[len(prefix) :] for scope in scopes if scope.startswith(prefix)})]
 
 
-def _rows(table: RestoredTable, raw: dict[str, Any]) -> list[RangeRow]:
-    """a range page's row as the reader hands it on: the row, and for a row a write moved in the range, the row again
-    with the tenant and the values it left.
+def _moves_slot(table: RestoredTable, slot: int) -> int | None:
+    """the bucket whose moves a walk's ``slot`` reads (:func:`_stations`); None for a slot of a table's own rows.
+
+    :param table: the relation
+    :ptype table: RestoredTable
+    :param slot: the slot
+    :ptype slot: int
+    :return: the bucket, or None
+    :rtype: int | None
+    """
+    if isinstance(table, StampedTable) and slot >= table.buckets:
+        return slot - table.buckets
+    return None
+
+
+def _rows(table: RestoredTable, raw: dict[str, Any], *, moved: bool = False) -> RangeRow:
+    """a range page's row as the reader hands it on: a row of the table with its own tenant and values, or a move with
+    the tenant and values the row left.
 
     :param table: the relation
     :ptype table: RestoredTable
     :param raw: the row as read
     :ptype raw: dict[str, Any]
-    :return: the rows
-    :rtype: list[RangeRow]
+    :param moved: the row is a moves row (:func:`_move_columns`)
+    :ptype moved: bool
+    :return: the row
+    :rtype: RangeRow
     """
+    tenant = raw[_TENANT]
+    named = None if tenant is None else str(tenant)
+    if moved:
+        # function-local and read-only: one moves row's own JSON, a key and a few columns
+        left = json.loads(raw["columns"]) if raw["columns"] is not None else None
+        columns = {column: left.get(column) for column in table.columns} if table.columns and left else None
+        return RangeRow(keys=tuple(str(key) for key in json.loads(raw["keys"])), tenant=named, columns=columns)
     keys = tuple(str(raw[_KEY_TEXT.format(index)]) for index in range(len(table.keys)))
-
-    def named(tenant_at: str, column_at: str) -> RangeRow:
-        tenant = raw[tenant_at]
-        columns = (
-            {column: raw[column_at.format(index)] for index, column in enumerate(table.columns)}
-            if table.columns
-            else None
-        )
-        return RangeRow(keys=keys, tenant=None if tenant is None else str(tenant), columns=columns)
-
-    found = [named(_TENANT, _COLUMN_TEXT)]
-    if raw.get(_MOVED):
-        found.append(named(_LEFT_TENANT, _LEFT_COLUMN))
-    return found
+    columns = (
+        {column: raw[_COLUMN_TEXT.format(index)] for index, column in enumerate(table.columns)}
+        if table.columns
+        else None
+    )
+    return RangeRow(keys=keys, tenant=named, columns=columns)
 
 
 async def _range_page(
@@ -354,9 +341,11 @@ async def _range_page(
     order: list[Sort],
     after: str | None,
     limit: int,
+    move_filters: tuple[Fragment, ...] = (),
 ) -> KeyPage:
     """one keyset page of the rows of one index range of ``table`` stamped in ``[floor, ceiling]``, every version and
-    gone marker (or gone row) included.
+    gone marker (or gone row) included; for a moves slot (:func:`_stations`), of the bucket's moves in the range, one
+    range of the moves table's key.
 
     :param pool: the L3 pool, or one connection
     :ptype pool: Any
@@ -376,24 +365,35 @@ async def _range_page(
     :ptype after: str | None
     :param limit: the most rows
     :ptype limit: int
+    :param move_filters: a tenant's filter on the moves (a moves slot's)
+    :ptype move_filters: tuple[Fragment, ...]
     :return: the page
     :rtype: KeyPage
     """
     bucket, scope = station
+    bounds = [Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,)), Fragment(f't."{EPOCH_COLUMN}" <= $1', (ceiling,))]
+    moved = _moves_slot(table, bucket)
+    if moved is not None and isinstance(table, StampedTable):
+        return await keyset_page(
+            pool,
+            moves_relation(table),
+            columns=_move_columns(table),
+            by=moves_by(table, moved),
+            order=list(_MOVES_ORDER),
+            limit=limit,
+            cursor=after,
+            where=[*bounds, *move_filters],
+        )
     by: dict[str, Any] = {table.bucket: bucket} if isinstance(table, StampedTable) else {table.scope: scope}
     return await keyset_page(
         pool,
         table.relation,
-        columns=_columns(table, floor),
+        columns=_columns(table),
         by=by,
         order=order,
         limit=limit,
         cursor=after,
-        where=[
-            Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,)),
-            Fragment(f't."{EPOCH_COLUMN}" <= $1', (ceiling,)),
-            *filters,
-        ],
+        where=[*bounds, *filters],
         # every version and gone marker is a change the range holds: read as stored, never the newest relation
         with_gone=True,
     )
@@ -408,8 +408,8 @@ async def range_rows(
     page: int,
 ) -> AsyncIterator[list[RangeRow]]:
     """every row of ``table`` stamped in ``[floor, ceiling]``, every tenant's, a page at a time: a scope or a bucket
-    at a time, each one index range read a keyset page a statement; a row a write moved in the range once more, with
-    the tenant and values it left. For a reader that stops early (the writers' backstop, once it holds more rows than
+    at a time, each one index range read a keyset page a statement; then each move in the range, with the tenant and
+    values the row left. For a reader that stops early (the writers' backstop, once it holds more rows than
     one record names).
 
     :param pool: the L3 pool, or one connection
@@ -433,7 +433,8 @@ async def range_rows(
                 pool, table, station, floor, ceiling, filters=(), order=order, after=after, limit=page
             )
             if found.rows:
-                yield [row for raw in found.rows for row in _rows(table, raw)]
+                moved = _moves_slot(table, station[0]) is not None
+                yield [_rows(table, raw, moved=moved) for raw in found.rows]
             if found.next_cursor is None:
                 break
             after = found.next_cursor
@@ -566,11 +567,11 @@ async def epoch_keys_page(
     relations = await relations_named(pool, table)
     if not relations:
         return "notes_unavailable"
-    asked = [(each, _asked(each, platform_schema, tenant_token, every_tenant, floor)) for each in relations]
-    tables = [(each, filters) for each, (read, filters) in asked if read]
+    asked = [(each, _asked(each, platform_schema, tenant_token, every_tenant)) for each in relations]
+    tables = [(each, filters, moving) for each, (read, filters, moving) in asked if read]
     whole = cursor is None and await _whole_in_range(
         pool,
-        [each for each, _ in tables],
+        [each for each, _, _ in tables],
         floor,
         ceiling,
         platform_schema=platform_schema,
@@ -584,14 +585,14 @@ async def epoch_keys_page(
     def page(next_at: NotedKeysCursor | None) -> NotedKeysPage:
         return NotedKeysPage(keys=tuple(keys), columns=tuple(columns), whole_table=whole, next=next_at)
 
-    schemas = [each.schema for each, _ in tables]
+    schemas = [each.schema for each, _, _ in tables]
     start = 0
     if cursor is not None:
         if cursor.schema not in schemas:
             return "not_covered"
         start = schemas.index(cursor.schema)
-    for each, filters in tables[start:]:
-        order = _order(each, await _key_types(pool, each))
+    for each, filters, moving in tables[start:]:
+        rows_order = _order(each, await _key_types(pool, each))
         stations = [(slot, scope or "") for slot, scope in await _stations(pool, each, floor)]
         at: tuple[int, str] | None = None
         if cursor is not None and cursor.schema == each.schema:
@@ -605,6 +606,8 @@ async def epoch_keys_page(
                 continue
             station = (slot, None if isinstance(each, StampedTable) else scope)
             place = partial(NotedKeysCursor, slot, each.schema, station[1])
+            moved = _moves_slot(each, slot) is not None
+            order = list(_MOVES_ORDER) if moved else rows_order
             while True:
                 found = await _range_page(
                     pool,
@@ -616,22 +619,17 @@ async def epoch_keys_page(
                     order=order,
                     after=after,
                     limit=limit - len(keys),
+                    move_filters=moving,
                 )
                 for index, raw in enumerate(found.rows):
-                    # the row, and a moved row again as it was: each the asked tenant's (the filter kept the raw row
-                    # for either), one unit a page holds whole
-                    rows = [
-                        row
-                        for row in _rows(each, raw)
-                        if every_tenant or each.tenancy.kind != "column" or row.tenant == tenant_token
-                    ]
-                    size = sum(_bytes(row) for row in rows)
+                    # the row (or the move, as the row left it): the asked tenant's, as the filter kept it
+                    row = _rows(each, raw, moved=moved)
+                    size = _bytes(row)
                     if keys and used + size > max_bytes:
                         # the page's bytes are spent: the next page starts at this row
                         return page(place(after if index == 0 else keyset_cursor(order, found.rows[index - 1])))
-                    for row in rows:
-                        keys.append(row.keys)
-                        columns.append(row.columns)
+                    keys.append(row.keys)
+                    columns.append(row.columns)
                     used += size
                 if found.next_cursor is None:
                     break

@@ -1,44 +1,62 @@
-"""a stamped table's row that moves between tenants records the tenant it left on itself, in the write that moves it.
+"""a stamped table's row that moves between tenants: the write that moves it appends one row to the moves table.
 
 Append-only L3 retires the change-note ring (``design-append-only-l3.md``, chunk 7). A pod caches a table's rows by
 tenant (its tenancy column, an invalidation column), so a write that changes a row's tenant column in place must be
 heard by the tenant it LEFT as well as the one it joined: the old tenant's followers still hold the row. The ring's
-old-row note was the only thing that told them. Without it they would keep a row that is no longer theirs, live and
-after a restore. Pace chose (2026-11-25, option A) to record the old tenant on the row itself.
+old-row note was the only thing that told them. Pace chose (2026-11-25) to record each move as its own row of a small
+append-only table, so a restore reads every move since X, not only a row's last.
 
 **The declaration.** A stamped table (``ROW_STAMPED``) whose tenancy column can change names it in
-``TableSchema(moveable=(column,))``. Each such column gets two L3-only columns beside it (:func:`moved_columns`), as the
-restore bucket is L3-only: no cache, entity or ``INSERT`` names them, so a new row holds NULL in both.
+``TableSchema(moveable=(column,))``. Each such column gets two L3-only columns beside it (:func:`moved_columns`): no
+cache, entity or ``INSERT`` names them, so a new row holds NULL in both.
 
 - ``<column>_moved_from``, the column's type, nullable: the value the row's last move left.
-- ``<column>_moved_epoch``, ``BIGINT``, nullable: the epoch of the write that moved it, NULL for a row that never
-  moved. WHY a second column, not the row's epoch alone: a tenancy column may be NULL (the hub's platform datasets,
-  ``customer_id IS NULL``, a tenant of their own, ``_all``), so ``moved_from IS NULL`` cannot say "never moved"; and a
-  later write that does not move the row raises its epoch, so the row's epoch cannot say which write moved it.
+- ``<column>_moved_epoch``, ``BIGINT``, nullable: the epoch of the write that last moved it.
 
-**The write** (:func:`moved_assignments`): a statement that sets a moveable column also sets both, IN THE SAME
-STATEMENT, from the row's old values (an ``UPDATE``'s right-hand sides read the row as it was), no extra read::
+WHY they stay on the row: they are how ONE statement learns, exactly, that it moved the row and from what. An
+``UPDATE``'s right-hand sides read the row as it was, so the ``SET`` terms (:func:`moved_assignments`) copy the old
+value into ``_moved_from`` only when the value changes, and stamp ``_moved_epoch`` with the row's new epoch. The
+statement's ``RETURNING`` then carries the old value out (PostgreSQL before 18, and YugabyteDB, have no ``OLD`` in
+``RETURNING``), and the row moved in that statement exactly when ``moved_epoch = epoch``: a row's epoch rises on every
+write, so an earlier move's epoch is always below it. A read of the old row in a CTE beside the write would see the
+statement's snapshot, not the row the write locked, and miss a move a concurrent writer made.
 
-    c_moved_from  = CASE WHEN c IS DISTINCT FROM <new> THEN c ELSE c_moved_from END
-    c_moved_epoch = CASE WHEN c IS DISTINCT FROM <new> THEN <the row's new epoch> ELSE c_moved_epoch END
+**The moves table** (:data:`TENANT_MOVES_TABLE`, declared by
+:data:`threetears.core.collections.tenant_moves.TENANT_MOVES_SCHEMA`, in the moved table's own schema): one row a move,
+append-only, ``(table_name, scope, epoch, keys, tenant, columns)``, its key ``(table_name, scope, epoch, keys)``:
 
-A write that does not change the column leaves both as they are. WHY never cleared: clearing them "once older than the
-restore window" would need the window in the statement, and the window is the change log's own (a keeper's mark may be
-older than the margin M: ``row_epoch.cleanup_floor``), which no writer knows; a stale move costs nothing, since the
-restore reads it only while the row's ``moved_epoch`` is at or above X (below).
+- ``table_name`` the moved table; ``scope`` the row's restore bucket (``epoch_bucket``) as text, so a restore reads the
+  moves of a bucket beside the bucket's rows, and a table's moves spread over its buckets' ranges;
+- ``epoch`` the moving write's epoch (the row's new one);
+- ``keys`` the row's key as a record spells it, a JSON array of text (a ``timestamptz`` as its UTC instant);
+- ``tenant`` the tenant token the row left (:func:`~threetears.core.tenancy.column_tenant_sql`), NULL for ``_all`` or
+  for a table whose tenancy is not a column;
+- ``columns`` every declared invalidation column as the row left it, a JSON object of text: a column the write moved
+  holds the value it left, any other the row's value.
 
-**Live.** The statement returns the two columns and the row's epoch (``RETURNING``, the same statement); the row moved
-in it exactly when ``moved_epoch = epoch`` (:func:`moves_returned`). The writer notes the move (:func:`note_moves`), and
-the collection that made the write takes it (:func:`taken_moves`) and names the key twice in the write's epoch record:
-once with its new tenant, once with the tenant it left, so each tenant's followers evict it.
+**The write** (:func:`with_moves_appended`): a statement that sets a moveable column becomes one statement,
+no extra round trip::
 
-**Restore.** A restore reads each bucket of a stamped table a second time for each moveable column of its tenancy,
-``epoch >= X AND moved_epoch >= X`` within the same ``(bucket, epoch)`` range, the tenant named from ``moved_from``
-(``table_restore``): every row that moved since X comes back for the tenant it left, as well as for its own.
+    WITH moved AS (<the write> RETURNING <key, bucket, epoch, columns, moved_from, moved_epoch>),
+         noted AS (INSERT INTO threetears_tenant_moves ... SELECT ... FROM moved AS t WHERE t.c_moved_epoch = t.epoch)
+    SELECT <what the caller asked> FROM moved
 
-**A known limit.** One row moved twice inside a restore's window (A to B, then B to C, both after X) keeps only its
-last former tenant (B): A's followers that lost the log hear no eviction from a restore. Live, each move's record named
-its own old tenant, so only a follower that missed both live records and is restored misses it.
+A row that did not move appends nothing. Every write that may move a row goes through it: the single-row upsert and
+fenced update (``SqlL3Backend``), the bulk upsert (``schema_sql.build_bulk_insert_sql``) and a keyed update whose values
+:func:`~threetears.core.collections.schema_backed.stamped_values` made (its ``_moved_epoch`` value a
+:class:`MoveStamp`, which ``update_keyed`` reads the moves table's append off).
+
+**Live.** The statement returns each moved column's two columns and the row's epoch; the writer notes the move
+(:func:`note_moves`), and the collection that made the write takes it (:func:`taken_moves`) and names the key twice in
+the write's epoch record: once with its new tenant, once with the tenant it left.
+
+**Restore.** A restore reads, beside each bucket of a stamped table, the moves table's rows of the table and bucket
+with ``epoch >= X`` (one range of its key) and folds each into a record for the tenant and values the row left
+(``table_restore``); the epoch-range readers read the same range with a ceiling (``epoch_reads``). A row moved A to B,
+then B to C, both after X, is two moves rows: A's followers and B's both evict it.
+
+**Cleanup.** A move below the cleanup floor F is read by no restore: quiet-time cleanup deletes the moves rows of each
+table and bucket stamped below F (:func:`~threetears.core.collections.tenant_moves.clear_moves`).
 
 A leaf module: the collections and backends both import it, and it imports nothing of theirs.
 """
@@ -47,20 +65,51 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Final
+
+from threetears.core.tenancy import column_tenant_sql
+from threetears.interfaces.keyed.filters import Fragment, quote_identifier
 
 __all__ = [
     "MOVED_EPOCH_SUFFIX",
     "MOVED_FROM_SUFFIX",
+    "TENANT_MOVES_KEY",
+    "TENANT_MOVES_TABLE",
+    "TENANT_MOVE_COLUMNS",
+    "MoveRecord",
+    "MoveStamp",
+    "key_text_sql",
     "moved_assignments",
     "moved_columns",
     "moved_epoch_column",
     "moved_from_column",
     "moved_returning",
+    "move_record_of_values",
     "moves_returned",
     "note_moves",
     "taken_moves",
+    "with_moves_appended",
 ]
+
+#: the moves table, in the same schema as the stamped tables whose moves it holds
+TENANT_MOVES_TABLE: Final[str] = "threetears_tenant_moves"
+
+#: its columns, in order (the module's "The moves table")
+TENANT_MOVE_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys", "tenant", "columns")
+
+#: its key: a restore reads one table's bucket's moves since X as one range of it
+TENANT_MOVES_KEY: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys")
+
+#: the row's restore bucket column (``row_epoch.BUCKET_COLUMN``, named here so this module stays a leaf)
+_BUCKET: Final[str] = "epoch_bucket"
+
+#: a ``timestamptz`` key's text in a record: its UTC instant to the microsecond, as a change note spells it
+_UTC_MICROS: Final[str] = '\'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"\''
+
+#: what the wrapped statement names the write's returned rows, and the moves' append
+_MOVED_ROWS: Final[str] = "threetears_moved"
+_NOTED: Final[str] = "threetears_noted_moves"
 
 #: what a moveable column's former value is kept in, beside it: ``<column>_moved_from``
 MOVED_FROM_SUFFIX: Final[str] = "_moved_from"
@@ -70,6 +119,191 @@ MOVED_EPOCH_SUFFIX: Final[str] = "_moved_epoch"
 
 #: the column the row's epoch is in (``row_epoch.EPOCH_COLUMN``, named here so this module stays a leaf)
 _EPOCH: Final[str] = "epoch"
+
+
+def key_text_sql(column: str, *, instant: bool, row: str = "t") -> str:
+    """a key column of a row as a record spells it: its text, a ``timestamptz`` as its UTC instant. The one spelling the
+    moves table's ``keys`` and a restore's read of a table's own rows share (``table_restore.key_term``).
+
+    :param column: the key column, a TRUSTED identifier
+    :ptype column: str
+    :param instant: whether it is a ``timestamptz``
+    :ptype instant: bool
+    :param row: the row's alias in the statement
+    :ptype row: str
+    :return: the expression
+    :rtype: str
+    """
+    value = f"{row}.{quote_identifier(column)}"
+    if instant:
+        return f"to_char({value} AT TIME ZONE 'UTC', {_UTC_MICROS})"
+    return f"{value}::text"
+
+
+def _literal(text: str) -> str:
+    """``text`` as a SQL string literal.
+
+    :param text: a TRUSTED name (a table's, a column's)
+    :ptype text: str
+    :return: the literal
+    :rtype: str
+    """
+    return "'" + text.replace("'", "''") + "'"
+
+
+@dataclass(frozen=True, slots=True)
+class MoveRecord:
+    """what a stamped table's moves rows name, from its schema (``TableSchema.move_record``): the table, its key, its
+    tenancy and the columns a restore's record carries, of which those a write may move.
+
+    :ivar table: the table's name
+    :ivar keys: its primary key's columns, in order
+    :ivar instants: those of them that are ``timestamptz``
+    :ivar tenant_column: its tenant column, for a column tenancy; None otherwise
+    :ivar columns: its declared invalidation columns as its restore declaration names them (the tenant column among
+        them), in order
+    :ivar moved: those of them a write may move (``TableSchema.moveable``), in order; at least one
+    """
+
+    table: str
+    keys: tuple[str, ...]
+    instants: tuple[str, ...]
+    tenant_column: str | None
+    columns: tuple[str, ...]
+    moved: tuple[str, ...]
+
+    @property
+    def returned(self) -> tuple[str, ...]:
+        """the columns the write must return for its moves to be appended: the key, the bucket, the epoch, every
+        recorded column and each moved column's two.
+
+        :return: them, each once
+        :rtype: tuple[str, ...]
+        """
+        named = (*self.keys, _BUCKET, _EPOCH, *self.columns, *(name for c in self.moved for name in moved_columns(c)))
+        return tuple(dict.fromkeys(named))
+
+    def _moved_in_write(self, column: str, row: str) -> str:
+        """whether the write moved ``column``: its move's epoch is the row's new one.
+
+        :param column: a moved column
+        :ptype column: str
+        :param row: the returned row's alias
+        :ptype row: str
+        :return: the condition
+        :rtype: str
+        """
+        return f"{row}.{quote_identifier(moved_epoch_column(column))} = {row}.{quote_identifier(_EPOCH)}"
+
+    def _left_value(self, column: str, row: str) -> str:
+        """a recorded column as the row left it, its text: the value the write moved it off, else the row's own.
+
+        :param column: a recorded column
+        :ptype column: str
+        :param row: the returned row's alias
+        :ptype row: str
+        :return: the expression
+        :rtype: str
+        """
+        own = f"{row}.{quote_identifier(column)}::text"
+        if column not in self.moved:
+            return own
+        left = f"{row}.{quote_identifier(moved_from_column(column))}::text"
+        return f"(CASE WHEN {self._moved_in_write(column, row)} THEN {left} ELSE {own} END)"
+
+    def _left_tenant(self, row: str) -> str:
+        """the tenant token the row left: its tenant column's as the write moved it off, else its own; NULL for a
+        table whose tenancy is not a column (a restore names its tenant from the table).
+
+        :param row: the returned row's alias
+        :ptype row: str
+        :return: the expression
+        :rtype: str
+        """
+        column = self.tenant_column
+        if column is None:
+            return "NULL::text"
+        own = column_tenant_sql(column, row)
+        if column not in self.moved:
+            return own
+        left = column_tenant_sql(moved_from_column(column), row)
+        return f"(CASE WHEN {self._moved_in_write(column, row)} THEN {left} ELSE {own} END)"
+
+    def append_sql(self, source: str) -> str:
+        """the ``INSERT`` that appends one moves row a row of ``source`` (the write's returned rows) the write moved.
+
+        :param source: the relation of the write's returned rows (:attr:`returned`), a TRUSTED name
+        :ptype source: str
+        :return: the statement
+        :rtype: str
+        """
+        row = "t"
+        keys = ", ".join(key_text_sql(key, instant=key in self.instants, row=row) for key in self.keys)
+        pairs = ", ".join(f"{_literal(column)}, {self._left_value(column, row)}" for column in self.columns)
+        moved = " OR ".join(f"({self._moved_in_write(column, row)})" for column in self.moved)
+        selected = (
+            _literal(self.table),
+            f"{row}.{quote_identifier(_BUCKET)}::text",
+            f"{row}.{quote_identifier(_EPOCH)}",
+            f"array_to_json(ARRAY[{keys}])::text",
+            self._left_tenant(row),
+            f"json_build_object({pairs})::text",
+        )
+        return (
+            f"INSERT INTO {TENANT_MOVES_TABLE} ({', '.join(TENANT_MOVE_COLUMNS)}) "
+            f"SELECT {', '.join(selected)} FROM {source} AS {row} WHERE {moved}"
+        )
+
+
+def with_moves_appended(statement: str, record: MoveRecord, selected: Sequence[str]) -> str:
+    """``statement`` (a write of ``record``'s table ending in a ``RETURNING`` that names :attr:`MoveRecord.returned`)
+    as one statement that also appends a moves row for each row it moved (the module's "The write"), answering
+    ``selected`` of each row it wrote.
+
+    :param statement: the write, with its ``RETURNING``
+    :ptype statement: str
+    :param record: the table's moves
+    :ptype record: MoveRecord
+    :param selected: what the statement answers of the write's returned rows: select-list items, TRUSTED (column
+        names, ``count(*) AS count``)
+    :ptype selected: Sequence[str]
+    :return: the statement
+    :rtype: str
+    :raises ValueError: when nothing is selected
+    """
+    if not selected:
+        raise ValueError("a write that appends its moves answers something of its rows")
+    return (
+        f"WITH {_MOVED_ROWS} AS ({statement}), {_NOTED} AS ({record.append_sql(_MOVED_ROWS)}) "
+        f"SELECT {', '.join(selected)} FROM {_MOVED_ROWS}"
+    )
+
+
+@dataclass(frozen=True)
+class MoveStamp(Fragment):
+    """a keyed ``UPDATE``'s value for a moveable column's ``_moved_epoch`` (``schema_backed.stamped_values``): a
+    :class:`~threetears.interfaces.keyed.Fragment` the update renders as any other, and the table's moves
+    (:attr:`record`), so ``update_keyed`` appends the moves rows in the same statement (:func:`with_moves_appended`).
+
+    WHY a kind of its own, as ``row_epoch.RisingStamp`` is: the keyed layer knows a table by its name alone; the value
+    is how the update learns that it may move a row, and what its moves rows name.
+
+    :param record: the table's moves
+    :ptype record: MoveRecord | None
+    """
+
+    record: MoveRecord | None = None
+
+
+def move_record_of_values(values: Mapping[str, Any]) -> MoveRecord | None:
+    """the moves a keyed ``UPDATE``'s ``values`` may make (a :class:`MoveStamp` among them).
+
+    :param values: column -> its new value, as ``update_keyed`` takes them
+    :ptype values: Mapping[str, Any]
+    :return: the table's moves; None when the update moves nothing
+    :rtype: MoveRecord | None
+    """
+    return next((value.record for value in values.values() if isinstance(value, MoveStamp) and value.record), None)
 
 
 def moved_from_column(column: str) -> str:

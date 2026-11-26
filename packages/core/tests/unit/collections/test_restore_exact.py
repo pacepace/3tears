@@ -38,6 +38,7 @@ from threetears.core.collections.schema_backed import STRING_TYPE, Column, Table
 from threetears.core.collections.table_restore import TableChanges, restored_tables
 from threetears.core.ddl.row_epoch import ROW_STAMPED, row_versions
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 from threetears.core.eviction import Declared, Policy
 from threetears.core.keyed import ThreadedDuckDB
 from threetears.core.tenancy import tenant_column, value_tenant
@@ -123,6 +124,10 @@ class _Db:
         self._conn.execute(
             f"CREATE TABLE {SCHEMA}.{RUN_MARKERS_TABLE} (table_name TEXT, scope TEXT, prefix TEXT, epoch BIGINT)"
         )
+        self._conn.execute(
+            f"CREATE TABLE {SCHEMA}.{TENANT_MOVES_TABLE} (table_name TEXT, scope TEXT, epoch BIGINT, keys TEXT, "
+            "tenant TEXT, columns TEXT)"
+        )
         self._db = ThreadedDuckDB(self._conn)
         self.declared = declared
         self.sent: list[tuple[str, tuple[Any, ...]]] = []
@@ -130,12 +135,24 @@ class _Db:
     def stamped(
         self, run: str, customer: str, office: str, epoch: int, *, left: tuple[str, str, int] | None = None
     ) -> None:
-        """a stamped row; ``left`` the customer and office a move at its epoch left."""
+        """a stamped row; ``left`` the customer and office a move at its epoch left, appended to the moves table as the
+        moving write appends it (``tenant_moves``)."""
         old_customer, old_office, at = left if left is not None else (None, None, None)
         self._conn.execute(
             f"INSERT INTO {SCHEMA}.{STAMPED} VALUES (?, ?, ?, ?, ?, ?, ?, ?, 3, false)",
             [run, customer, office, old_customer, at, old_office, at, epoch],
         )
+        if left is not None:
+            self._conn.execute(
+                f"INSERT INTO {SCHEMA}.{TENANT_MOVES_TABLE} VALUES (?, '3', ?, ?, ?, ?)",
+                [
+                    STAMPED,
+                    left[2],
+                    json.dumps([run]),
+                    value_tenant(left[0]),
+                    json.dumps({"office": left[1], "customer_id": left[0]}),
+                ],
+            )
 
     def version(self, state: str, run: str, customer: str, office: str, epoch: int) -> None:
         """a version of the versioned table, its scope touched at its epoch."""

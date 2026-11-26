@@ -2885,7 +2885,14 @@ class SqlL3Backend:
         moving = schema_sql.moving_columns(schema, data, fenced=fenced)
         if not moving:
             return parse_rowcount(await self._execute(sql, *params, conn=conn))
-        rows = await self._fetch(sql + schema_sql.moving_returning(moving), *params, conn=conn)
+        record = schema.move_record
+        # each move appended to the moves table in this same statement, so a restore reads every one (tenant_moves)
+        sql = (
+            sql + schema_sql.moving_returning(moving)
+            if record is None
+            else schema_sql.with_moves_returning(sql, record, moving)
+        )
+        rows = await self._fetch(sql, *params, conn=conn)
         note_moves(schema.name, moves_returned(rows[0], moving) if rows else ())
         return len(rows)
 
