@@ -530,7 +530,9 @@ ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3
 
 On a spent key's refusal the model sends the same request again on the next key; the refused call was not billed.
 A spent key is never sent again in the process, by any model reading that variable, and each switch is logged once at
-WARNING naming the two variables, never a key. Only that refusal fails over: a refused key (401, 403), a bad request,
+WARNING naming the two variables, never a key. OpenRouter's 403 for the key's own spent limit (`limit_source` `openrouter_key_limit`) fails over the same
+way; its 403 for a guardrail's or a workspace's spent budget does not, since every key shares it. Only those refusals
+fail over: a refused key (401, any other 403), a bad request,
 a 5xx and a timeout keep their behaviour. When every key's credit is spent, the account failure is raised as before,
 naming every variable it tried. A name in the list the environment does not set is refused when the model is built.
 Any provider's variable takes a list; OpenAI's own spent quota (a 429 `insufficient_quota`) is not read as spent

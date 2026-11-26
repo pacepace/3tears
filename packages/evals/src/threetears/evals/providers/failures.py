@@ -77,6 +77,10 @@ _ROUTER_LIMIT_SOURCE: Final = "limit_source"
 #: The ``error.metadata`` key holding when that budget's window rolls over (ISO 8601 UTC), null for a lifetime budget.
 _ROUTER_RESETS_AT: Final = "resets_at"
 
+#: The ``limit_source`` of a budget that is the key's own limit, which another key does not share. A guardrail's or a
+#: workspace's budget (or a source the errors page does not name) is met by every key under the account.
+_ROUTER_KEY_LIMIT: Final = "openrouter_key_limit"
+
 
 def _parsed(body: object) -> object:
     """``body`` as JSON when it is text, else as given; ``None`` when it is text that is not JSON."""
@@ -202,13 +206,14 @@ class ProviderError(Exception):
         ``model_not_found``. ``candidate``: OpenRouter's 403 that blocked the request's content, which its body says
         with a guardrail's ``patterns``, moderation's ``reasons`` or ``flagged_input``, or an ``error_type`` of
         ``content_policy_violation`` or ``refusal``; and everything else, a 500 and a 502 among it.
-    :ivar credit_spent: Whether the answer says the key's prepaid credit is spent: Anthropic's 400 credit-balance
-        notice, or a 402 (OpenRouter's insufficient credits). An ``account`` failure that another key may not meet,
-        so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``).
+    :ivar credit_spent: Whether the answer says the key's prepaid credit or its own limit is spent: Anthropic's 400
+        credit-balance notice, a 402 (OpenRouter's insufficient credits), or OpenRouter's 403 naming the key's own
+        spent limit (``limit_source`` ``openrouter_key_limit``). An ``account`` failure that another key may not meet,
+        so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``). A guardrail's or a
+        workspace's spent budget is not: every key under the account meets it.
     :ivar resets_at: When the spent budget rolls over, in UTC, for OpenRouter's 403 naming a spent guardrail,
         workspace or key budget (``error.metadata.limit_source``, its ``resets_at``): an ``account`` failure that
-        lasts until then, not spent credit, so it fails over to no other key. ``None`` for every other answer, and
-        for a budget with no reset (a lifetime one).
+        lasts until then. ``None`` for every other answer, and for a budget with no reset (a lifetime one).
     """
 
     def __init__(
@@ -246,7 +251,12 @@ class ProviderError(Exception):
             if _model_unserved(provider, status, error, message)
             else "candidate"
         )
-        self.credit_spent = credit or status == 402
+        key_limit = (
+            provider == "openrouter"
+            and status == 403
+            and _metadata(error).get(_ROUTER_LIMIT_SOURCE) == _ROUTER_KEY_LIMIT
+        )
+        self.credit_spent = credit or status == 402 or key_limit
         self.resets_at = _router_budget_resets(provider, status, error)
         said = f": {self.message}" if self.message else " (the response carried no message)"
         tried = f" (after {attempts} attempts)" if attempts > 1 else ""
