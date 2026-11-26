@@ -58,7 +58,6 @@ __all__ = [
     "L2_WRITE_GENERATION",
     "WRITE_GENERATION",
     "WRITE_GENERATION_UNDECLARED",
-    "is_versioned_class",
     "GenerationMarks",
     "GenerationSource",
     "GenerationVerdict",
@@ -1118,17 +1117,3 @@ async def advance_for_write(
         # (CallerTransaction.committed_generations)
         note_advanced_generation(table_name, token)
     return token
-
-
-def is_versioned_class(cls: type) -> bool:
-    """whether a collection class's table is versioned (``TableSchema(row_epoch=row_versions(...))``): a page-written
-    table, append-only, its own change record. It carries no per-row trigger (append-only L3, decisions 3 and 4;
-    :mod:`~threetears.core.ddl.epoch_catalog`): a restore reads it back through its ``(scope, epoch)`` index.
-
-    :param cls: a collection class
-    :ptype cls: type
-    :return: whether its schema declares versions
-    :rtype: bool
-    """
-    declared = getattr(getattr(cls, "schema", None), "row_epoch", None)
-    return bool(getattr(declared, "versions", False))

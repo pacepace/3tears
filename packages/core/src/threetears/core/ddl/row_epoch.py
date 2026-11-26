@@ -101,7 +101,6 @@ __all__ = [
     "GONE_COLUMN",
     "MAX_TRANSACTION_AGE_MS",
     "ROW_STAMPED",
-    "RisingStamp",
     "RowEpoch",
     "TransactionTooOldError",
     "UnstampedWriteError",
@@ -698,7 +697,7 @@ def rising_epoch_assignment(target: str, quoted_epoch: str = EPOCH_COLUMN) -> st
 
 
 @dataclass(frozen=True)
-class RisingStamp(Fragment):
+class _RisingStamp(Fragment):
     """a keyed ``UPDATE``'s value for a stamped table's epoch, ``GREATEST("epoch" + 1, $1::bigint)`` bound to
     :attr:`stamp` (:func:`rising_stamp`): a :class:`~threetears.interfaces.keyed.Fragment` the update renders as any
     other, and the stamp the update sends on the wire as its write's ``s_min`` (:func:`stamp_of_values`).
@@ -713,7 +712,7 @@ class RisingStamp(Fragment):
     stamp: int = 0
 
 
-def rising_stamp(stamp: int, quoted_epoch: str = '"epoch"') -> RisingStamp:
+def rising_stamp(stamp: int, quoted_epoch: str = '"epoch"') -> _RisingStamp:
     """a keyed ``UPDATE``'s value for a stamped table's epoch: ``GREATEST(<epoch> + 1, <stamp>)``, so the row's stamp
     never goes back (as :func:`rising_epoch_assignment` keeps an upsert's).
 
@@ -722,13 +721,13 @@ def rising_stamp(stamp: int, quoted_epoch: str = '"epoch"') -> RisingStamp:
     :param quoted_epoch: the epoch column, quoted as the statement quotes it
     :ptype quoted_epoch: str
     :return: the value
-    :rtype: RisingStamp
+    :rtype: _RisingStamp
     """
-    return RisingStamp(f"GREATEST({quoted_epoch} + 1, $1::bigint)", (stamp,), stamp=stamp)
+    return _RisingStamp(f"GREATEST({quoted_epoch} + 1, $1::bigint)", (stamp,), stamp=stamp)
 
 
 def stamp_of_values(values: Mapping[str, Any]) -> int | None:
-    """the stamp a keyed ``UPDATE``'s ``values`` carry (a :class:`RisingStamp` epoch), sent as its write's ``s_min``.
+    """the stamp a keyed ``UPDATE``'s ``values`` carry (a :class:`_RisingStamp` epoch), sent as its write's ``s_min``.
 
     :param values: column -> its new value, as ``update_keyed`` takes them
     :ptype values: Mapping[str, Any]
@@ -736,7 +735,7 @@ def stamp_of_values(values: Mapping[str, Any]) -> int | None:
     :rtype: int | None
     """
     value = values.get(EPOCH_COLUMN)
-    return value.stamp if isinstance(value, RisingStamp) else None
+    return value.stamp if isinstance(value, _RisingStamp) else None
 
 
 def versioned_primary_key_sql(quoted_key: tuple[str, ...], quoted_epoch: str, *, yugabyte: bool) -> str:

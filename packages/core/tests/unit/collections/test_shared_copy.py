@@ -26,7 +26,6 @@ from threetears.core.collections.copy_parts import WHOLE_PART, PartRule, part_na
 from threetears.core.collections.shared_copy import (
     KEYS,
     ByCount,
-    LOCATED_PREFIX,
     MARK_TABLE,
     ROWS,
     ApplyPlan,
@@ -38,6 +37,9 @@ from threetears.core.collections.shared_copy import (
 from threetears.core.shared_arrow import JobContext, SharedArrowStore, read_version
 
 _STATES = pa.array(["AZ", "GA", "NC", "PA", "VA"], pa.string())
+
+#: the prefix a split table's locator is published beside it under
+_LOCATED = "__located__"
 
 SCHEMA = pa.schema(
     [
@@ -264,7 +266,7 @@ class TestTheVersionEqualsDuckDB:
             if rule.locator is not None:
                 current = store.current
                 assert current is not None
-                assert held_parts(store.root, current.name, f"{LOCATED_PREFIX}results").keys() == {WHOLE_PART}
+                assert held_parts(store.root, current.name, f"{_LOCATED}results").keys() == {WHOLE_PART}
         finally:
             db.close()
             await backend.close()

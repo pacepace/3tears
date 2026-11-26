@@ -19,15 +19,12 @@ from threetears.core.ddl.epoch_catalog import (
     refuse_row_triggers,
     refuse_tables_without_epoch,
 )
-from threetears.observe import get_logger
 
 __all__ = [
     "refuse_moveable_without_moves_here",
     "refuse_row_triggers_here",
     "switched_tables_without_epoch",
 ]
-
-log = get_logger(__name__)
 
 
 class _Fetched:
@@ -79,26 +76,19 @@ async def refuse_moveable_without_moves_here(store: Any) -> None:
 
 
 async def switched_tables_without_epoch(store: Any, tables: Sequence[str]) -> frozenset[str]:
-    """the switched-on ``tables`` of the run's schema that carry no epoch, refused by
-    :func:`~threetears.core.ddl.epoch_catalog.refuse_tables_without_epoch` once its refusal is on; said at WARNING
-    until then.
+    """refuse the switched-on ``tables`` of the run's schema that carry no epoch
+    (:func:`~threetears.core.ddl.epoch_catalog.refuse_tables_without_epoch`).
 
     :param store: the run's locked ``DataStore``, bound to the target schema
     :ptype store: Any
     :param tables: the switched-on tables the run's packages declare
     :ptype tables: Sequence[str]
-    :return: those without an epoch
+    :return: none: a table without an epoch is refused
     :rtype: frozenset[str]
-    :raises TableWithoutEpochError: when one carries none and the refusal is on
+    :raises TableWithoutEpochError: when one carries none
     """
     rows = await store.query("SELECT current_schema() AS schema_name")
     if not rows:
         # a shim that is no database (a preview's): it holds no table to judge
         return frozenset()
-    missing = await refuse_tables_without_epoch(_Fetched(store), str(rows[0]["schema_name"]), tables)
-    if missing:
-        log.warning(
-            "switched-on tables carry no epoch: their writes reach no reader of what changed until they do",
-            extra={"extra_data": {"tables": sorted(missing)}},
-        )
-    return missing
+    return await refuse_tables_without_epoch(_Fetched(store), str(rows[0]["schema_name"]), tables)

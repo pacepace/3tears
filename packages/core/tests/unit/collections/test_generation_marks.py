@@ -19,12 +19,15 @@ import asyncio
 import pytest
 
 from threetears.core.collections.generation import (
-    _MAX_REMEMBERED_ADVANCES,
     GenerationMarks,
     GenerationVerdict,
     NoWriteGeneration,
     split_generation_token,
 )
+
+#: how many advances one table's mark remembers heard but not yet contiguous with it (``generation``'s bound): past
+#: it the mark stops recording, which a pass reads as an advance unheard
+_MAX_REMEMBERED_ADVANCES = 4096
 
 
 def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:

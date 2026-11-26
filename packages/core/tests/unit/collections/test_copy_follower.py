@@ -2996,6 +2996,15 @@ class _HeldStore(_Store):
         await super().put(name, data)
 
 
+class _LendingPointers(_Pointers):
+    """:class:`_Pointers` holding a table lent to it: what the follower holds, through its checkpoints, and nothing
+    else does."""
+
+    def __init__(self, lent: Any) -> None:
+        super().__init__()
+        self.lent = lent
+
+
 @pytest.fixture
 def _collector_off() -> Iterator[None]:
     """the cycle collector off for the test: only reference counting frees anything."""
@@ -3015,17 +3024,19 @@ async def test_a_follower_stopped_while_it_writes_a_checkpoint_is_freed_by_refer
     follower (follower -> task -> error -> traceback -> frame -> follower). Only a full collection freed it, and with
     it the version it held mapped: a pod that runs none (reports' ``pod.interpreter``, 2026-11-25) kept both for good.
     With the collector off, the stopped follower goes when let go, and its mapped version with it."""
-    l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _HeldStore(), _Pointers()
-    l3.put(_rows("VA", 200))
-    log.commit([("VA", i) for i in range(200)])
-    _, writer, checkpoints = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
     shared = SharedArrowStore(tmp_path / "shm", max_bytes=8 << 20)
     shared.publish("v1", {"t": pa.table({"a": list(range(100))})})
     # the version the follower holds mapped, as a copy published as shared Arrow does: a table lent past its
-    # mapping's close keeps its files mapped, and the version's lock held, until the last buffer over them is freed
+    # mapping's close keeps its files mapped, and the version's lock held, until the last buffer over them is freed.
+    # Lent to what the follower alone holds: its checkpoints' pointer bucket
     with MappedTables("v1", shared.root / "versions" / "v1", lock=False, pin=True) as mapped:
-        setattr(writer, "_mapped_version", mapped.tables["t"])
+        pointers = _LendingPointers(mapped.tables["t"])
     del mapped
+    l3, log, lock, store = _L3(), _Log(), _Seqlock(), _HeldStore()
+    l3.put(_rows("VA", 200))
+    log.commit([("VA", i) for i in range(200)])
+    _, writer, checkpoints = _replica(l3, log, lock, store, pointers, "a", ratio=0.0)
+    del pointers
     assert not await writer.start()
     assert await writer.catch_up()
     await writer.checkpointed()

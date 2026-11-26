@@ -19,7 +19,6 @@ from threetears.core.data.migrations import (
     make_unique_index_live_only,
     make_unique_indexes_live_only,
 )
-from threetears.core.data.migrations.live_unique import live_only_definition, temporary_name
 
 pytestmark = pytest.mark.integration
 
@@ -42,6 +41,27 @@ class _Store:
 
     async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         return [dict(row) for row in await self._conn.fetch(sql, *params)]
+
+
+class _StoppedError(RuntimeError):
+    """the run stopped, as a migration's process stops mid-run."""
+
+
+class _StoppedAtRename(_Store):
+    """the store of a run that stops at its rename: every statement before it ran, the rename never does."""
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        if " RENAME TO " in sql:
+            raise _StoppedError(sql)
+        return await super().execute(sql, *params)
+
+
+async def _indexes(conn: asyncpg.Connection) -> set[str]:
+    """the names of the ``things`` table's indexes in the test's schema."""
+    rows = await conn.fetch(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'things'"
+    )
+    return {str(row["indexname"]) for row in rows}
 
 
 @pytest.fixture
@@ -157,13 +177,16 @@ async def test_a_second_run_does_nothing(conn: asyncpg.Connection) -> None:
 
 async def test_a_run_stopped_after_the_drop_finishes_with_the_rename(conn: asyncpg.Connection) -> None:
     await conn.execute("CREATE UNIQUE INDEX things_name ON things (name)")
-    definition = await conn.fetchval("SELECT pg_get_indexdef('things_name'::regclass)")
-    await conn.execute(live_only_definition(definition, None, temporary_name("things_name")))
-    await conn.execute("DROP INDEX things_name")
+    before = await _indexes(conn)
+    with pytest.raises(_StoppedError):
+        await make_unique_indexes_live_only(_StoppedAtRename(conn), ["things_name"])
+    # stopped after the drop: the live-only index stands under its temporary name alone
+    during = await _indexes(conn)
+    assert "things_name" not in during and len(during) == len(before), during
     assert await make_unique_indexes_live_only(_Store(conn), ["things_name"]) == 1
     assert await _predicate(conn, "things_name") == "(NOT gone)"
-    assert await _predicate(conn, temporary_name("things_name")) is None
-    assert await conn.fetchval("SELECT to_regclass($1)", temporary_name("things_name")) is None
+    # the temporary name is gone with the rename
+    assert await _indexes(conn) == before
 
 
 async def test_a_foreign_keys_target_is_refused_and_left_whole(conn: asyncpg.Connection) -> None:

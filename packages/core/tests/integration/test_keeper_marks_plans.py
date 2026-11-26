@@ -20,6 +20,7 @@ import pytest
 
 from threetears.core.collections.log_keeper import LogKeeper
 from threetears.core.testing.plans import PlanRecorder, plan_uses_index
+from threetears.nats.change_log import ChangeLogState
 
 pytestmark = pytest.mark.integration
 
@@ -107,6 +108,16 @@ async def test_threetears_change_note_marks_position_reads_a_restores_marks(mark
     assert checked.plans and all(
         plan_uses_index(plan, "threetears_change_note_marks_position") for plan in checked.plans
     ), [p.plan for p in checked.plans]
+    # the window's anchor (keep_window_marks): the log's newest mark before its first record, from the same index; the
+    # sweep it then runs reads the time index, so only the anchor's plan (the first statement) is this index's
+    anchored = PlanRecorder(marks.conn)
+    window = ChangeLogState(first_seq=41, last_seq=_MARKS_EACH, bytes=0, max_bytes=None, incarnation="log_7")
+    dropped = await _keeper(anchored, marks.schema).keep_window_marks(window)
+    # log_7's mark at seq 40 is the g = 40 * _MARKED_LOGS + 7th, and every mark of a larger g is older than it
+    assert dropped == _MARKED_LOGS * _MARKS_EACH - (40 * _MARKED_LOGS + 7), dropped
+    assert anchored.plans and plan_uses_index(anchored.plans[0], "threetears_change_note_marks_position"), [
+        p.plan for p in anchored.plans
+    ]
 
 
 async def test_threetears_change_note_marks_at_reads_the_windows_sweep(marks: _Marks) -> None:

@@ -58,7 +58,6 @@ __all__ = [
     "MAX_STATEMENT_PARAMS",
     "PGVECTOR_TYPES",
     "build_bulk_insert_sql",
-    "bulk_moves",
     "returning_rows_sql",
     "build_cas_params",
     "build_cas_update_sql",
@@ -76,7 +75,6 @@ __all__ = [
     "build_where_pk",
     "build_whole_key_delete_sql",
     "build_whole_key_select_sql",
-    "newest_source",
     "bulk_batches",
     "bulk_insert_batches",
     "bulk_insert_row_sql",
@@ -721,7 +719,7 @@ def with_moves_returning(sql: str, record: MoveRecord, columns: Sequence[str]) -
     return with_moves_appended(statement, record, [quote_identifier(name) for name in answered])
 
 
-def bulk_moves(schema: TableSchema, cols: Sequence[Column]) -> MoveRecord | None:
+def _bulk_moves(schema: TableSchema, cols: Sequence[Column]) -> MoveRecord | None:
     """the moves a bulk upsert of ``cols`` (:func:`build_bulk_insert_sql`) may make: the table's moves record when its
     ``DO UPDATE`` sets a moveable column a record carries; None otherwise.
 
@@ -1015,7 +1013,7 @@ def _bulk_insert_sql(schema: TableSchema, cols: list[Column], values: str) -> st
     """
     col_names = ", ".join(c.name for c in cols)
     sql = _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
-    record = bulk_moves(schema, cols)
+    record = _bulk_moves(schema, cols)
     if record is not None:
         # a row the upsert moves between tenants appends its move to the moves table in this same statement
         # (tenant_moves); the statement answers how many rows it wrote
@@ -1203,7 +1201,7 @@ def build_whole_key_select_sql(schema: TableSchema) -> str:
         pk_where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
     # a versioned table's batch names its keys inside its newest relation: no planner pushes a join's keys into it
     return (
-        f"SELECT {build_select_column_list(schema)} FROM {newest_source(schema, pk_where)} "
+        f"SELECT {build_select_column_list(schema)} FROM {_newest_source(schema, pk_where)} "
         f"WHERE {pk_where}{_live_condition(schema)}"
     )
 
@@ -1215,7 +1213,7 @@ def _versioned(schema: TableSchema) -> bool:
     return declared is not None and declared.versions
 
 
-def newest_source(schema: TableSchema, within: str | None = None) -> str:
+def _newest_source(schema: TableSchema, within: str | None = None) -> str:
     """what an L3 read of ``schema``'s rows names in its ``FROM``: the table, or for a versioned table its newest live
     versions (:func:`~threetears.interfaces.keyed.keys.newest_relation`, read under the table's own bare name), so the
     read answers only each key's newest version, never an older one, a key whose newest version is a "gone" marker,
@@ -1247,7 +1245,7 @@ def _live_condition(schema: TableSchema) -> str:
     """the condition (`` AND ...``) an L3 read of a stamped table's rows by its key adds, so it answers only live rows,
     never one a delete marked gone (``TableSchema``: a stamped delete is an update in place setting the flag, so a
     restore hears it). Empty for any other table. The stamped half of an L3 read of a schema's rows: its versioned
-    half is :func:`newest_source`, the relation the read names (a table is one or the other, never both).
+    half is :func:`_newest_source`, the relation the read names (a table is one or the other, never both).
 
     :param schema: table schema, read as ``FROM <schema.name>`` with no alias
     :ptype schema: TableSchema
@@ -1274,7 +1272,7 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     lead_key = schema.pk_columns[0]
     led = f"{as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)})"
     return (
-        f"SELECT {build_select_column_list(schema, columns)} FROM {newest_source(schema, led)} "
+        f"SELECT {build_select_column_list(schema, columns)} FROM {_newest_source(schema, led)} "
         f"WHERE {led}{_live_condition(schema)}"
     )
 
@@ -1668,7 +1666,7 @@ def build_select_column_list(schema: TableSchema, columns: Sequence[str] | None 
     """
     text_cast_types = (_VECTOR_TYPE, _TSVECTOR_TYPE)
     # a versioned or stamped table's "gone" flag is no column of a row a read answers: a read sees only live rows (a
-    # versioned table's live newest versions, newest_source; a stamped one's live rows, _live_condition), whose flag is
+    # versioned table's live newest versions, _newest_source; a stamped one's live rows, _live_condition), whose flag is
     # always false; a stamped table's L3 restore bucket is no declared column at all
     chosen = (
         [col for col in schema.columns if not ((_versioned(schema) or _stamped(schema)) and col.name == GONE_COLUMN)]
@@ -1692,7 +1690,7 @@ def build_fetch_sql(schema: TableSchema) -> str:
     """
     pk_where, _ = build_where_pk(schema, start=1)
     columns = build_select_column_list(schema)
-    return f"SELECT {columns} FROM {newest_source(schema)} WHERE {pk_where}{_live_condition(schema)}"
+    return f"SELECT {columns} FROM {_newest_source(schema)} WHERE {pk_where}{_live_condition(schema)}"
 
 
 def build_delete_sql(schema: TableSchema) -> str:

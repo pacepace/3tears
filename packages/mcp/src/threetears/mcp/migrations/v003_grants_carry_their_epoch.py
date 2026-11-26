@@ -22,12 +22,12 @@ from threetears.core.data.migrations.stamp_tables import StampingTable, stamp_ex
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
-__all__ = ["STAMPED_TABLES", "grants_carry_their_epoch"]
+__all__ = ["grants_carry_their_epoch"]
 
 log = get_logger(__name__)
 
 #: the table v003 stamps, its key as declared at v003 (FROZEN: a later change of its key is its own migration)
-STAMPED_TABLES: Final[tuple[StampingTable, ...]] = (
+_STAMPED_TABLES: Final[tuple[StampingTable, ...]] = (
     StampingTable("mcp_tool_grants", (("grant_id", "uuid"),), tenancy=("undeclared", None)),
 )
 
@@ -40,5 +40,5 @@ async def grants_carry_their_epoch(store: DataStore) -> None:
     :return: nothing
     :rtype: None
     """
-    stamped = await stamp_existing_tables(store, STAMPED_TABLES)
+    stamped = await stamp_existing_tables(store, _STAMPED_TABLES)
     log.info("mcp v003: the tool grants are ROW_STAMPED", extra={"extra_data": {"rows_stamped": stamped}})

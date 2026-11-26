@@ -86,8 +86,6 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "ACL_TABLES_DDL",
     "PACKAGE_NAME",
-    "access_tables_carry_their_epoch",
     "create_acl_tables",
-    "names_hold_live_rows_only",
     "register",
 ]

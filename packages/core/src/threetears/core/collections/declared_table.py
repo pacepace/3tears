@@ -363,12 +363,12 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         pool = self.l3_pool if conn is None else conn
         if pool is None:
             return
-        key = dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True))
         await update_keyed(
             pool,
             self.schema.name,
             values=self.stamped_values({GONE_COLUMN: True}, conn=conn),
-            by=key,
+            # the table's own key, written where the statement is so the key it binds is the one read
+            by=dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True)),
             where=[Fragment(f'NOT "{GONE_COLUMN}"')],
         )
 
@@ -487,8 +487,9 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
             )
             if self._live_arbiter():
                 # a natural key holds its live rows only: a gone row of the same name is another row, never this one
-                keys = f"{keys} AND NOT {GONE_COLUMN}"
-            sql = f"UPDATE {table} SET {assignments} WHERE {keys}"  # noqa: S608 - declared names
+                sql = f"UPDATE {table} SET {assignments} WHERE {keys} AND NOT {GONE_COLUMN}"  # noqa: S608 - declared names
+            else:
+                sql = f"UPDATE {table} SET {assignments} WHERE {keys}"  # noqa: S608 - declared names
             bound = [*updated, *conflict]
         if returning:
             sql = f"{sql} RETURNING {', '.join(self.schema.pk_columns)}"

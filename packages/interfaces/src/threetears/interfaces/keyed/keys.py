@@ -75,13 +75,9 @@ __all__ = [
     "StampedTable",
     "TableKey",
     "VersionedTable",
-    "NEWEST_FETCH_ROW_LIMIT",
-    "NEWEST_FIRST_KEYS",
     "NEWEST_KEPT",
     "NEWEST_LIVE",
-    "NEWEST_ROWS_A_READ",
     "NEWEST_VERSIONS",
-    "NEWEST_WORK_MEM",
     "key_only",
     "key_pins_within",
     "newest_lateral",
@@ -826,26 +822,26 @@ def versioned_table(table: Any, *, l3: bool) -> VersionedTable | None:
 #: version of its keys (YugabyteDB's batched nested loop answers them in no key order); 5,000 keys' 250,000 versions
 #: passed the default 4 MB and spilled on both engines (external merge, 20 MB on disk), and 64 MB held them in memory
 #: (quicksort). Pods have no scratch volume (no disk spill, by design): the work a read asks is bounded by
-#: :data:`NEWEST_ROWS_A_READ`, and this is the memory that bound is sized against. In kB, the setting's base unit
+#: :data:`_NEWEST_ROWS_A_READ`, and this is the memory that bound is sized against. In kB, the setting's base unit
 #: (``SET LOCAL work_mem = 65536``): the hub's broker bounds a rail read's settings by comparing numbers, never units.
-NEWEST_WORK_MEM: Final = 64 * 1024
+_NEWEST_WORK_MEM: Final = 64 * 1024
 
 #: the ``yb_fetch_row_limit`` a newest read sets on YugabyteDB for its own transaction (:func:`newest_settings`). WHY
 #: 10,000 (measured 2026-11-25, 5,000-key batch): the default 1,024 rows a storage request made a batch of 50 versions a
 #: key 246 requests; 10,000 made it 30 (5 versions: 26 -> 6), each request a round trip to the tablets.
-NEWEST_FETCH_ROW_LIMIT: Final = 10_000
+_NEWEST_FETCH_ROW_LIMIT: Final = 10_000
 
 #: the most versions one newest read's statement reads: a fill page or a keyed batch asks for as many keys as hold
 #: this many versions at the versions a key its last statement read (:func:`next_newest_keys`), so no sort outgrows
-#: :data:`NEWEST_WORK_MEM`. WHY 100,000: 250,000 versions of the measured table's rows (about 70 bytes each) sorted in
+#: :data:`_NEWEST_WORK_MEM`. WHY 100,000: 250,000 versions of the measured table's rows (about 70 bytes each) sorted in
 #: 64 MB; 100,000 leaves room for rows two and a half times as wide. A fill page streams its range in key order (no
 #: sort but its own page's), so for it the bound is the work one statement does, never memory alone.
-NEWEST_ROWS_A_READ: Final = 100_000
+_NEWEST_ROWS_A_READ: Final = 100_000
 
 #: the keys a read's first statement asks for when it knows nothing yet of its versions: as many as fill
-#: :data:`NEWEST_ROWS_A_READ` at 50 versions a key, the measured worst (a key rewritten 50 times in a burst, cleanup
+#: :data:`_NEWEST_ROWS_A_READ` at 50 versions a key, the measured worst (a key rewritten 50 times in a burst, cleanup
 #: never relied on); each later statement asks by the versions the one before read
-NEWEST_FIRST_KEYS: Final = NEWEST_ROWS_A_READ // 50
+_NEWEST_FIRST_KEYS: Final = _NEWEST_ROWS_A_READ // 50
 
 #: the column a fill page's statement answers beside each key's newest version: whether a read keeps it (not a gone
 #: marker, no newer run marker, the read's own filters past the key). The page keeps every key it read to step past
@@ -858,8 +854,8 @@ NEWEST_VERSIONS: Final = "_newest_versions"
 
 
 def newest_settings(*, yugabyte: bool, batch: bool = True) -> tuple[tuple[str, int], ...]:
-    """the settings each newest read sets for its own transaction (``SET LOCAL``): :data:`NEWEST_WORK_MEM`, and for a
-    keyed batch on YugabyteDB :data:`NEWEST_FETCH_ROW_LIMIT`. WHY not a fill page's: a page stops at its ``LIMIT``, and
+    """the settings each newest read sets for its own transaction (``SET LOCAL``): :data:`_NEWEST_WORK_MEM`, and for a
+    keyed batch on YugabyteDB :data:`_NEWEST_FETCH_ROW_LIMIT`. WHY not a fill page's: a page stops at its ``LIMIT``, and
     YugabyteDB fetches a storage request's rows whole, so 10,000 a request read up to 10,000 rows past a page's last
     key (4 pages of 501 keys at 10 versions: 65,581 rows read for 20,000, test_newest_reads_cost_live, 2026-11-25); at
     the default 1,024 a page reads at most a request past it (the measured fills: 105 requests for 101,880 rows).
@@ -871,14 +867,14 @@ def newest_settings(*, yugabyte: bool, batch: bool = True) -> tuple[tuple[str, i
     :return: each setting's name and its value in the setting's base unit (``work_mem`` in kB, rows)
     :rtype: tuple[tuple[str, int], ...]
     """
-    settings: tuple[tuple[str, int], ...] = (("work_mem", NEWEST_WORK_MEM),)
+    settings: tuple[tuple[str, int], ...] = (("work_mem", _NEWEST_WORK_MEM),)
     if yugabyte and batch:
-        settings += (("yb_fetch_row_limit", NEWEST_FETCH_ROW_LIMIT),)
+        settings += (("yb_fetch_row_limit", _NEWEST_FETCH_ROW_LIMIT),)
     return settings
 
 
 def next_newest_keys(keys: int, versions: int, asked: int) -> int:
-    """how many keys a newest read's next statement asks for: as many as hold :data:`NEWEST_ROWS_A_READ` versions at the
+    """how many keys a newest read's next statement asks for: as many as hold :data:`_NEWEST_ROWS_A_READ` versions at the
     versions a key the last statement read, at most ``asked``; at least one.
 
     :param keys: the keys the last statement read
@@ -891,8 +887,8 @@ def next_newest_keys(keys: int, versions: int, asked: int) -> int:
     :rtype: int
     """
     if keys <= 0 or versions <= 0:
-        return max(1, min(asked, NEWEST_FIRST_KEYS))
-    return max(1, min(asked, NEWEST_ROWS_A_READ * keys // versions))
+        return max(1, min(asked, _NEWEST_FIRST_KEYS))
+    return max(1, min(asked, _NEWEST_ROWS_A_READ * keys // versions))
 
 
 #: the words a condition may hold beside the key's own columns and still be judged by the key alone (:func:`key_only`)

@@ -2349,7 +2349,6 @@ class SqlL3Backend:
         :return: nothing
         :rtype: None
         """
-        batch = KeyBatch(columns=tuple(schema.pk_columns), keys=list(columns), casts=tuple(casts))
         epoch_column = quote_identifier(EPOCH_COLUMN)
         gone = quote_identifier(GONE_COLUMN)
         # every row carries the delete's one stamp, and each statement says so
@@ -2361,7 +2360,8 @@ class SqlL3Backend:
                     GONE_COLUMN: True,
                     EPOCH_COLUMN: Fragment(f"GREATEST({epoch_column} + 1, $1::bigint)", (epoch,)),
                 },
-                keys=batch,
+                # the table's own key, written where the statement is so the key it binds is the one read
+                keys=KeyBatch(tuple(schema.pk_columns), keys=list(columns), casts=tuple(casts)),
                 where=[Fragment(f"NOT {gone}")],
                 batch=max_rows,
             )

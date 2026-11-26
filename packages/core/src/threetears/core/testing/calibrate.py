@@ -38,7 +38,6 @@ __all__ = [
     "best_cpu_seconds",
     "best_seconds_interleaved",
     "budget_problem",
-    "plain_copy_seconds",
     "plain_keyed_delete_seconds",
     "thread_cpu_seconds",
 ]
@@ -302,36 +301,6 @@ async def plain_read_seconds(conn: Any, rows_sql: str, *args: Any, runs: int = _
     """
     async with plain_copies(conn, {"rows": (rows_sql, args)}) as plain:
         return await best_seconds(lambda: conn.fetch(f"SELECT * FROM {plain['rows']}"), runs=runs)  # noqa: S608
-
-
-async def plain_copy_seconds(
-    conn: Any, columns: Sequence[tuple[str, str]], records: Sequence[Sequence[Any]], *, runs: int = _RUNS
-) -> float:
-    """the best time to ``COPY`` ``records`` into a fresh plain table of ``columns`` (no key, no index).
-
-    :param conn: an asyncpg connection
-    :ptype conn: Any
-    :param columns: each column's name and SQL type
-    :ptype columns: Sequence[tuple[str, str]]
-    :param records: the rows, each in ``columns``' order
-    :ptype records: Sequence[Sequence[Any]]
-    :param runs: how many timed copies, each into a table of its own
-    :ptype runs: int
-    :return: seconds
-    :rtype: float
-    """
-    best = float("inf")
-    shape = ", ".join(f"{name} {kind}" for name, kind in columns)
-    for _ in range(runs):
-        plain = _plain_name()
-        await conn.execute(f"CREATE TABLE {plain} ({shape})")
-        try:
-            began = time.perf_counter()
-            await conn.copy_records_to_table(plain, records=list(records), columns=[name for name, _ in columns])
-            best = min(best, time.perf_counter() - began)
-        finally:
-            await conn.execute(f"DROP TABLE IF EXISTS {plain}")
-    return best
 
 
 async def _keyed_plain(conn: Any, rows: int) -> str:

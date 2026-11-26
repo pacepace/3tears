@@ -18,7 +18,6 @@ import pytest
 
 from threetears.agent.acl import GroupCollection, GroupMemberCollection, RoleAssignmentCollection
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
-from threetears.core.collections.delete_cascade import UnappliedCascadeError
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -319,7 +318,7 @@ async def test_a_cascade_no_registered_collection_can_announce_is_refused_before
     groups = GroupCollection(registry, _CONFIG, nats_client=bus)
     groups.delete_from_store = AsyncMock()  # type: ignore[method-assign]
 
-    with pytest.raises(UnappliedCascadeError, match="role_assignments"):
+    with pytest.raises(RuntimeError, match="role_assignments"):
         await groups.delete(("customer", uuid4()))
 
     groups.delete_from_store.assert_not_awaited()

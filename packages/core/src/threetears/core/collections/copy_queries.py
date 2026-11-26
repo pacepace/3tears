@@ -78,7 +78,7 @@ from typing import Any, Final
 import pyarrow as pa
 import pyarrow.ipc as ipc
 
-from threetears.core.arrow_keys import CANONICAL_CASTS, canonical_texts, rows_named, stored_instants
+from threetears.core.arrow_keys import rows_found
 from threetears.core.collections.shared_copy import INDEX_PREFIXES, MARK_TABLE
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
@@ -101,7 +101,6 @@ __all__ = [
     "QueryTimeout",
     "QueryWorkerDied",
     "query_workers",
-    "rows_found",
 ]
 
 log = get_logger(__name__)
@@ -307,7 +306,7 @@ class _Query:
     :ivar binds: the scalar binds
     :ivar prepare: the copy's prepare hook; None for none
     :ivar lookup: a keyed lookup's table, key columns and each key column's SQL type (``(column, type)`` pairs:
-        :func:`_compared`); its keys handed as :data:`_KEYS`. None for a query
+        :func:`~threetears.core.arrow_keys.rows_found`); its keys handed as :data:`_KEYS`. None for a query
     """
 
     sql: str | None
@@ -406,71 +405,11 @@ def _write_answer(context: JobContext, batches: pa.RecordBatchReader) -> int:
     return rows
 
 
-def _compared(
-    column: pa.ChunkedArray | pa.Array, cast: str | None, held: pa.DataType, *, asked: bool
-) -> pa.ChunkedArray | pa.Array:
-    """a key column as a lookup compares it: an asked key's or a held row's.
-
-    A column held typed (an integer, a decimal, a boolean) is compared as it is held, the asked keys cast to its type
-    (``arrow_keys.rows_named``, Arrow's cast). A column held as text whose type is not text is compared by value, as
-    the copy's read by key compared it in SQL cast to the column's type (``FollowedTable.held_key``): the asked keys in
-    the one spelling the copy stores (``arrow_keys.canonical_texts``: a NUMERIC's ``1.50`` is ``1.5``, a UUID
-    lower-cased; an instant's ``arrow_keys.stored_instants``), and the held column as it is, never respelled.
-
-    **Why only the asked side** (2026-11-25). Respelled on both sides, every lookup rewrote the held column across the
-    whole part it probed, a cost of the part's rows, not the keys'. The copy now stores that spelling once, as each
-    change is applied (``shared_copy.SharedCopyBackend``'s ``canonical`` and ``instants``), so a lookup's cost is its
-    keys'. In Arrow's kernels alone, never a Python object a key.
-
-    :param column: the column
-    :ptype column: pa.ChunkedArray | pa.Array
-    :param cast: the column's SQL type; None compares it as it is
-    :ptype cast: str | None
-    :param held: the copy's Arrow type of the column
-    :ptype held: pa.DataType
-    :param asked: whether the column is the asked keys' (else the copy's rows')
-    :ptype asked: bool
-    :return: the column as compared
-    :rtype: pa.ChunkedArray | pa.Array
-    """
-    if not asked or cast is None or not (pa.types.is_string(held) or pa.types.is_large_string(held)):
-        return column
-    if cast in CANONICAL_CASTS:
-        return canonical_texts(column, cast)
-    if cast == "timestamptz":
-        return stored_instants(column)
-    return column
-
-
-def rows_found(rows: pa.Table, keys: pa.Table, key: Sequence[str], casts: Mapping[str, str] = EMPTY) -> pa.Table:
-    """the rows of ``rows`` whose key ``keys`` names, in their order in ``rows`` (Arrow's hash kernels, no Python
-    object a key), each key column compared as :func:`_compared` compares it.
-
-    :param rows: the rows looked in
-    :ptype rows: pa.Table
-    :param keys: the keys looked for
-    :ptype keys: pa.Table
-    :param key: the key's columns
-    :ptype key: Sequence[str]
-    :param casts: each key column's SQL type, for a column held as text compared by value; others as they are
-    :ptype casts: Mapping[str, str]
-    :return: the rows found, as the copy holds them
-    :rtype: pa.Table
-    """
-    held = rows.select(list(key))
-    asked = keys.select(list(key))
-    for at, column in enumerate(key):
-        kind = held.schema.field(column).type
-        held = held.set_column(at, column, _compared(held.column(column), casts.get(column), kind, asked=False))
-        asked = asked.set_column(at, column, _compared(asked.column(column), casts.get(column), kind, asked=True))
-    return rows.take(pa.array(rows_named(held, asked, key)))
-
-
 def _lookup_in_worker(
     context: JobContext, table: str, key: Sequence[str], casts: Sequence[tuple[str, str]] = ()
 ) -> int:
     """a keyed lookup in its worker: the version's table probed by the handed keys (each key column compared as
-    :func:`rows_found` compares it), the rows found written as the answer.
+    :func:`~threetears.core.arrow_keys.rows_found` compares it), the rows found written as the answer.
 
     :param context: the job's context
     :ptype context: JobContext

@@ -64,7 +64,6 @@ from threetears.core.collections.table_restore import (
     column_value_sql,
     key_term,
     moved_tenant_sql,
-    moves_by,
     moves_relation,
     restored_tables,
     run_marker_changes,
@@ -99,7 +98,7 @@ _TENANT: Final = "_tenant"
 _COLUMN_TEXT: Final = "_column_text_{}"
 
 #: a moves page's order: the moves table's key after its bound table and bucket (tenant_moves)
-_MOVES_ORDER: Final = (Sort(EPOCH_COLUMN, cast="bigint"), Sort("keys"))
+_MOVES_ORDER: Final = (Sort("epoch", cast="bigint"), Sort("keys"))
 
 #: a row's key column types, from the catalog: what a keyset cursor's text is cast back to
 _KEY_TYPES_SQL: Final = """
@@ -374,12 +373,14 @@ async def _range_page(
     bounds = [Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,)), Fragment(f't."{EPOCH_COLUMN}" <= $1', (ceiling,))]
     moved = _moves_slot(table, bucket)
     if moved is not None and isinstance(table, StampedTable):
+        # the moves table's key prefix, the table and the bucket, then its own order (its own columns, as
+        # TENANT_MOVES_SCHEMA spells them)
         return await keyset_page(
             pool,
             moves_relation(table),
             columns=_move_columns(table),
-            by=moves_by(table, moved),
-            order=list(_MOVES_ORDER),
+            by={"table_name": table.table, "scope": str(moved)},
+            order=_MOVES_ORDER,
             limit=limit,
             cursor=after,
             where=[*bounds, *move_filters],

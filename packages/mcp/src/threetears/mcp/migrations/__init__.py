@@ -74,6 +74,5 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
 __all__ = [
     "PACKAGE_NAME",
     "create_mcp_tool_grants_table",
-    "grants_carry_their_epoch",
     "register",
 ]

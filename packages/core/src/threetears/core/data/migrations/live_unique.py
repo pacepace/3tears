@@ -42,18 +42,15 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
 __all__ = [
-    "LIVE_ONLY_PREDICATE",
     "LiveUniqueRefusedError",
-    "live_only_definition",
     "make_unique_index_live_only",
     "make_unique_indexes_live_only",
-    "temporary_name",
 ]
 
 log = get_logger(__name__)
 
 #: the predicate a live-only unique index adds: a stamped table's live rows
-LIVE_ONLY_PREDICATE: Final[str] = f"NOT {GONE_COLUMN}"
+_LIVE_ONLY_PREDICATE: Final[str] = f"NOT {GONE_COLUMN}"
 
 #: a predicate already holding the live rows only, as the catalog prints it (``(NOT gone)``)
 _ALREADY_LIVE: Final = re.compile(rf"\bNOT {GONE_COLUMN}\b")
@@ -129,7 +126,7 @@ class _Held:
     stamped: bool
 
 
-def temporary_name(index: str) -> str:
+def _temporary_name(index: str) -> str:
     """the name the live-only index is built under, within the identifier limit.
 
     :param index: the index
@@ -140,7 +137,7 @@ def temporary_name(index: str) -> str:
     return f"{index[: _MAX_IDENTIFIER - len(_TEMPORARY_SUFFIX)]}{_TEMPORARY_SUFFIX}"
 
 
-def live_only_definition(definition: str, predicate: str | None, name: str) -> str:
+def _live_only_definition(definition: str, predicate: str | None, name: str) -> str:
     """``definition`` (as ``pg_get_indexdef`` prints it) built as ``name``, its predicate the live rows' too.
 
     :param definition: the index's own definition
@@ -161,7 +158,7 @@ def live_only_definition(definition: str, predicate: str | None, name: str) -> s
         if not definition.endswith(tail):
             raise ValueError(f"the definition does not end in its predicate {predicate!r}: {definition}")
         body = definition[: -len(tail)]
-    where = f"({predicate}) AND ({LIVE_ONLY_PREDICATE})" if predicate is not None else f"({LIVE_ONLY_PREDICATE})"
+    where = f"({predicate}) AND ({_LIVE_ONLY_PREDICATE})" if predicate is not None else f"({_LIVE_ONLY_PREDICATE})"
     renamed = _HEAD.sub(f"CREATE UNIQUE INDEX IF NOT EXISTS {quote_identifier(name)} ON ", body, count=1)
     return f"{renamed} WHERE {where}"
 
@@ -230,7 +227,7 @@ async def make_unique_index_live_only(store: Any, index: str, *, schema: str | N
     :raises LiveUniqueRefusedError: when it is missing, a foreign key's target, the primary key, not unique, or on a
         table with no gone column
     """
-    temporary = temporary_name(index)
+    temporary = _temporary_name(index)
     held = await _held(store, index, schema)
     built = await _held(store, temporary, schema)
     if held is None:
@@ -254,7 +251,7 @@ async def make_unique_index_live_only(store: Any, index: str, *, schema: str | N
     if built is not None and not built.is_valid:
         # a build a failed run left behind holds nothing: built again
         await store.execute(f"DROP INDEX {qualified_schema}.{quote_identifier(temporary)}")
-    await store.execute(live_only_definition(held.definition, held.predicate, temporary))
+    await store.execute(_live_only_definition(held.definition, held.predicate, temporary))
     if held.constraint_name is not None:
         await store.execute(
             f"ALTER TABLE {qualified_schema}.{quote_identifier(held.table_name)} "
@@ -299,7 +296,7 @@ async def make_unique_indexes_live_only(store: Any, indexes: Sequence[str], *, s
     for index in indexes:
         held = await _held(store, index, schema)
         if held is None:
-            built = await _held(store, temporary_name(index), schema)
+            built = await _held(store, _temporary_name(index), schema)
             if built is None or not built.is_valid:
                 raise LiveUniqueRefusedError(index, "no such index")
             continue

@@ -56,7 +56,6 @@ __all__ = [
     "DeleteCascade",
     "DeleteRestrict",
     "RestrictedDeleteError",
-    "UnappliedCascadeError",
     "announce_delete_cascade",
     "apply_delete_cascade",
     "read_delete_cascade",
@@ -156,7 +155,7 @@ class CascadedRows:
     column: str = field(default="", compare=False)
 
 
-class UnappliedCascadeError(RuntimeError):
+class _UnappliedCascadeError(RuntimeError):
     """a stamped parent's delete reaches rows its foreign-key action cannot be taken on by 3tears: the child table has
     no collection in this registry, or one that cannot take it (a versioned child). Raised before the parent is marked
     gone, so nothing is left half done."""
@@ -295,7 +294,7 @@ def refuse_unappliable_cascade(collection: Any, cascaded: Sequence[CascadedRows]
     :ptype cascaded: Sequence[CascadedRows]
     :return: nothing
     :rtype: None
-    :raises UnappliedCascadeError: when an action cannot be taken
+    :raises _UnappliedCascadeError: when an action cannot be taken
     """
     registry = collection.registry
     for rows in cascaded:
@@ -304,7 +303,7 @@ def refuse_unappliable_cascade(collection: Any, cascaded: Sequence[CascadedRows]
         child = None if rows.unheard or registry is None else registry.get_collection(rows.table_name)
         schema = getattr(child, "schema", None)
         if child is None or schema is None or getattr(schema, "versioned", False):
-            raise UnappliedCascadeError(
+            raise _UnappliedCascadeError(
                 f"{collection.table_name}: a delete marks its row gone (ROW_STAMPED), so the database's ON DELETE "
                 f"{rows.action} of {rows.table_name}.{rows.column} never runs, and 3tears takes it only through the "
                 f"child's own collection, which this registry does not hold (or holds versioned); register it"
@@ -333,7 +332,7 @@ async def apply_delete_cascade(collection: Any, cascaded: Sequence[CascadedRows]
     :ptype conn: Any
     :return: nothing
     :rtype: None
-    :raises UnappliedCascadeError: when an action cannot be taken
+    :raises _UnappliedCascadeError: when an action cannot be taken
     """
     refuse_unappliable_cascade(collection, cascaded)
     registry = collection.registry
@@ -344,28 +343,30 @@ async def apply_delete_cascade(collection: Any, cascaded: Sequence[CascadedRows]
         schema = child.schema
         columns = tuple(schema.pk_columns)
         named = [key if isinstance(key, tuple) else (key,) for key in rows.keys]
-        batch = KeyBatch(
-            columns=columns,
-            keys=[[key[place] for key in named] for place in range(len(columns))],
-            casts=tuple(_sql_cast(schema, column) for column in columns),
-        )
+        values = [[key[place] for key in named] for place in range(len(columns))]
+        casts = tuple(_sql_cast(schema, column) for column in columns)
         stamped = bool(getattr(schema, "stamps_epoch", False))
         # the parent's L3, as the cascade's read of the children went (read_delete_cascade): one database
         pool = collection.required_l3_pool if conn is None else conn
+        # each statement's key batch is the child's own key (pk_columns), written where the statement is so the key
+        # it binds is the one read
         if rows.action == "SET NULL":
             await update_keyed(
-                pool, schema.name, values=child.stamped_values({rows.column: None}, conn=conn), keys=batch
+                pool,
+                schema.name,
+                values=child.stamped_values({rows.column: None}, conn=conn),
+                keys=KeyBatch(columns, keys=values, casts=casts),
             )
         elif stamped:
             await update_keyed(
                 pool,
                 schema.name,
                 values=child.stamped_values({GONE_COLUMN: True}, conn=conn),
-                keys=batch,
+                keys=KeyBatch(columns, keys=values, casts=casts),
                 where=[Fragment(f"NOT {quote_identifier(GONE_COLUMN)}")],
             )
         else:
-            await delete_keyed(pool, schema.name, keys=batch)
+            await delete_keyed(pool, schema.name, keys=KeyBatch(columns, keys=values, casts=casts))
         log.info(
             "a stamped parent's foreign-key action taken by 3tears",
             extra={"extra_data": {"table": rows.table_name, "action": rows.action, "rows": len(rows.keys)}},

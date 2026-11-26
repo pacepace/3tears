@@ -38,18 +38,21 @@ from threetears.core.collections.copy_parts import (
     is_pack,
 )
 from threetears.core.collections.copy_reload import ReloadLane
+from threetears.core.collections.copy_pieces import apply_piece_bytes, reload_piece_bytes
 from threetears.core.collections.shared_copy import (
-    MAX_VERSION_FILES,
-    PACKED_PREFIX,
     ROWS,
     ChangePage,
     ReloadScope,
     SharedCopyBackend,
-    apply_piece_bytes,
     held_parts,
-    reload_piece_bytes,
 )
 from threetears.core.shared_arrow import SharedArrowStore, read_version, version_files
+
+#: the most files a version holds by default (``SharedCopyBackend``'s ``max_files``)
+_MAX_VERSION_FILES = 512
+
+#: the prefix a split table's packs index is published beside it under
+_PACKED = "__packed__"
 
 SCHEMA = pa.schema(
     [
@@ -160,7 +163,7 @@ class TestFewFiles:
                 await lane.apply([ChangePage(ROWS, "results", _rows(_state(n), 50, votes=n))])
                 await lane.drained()
                 most = max(most, len(_parts(store)))
-                assert _files(store) <= MAX_VERSION_FILES
+                assert _files(store) <= _MAX_VERSION_FILES
             assert most <= 2, most
             assert lane.status().merges >= 1
             held = _held(store)
@@ -214,7 +217,7 @@ class TestAChangeRewritesOnlyItsParts:
         current = store.current
         assert current is not None
         with read_version(store.root, current.name) as mapped:
-            index = mapped.tables[f"{PACKED_PREFIX}results"]
+            index = mapped.tables[f"{_PACKED}results"]
             assert _state(5) not in index.column(0).to_pylist()
 
 

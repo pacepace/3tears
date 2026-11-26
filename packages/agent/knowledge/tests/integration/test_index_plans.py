@@ -20,11 +20,12 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from packages.agent.knowledge.tests.proxy_pool_support import ProxyPoolDouble
 from packages.core.tests.dialect_support import pg_dialect
 from threetears.agent.knowledge.collections import ConceptCollection, PlaybookEntryCollection
+from threetears.core.collections.delete_cascade import read_delete_cascade
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import TableSchema
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.captured import CapturedL3
-from threetears.core.testing.plans import explain_statement, plan_uses_index
+from threetears.core.testing.plans import PlanRecorder, explain_statement, plan_uses_index
 
 pytestmark = pytest.mark.integration
 #: rows seeded per table: past the size where the planner would rather scan than use an index
@@ -211,3 +212,26 @@ async def test_visible_by_customer_indexes(conn: asyncpg.Connection) -> None:
     assert plan_uses_index(entry_plan, "playbook_entries_visible_by_customer"), entry_plan.plan
     concept_plan = await explain_statement(conn, concepts_sql, *concept_args)
     assert plan_uses_index(concept_plan, "concepts_visible_by_customer"), concept_plan.plan
+
+
+async def test_origin_indexes(conn: asyncpg.Connection) -> None:
+    """Flips if the shadows a delete of an original entry or concept reaches (read_delete_cascade, before the original
+    is marked gone) stop reading their table's origin index by the original, or read past its own shadows."""
+    originals = [uuid.uuid4() for _ in range(500)]
+    origin = "CASE WHEN g % 10 = 0 THEN NULL ELSE ($1::uuid[])[1 + g % 500] END"
+    await _seed(conn, "playbook_entries", origin_entry_id=origin, _params=(originals,))
+    await _seed(conn, "concepts", origin_concept_id=origin, _params=(originals,))
+    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    for collection_class, index, column in (
+        (PlaybookEntryCollection, "playbook_entries_by_origin_entry", "origin_entry_id"),
+        (ConceptCollection, "concepts_by_origin_concept", "origin_concept_id"),
+    ):
+        table = collection_class.schema.name
+        shadows = await conn.fetchval(f'SELECT count(*) FROM "{table}" WHERE {column} = $1', originals[1])  # noqa: S608 - test identifiers
+        recorder = PlanRecorder(conn)
+        collection = collection_class(registry=CollectionRegistry(), config=cfg)
+        collection.l3_pool = recorder
+        found = await read_delete_cascade(collection, [originals[1]])
+        assert shadows and [len(rows.keys) for rows in found] == [shadows], found
+        plan = recorder.plans[0]
+        assert plan_uses_index(plan, index), plan.plan

@@ -159,6 +159,7 @@ __all__ = [
     "EpochSnapshot",
     "ScopeEpochs",
     "WriterLease",
+    "changed_scopes",
     "scope_epochs_collection",
     "scope_epochs_schema",
 ]
@@ -218,6 +219,34 @@ class EpochRecordBusyError(RuntimeError):
     hangs, so ``begin`` refuses at once instead; the next request to write begins once the holder has
     ended (a hung one within the bound the module describes).
     """
+
+
+async def changed_scopes(pool: Any, schema: str, epochs: str, floor: int) -> list[str]:
+    """the scopes of the scope epochs table ``schema.epochs`` a stamped write touched at ``floor`` or later: their
+    ``last_epoch`` at or above it, read through the table's ``last_epoch`` index a page at a time. A restore's read
+    (``table_restore``, ``epoch_reads``), written here beside the table's declaration (:func:`scope_epochs_schema`),
+    whose index names it.
+
+    :param pool: the keeper's L3 pool
+    :ptype pool: Any
+    :param schema: the table's schema
+    :ptype schema: str
+    :param epochs: the scope epochs table
+    :ptype epochs: str
+    :param floor: X
+    :ptype floor: int
+    :return: the scopes, :data:`WHOLE` left out
+    :rtype: list[str]
+    """
+    rows = await keyset_rows(
+        pool,
+        f"{schema}.{epochs}",
+        columns=("last_epoch", "scope"),
+        by={},
+        order=[Sort("last_epoch", cast="bigint"), Sort("scope")],
+        where=[Fragment('t."last_epoch" >= $1', (floor,))],
+    )
+    return [str(row["scope"]) for row in rows if row["scope"] != WHOLE]
 
 
 def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
@@ -294,7 +323,7 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
                 "last_epoch",
                 "scope",
                 asc="last_epoch",
-                purpose="packages/core/src/threetears/core/collections/table_restore.py::changed_scopes",
+                purpose=f"{_HERE}::changed_scopes",
                 plan_test=(
                     "packages/core/tests/integration/test_table_restore_plans_live.py::"
                     "test_a_restore_finds_its_scopes_through_the_last_epoch_index"

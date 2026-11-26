@@ -124,7 +124,6 @@ __all__ = [
     "EpochQuiet",
     "EpochWalk",
     "epoch_change_body",
-    "KeyedRecordForm",
     "keyed_record_form",
     "read_epoch_change_body",
     "read_logged_epoch_change",
@@ -1273,7 +1272,7 @@ def epoch_change_body(
 
 
 @dataclass(frozen=True, slots=True)
-class KeyedRecordForm:
+class _KeyedRecordForm:
     """the stored form of a keyed change (:func:`epoch_change_body` over rows) in its fixed pieces, for a record
     assembled from rows already in JSON (a restore's, in a worker process: :mod:`threetears.core.change_note_fold`).
 
@@ -1299,7 +1298,7 @@ class KeyedRecordForm:
     max_bytes: int
 
 
-def keyed_record_form(database: str | None = None, *, s_min: int | None = None) -> KeyedRecordForm:
+def keyed_record_form(database: str | None = None, *, s_min: int | None = None) -> _KeyedRecordForm:
     """the stored form of a keyed change in its fixed pieces, cut out of :func:`epoch_change_body`'s output.
 
     :param database: the database its records name (:attr:`EpochChange.database`), carried in the form's tail
@@ -1308,7 +1307,7 @@ def keyed_record_form(database: str | None = None, *, s_min: int | None = None) 
         its floor, the lowest stamp any row it read may carry
     :ptype s_min: int | None
     :return: the form
-    :rtype: KeyedRecordForm
+    :rtype: _KeyedRecordForm
     """
     table, ids = "T", ["I"]
     columns: dict[str, str | None] = {"C": "V"}
@@ -1323,7 +1322,7 @@ def keyed_record_form(database: str | None = None, *, s_min: int | None = None) 
     row_columns, _, carried_tail = carried.removeprefix(row_head + ids_json).partition(columns_json)
     if carried_tail != row_tail or head + table_json + middle + bare + tail != body:
         raise RuntimeError(f"a keyed record's form could not be cut out of {body!r} and {carried!r}")
-    return KeyedRecordForm(
+    return _KeyedRecordForm(
         head=head,
         middle=middle,
         tail=tail,

@@ -475,6 +475,17 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
                 purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::PlaybookEntryCollection.list_visible_to_user",
                 plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_visible_by_customer_indexes",
             ),
+            # the shadows a delete of an original reaches (its ``ON DELETE SET NULL`` on origin_entry_id, taken
+            # by 3tears for a gone mark: delete_cascades above), read by read_delete_cascade's keyset read by
+            # origin_entry_id: the rows naming the original alone. The hub's migration builds it (the table's DDL
+            # is the hub's); declared here because 3tears reads by it
+            Index(
+                "playbook_entries_by_origin_entry",
+                "origin_entry_id",
+                where="origin_entry_id IS NOT NULL",
+                purpose="packages/core/src/threetears/core/collections/delete_cascade.py::_children",
+                plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_origin_indexes",
+            ),
         ),
         cas_column="date_updated",
         l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
@@ -727,6 +738,17 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 asc=("date_created", "id"),
                 purpose="packages/agent/knowledge/src/threetears/agent/knowledge/collections.py::ConceptCollection.list_visible_to_user",
                 plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_visible_by_customer_indexes",
+            ),
+            # the shadows a delete of an original reaches (its ``ON DELETE SET NULL`` on origin_concept_id, taken
+            # by 3tears for a gone mark: delete_cascades above), read by read_delete_cascade's keyset read by
+            # origin_concept_id: the rows naming the original alone. The hub's migration builds it (the table's DDL
+            # is the hub's); declared here because 3tears reads by it
+            Index(
+                "concepts_by_origin_concept",
+                "origin_concept_id",
+                where="origin_concept_id IS NOT NULL",
+                purpose="packages/core/src/threetears/core/collections/delete_cascade.py::_children",
+                plan_test="packages/agent/knowledge/tests/integration/test_index_plans.py::test_origin_indexes",
             ),
         ),
         cas_column="date_updated",

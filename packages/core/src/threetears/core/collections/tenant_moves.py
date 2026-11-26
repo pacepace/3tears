@@ -22,7 +22,7 @@ from typing import Any, Final
 from threetears.core.backends.broker_generation import cleanup_deleting
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_BUCKETS
-from threetears.core.ddl.tenant_moves import TENANT_MOVES_KEY, TENANT_MOVES_TABLE
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 from threetears.core.eviction import Declared, Policy
 from threetears.core.keyed import Fragment, delete_keyed
 from threetears.core.tenancy import TENANT_BY_SCHEMA
@@ -32,8 +32,11 @@ __all__ = ["TENANT_MOVES_SCHEMA", "clear_moves"]
 #: the moves table: the table a row of moved, the row's bucket, the move's epoch, the key, the tenant and the
 #: invalidation columns it left (``tenant_moves``)
 TENANT_MOVES_SCHEMA: Final = TableSchema(
-    name=TENANT_MOVES_TABLE,
-    primary_key=TENANT_MOVES_KEY,
+    # the name and key spelled here, not by TENANT_MOVES_TABLE and TENANT_MOVES_KEY: the no-whole-reads walk reads a
+    # declaration's names only from its own module, and judges every read of the table by this key
+    # (test_run_markers_schema holds them equal)
+    name="threetears_tenant_moves",
+    primary_key=("table_name", "scope", "epoch", "keys"),
     columns=[
         Column("table_name", STRING_TYPE),
         Column("scope", STRING_TYPE),
