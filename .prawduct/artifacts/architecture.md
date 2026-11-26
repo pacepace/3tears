@@ -248,6 +248,11 @@ behind it.
   fails in a consumer. Gates: `tests/enforcement/test_imports_declared.py`,
   `tests/enforcement/test_dependency_alignment.py`.
 
+- **Pricing is the host's: the engine reports tokens and models, the host injects prices, and
+  3tears ships only a swappable dev default.**
+  Why: a consumer may have special deals, BYOK, subscriptions or local models; a rate table in the
+  engine would be wrong for them. Owner 2026-10-28 (`.prawduct/owner-rulings.md`).
+
 ## Candidate norms (unratified)
 
 - Every NATS KV bucket is memory-backed — `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`

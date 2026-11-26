@@ -234,6 +234,10 @@ Ratified 2026-11-26 from declarations the owner already made; each Why cites whe
   (`CLAUDE.md` § Scripts). Gates: `tests/enforcement/test_ci_unit_shards.py`,
   `scripts/ci-unit-tests.sh`. Owner 2026-11-26 bulk ratification.
 
+- **The maintainer sets versions at release; a work PR never pre-picks one.**
+  Why: pre-claimed versions collided when another workstream released first and forced a
+  re-version of three stacked PRs. Owner 2026-10-19 (`.prawduct/owner-rulings.md`).
+
 ## Candidate norms (unratified)
 
 | Rule the code enforces | Enforcing file |
