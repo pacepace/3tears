@@ -6,7 +6,9 @@ runs its own statements at a small size on the session ``db_container`` (Postgre
 
 - every mechanism answers the same rows: each key's newest live version, never a gone key;
 - the per-key seeks read a bounded number of entries a key whatever its versions (``skip`` two, ``lateral`` one),
-  while the shipped guard's rows read grow with them.
+  while the shipped guard's rows read grow with them;
+- on YugabyteDB the batched ``DISTINCT ON`` key reads (``distinct``, ``distinct_join``) read each batch key's
+  versions and no more: rows read grow with the versions, never with the table.
 
 It asserts no speed budget: the mechanism is not chosen yet. The numbers are logged.
 """
@@ -43,10 +45,9 @@ def _script() -> ModuleType:
 @pytest.fixture
 async def measured(db_container: str) -> AsyncIterator[tuple[Any, ModuleType, bool]]:
     script = _script()
-    script.SCHEMA = f"nr_{uuid.uuid4().hex[:8]}"
-    # a scope a page's worth of keys several times over, at this size
-    script.KEYS_A_SCOPE = 2_000
-    script.PAGE = 500
+    # a scope a page's worth of keys several times over, at this size (set through the module's namespace: a
+    # ModuleType names no attributes to the type checker)
+    vars(script).update(SCHEMA=f"nr_{uuid.uuid4().hex[:8]}", KEYS_A_SCOPE=2_000, PAGE=500)
     conn = await asyncpg.connect(db_container)
     try:
         yield conn, script, await script.on_yugabyte(conn)
@@ -69,7 +70,7 @@ async def test_every_mechanism_answers_each_key_s_newest_live_version(
     measured: tuple[Any, ModuleType, bool],
 ) -> None:
     """Flips if a mechanism answers an older version, a gone key, or loses a key; or a per-key seek reads more entries
-    a key as its versions grow."""
+    a key as its versions grow; or a batched DISTINCT ON reads more than the batch keys' versions."""
     conn, script, yugabyte = measured
     read: dict[tuple[int, str], int] = {}
     for versions in (1, 10):
@@ -87,7 +88,7 @@ async def test_every_mechanism_answers_each_key_s_newest_live_version(
             plan = await script.explain(conn, sql, ("s000", -1, script.PAGE), yugabyte)
             read[(versions, mechanism)] = script.rows_read(plan, yugabyte)
         keys = [("s000", key) for key in range(0, script.KEYS_A_SCOPE, 7)]
-        for mechanism in ("guard", "lateral"):
+        for mechanism in ("guard", "lateral", "distinct", "distinct_join"):
             sql, params = script.batch_sql(mechanism, versions, yugabyte, keys)
             answered = sorted(int(row["id"]) for row in await conn.fetch(sql, *params))
             assert answered == [key for _, key in keys if key in set(expected)], (mechanism, versions)
@@ -99,3 +100,12 @@ async def test_every_mechanism_answers_each_key_s_newest_live_version(
         # bounded a key: ten versions read no more than one does, give or take the marker probe's rows
         assert read[(10, mechanism)] <= read[(1, mechanism)] * 1.1 + 10, (mechanism, read)
     assert read[(10, "guard")] > read[(1, "guard")] * 5, read
+    if not yugabyte:
+        # Postgres at this size (40,000 rows, a 286-key batch) rightly reads the whole table for the batched DISTINCT
+        # ON (a hash join beats 286 index seeks); at 2M rows it seeks the keys (measured 2026-11-25)
+        return
+    for mechanism in ("batch-distinct", "batch-distinct_join"):
+        # each batch key's versions (about 286 keys here), give or take the marker probe's rows: never a table scan
+        batch = len(range(0, script.KEYS_A_SCOPE, 7))
+        for versions in (1, 10):
+            assert read[(versions, mechanism)] <= batch * versions * 1.1 + 50, (mechanism, versions, read)

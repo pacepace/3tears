@@ -17,6 +17,17 @@ compares the mechanisms on one table, one database, one machine:
     1``), then its newest version (``ORDER BY epoch DESC LIMIT 1``), two seeks a key whatever its versions.
 ``lateral``
     (key batches only) the batch unnested, each key ``LATERAL (... WHERE key = k ORDER BY epoch DESC LIMIT 1)``.
+``distinct``
+    (key batches only) a batched ``DISTINCT ON``: every version of the batch's keys in one read through the key form
+    the shipped builder sends (``(key...) IN (SELECT unnest(...))``, hinted ``YbBatchedNL`` on YugabyteDB so its
+    batched nested loop sends the keys a batch at a time), then ``DISTINCT ON (key) ORDER BY key, epoch DESC``; the
+    gone flag and run markers (a LEFT JOIN) judged on the one row kept. Measured 2026-11-25 (5,000 keys): YugabyteDB
+    6 / 26 / 246 storage requests at 1 / 5 / 50 versions (one per 1,024 rows, ``yb_fetch_row_limit``) against
+    LATERAL's 5,005; at 50 versions the sort of 250,000 rows passes the default 4 MB ``work_mem`` and spills to disk
+    on both engines (external merge, 20 MB).
+``distinct_join``
+    (key batches only) the same, the batch an inner join of ``unnest(...)``, no hint: what the planner picks itself
+    (on YugabyteDB at 1 version a key it drops the batched nested loop: 5,001 requests).
 
 Cases, weighted as Pace set them (2026-11-25: L3 reads are cache fills; the hot path runs on NATS deltas):
 
@@ -32,6 +43,9 @@ rows scanned, on Postgres each scan node's rows plus the rows its filter removed
 Run one engine at a time, one version count at a time (each load is a few minutes on YugabyteDB)::
 
     uv run python scripts/measure-newest-reads.py --url "$URL" --versions 5 --cases state table batch --out DIR
+
+``--set NAME=VALUE`` (repeatable) sets a session setting before measuring (e.g. ``yb_bnl_batch_size``,
+``yb_fetch_row_limit``); the settings are added to each case's tag.
 
 The schema it builds (``nr_measure``) is dropped at the end. ``tests/integration/test_newest_reads_cost_live.py``
 runs the same statements at a small size and checks every mechanism answers the same rows.
@@ -61,6 +75,7 @@ KEYS_A_SCOPE = 20_000
 PAGE = 5_000
 MARKERS = "threetears_run_markers"
 COLUMNS = ("state", "id", "v", "payload")
+BATCH_MECHANISMS = ("guard", "lateral", "distinct", "distinct_join")
 
 
 def table_name(versions: int) -> str:
@@ -202,6 +217,26 @@ def batch_sql(mechanism: str, versions: int, yugabyte: bool, keys: Sequence[tupl
             f"ORDER BY t.epoch DESC LIMIT 1) AS n WHERE NOT n.gone AND {marker_free(versions, 'n')}",
             [states, ids],
         )
+    if mechanism in ("distinct", "distinct_join"):
+        cols = ", ".join(f"t.{c}" for c in ("state", "id", "epoch", "gone", "v", "payload"))
+        if mechanism == "distinct":
+            # the shipped builder's key form (keyed_read_statement on YugabyteDB): its hint, its IN (SELECT unnest)
+            hint = "/*+ YbBatchedNL(ANY_subquery t) */ " if yugabyte else ""
+            source = (
+                f"{table} AS t WHERE (t.state, t.id) IN (SELECT unnest($1::text[]) AS k0, unnest($2::bigint[]) AS k1)"
+            )
+        else:
+            hint = ""
+            source = (
+                f"unnest($1::text[], $2::bigint[]) AS k(state, id) JOIN {table} AS t "
+                f"ON t.state = k.state AND t.id = k.id"
+            )
+        return (
+            f"{hint}SELECT n.state, n.id, n.v, n.payload FROM (SELECT DISTINCT ON (t.state, t.id) {cols} FROM {source} "
+            f"ORDER BY t.state, t.id, t.epoch DESC) AS n {marker_join(versions, 'n')} "
+            f"WHERE NOT n.gone AND gone_run.table_name IS NULL",
+            [states, ids],
+        )
     raise ValueError(mechanism)
 
 
@@ -321,6 +356,7 @@ async def main(argv: Sequence[str]) -> int:
     parser.add_argument("--rows", type=int, default=2_000_000)
     parser.add_argument("--cases", nargs="+", default=["state", "batch"], choices=["state", "table", "batch"])
     parser.add_argument("--mechanisms", nargs="+", default=["guard", "distinct", "skip", "lateral"])
+    parser.add_argument("--set", dest="settings", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--batch", type=int, default=5_000)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", type=Path, required=True)
@@ -330,6 +366,11 @@ async def main(argv: Sequence[str]) -> int:
     conn = await asyncpg.connect(args.url)
     yugabyte = await on_yugabyte(conn)
     engine = "yugabyte" if yugabyte else "postgres"
+    suffix = ""
+    for setting in args.settings:
+        name, value = setting.split("=", 1)
+        await conn.execute("SELECT set_config($1, $2, false)", name, value)
+        suffix += f"-{name}={value}"
     results: list[dict[str, Any]] = []
     try:
         for versions in args.versions:
@@ -344,17 +385,21 @@ async def main(argv: Sequence[str]) -> int:
                 names = [f"s{i:03d}" for i in range(scopes)] if case == "table" else ["s000"]
                 for mechanism in args.mechanisms:
                     if case == "batch":
-                        if mechanism not in ("guard", "lateral"):
+                        if mechanism not in BATCH_MECHANISMS:
                             continue
                         result = await measure_batch(
                             conn, mechanism, versions, scopes, yugabyte, args.runs, args.out, args.batch
                         )
                     else:
-                        if mechanism == "lateral":
+                        if mechanism in ("lateral", "distinct_join"):
                             continue
                         runs = 1 if case == "table" else args.runs
                         result = await measure_fill(conn, mechanism, versions, names, yugabyte, runs, args.out)
                     result["engine"] = engine
+                    if suffix:
+                        result["case"] += suffix
+                        plan = args.out / f"{result['case'].removesuffix(suffix)}.plan.txt"
+                        plan.rename(args.out / f"{result['case']}.plan.txt")
                     results.append(result)
                     print(json.dumps(result), flush=True)
     finally:
