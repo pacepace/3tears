@@ -113,6 +113,7 @@ from threetears.models.price_lookup import (
     match_price,
     register_price_source,
 )
+from threetears.models.pricing import TokenRates, UnpricedModelError, cost_of_usage
 from threetears.models.registry import BUILTIN_PROVIDERS, ProviderRegistry
 from threetears.models.tool_name_validation import (
     ToolNameValidationError,
@@ -132,6 +133,7 @@ from threetears.models.tracking import (
     UsageTrackingCallback,
     current_usage_scope,
     default_usage_tracker,
+    estimate_input_tokens,
     extract_usage,
     set_default_usage_tracker,
     usage_scope,
@@ -152,6 +154,10 @@ from threetears.models.providers import (  # noqa: E402, F401
 
 __all__ = [
     "USAGE_METADATA_PREFIX",
+    "TokenRates",
+    "UnpricedModelError",
+    "cost_of_usage",
+    "estimate_input_tokens",
     "ExtractedUsage",
     "TokenSource",
     "UsageAccumulator",

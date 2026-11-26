@@ -87,6 +87,14 @@ What must stay possible:
   can't hold | owner can veto]
 
 **Decisions made mid-build:** *(appended while building, one line each)*
+- Chunk 01: `UsageAccumulator` prices through `cost_of_usage` too, per call, so a turn's total agrees with the tracker
+  (settled by chunk 01's "one place usage is priced"; Critic rev-20261126T015246Z-257c15f6).
+- Chunk 01: the text-level token estimate stays private, and the price Protocol is private `_Rates`. Each had no
+  production caller outside its module (CLAUDE.md, no public API only for a test).
+- Chunks 01 and 04: `test_public_api_has_a_caller` is red at these chunk boundaries for the names chunk 06 calls:
+  `UnpricedModelError` (the KP-A4 build refusal), `estimate_input_tokens` (the KP-E1 reservation estimate), and chunk
+  04's store and period names. Chunk 06 must leave it green, or ledger a name with a reason. That is the fix for
+  blocking finding rev-20261126T020832Z-d8caf915 (the recorded suite's one red), which rides chunk 06's commit.
 
 **Level:** Medium. The pool logic is well specified. Two foreign surfaces carry the risk, and their verify-api steps
 are what raise the level:

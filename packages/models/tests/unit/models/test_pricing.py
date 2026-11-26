@@ -15,7 +15,6 @@ from threetears.models.tracking import (
     UsageRecord,
     UsageTracker,
     estimate_input_tokens,
-    estimate_text_tokens,
 )
 
 _IN = Decimal("0.000003")
@@ -141,7 +140,7 @@ class TestEstimate:
 
     @pytest.mark.parametrize(("text", "tokens"), [("", 0), ("a", 1), ("abcd", 1), ("abcdefgh", 2), ("x" * 40, 10)])
     def test_text_is_about_four_characters_a_token(self, text: str, tokens: int) -> None:
-        assert estimate_text_tokens(text) == tokens
+        assert estimate_input_tokens([HumanMessage(content=text)]) == tokens
 
     def test_a_prompt_is_the_sum_of_its_messages(self) -> None:
         messages = [HumanMessage(content="x" * 40), AIMessage(content=[{"type": "text", "text": "y" * 8}])]

@@ -389,7 +389,7 @@ def _message_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
     return "".join(str(p) for p in parts)
 
 
-def estimate_text_tokens(text: str) -> int:
+def _estimate_text_tokens(text: str) -> int:
     """a rough token count for ``text`` (about four characters a token); local, no network.
 
     :param text: the text
@@ -411,7 +411,7 @@ def estimate_input_tokens(messages: Sequence[Any]) -> int:
     :return: the estimated input tokens
     :rtype: int
     """
-    return sum(estimate_text_tokens(_message_text(m)) for m in messages)
+    return sum(_estimate_text_tokens(_message_text(m)) for m in messages)
 
 
 def _reply_text(message: Any) -> str:  # noqa: ANN401 -- any LangChain message
@@ -495,7 +495,7 @@ def extract_usage(response: LLMResult, *, prompt_messages: list[Any] | None = No
                 batch_usages.append(usage)
             else:
                 emitted = _reply_text(message) if message is not None else str(getattr(generation, "text", ""))
-                estimated_output += estimate_text_tokens(emitted)
+                estimated_output += _estimate_text_tokens(emitted)
         # within ONE prompt's choices, one call's usage repeated on every choice (ChatOpenAI, n > 1) is
         # counted once; separate prompts are separate calls, however alike their counts
         if len(batch_usages) > 1 and all(u == batch_usages[0] for u in batch_usages[1:]):

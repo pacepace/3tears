@@ -181,6 +181,42 @@ async def test_the_accumulator_totals_a_run() -> None:
     )
 
 
+async def test_the_accumulator_prices_a_turn_as_the_tracker_prices_its_calls() -> None:
+    rates = {
+        "cost_per_input_token": Decimal("0.000003"),
+        "cost_per_output_token": Decimal("0.000015"),
+        "cost_per_cache_read_token": Decimal("0.0000003"),
+        "cost_per_cache_write_token": Decimal("0.00000375"),
+        "cost_per_request": Decimal("0.001"),
+    }
+    # the whole prompt is 130 tokens, of which 100 were read from the cache and 20 written to it
+    cached = {
+        "input_tokens": 130,
+        "output_tokens": 7,
+        "total_tokens": 137,
+        "input_token_details": {"cache_read": 100, "cache_creation": 20},
+    }
+    accumulator = UsageAccumulator(**rates)
+    tracker = UsageTracker()
+    recorded: list[UsageRecord] = []
+    tracker.record = recorded.append  # type: ignore[method-assign]
+    model = GenericFakeChatModel(messages=iter([_reply(usage=cached), _reply(usage=cached)])).with_config(
+        callbacks=[tracker.make_callback(model_name="fake", provider_name="fake", **rates), accumulator]
+    )
+    await model.ainvoke([HumanMessage(content="one")])
+    await model.ainvoke([HumanMessage(content="two")])
+
+    per_call = (
+        Decimal("0.000003") * 10
+        + Decimal("0.0000003") * 100
+        + Decimal("0.00000375") * 20
+        + Decimal("0.000015") * 7
+        + Decimal("0.001")
+    )
+    assert accumulator.cost_usd == 2 * per_call, "the accumulator priced the cache at the input rate, or once per turn"
+    assert [r.cost_usd for r in recorded] == [per_call, per_call]
+
+
 class _Heard(BaseCallbackHandler):
     def __init__(self) -> None:
         self.ends = 0

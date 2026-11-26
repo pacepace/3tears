@@ -30,7 +30,7 @@ class UnpricedModelError(ValueError):
     """a call cannot be priced because the model has no input or no output price."""
 
 
-class Rates(Protocol):
+class _Rates(Protocol):
     """anything that carries a model's per-token prices; ``ModelCapabilities`` does.
 
     The prices are USD per token.
@@ -96,7 +96,7 @@ def _price(value: Decimal | float | None, fallback: Decimal) -> Decimal:
 
 
 def cost_of_usage(
-    rates: Rates,
+    rates: _Rates,
     *,
     input_tokens: int,
     output_tokens: int,
@@ -111,7 +111,7 @@ def cost_of_usage(
     falling back to the input rate when unset; output at the output rate; and ``cost_per_request`` once.
 
     :param rates: the model's prices (``ModelCapabilities``, or :class:`TokenRates`)
-    :ptype rates: Rates
+    :ptype rates: _Rates
     :param input_tokens: the whole prompt, cache tokens included
     :ptype input_tokens: int
     :param output_tokens: tokens generated
