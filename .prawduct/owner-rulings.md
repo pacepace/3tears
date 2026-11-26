@@ -5,6 +5,14 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26.** On the three rate-limit follow-ups:
+- A rate limit whose wait exceeds a per-pool threshold (default 120 s) counts as exhaustion and moves to the next
+  key, holding the old one until its reset: "yes agreed but I don't think this is a real thing". So it is built as a
+  cheap guard against provider daily caps, not as a headline feature.
+- Pool-side retries of a rate limit (OpenRouter, whose SDK never retries a 429): "sounds good on 2 retries". That is
+  2 retries on the same key, honouring `retry-after` up to the threshold, then the error reaches the caller.
+- OpenRouter's `weight_exceeds_budget` 402 skips that key for this call only and marks nothing exhausted: "agreed".
+
 **2026-11-26.** On the model key pool, when asked whether a rate-limited key may get one more attempt after the
 pool's wait: "let's separate rate limiting from quota exhaustion. Assume all rates are the same. For now, rate limit
 means retry. Quota exhaustion means move to next key. Hopefully we can tell the two apart." So a rate limit never
