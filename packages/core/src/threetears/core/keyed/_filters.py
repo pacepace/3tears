@@ -16,7 +16,15 @@ from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
-from threetears.interfaces.keyed.keys import index_hint, not_null_guards, serving_index
+from threetears.interfaces.keyed.keys import (
+    VersionedTable,
+    index_hint,
+    newest_relation,
+    newest_settings,
+    not_null_guards,
+    serving_index,
+    versioned_table,
+)
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -63,6 +71,10 @@ __all__ = [
     "selected_column",
     "relation",
     "narrowing",
+    "newest_of",
+    "newest_read",
+    "newest_sent",
+    "refuse_versioned",
     "one_use_each",
     "renumbered",
     "sent_by",
@@ -190,6 +202,132 @@ def reads_l3(conn: Any) -> bool:
     # answers any name it is asked, and is no datasource
     named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
     return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
+
+
+def newest_of(conn: Any, table: Any) -> VersionedTable | None:
+    """the versioned declaration of the L3 table a read on ``conn`` names: None for a read that does not go to L3 (a
+    local copy keeps one row a key), a derived relation, or a table no versioned declaration names.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: Any
+    :return: the declaration, or None
+    :rtype: VersionedTable | None
+    """
+    return versioned_table(table, l3=reads_l3(conn))
+
+
+def refuse_versioned(conn: Any, tables: Sequence[Any], read: str) -> None:
+    """refuse a read on L3 that names a versioned table in a shape no newest relation reads (a recursive walk, a join
+    inside one statement): it would read every version of the table. A local copy (one row a key) is read as held.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param tables: the tables the read names
+    :ptype tables: Sequence[Any]
+    :param read: what the read is, for the refusal
+    :ptype read: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when one of them is a versioned L3 table
+    """
+    named = [table for table in tables if newest_of(conn, table) is not None]
+    if named:
+        raise ValueError(
+            f"{read} names the versioned table(s) {', '.join(map(str, named))}, every version of which it would read: "
+            "read them by keyed reads (read_keyed, read_by), which see each key's newest live version"
+        )
+
+
+def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | Derived:
+    """what a read of ``table`` on ``conn`` reads in its place: a versioned L3 table's newest live versions, a
+    :class:`Derived` relation answering one row a key (:func:`~threetears.interfaces.keyed.keys.newest_relation`), so
+    the read sees only each key's newest version, never an older one, a key whose newest version is a "gone" marker,
+    or a key under a newer run marker. ``table`` itself for a read that does not go to L3, a derived relation, or a
+    table no versioned declaration names.
+
+    For a read whose conditions on the key are plain ones (pins, ranges: the planner pushes them into the relation's
+    ``DISTINCT ON``); a keyed batch, a join and a fill page name their keys or ``LIMIT`` inside it themselves
+    (``read_keyed``, ``keyset_pages``), as no planner pushes those.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: str | Derived
+    :param lock: the row lock the read takes; a versioned table's versions are never locked
+    :ptype lock: Lock | None
+    :return: the relation to read
+    :rtype: str | Derived
+    :raises ValueError: when a read of a versioned table takes a row lock (``DISTINCT ON`` takes none, and an
+        append-only table's versions are never changed in place, so there is nothing to lock against)
+    """
+    versioned = newest_of(conn, table)
+    if versioned is None or not isinstance(table, str):
+        return table
+    if lock is not None:
+        raise ValueError(f"{table} is versioned (append-only): its newest versions are read, never locked")
+    return Derived(newest_relation(versioned, table))
+
+
+class _NewestSettings:
+    """a direct connection or pool sending each newest read in a transaction of its own that first sets the read's
+    bounds (:func:`~threetears.interfaces.keyed.keys.newest_settings`, ``SET LOCAL``): they end with the read."""
+
+    def __init__(self, conn: Any, settings: Sequence[tuple[str, str]]) -> None:
+        self._conn = conn
+        # one simple-protocol statement setting them all: one round trip
+        self._set = "; ".join(f"SET LOCAL {name} = '{value}'" for name, value in settings)
+
+    async def _on(self, conn: Any, query: str, params: Sequence[Any]) -> list[Any]:
+        if conn.is_in_transaction():
+            # the caller's transaction: the bounds hold to its end, the read's own statement among its others
+            await conn.execute(self._set)
+            return list(await conn.fetch(query, *params))
+        async with conn.transaction():
+            await conn.execute(self._set)
+            return list(await conn.fetch(query, *params))
+
+    async def fetch(self, query: str, *params: Any) -> list[Any]:
+        """the statement's rows, read under the bounds.
+
+        :param query: the statement
+        :ptype query: str
+        :param params: its binds
+        :ptype params: Any
+        :return: the rows
+        :rtype: list[Any]
+        """
+        if isinstance(self._conn, asyncpg.Pool):
+            async with self._conn.acquire() as conn:
+                return await self._on(conn, query, params)
+        return await self._on(self._conn, query, params)
+
+
+def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool, *, batch: bool = True) -> Any:
+    """what a newest read of a versioned table sends its statement through: on a direct asyncpg connection or pool,
+    each statement in a transaction of its own setting the read's bounds first (``work_mem``, and YugabyteDB's
+    ``yb_fetch_row_limit``: :func:`~threetears.interfaces.keyed.keys.newest_settings`), so its sort stays in memory
+    and its storage requests few; any other reader (:func:`sent_by`) as it is.
+
+    WHY not on the L3 rail: the hub's broker refuses ``SET`` and ``set_config`` at the door (its ``sql_safety``), so a
+    pod cannot set a session's bounds itself; the broker applies a request's own settings as it applies its
+    ``statement_timeout`` (the hub half, apart from this one).
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param newest: the table's versioned declaration; None for a read of every row named
+    :ptype newest: VersionedTable | None
+    :param yugabyte: whether the read runs on YugabyteDB
+    :ptype yugabyte: bool
+    :param batch: whether the read is a keyed batch (else a fill page, which sets ``work_mem`` alone)
+    :ptype batch: bool
+    :return: what to send the statement through
+    :rtype: Any
+    """
+    if newest is not None and isinstance(conn, asyncpg.Connection | PoolConnectionProxy | asyncpg.Pool):
+        return _NewestSettings(conn, newest_settings(yugabyte=yugabyte, batch=batch))
+    return sent_by(conn)
 
 
 async def reads_yugabyte(conn: Any) -> bool:

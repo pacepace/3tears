@@ -37,6 +37,13 @@ from threetears.interfaces.keyed.filters import (
     relation,
     selected_column,
 )
+from threetears.interfaces.keyed.keys import (
+    NEWEST_VERSIONS,
+    VersionedTable,
+    key_only,
+    newest_lateral,
+    newest_relation,
+)
 
 __all__ = [
     "ANY_ROWS_CAP",
@@ -494,6 +501,70 @@ class _KeyedRead:
     lock: Lock | None = None
     where: Sequence[Fragment] = ()
     binder: KeyBinder = PLAIN_KEYS
+    #: the versioned declaration of :attr:`table` when the read sees only each key's newest live version
+    #: (``threetears.core.keyed.newest_of``); None reads every row named
+    newest: VersionedTable | None = None
+
+    def __post_init__(self) -> None:
+        """refuse a lock on a versioned table's newest versions (``DISTINCT ON`` takes none, and an append-only
+        table's versions are never changed in place).
+
+        :raises ValueError: for such a read
+        """
+        if self.newest is not None and self.lock is not None:
+            raise ValueError(f"{self.table} is versioned (append-only): its newest versions are read, never locked")
+
+    def counted(self, yugabyte: bool) -> bool:
+        """whether the statement answers :data:`~threetears.interfaces.keyed.keys.NEWEST_VERSIONS` beside each row: a
+        versioned batch on YugabyteDB, which sorts every version of its keys and so sizes its next batch by the
+        versions this one read (``threetears.core.keyed.read_keyed``).
+
+        :param yugabyte: whether the statement runs on YugabyteDB
+        :ptype yugabyte: bool
+        :return: whether it answers the count
+        :rtype: bool
+        """
+        return self.newest is not None and yugabyte
+
+    def _newest_text(
+        self,
+        named: str,
+        conditions: Sequence[str],
+        guards: Sequence[str],
+        yugabyte: bool,
+        *,
+        keys_from: str | None = None,
+    ) -> str:
+        """a versioned batch's statement: the batch's keys (``named``, on ``t``) and the pins on the key alone read
+        inside the newest relation, the rest judged on each key's newest version. On YugabyteDB a batched ``DISTINCT
+        ON`` (:func:`~threetears.interfaces.keyed.keys.newest_relation`, hinted so its batched nested loop sends the
+        keys a batch at a time), counting each key's versions; on PostgreSQL, given ``keys_from`` (the batch as a
+        relation ``k``), each key's newest by its own ``LATERAL`` seek
+        (:func:`~threetears.interfaces.keyed.keys.newest_lateral`). A batch naming no leading part of the key (an
+        index's) reads its keys' versions through the keys it names: ``(key) IN (SELECT key ... WHERE <named>)``."""
+        newest = self.newest
+        assert newest is not None and isinstance(self.table, str)
+        inside = [condition for condition in conditions if key_only(condition, newest.key, alias="t")]
+        outside = [condition for condition in conditions if condition not in inside] + list(guards)
+        width = len(self.keys.columns)
+        leading = newest.key[:width] == tuple(self.keys.columns)
+        if keys_from is not None and leading and not yugabyte:
+            joined = [(column, f"k.k{index}") for index, column in enumerate(self.keys.columns)]
+            source = newest_lateral(newest, self.table, keys=keys_from, joined=joined, within=inside)
+            hint = ""
+        else:
+            if not leading:
+                key = ", ".join(f"{{alias}}.{quote_identifier(column)}" for column in newest.key)
+                candidates = named.replace("t.", "c.")
+                named = (
+                    f"({key.format(alias='t')}) IN (SELECT {key.format(alias='c')} FROM "
+                    f"{relation(self.table, 'c')} WHERE {candidates})"
+                )
+            source = newest_relation(newest, self.table, within=[named, *inside], counted=self.counted(yugabyte))
+            hint = batched_join_hint(IN_SUBQUERY, "t") if width > 1 else ""
+        selected = self.selected + (f", t.{quote_identifier(NEWEST_VERSIONS)}" if self.counted(yugabyte) else "")
+        where = f" WHERE {' AND '.join(outside)}" if outside else ""
+        return f"{hint}SELECT {selected} FROM ({source}) AS t{where}"
 
     def _guards(self, before: int) -> tuple[list[str], list[Any]]:
         """the ``where`` fragments, renumbered past the ``before`` parameters the statement already binds."""
@@ -545,8 +616,10 @@ class _KeyedRead:
                 named = f"({', '.join(columns)}) IN ({rows})"
             conditions, pinned = by_conditions(self.by, first=count * width + 1, alias="t")
             guards, guarded = self._guards(count * width + len(pinned))
-            where = " AND ".join([named, *conditions, *guards])
             values = listed[0] if width == 1 else [value for key in zip(*listed, strict=True) for value in key]
+            if self.newest is not None:
+                return self._newest_text(named, conditions, guards, False), (*values, *pinned, *guarded)
+            where = " AND ".join([named, *conditions, *guards])
             return self._locked(f"{head} WHERE {where}"), (*values, *pinned, *guarded)
         # each key column's values bound as ONE array: of the column's type where the connection binds it natively,
         # a text array, or the array's literal text, each cast as a whole to the column's type. The column is compared
@@ -562,16 +635,17 @@ class _KeyedRead:
         # prefixes naming 30,000 rows: 1,020 ms bounded, 37 ms not. On PostgreSQL 16 they make a prefix batch its
         # index's own condition (14 ms against 22.5) and cost full keys nothing, so PostgreSQL keeps them
         # (test_keyed_binding_live: the YugabyteDB budget, and the PostgreSQL statement still bounded)
-        if width > 1 and not yugabyte:
+        if width > 1 and not yugabyte and self.newest is None:
             tight = self._tight_values(chunk, count, natively)
         guarded = [param for fragment in self.where for param in fragment.params]
         # the statement's text follows only its shape (how each column binds, whether bounded): rendered once a
         # shape, here or by an earlier read of the same shape, and each batch binds its own arrays to it
         tight_kinds = tuple(kind for _, kind in tight)
-        shape = (self._shape, kinds, tight_kinds)
+        # a versioned batch's text follows the engine too (a batched DISTINCT ON, or a LATERAL seek a key)
+        shape = (self._shape, kinds, tight_kinds, yugabyte and self.newest is not None)
         sql = _RENDERED.get(shape)
         if sql is None:
-            sql = self._array_text(kinds, tight_kinds)
+            sql = self._array_text(kinds, tight_kinds, yugabyte)
             _remember(shape, sql)
         return sql, (*arrays, *self._by[1], *(value for value, _ in tight), *guarded)
 
@@ -591,6 +665,9 @@ class _KeyedRead:
                 # every part NULL: the pins alone name the key's rows
                 conditions, pinned = by_conditions(by, alias="t")
                 guards, guarded = self._guards(len(pinned))
+                if self.newest is not None:
+                    branches.append((self._newest_text("TRUE", conditions, guards, False), (*pinned, *guarded)))
+                    continue
                 where = " AND ".join([*conditions, *guards])
                 head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
                 branches.append((self._locked(f"{head} WHERE {where}"), (*pinned, *guarded)))
@@ -605,8 +682,10 @@ class _KeyedRead:
         named = f"({spelled}) IN ({', '.join(f'${place + 1}' for place in range(count))})"
         conditions, pinned = by_conditions(self.by, first=count + 1, alias="t")
         guards, guarded = self._guards(count + len(pinned))
-        where = " AND ".join([named, *conditions, *guards])
         texts = ("".join(f"{len(part)}:{part}" for part in key) for key in zip(*listed, strict=True))
+        if self.newest is not None:
+            return self._newest_text(named, conditions, guards, False), (*texts, *pinned, *guarded)
+        where = " AND ".join([named, *conditions, *guards])
         return self._locked(f"{head} WHERE {where}"), (*texts, *pinned, *guarded)
 
     @cached_property
@@ -627,16 +706,30 @@ class _KeyedRead:
             self.lock,
             tuple(self._by[0]),
             tuple((fragment.sql, len(fragment.params)) for fragment in self.where),
+            self.newest,
         )
 
-    def _array_text(self, kinds: tuple[BindKind, ...], tight: tuple[BindKind, ...]) -> str:
+    def _array_text(self, kinds: tuple[BindKind, ...], tight: tuple[BindKind, ...], yugabyte: bool = False) -> str:
         """the array statement's text: ``= ANY`` for one key column, else the keys joined as rows by
-        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``tight`` names their binds."""
+        ``IN (SELECT unnest ...)``, each key column bounded to its distinct values when ``tight`` names their binds; a
+        versioned table's keys read inside its newest relation (:meth:`_newest_text`)."""
         width = len(self.keys.columns)
         head = f"SELECT {self.selected} FROM {relation(self.table, 't')}"
         typed = [_typed_array(index + 1, self.keys.cast(index), kinds[index]) for index in range(width)]
         conditions, pinned = self._by
         columns = [f"t.{quote_identifier(column)}" for column in self.keys.columns]
+        if self.newest is not None:
+            guards, _ = self._guards(width + len(pinned))
+            if width == 1:
+                named = f"{columns[0]} = ANY({typed[0]})"
+            else:
+                named = f"({', '.join(columns)}) IN (SELECT {', '.join(f'unnest({array}) AS k{index}' for index, array in enumerate(typed))})"
+            # the batch as rows (each column's array unnested beside the others, zipped: PostgreSQL's and DuckDB's
+            # spelling alike)
+            keys_from = (
+                f"(SELECT {', '.join(f'unnest({array}) AS k{index}' for index, array in enumerate(typed))}) AS k"
+            )
+            return self._newest_text(named, conditions, guards, yugabyte, keys_from=keys_from)
         if width == 1:
             guards, _ = self._guards(width + len(pinned))
             where = " AND ".join([f"{columns[0]} = ANY({typed[0]})", *conditions, *guards])
@@ -690,6 +783,7 @@ def keyed_read_statement(
     lock: Lock | None = None,
     where: Sequence[Fragment] = (),
     binder: KeyBinder = PLAIN_KEYS,
+    newest: VersionedTable | None = None,
 ) -> _KeyedRead:
     """the statement a keyed read of ``columns`` sends each batch of ``keys``: its ``render(chunk, natively)`` writes
     a batch's text and binds (``threetears.core.keyed.read_keyed`` renders each batch as it reads it, halving one its
@@ -709,6 +803,9 @@ def keyed_read_statement(
     :ptype where: Sequence[Fragment]
     :param binder: how the key columns bind (:data:`PLAIN_KEYS`, or ``threetears.core.keyed``'s Arrow binder)
     :ptype binder: KeyBinder
+    :param newest: the versioned declaration of ``table`` when the read sees only each key's newest live version
+        (``threetears.core.keyed.newest_of``); None reads every row named
+    :ptype newest: VersionedTable | None
     :return: the statement
     :rtype: _KeyedRead
     :raises ValueError: when no column is named
@@ -716,7 +813,9 @@ def keyed_read_statement(
     if not columns:
         raise ValueError(f"a keyed read of {table} names the columns it reads")
     selected = ", ".join(selected_column(column) for column in columns)
-    return _KeyedRead(table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where), binder=binder)
+    return _KeyedRead(
+        table=table, selected=selected, keys=keys, by=by, lock=lock, where=tuple(where), binder=binder, newest=newest
+    )
 
 
 def key_chunks(keys: KeyBatch, batch: int, binder: KeyBinder = PLAIN_KEYS) -> list[KeyChunk]:

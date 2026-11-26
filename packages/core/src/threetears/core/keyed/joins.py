@@ -29,7 +29,7 @@ from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Final
 
 from threetears.core.keyed._filters import Const, Fragment, Selected
-from threetears.core.keyed._filters import sent_by
+from threetears.core.keyed._filters import refuse_versioned, sent_by
 from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.interfaces.keyed.filters import AnyOf, by_conditions, quote_identifier, quoted_table
 from threetears.core.keyed.page import keyset_page
@@ -166,6 +166,8 @@ async def read_reached(
     if not columns:
         raise ValueError(f"a walk of {table} answers at least one column")
     if depth is not None:
+        # one recursive statement: no newest relation reads its levels, so a versioned table is refused there
+        refuse_versioned(conn, [table, *(join.table for join in joins or ())], f"a walk of {table} in one statement")
         sql, params = _held_statement(
             table, start=start, on=on, to=to, columns=columns, by=by, follow=follow, depth=depth, joins=joins
         )

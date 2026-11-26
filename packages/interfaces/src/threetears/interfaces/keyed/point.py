@@ -216,7 +216,7 @@ def read_row_statement(
 
 
 def read_row_beside_statement(
-    table: str,
+    table: str | Derived,
     *,
     by: Mapping[str, Any],
     columns: Sequence[str | Selected],
@@ -224,6 +224,7 @@ def read_row_beside_statement(
     limit: int,
     present: str,
     first: str | None = None,
+    where: Sequence[Fragment] = (),
 ) -> tuple[str, list[Any]]:
     """the statement reading the first row of ``table`` the pins name (``r``, as :func:`read_row_statement` reads it)
     and, beside it, up to ``limit`` rows of a step that reads that row's columns (``r."col"``): one statement, so one
@@ -236,8 +237,9 @@ def read_row_beside_statement(
     A row with no step row comes back once, ``present`` and every step column NULL; no row comes back when the pins
     name none.
 
-    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time)
-    :ptype table: str
+    :param table: the table, a TRUSTED identifier (``schema.table`` quoted a segment at a time), or a derived relation
+        (a versioned table's newest versions)
+    :ptype table: str | Derived
     :param by: its pins, as :func:`read_by_statement` takes them; at least one
     :ptype by: Mapping[str, Any]
     :param columns: the row's columns, as :func:`read_by_statement` takes them; each one the step reads among them
@@ -256,13 +258,16 @@ def read_row_beside_statement(
         with the ring's five columns: the statement's best 1.58 -> 1.33 ms, its median 2.08 -> 1.64 ms, 2026-11-16).
         ``None`` repeats them on every row
     :ptype first: str | None
-    :return: the statement, and its binds: the pins', the step's, then ``limit``
+    :param where: guards on the row beside its pins, each a fragment written as ``t."col"`` from ``$1`` (a versioned
+        table's newest-version guard); none when empty
+    :ptype where: Sequence[Fragment]
+    :return: the statement, and its binds: the pins', the guards', the step's, then ``limit``
     :rtype: tuple[str, list[Any]]
     :raises ValueError: when nothing is pinned, or for a limit under one row
     """
     if isinstance(limit, bool) or limit < 1:
         raise ValueError(f"a read beside a row reads at least one row of its step, not {limit!r}")
-    row, params = _sql(table, by, columns, limit=True)
+    row, params = _sql(table, by, columns, limit=True, where=where)
     step = renumbered(Fragment(beside.sql, beside.params), len(params))
     params += list(beside.params)
     params.append(limit)

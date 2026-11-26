@@ -27,6 +27,9 @@ from decimal import Decimal
 from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
+from threetears.core.ddl.row_epoch import GONE_COLUMN as _GONE_COLUMN
+from threetears.interfaces.keyed.filters import quote_identifier
+from threetears.interfaces.keyed.keys import newest_relation, versioned_table
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, rising_epoch_assignment
 from threetears.core.loop_turns import LoopTurns
@@ -67,6 +70,7 @@ __all__ = [
     "build_where_pk",
     "build_whole_key_delete_sql",
     "build_whole_key_select_sql",
+    "newest_source",
     "bulk_batches",
     "bulk_insert_batches",
     "bulk_insert_row_sql",
@@ -1093,7 +1097,36 @@ def build_whole_key_select_sql(schema: TableSchema) -> str:
     if len(arrays) > 1:
         key = ", ".join(as_written(name) for name in schema.pk_columns)
         pk_where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
-    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {pk_where}"
+    # a versioned table's batch names its keys inside its newest relation: no planner pushes a join's keys into it
+    return f"SELECT {build_select_column_list(schema)} FROM {newest_source(schema, pk_where)} WHERE {pk_where}"
+
+
+def _versioned(schema: TableSchema) -> bool:
+    """whether ``schema`` declares a versioned table (``row_epoch=row_versions(...)``); a stand-in schema with no
+    declaration is not one."""
+    declared = getattr(schema, "row_epoch", None)
+    return declared is not None and declared.versions
+
+
+def newest_source(schema: TableSchema, within: str | None = None) -> str:
+    """what an L3 read of ``schema``'s rows names in its ``FROM``: the table, or for a versioned table its newest live
+    versions (:func:`~threetears.interfaces.keyed.keys.newest_relation`, read under the table's own bare name), so the
+    read answers only each key's newest version, never an older one, a key whose newest version is a "gone" marker,
+    or a key under a newer run marker.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param within: the read's own condition on the key (its batch, its lead), placed inside the relation too, where the
+        planner would not push it; None for a read whose plain conditions it pushes itself
+    :ptype within: str | None
+    :return: the ``FROM`` item
+    :rtype: str
+    """
+    versioned = versioned_table(schema.name, l3=True) if _versioned(schema) else None
+    if versioned is None:
+        return schema.name
+    relation = newest_relation(versioned, schema.name, within=() if within is None else (within,))
+    return f"({relation}) AS {quote_identifier(schema.name.replace(chr(34), '').rsplit('.', 1)[-1])}"
 
 
 def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
@@ -1111,10 +1144,8 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     :raises ValueError: when the leading key column's type has no array form
     """
     lead_key = schema.pk_columns[0]
-    return (
-        f"SELECT {build_select_column_list(schema, columns)} FROM {schema.name} "
-        f"WHERE {as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)})"
-    )
+    led = f"{as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)})"
+    return f"SELECT {build_select_column_list(schema, columns)} FROM {newest_source(schema, led)} WHERE {led}"
 
 
 def transport_param(value: Any) -> Any:
@@ -1505,7 +1536,13 @@ def build_select_column_list(schema: TableSchema, columns: Sequence[str] | None 
     :rtype: str
     """
     text_cast_types = (_VECTOR_TYPE, _TSVECTOR_TYPE)
-    chosen = list(schema.columns) if columns is None else [schema.column(name) for name in columns]
+    # a versioned table's "gone" flag is no column of a row a read answers: a read sees only live newest versions
+    # (newest_source), whose flag is always false
+    chosen = (
+        [col for col in schema.columns if not (_versioned(schema) and col.name == _GONE_COLUMN)]
+        if columns is None
+        else [schema.column(name) for name in columns]
+    )
     parts: list[str] = []
     for col in chosen:
         name = as_written(col.name)
@@ -1523,7 +1560,7 @@ def build_fetch_sql(schema: TableSchema) -> str:
     """
     pk_where, _ = build_where_pk(schema, start=1)
     columns = build_select_column_list(schema)
-    return f"SELECT {columns} FROM {schema.name} WHERE {pk_where}"
+    return f"SELECT {columns} FROM {newest_source(schema)} WHERE {pk_where}"
 
 
 def build_delete_sql(schema: TableSchema) -> str:

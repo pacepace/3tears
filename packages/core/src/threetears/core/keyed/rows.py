@@ -34,12 +34,12 @@ dicts (:func:`read_keyed`) or the Arrow table (:func:`read_keyed_arrow`, parsed 
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Any, Literal, overload
 
-from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.arrow_reply import counted_type, l3_fetch_arrow, without_counted
 from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed.binding import binder_for, key_chunks_off_loop
 from threetears.core.keyed._filters import (
@@ -50,6 +50,9 @@ from threetears.core.keyed._filters import (
     binds_native_arrays,
     by_conditions,
     narrowing,
+    newest_of,
+    newest_read,
+    newest_sent,
     reads_yugabyte,
     relation,
     sent_by,
@@ -70,6 +73,7 @@ from threetears.interfaces.keyed.rows import (
     declared_key,
     keyed_read_statement,
 )
+from threetears.interfaces.keyed.keys import NEWEST_VERSIONS, next_newest_keys
 
 __all__ = [
     "ANY_ROWS_CAP",
@@ -113,6 +117,43 @@ class _Fit:
 def _sliced(keys: KeyChunk, start: int, stop: int | None = None) -> KeyChunk:
     """keys ``start`` to ``stop`` of a chunk, each column sliced (an Arrow column's slice copies nothing)."""
     return tuple(column[start:stop] for column in keys)
+
+
+class _NewestSizing:
+    """how many keys a versioned batch on YugabyteDB asks for: its first :data:`NEWEST_FIRST_KEYS` (the budget at the
+    measured worst, 50 versions a key), each later one as many as hold
+    :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the versions a key the one before read
+    (:func:`~threetears.interfaces.keyed.keys.next_newest_keys`), so the batch's sort of every version of its keys
+    never outgrows its ``work_mem``. Local to one read."""
+
+    def __init__(self, asked: int) -> None:
+        self._asked = asked
+        self.keys = next_newest_keys(0, 0, asked)
+
+    def read(self, keys: int, versions: int) -> None:
+        """learn from a batch: ``keys`` named, ``versions`` read of the keys it answered."""
+        self.keys = next_newest_keys(keys, versions, self._asked)
+
+
+async def _chunks(keys: KeyBatch, batch: int, binder: Any, sizing: _NewestSizing | None) -> Iterable[KeyChunk]:
+    """the read's chunks of distinct keys: ``batch`` a chunk (:func:`key_chunks_off_loop`), or, for a versioned batch
+    sized by its versions, as many as ``sizing`` asks for each in turn. Either way a large Arrow batch's distinct keys
+    are found in a worker process, never on the loop (``key_chunks_off_loop``)."""
+    if sizing is None:
+        return await key_chunks_off_loop(keys, batch, binder)
+    # every distinct key as one chunk, off the loop as any other read's; the sized chunks are zero-copy slices of it
+    whole = await key_chunks_off_loop(keys, max(1, len(keys.keys[0]) if keys.keys else 1), binder)
+    return _sized(whole[0], sizing) if whole else ()
+
+
+def _sized(unique: KeyChunk, sizing: _NewestSizing) -> Iterator[KeyChunk]:
+    """``unique``'s keys, as many a chunk as ``sizing`` asks for when each chunk is taken."""
+    total = len(unique[0])
+    start = 0
+    while start < total:
+        size = sizing.keys
+        yield tuple(column[start : start + size] for column in unique)
+        start += size
 
 
 async def _read_split(
@@ -236,24 +277,39 @@ async def read_keyed(
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
     binder = binder_for(conn, keys)
-    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder)
+    newest = newest_of(conn, table)
+    statement = keyed_read_statement(table, columns, keys, by or {}, lock, where, binder, newest)
     natively = binds_native_arrays(conn)
-    # asked only where it changes the statement: a batch of several key columns (its bounds, PostgreSQL's alone)
-    yugabyte = len(keys.columns) > 1 and not keys.as_list and await reads_yugabyte(conn)
+    # asked only where it changes the statement: a batch of several key columns (its bounds, PostgreSQL's alone), or
+    # any batch of a versioned table (a batched DISTINCT ON on YugabyteDB, a LATERAL seek a key on PostgreSQL)
+    yugabyte = (newest is not None or len(keys.columns) > 1) and not keys.as_list and await reads_yugabyte(conn)
+    counted = statement.counted(yugabyte)
 
     async def fetch(chunk: KeyChunk) -> list[Any]:
         sql, params = statement.render(chunk, natively, yugabyte)
-        return list(await sent_by(conn).fetch(sql, *params))
+        return list(await newest_sent(conn, newest, yugabyte).fetch(sql, *params))
 
     rows: list[Any] = []
     fit = _Fit()
-    for chunk in await key_chunks_off_loop(keys, key_batch_for(conn) if batch is None else batch, binder):
+    asked = key_batch_for(conn) if batch is None else batch
+    sizing = _NewestSizing(asked) if counted else None
+    for chunk in await _chunks(keys, asked, binder, sizing):
+        versions = 0
         for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
-            if records:
+            if counted:
+                # the versions each key read sizes the next batch; the count is the read's own, never a column of
+                # the rows answered
+                versions += sum(row[NEWEST_VERSIONS] for row in answered)
+                rows.extend(
+                    {name: value for name, value in dict(row).items() if name != NEWEST_VERSIONS} for row in answered
+                )
+            elif records:
                 rows.extend(answered)
             else:
                 # mapped, not a generator: a row a call less, at a page's 6,000 rows a millisecond
                 rows.extend(map(dict, answered))
+        if sizing is not None:
+            sizing.read(len(chunk[0]), versions)
     return rows
 
 
@@ -297,21 +353,33 @@ async def read_keyed_arrow(
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
     binder = binder_for(conn, keys)
+    newest = newest_of(conn, table)
     statement = keyed_read_statement(
-        table, list(types) if columns is None else columns, keys, by or {}, None, where, binder
+        table, list(types) if columns is None else columns, keys, by or {}, None, where, binder, newest
     )
     natively = binds_native_arrays(conn)
     # asked only where it changes the statement, as read_keyed asks it
-    yugabyte = len(keys.columns) > 1 and not keys.as_list and await reads_yugabyte(conn)
+    yugabyte = (newest is not None or len(keys.columns) > 1) and not keys.as_list and await reads_yugabyte(conn)
+    counted = statement.counted(yugabyte)
+    fetched = {**types, NEWEST_VERSIONS: counted_type()} if counted else types
 
     async def fetch(chunk: KeyChunk) -> Any:
         sql, params = statement.render(chunk, natively, yugabyte)
-        return await l3_fetch_arrow(conn, sql, *params, types=types)
+        return await l3_fetch_arrow(newest_sent(conn, newest, yugabyte), sql, *params, types=fetched)
 
     tables: list[Any] = []
     fit = _Fit()
-    for chunk in await key_chunks_off_loop(keys, key_batch_for(conn) if batch is None else batch, binder):
-        tables += await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit)
+    asked = key_batch_for(conn) if batch is None else batch
+    sizing = _NewestSizing(asked) if counted else None
+    for chunk in await _chunks(keys, asked, binder, sizing):
+        versions = 0
+        for answered in await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit):
+            if counted:
+                answered, read = without_counted(answered, NEWEST_VERSIONS)
+                versions += read
+            tables.append(answered)
+        if sizing is not None:
+            sizing.read(len(chunk[0]), versions)
     return tables
 
 
@@ -429,6 +497,6 @@ async def any_rows(
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in columns)
     rows = await sent_by(conn).fetch(
-        f"SELECT {selected} FROM {relation(table, 't', params)}{clause} LIMIT {limit}", *params
+        f"SELECT {selected} FROM {relation(newest_read(conn, table), 't', params)}{clause} LIMIT {limit}", *params
     )
     return [dict(row) for row in rows]

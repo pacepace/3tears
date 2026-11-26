@@ -5988,6 +5988,7 @@ class CopyFollower:
                         )
                     },
                     page_size=self._page_size,
+                    table=name,
                 )
                 async for page in pages:
                     if page.num_rows == 0:
@@ -6186,7 +6187,13 @@ class CopyFollower:
         select, types, lead = self._whole_select(table)
         pages = whole_read(
             keyset_arrow_pages(
-                self._l3, select, table.read_order, types=types, page_size=self._page_size, lead_array=lead
+                self._l3,
+                select,
+                table.read_order,
+                types=types,
+                page_size=self._page_size,
+                lead_array=lead,
+                table=table.name,
             ),
             kind="cold_start",
             reason="the copy holds nothing valid for the table: a first start with no checkpoint, or an operator's reset",
@@ -6207,7 +6214,13 @@ class CopyFollower:
         select, types, lead = self._whole_select(table)
         pages = whole_read(
             keyset_arrow_pages(
-                self._l3, select, table.read_order, types=types, page_size=self._page_size, lead_array=lead
+                self._l3,
+                select,
+                table.read_order,
+                types=types,
+                page_size=self._page_size,
+                lead_array=lead,
+                table=table.name,
             ),
             kind="schema_change",
             reason="a followed table was dropped or recreated by a migration: that table alone is read again",
@@ -6229,7 +6242,13 @@ class CopyFollower:
         select, types, lead = self._whole_select(table)
         pages = whole_read(
             keyset_arrow_pages(
-                self._l3, select, table.read_order, types=types, page_size=self._page_size, lead_array=lead
+                self._l3,
+                select,
+                table.read_order,
+                types=types,
+                page_size=self._page_size,
+                lead_array=lead,
+                table=table.name,
             ),
             kind="rolling_upgrade",
             reason="a writer older than 0.95.0 recorded the whole table mid-roll: that table is read again",

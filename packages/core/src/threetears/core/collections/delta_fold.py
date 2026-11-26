@@ -2931,6 +2931,7 @@ def _cold_start_pages(
             types=types,
             page_size=reader.page_size,
             lead_array=_lead_array(table),
+            table=table.name,
         ),
         kind="cold_start",
         reason="no full on the delta-files volume holds the table (a lost volume, a new environment), or it was reset: the writer "
@@ -2965,6 +2966,7 @@ def _schema_change_pages(
             types=types,
             page_size=reader.page_size,
             lead_array=_lead_array(table),
+            table=table.name,
         ),
         kind="schema_change",
         reason="a folded table was dropped or recreated by a migration: the writer reads that table alone once and publishes its "

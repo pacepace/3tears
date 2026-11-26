@@ -40,7 +40,16 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, reads_l3, sent_by, yugabyte_index_hint
+from threetears.core.keyed._filters import (
+    Derived,
+    Fragment,
+    Lock,
+    Selected,
+    newest_read,
+    reads_l3,
+    sent_by,
+    yugabyte_index_hint,
+)
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
@@ -122,6 +131,9 @@ async def keyset_page(
     :raises CursorError: when ``cursor`` is not one this sort issued
     """
     check_page(table, columns, order, limit)
+    # a versioned table's rows are its keys' newest live versions alone, read in its place: its key is then unique
+    # among them; the pins and the cursor's range on the key are pushed into its DISTINCT ON by the planner
+    read_from = newest_read(conn, table, lock=lock)
     if cursor is not None:
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
         refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
@@ -130,7 +142,7 @@ async def keyset_page(
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
     hint = await yugabyte_index_hint(conn, table, by, order)
     sql, params = page_statement(
-        table,
+        read_from,
         columns,
         by,
         order,
@@ -233,6 +245,7 @@ async def keyset_rows(
     :raises ValueError: as :func:`keyset_page`
     """
     check_page(table, columns, order, page)
+    read_from = newest_read(conn, table)
     # every statement after the first starts past the last row read: the order must hold a key
     refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     rows: list[dict[str, Any]] = []
@@ -242,7 +255,7 @@ async def keyset_rows(
     hint = await yugabyte_index_hint(conn, table, by, order)
     while True:
         sql, params = page_statement(
-            table,
+            read_from,
             columns,
             by,
             order,
@@ -305,7 +318,7 @@ async def copy_keyed(
     """
     # no cursor is made from the rows, so a sort column need not be read (a time sorted by, read as its text)
     check_page(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
-    sql, params = page_statement(table, columns, by, order, 1, None, False, (), where, None)
+    sql, params = page_statement(newest_read(conn, table), columns, by, order, 1, None, False, (), where, None)
     sql = sql.removesuffix(" LIMIT 1")
     chunks: list[bytes] = []
 

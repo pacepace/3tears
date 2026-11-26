@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from threetears.core.keyed._filters import sent_by
+from threetears.core.keyed._filters import refuse_versioned, sent_by
 from threetears.interfaces.keyed.filters import quote_identifier, quoted_table
 
 __all__ = [
@@ -91,5 +91,6 @@ async def read_link_chain(
     """
     if isinstance(most, bool) or most < 1:
         raise ValueError(f"a link chain walks at least one row, not {most!r}")
+    refuse_versioned(conn, [table], f"a link chain of {table}")
     statement = _link_chain_statement(table, key=key, link=link, columns=columns)
     return [dict(row) for row in await sent_by(conn).fetch(statement, start, most)]

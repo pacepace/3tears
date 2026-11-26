@@ -39,12 +39,14 @@ from typing import Any
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.protocol import parse_rowcount
+from threetears.core.ddl.row_epoch import AppendOnlyWriteError
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
     Selected,
     narrowing,
     quoted_table,
+    reads_l3,
     renumbered,
     selected_column,
     sent_by,
@@ -53,6 +55,7 @@ from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort
 from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.keys import versioned_table
 from threetears.interfaces.keyed.steps import Match, Quoted, Rel, Step, change_relation
 
 __all__ = [
@@ -93,15 +96,21 @@ class _Statement:
 
     def __init__(self) -> None:
         self.params: list[Any] = []
+        #: the versioned L3 tables the statement names as plain relations (:attr:`Step.versioned`)
+        self.versioned: list[str] = []
 
     def source(self, rel: Rel, alias: str) -> str:
         """``rel`` as a FROM item under ``alias``, its parameters bound after those already bound."""
         if isinstance(rel, Step | Derived):
             text = renumbered(Fragment(rel.sql, rel.params), len(self.params))
             self.params += list(rel.params)
+            if isinstance(rel, Step):
+                self.versioned += rel.versioned
             return f"({text}) AS {alias}"
         if isinstance(rel, Quoted):
             return f"{rel.name} AS {alias}"
+        if versioned_table(rel, l3=True) is not None:
+            self.versioned.append(rel)
         return f"{quoted_table(rel)} AS {alias}"
 
     def fragments(self, fragments: Sequence[Fragment]) -> list[str]:
@@ -120,7 +129,28 @@ class _Statement:
         :return: the step
         :rtype: Step
         """
-        return Step(sql, tuple(self.params))
+        return Step(sql, tuple(self.params), tuple(dict.fromkeys(self.versioned)))
+
+
+def _runs(conn: Any, *steps: Step) -> None:
+    """refuse to run on L3 a step naming a versioned table as a plain relation: it would read every version of it
+    (an older one, a gone marker, a key under a newer run marker). A step built over a local copy (one row a key) runs.
+
+    :param conn: the reader
+    :ptype conn: Any
+    :param steps: the steps run
+    :ptype steps: Step
+    :return: nothing
+    :rtype: None
+    :raises ValueError: for such a step on L3
+    """
+    named = [table for step in steps for table in step.versioned]
+    if named and reads_l3(conn):
+        raise ValueError(
+            f"a step reads the versioned table(s) {', '.join(dict.fromkeys(named))} as plain relations on L3, every "
+            "version of each: read each through threetears.core.keyed.newest_read(conn, table), its newest live "
+            "versions"
+        )
 
 
 def _columns(columns: Sequence[str | Selected] | None, alias: str = "t") -> str:
@@ -411,10 +441,17 @@ def latest_per_key(
     columns: Sequence[str | Selected] | None = None,
     where: Sequence[Fragment] = (),
     ties: bool = False,
+    gone: str | None = None,
 ) -> Step:
     """the first row of each ``key`` in ``order`` (the newest, ordered descending): ``DISTINCT ON``. With ``ties``,
     every row of a key whose ``order[0]`` value is the key's first (``max`` descending, ``min`` ascending), its NULLs
     never first: a window filter (:func:`windowed`).
+
+    With ``gone``, the newest live version of each key of a relation of versions (a versioned table's rows a change
+    produced, ordered by the epoch descending): a key whose first row is a "gone" marker (``gone`` true) answers
+    nothing, never the version behind it. A keyed read of a versioned L3 table itself takes the same rule as a probe
+    beside the read (:func:`~threetears.interfaces.keyed.keys.newest_relation`): a ``DISTINCT ON`` subquery takes no
+    key a join names, so read through one a table would be read whole.
 
     :param rel: the relation
     :ptype rel: str | Derived | Step
@@ -428,12 +465,18 @@ def latest_per_key(
     :ptype where: Sequence[Fragment]
     :param ties: keep every row tied first by ``order[0]`` (one sort column only), not one row a key
     :ptype ties: bool
+    :param gone: the column a "gone" marker sets, a TRUSTED identifier: a key whose first row sets it answers nothing;
+        None keeps every key's first row
+    :ptype gone: str | None
     :return: the step
     :rtype: Step
-    :raises ValueError: when ``key`` or ``order`` is empty, or ``ties`` is given more than one sort column
+    :raises ValueError: when ``key`` or ``order`` is empty, ``ties`` is given more than one sort column, or ``gone``
+        beside ``ties``
     """
     if not key or not order:
         raise ValueError("the newest row of each key names the key and the order")
+    if gone is not None and ties:
+        raise ValueError("a key's newest live version is one row: gone= takes no ties")
     if any(sort.nulls is not None for sort in order):
         raise ValueError("the newest row of each key places NULLs as its order says it, never by a sort's nulls")
     if ties:
@@ -449,6 +492,12 @@ def latest_per_key(
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
     keyed = ", ".join(f"t.{quote_identifier(column)}" for column in key)
+    if gone is not None:
+        # the first row of each key, whole (its marker flag kept to judge it), then the live ones' columns
+        heads = latest_per_key(rel, key=key, order=order, where=where)
+        inner = _Statement()
+        newest = inner.source(heads, "n")
+        return inner.step(f"SELECT {_columns(columns, 'n')} FROM {newest} WHERE NOT n.{quote_identifier(gone)}")
     ordered = ", ".join(
         [f"t.{quote_identifier(column)}" for column in key]
         + [
@@ -519,8 +568,9 @@ def ordered(step: Rel, order: Sequence[Sort], *, limit: int | None = None) -> St
     """
     if not order:
         raise ValueError("an ordered step names its order: at least one sort")
-    sql, params = _ordered(_as_step(step), order, limit)
-    return Step(sql, tuple(params))
+    built = _as_step(step)
+    sql, params = _ordered(built, order, limit)
+    return Step(sql, tuple(params), built.versioned)
 
 
 async def read_step(
@@ -540,7 +590,9 @@ async def read_step(
     :rtype: list[dict[str, Any]]
     :raises ValueError: for a limit that is no count of rows
     """
-    sql, params = _ordered(_as_step(step), order, limit)
+    built = _as_step(step)
+    _runs(conn, built)
+    sql, params = _ordered(built, order, limit)
     return [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
 
 
@@ -581,7 +633,9 @@ async def read_step_arrow(
     """
     if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 1):
         raise ValueError(f"an Arrow batch is sized for at least one row, not {size!r}")
-    sql, params = _ordered(_as_step(step), order, limit)
+    built = _as_step(step)
+    _runs(conn, built)
+    sql, params = _ordered(built, order, limit)
     if isinstance(conn, (InlineDuckDB, ThreadedDuckDB)):
         return await sent_by(conn).fetch_arrow(sql, *params, types=types, size=size if size is not None else limit)
     if types is None:
@@ -692,6 +746,7 @@ async def count_step(conn: Any, step: Rel) -> int:
     """
     statement = _Statement()
     source = statement.source(_as_step(step), "c")
+    _runs(conn, statement.step(""))
     rows = await sent_by(conn).fetch(f"SELECT count(*) AS n FROM {source}", *statement.params)
     return int(rows[0]["n"])
 
@@ -708,6 +763,7 @@ async def any_step(conn: Any, step: Rel) -> bool:
     """
     statement = _Statement()
     source = statement.source(_as_step(step), "e")
+    _runs(conn, statement.step(""))
     rows = await sent_by(conn).fetch(f"SELECT EXISTS (SELECT 1 FROM {source}) AS held", *statement.params)
     return bool(rows[0]["held"])
 
@@ -730,6 +786,7 @@ async def materialize(conn: Any, table: str, step: Rel, *, temp: bool = False, r
     :rtype: int
     """
     built = _as_step(step)
+    _runs(conn, built)
     target = quoted_table(table)
     if replace:
         await conn.execute(f"DROP TABLE IF EXISTS {target}")
@@ -758,8 +815,14 @@ async def delete_matching(
     """
     if not on:
         raise ValueError(f"a delete from {table} by a change relation matches on its key")
+    if reads_l3(conn) and versioned_table(table, l3=True) is not None:
+        raise AppendOnlyWriteError(
+            f"{table} is versioned (append-only): a delete would remove versions in place; delete each key as a gone "
+            "marker through its collection or the L3 backend"
+        )
     statement = _Statement()
     other = statement.source(keys, "k")
+    _runs(conn, statement.step(""))
     inner = [match.condition("t", "k") for match in on] + statement.fragments(also)
     sql = f"DELETE FROM {quoted_table(table)} AS t WHERE EXISTS (SELECT 1 FROM {other} WHERE {' AND '.join(inner)})"
     return parse_rowcount(await conn.execute(sql, *statement.params))
@@ -802,6 +865,7 @@ async def first_difference(
     statement = _Statement()
     left = statement.source(rel, "t")
     right = statement.source(other, "k")
+    _runs(conn, statement.step(""))
     differs = " OR ".join(f"{_value(value)} IS DISTINCT FROM k.{quote_identifier(theirs)}" for value, theirs in compare)
     named = list(dict.fromkeys([match.column for match in on] + list(order)))
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in named)
