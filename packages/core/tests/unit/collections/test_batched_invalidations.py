@@ -3,6 +3,8 @@ a copy as one Arrow batch."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -22,6 +24,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.core.testing.loop_lateness import turn_holds
 
 _ROWS = 1_200
 
@@ -234,9 +237,11 @@ async def test_a_page_of_5000_keys_reaches_a_copy_as_one_message_and_one_arrow_b
     expanded: list[int] = []
     real_each_row = CacheInvalidationMessage.each_row
 
-    def each_row(message: CacheInvalidationMessage) -> list[CacheInvalidationMessage]:
+    def each_row(
+        message: CacheInvalidationMessage, start: int = 0, stop: int | None = None
+    ) -> list[CacheInvalidationMessage]:
         expanded.append(message.row_count)
-        return real_each_row(message)
+        return real_each_row(message, start, stop)
 
     monkeypatch.setattr(CacheInvalidationMessage, "each_row", each_row)
     await receiver.start_invalidation_listener(bus)
@@ -253,6 +258,152 @@ async def test_a_page_of_5000_keys_reaches_a_copy_as_one_message_and_one_arrow_b
         pa.table({"k0": pa.array([s for s, _ in page], pa.string()), "k1": pa.array([g for _, g in page], pa.string())})
     ), "the copy was told other keys than the page's"
     assert expanded == [], "a peer whose only cache of the table is the copy built a row message a row"
+
+
+#: a write's keys as one message: short one-column keys, 50,000 of them inside one message's byte budget
+_ONE_MESSAGE = 50_000
+
+#: advances a follower holds heard and waiting behind one it has not heard: what each count of the mark copies
+_WAITING = 4_000
+
+
+def _waiting_marks(registry: CollectionRegistry) -> None:
+    """``registry`` follows ``results`` from ``inc:0`` and holds :data:`_WAITING` advances heard in full and waiting
+    behind ``inc:1``, which it has not heard. Synchronous setup, run on a thread: each count copies the advances
+    already waiting, so the setup's counts are quadratic in them (0.3 s for 4,000), where a follower hears each
+    advance's broadcast in its own turn."""
+    registry.follow_generation("results")
+    marks = registry.generation_marks
+    marks.adopt_generation("results", "inc:0")
+    for count in range(2, 2 + _WAITING):
+        marks.hear("results", f"inc:{count}", 1)
+
+
+async def _hear_one_message(
+    receiver: CollectionRegistry, *, count: int = _ONE_MESSAGE, raise_at: int | None = None
+) -> tuple[list[tuple[float, str]], list[str]]:
+    """``receiver``, with a cache that takes rows, hears one message of ``count`` keys at ``inc:9000``: every turn of
+    the loop meanwhile, and the ids the cache was told. ``raise_at`` makes the cache raise on that row."""
+    bus = FakeNatsClient()
+    sender = CollectionRegistry()
+    told: list[str] = []
+
+    def on_row(message: CacheInvalidationMessage) -> None:
+        if raise_at is not None and len(told) == raise_at:
+            raise RuntimeError("the cache failed this row")
+        told.append(message.ids[0])
+
+    receiver.register_derived_cache(
+        "results", on_row=on_row, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+    )
+    keys = [str(n) for n in range(count)]
+    batches = await asyncio.to_thread(invalidation_batches, keys)
+    assert len(batches) == 1, "the keys did not fit one message"
+    await receiver.start_invalidation_listener(bus)
+    try:
+        with turn_holds() as holds:
+            with contextlib.suppress(RuntimeError):
+                await sender.publish_invalidations(bus, "results", batches, generation="inc:9000", bump_rows=count)
+    finally:
+        await receiver.stop_invalidation_listener()
+    return holds, told
+
+
+async def test_a_message_of_50000_keys_heard_by_a_cache_taking_rows_holds_no_turn_past_the_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips if hearing one message of 50,000 keys, where a cache takes rows, holds one turn of the loop past the
+    loop-stall guard, builds more than a run of its row messages in a turn, or counts its rows toward their advance
+    otherwise than once for the message. Every row message was built in the message's first turn (0.34 s of the loop
+    at 50,000 keys on a laptop, in ``each_row``), and the mark was counted a row at a time, each count copying every
+    advance the follower holds waiting: 194 us a row with 4,000 waiting, 9.7 s of the loop over the message
+    (2026-11-25). Each turn now builds and applies one run of rows (4 ms there), and the mark is counted once."""
+    receiver = CollectionRegistry()
+    await asyncio.to_thread(_waiting_marks, receiver)
+    marks = receiver.generation_marks
+    counts: list[int] = []
+    real_hear = type(marks).hear
+
+    def hear(owner: Any, table: str, generation: str, bump_rows: int, *, rows: int = 1) -> None:
+        if owner is marks and generation == "inc:9000":
+            counts.append(rows)
+        real_hear(owner, table, generation, bump_rows, rows=rows)
+
+    built: list[int] = []
+    real_each_row = CacheInvalidationMessage.each_row
+
+    def each_row(
+        message: CacheInvalidationMessage, start: int = 0, stop: int | None = None
+    ) -> list[CacheInvalidationMessage]:
+        rows = real_each_row(message, start, stop)
+        built.append(len(rows))
+        return rows
+
+    monkeypatch.setattr(type(marks), "hear", hear)
+    monkeypatch.setattr(CacheInvalidationMessage, "each_row", each_row)
+    holds, told = await _hear_one_message(receiver)
+    assert told == [str(n) for n in range(_ONE_MESSAGE)], "the cache was not told every row, in order"
+    assert counts == [_ONE_MESSAGE], f"the message's rows were counted {len(counts)} times, not once"
+    assert max(built) <= _A_RUN, f"{max(built)} row messages were built in one turn; a run is {_A_RUN}"
+    longest, what = max(holds)
+    assert longest < _STALL_LIMIT, f"one turn held the loop {longest:.3f} s ({what}); the guard is {_STALL_LIMIT} s"
+
+
+#: the rows of a message a turn applies (``registry._NOTED_ROWS_PER_YIELD``), and the loop-stall guard's limit
+#: (``threetears.core.testing.loop_stall``), restated so the test says what it holds them to
+_A_RUN = 500
+_STALL_LIMIT = 0.25
+
+
+#: the rows a message of many rows is compared with one message a row over: several runs of them
+_COMPARED = 5_000
+
+
+@pytest.mark.parametrize("raise_at", [None, 1_234])
+async def test_a_message_of_many_rows_leaves_the_marks_a_message_a_row_left(raise_at: int | None) -> None:
+    """Flips if the marks a message of many rows leaves, where a cache takes rows, differ from what one message a row
+    leaves: every row applied counted toward its advance, and when the cache fails a row, the rows before it alone
+    (the advance then waits for its record), with the advances already waiting where they were."""
+    batched = CollectionRegistry()
+    await asyncio.to_thread(_waiting_marks, batched)
+    _holds, told = await _hear_one_message(batched, count=_COMPARED, raise_at=raise_at)
+
+    singles = CollectionRegistry()
+    await asyncio.to_thread(_waiting_marks, singles)
+    bus = FakeNatsClient()
+    sender = CollectionRegistry()
+    one_a_row: list[str] = []
+
+    def on_row(message: CacheInvalidationMessage) -> None:
+        if raise_at is not None and len(one_a_row) == raise_at:
+            raise RuntimeError("the cache failed this row")
+        one_a_row.append(message.ids[0])
+
+    singles.register_derived_cache(
+        "results", on_row=on_row, on_table_dropped=lambda: None, on_partition=lambda _prefix: None
+    )
+    await singles.start_invalidation_listener(bus)
+    try:
+        for n in range(_COMPARED if raise_at is None else raise_at + 1):
+            with contextlib.suppress(RuntimeError):
+                await sender.publish_invalidation(bus, "results", str(n), generation="inc:9000", bump_rows=_COMPARED)
+            # a real bus hands each message to its own callback turn; the fake one delivers inside the publish
+            await asyncio.sleep(0)
+    finally:
+        await singles.stop_invalidation_listener()
+
+    assert told == one_a_row
+    left, right = batched.generation_marks, singles.generation_marks
+    assert left.pending("results") == right.pending("results")
+    assert left.recorded("results") == right.recorded("results") == "inc:0"
+    assert left.highest_heard("results") == right.highest_heard("results")
+    assert left.heard_in_full("results", "inc:9000") is right.heard_in_full("results", "inc:9000") is (raise_at is None)
+    heard = 1_234 if raise_at is not None else _COMPARED
+    assert f"inc:9000 ({heard}/{_COMPARED})" in left.pending("results")
+    # inc:1 heard now: every waiting advance passes into the mark, and the message's advance once heard in full
+    for marks in (left, right):
+        marks.hear("results", "inc:1", 1)
+    assert left.recorded("results") == right.recorded("results") == f"inc:{1 + _WAITING}"
 
 
 def test_the_wire_spells_every_key_as_a_row_message_does() -> None:
