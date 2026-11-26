@@ -336,14 +336,21 @@ async def refuse_tables_without_epoch(conn: _Fetching, schema: str, tables: Iter
     :ptype conn: _Fetching
     :param schema: the schema
     :ptype schema: str
-    :param tables: the switched-on tables a run declares
+    :param tables: the switched-on tables a run declares: bare, judged in ``schema``, or ``other_schema.table`` for a
+        table a run's package creates in a second schema of its database (the hub's audit table), judged in its own
     :ptype tables: Iterable[str]
-    :return: those without an epoch (empty once refused, since a refusal raises)
+    :return: those without an epoch, as named (empty once refused, since a refusal raises)
     :rtype: frozenset[str]
     :raises TableWithoutEpochError: when one carries none and the refusal is on
     """
-    names = frozenset(tables)
-    missing = names - await tables_carrying_epoch(conn, schema, names)
+    by_schema: dict[str, set[str]] = {}
+    for name in frozenset(tables):
+        home, _, bare = name.rpartition(".")
+        by_schema.setdefault(home or schema, set()).add(bare)
+    missing: set[str] = set()
+    for home, names in sorted(by_schema.items()):
+        carrying = await tables_carrying_epoch(conn, home, names)
+        missing |= {name if home == schema else f"{home}.{name}" for name in names - carrying}
     if missing and REFUSE_TABLES_WITHOUT_EPOCH:
-        raise TableWithoutEpochError(f"{schema}.{name}" for name in missing)
-    return missing
+        raise TableWithoutEpochError(name if "." in name else f"{schema}.{name}" for name in missing)
+    return frozenset(missing)
