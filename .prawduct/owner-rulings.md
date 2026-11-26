@@ -5,6 +5,15 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26.** On the model key pool, when asked whether a rate-limited key may get one more attempt after the
+pool's wait: "let's separate rate limiting from quota exhaustion. Assume all rates are the same. For now, rate limit
+means retry. Quota exhaustion means move to next key. Hopefully we can tell the two apart." So a rate limit never
+moves the active key and is never a per-key state. It is retried on the same key, as the provider SDK retries it
+today, honouring `retry-after`. After those retries it reaches the caller unchanged. Only quota or credit
+exhaustion (and revoked or forbidden keys) moves to the next key. This replaces the Q4 ruling above (wait for the
+earliest `until`, cap default 0), which no longer has a case, and the rate-limit parts of KP-C2, C3, D3, H4 and K1.
+Lands in `docs/model-key-pool-requirements.md` and the build plan.
+
 **2026-11-26.** On the seven security-model rules with no enforcement gate: "yes to all", as proposed. Rules
 1, 2, 5 and 7 (session token carries identity only; an admin grants only what they hold at every scope; tool-pod
 identity from a verified token; secrets by reference) are ratified Critic-only. Rules 4 and 6 are ratified
