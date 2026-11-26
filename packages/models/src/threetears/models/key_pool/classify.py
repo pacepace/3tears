@@ -824,7 +824,8 @@ class _OpenRouterClassifier:
     rolls over, where the reverse mistake costs each sibling one refused call.
     """
 
-    #: ``chat.send`` retries only ``5XX`` statuses (``openrouter/chat.py``), so the pool retries a 429
+    #: ``chat.send`` retries only ``5XX`` statuses (``openrouter/chat.py``), so the pool retries a 429.
+    #: ``create_openrouter_chat`` builds its model on the same fact; the two change together
     sdk_retries_rate_limits = False
 
     def classify(

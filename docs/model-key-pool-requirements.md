@@ -78,6 +78,8 @@ returns `None`.
 - **Moving** the active key is durable: it is recorded in the store. **Skipping** a key affects one call only.
 - **Reservation.** Budget held for one in-flight call. **Settlement** replaces it with the call's actual cost.
 - **Room.** `budget − spent − reserved` for the current period.
+- **Settled room.** `budget − spent` for the current period: room before open reservations. Within a period it only
+  shrinks.
 - **Eligible.** A key is eligible when its state is `ok`, its breaker isn't OPEN, and it has room.
 
 ## 4. Requirements
@@ -185,8 +187,10 @@ Every requirement must be testable without a network (KP-L1).
   - its state turns `exhausted`, `revoked` or `forbidden` (for this model); a rate limit never moves it
     (amended 2026-11-26);
   - its breaker is OPEN;
-  - its room falls below `min_headroom` (default 1% of its budget).
-- **KP-D3.** A call whose reservation doesn't fit on a key that still has room above `min_headroom` **skips**
+  - its settled room falls below `min_headroom` (default 1% of its budget). Open reservations are pessimistic
+    estimates that settle within the call, so they never mark a key low for the period; a call they crowd off a key
+    skips it, as in KP-D3 (amended 2026-11-26).
+- **KP-D3.** A call whose reservation doesn't fit on a key whose settled room is still above `min_headroom` **skips**
   that key for this call only. The active key stays put, so one large call doesn't strand the room that small
   calls can still use. A call the provider refuses as larger than the key may spend at all (OpenRouter's
   `weight_exceeds_budget`) skips the key the same way, and nothing is marked exhausted. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*

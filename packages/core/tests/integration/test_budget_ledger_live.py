@@ -40,7 +40,16 @@ from threetears.nats import NatsClient, set_default_namespace
 pytestmark = pytest.mark.integration
 
 _SCOPE = "live-ledger"
-_EXPIRES = datetime.now(UTC) + timedelta(hours=1)
+
+
+@pytest.fixture
+def expires() -> datetime:
+    """an expiry an hour past the test's own start, read when the test runs rather than at import.
+
+    :return: the expiry
+    :rtype: datetime
+    """
+    return datetime.now(UTC) + timedelta(hours=1)
 
 
 async def _migrated_pool(db_url: str) -> asyncpg.Pool:
@@ -81,16 +90,18 @@ async def _connect(nats_url: str, namespace: str, name: str) -> NatsClient:
     return await NatsClient.connect(nats_url=nats_url, nats_subject_namespace=namespace, client_name=name)
 
 
-async def test_spend_survives_a_new_ledger_after_the_bucket_is_wiped(db_container: str, nats_container: str) -> None:
+async def test_spend_survives_a_new_ledger_after_the_bucket_is_wiped(
+    db_container: str, nats_container: str, expires: datetime
+) -> None:
     namespace = f"ledger{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
     pool = await _migrated_pool(db_container)
     try:
         async with await _connect(nats_container, namespace, "ledger") as nats:
             ledger = _replica(nats, pool)
-            assert await ledger.reserve("acct", "r1", Decimal("6.00"), Decimal("10.00"), _EXPIRES)
+            assert await ledger.reserve("acct", "r1", Decimal("6.00"), Decimal("10.00"), expires)
             await ledger.settle("acct", "r1", Decimal("7.25"))
-            assert await ledger.reserve("acct", "r2", Decimal("1.50"), Decimal("10.00"), _EXPIRES)
+            assert await ledger.reserve("acct", "r2", Decimal("1.50"), Decimal("10.00"), expires)
             assert await ledger.compare_and_set_record("active", 0, {"key": "a", "budget": "10.00"}) == (
                 True,
                 1,
@@ -104,9 +115,7 @@ async def test_spend_survives_a_new_ledger_after_the_bucket_is_wiped(db_containe
             )
             assert row is not None
             assert (row["spent"], row["reserved"]) == ("7.25", "1.50")
-            assert json.loads(row["open_reservations"]) == {
-                "r2": {"amount": "1.50", "expires_at": _EXPIRES.isoformat()}
-            }
+            assert json.loads(row["open_reservations"]) == {"r2": {"amount": "1.50", "expires_at": expires.isoformat()}}
             assert json.loads(row["orphaned"]) == {}
             assert row["expires_at"] is None
             assert row["l2_epoch"] is not None and row["l2_revision"] is not None, "a persist carried no order"
@@ -118,7 +127,7 @@ async def test_spend_survives_a_new_ledger_after_the_bucket_is_wiped(db_containe
 
             snap = (await fresh.snapshot(["acct"]))["acct"]
             assert (snap["spent"], snap["reserved"]) == (Decimal("7.25"), Decimal("1.50")), "the wipe lost spend"
-            assert await fresh.reserve("acct", "r3", Decimal("1.26"), Decimal("10.00"), _EXPIRES) is False
+            assert await fresh.reserve("acct", "r3", Decimal("1.26"), Decimal("10.00"), expires) is False
             await fresh.settle("acct", "r2", Decimal("1.00"))
             assert (await fresh.snapshot(["acct"]))["acct"]["spent"] == Decimal("8.25")
             assert await fresh.read_record("active") == (1, {"key": "a", "budget": "10.00"})
@@ -131,7 +140,9 @@ async def test_spend_survives_a_new_ledger_after_the_bucket_is_wiped(db_containe
         await pool.close()
 
 
-async def test_two_replicas_share_accounts_and_records(db_container: str, nats_container: str) -> None:
+async def test_two_replicas_share_accounts_and_records(
+    db_container: str, nats_container: str, expires: datetime
+) -> None:
     namespace = f"ledger{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
     pool = await _migrated_pool(db_container)
@@ -142,14 +153,14 @@ async def test_two_replicas_share_accounts_and_records(db_container: str, nats_c
         ):
             first, second = _replica(nats_a, pool), _replica(nats_b, pool)
 
-            assert await first.reserve("acct", "r1", Decimal(4), Decimal(10), _EXPIRES)
+            assert await first.reserve("acct", "r1", Decimal(4), Decimal(10), expires)
             await second.settle("acct", "r1", Decimal(3))
             assert (await first.snapshot(["acct"]))["acct"]["spent"] == Decimal(3)
 
-            assert await second.reserve("acct", "r2", Decimal(7), Decimal(10), _EXPIRES)
-            assert await first.reserve("acct", "r3", Decimal("0.01"), Decimal(10), _EXPIRES) is False
+            assert await second.reserve("acct", "r2", Decimal(7), Decimal(10), expires)
+            assert await first.reserve("acct", "r3", Decimal("0.01"), Decimal(10), expires) is False
 
-            swept_at = _EXPIRES + timedelta(seconds=1)
+            swept_at = expires + timedelta(seconds=1)
             assert await first.sweep_expired(["acct"], swept_at) == {"acct": ["r2"]}
             assert (await second.snapshot(["acct"]))["acct"]["orphaned"] == {"r2": Decimal(7)}
             await second.release("acct", "r2")
@@ -163,7 +174,7 @@ async def test_two_replicas_share_accounts_and_records(db_container: str, nats_c
 
 
 async def test_concurrent_reservations_from_two_replicas_never_exceed_the_budget(
-    db_container: str, nats_container: str
+    db_container: str, nats_container: str, expires: datetime
 ) -> None:
     namespace = f"ledger{uuid.uuid4().hex[:6]}"
     set_default_namespace(namespace)
@@ -176,7 +187,7 @@ async def test_concurrent_reservations_from_two_replicas_never_exceed_the_budget
             first, second = _replica(nats_a, pool), _replica(nats_b, pool)
             results = await asyncio.gather(
                 *(
-                    (first if i % 2 else second).reserve("acct", f"r{i}", Decimal(1), Decimal(7), _EXPIRES)
+                    (first if i % 2 else second).reserve("acct", f"r{i}", Decimal(1), Decimal(7), expires)
                     for i in range(20)
                 )
             )

@@ -254,13 +254,67 @@ class TestStoreDown:
         with pytest.raises(KeyPoolStoreError):
             await make_pool(spec("a"), store=store).acquire(MODEL, Decimal("0.01"))
 
-    async def test_a_record_in_another_layout_is_refused_not_overwritten(self) -> None:
+    async def test_a_record_in_another_layout_is_refused_not_overwritten(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         store = FakeFlakyStore()
-        await store.inner.compare_and_set_record(f"key-pool/{PROVIDER}/{POOL}", 0, {"layout": 99, "keys": {}})
+        await store.inner.compare_and_set_record(_RECORD, 0, {"layout": 99, "keys": {}})
+        pool = make_pool(spec("a"), store=store)
         with pytest.raises(KeyPoolStoreError, match="layout"):
-            await make_pool(spec("a"), store=store).acquire(MODEL, Decimal("0.01"))
-        assert (await store.inner.read_record(f"key-pool/{PROVIDER}/{POOL}"))[1] == {"layout": 99, "keys": {}}
+            await pool.acquire(MODEL, Decimal("0.01"))
+        assert (await store.inner.read_record(_RECORD))[1] == {"layout": 99, "keys": {}}
+        assert pool.counters.store_failures == {"read_record": 1}
+        assert len(lines(caplog, logging.ERROR, "fails closed")) == 1
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("until", "next tuesday"),
+            ("until", "2026-11-26T13:00:00"),  # naive: the pool compares it with an aware clock
+            ("budget", "ten dollars"),
+            ("forbidden", None),
+            ("revoked", "no"),
+        ],
+    )
+    async def test_a_record_with_a_field_that_does_not_parse_is_a_counted_store_failure(
+        self, field: str, value: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = FakeFlakyStore()
+        await serve(make_pool(spec("a"), store=store))
+        version, record = await store.inner.read_record(_RECORD)
+        assert record is not None
+        entry = record["keys"]["a"]
+        generation = entry["generations"]["0"]
+        fingerprint = generation["fingerprint"]
+        if field == "until":
+            generation["exhausted"] = {"period": "2026-11", "until": value}
+        elif field == "budget":
+            entry["budget"] = value
+        else:
+            generation[field] = value
+        assert (await store.inner.compare_and_set_record(_RECORD, version, record))[0]
+        restarted = make_pool(spec("a"), store=store)  # a new process reads the record afresh
+        with pytest.raises(KeyPoolStoreError, match="can't read") as caught:
+            await restarted.acquire(MODEL, Decimal("0.01"))
+        assert restarted.counters.store_failures == {"read_record": 1}
+        logged = lines(caplog, logging.ERROR, "fails closed")
+        assert len(logged) == 1
+        assert fingerprint not in str(caught.value) + logged[0].getMessage()
+
+    async def test_a_record_a_compare_and_set_returns_unreadable_is_a_counted_store_failure(self) -> None:
+        store = FakeFlakyStore()
+        pool = make_pool(spec("a"), spec("b"), store=store)
+        await serve(pool)
+        version, record = await store.inner.read_record(_RECORD)
+        assert record is not None
+        record["keys"]["a"]["budget"] = "ten dollars"  # another writer's record this layout can't read
+        assert (await store.inner.compare_and_set_record(_RECORD, version, record))[0]
+        with pytest.raises(KeyPoolStoreError, match="can't read"):
+            await fail_on(pool, exhausted())  # its write loses to the newer record, which it can't read
+        assert pool.counters.store_failures == {"compare_and_set_record": 1}
+
+
+_RECORD = f"key-pool/{PROVIDER}/{POOL}"
 
 _SENTINEL = "sk-ant-api03-SENTINEL-1f2e3d4c5b6a"
 _ROTATED = "sk-ant-api03-SENTINEL-rotated-99887766"
