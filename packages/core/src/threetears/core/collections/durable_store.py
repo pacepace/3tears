@@ -118,6 +118,10 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         """Delete the entity from L3 via the structured ``DurableStore.delete`` (no SQL)."""
         await self._durable_store.delete(self.table_name, self._pk_mapping(entity_id))
 
+    async def delete_from_store_on(self, entity_id: Any, *, conn: Any) -> None:
+        """Delete the entity from L3 on the caller's transaction via ``DurableStore.delete(conn=...)`` (no SQL)."""
+        await self._durable_store.delete(self.table_name, self._pk_mapping(entity_id), conn=conn)
+
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Default L2 codec: canonical JSON bytes. Override for a domain codec."""
         return serialize_to_json(data)

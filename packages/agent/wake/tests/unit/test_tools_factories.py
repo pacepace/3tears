@@ -158,7 +158,7 @@ class _FakeScheduleCollection(WakeScheduleCollection):
             if r["agent_id"] == agent_id and r["status"] in statuses
         ]
 
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         self.rows.pop(entity_id, None)
         return True
 
@@ -219,7 +219,7 @@ class _FakeSubscriptionsCollection(WebhookSubscriptionCollection):
             if r["agent_id"] == agent_id
         ]
 
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         self.rows.pop(entity_id, None)
         return True
 

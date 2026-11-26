@@ -28,7 +28,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, NoReturn, TypeVar, cast
 from uuid import uuid7
 
-from asyncpg import PostgresError
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
@@ -46,7 +45,7 @@ from threetears.core import keyed
 from threetears.core.keyed import Fragment, Sort, inline_l1, run_inline
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
-from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
+from threetears.core.collections.caller_transaction import CallerTransaction, outcome_known, shared_advance_for
 from threetears.core.collections.delta_files import DeltaFileRefusedError, TableDelta, entity_key_batch
 from threetears.core.collections.invalidation_rows import invalidation_batches
 from threetears.core.collections.epoch_change import (
@@ -421,27 +420,6 @@ class _Bump:
 
 #: no advance was made and none was owed.
 _NO_BUMP: Final = _Bump()
-
-#: the SQLSTATE classes a database answers with when it cannot say how a statement or commit ended: a connection
-#: exception (``08``), an operator intervention such as a shutdown (``57``), an internal error (``XX``)
-_OUTCOME_UNKNOWN_CLASSES: Final = frozenset({"08", "57", "XX"})
-
-
-def _outcome_known(error: BaseException) -> bool:
-    """whether a write that raised ``error`` is known not to have committed: the database answered it with its own error
-    (``asyncpg.PostgresError``, which the L3 rail's proxy raises as well), and not one of a lost connection, a shutdown
-    or an internal failure. Anything else -- a dropped connection during ``COMMIT``, a timeout waiting for the reply,
-    a cancellation -- leaves the outcome unknown: the write may have landed.
-
-    :param error: what the write raised
-    :ptype error: BaseException
-    :return: whether the write is known not to have landed
-    :rtype: bool
-    """
-    if not isinstance(error, PostgresError):
-        return False
-    state = f"{getattr(error, 'sqlstate', '') or ''}"
-    return state[:2] not in _OUTCOME_UNKNOWN_CLASSES
 
 
 def _reach_kw(reach: WholeReach | None) -> dict[str, Any]:
@@ -2292,8 +2270,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         (:meth:`invalidate_cache_many`), and every row a delete's foreign-key actions reached through its own collection
         (``announce_delete_cascade``), shielded from a cancellation, and the write's own error raised after. A spurious
         announcement costs a reader one re-read; a missed one leaves every pod serving what L3 no longer holds (every
-        epoch heard). A write the database refused with its own error (:func:`_outcome_known`) did not land and
-        announces nothing. A failure to announce is logged and the write's error raised: it is the caller's.
+        epoch heard). A write the database refused with its own error
+        (:func:`~threetears.core.collections.caller_transaction.outcome_known`) did not land and announces nothing. A failure to announce is logged and the write's error raised: it is the caller's.
 
         A write joined to a caller's transaction needs none of this: it is enrolled there before it is sent, and
         settled however the transaction ends (:class:`~threetears.core.collections.caller_transaction.CallerTransaction`).
@@ -2312,7 +2290,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 yield
             # BaseException, not Exception: a cancelled write's outcome is as unknown as a dropped connection's
             except BaseException as error:  # prawduct:allow prawduct/broad-except -- announced, then re-raised
-                if not _outcome_known(error):
+                if not outcome_known(error):
                     await asyncio.shield(self._announce_unknown_outcome(entity_ids, rows, cascaded, error))
                 raise
 
@@ -4373,7 +4351,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 # L1 took this row synchronously at the assignment; withdraw it from every tier
                 # so every reader goes to L3. A write whose outcome is unknown was withdrawn and announced, with an
                 # advance, by _write_heard; one the database refused did not land and advances nothing
-                if _outcome_known(exc):
+                if outcome_known(exc):
                     await self._withdraw_from_caches(entity_id)
                 if not isinstance(exc, Exception):
                     raise
@@ -5730,12 +5708,24 @@ class BaseCollection(ABC, Generic[EntityT]):
         return result
 
     @traced()
-    async def delete(self, entity_id: Any) -> bool:
+    async def delete(self, entity_id: Any, *, conn: Any = None) -> bool:
         """delete entity from all tiers.
+
+        **On a caller's transaction** (``conn``, its transaction opened by
+        :class:`~threetears.core.collections.caller_transaction.CallerTransaction`): the same steps, written on
+        ``conn``, so the delete commits or rolls back with the rest of the caller's work. A declared ``RESTRICT`` /
+        ``NO ACTION`` child is refused before anything is written; a stamped row's declared foreign-key actions are
+        taken, children before the parent, on ``conn``; and the row and every row those actions reach are announced
+        once the transaction's COMMIT has landed, or was sent and never answered (the unknown-outcome rule), never
+        after a rollback (:meth:`CallerTransaction.after_commit`). A failure to advance a write generation then is the
+        transaction's error, as for every write joined to it.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in
             declared column order (composite-pk)
         :ptype entity_id: Any
+        :param conn: the caller's connection, its transaction opened by ``CallerTransaction``; None for a delete
+            of its own
+        :ptype conn: Any
         :return: always ``True`` (delete is idempotent across tiers)
         :rtype: bool
         :raises KvError: when L2 is this collection's store (:attr:`l2_is_the_store`) and refused
@@ -5744,8 +5734,14 @@ class BaseCollection(ABC, Generic[EntityT]):
             (:attr:`write_generation`) deleted the row and could not advance
             its write generation; the row is gone from every tier and the
             eviction was broadcast
+        :raises ValueError: with ``conn``, when no ``CallerTransaction`` is open on it, or the collection writes L2
+            first or defers its L3 writes (its delete is no L3 write a caller's transaction can hold)
+        :raises RestrictedDeleteError: with ``conn``, when a live child a declared ``RESTRICT`` / ``NO ACTION``
+            foreign key names still names a stamped row
         """
         self._set_span_table()
+        if conn is not None:
+            return await self._delete_joined(entity_id, conn)
         if self.writes_l2_first:
             return await self._delete_l2_first(entity_id)
         # read before it goes, and only when the message must carry columns of it
@@ -5785,6 +5781,99 @@ class BaseCollection(ABC, Generic[EntityT]):
         if bump.failure is not None:
             raise bump.failure
         return True
+
+    async def _delete_joined(self, entity_id: Any, conn: Any) -> bool:
+        """:meth:`delete` on the caller's transaction: what a delete of its own writes, on ``conn``, its announcement
+        owed to the transaction's commit (:meth:`CallerTransaction.after_commit`).
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared column order (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, its transaction opened by ``CallerTransaction``
+        :ptype conn: Any
+        :return: always ``True``
+        :rtype: bool
+        :raises ValueError: when no ``CallerTransaction`` is open on ``conn``, or the collection writes L2 first or
+            defers its L3 writes
+        :raises RestrictedDeleteError: when a live child a declared ``RESTRICT`` / ``NO ACTION`` foreign key names
+            still names a stamped row
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete")
+        if self.writes_l2_first or self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.delete(conn=...): {self.table_name} writes L2 first or defers its L3 writes, "
+                f"so its delete is no L3 write a caller's transaction can hold"
+            )
+        # read before anything is written, as a delete of its own reads them, but on conn: the row, when its message
+        # carries columns of it, and the rows the foreign-key actions reach while they still name it. On the pool a
+        # row or child the transaction wrote before the delete is not there yet, and would be left live
+        row = await self.fetch_from_store_in_transaction(entity_id, conn=conn) if self.invalidation_columns else None
+        cascaded = await self.delete_cascaded([entity_id], conn=conn)
+        gone_mark = self._marks_gone()
+        if gone_mark:
+            # the database's RESTRICT / NO ACTION guard, which a gone mark never runs, refused before any write
+            await refuse_restricted_delete(self, [entity_id], conn=conn)
+            refuse_unappliable_cascade(self, cascaded)
+
+        async def announce() -> None:
+            await self._announce_joined_delete(entity_id, row, cascaded)
+
+        # owed before anything is sent, as an enrolled key is: a COMMIT never answered is announced too
+        transaction.after_commit(announce)
+        with self._naming_changed([self.changed_row(entity_id, row)]):
+            if gone_mark:
+                # children before the parent, each statement's stamp from the transaction's rising clock
+                # (_mark_gone_after_cascades says why)
+                await apply_delete_cascade(self, cascaded, conn=conn)
+                await self.mark_gone_in_store(entity_id, conn=conn)
+            else:
+                await self.delete_from_store_on(entity_id, conn=conn)
+        return True
+
+    async def _announce_joined_delete(
+        self, entity_id: Any, row: dict[str, Any] | None, cascaded: Sequence[CascadedRows]
+    ) -> None:
+        """announce a delete joined to a caller's transaction once its COMMIT landed: the row evicted from every tier
+        and broadcast in one advance (:meth:`invalidate_cache_many`, as the transaction settles its enrolled keys), then
+        every row its foreign-key actions reached, through each one's collection (``announce_delete_cascade``).
+
+        :param entity_id: the deleted key
+        :ptype entity_id: Any
+        :param row: the row as read before the delete, for its message's columns
+        :ptype row: dict[str, Any] | None
+        :param cascaded: the rows its foreign-key actions reached
+        :ptype cascaded: Sequence[CascadedRows]
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when a write generation could not be advanced; every row was still
+            announced
+        """
+        failure: GenerationUnavailableError | None = None
+        try:
+            await self.invalidate_cache_many([entity_id], rows=[row])
+        except GenerationUnavailableError as exc:
+            failure = exc
+        try:
+            await announce_delete_cascade(self, cascaded)
+        except GenerationUnavailableError as exc:
+            # the row's own failure, when there is one, is the one raised
+            failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    async def delete_from_store_on(self, entity_id: Any, *, conn: Any) -> None:
+        """delete one row from L3 by primary key on the caller's transaction: :meth:`delete_from_store`, joined to
+        ``conn``. What :meth:`delete` with ``conn`` writes for a table that is not stamped (a stamped one's row is
+        marked gone, :meth:`mark_gone_in_store`). The database's own foreign-key actions run inside the transaction.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, its transaction opened by ``CallerTransaction``
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises NotImplementedError: on a collection whose store cannot delete on a caller's transaction
+        """
+        raise NotImplementedError(f"{type(self).__name__}: {self.table_name} cannot delete on a caller's transaction")
 
     async def _mark_gone_after_cascades(
         self, entity_id: Any, row: dict[str, Any] | None, cascaded: Sequence[CascadedRows]
@@ -5831,7 +5920,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         raise NotImplementedError(f"{type(self).__name__}: {self.table_name} is not stamped (ROW_STAMPED)")
 
-    async def delete_cascaded(self, entity_ids: Sequence[Any]) -> list[CascadedRows]:
+    async def delete_cascaded(self, entity_ids: Sequence[Any], *, conn: Any = None) -> list[CascadedRows]:
         """the rows of other tables a delete of ``entity_ids`` reaches, read before it: what the database's foreign-key
         actions would take, so a stamped delete (a gone mark, an ``UPDATE`` no foreign key fires on) takes each itself,
         children before the parent in one transaction (:meth:`_mark_gone_after_cascades`), and announces each
@@ -5840,10 +5929,13 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :param entity_ids: the keys about to be deleted
         :ptype entity_ids: Sequence[Any]
+        :param conn: the caller's connection when the delete joins its transaction (``delete(conn=...)``): read on it,
+            so rows the transaction wrote before the delete are found; None for the collection's L3
+        :ptype conn: Any
         :return: the rows reached, one entry per (action, table)
         :rtype: list[CascadedRows]
         """
-        return await read_delete_cascade(self, entity_ids)
+        return await read_delete_cascade(self, entity_ids, conn=conn)
 
     def _marks_gone(self) -> bool:
         """whether this collection's delete marks its row gone in place (a stamped table, ``ROW_STAMPED``) rather than
