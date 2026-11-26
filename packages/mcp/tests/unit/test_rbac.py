@@ -167,7 +167,8 @@ class TestListGrantsPage:
         sql, *args = pool.fetch.await_args.args
         # keyset_page's first page: after the last key, in key order, bounded (the page and the one row past it that
         # says whether another page follows)
-        assert 'WHERE (grant_id > $1) ORDER BY t."grant_id" ASC LIMIT 51' in sql, sql
+        # its live grants alone (ROW_STAMPED: a revoked grant is marked gone in place)
+        assert 'WHERE (grant_id > $1) AND (NOT t."gone") ORDER BY t."grant_id" ASC LIMIT 51' in sql, sql
         assert args == [after]
 
     @pytest.mark.asyncio
