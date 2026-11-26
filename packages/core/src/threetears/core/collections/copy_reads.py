@@ -284,6 +284,11 @@ class _QueriedPinned:
 
     @property
     def mark(self) -> int | None:
+        """the mark of the change the version holds.
+
+        :return: the mark; None before any
+        :rtype: int | None
+        """
         return self._version.mark
 
     @property
@@ -302,6 +307,17 @@ class _QueriedPinned:
         *,
         tables: Mapping[str, Any] | None = None,
     ) -> Any:
+        """``job(connection, args)`` in a query worker over the version held.
+
+        :param job: a module-level function taking the connection and ``args``
+        :ptype job: Callable[[Any, Sequence[Any]], Any]
+        :param args: the job's binds
+        :ptype args: Sequence[Any]
+        :param tables: Arrow tables registered on the job's connection, by name; None for none
+        :ptype tables: Mapping[str, Any] | None
+        :return: its answer
+        :rtype: pa.Table
+        """
         return await _answered(self._queries, job, args, tables, self._version.name)
 
     async def fingerprint(
@@ -312,11 +328,26 @@ class _QueriedPinned:
         *,
         tables: Mapping[str, Any] | None = None,
     ) -> str:
+        """the fingerprint (``volume_fulls.rows_fingerprint`` by ``kinds``) of the rows ``job`` answers over the
+        version held, taken in a query worker.
+
+        :param job: a module-level function taking the connection and ``args``
+        :ptype job: Callable[[Any, Sequence[Any]], Any]
+        :param args: the job's binds
+        :ptype args: Sequence[Any]
+        :param kinds: ``volume_fulls.fingerprint_kinds`` of the columns to fingerprint
+        :ptype kinds: tuple[tuple[str, str], ...]
+        :param tables: Arrow tables registered on the job's connection, by name; None for none
+        :ptype tables: Mapping[str, Any] | None
+        :return: the fingerprint
+        :rtype: str
+        """
         answer = await _answered(self._queries, _fingerprinted, (job, tuple(args), kinds), tables, self._version.name)
         found: str = answer.column(_FINGERPRINT)[0].as_py()
         return found
 
     async def close(self) -> None:
+        """let the version go: its lease ends."""
         await self._version.aclose()
 
 
@@ -347,9 +378,28 @@ class QueriedReads:
         self._queries = queries
 
     async def current(self) -> PinnedCopy:
+        """the version current now, leased with its mark; the caller closes it.
+
+        :return: the version pinned
+        :rtype: PinnedCopy
+        """
         return _QueriedPinned(self._queries, await self._queries.current())
 
     async def rows_of_keys(self, table: FollowedTable, columns: Sequence[str], keys: Any, out: Sequence[str]) -> Any:
+        """the rows of ``table`` the current version holds whose ``columns`` hold one of ``keys``, looked up in a
+        query worker: ``out`` of them, each row once.
+
+        :param table: the table
+        :ptype table: FollowedTable
+        :param columns: the key columns named, a leading part of its key or all of it
+        :ptype columns: Sequence[str]
+        :param keys: the keys, those columns as text, a row a key
+        :ptype keys: Any
+        :param out: the columns read
+        :ptype out: Sequence[str]
+        :return: the rows found
+        :rtype: pa.Table
+        """
         # a client waits on a pass's keys: given the next free worker ahead of a checkpoint's or a drift check's job.
         # Each key column compared as the copy holds it; a NUMERIC, a UUID or an instant held as text by value, spelled
         # one way on both sides in the worker (an instant's asked text in the copy's stored spelling)
@@ -365,4 +415,15 @@ class QueriedReads:
         *,
         tables: Mapping[str, Any] | None = None,
     ) -> Any:
+        """``job(connection, args)`` in a query worker over the version current now.
+
+        :param job: a module-level function taking the connection and ``args``
+        :ptype job: Callable[[Any, Sequence[Any]], Any]
+        :param args: the job's binds
+        :ptype args: Sequence[Any]
+        :param tables: Arrow tables registered on the job's connection, by name; None for none
+        :ptype tables: Mapping[str, Any] | None
+        :return: its answer
+        :rtype: pa.Table
+        """
         return await _answered(self._queries, job, args, tables, None)

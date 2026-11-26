@@ -1087,7 +1087,7 @@ def declared_whole_read(
     :return: the declaration
     :rtype: DeclaredWhole
     """
-    wrapped: ast.AST | None = node.args[0] if node.args and body is None else None
+    wrapped: ast.expr | None = node.args[0] if node.args and body is None else None
     first, last = node.lineno, node.lineno
     if body:
         first, last = body[0].lineno, max(statement.end_lineno or statement.lineno for statement in body)
