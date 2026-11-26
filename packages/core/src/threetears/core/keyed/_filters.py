@@ -12,6 +12,7 @@ from typing import Any, Final
 
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
+from threetears.core.backends.broker_generation import cleanup_delete_floor
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.ddl.row_epoch import AppendOnlyWriteError
 from threetears.core.keyed.inline import InlineDuckDB
@@ -409,7 +410,9 @@ def refuse_in_place(conn: Any, table: Any, write: str) -> None:
       quiet-time cleanup deletes from it, below the restore window, through its own statements
       (:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`).
 
-    A local copy's writes are its own.
+    A local copy's writes are its own, and quiet-time cleanup's delete (one made inside
+    :func:`~threetears.core.backends.broker_generation.cleanup_deleting`, below its floor F) is the one delete either
+    kind takes: it removes only what no restore reads (``QuietCleanup``, ``clear_stamped_gone``).
 
     :param conn: the connection the write would run on; None for a collection's own L3 pool
     :ptype conn: Any
@@ -421,6 +424,9 @@ def refuse_in_place(conn: Any, table: Any, write: str) -> None:
     :rtype: None
     :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table, or a stamped one a delete names
     """
+    if write == "delete" and cleanup_delete_floor() is not None:
+        # quiet-time cleanup's own delete, marked with its floor (the hub's broker bounds it by its own reading)
+        return
     l3 = conn is None or reads_l3(conn)
     if versioned_table(table, l3=l3) is not None:
         raise AppendOnlyWriteError(

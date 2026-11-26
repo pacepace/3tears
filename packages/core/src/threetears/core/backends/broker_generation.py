@@ -110,6 +110,7 @@ __all__ = [
     "naming_unconfirmed_delta_files",
     "note_load_answer",
     "note_advanced_generation",
+    "cleanup_delete_floor",
     "cleanup_deleting",
     "record_reply_generations",
     "reply_generations_since",
@@ -457,6 +458,17 @@ def cleanup_deleting(floor: int) -> Iterator[None]:
         yield
     finally:
         _CLEANUP_FLOOR.reset(token)
+
+
+def cleanup_delete_floor() -> int | None:
+    """the floor of the quiet-time cleanup delete being sent in this context (:func:`cleanup_deleting`); None outside
+    one. The keyed deletes ask it before refusing a delete of an append-only table
+    (``threetears.core.keyed._filters.refuse_in_place``): cleanup's is the one delete such a table takes.
+
+    :return: the floor, or None
+    :rtype: int | None
+    """
+    return _CLEANUP_FLOOR.get()
 
 
 def stamp_fields() -> dict[str, Any]:

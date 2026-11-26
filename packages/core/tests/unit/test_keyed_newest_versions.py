@@ -179,6 +179,15 @@ class TestKeyedReads:
         tables = await read_keyed_arrow(_L3(db), _TABLE, keys=_every_key(), types=types)
         assert _read(pa.concat_tables(tables).to_pylist()) == _NEWEST
 
+    async def test_read_keyed_arrow_with_gone_reads_every_stored_version(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if the as-stored keyed read quiet-time cleanup makes (it reads the versions it removes) answers each
+        key's newest live version alone, or anything but every version and gone marker as stored."""
+        types = {"state": pa.string(), "id": pa.int32(), "epoch": pa.int64()}
+        keys = KeyBatch(("state", "id"), [["CA", "CA"], [1, 2]], ("text", "integer"))
+        tables = await read_keyed_arrow(_L3(db), _TABLE, keys=keys, types=types, with_gone=True)
+        held = sorted((row["state"], row["id"], row["epoch"]) for row in pa.concat_tables(tables).to_pylist())
+        assert held == [("CA", 1, 10), ("CA", 1, 20), ("CA", 1, 30), ("CA", 2, 10), ("CA", 2, 20)]
+
     async def test_a_local_copy_is_read_as_it_holds(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a read that does not go to L3 (a local copy, one row a key) is sent the newest guard."""
         rows = await read_by(ThreadedDuckDB(db), _TABLE, by={"state": "CA", "id": 1}, columns=["v"])

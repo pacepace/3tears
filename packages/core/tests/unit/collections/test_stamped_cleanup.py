@@ -14,16 +14,25 @@ is a plain column here. The seeded rows, F = 100:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, cast
 
 import duckdb
 import pytest
 
+from threetears.core.backends.broker_generation import (
+    CLEANUP_DELETE_FIELD,
+    CLEANUP_FLOOR_FIELD,
+    cleanup_deleting,
+    stamp_fields,
+)
+from threetears.core.collections.cleanup_progress import CLEANUP_PROGRESS_TABLE
+from threetears.core.collections.quiet_cleanup import STAMPED_SCOPE, LoadGate, QuietCleanup
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
+from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
 from threetears.core.collections.stamped_cleanup import clear_stamped_gone
 from threetears.core.ddl.row_epoch import ROW_STAMPED, AppendOnlyWriteError
-from threetears.core.keyed import ThreadedDuckDB, delete_keyed
+from threetears.core.keyed import Fragment, ThreadedDuckDB, delete_keyed
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _TABLE = "sc_runs"
@@ -114,3 +123,73 @@ async def test_a_keyed_delete_of_the_table_is_still_refused(db: duckdb.DuckDBPyC
     """Flips if the keyed delete cleanup does not use is open to every caller."""
     with pytest.raises(AppendOnlyWriteError):
         await delete_keyed(_L3(db), _TABLE, by={"state": "CA", "run_id": "r1"})
+
+
+class _Epochs:
+    """the scope epochs QuietCleanup listens to: a quiet snapshot, nothing writing."""
+
+    def __init__(self) -> None:
+        self.snap = EpochSnapshot(version=1, writing=None, epochs={WHOLE: 1}, previous={})
+
+    def on_change(self, listener: Callable[[], None]) -> Callable[[], None]:
+        return lambda: None
+
+    async def snapshot(self) -> EpochSnapshot:
+        return self.snap
+
+
+class _Marked(_L3):
+    """:class:`_L3` keeping what each statement's request would say on the rail (stamp_fields)."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        super().__init__(conn)
+        self.fields: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, query: str, *params: Any) -> str:
+        self.fields.append((query, stamp_fields()))
+        return await super().execute(query, *params)
+
+
+def _quiet(pool: Any, floor: int) -> QuietCleanup:
+    async def window() -> int | None:
+        return floor
+
+    return QuietCleanup(pool, (_RUNS,), LoadGate(cast(ScopeEpochs, _Epochs())), window, run_markers=None)
+
+
+async def test_quiet_cleanup_clears_a_stamped_tables_gone_rows_and_records_its_progress(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if QuietCleanup refuses a stamped table, leaves its gone rows below F, or does not record that it cleared
+    the table to F (so the next pass would read it again)."""
+    db.execute(
+        f"CREATE TABLE {CLEANUP_PROGRESS_TABLE} (table_name VARCHAR, scope VARCHAR, cleaned_to BIGINT, "
+        "PRIMARY KEY (table_name, scope))"
+    )
+    pool = _Marked(db)
+    done = await _quiet(pool, 100).clean()
+    assert done.finished and done.removed == 3
+    assert _held(db) == [("CA", "r3"), ("NV", "r1")]
+    assert db.execute(f"SELECT table_name, scope, cleaned_to FROM {CLEANUP_PROGRESS_TABLE}").fetchall() == [
+        (_TABLE, STAMPED_SCOPE, 100)
+    ]
+    # every delete of the table is sent as cleanup's, with its floor
+    deletes = [fields for sql, fields in pool.fields if sql.startswith("DELETE")]
+    assert deletes and all(f[CLEANUP_DELETE_FIELD] is True and f[CLEANUP_FLOOR_FIELD] == 100 for f in deletes)
+    # a second pass at the same floor reads none of the table
+    pool.statements.clear()
+    again = await _quiet(pool, 100).clean()
+    assert again.finished and again.removed == 0
+    assert not [sql for sql in pool.statements if f'"{_TABLE}"' in sql or f" {_TABLE} " in sql], pool.statements
+
+
+async def test_cleanups_own_keyed_delete_is_taken_inside_cleanup_deleting(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if a keyed delete of an append-only table is refused inside cleanup_deleting (quiet-time cleanup's own
+    delete, the one such a table takes), or taken outside it."""
+    with cleanup_deleting(100):
+        written = await delete_keyed(
+            _L3(db), _TABLE, by={"state": "CA", "run_id": "r1"}, where=[Fragment('"epoch" < $1', (100,))]
+        )
+    assert written.count == 1
+    with pytest.raises(AppendOnlyWriteError):
+        await delete_keyed(_L3(db), _TABLE, by={"state": "CA", "run_id": "r2"})

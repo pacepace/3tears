@@ -1,4 +1,5 @@
-"""quiet-time cleanup of versioned tables: older versions, "gone" markers and run markers below the restore window.
+"""quiet-time cleanup below the restore window: versioned tables' older versions, "gone" markers and run markers, and
+stamped tables' gone rows.
 
 Append-only L3 (``design-append-only-l3.md``, decisions 2, 3 and 5; build plan chunk 6). A versioned table
 (:func:`~threetears.core.ddl.row_epoch.row_versions`) keeps a version of a key a write, a delete appends a "gone"
@@ -37,6 +38,11 @@ whole, scans it or truncates it (``TRUNCATE`` bumps YugabyteDB's catalog version
 trigger. Each version is visited once: a scope's progress (:data:`~threetears.core.collections.cleanup_progress.
 CLEANUP_PROGRESS_SCHEMA`) records the epoch below which every version was visited, so a round reads only what was
 written since, and a round whose floor has not moved reads no data at all.
+
+**Stamped tables too.** A stamped table (``ROW_STAMPED``: one row a key, updated in place) keeps no older versions;
+its delete marks its row gone in place. Its gone rows below F go by
+:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`, a bucket at a time through its
+``(epoch_bucket, epoch)`` index, after the versioned tables, its progress one row under :data:`STAMPED_SCOPE`.
 
 **Only while nothing loads, and never in a writer's way.** :class:`LoadGate` listens to the scope epochs table
 (``ScopeEpochs.on_change``: this process's own writes and every peer's broadcast, no L3 read a change). A change heard
@@ -81,6 +87,7 @@ from threetears.core.collections.schema_backed import (
     rail_arrow_types,
 )
 from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs
+from threetears.core.collections.stamped_cleanup import StampedSweep, clear_stamped_gone
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, cleanup_floor
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.keyed import Fragment, KeyBatch, Sort, delete_before, delete_keyed, keyset_rows, read_keyed_arrow
@@ -101,13 +108,17 @@ log = get_logger(__name__)
 #: four times longer for the batch in flight to end
 _DEFAULT_BATCH: Final = 500
 
+#: the progress scope a stamped table's cleanup is recorded under (``threetears_cleanup_progress``): its gone rows are
+#: cleared a bucket at a time across the whole table, so it has one progress, never one a scope
+STAMPED_SCOPE: Final = "*"
+
 #: what a run marker's prefix joins its values with (:mod:`~threetears.core.ddl.run_markers`)
 _PREFIX_SEPARATOR: Final = "\x1f"
 
 _REMOVED = counter(
     "threetears_quiet_cleanup_removed_total",
-    description="rows quiet-time cleanup removed from versioned tables: superseded versions and gone markers "
-    "(version), a gone run's rows (run_row) and run markers (run_marker)",
+    description="rows quiet-time cleanup removed: a versioned table's superseded versions and gone markers "
+    "(version), a gone run's rows (run_row) and run markers (run_marker); a stamped table's gone rows (stamped_gone)",
     label_names=("table", "kind"),
 )
 _BACKLOG = gauge(
@@ -287,12 +298,15 @@ def _decoded(kind: str, text: str) -> Any:
 
 
 class QuietCleanup:
-    """removes versioned tables' older versions, gone markers and run markers below the restore window, only while
-    nothing loads (the module's docstring).
+    """removes versioned tables' older versions, gone markers and run markers, and stamped tables' gone rows, below the
+    restore window, only while nothing loads (the module's docstring).
 
     :param pool: the L3 the tables live in (a pool, or the rail's proxy)
     :ptype pool: Any
-    :param tables: the versioned tables cleaned (``row_versions``), each registered with the store
+    :param tables: the tables cleaned, each registered with the store: versioned ones (``row_versions``) a scope at a
+        time, stamped ones (``ROW_STAMPED``) a bucket at a time by
+        :func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`, their progress under the scope
+        :data:`STAMPED_SCOPE`
     :ptype tables: Sequence[TableSchema]
     :param gate: the load signal
     :ptype gate: LoadGate
@@ -308,7 +322,7 @@ class QuietCleanup:
     :ptype progress: str
     :param run_markers: the run-marker table in the tables' schema; None when they delete no whole runs
     :ptype run_markers: str | None
-    :raises ValueError: for a table that is not versioned, or a batch under one
+    :raises ValueError: for a table that declares no row epoch, or a batch under one
     """
 
     def __init__(
@@ -323,13 +337,16 @@ class QuietCleanup:
         progress: str = CLEANUP_PROGRESS_TABLE,
         run_markers: str | None = RUN_MARKERS_TABLE,
     ) -> None:
-        refused = [schema.name for schema in tables if not schema.versioned]
+        refused = [schema.name for schema in tables if schema.row_epoch is None]
         if refused:
-            raise ValueError(f"quiet-time cleanup clears versioned tables (row_versions); not {refused}")
+            raise ValueError(
+                f"quiet-time cleanup clears versioned (row_versions) and stamped (ROW_STAMPED) tables; not {refused}"
+            )
         if batch < 1:
             raise ValueError(f"a cleanup batch visits at least one version; got {batch}")
         self._pool = pool
-        self._tables = tuple(tables)
+        self._tables = tuple(schema for schema in tables if schema.versioned)
+        self._stamped = tuple(schema for schema in tables if not schema.versioned)
         self._gate = gate
         self._floor = floor
         self._prefix = scope_prefix
@@ -400,13 +417,49 @@ class QuietCleanup:
                 _BACKLOG.labels(table=schema.name).set(len(behind) - left - 1)
             if stopped:
                 break
+        unfinished = False
+        if not stopped:
+            stopped, unfinished, count = await self._clean_stamped(floor)
+            removed += count
         if not stopped:
             _PAUSED.set(0)
             log.info(
                 "quiet-time cleanup cleared every scope to the restore window",
-                extra={"extra_data": {"floor": floor, "removed": removed}},
+                extra={"extra_data": {"floor": floor, "removed": removed, "unfinished": unfinished}},
             )
-        return self._paused(removed, floor) if stopped else CleanupPass(removed, False, True, floor)
+        return self._paused(removed, floor) if stopped else CleanupPass(removed, False, not unfinished, floor)
+
+    async def _clean_stamped(self, floor: int) -> tuple[bool, bool, int]:
+        """clear every stamped table's gone rows to ``floor``, a bucket at a time
+        (:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`), each table's progress one row of
+        the progress table under :data:`STAMPED_SCOPE`; stopping when a load starts.
+
+        :param floor: F
+        :ptype floor: int
+        :return: whether a load stopped it, whether a table was left unfinished for another reason (a full page none
+            of which went, logged where it stopped), and the rows removed
+        :rtype: tuple[bool, bool, int]
+        """
+        removed = 0
+        unfinished = False
+        for schema in self._stamped:
+            since = (await self._cleaned_to(schema.name)).get(STAMPED_SCOPE, 0)
+            _BACKLOG.labels(table=schema.name).set(int(since < floor))
+            if since >= floor:
+                continue
+            sweep: StampedSweep = await clear_stamped_gone(
+                self._pool, schema, since=since, floor=floor, batch=self._batch, stirred=lambda: self._gate.stirred
+            )
+            removed += sweep.removed
+            _REMOVED.labels(table=schema.name, kind="stamped_gone").inc(sweep.removed)
+            if sweep.finished:
+                await self._record(schema.name, STAMPED_SCOPE, floor)
+                _BACKLOG.labels(table=schema.name).set(0)
+            elif self._gate.stirred:
+                return True, unfinished, removed
+            else:
+                unfinished = True
+        return False, unfinished, removed
 
     def _paused(self, removed: int, floor: int | None) -> CleanupPass:
         """a pass that stopped for a load: counted, and the paused gauge raised until a pass finishes.

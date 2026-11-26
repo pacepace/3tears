@@ -26,11 +26,11 @@ pass stops there and the caller resumes it from ``since`` on its next quiet look
 reads a table whole, scans it, or truncates it, and F is at least ten minutes older than any transaction a writer may
 still commit, so cleanup never contends for a row a writer writes.
 
-FOLD NOTE (append-only fold): ``QuietCleanup`` (``quiet_cleanup.py``, chunk 6, on ``work/0950-cleanup``) cleans the
-versioned tables; this is its rule for a stamped table, kept apart here because that module is on its own branch. The
-fold calls :func:`clear_stamped_gone` from ``QuietCleanup._clean_to`` for each stamped table it is given, its progress
-kept in ``threetears_cleanup_progress`` under ``(table_name, "*")``, and counts its rows in
-``threetears_quiet_cleanup_removed_total{kind="stamped_gone"}``.
+**Run by** ``QuietCleanup`` (:mod:`~threetears.core.collections.quiet_cleanup`), beside its rule for the versioned
+tables: for each stamped table it is given, from its progress in ``threetears_cleanup_progress`` under
+``(table_name, "*")``, its rows counted in ``threetears_quiet_cleanup_removed_total{kind="stamped_gone"}``. Each delete
+is sent inside ``cleanup_deleting(F)`` (``broker_generation``), as every cleanup delete is: the one context a delete of
+an append-only table is taken in.
 
 Needs the ``arrow`` extra (pyarrow at module top).
 """
@@ -45,6 +45,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.broker_generation import cleanup_deleting
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import key_array_type
 from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types
@@ -138,8 +139,8 @@ async def _gone_page(pool: Any, schema: TableSchema, bucket: int, since: int, fl
 
 async def _delete_gone(pool: Any, schema: TableSchema, page: pa.Table, floor: int) -> int:
     """delete a page's rows by their whole key, each only while it is still gone and below ``floor``: a key written
-    again since is live (or risen past F) and stays. Cleanup's own statements: the one ``DELETE`` of a stamped table
-    (``keyed.delete_keyed`` refuses one).
+    again since is live (or risen past F) and stays. Cleanup's own statements, inside ``cleanup_deleting(floor)``: the
+    one ``DELETE`` a stamped table takes (``keyed.refuse_in_place`` refuses every other).
 
     :param pool: the L3 pool
     :ptype pool: Any
@@ -167,7 +168,9 @@ async def _delete_gone(pool: Any, schema: TableSchema, page: pa.Table, floor: in
     )
     deleted = 0
     for sql, params in statements:
-        deleted += parse_rowcount(await pool.execute(sql, *params))
+        # marked cleanup's with its floor, as every cleanup delete is (and bounded by it in its own WHERE)
+        with cleanup_deleting(floor):
+            deleted += parse_rowcount(await pool.execute(sql, *params))
     return deleted
 
 
