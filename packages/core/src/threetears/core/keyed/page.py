@@ -37,7 +37,7 @@ IO only: one statement a page, on the caller's connection.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed._filters import (
@@ -46,14 +46,25 @@ from threetears.core.keyed._filters import (
     Lock,
     Selected,
     live_read,
+    newest_of,
+    newest_sent,
     reads_l3,
-    sent_by,
+    reads_yugabyte,
     yugabyte_index_hint,
 )
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
-from threetears.interfaces.keyed.keys import declared_columns, refuse_non_unique_order
+from threetears.interfaces.keyed.keys import (
+    NEWEST_KEPT,
+    NEWEST_LIVE,
+    NEWEST_VERSIONS,
+    VersionedTable,
+    declared_columns,
+    newest_page_statement,
+    next_newest_keys,
+    refuse_non_unique_order,
+)
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -133,14 +144,21 @@ async def keyset_page(
     # every column of a stamped table is its declared ones, never its L3 restore bucket (keys.declared_columns)
     columns = declared_columns(table) if columns is None else columns
     check_page(table, columns, order, limit)
-    # a versioned table's rows are its keys' newest live versions alone, read in its place: its key is then unique
-    # among them; the pins and the cursor's range on the key are pushed into its DISTINCT ON by the planner. A stamped
-    # table's rows are its live ones alone (live_read)
-    read_from, where = live_read(conn, table, where, lock=lock)
     if cursor is not None:
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
         refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     past = None if cursor is None else cursor_values(order, cursor)
+    newest = newest_of(conn, table) if lock is None else None
+    if newest is not None and isinstance(table, str):
+        # a versioned table paged in its key's order: its LIMIT and cursor inside the newest relation, so the page
+        # reads only its range's versions (newest_listing)
+        listed = await newest_listing(conn, newest, table, columns, by, order, limit + 1, past, visible, where)
+        if listed is not None:
+            return KeyPage.cut(order, listed[0], limit)
+    # a versioned table's rows are its keys' newest live versions alone, read in its place: its key is then unique
+    # among them; the pins on the key are named inside its DISTINCT ON (a page in an order past the key reads its
+    # pinned scope's newest versions first). A stamped table's rows are its live ones alone (live_read)
+    read_from, where = live_read(conn, table, where, lock=lock, by=by)
     by_row = past is not None and await _steps_by_row(conn, order)
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
     hint = await yugabyte_index_hint(conn, table, by, order)
@@ -159,8 +177,101 @@ async def keyset_page(
         chain_legs=_chains_legs(conn),
         hint=hint,
     )
-    answered = list(await sent_by(conn).fetch(sql, *params))
+    # a versioned table's page in another order sorts its pinned scope's newest versions: under a fill's bounds
+    answered = list(await newest_sent(conn, newest, False, batch=False).fetch(sql, *params))
     return KeyPage.cut(order, answered if records else [dict(row) for row in answered], limit)
+
+
+#: the columns a key-ordered newest page answers beside each row, never handed to the caller
+_NEWEST_COLUMNS: Final = frozenset({NEWEST_KEPT, NEWEST_LIVE, NEWEST_VERSIONS})
+
+
+async def newest_listing(
+    conn: Any,
+    newest: VersionedTable,
+    table: str,
+    columns: Sequence[str | Selected] | None,
+    by: Mapping[str, Any],
+    order: Sequence[Sort],
+    wanted: int | None,
+    past: Sequence[Any] | None,
+    visible: Sequence[Fragment],
+    where: Sequence[Fragment],
+    page: int | None = None,
+    hidden: frozenset[str] = frozenset(),
+) -> tuple[list[dict[str, Any]], int] | None:
+    """the kept rows of a versioned table's listing in its key's order, read a range at a time
+    (:func:`~threetears.interfaces.keyed.keys.newest_page_statement`: the pins on the key and the cursor inside the
+    ``DISTINCT ON``, its ``LIMIT`` the keys read), until ``wanted`` rows are kept or the range ends; every key read
+    stepped past, kept or not, each statement asking as many keys as hold
+    :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the versions a key the one before read
+    (at most a page), each sent under the read's bounds (:func:`~threetears.core.keyed.newest_sent`). None for a
+    listing in another order, read as a plain page over the newest relation.
+
+    :param conn: the reader
+    :ptype conn: Any
+    :param newest: the table's versioned declaration
+    :ptype newest: VersionedTable
+    :param table: the table as the read names it
+    :ptype table: str
+    :param columns: the columns read; every column when None
+    :ptype columns: Sequence[str | Selected] | None
+    :param by: the bound prefix
+    :ptype by: Mapping[str, Any]
+    :param order: the sort
+    :ptype order: Sequence[Sort]
+    :param wanted: the rows to keep (a page and the one past it); every row when None
+    :ptype wanted: int | None
+    :param past: the place the listing starts after; its start when None
+    :ptype past: Sequence[Any] | None
+    :param visible: visibility clauses
+    :ptype visible: Sequence[Fragment]
+    :param where: filters beside the prefix
+    :ptype where: Sequence[Fragment]
+    :param page: the most keys a statement reads; ``wanted`` when None
+    :ptype page: int | None
+    :param hidden: columns read to step past (the key's, beside a read's own) and never handed over
+    :ptype hidden: frozenset[str]
+    :return: the kept rows, in the key's order, and the versions read; None for a listing in another order
+    :rtype: tuple[list[dict[str, Any]], int] | None
+    """
+    most = page if page is not None else wanted
+    assert most is not None  # noqa: S101 -- a listing read to its end names its page
+    by_row = await _steps_by_row(conn, order)
+    sender = newest_sent(conn, newest, await reads_yugabyte(conn), batch=False)
+    kept: list[dict[str, Any]] = []
+    dropped = _NEWEST_COLUMNS | hidden
+    asked = next_newest_keys(0, 0, most)
+    read = 0
+    while True:
+        built = newest_page_statement(
+            newest,
+            table,
+            columns=columns,
+            by=by,
+            order=order,
+            keys=asked,
+            past=past,
+            by_row=by_row,
+            visible=visible,
+            where=where,
+        )
+        if built is None:
+            return None
+        sql, params = built
+        answered = await sender.fetch(sql, *params)
+        versions = 0
+        for row in answered:
+            versions += int(row[NEWEST_VERSIONS])
+            if row[NEWEST_KEPT]:
+                kept.append({name: value for name, value in dict(row).items() if name not in dropped})
+        read += versions
+        if len(answered) < asked or (wanted is not None and len(kept) >= wanted):
+            return kept, read
+        # past the last key read, kept or not; a page asks only the rows it still lacks (at least that many keys),
+        # never a whole page again: the next page starts past its last kept row, so keys read past it are read twice
+        past = next_past(order, answered[-1])
+        asked = next_newest_keys(len(answered), versions, most if wanted is None else wanted - len(kept))
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:
@@ -248,10 +359,15 @@ async def keyset_rows(
     :raises ValueError: as :func:`keyset_page`
     """
     check_page(table, columns, order, page)
-    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone
-    read_from, where = live_read(conn, table, where)
     # every statement after the first starts past the last row read: the order must hold a key
     refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
+    newest = newest_of(conn, table)
+    if newest is not None and isinstance(table, str):
+        listed = await newest_listing(conn, newest, table, columns, by, order, None, None, visible, where, page + 1)
+        if listed is not None:
+            return listed[0]
+    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone
+    read_from, where = live_read(conn, table, where, by=by)
     rows: list[dict[str, Any]] = []
     past: list[Any] | None = None
     by_row: bool | None = None
@@ -273,7 +389,7 @@ async def keyset_rows(
             chain_legs=_chains_legs(conn),
             hint=hint,
         )
-        answered = await sent_by(conn).fetch(sql, *params)
+        answered = await newest_sent(conn, newest, False, batch=False).fetch(sql, *params)
         rows.extend(dict(row) for row in answered)
         if len(answered) <= page:
             return rows
@@ -328,7 +444,7 @@ async def copy_keyed(
     # no cursor is made from the rows, so a sort column need not be read (a time sorted by, read as its text)
     check_page(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
     # a restore reads the table as stored (every version, every gone row); every other read its live rows alone
-    read_from, read = (table, tuple(where)) if with_gone else live_read(conn, table, where)
+    read_from, read = (table, tuple(where)) if with_gone else live_read(conn, table, where, by=by)
     sql, params = page_statement(read_from, columns, by, order, 1, None, False, (), read, None)
     sql = sql.removesuffix(" LIMIT 1")
     chunks: list[bytes] = []

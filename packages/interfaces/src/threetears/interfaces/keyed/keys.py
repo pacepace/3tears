@@ -58,8 +58,17 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-from threetears.interfaces.keyed.filters import AnyOf, quote_identifier, quoted_table
-from threetears.interfaces.keyed.page import Sort
+from threetears.interfaces.keyed.filters import (
+    AnyOf,
+    Fragment,
+    Selected,
+    by_conditions,
+    narrowing,
+    quote_identifier,
+    quoted_table,
+    selected_column,
+)
+from threetears.interfaces.keyed.page import Sort, past_condition
 
 __all__ = [
     "DeclaredIndex",
@@ -68,12 +77,15 @@ __all__ = [
     "VersionedTable",
     "NEWEST_FETCH_ROW_LIMIT",
     "NEWEST_FIRST_KEYS",
+    "NEWEST_KEPT",
     "NEWEST_LIVE",
     "NEWEST_ROWS_A_READ",
     "NEWEST_VERSIONS",
     "NEWEST_WORK_MEM",
     "key_only",
+    "key_pins_within",
     "newest_lateral",
+    "newest_page_statement",
     "newest_relation",
     "newest_settings",
     "next_newest_keys",
@@ -773,8 +785,9 @@ def versioned_table(table: Any, *, l3: bool) -> VersionedTable | None:
 #: version of its keys (YugabyteDB's batched nested loop answers them in no key order); 5,000 keys' 250,000 versions
 #: passed the default 4 MB and spilled on both engines (external merge, 20 MB on disk), and 64 MB held them in memory
 #: (quicksort). Pods have no scratch volume (no disk spill, by design): the work a read asks is bounded by
-#: :data:`NEWEST_ROWS_A_READ`, and this is the memory that bound is sized against.
-NEWEST_WORK_MEM: Final = "64MB"
+#: :data:`NEWEST_ROWS_A_READ`, and this is the memory that bound is sized against. In kB, the setting's base unit
+#: (``SET LOCAL work_mem = 65536``): the hub's broker bounds a rail read's settings by comparing numbers, never units.
+NEWEST_WORK_MEM: Final = 64 * 1024
 
 #: the ``yb_fetch_row_limit`` a newest read sets on YugabyteDB for its own transaction (:func:`newest_settings`). WHY
 #: 10,000 (measured 2026-11-25, 5,000-key batch): the default 1,024 rows a storage request made a batch of 50 versions a
@@ -803,7 +816,7 @@ NEWEST_LIVE: Final = "_newest_live"
 NEWEST_VERSIONS: Final = "_newest_versions"
 
 
-def newest_settings(*, yugabyte: bool, batch: bool = True) -> tuple[tuple[str, str], ...]:
+def newest_settings(*, yugabyte: bool, batch: bool = True) -> tuple[tuple[str, int], ...]:
     """the settings each newest read sets for its own transaction (``SET LOCAL``): :data:`NEWEST_WORK_MEM`, and for a
     keyed batch on YugabyteDB :data:`NEWEST_FETCH_ROW_LIMIT`. WHY not a fill page's: a page stops at its ``LIMIT``, and
     YugabyteDB fetches a storage request's rows whole, so 10,000 a request read up to 10,000 rows past a page's last
@@ -814,12 +827,12 @@ def newest_settings(*, yugabyte: bool, batch: bool = True) -> tuple[tuple[str, s
     :ptype yugabyte: bool
     :param batch: whether the read is a keyed batch (else a fill page)
     :ptype batch: bool
-    :return: each setting's name and value
-    :rtype: tuple[tuple[str, str], ...]
+    :return: each setting's name and its value in the setting's base unit (``work_mem`` in kB, rows)
+    :rtype: tuple[tuple[str, int], ...]
     """
-    settings: tuple[tuple[str, str], ...] = (("work_mem", NEWEST_WORK_MEM),)
+    settings: tuple[tuple[str, int], ...] = (("work_mem", NEWEST_WORK_MEM),)
     if yugabyte and batch:
-        settings += (("yb_fetch_row_limit", str(NEWEST_FETCH_ROW_LIMIT)),)
+        settings += (("yb_fetch_row_limit", NEWEST_FETCH_ROW_LIMIT),)
     return settings
 
 
@@ -1189,3 +1202,113 @@ def default_projection(table: Any, alias: str = "t") -> str:
     if columns is None:
         return f"{alias}.*"
     return ", ".join(f'{alias}."{column}"' for column in columns)
+
+
+#: the column a key-ordered newest page answers beside each key it read: whether the page keeps it (its newest
+#: version live, and every one of the read's conditions past the key holding of it), so the page steps past every
+#: key it read, kept or not (:func:`newest_page_statement`)
+NEWEST_KEPT: Final = "_newest_kept"
+
+
+def key_pins_within(table: VersionedTable, by: Mapping[str, Any]) -> tuple[list[str], list[Any]]:
+    """the pins of ``by`` on the key's columns alone, written on ``t`` from ``$1`` (:func:`key_only`), and their
+    values: what a newest read names inside its relation's ``DISTINCT ON`` itself (``within``), never left to the
+    planner to push there, so the relation reads only the pinned scope's versions whatever the statement around it.
+
+    :param table: the declaration
+    :ptype table: VersionedTable
+    :param by: the read's pins, as :func:`~threetears.interfaces.keyed.filters.by_conditions` takes them
+    :ptype by: Mapping[str, Any]
+    :return: the conditions, and their values in placeholder order
+    :rtype: tuple[list[str], list[Any]]
+    """
+    inside: list[str] = []
+    values: list[Any] = []
+    for column, value in by.items():
+        conditions, params = by_conditions({column: value}, first=len(values) + 1, alias="t")
+        if all(key_only(condition, table.key, alias="t") for condition in conditions):
+            inside += conditions
+            values += params
+    return inside, values
+
+
+def newest_page_statement(
+    table: VersionedTable,
+    read_as: str,
+    *,
+    columns: Sequence[str | Selected] | None,
+    by: Mapping[str, Any],
+    order: Sequence[Sort],
+    keys: int,
+    past: Sequence[Any] | None,
+    by_row: bool,
+    visible: Sequence[Fragment] = (),
+    where: Sequence[Fragment] = (),
+) -> tuple[str, list[Any]] | None:
+    """the statement of a listing's page of a versioned table read in its key's order: ``DISTINCT ON (key...) ...
+    ORDER BY key..., epoch DESC LIMIT <keys>`` over the page's key range (the pins and filters on the key alone and
+    the cursor inside), so it reads only its range's versions, each once, and stops at its ``keys``-th key, as a fill
+    page does (``threetears.core.keyset``). Every key read is answered, :data:`NEWEST_KEPT` saying whether the page
+    keeps it (its newest version live, the conditions past the key holding of it) and :data:`NEWEST_VERSIONS` how many
+    versions of it were read, so the reader steps past the last key read, kept or not, and sizes its next statement
+    (:func:`next_newest_keys`). None for a page in any other order (a listing by a column past the key), which no
+    ``LIMIT`` inside the relation can bound: it reads its keys' newest versions first.
+
+    WHY (2026-11-25): written as a plain page over the newest relation, its ``LIMIT`` and cursor stood outside the
+    ``DISTINCT ON``, and only the planner's push of the plain conditions bounded it: a page of a big scope could read
+    and sort the scope's every version, a page at a time.
+
+    :param table: the declaration
+    :ptype table: VersionedTable
+    :param read_as: the table as the read names it
+    :ptype read_as: str
+    :param columns: the columns read (each sort column among them); every column (``t.*``) when None
+    :ptype columns: Sequence[str | Selected] | None
+    :param by: the bound prefix
+    :ptype by: Mapping[str, Any]
+    :param order: the sort: past the columns ``by`` pins, the key's other columns in its order, ascending
+    :ptype order: Sequence[Sort]
+    :param keys: the keys the statement reads
+    :ptype keys: int
+    :param past: the place the statement starts after, the whole sort's values (``cursor_values``, ``next_past``);
+        the first statement when None
+    :ptype past: Sequence[Any] | None
+    :param by_row: step past ``past`` by the row comparison (PostgreSQL; never YugabyteDB)
+    :ptype by_row: bool
+    :param visible: visibility clauses, judged on each key's newest version
+    :ptype visible: Sequence[Fragment]
+    :param where: filters beside the prefix: inside where they name the key alone, else judged on the newest
+    :ptype where: Sequence[Fragment]
+    :return: the statement and its parameters; None for a page in another order
+    :rtype: tuple[str, list[Any]] | None
+    """
+    pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
+    places = [place for place, sort in enumerate(order) if sort.expression is not None or sort.column not in pinned]
+    walked = [order[place] for place in places]
+    rest = [column for column in table.key if column not in pinned]
+    if not rest or [sort.column for sort in walked] != rest:
+        return None
+    if any(sort.expression is not None or sort.descending or sort.nullable for sort in walked):
+        return None
+    conditions, params = by_conditions(by, alias="t")
+    for fragment in where:
+        conditions.append(narrowing(fragment, len(params)))
+        params += list(fragment.params)
+    inside = [condition for condition in conditions if key_only(condition, table.key, alias="t")]
+    outside = [condition for condition in conditions if condition not in inside]
+    if past is not None:
+        condition, values = past_condition(walked, [past[place] for place in places], len(params) + 1, by_row=by_row)
+        inside.append(condition)
+        params += values
+    for fragment in visible:
+        outside.append(narrowing(fragment, len(params)))
+        params += list(fragment.params)
+    relation = newest_relation(table, read_as, within=inside, limit=str(keys), counted=True, flagged=True)
+    selected = "t.*" if columns is None else ", ".join(selected_column(column) for column in columns)
+    kept = " AND ".join([f"t.{quote_identifier(NEWEST_LIVE)}", *outside])
+    ordered = ", ".join(f"t.{quote_identifier(column)}" for column in rest)
+    return (
+        f"SELECT {selected}, ({kept}) AS {quote_identifier(NEWEST_KEPT)}, t.{quote_identifier(NEWEST_VERSIONS)} "
+        f"FROM ({relation}) AS t ORDER BY {ordered}",
+        params,
+    )

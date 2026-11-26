@@ -22,7 +22,17 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, overload
 
-from threetears.core.keyed._filters import Fragment, Lock, Selected, live_read, reads_l3, refuse_versioned, sent_by
+from threetears.core.keyed._filters import (
+    Fragment,
+    Lock,
+    Selected,
+    live_read,
+    newest_of,
+    newest_sent,
+    reads_l3,
+    refuse_versioned,
+    sent_by,
+)
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import yugabyte_index_hint
@@ -342,19 +352,24 @@ async def read_nearest(
     :raises ValueError: when nothing is pinned, ``columns`` is empty, ``limit`` is negative, or a join is an inner
         one or names nothing to join on
     """
-    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone; a joined table is
-    # joined inside the statement, where no newest relation reads it, so a versioned one is refused
-    read_from, where = live_read(conn, table, where)
+    # a versioned table's newest live versions, read in its place, the pins on its key named inside its DISTINCT ON
+    # (a ranked read's LIMIT is by its rank, past the key, so it reads its pinned scope's newest versions first), a
+    # stamped one's live rows alone; a joined table is joined inside the statement, where no newest relation reads
+    # it, so a versioned one is refused
+    read_from, where = live_read(conn, table, where, by=by)
+    # sent under a newest read's bounds (work_mem): the relation sorts its pinned scope's versions (a fill's bounds:
+    # no keyed batch's fetch limit, so the engine is not asked)
+    sender = newest_sent(conn, newest_of(conn, table), False, batch=False)
     refuse_versioned(conn, [join.table for join in joins], f"a ranked read of {table} joining")
     if isinstance(nearest, PatternCount):
         sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins)
-        rows = list(await sent_by(conn).fetch(sql, *params))
+        rows = list(await sender.fetch(sql, *params))
         return rows if records and not joins else [dict(row) for row in rows]
     if not joins:
         sql, params = read_nearest_statement(
             read_from, by=by, nearest=nearest, limit=limit, columns=columns, where=where
         )
-        rows = list(await sent_by(conn).fetch(sql, *params))
+        rows = list(await sender.fetch(sql, *params))
         return rows if records else [dict(row) for row in rows]
     check_joins(table, joins)
     if any(not (join.left or join.counts) for join in joins):
@@ -376,12 +391,12 @@ async def read_nearest(
         # read. Guarded by packages/core/tests/integration/test_nearest_join_leg_speed_live.py (2x the bare read, one
         # statement a read).
         joined_sql, joined_params = _joined_nearest_statement(sql, list(params), nearest, joins)
-        rows = [dict(row) for row in await sent_by(conn).fetch(joined_sql, *joined_params)]
+        rows = [dict(row) for row in await sender.fetch(joined_sql, *joined_params)]
         for row in rows:
             for column in hidden:
                 del row[column]
         return rows
-    ranked = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
+    ranked = [dict(row) for row in await sender.fetch(sql, *params)]
     return (await join_rows(conn, ranked, joins, batch=batch, hidden=hidden))[:limit]
 
 

@@ -39,9 +39,10 @@ from dataclasses import dataclass
 from operator import itemgetter
 from typing import Any, Literal, overload
 
-from threetears.core.backends.arrow_reply import counted_type, l3_fetch_arrow, without_counted
+from threetears.core.backends.arrow_reply import counted_type, flag_type, l3_fetch_arrow, without_counted
 from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed.binding import binder_for, key_chunks_off_loop
+from threetears.core.keyed.page import newest_listing
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
@@ -74,7 +75,8 @@ from threetears.interfaces.keyed.rows import (
     declared_key,
     keyed_read_statement,
 )
-from threetears.interfaces.keyed.keys import NEWEST_VERSIONS, next_newest_keys
+from threetears.interfaces.keyed.keys import NEWEST_KEPT, NEWEST_VERSIONS, newest_page_statement, next_newest_keys
+from threetears.interfaces.keyed.page import Sort, next_past
 
 __all__ = [
     "ANY_ROWS_CAP",
@@ -120,6 +122,117 @@ def _sliced(keys: KeyChunk, start: int, stop: int | None = None) -> KeyChunk:
     return tuple(column[start:stop] for column in keys)
 
 
+#: the SQL types whose key values a prefix batch pins as they are (a prefix read a range at a time,
+#: :func:`_prefix_scope`): a text array's value is the column's own; any other column's value is its type's (an Arrow
+#: column of the type), never text cast back
+_TEXT_CASTS = frozenset({"text", "varchar", "character varying"})
+
+
+def _reads_prefix_scopes(newest: Any, keys: KeyBatch, yugabyte: bool) -> bool:
+    """whether a keyed read is a batch of a versioned table's key prefixes on YugabyteDB, bound as arrays: each of
+    its keys a scope of many keys (a state's geographies), whose batched ``DISTINCT ON`` sorts every version of the
+    scopes it names. WHY bounded apart (2026-11-25): sized by keys like a batch of whole keys, its first statement
+    named :data:`~threetears.interfaces.keyed.keys.NEWEST_FIRST_KEYS` prefixes and sorted all their scopes' versions
+    in one statement, past any ``work_mem`` (pods have no scratch volume: no disk spill, by design)."""
+    width = len(keys.columns)
+    return (
+        newest is not None
+        and yugabyte
+        and not keys.as_list
+        and not keys.null_safe
+        and width < len(newest.key)
+        and tuple(newest.key[:width]) == tuple(keys.columns)
+    )
+
+
+def _prefix_pins(keys: KeyBatch, chunk: KeyChunk) -> dict[str, Any] | None:
+    """the one prefix a chunk names as pins (column -> value), or None when it names several, or a value bound as
+    text for a column of another type (a read that names it so is read as a batch)."""
+    if len(chunk[0]) != 1:
+        return None
+    pins: dict[str, Any] = {}
+    for index, column in enumerate(keys.columns):
+        value = chunk[index][0]
+        value = value.as_py() if hasattr(value, "as_py") else value
+        if isinstance(value, str) and keys.cast(index).lower() not in _TEXT_CASTS:
+            return None
+        pins[column] = value
+    return pins
+
+
+async def _prefix_scope(
+    conn: Any,
+    newest: Any,
+    table: str,
+    columns: Sequence[str | Selected],
+    by: Mapping[str, Any],
+    pins: Mapping[str, Any],
+    where: Sequence[Fragment],
+    page: int,
+) -> tuple[list[dict[str, Any]], int] | None:
+    """one prefix's rows read a range of its keys at a time, in the key's order
+    (:func:`~threetears.core.keyed.page.newest_listing`: the prefix pinned and the cursor inside the ``DISTINCT ON``,
+    each statement's ``LIMIT`` the keys that hold :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ`
+    versions at the versions a key the one before read), so a scope of any size is read in bounded statements, each
+    seeking past the pinned lead; and the versions read, which size the next batch."""
+    rest = [column for column in newest.key if column not in pins]
+    named = {column if isinstance(column, str) else column.alias for column in columns}
+    hidden = frozenset(column for column in rest if column not in named)
+    order = [Sort(column, cast=None) for column in newest.key]
+    read = [*columns, *sorted(hidden)]
+    return await newest_listing(conn, newest, table, read, {**by, **pins}, order, None, None, (), where, page, hidden)
+
+
+async def _prefix_scope_arrow(
+    conn: Any,
+    newest: Any,
+    table: str,
+    columns: Sequence[str | Selected],
+    types: Mapping[str, Any],
+    by: Mapping[str, Any],
+    pins: Mapping[str, Any],
+    where: Sequence[Fragment],
+    page: int,
+) -> tuple[list[Any], int] | None:
+    """:func:`_prefix_scope`, each statement's rows one Arrow table (kept by Arrow's own filter, its versions by
+    Arrow's sum, no row a Python object); None when the read's columns leave out a key column past the prefix, whose
+    Arrow type it cannot name for its cursor (such a read is read as a batch)."""
+    rest = [column for column in newest.key if column not in pins]
+    if any(column not in types for column in rest):
+        return None
+    order = [Sort(column, cast=None) for column in newest.key]
+    fetched = {**types, NEWEST_KEPT: flag_type(), NEWEST_VERSIONS: counted_type()}
+    sender = newest_sent(conn, newest, True, batch=False)
+    tables: list[Any] = []
+    total = 0
+    past: list[Any] | None = None
+    asked = next_newest_keys(0, 0, page)
+    while True:
+        built = newest_page_statement(
+            newest,
+            table,
+            columns=columns,
+            by={**by, **pins},
+            order=order,
+            keys=asked,
+            past=past,
+            by_row=False,
+            where=where,
+        )
+        assert built is not None  # noqa: S101 -- a key's own order is always the listing's
+        sql, params = built
+        answered = await l3_fetch_arrow(sender, sql, *params, types=fetched)
+        counted, versions = without_counted(answered, NEWEST_VERSIONS)
+        total += versions
+        tables.append(counted.filter(counted.column(NEWEST_KEPT)).drop_columns([NEWEST_KEPT]))
+        if answered.num_rows < asked:
+            return tables, total
+        # past the last key read, kept or not: one row's key, read off the table
+        last = answered.slice(answered.num_rows - 1, 1).select(rest).to_pylist()[0]
+        past = next_past(order, {**pins, **last})
+        asked = next_newest_keys(answered.num_rows, versions, page)
+
+
 class _NewestSizing:
     """how many keys a versioned batch on YugabyteDB asks for: its first :data:`NEWEST_FIRST_KEYS` (the budget at the
     measured worst, 50 versions a key), each later one as many as hold
@@ -127,9 +240,10 @@ class _NewestSizing:
     (:func:`~threetears.interfaces.keyed.keys.next_newest_keys`), so the batch's sort of every version of its keys
     never outgrows its ``work_mem``. Local to one read."""
 
-    def __init__(self, asked: int) -> None:
+    def __init__(self, asked: int, *, first: int | None = None) -> None:
         self._asked = asked
-        self.keys = next_newest_keys(0, 0, asked)
+        # a batch of key prefixes knows nothing yet of how many keys a prefix holds: its first statement names one
+        self.keys = next_newest_keys(0, 0, asked) if first is None else first
 
     def read(self, keys: int, versions: int) -> None:
         """learn from a batch: ``keys`` named, ``versions`` read of the keys it answered."""
@@ -296,8 +410,18 @@ async def read_keyed(
     rows: list[Any] = []
     fit = _Fit()
     asked = key_batch_for(conn) if batch is None else batch
-    sizing = _NewestSizing(asked) if counted else None
+    scopes = _reads_prefix_scopes(newest, keys, yugabyte) and isinstance(table, str)
+    sizing = _NewestSizing(asked, first=1 if scopes else None) if counted else None
     for chunk in await _chunks(keys, asked, binder, sizing):
+        pins = _prefix_pins(keys, chunk) if scopes else None
+        if pins is not None and sizing is not None and isinstance(table, str):
+            # one prefix alone: read a range of its keys at a time, never its whole scope in one sort
+            page = max(1, (row_cap - 1) if row_cap is not None else asked)
+            listed = await _prefix_scope(conn, newest, table, columns, by or {}, pins, where, page)
+            assert listed is not None  # noqa: S101 -- a key's own order is always the listing's
+            rows.extend(listed[0])
+            sizing.read(1, listed[1])
+            continue
         versions = 0
         for answered in await _read_split(fetch, len, chunk, row_cap, table, fit):
             if counted:
@@ -388,8 +512,19 @@ async def read_keyed_arrow(
     tables: list[Any] = []
     fit = _Fit()
     asked = key_batch_for(conn) if batch is None else batch
-    sizing = _NewestSizing(asked) if counted else None
+    scopes = _reads_prefix_scopes(newest, keys, yugabyte) and isinstance(table, str)
+    sizing = _NewestSizing(asked, first=1 if scopes else None) if counted else None
     for chunk in await _chunks(keys, asked, binder, sizing):
+        pins = _prefix_pins(keys, chunk) if scopes else None
+        if pins is not None and sizing is not None and isinstance(table, str):
+            # one prefix alone: read a range of its keys at a time, never its whole scope in one sort
+            page = max(1, (row_cap - 1) if row_cap is not None else asked)
+            selected = list(types) if columns is None else columns
+            listed = await _prefix_scope_arrow(conn, newest, table, selected, types, by or {}, pins, where, page)
+            if listed is not None:
+                tables.extend(listed[0])
+                sizing.read(1, listed[1])
+                continue
         versions = 0
         for answered in await _read_split(fetch, lambda answered: int(answered.num_rows), chunk, row_cap, table, fit):
             if counted:
