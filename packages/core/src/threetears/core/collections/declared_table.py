@@ -32,6 +32,7 @@ from typing import Any, ClassVar
 from sqlalchemy import MetaData
 
 from threetears.interfaces.keyed.rows import KeyColumns
+from threetears.core.backends.broker_generation import stamping_write
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import normalize_write_value, render_param
 from threetears.core.cache.base import UnsupportedL1ColumnError
@@ -457,10 +458,14 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         if target is None:
             return 0
         data = self._stamped_row(data, conn)
+        # a stamped table's statement says so on the wire with its stamp as s_min, as every stamped write does; the
+        # stamp was noted as the statement's own when it was drawn (stamp_for)
+        stamp = data[EPOCH_COLUMN] if self._rises_epoch() else None
         pk = self.schema.pk_columns
         if self.conflict_columns != pk:
             sql, params = self.write_statement(data, returning=True)
-            row = await target.fetchrow(sql, *params)
+            with stamping_write(stamp):
+                row = await target.fetchrow(sql, *params)
             sent = data.get(pk[0]) if len(pk) == 1 else tuple(data.get(column) for column in pk)
             stored: Any = None
             if row is not None:
@@ -469,7 +474,8 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
             rows = 0 if row is None else 1
         else:
             sql, params = self.write_statement(data)
-            rows = parse_rowcount(await target.execute(sql, *params))
+            with stamping_write(stamp):
+                rows = parse_rowcount(await target.execute(sql, *params))
         missing = self.missing_required(data)
         if rows == 0 and missing:
             key = {column: f"{data[column]}" for column in self.conflict_columns}

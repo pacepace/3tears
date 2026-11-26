@@ -76,8 +76,11 @@ import hashlib
 import json
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
+
+from threetears.interfaces.keyed.filters import Fragment
 
 __all__ = [
     "AppendOnlyWriteError",
@@ -86,6 +89,7 @@ __all__ = [
     "GONE_COLUMN",
     "MAX_TRANSACTION_AGE_MS",
     "ROW_STAMPED",
+    "RisingStamp",
     "RowEpoch",
     "TransactionTooOldError",
     "UnstampedWriteError",
@@ -103,7 +107,9 @@ __all__ = [
     "scope_epoch_index_name",
     "observe_epoch",
     "rising_epoch_assignment",
+    "rising_stamp",
     "row_versions",
+    "stamp_of_values",
     "versioned_primary_key_sql",
     "wall_clock_ms",
 ]
@@ -547,6 +553,48 @@ def rising_epoch_assignment(target: str, quoted_epoch: str = EPOCH_COLUMN) -> st
     :rtype: str
     """
     return f"{quoted_epoch} = GREATEST({target}.{quoted_epoch} + 1, EXCLUDED.{quoted_epoch})"
+
+
+@dataclass(frozen=True)
+class RisingStamp(Fragment):
+    """a keyed ``UPDATE``'s value for a stamped table's epoch, ``GREATEST("epoch" + 1, $1::bigint)`` bound to
+    :attr:`stamp` (:func:`rising_stamp`): a :class:`~threetears.interfaces.keyed.Fragment` the update renders as any
+    other, and the stamp the update sends on the wire as its write's ``s_min`` (:func:`stamp_of_values`).
+
+    WHY a kind of its own: the keyed layer knows a table by its name alone; the value is how the update learns that it
+    stamps, and with which stamp, so the broker records the write's ``s_min`` like every other stamped write.
+
+    :param stamp: the write's stamp, a positive BIGINT
+    :ptype stamp: int
+    """
+
+    stamp: int = 0
+
+
+def rising_stamp(stamp: int, quoted_epoch: str = '"epoch"') -> RisingStamp:
+    """a keyed ``UPDATE``'s value for a stamped table's epoch: ``GREATEST(<epoch> + 1, <stamp>)``, so the row's stamp
+    never goes back (as :func:`rising_epoch_assignment` keeps an upsert's).
+
+    :param stamp: the write's stamp, a positive BIGINT
+    :ptype stamp: int
+    :param quoted_epoch: the epoch column, quoted as the statement quotes it
+    :ptype quoted_epoch: str
+    :return: the value
+    :rtype: RisingStamp
+    """
+    return RisingStamp(f"GREATEST({quoted_epoch} + 1, $1::bigint)", (stamp,), stamp=stamp)
+
+
+def stamp_of_values(values: Mapping[str, Any]) -> int | None:
+    """the stamp a keyed ``UPDATE``'s ``values`` carry (a :class:`RisingStamp` epoch), sent as its write's ``s_min``.
+
+    :param values: column -> its new value, as ``update_keyed`` takes them
+    :ptype values: Mapping[str, Any]
+    :return: the stamp; None when the update stamps nothing
+    :rtype: int | None
+    """
+    value = values.get(EPOCH_COLUMN)
+    return value.stamp if isinstance(value, RisingStamp) else None
 
 
 def versioned_primary_key_sql(quoted_key: tuple[str, ...], quoted_epoch: str, *, yugabyte: bool) -> str:
