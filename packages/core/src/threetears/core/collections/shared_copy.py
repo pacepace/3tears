@@ -1924,9 +1924,22 @@ def _let_go_parts(
     rule: PartRule, gone: pa.Table, held: Mapping[str, Path], files: Mapping[str, Any], table: str
 ) -> frozenset[str]:
     """the held parts a table's let-go rows may match (:class:`LetGoRows`): by their scope column (and run, a per-run
-    table's), else their locator, a packed scope's pack among them; every part when they name no scope."""
+    table's), else their locator, a packed scope's pack among them; every part when they name no scope. A split
+    table's one part (it crossed the floor and is re-cut by its next change, as :meth:`AppliedTables.table` reads it)
+    holds every scope's rows: always among them while it is held.
+
+    Why: a replica rebuilt from L3 holds each table its whole read wrote as one part, and its whole settle's let-go of
+    a split table's runs matched no part, keeping every run it let go (reports R-2, 2026-11-25)."""
     if not rule.split:
         return frozenset(held) & {WHOLE_PART}
+    return _let_go_split_parts(rule, gone, held, files, table) | (frozenset(held) & {WHOLE_PART})
+
+
+def _let_go_split_parts(
+    rule: PartRule, gone: pa.Table, held: Mapping[str, Path], files: Mapping[str, Any], table: str
+) -> frozenset[str]:
+    """:func:`_let_go_parts` for a split table's cut parts: by scope column (and run), else locator, a packed scope's
+    pack among them; every part when the rows name no scope."""
     columns = set(gone.column_names)
     scopes: pa.Array | None = None
     if rule.scope_column in columns:
