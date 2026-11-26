@@ -135,6 +135,13 @@ the Direction entry it points at.
 | norm lives in `data-model.md` § Direction (absence-caching collections write L3 only through the framework) | Test | `packages/core/tests/enforcement/test_negative_cache_write_paths.py` | janitor | see the Direction entry |
 | norm lives in `security-model.md` § Direction (JWS verified with a pinned algorithm) | Test | `tests/enforcement/test_jwt_alg_pinning.py` | janitor | see the Direction entry |
 | norm lives in `security-model.md` § Direction (audit `details` keys are classified) | Test | `tests/enforcement/test_audit_details_keys_are_classified.py` | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (a session token carries identity only) | Critic | — | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (an admin grants only what they hold at every scope) | Critic | — | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (an unowned namespace matches no caller) | Test | `packages/agent/acl/tests/unit/test_evaluation.py`, `tests/enforcement/test_namespace_owner_is_always_carried.py` | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (erasure never deletes audit rows; in-transition, pacepace/3tears#1313) | Critic | — (gate tracked in pacepace/3tears#1313) | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (tool-pod identity from a verified token) | Critic | — | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (the SSRF check on every request; in-transition, pacepace/3tears#1314) | Test | `packages/scrape/tests/test_private_hosts.py` (httpx paths; browser paths tracked in pacepace/3tears#1314) | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (secrets by reference, never by value) | Critic | — | janitor | see the Direction entry |
 
 **A filled `Delegation` / `Delegate verification` / `Inner-loop verification` row states a norm, and each takes `Critic`** — a policy stated in prose is judgment-required by construction, so no linter or test can grade it; audit home `janitor`, and the why is the sentence the owner gave for it. One row covers the policy `Delegation` and `Delegate verification` state together; `Inner-loop verification` governs your own loop rather than a delegate's, so it gets its own row. The row is written when the policy is **ratified** — the owner confirms it, and `/prawduct:doctor` proposes a starting point for all three — never shipped here, because this table ships empty.
 
