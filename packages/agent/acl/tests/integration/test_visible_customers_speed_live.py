@@ -122,7 +122,9 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
             role,
             _TYPE,
         )
-        for table in ("groups", "group_members", "role_assignments", "namespaces"):
+        # every table the set reads, as a deployment's autovacuum keeps them: the walk joins roles, which the old
+        # statement does not, so an unanalyzed roles table would price the new side's plan from defaults alone
+        for table in ("groups", "group_members", "role_assignments", "namespaces", "roles"):
             await held.execute(f"ANALYZE {table}")
         caller = uuid.uuid4()
         nested = await held.fetchval(

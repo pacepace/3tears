@@ -9,9 +9,11 @@ so a join is spelled one way whichever read it follows.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from collections.abc import Hashable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
@@ -48,6 +50,9 @@ class Joined:
         counted by when it is not NULL (``COUNT(dc.description)``), or None to count every matching row
         (``COUNT(*)``); every read row is then kept once, with no joined column (``columns`` empty)
     :ptype counts: Mapping[str, str | None]
+    :ivar shape: everything the join's SQL is written from, each mapping's columns and values beside their types:
+        what a statement held by its call's shape keys the join by (``threetears.core.keyed.joins``). The mappings
+        are copied read-only when the join is built, so the shape is computed once and holds while the join lives
     """
 
     table: str
@@ -58,6 +63,38 @@ class Joined:
     matched: str | None = None
     casts: Mapping[str, str] = field(default_factory=dict)
     counts: Mapping[str, str | None] = field(default_factory=dict)
+    shape: Hashable = field(init=False, compare=False, repr=False, default=None)
+
+    def __post_init__(self) -> None:
+        """copy the mappings read-only, then compute the join's shape once.
+
+        WHY (2026-11-26): a walk held by its call's shape recomputed every join's part of the key on every call --
+        half the Python of ``read_reached`` for the visible-customer walk's four joins, a fixed cost beside a
+        statement its speed test bars it at twice of (``test_visible_customers_speed_live``). Read-only, a join's
+        mappings cannot change under a shape computed from them.
+
+        :return: nothing
+        :rtype: None
+        """
+        # frozen: each field set once, here, through object's own setter
+        for name in ("on", "columns", "casts", "counts"):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+        if self.by is not None:
+            object.__setattr__(self, "by", MappingProxyType(dict(self.by)))
+        object.__setattr__(
+            self,
+            "shape",
+            (
+                self.table,
+                tuple(self.on.items()),
+                tuple(self.columns.items()),
+                self.left,
+                None if self.by is None else tuple((type(c), c, type(v), v) for c, v in self.by.items()),
+                self.matched,
+                tuple(self.casts.items()),
+                tuple(self.counts.items()),
+            ),
+        )
 
 
 #: a Python value's SQL type, for an ``on`` column given no cast

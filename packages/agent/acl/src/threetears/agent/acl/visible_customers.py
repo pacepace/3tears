@@ -24,6 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from threetears.core.frozen_state import EMPTY, with_entry
+from threetears.observe import BuildOnce
 from threetears.core.keyed import AnyOf, Const, Fragment, Joined, Sort, keyset_rows, read_reached
 from threetears.core.sql_fragments import quote_identifier
 
@@ -169,6 +170,15 @@ _WALK_JOINS: Final[tuple[Joined, ...]] = (
 )
 
 
+#: whether a role's permissions, as their stored text, act on a type: a pure function of the two, answered once a
+#: process rather than once a call. WHY (2026-11-26): decoding the role's JSON and asking it on every call was a fixed
+#: cost of Python beside a statement the bar measures against (the reached-CTE it replaced, ~75 us on the pool's
+#: PostgreSQL runners), and with the walk's own Python it put the set at 1.63-1.75x of a 2x bar there, 2.0x on a
+#: busy run (test_visible_customers_speed_live). A role whose permissions change is new text, so a new key; bounded
+#: at 1,024 (role, type) pairs, past which a pair is answered for its call
+_ACTS: BuildOnce[tuple[str, str | None], bool] = BuildOnce(cost=lambda _: 1, max_cost=1024)
+
+
 async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | None) -> VisibleCustomers:
     """the customers ``user_id``'s grants cover for ``namespace_type``: the caller's groups and their grants, by key, in
     one statement.
@@ -223,17 +233,11 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
         joins=_WALK_JOINS,
     )
     wall = _CustomerWall(user_id, rows)
-    # a role is decoded and asked once a call: the walk answers it beside every grant that binds it (one role on six
-    # grants in the speed test's world: decoding each row's cost ~5 us of the set's ~25 us of Python, 2026-11-21)
-    acting: dict[tuple[Any, str | None], bool] = {}
 
     def acts(raw: Any, on_type: str | None) -> bool:
         if not isinstance(raw, str):
             return permissions_act_on(decode_role_permissions(raw), on_type)
-        answer = acting.get((raw, on_type))
-        if answer is None:
-            answer = acting[(raw, on_type)] = permissions_act_on(decode_role_permissions(raw), on_type)
-        return answer
+        return _ACTS.get((raw, on_type), lambda: permissions_act_on(decode_role_permissions(raw), on_type))
 
     is_all = False
     customers: set[UUID] = set()

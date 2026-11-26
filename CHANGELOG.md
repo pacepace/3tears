@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, agent/acl: the visible-customer set's fixed Python cost, cut
+
+**Changed:** `Joined` copies its mappings read-only when it is built and carries its `shape`, computed once, which a
+walk held by its call's shape (`read_reached` with `depth`) keys each join by: the key was rebuilt from every join's
+mappings on every call, half of the walk's Python. `visible_customers` answers whether a role's stored permissions
+act on a type once a process (bounded at 1,024 pairs), not once a call. On the pool's PostgreSQL runners the set
+measured 1.51-1.63x the reached-CTE it replaced (was 1.63-1.84x, and 2.0x on one busy run, against its bar of 2x),
+YugabyteDB 1.08x (was 1.17x). `test_visible_customers_speed_live` analyzes `roles` too, as a deployment's autovacuum
+does: the walk joins it and the old statement does not.
+
 ### tool-contract: a TearsTool served over MCP
 
 **Added:** `threetears.tool_contract.mcp_face.mcp_tool(tool, *, required_permission, name=None, title=None,

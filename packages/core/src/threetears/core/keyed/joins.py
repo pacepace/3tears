@@ -263,19 +263,7 @@ def _statement_key(
         tuple((type(c), c, _pin_shape(v)) for c, v in start.items()),
         _mapping_key(by),
         _mapping_key(follow),
-        tuple(
-            (
-                j.table,
-                tuple(j.on.items()),
-                tuple(j.columns.items()),
-                j.left,
-                _mapping_key(j.by),
-                j.matched,
-                tuple(j.casts.items()),
-                tuple(j.counts.items()),
-            )
-            for j in joins
-        ),
+        tuple(j.shape for j in joins),
     )
     try:
         hash(key)
