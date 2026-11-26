@@ -31,7 +31,7 @@ from threetears.datasources.partitioned_export import (
     read_counted_partition,
     read_counted_partition_arrow,
 )
-from threetears.datasources.query_client import DatasourceExportResult
+from threetears.datasources.query_client import DatasourceExportResult, DatasourceQueryError
 
 _BUCKET = "bl-eng-aibots-reports-export-dev"
 _DESTINATION = "lsf/x1/projections"
@@ -342,3 +342,155 @@ class TestAPartReadAsArrow:
         ]
         for code in arrow_path:
             assert "to_pylist" not in code and "to_pydict" not in code and "_parquet_rows" not in code, code[:60]
+
+
+class _Hub:
+    """a hub and its bucket, every step of an export held at a controlled point, never a timer.
+
+    As on the bus, an export ask is a request: the caller's cancel stops only its wait, and the hub goes
+    on writing the export and answers. A delete is a request too, held before it reaches the hub (the
+    client's send), and deletes what sits under the destination's prefix when it does.
+    """
+
+    def __init__(self, parts: dict[str, list[list[dict[str, Any]]]], *, pause: str | None = None) -> None:
+        self._export = _export(parts)
+        self._rows = sum(len(rows) for files in parts.values() for rows in files)
+        self.pause = pause
+        self.objects: dict[str, bytes] = {}
+        self.paused = asyncio.Event()
+        self.resume = asyncio.Event()
+        self.hold_delete = False
+        self.deleting = asyncio.Event()
+        self.delete_resume = asyncio.Event()
+        self.fails: DatasourceQueryError | None = None
+        self.deleted: list[str] = []
+        self.running: asyncio.Future[DatasourceExportResult] | None = None
+
+    async def _write(self) -> DatasourceExportResult:
+        keys = list(self._export)  # the data files, then the manifest
+        for index, key in enumerate(keys):
+            if (self.pause == "before the write" and index == 0) or (
+                self.pause == "mid-write" and index == len(keys) // 2
+            ):
+                self.paused.set()
+                await self.resume.wait()
+            if self.fails is not None and index == len(keys) // 2:
+                raise self.fails
+            self.objects[key] = self._export[key]
+        return DatasourceExportResult(
+            row_count=self._rows, bucket=_BUCKET, object_prefix=_PREFIX, manifest_path=f"{_PREFIX}manifest"
+        )
+
+    async def export(
+        self, datasource_name: str, select: str, *, destination: str, partition_by: str | None = None
+    ) -> DatasourceExportResult:
+        self.running = asyncio.ensure_future(self._write())
+        return await asyncio.shield(self.running)
+
+    async def delete_export(self, datasource_name: str, *, destination: str) -> int:
+        if self.hold_delete:
+            self.deleting.set()
+            await self.delete_resume.wait()
+        prefix = f"exports/reports-warehouse/{destination}/"
+        gone = [key for key in self.objects if key.startswith(prefix)]
+        for key in gone:
+            del self.objects[key]
+        self.deleted.append(destination)
+        return len(gone)
+
+    async def finished(self) -> None:
+        """the hub's export over, however it ended: what it leaves in the bucket is final."""
+        if self.running is not None:
+            await asyncio.wait({self.running})
+            if not self.running.cancelled():
+                self.running.exception()
+
+
+class _HeldStore(_Store):
+    """the hub's bucket, the proof's first read held until released."""
+
+    def __init__(self, objects: dict[str, bytes], *, hold: bool) -> None:
+        super().__init__(objects)
+        self.hold = hold
+        self.reading = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def open_read(self, key: str) -> AsyncIterator[bytes]:
+        if self.hold:
+            self.reading.set()
+            await self.resume.wait()
+        yield self.objects[key]
+
+
+_PARTS = {"TX": [_rows("TX", 1), _rows("TX", 2)], "DE": [_rows("DE", 2)]}
+_COUNTS = {"TX": 3, "DE": 2}
+
+
+@pytest.mark.parametrize("point", ["before the write", "mid-write", "after the write, before the count check"])
+@pytest.mark.asyncio
+async def test_an_export_cancelled_at_any_point_leaves_no_export_behind(point: str) -> None:
+    """Flips if a cancel landing while the export is asked (the hub still writing) or proven leaves its files.
+
+    The cancel is raised, never swallowed, and only once the hub has stopped writing and the export was
+    deleted: a delete sent while the hub still wrote would leave the files written after it.
+    """
+    after_write = point.startswith("after")
+    hub = _Hub(_PARTS, pause=None if after_write else point)
+    store = _HeldStore(hub.objects, hold=after_write)
+    task = asyncio.create_task(_counted(hub, store, _COUNTS))  # type: ignore[arg-type]
+    await (store.reading if after_write else hub.paused).wait()
+
+    task.cancel()
+    await asyncio.sleep(0)  # the cancel reaches the caller while the hub is still held
+    hub.resume.set()
+    store.resume.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await hub.finished()
+
+    assert hub.objects == {}, f"a cancel {point} left the export's files in the bucket"
+    assert hub.deleted == [_DESTINATION]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_landing_on_the_delete_still_deletes_the_export_and_is_raised() -> None:
+    hub = _Hub(_PARTS)
+    hub.hold_delete = True
+    store = _HeldStore(hub.objects, hold=True)
+    task = asyncio.create_task(_counted(hub, store, _COUNTS))  # type: ignore[arg-type]
+    await store.reading.wait()
+    task.cancel()  # mid-proof: the delete starts
+    await hub.deleting.wait()
+
+    task.cancel()  # and again, while the delete is on its way
+    await asyncio.sleep(0)
+    hub.delete_resume.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert hub.objects == {}, "a cancel landing on the delete left the export in the bucket"
+    assert hub.deleted == [_DESTINATION]
+
+
+@pytest.mark.parametrize(
+    ("code", "deleted"),
+    [
+        ("EXPORT_NOT_GRANTED", []),
+        ("DATASOURCE_BUSY", []),
+        ("QUERY_EXECUTION_ERROR", [_DESTINATION]),
+        ("REQUEST_FAILED", [_DESTINATION]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_failed_ask_is_deleted_unless_the_hub_refused_it_before_anything_ran(
+    code: str, deleted: list[str]
+) -> None:
+    """Flips if an UNLOAD that failed midway leaves the files it wrote, or a refusal asks a needless delete."""
+    hub = _Hub(_PARTS)
+    hub.fails = DatasourceQueryError(code, "the export failed")
+    with pytest.raises(DatasourceQueryError) as raised:
+        await _counted(hub, _Store(hub.objects), _COUNTS)  # type: ignore[arg-type]
+    assert raised.value.error_code == code
+    assert hub.deleted == deleted
+    if deleted:
+        assert hub.objects == {}, "the files an UNLOAD wrote before it failed were left in the bucket"

@@ -7,6 +7,7 @@ under the export's own prefix) hold exactly that many. Every way that can fail i
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import subprocess
@@ -475,6 +476,38 @@ class TestTheExportIsTheOneAskedFor:
 
 
 class TestDeleteAfterLoad:
+    @pytest.mark.asyncio
+    async def test_a_part_cancelled_while_the_export_is_asked_is_deleted_once_the_hub_answered(self) -> None:
+        """Flips if a cancel landing while the hub still writes leaves the export, or deletes before its last file.
+
+        As on the bus, the cancel stops only the caller's wait: the hub goes on and answers.
+        """
+        asking, answer = asyncio.Event(), asyncio.Event()
+
+        class _HeldHub(_Client):
+            async def export(self, datasource: str, select: str, *, destination: str) -> DatasourceExportResult:
+                async def hub() -> DatasourceExportResult:
+                    asking.set()
+                    await answer.wait()
+                    return await _Client.export(self, datasource, select, destination=destination)
+
+                self.running = asyncio.ensure_future(hub())
+                return await asyncio.shield(self.running)
+
+        client = _HeldHub([_print(3), _print(3)], exported=3)
+        task = asyncio.create_task(_part(client, _Store(_export([_ROWS]))))
+        await asking.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        answer.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait({client.running})
+
+        assert [kind for kind, _ in client.calls] == ["fingerprint", "export", "delete"], (
+            "the export was left, or deleted before the hub answered"
+        )
+
     @pytest.mark.asyncio
     async def test_a_refused_export_is_deleted_and_its_refusal_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """delete after load, no timer (Pace's ruling): a refusal keeps no copy of the rows either."""
