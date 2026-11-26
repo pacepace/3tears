@@ -4943,7 +4943,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         committed = EpochChange(table=self.table_name, token=token, rows=[changed])
         bump = _Bump(token=token, rows=1)
         if self.waits_for_l3:
-            cascaded = await read_delete_cascade(self, [entity_id])
+            cascaded = await self.delete_cascaded([entity_id])
             try:
                 await self.delete_from_store(entity_id)
             except BaseException as exc:
@@ -5638,7 +5638,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         # read before it goes, and only when the message must carry columns of it
         row = await self._row_before_delete(entity_id)
         # the rows the database's foreign-key actions will rewrite, read while they still name it
-        cascaded = await read_delete_cascade(self, [entity_id])
+        cascaded = await self.delete_cascaded([entity_id])
         # a stamped table's delete marks its row gone in place: no foreign-key action runs in the database, so 3tears
         # takes each declared one itself (refused before anything is written, when one cannot be taken)
         gone_mark = self._marks_gone()
@@ -5715,6 +5715,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         :raises NotImplementedError: on a collection whose table is not stamped
         """
         raise NotImplementedError(f"{type(self).__name__}: {self.table_name} is not stamped (ROW_STAMPED)")
+
+    async def delete_cascaded(self, entity_ids: Sequence[Any]) -> list[CascadedRows]:
+        """the rows of other tables a delete of ``entity_ids`` reaches, read before it: what the database's foreign-key
+        actions would take, so a stamped delete (a gone mark, an ``UPDATE`` no foreign key fires on) takes each itself,
+        children before the parent in one transaction (:meth:`_mark_gone_after_cascades`), and announces each
+        (``announce_delete_cascade``). By default the collection's declared actions (:attr:`delete_cascades`,
+        ``read_delete_cascade``); a collection that reads its cascade its own way (``GroupCollection``) answers it here.
+
+        :param entity_ids: the keys about to be deleted
+        :ptype entity_ids: Sequence[Any]
+        :return: the rows reached, one entry per (action, table)
+        :rtype: list[CascadedRows]
+        """
+        return await read_delete_cascade(self, entity_ids)
 
     def _marks_gone(self) -> bool:
         """whether this collection's delete marks its row gone in place (a stamped table, ``ROW_STAMPED``) rather than

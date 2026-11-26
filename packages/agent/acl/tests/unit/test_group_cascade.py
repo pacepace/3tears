@@ -1,10 +1,10 @@
-"""a group delete announces the memberships and assignments its database cascade removed.
+"""a group delete marks its memberships and assignments gone before itself, in one transaction, and announces them.
 
-``ON DELETE CASCADE`` takes a group's ``group_members`` and ``role_assignments`` rows where no
-collection sees them, so no write generation moves for those tables. The framework's
-:class:`GroupCollection` reads the rows before the delete and announces them afterwards through the
-registry's collections of those tables, one advance per table, each broadcast naming what the row
-reaches.
+A group is stamped: its delete is a gone mark (an ``UPDATE``), so the database's ``ON DELETE CASCADE`` from
+``group_members`` and ``role_assignments`` never fires. :class:`GroupCollection` reads those rows before the delete
+(``delete_cascaded``); the framework's delete marks them gone, then the group, in one transaction, and announces them
+once it commits through the registry's collections of those tables, one advance per table, each broadcast naming what
+the row reaches.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ class _Pool:
     def __init__(self, members: list[dict[str, Any]], assignments: list[dict[str, Any]]) -> None:
         self.members = members
         self.assignments = assignments
+        #: each write and transaction boundary, in order: ``BEGIN``, ``UPDATE <table>``, ``COMMIT`` / ``ROLLBACK``
+        self.sent: list[str] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         if sql.startswith(
@@ -47,9 +49,35 @@ class _Pool:
 
     async def execute(self, sql: str, *params: Any) -> str:
         """the gone marks a stamped group's delete leaves on its memberships and grants (ROW_STAMPED: the database's
-        cascade never runs for a row marked gone in place)."""
-        del sql, params
+        cascade never runs for a row marked gone in place), kept by the table each updates."""
+        del params
+        self.sent = [*self.sent, " ".join(sql.split()[:2])]
         return "UPDATE 1"
+
+    def acquire(self) -> _Held:
+        """the pool as its own connection, as a stamped parent's delete acquires one for its transaction."""
+        return _Held(self, transaction=False)
+
+    def transaction(self, **_options: Any) -> _Held:
+        """a transaction, its boundaries kept with the writes."""
+        return _Held(self, transaction=True)
+
+
+class _Held:
+    """an ``async with`` answering the pool: its connection, or a transaction whose boundaries it keeps."""
+
+    def __init__(self, pool: _Pool, *, transaction: bool) -> None:
+        self._pool = pool
+        self._transaction = transaction
+
+    async def __aenter__(self) -> _Pool:
+        if self._transaction:
+            self._pool.sent = [*self._pool.sent, "BEGIN"]
+        return self._pool
+
+    async def __aexit__(self, exc_type: type[BaseException] | None, *exc: object) -> None:
+        if self._transaction:
+            self._pool.sent = [*self._pool.sent, "COMMIT" if exc_type is None else "ROLLBACK"]
 
 
 class _Source:
@@ -201,28 +229,54 @@ class _RaisingPool(_Pool):
         return await super().execute(sql, *params)
 
 
-async def test_a_membership_mark_that_raised_is_still_announced() -> None:
-    """Flips if the cascade's gone marks are announced only after they return: a statement that raised may still
-    have reached L3, and every pod would keep the deleted group's memberships granting."""
+async def test_a_membership_mark_that_raised_leaves_the_group_live() -> None:
+    """Flips if a group's gone mark is sent outside its memberships' transaction, or after one of their marks failed:
+    the transaction rolls back whole, never a group gone with its members still holding its roles. Nothing committed,
+    so nothing is announced."""
     group_id = uuid4()
     members = [{"member_type": "user", "member_id": uuid4(), "id": uuid4()}]
+    pool = _RaisingPool(members, [])
     bus = FakeNatsClient()
     registry = CollectionRegistry()
-    registry.configure(l3_pool=_RaisingPool(members, []), l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
+    registry.configure(l3_pool=pool, l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
     registry.set_generation_source(_Source())
     groups = GroupCollection(registry, _CONFIG, nats_client=bus)
     GroupMemberCollection(registry, _CONFIG, nats_client=bus)
-    groups.delete_from_store = AsyncMock()  # type: ignore[method-assign]
 
     with pytest.raises(ConnectionError):
         await groups.delete(("customer", group_id))
 
-    assert [(m.ids, m.columns) for m in _rows(bus, "group_members")] == [
-        (
-            [f"{group_id}", f"{members[0]['id']}"],
-            {"member_type": "user", "member_id": f"{members[0]['member_id']}"},
-        )
+    assert pool.sent == ["BEGIN", "ROLLBACK"]
+    assert _rows(bus, "group_members") == []
+
+
+async def test_the_memberships_and_grants_go_before_the_group_in_one_transaction() -> None:
+    """Flips if the group is marked gone before its memberships and grants, or outside their transaction: every
+    child's stamp must be at most its parent's (quiet cleanup reaches the children first), and a failure must leave
+    neither half (Pace: children gone before the parent, one transaction)."""
+    group_id = uuid4()
+    members = [{"member_type": "user", "member_id": uuid4(), "id": uuid4()}]
+    assignments = [{"row_scope": "customer", "assignment_id": uuid4()}]
+    pool = _Pool(members, assignments)
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool, l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
+    registry.set_generation_source(_Source())
+    groups = GroupCollection(registry, _CONFIG, nats_client=bus)
+    GroupMemberCollection(registry, _CONFIG, nats_client=bus)
+    RoleAssignmentCollection(registry, _CONFIG, nats_client=bus)
+
+    await groups.delete(("customer", group_id))
+
+    assert pool.sent[0] == "BEGIN" and pool.sent[-1] == "COMMIT", pool.sent
+    marks = pool.sent[1:-1]
+    assert sorted(marks[:-1]) == ['UPDATE "group_members"', 'UPDATE "role_assignments"'], pool.sent
+    assert marks[-1] == 'UPDATE "groups"', pool.sent
+    # each announced once the transaction committed, naming what it reaches
+    assert [m.columns for m in _rows(bus, "group_members")] == [
+        {"member_type": "user", "member_id": f"{members[0]['member_id']}"}
     ]
+    assert [m.columns for m in _rows(bus, "role_assignments")] == [{"group_id": f"{group_id}"}]
 
 
 async def test_a_cascade_no_registered_collection_can_announce_is_refused_before_the_delete() -> None:
