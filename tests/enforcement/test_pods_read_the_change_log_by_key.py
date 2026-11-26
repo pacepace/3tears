@@ -31,6 +31,11 @@ _OWNER_ONLY: Final = {
         "core/src/threetears/core/collections/log_keeper.py",
         "LogKeeper._epochs_between",
     ): "runs only under keeps_log=True, the hub's keeper; a keeper beside the log scrubs by changes_after",
+    (
+        "core/src/threetears/core/collections/quiet_cleanup.py",
+        "log_window_floor",
+    ): "the hub's broker's own bound on the cleanup floor (aibots.hub.broker.proxy), over the log it writes; no pod "
+    "calls it, a pod's QuietCleanup is handed its floor",
 }
 
 #: methods that read the log by sequence whatever their receiver

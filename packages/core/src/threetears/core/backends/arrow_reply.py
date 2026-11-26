@@ -33,10 +33,13 @@ from typing import Any, Final
 from threetears.core.backends.protocol import ArrowL3Reader
 
 try:
+    import numpy as np
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
     import pyarrow.json as pa_json
+
+    from threetears.core.arrow_keys import key_codes
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; reply_rows refuses without it, saying so
@@ -338,8 +341,10 @@ def without_counted(table: Any, column: str) -> tuple[Any, int]:
 
 def without_full_groups(table: Any, columns: Sequence[str], at_least: int) -> tuple[Any, Any]:
     """``table`` without the rows of each group of ``columns`` holding ``at_least`` rows, and those groups (their
-    ``columns`` alone, a row each): Arrow's own group count and anti-join, no row made a Python object. What a read
-    of several scopes under one ``LIMIT`` each tells apart: a scope that filled its limit is read again on its own.
+    ``columns`` alone, a row each, in the order each first appears): each row's group coded by Arrow's hash kernels
+    (:func:`~threetears.core.arrow_keys.key_codes`), counted and matched in numpy, no Acero plan and no row made a
+    Python object. What a read of several scopes under one ``LIMIT`` each tells apart: a scope that filled its limit
+    is read again on its own.
 
     :param table: the rows read
     :ptype table: pyarrow.Table
@@ -351,11 +356,17 @@ def without_full_groups(table: Any, columns: Sequence[str], at_least: int) -> tu
     :rtype: tuple[pyarrow.Table, pyarrow.Table]
     """
     named = list(columns)
-    counted = table.select(named).group_by(named).aggregate([([], "count_all")])
-    full = counted.filter(pc.greater_equal(counted.column("count_all"), at_least)).select(named)
+    groups = table.select(named)
+    if not table.num_rows:
+        return table, groups
+    (codes,) = key_codes([table], named)
+    distinct, first, counts = np.unique(codes, return_index=True, return_counts=True)
+    filled = counts >= at_least
+    full = groups.take(pa.array(np.sort(first[filled]), pa.int64()))
     if full.num_rows == 0:
         return table, full
-    return table.join(full, keys=named, join_type="left anti"), full
+    kept = np.flatnonzero(~np.isin(codes, distinct[filled]))
+    return table.take(pa.array(kept, pa.int64())), full
 
 
 async def l3_fetch_arrow(l3: Any, query: str, *params: Any, types: Mapping[str, Any]) -> Any:
