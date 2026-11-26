@@ -143,10 +143,13 @@ class SchemaPrimingIntegration:
             "datasources",
             by={"name": AnyOf(self.datasource_names, cast=None), "status": "active"},
             where=[
+                # its live rows, as the name's unique index holds them (WHERE NOT gone): stated, so the read is the
+                # index's
+                Fragment('NOT "gone"'),
                 Fragment(
                     "( customer_id = $1 OR visibility = 'public' OR EXISTS ( SELECT 1 FROM datasource_customers dc WHERE dc.datasource_id = t.id AND dc.customer_id = $1 ))",
                     (self.customer_id,),
-                )
+                ),
             ],
             columns=("id",),
             records=True,

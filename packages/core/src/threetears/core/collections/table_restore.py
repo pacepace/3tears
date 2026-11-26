@@ -73,6 +73,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.collections.noted_change import NotedChange
 from threetears.core.collections.epoch_change import RESET_REASON, keyed_record_form
+from threetears.core.collections.scope_epochs import changed_scopes
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK, invalidation_columns_of
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, TABLE_RESET_SCOPE
 from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE, key_text_sql
@@ -112,8 +113,6 @@ _CHUNK_ROWS: Final = 5000
 #: what a run marker's prefix joins its values with (:mod:`~threetears.core.ddl.run_markers`)
 _PREFIX_SEPARATOR: Final = "\x1f"
 
-#: the row :data:`_SCOPE_EPOCHS_WHOLE` names in a scope epochs table: the data's version, never a scope
-_SCOPE_EPOCHS_WHOLE: Final = "*"
 
 #: the CSV columns the fold reads, each a JSON text (:mod:`threetears.core.change_note_fold_job`)
 _FOLD_COLUMNS: Final = ("table_json", "tenant_json", "keys_json", "columns_json")
@@ -309,32 +308,6 @@ async def versioned_tables(pool: Any) -> list[VersionedTable]:
     :rtype: list[VersionedTable]
     """
     return [table for table in await restored_tables(pool) if isinstance(table, VersionedTable)]
-
-
-async def changed_scopes(pool: Any, schema: str, epochs: str, floor: int) -> list[str]:
-    """the scopes of the scope epochs table ``schema.epochs`` a stamped write touched at ``floor`` or later: their
-    ``last_epoch`` at or above it, read through the table's ``last_epoch`` index a page at a time.
-
-    :param pool: the keeper's L3 pool
-    :ptype pool: Any
-    :param schema: the table's schema
-    :ptype schema: str
-    :param epochs: the scope epochs table
-    :ptype epochs: str
-    :param floor: X
-    :ptype floor: int
-    :return: the scopes, :data:`_SCOPE_EPOCHS_WHOLE` left out
-    :rtype: list[str]
-    """
-    rows = await keyset_rows(
-        pool,
-        f"{schema}.{epochs}",
-        columns=("last_epoch", "scope"),
-        by={},
-        order=[Sort("last_epoch", cast="bigint"), Sort("scope")],
-        where=[Fragment('t."last_epoch" >= $1', (floor,))],
-    )
-    return [str(row["scope"]) for row in rows if row["scope"] != _SCOPE_EPOCHS_WHOLE]
 
 
 def _literal(text: str) -> str:
