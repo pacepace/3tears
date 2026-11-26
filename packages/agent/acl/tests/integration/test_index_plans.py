@@ -320,10 +320,11 @@ async def _seed_namespaces(conn: asyncpg.Connection) -> None:
     """
     await conn.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, customer_id,"
-        " schema_name, owner_namespace, date_created, date_updated, epoch)"
+        " schema_name, owner_namespace, owner_namespace_id, date_created, date_updated, epoch)"
         " SELECT 'customer', gen_random_uuid(), 'agent.a' || g, (ARRAY['agent', 'workspace', 'tool'])[1 + g % 3],"
         " gen_random_uuid(), ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid,"
-        " 'agent_s' || g, 'agent.o' || (g % 2000), now(), now(), $1 FROM generate_series(1, 6000) g",
+        " 'agent_s' || g, 'agent.o' || (g % 2000), md5('agent.o' || (g % 2000))::uuid, now(), now(), $1"
+        " FROM generate_series(1, 6000) g",
         next_epoch(),
     )
     await conn.execute(
@@ -418,11 +419,12 @@ async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
         assert plan_uses_index(plan, "idx_namespaces_customer_type") or by_type, (namespace_type, plan.plan)
 
 
-async def test_namespaces_owner_namespace(conn: asyncpg.Connection) -> None:
-    """Flips if what a namespace owns stops reading idx_namespaces_owner_namespace."""
+async def test_namespaces_owner_namespace_id(conn: asyncpg.Connection) -> None:
+    """Flips if what a namespace owns stops reading idx_namespaces_owner_namespace_id (acl v011), by its owner's id."""
     await _seed_namespaces(conn)
-    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.list_owned_by("agent.o17"))
-    assert plan_uses_index(plan, "idx_namespaces_owner_namespace"), plan.plan
+    owner = await conn.fetchval("SELECT md5('agent.o17')::uuid")
+    plan = await _planned(conn, acl.NamespaceCollection, lambda namespaces: namespaces.list_owned_by(owner))
+    assert plan_uses_index(plan, "idx_namespaces_owner_namespace_id"), plan.plan
 
 
 async def test_namespaces_schema_name(conn: asyncpg.Connection) -> None:

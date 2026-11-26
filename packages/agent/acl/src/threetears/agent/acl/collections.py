@@ -2554,6 +2554,13 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # caller is known to be an agent; declaring it immutable
             # here would break the operator path instead.
             Column("owner_namespace", STRING_TYPE, nullable=True),
+            # the namespace row that OWNS this one, BY ID: the stored owner (Pace 2026-11-26). A deployment holding its
+            # owners' rows (the hub) keys its foreign key onto ``namespace_id`` through it, so the name index holds
+            # live rows only and a deleted namespace's name frees up; what a namespace owns is read by it
+            # (:meth:`NamespaceCollection.list_owned_by`). ``owner_namespace`` above stays the owner's NAME, the
+            # evaluator's in-process ownership key: an agent pod derives its own name and reads no namespace row.
+            # NULL where no owner row exists to name (a hub-less deployment's agents have none).
+            Column("owner_namespace_id", UUID_TYPE, nullable=True),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("schema_name", STRING_TYPE, nullable=True, immutable=True),
             Column(
@@ -2884,6 +2891,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         namespace_type: str,
         owner_agent_id: UUID | None,
         owner_namespace: str | None,
+        owner_namespace_id: UUID | None,
         customer_id: UUID | None,
         schema_name: str | None,
         metadata: dict[str, Any] | None,
@@ -2916,6 +2924,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                             "namespace_type": namespace_type,
                             "owner_agent_id": owner_agent_id,
                             "owner_namespace": owner_namespace,
+                            "owner_namespace_id": owner_namespace_id,
                             "customer_id": customer_id,
                             "schema_name": schema_name,
                             "metadata": Fragment("$1::text::jsonb", (_json.dumps(dict(metadata or {})),)),
@@ -2943,6 +2952,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         owner_agent_id: UUID | None,
         customer_id: UUID | None,
         owner_namespace: str | None = None,
+        owner_namespace_id: UUID | None = None,
         schema_name: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> NamespaceEntity:
@@ -2957,10 +2967,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         the primary key, ``UNIQUE (namespace_id)`` or ``UNIQUE (name)`` -- instead of raising, and an
         existing row is never overwritten. the row is then READ BACK by id, and every field asked for
         is compared: a row that exists but means something else (type, owner, customer, name, owner
-        namespace, schema) is refused, never silently returned or clobbered.
+        namespace, its id, schema) is refused, never silently returned or clobbered.
 
-        where the table carries the ``owner_namespace`` foreign key onto ``name`` (the hub's shape),
-        the owner's own namespace row must already exist; this does not create owners.
+        where the table carries the ``owner_namespace_id`` foreign key onto ``namespace_id`` (the hub's
+        shape), the owner's own namespace row must already exist; this does not create owners.
 
         :param namespace_id: the row's id, typically derived from its owner (e.g. ``memory_namespace_id``)
         :ptype namespace_id: UUID
@@ -2975,6 +2985,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :param owner_namespace: the owning agent's own namespace name -- the key the evaluator's
             ownership short-circuit reads; a row without one is owned by no agent
         :ptype owner_namespace: str | None
+        :param owner_namespace_id: that owner's row, by id -- the stored owner, where the deployment holds
+            its owners' rows; ``None`` where it holds none (a hub-less deployment's agents)
+        :ptype owner_namespace_id: UUID | None
         :param schema_name: backing schema name, where the type has one
         :ptype schema_name: str | None
         :param metadata: row metadata for a NEW row (default ``{}``); an existing row's is not compared
@@ -2986,7 +2999,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :raises RuntimeError: the collection has no L3 pool to write through
         :raises Exception: the backend's own error for what the table refuses outright -- a
             ``CHECK`` (e.g. a platform-scoped row of a customer-only type) or a missing owner under
-            the ``owner_namespace`` foreign key
+            the ``owner_namespace_id`` foreign key
         """
         if self.l3_pool is None:
             raise RuntimeError("ensure_namespace needs an L3 pool to write through")
@@ -2997,8 +3010,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             # stamped (ROW_STAMPED): the row carries its write's epoch, a fresh stamp of its own statement
             await self.l3_pool.execute(
                 "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, "
-                "owner_namespace, customer_id, schema_name, metadata, date_created, date_updated, epoch) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $10, $11) ON CONFLICT DO NOTHING",
+                "owner_namespace, owner_namespace_id, customer_id, schema_name, metadata, date_created, date_updated, "
+                "epoch) VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9::text::jsonb, $10, $10, $11) "
+                "ON CONFLICT DO NOTHING",
                 row_scope,
                 namespace_id,
                 name,
@@ -3010,6 +3024,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 _json.dumps(dict(metadata or {})),
                 now,
                 CallerTransaction.stamp_for(None, "namespaces"),
+                owner_namespace_id,
             )
             # announced whether or not a conflict absorbed it: through the L3 broker the INSERT
             # advanced the table's write generation either way, and an advance no row is heard for
@@ -3022,6 +3037,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 namespace_type=namespace_type,
                 owner_agent_id=owner_agent_id,
                 owner_namespace=owner_namespace,
+                owner_namespace_id=owner_namespace_id,
                 customer_id=customer_id,
                 schema_name=schema_name,
                 metadata=metadata,
@@ -3040,13 +3056,14 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 "namespace ensured",
                 extra={"extra_data": {"namespace_id": str(namespace_id), "namespace_type": namespace_type}},
             )
-        wanted = (namespace_type, owner_agent_id, customer_id, name, owner_namespace, schema_name)
+        wanted = (namespace_type, owner_agent_id, customer_id, name, owner_namespace, owner_namespace_id, schema_name)
         actual = (
             existing.namespace_type,
             existing.owner_agent_id,
             existing.customer_id,
             existing.name,
             existing.owner_namespace,
+            existing.owner_namespace_id,
             existing.schema_name,
         )
         if actual != wanted:
@@ -3504,12 +3521,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             ]
         return result
 
-    async def list_owned_by(self, owner_name: str) -> list[NamespaceEntity]:
-        """return every namespace whose ``owner_namespace`` is ``owner_name``, except the owner itself.
+    async def list_owned_by(self, owner_namespace_id: UUID) -> list[NamespaceEntity]:
+        """return every live namespace whose ``owner_namespace_id`` is ``owner_namespace_id``, except the owner itself.
 
-        the finding half of tearing a namespace down. ``owner_namespace`` names its
-        owner through a foreign key onto the unique name index, and that key refuses
-        to delete an owner while any row still names it -- so a caller removing a
+        the finding half of tearing a namespace down. ``owner_namespace_id`` names its
+        owner by id (the hub's foreign key onto ``namespace_id``), and a delete of an
+        owner is refused while any live row still names it -- so a caller removing a
         namespace removes what this returns first, walking it again for each child
         that owns rows of its own.
 
@@ -3525,9 +3542,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         tells a teardown walker the owner is a leaf, and that is a guess when nothing was
         asked.
 
-        :param owner_name: the owning namespace's name; an empty name owns nothing,
-            never every ownerless row
-        :ptype owner_name: str
+        :param owner_namespace_id: the owning namespace's id
+        :ptype owner_namespace_id: UUID
         :return: the owned namespace entities, ordered by ``namespace_id``
         :rtype: list[NamespaceEntity]
         :raises RuntimeError: if the collection has no L3 pool to ask
@@ -3537,18 +3553,15 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 "NamespaceCollection.list_owned_by requires an L3 pool: without one it cannot tell "
                 "an owner with no children from one it never checked",
             )
-        result: list[NamespaceEntity] = []
-        if owner_name:
-            rows = await read_by(
-                self.l3_pool,
-                "namespaces",
-                by={"row_scope": AnyOf(("platform", "customer"), cast=None), "owner_namespace": owner_name},
-                where=[Fragment("name <> $1", (owner_name,))],
-                records=True,
-                order=[Sort("namespace_id")],
-            )
-            result = [self.entity_class(self._coerce_row(dict(row)), is_new=False, collection=self) for row in rows]
-        return result
+        rows = await read_by(
+            self.l3_pool,
+            "namespaces",
+            by={"row_scope": AnyOf(("platform", "customer"), cast=None), "owner_namespace_id": owner_namespace_id},
+            where=[Fragment("namespace_id <> $1", (owner_namespace_id,))],
+            records=True,
+            order=[Sort("namespace_id")],
+        )
+        return [self.entity_class(self._coerce_row(dict(row)), is_new=False, collection=self) for row in rows]
 
     async def schema_in_use(self, schema_name: str) -> bool:
         """return whether any namespace row still names ``schema_name``.

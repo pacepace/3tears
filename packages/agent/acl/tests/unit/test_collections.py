@@ -527,7 +527,7 @@ class TestNamespaceListOwnedBy:
 
     @pytest.mark.asyncio
     async def test_the_owned_rows_come_back_as_entities(self) -> None:
-        child_id = uuid7()
+        child_id, owner_id = uuid7(), uuid7()
         pool = AsyncMock()
         pool.fetch.return_value = [
             {
@@ -536,28 +536,22 @@ class TestNamespaceListOwnedBy:
                 "name": "tools.probe.example.1-0",
                 "namespace_type": "tool",
                 "owner_namespace": "agents.owner",
+                "owner_namespace_id": owner_id,
             },
         ]
         coll = make_collection(NamespaceCollection, l3_pool=pool)
-        owned = await coll.list_owned_by("agents.owner")
+        owned = await coll.list_owned_by(owner_id)
         assert [entity.id for entity in owned] == [child_id]
-        # bound after the two row scopes it reads across
-        assert pool.fetch.await_args.args[1:3] == (["platform", "customer"], "agents.owner")
-
-    @pytest.mark.asyncio
-    async def test_an_empty_owner_owns_nothing_and_asks_nothing(self) -> None:
-        """an empty name must never reach the query, where it would match every row owned by ``''``."""
-        pool = AsyncMock()
-        coll = make_collection(NamespaceCollection, l3_pool=pool)
-        assert await coll.list_owned_by("") == []
-        pool.fetch.assert_not_awaited()
+        # the owner by id, bound after the two row scopes it reads across: never its name
+        assert pool.fetch.await_args.args[1:3] == (["platform", "customer"], owner_id)
+        assert '"owner_namespace_id"' in pool.fetch.await_args.args[0]
 
     @pytest.mark.asyncio
     async def test_no_pool_refuses_rather_than_answering_nothing_is_owned(self) -> None:
         """an empty list tells a teardown walker the owner is a leaf; with no pool that is a guess."""
         coll = make_collection(NamespaceCollection, l3_pool=None)
         with pytest.raises(RuntimeError, match="list_owned_by requires an L3 pool"):
-            await coll.list_owned_by("agents.owner")
+            await coll.list_owned_by(uuid7())
 
 
 class TestNamespaceSchemaInUse:

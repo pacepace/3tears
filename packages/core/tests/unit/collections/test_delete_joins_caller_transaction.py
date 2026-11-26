@@ -368,3 +368,31 @@ async def test_a_delete_finds_a_parent_and_child_written_earlier_in_its_transact
     parents.invalidate_cache_many.assert_awaited_once_with(["p9"], rows=[None])
     children.invalidate_cache_many.assert_awaited_once()
     assert list(children.invalidate_cache_many.await_args.args[0]) == ["c9"]
+
+
+class _SelfOwnedParents(_Parents):
+    """a parent naming its owner among its own rows by key (``label`` holds the owner's id), as a namespace names the
+    namespace owning it, an agent's own namespace itself."""
+
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = ()
+    delete_restricts: ClassVar[tuple[DeleteRestrict, ...]] = (
+        DeleteRestrict("dj_parent", "label", "NO ACTION", parent_column="id"),
+    )
+
+
+async def test_a_row_naming_itself_is_deleted_and_one_owning_another_live_row_is_refused(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if a self-referencing restrict counts the row being deleted among its own children (an agent's own
+    namespace, owner of itself, could never be removed), or stops counting another live row that names it."""
+    db.execute("UPDATE dj_parent SET label = 'p1' WHERE id = 'p1'")
+    db.execute("INSERT INTO dj_parent VALUES ('p2', 'p2', 1, false, 2), ('p3', 'p2', 1, false, 2)")
+    pool = _Pool(db)
+    parents, _children = _family(pool, _SelfOwnedParents)
+    async with CallerTransaction(pool):
+        await parents.delete("p1", conn=pool)
+    with pytest.raises(RestrictedDeleteError, match="1 live row"):
+        async with CallerTransaction(pool):
+            await parents.delete("p2", conn=pool)
+    parent = _epochs(db, "dj_parent")
+    assert parent["p1"][1] and not parent["p2"][1], parent
