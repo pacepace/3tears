@@ -100,6 +100,37 @@ the Direction entry it points at.
 | norm lives in `operational-spec.md` § Direction (integration suite before any PR) | Critic | `scripts/check-all.sh`; suite completeness by `tests/enforcement/test_integration_suite_selection.py` | janitor | see the Direction entry |
 | norm lives in `operational-spec.md` § Direction (change record as `.prawduct/changes/` fragments) | Critic | — | advisory | see the Direction entry |
 | `threetears/` and `threetears/agent/` never get an `__init__.py`; only leaf packages do (§ Code Style, Imports) | Critic | — | janitor | "Implicit namespace packages need this to work when packages are installed independently." (`CLAUDE.md` § Namespace packages) |
+| norm lives in `api-contract.md` § Direction (a new public name has a production caller) | Test | `tests/enforcement/test_public_api_has_a_caller.py` | janitor | see the Direction entry |
+| norm lives in `api-contract.md` § Direction (cross-deployable wire models are tolerant readers) | Test | `tests/enforcement/test_wire_models_are_tolerant_readers.py` | janitor | see the Direction entry |
+| norm lives in `api-contract.md` § Direction (web packages follow the family version) | Test | `tests/enforcement/test_web_packages_follow_the_family_version.py` | janitor | see the Direction entry |
+| norm lives in `api-contract.md` § Direction (`__version__` read from metadata) | Test | `tests/enforcement/test_runtime_version_is_not_hardcoded.py` | janitor | see the Direction entry |
+| norm lives in `api-contract.md` § Direction (managed model ids only from `threetears.models.defaults`) | Test | `tests/enforcement/test_no_hardcoded_model_literals.py` | janitor | see the Direction entry |
+| norm lives in `observability-strategy.md` § Direction (narrow silent handlers log, re-raise or carry `# NOSILENT`) | Test | `tests/enforcement/test_no_silent_swallow.py` | janitor | see the Direction entry |
+| norm lives in `observability-strategy.md` § Direction (one OpenTelemetry floor, tested in CI) | Test | `tests/enforcement/test_otel_floor.py` | janitor | see the Direction entry |
+| norm lives in `observability-strategy.md` § Direction (no structlog keywords on logger calls) | Test | `tests/enforcement/test_logger_call_kwargs.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (every integration test on the pool or in `--here`) | Test | `tests/enforcement/test_integration_suite_selection.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (`docker` and `secrets` markers) | Test | `tests/enforcement/test_docker_marker.py`, `tests/enforcement/test_secrets_marker.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (CI unit shards run the whole suite and gate `check`) | Test | `tests/enforcement/test_ci_unit_shards.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (`loop_timing` tests run serially) | Test | `tests/enforcement/test_ci_unit_shards.py`, `scripts/ci-unit-tests.sh` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (KV buckets are memory-backed) | Test | `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (only `3tears-nats` imports `nats`) | Test | `tests/enforcement/test_nats_wrapper_usage.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (`kv_key_scope_for` is the only L2 scope producer) | Test | `tests/enforcement/test_l2_scope_discipline.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (KV buckets open only through the reconcile primitive) | Test | `tests/enforcement/test_kv_bucket_open_discipline.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (a KV grant names the bucket its opener creates) | Test | `tests/enforcement/test_kv_bucket_grant_naming.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (subject grants match the code both ways) | Test | `tests/enforcement/test_subject_grants_match_the_code.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (NATS receivers declare sender posture) | Test | `tests/enforcement/test_subscribers_declare_sender_posture.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (no epoch bypass or quiet degrade) | Test | `tests/enforcement/test_epoch_discipline.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (every tier hands back what was written) | Test | `tests/enforcement/test_tier_parity.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (persisted ids are UUIDv7) | Test | `tests/enforcement/test_uuidv7_enforcement.py` | janitor | see the Direction entry |
+| norm lives in `architecture.md` § Direction (a package imports only what it declares) | Test | `tests/enforcement/test_imports_declared.py`, `tests/enforcement/test_dependency_alignment.py` | janitor | see the Direction entry |
+| norm lives in `data-model.md` § Direction (datetime columns are `TIMESTAMPTZ`) | Test | `packages/core/tests/enforcement/test_no_datetime_type_columns.py` | janitor | see the Direction entry |
+| norm lives in `data-model.md` § Direction (partitioned-table SQL names the partition column) | Test | `packages/core/tests/enforcement/test_partition_column_enforcement.py` | janitor | see the Direction entry |
+| norm lives in `data-model.md` § Direction (migrations idempotent, replay-guarded, no mixed DDL and DML) | Test | `packages/core/tests/enforcement/test_migration_yugabyte_safety.py` | janitor | see the Direction entry |
+| norm lives in `data-model.md` § Direction (jsonb bound natively) | Test | `packages/core/tests/enforcement/test_jsonb_native_binding.py` | janitor | see the Direction entry |
+| norm lives in `data-model.md` § Direction (write generation declared on the schema) | Test | `tests/enforcement/test_write_generation_is_declared_on_the_schema.py` | janitor | see the Direction entry |
+| norm lives in `data-model.md` § Direction (absence-caching collections write L3 only through the framework) | Test | `packages/core/tests/enforcement/test_negative_cache_write_paths.py` | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (JWS verified with a pinned algorithm) | Test | `tests/enforcement/test_jwt_alg_pinning.py` | janitor | see the Direction entry |
+| norm lives in `security-model.md` § Direction (audit `details` keys are classified) | Test | `tests/enforcement/test_audit_details_keys_are_classified.py` | janitor | see the Direction entry |
 
 **A filled `Delegation` / `Delegate verification` / `Inner-loop verification` row states a norm, and each takes `Critic`** — a policy stated in prose is judgment-required by construction, so no linter or test can grade it; audit home `janitor`, and the why is the sentence the owner gave for it. One row covers the policy `Delegation` and `Delegate verification` state together; `Inner-loop verification` governs your own loop rather than a delegate's, so it gets its own row. The row is written when the policy is **ratified** — the owner confirms it, and `/prawduct:doctor` proposes a starting point for all three — never shipped here, because this table ships empty.
 

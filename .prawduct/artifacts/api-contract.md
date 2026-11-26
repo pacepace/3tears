@@ -224,6 +224,31 @@ Ratified 2026-11-26 from declarations the owner already made; each Why cites whe
   internal change into a break. Owner ruling 2026-10-01 (`CLAUDE.md` § Leading underscores are a
   stability contract).
 
+- **A name added to a module's public surface has a caller in some package's `src` other than
+  its own module, or names its outside caller in `_public_api_consumers.txt`.**
+  Why: no public API exists only for a test; a name with no production caller is surface a
+  release must carry for nobody (`CLAUDE.md` § Leading underscores). Gate:
+  `tests/enforcement/test_public_api_has_a_caller.py`. Owner 2026-11-26 bulk ratification.
+- **A wire model a separately deployed receiver reads is a `TolerantWireModel`, and only those
+  models are.**
+  Why: components and consumers upgrade on their own schedules (expand / migrate / contract,
+  owner ruling 2026-10-07), so a receiver must ignore a field a newer sender adds while still
+  refusing the fields that steer authority. Gate:
+  `tests/enforcement/test_wire_models_are_tolerant_readers.py`. Owner 2026-11-26 bulk ratification.
+- **The `web/` packages (`@3tears/*`) carry the Python family's version, and the release tool
+  lists every one of them.**
+  Why: one tag releases PyPI and npm together, so a package the release tool does not list would
+  ship at a stale version. Gate: `tests/enforcement/test_web_packages_follow_the_family_version.py`.
+  Owner 2026-11-26 bulk ratification.
+- **A package's runtime `__version__` is read from installed metadata, never written.**
+  Why: a release that bumps `pyproject.toml` without touching `__init__.py` cannot drift the
+  runtime version. Gate: `tests/enforcement/test_runtime_version_is_not_hardcoded.py`. Owner
+  2026-11-26 bulk ratification.
+- **Managed model ids come only from `threetears.models.defaults`; no source or test pins a raw
+  managed id.**
+  Why: a model rev is then one edit in one module. Gate:
+  `tests/enforcement/test_no_hardcoded_model_literals.py`. Owner 2026-11-26 bulk ratification.
+
 ## Candidate norms (unratified)
 
 - Intra-family dependencies carry a minor-line bound — `tests/enforcement/test_intra_family_version_bounds.py`

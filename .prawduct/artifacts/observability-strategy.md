@@ -175,6 +175,20 @@ Ratified 2026-11-26 from declarations the owner already made; each Why cites whe
   its caller, and a soft-fail wrapper hides the failure from both caller and operator.
   `CLAUDE.md` § Exceptions; `docs/exceptions.md`.
 
+- **A narrow handler whose body is only `pass`, `return None`, `continue` or `break` logs,
+  re-raises, or carries `# NOSILENT: <reason>`.**
+  Why: the same failure-visibility rule as above, applied where a handler is narrow enough to be
+  legitimate but still drops the failure. Gate: `tests/enforcement/test_no_silent_swallow.py`.
+  Owner 2026-11-26 bulk ratification.
+- **The OpenTelemetry floor 3tears declares is one floor, and CI tests the code at it.**
+  Why: the `otel` extra once declared `>=1.28` while the code needed 1.39; the suite only ran the
+  locked 1.43, and a consumer pinned at 1.36 resolved cleanly and failed at import. Gate:
+  `tests/enforcement/test_otel_floor.py`. Owner 2026-11-26 bulk ratification.
+- **Logger calls pass no structlog-style keywords (`log.info("msg", key=value)`).**
+  Why: `get_logger` returns a `logging.Logger`, so the keyword raises `TypeError`, and only at a
+  level the suite never runs, so it fails first in production. Gate:
+  `tests/enforcement/test_logger_call_kwargs.py`. Owner 2026-11-26 bulk ratification.
+
 ## Candidate norms (unratified)
 
 | Rule the code enforces | Enforcing file |

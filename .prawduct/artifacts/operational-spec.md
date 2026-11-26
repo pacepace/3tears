@@ -216,6 +216,24 @@ Ratified 2026-11-26 from declarations the owner already made; each Why cites whe
   Why: owner 2026-11-22, "Please also make sure change logs are the modern fragment style."
   (`.prawduct/owner-rulings.md`).
 
+- **Every integration test runs on the pool or in `--here`, and the two lists say exactly which.**
+  Why: a test in neither runs nowhere, and both the pool and the laptop go green without it. Gate:
+  `tests/enforcement/test_integration_suite_selection.py`. Owner 2026-11-26 bulk ratification.
+- **A test that drives a Docker daemon carries the `docker` marker, and a test that reads a
+  credential from the environment carries the `secrets` marker.**
+  Why: the pool has no Docker daemon and ships no credentials, and its suites deselect both
+  markers; an unmarked test would run there and fail or skip. Gates:
+  `tests/enforcement/test_docker_marker.py`, `tests/enforcement/test_secrets_marker.py`. Owner
+  2026-11-26 bulk ratification.
+- **The CI unit shards together run the whole suite, and `check` waits for every one.**
+  Why: a shard missing from a matrix is a slice of the suite that silently never runs, with every
+  job green. Gate: `tests/enforcement/test_ci_unit_shards.py`. Owner 2026-11-26 bulk ratification.
+- **Wall-clock tests carry the `loop_timing` marker and run serially.**
+  Why: they assert the event loop's responsiveness by wall clock, so they run apart and serially
+  (the marker's definition in the root `pyproject.toml`); the pool leaves them out
+  (`CLAUDE.md` § Scripts). Gates: `tests/enforcement/test_ci_unit_shards.py`,
+  `scripts/ci-unit-tests.sh`. Owner 2026-11-26 bulk ratification.
+
 ## Candidate norms (unratified)
 
 | Rule the code enforces | Enforcing file |
