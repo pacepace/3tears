@@ -192,15 +192,23 @@ _QUALIFIED_CONTEXT_NAMES = frozenset(f"{module}.CallContext" for module in _CONT
 #: a dotted name, as an annotation's text writes one
 _NAME = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
-#: a ``Literal[...]`` inside an annotation's text: its arguments are values, which name no type
-_LITERAL = re.compile(r"(?<![A-Za-z0-9_])(?:typing\.)?Literal\[[^\]]*\]")
+#: a module's dotted name before a ``typing`` form in an annotation's text (``typing.``, ``t.``, ``te.``)
+_FORM_PREFIX = r"(?<![A-Za-z0-9_.])(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
+
+#: a ``Literal[...]`` inside an annotation's text, under any module's name: its arguments are values, which name no
+#: type
+_LITERAL = re.compile(_FORM_PREFIX + r"Literal\[[^\]]*\]")
 
 #: a quoted forward reference inside an annotation's text, read as the name it quotes
 _QUOTED = re.compile(r"(['\"])(.*?)\1")
 
 
-#: where an ``Annotated[`` opens inside an annotation's text
-_ANNOTATED_OPEN = re.compile(r"(?<![A-Za-z0-9_])(?:typing\.)?Annotated\[")
+#: where an ``Annotated[`` opens inside an annotation's text, under any module's name (``typing.``, ``te.``): its
+#: metadata names no type, and the type it wraps is read as written
+_ANNOTATED_OPEN = re.compile(_FORM_PREFIX + r"Annotated\[")
+
+#: an ``Optional[`` or ``Union[`` under a module's name, read as the bare form
+_QUALIFIED_UNION_FORM = re.compile(_FORM_PREFIX + r"(Optional|Union)\[")
 
 
 def _without_metadata(text: str) -> str:
@@ -378,18 +386,8 @@ def _text_verdict(text: str, names: _ModuleNames) -> bool | None:
         return False
     if len(mentions) == 1:
         alone = re.sub(rf"(?<![A-Za-z0-9_.]){re.escape(mentions[0])}(?![A-Za-z0-9_])", "T", _type_text(text), count=1)
-        rest = re.sub(r"\s+", "", alone)
-        if rest in {
-            "T",
-            "T|None",
-            "None|T",
-            "Optional[T]",
-            "typing.Optional[T]",
-            "Union[T,None]",
-            "Union[None,T]",
-            "typing.Union[T,None]",
-            "typing.Union[None,T]",
-        }:
+        rest = _QUALIFIED_UNION_FORM.sub(r"\1[", re.sub(r"\s+", "", alone))
+        if rest in {"T", "T|None", "None|T", "Optional[T]", "Union[T,None]", "Union[None,T]"}:
             return True
     return None
 

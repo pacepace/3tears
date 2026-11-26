@@ -341,6 +341,13 @@ class TestTheHandlerDeclaresTheContext:
     def test_a_literal_value_naming_the_class_is_not_an_annotation_of_it(self) -> None:
         assert _tool(type_checking_handlers.literal_naming_it).context_parameter is None
 
+    def test_typing_forms_reached_through_a_modules_name_are_read_as_the_forms(self) -> None:
+        """``t.Annotated[...]`` and ``t.Optional[...]`` (``import typing as t``) wrap the context as the bare forms do,
+        and a ``t.Literal`` value names no type."""
+        assert _tool(type_checking_handlers.module_qualified_annotated_context).context_parameter == "ctx"
+        assert _tool(type_checking_handlers.module_qualified_optional_context).context_parameter == "ctx"
+        assert _tool(type_checking_handlers.module_qualified_literal_naming_it).context_parameter is None
+
     def test_an_unevaluable_annotation_that_is_not_an_input_is_warned_about(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

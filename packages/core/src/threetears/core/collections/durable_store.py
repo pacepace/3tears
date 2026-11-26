@@ -163,12 +163,12 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete")
         pk = self._pk_mapping(entity_id)
         seen = (
-            await self._durable_store.fetch_one(self.table_name, pk, conn=conn) if self.invalidation_columns else None
+            await self._durable_store.fetch_one(self.store_table, pk, conn=conn) if self.invalidation_columns else None
         )
         # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
         transaction.enroll(self, entity_id, row=seen)
         self._evict_l1(entity_id)
-        await self._durable_store.delete(self.table_name, pk, conn=conn)
+        await self._durable_store.delete(self.store_table, pk, conn=conn)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Default L2 codec: canonical JSON bytes. Override for a domain codec."""

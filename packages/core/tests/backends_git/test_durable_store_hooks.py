@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
@@ -97,6 +97,34 @@ async def test_a_collection_cached_under_its_own_name_reads_and_writes_the_store
         assert [scene.id for scene in await scenes.list()] == ["a"]
         await scenes.delete("a")
         assert await store.fetch_one("scenes", {"id": "a"}) is None
+    finally:
+        l1.reset()
+
+
+class _ColumnFilteredScenes(_Scenes):
+    """scenes whose eviction broadcast carries a column: a delete reads the row before it goes."""
+
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("words",)
+
+
+@pytest.mark.parametrize("cls", [_Scenes, _ColumnFilteredScenes], ids=["plain", "invalidation_columns"])
+async def test_a_store_table_collection_saves_and_deletes_in_a_change_set_under_the_store_table(
+    store: GitDurableStore, cls: type[_Scenes]
+) -> None:
+    """a write handed a change set (``conn=``) goes to ``store_table`` as a direct one does: a save and a delete (and
+    the read before the delete, for a collection whose broadcast carries columns)."""
+    l1 = _l1("s4")
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, l3_pool=store)
+    scenes = cls("s4", registry, DefaultCoreConfig(), store, nats_client=None, store_table="scenes")
+    try:
+        async with store.transaction(message="a scene") as change:
+            await scenes.save_entity(scenes.create({"id": "a", "words": 10, "date_updated": T0}), conn=change)
+        assert await store.fetch_one("scenes", {"id": "a"}) is not None
+        async with store.transaction(message="the scene goes") as change:
+            await scenes.delete("a", conn=change)
+        assert await store.fetch_one("scenes", {"id": "a"}) is None
+        assert await scenes.get("a") is None
     finally:
         l1.reset()
 

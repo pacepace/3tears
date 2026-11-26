@@ -78,7 +78,8 @@ Technical decisions taken here (the owner left the floor to the builder):
 - mcp tests: shims out, as above.
 - `scripts/test-mcp-floor.sh`, `.github/workflows/ci.yml`, `scripts/check-all.sh`,
   `tests/test_check_all_script.py`, `tests/enforcement/test_mcp_floor.py`, `docs/testing.md`,
-  `README.md`, `CLAUDE.md`: the floor run covers the three packages; `scripts/test-mcp-v1.sh` removed.
+  `README.md`, `CLAUDE.md` (merged onto the 0.95.0 line, where the scripts table lives in `docs/dev-workflow.md`,
+  that file carries the change): the floor run covers the three packages; `scripts/test-mcp-v1.sh` removed.
 - `CHANGELOG.md` under Unreleased, with the consumer check: of the known applications that install
   3tears-mcp, 3tears-models or the evals extra, three resolve mcp 2.2 or 2.3; four still resolve mcp
   1.x and move before they take this release; none resolves fastmcp 3.

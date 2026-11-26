@@ -27,7 +27,7 @@ import mcp.types as mcp_types
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import LOG_LEVEL_META_KEY
+from mcp.types import LOG_LEVEL_META_KEY
 from starlette.applications import Starlette
 from threetears.mcp import CallContext
 from threetears.mcp.auth import Identity

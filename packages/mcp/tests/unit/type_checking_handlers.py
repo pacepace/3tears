@@ -8,6 +8,7 @@ context, and an alias of the MCP one must still be found.
 
 from __future__ import annotations
 
+import typing as t
 from typing import TYPE_CHECKING, Annotated, Literal, Optional
 
 if TYPE_CHECKING:
@@ -75,4 +76,19 @@ async def bracket_in_metadata_row(*, row: Annotated[Row, "a]b"] | None = None) -
 
 async def literal_naming_it(*, mode: Literal["CallContext", "other"] = "other") -> str:
     """a Literal whose value happens to be the class's name."""
+    return "ok"
+
+
+async def module_qualified_annotated_context(*, ctx: t.Annotated[McpCallContext, "meta"]) -> str:
+    """the MCP CallContext inside ``Annotated`` reached through a module's name (``t.Annotated``), as text."""
+    return "ok"
+
+
+async def module_qualified_optional_context(*, ctx: t.Optional[McpCallContext] = None) -> str:  # noqa: UP045
+    """the MCP CallContext or None through a module's name (``t.Optional``), as text."""
+    return "ok"
+
+
+async def module_qualified_literal_naming_it(*, mode: t.Literal["CallContext", "other"] = "other") -> str:
+    """a Literal reached through a module's name whose value happens to be the class's name."""
     return "ok"

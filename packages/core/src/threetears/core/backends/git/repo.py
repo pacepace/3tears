@@ -2179,7 +2179,8 @@ class GitRepo:
         :param moves: old path -> new path
         :ptype moves: dict[str, str] | None
         :param takeover: committed by takeover, which holds the lease before this process counts as the writer:
-            no writer check
+            no writer check. Takeover commits only a layout-format migration, whose files are not hand edits, so no
+            version is stamped on them either (HEAD's rows are still under the older format)
         :ptype takeover: bool
         :return: the commit
         :rtype: CommitResult

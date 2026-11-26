@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import warnings
 import weakref
 from collections.abc import Mapping
@@ -45,7 +46,7 @@ from mcp.server.connection import allowed_log_levels
 from mcp.server.context import ServerRequestContext
 from mcp.server.stdio import stdio_server as _stdio_server
 from mcp.shared.exceptions import MCPDeprecationWarning
-from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 from threetears.observe import contain, get_logger
 
 from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, IdentityProvider
@@ -183,6 +184,9 @@ class McpServer:
         # the connection's initialize parameters, which live exactly as long as the connection; an entry goes when they
         # do. A connection that never asked is absent: every level is sent, as before
         self._log_levels: Mapping[int, LogLevel] = MappingProxyType({})
+        # a closed connection's entry is dropped by a weakref finalizer, which runs on whatever thread collects its
+        # parameters: each change of the mapping is made whole under this lock, so neither change loses the other
+        self._log_levels_lock = threading.Lock()
         self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
@@ -249,9 +253,10 @@ class McpServer:
         if connection is None:
             return
         key = id(connection)
-        if key not in self._log_levels:
-            weakref.finalize(connection, self._forget_log_level, key)
-        self._log_levels = MappingProxyType({**self._log_levels, key: level})
+        with self._log_levels_lock:
+            if key not in self._log_levels:
+                weakref.finalize(connection, self._forget_log_level, key)
+            self._log_levels = MappingProxyType({**self._log_levels, key: level})
 
     def _forget_log_level(self, key: int) -> None:
         """drop a closed connection's level.
@@ -261,7 +266,10 @@ class McpServer:
         :return: nothing
         :rtype: None
         """
-        self._log_levels = MappingProxyType({held: level for held, level in self._log_levels.items() if held != key})
+        with self._log_levels_lock:
+            self._log_levels = MappingProxyType(
+                {held: level for held, level in self._log_levels.items() if held != key}
+            )
 
     def _log_levels_for(self, request: ServerRequestContext[Any, Any]) -> frozenset[LogLevel]:
         """the log levels a call may send: the protocol's rule, narrowed by the connection's ``logging/setLevel``.
