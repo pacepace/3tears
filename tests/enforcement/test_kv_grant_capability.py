@@ -25,12 +25,15 @@ direction shows up as a test failure anywhere else, which is why they are enforc
 
 Mode via ``KV_GRANT_ENFORCEMENT_MODE`` (default ``strict``), mirroring the sibling guards.
 Exemptions live in ``_kv_grant_exemptions.txt`` and require a specific ``# rationale:`` line.
+Each file's bucket declarations are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
 
 import ast
 import sys
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -44,9 +47,9 @@ from threetears.enforcement.common import (
     find_local_src_roots,
     iter_python_files,
     parse_exemptions_with_rationale,
-    parse_python_file,
     resolve_mode,
 )
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXEMPTIONS_PATH = _REPO_ROOT / "tests" / "enforcement" / "_kv_grant_exemptions.txt"
@@ -207,6 +210,79 @@ def _enclosing_functions(tree: ast.Module) -> dict[int, str]:
     return owner
 
 
+@dataclass(frozen=True)
+class _BucketCall:
+    """one ``JsResource.kv(...)`` or ``JsResource(...)`` call, as the three rules read it.
+
+    :ivar line: the call's line
+    :ivar enclosing: the name of the function holding it, or ``<module>``
+    :ivar asks_to_declare: whether it asks for the declaring capability
+    :ivar names_shared_bucket: whether its bucket name builds the shared collections bucket's
+    :ivar scope_explicit: whether it passes a ``scope=`` that is not ``None``
+    :ivar missing: the required keywords it omits, in :data:`_REQUIRED_KEYWORDS` order
+    """
+
+    line: int
+    enclosing: str
+    asks_to_declare: bool
+    names_shared_bucket: bool
+    scope_explicit: bool
+    missing: tuple[str, ...]
+
+
+def _bucket_calls(path: Path, tree: ast.Module) -> tuple[_BucketCall, ...]:
+    """every bucket-resource call in one module, in walk order, as the scan cache keeps them.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: one record per ``JsResource.kv(...)`` / ``JsResource(...)`` call
+    :rtype: tuple[_BucketCall, ...]
+    """
+    owner = _enclosing_functions(tree)
+    found: list[_BucketCall] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        factory = _is_kv_factory(node)
+        constructor = _is_resource_constructor(node)
+        if not (factory or constructor):
+            continue
+        scope = _keyword(node, "scope")
+        found.append(
+            _BucketCall(
+                line=node.lineno,
+                enclosing=owner.get(node.lineno, "<module>"),
+                asks_to_declare=(factory and _is_truthy_constant(_keyword(node, "declare")))
+                or (constructor and _names_declare_capability(_keyword(node, "capability"))),
+                names_shared_bucket=_mentions_shared_bucket(_bucket_name_expression(node)),
+                scope_explicit=scope is not None and not (isinstance(scope, ast.Constant) and scope.value is None),
+                missing=tuple(name for name in _REQUIRED_KEYWORDS if _keyword(node, name) is None),
+            )
+        )
+    return tuple(found)
+
+
+def _bucket_calls_under(scan_roots: tuple[Path, ...]) -> Iterator[tuple[Path, _BucketCall]]:
+    """each bucket-resource call under *scan_roots*, file by file in walk order.
+
+    a file's calls are kept on disk by its bytes (``file_facts``), so a sibling rule or a later batch
+    parses none again; a root outside the repo (a planted tree) keeps its own store under itself.
+    a file that does not parse is noted and skipped, as :func:`parse_python_file` does.
+
+    :param scan_roots: src roots to scan
+    :ptype scan_roots: tuple[Path, ...]
+    :return: ``(file, call)`` pairs
+    :rtype: Iterator[tuple[Path, _BucketCall]]
+    """
+    for root in scan_roots:
+        base = facts_root(root)
+        for source, calls in file_facts(_bucket_calls, iter_python_files(root), root=base, unparsable="note").items():
+            for call in calls:
+                yield source, call
+
+
 # ---------------------------------------------------------------------------
 # rule (a) -- declare belongs to the declaring identity alone
 # ---------------------------------------------------------------------------
@@ -229,37 +305,26 @@ def find_declare_outside_the_declarer(
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            owner = _enclosing_functions(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                asks = (_is_kv_factory(node) and _is_truthy_constant(_keyword(node, "declare"))) or (
-                    _is_resource_constructor(node) and _names_declare_capability(_keyword(node, "capability"))
-                )
-                if not asks:
-                    continue
-                enclosing = owner.get(node.lineno, "<module>")
-                if enclosing in sanctioned:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_DECLARE_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=enclosing,
-                        reason=(
-                            f"'{enclosing}' asks for the declaring capability (STREAM.CREATE + "
-                            "STREAM.UPDATE) on a shared stream; UPDATE sets republish/sources, which "
-                            "mirror EVERY principal's keys onto a subject the caller names. it "
-                            f"belongs to the declaring identity alone ({', '.join(sorted(sanctioned))})"
-                        ),
-                    )
-                )
+    for source, call in _bucket_calls_under(scan_roots):
+        if not call.asks_to_declare:
+            continue
+        enclosing = call.enclosing
+        if enclosing in sanctioned:
+            continue
+        violations.append(
+            Violation(
+                category=_DECLARE_CATEGORY,
+                file=source,
+                line=call.line,
+                symbol=enclosing,
+                reason=(
+                    f"'{enclosing}' asks for the declaring capability (STREAM.CREATE + "
+                    "STREAM.UPDATE) on a shared stream; UPDATE sets republish/sources, which "
+                    "mirror EVERY principal's keys onto a subject the caller names. it "
+                    f"belongs to the declaring identity alone ({', '.join(sorted(sanctioned))})"
+                ),
+            )
+        )
     return violations
 
 
@@ -277,37 +342,25 @@ def find_unscoped_shared_bucket_grants(scan_roots: tuple[Path, ...]) -> list[Vio
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            owner = _enclosing_functions(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                if not (_is_kv_factory(node) or _is_resource_constructor(node)):
-                    continue
-                if not _mentions_shared_bucket(_bucket_name_expression(node)):
-                    continue
-                scope = _keyword(node, "scope")
-                explicit = scope is not None and not (isinstance(scope, ast.Constant) and scope.value is None)
-                if explicit:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_UNSCOPED_SHARED_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=owner.get(node.lineno, "<module>"),
-                        reason=(
-                            "the shared collections bucket is declared without a key scope; the "
-                            "grant would widen to $KV.{bucket}.> -- every principal's keys, read "
-                            "and write -- and nothing would fail, because a grant that is too wide "
-                            "works perfectly"
-                        ),
-                    )
-                )
+    for source, call in _bucket_calls_under(scan_roots):
+        if not call.names_shared_bucket:
+            continue
+        if call.scope_explicit:
+            continue
+        violations.append(
+            Violation(
+                category=_UNSCOPED_SHARED_CATEGORY,
+                file=source,
+                line=call.line,
+                symbol=call.enclosing,
+                reason=(
+                    "the shared collections bucket is declared without a key scope; the "
+                    "grant would widen to $KV.{bucket}.> -- every principal's keys, read "
+                    "and write -- and nothing would fail, because a grant that is too wide "
+                    "works perfectly"
+                ),
+            )
+        )
     return violations
 
 
@@ -325,33 +378,23 @@ def find_implicit_bucket_decisions(scan_roots: tuple[Path, ...]) -> list[Violati
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            owner = _enclosing_functions(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                if not (_is_kv_factory(node) or _is_resource_constructor(node)):
-                    continue
-                missing = [name for name in _REQUIRED_KEYWORDS if _keyword(node, name) is None]
-                if not missing:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_IMPLICIT_DECISION_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=owner.get(node.lineno, "<module>"),
-                        reason=(
-                            f"KV bucket declaration omits {', '.join(missing)}; a new bucket must "
-                            "state its key scope and its write intent explicitly rather than "
-                            "inherit another bucket's answer"
-                        ),
-                    )
-                )
+    for source, call in _bucket_calls_under(scan_roots):
+        missing = call.missing
+        if not missing:
+            continue
+        violations.append(
+            Violation(
+                category=_IMPLICIT_DECISION_CATEGORY,
+                file=source,
+                line=call.line,
+                symbol=call.enclosing,
+                reason=(
+                    f"KV bucket declaration omits {', '.join(missing)}; a new bucket must "
+                    "state its key scope and its write intent explicitly rather than "
+                    "inherit another bucket's answer"
+                ),
+            )
+        )
     return violations
 
 

@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID
 
 import httpx
 import mcp
@@ -32,7 +32,7 @@ from threetears.mcp.http_server import current_bearer_token
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
 
-_CALLER = uuid4()
+_CALLER = UUID("00000000-0000-4000-8000-000000001003")
 
 
 async def _resolve(token: str) -> Identity:

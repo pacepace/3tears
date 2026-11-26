@@ -34,7 +34,8 @@ currently moot (every docker-chained conftest fixture is itself named
 ``usefixtures`` for docker), but if either pattern appears, add the new
 fixture name to ``_DOCKER_ROOTED_FIXTURES`` or extend the detector.
 
-AST-based, side-effect-free, well under the 15s budget.
+AST-based, well under the 15s budget; each file's findings are kept in the
+gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 # repo root: this file lives at tests/enforcement/, two levels down.
@@ -150,13 +151,25 @@ def _declares_integration_marker(tree: ast.Module) -> bool:
     return False
 
 
+def _unmarked_service_user(path: Path, tree: ast.Module) -> bool:
+    """true when one test module needs a service and omits the integration marker.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :return: whether it requests a docker-rooted fixture or starts a service, unmarked
+    :rtype: bool
+    """
+    needs_services = _requests_docker_fixture(tree) or _starts_a_service(tree)
+    return needs_services and not _declares_integration_marker(tree)
+
+
 def test_docker_backed_tests_declare_the_integration_marker() -> None:
     """a test requesting a docker-rooted fixture must be marked integration."""
     offenders: list[str] = []
-    for path in _test_files():
-        tree = parse_python_path(path)
-        needs_services = _requests_docker_fixture(tree) or _starts_a_service(tree)
-        if needs_services and not _declares_integration_marker(tree):
+    for path, unmarked in file_facts(_unmarked_service_user, _test_files(), root=_REPO_ROOT).items():
+        if unmarked:
             offenders.append(str(path.relative_to(_REPO_ROOT)))
     if offenders:
         listing = "\n".join(f"  - {o}" for o in offenders)

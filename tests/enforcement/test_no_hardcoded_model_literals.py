@@ -40,7 +40,7 @@ import ast
 import re
 from pathlib import Path
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -144,21 +144,24 @@ def _collect_files() -> list[Path]:
     return sorted(files)
 
 
-def _violations_in_file(src_file: Path) -> list[str]:
+def _violations_in_file(src_file: Path, tree: ast.Module) -> tuple[str, ...]:
     """AST-walk one file and return managed-model-literal violation descriptions.
+
+    kept in the gitignored scan cache by the file's bytes (``file_facts``).
 
     :param src_file: python source file to scan
     :ptype src_file: Path
-    :return: list of ``line N: <value>`` violation strings (empty if none)
-    :rtype: list[str]
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: ``line N: <value>`` violation strings (empty if none)
+    :rtype: tuple[str, ...]
     """
-    tree = parse_python_path(src_file)
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if _is_model_literal(node.value):
                 violations.append(f"  line {node.lineno}: {node.value!r}")
-    return violations
+    return tuple(violations)
 
 
 def test_no_hardcoded_model_literals() -> None:
@@ -172,14 +175,16 @@ def test_no_hardcoded_model_literals() -> None:
     :raises AssertionError: when a managed-model-id literal is found
     """
     exemptions = _load_exemptions()
-    offenders: dict[str, list[str]] = {}
+    scanned: list[Path] = []
     for src_file in _collect_files():
         rel_posix = src_file.relative_to(_PROJECT_ROOT).as_posix()
         if _is_always_allowed(rel_posix) or rel_posix in exemptions:
             continue
-        found = _violations_in_file(src_file)
+        scanned.append(src_file)
+    offenders: dict[str, list[str]] = {}
+    for src_file, found in file_facts(_violations_in_file, scanned, root=_PROJECT_ROOT).items():
         if found:
-            offenders[rel_posix] = found
+            offenders[src_file.relative_to(_PROJECT_ROOT).as_posix()] = list(found)
     assert not offenders, (
         "hardcoded managed-model-id literal(s) found; import the canonical "
         "constant from threetears.models (DEFAULT_CHAT_MODEL / DEFAULT_FAST_MODEL "

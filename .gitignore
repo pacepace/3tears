@@ -46,6 +46,8 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+# the enforcement gates' scan memo (tests/enforcement/scan_cache.py); covered by .cache above, named so it stays ignored
+.cache/enforcement-scans/
 nosetests.xml
 coverage.xml
 *.cover

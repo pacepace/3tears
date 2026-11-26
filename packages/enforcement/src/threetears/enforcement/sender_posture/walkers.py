@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Final
 
 from threetears.enforcement.common import iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.common.scan_cache import file_facts
 from threetears.enforcement.sender_posture.config import POSTURES, SenderPostureConfig
 
 __all__ = [
@@ -86,6 +87,22 @@ class _Marker:
     line: int
     posture: str | None
     open_rows: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ModuleReceivers:
+    """what one module holds for the gate, whatever the repo's configuration: kept by the file's bytes.
+
+    :ivar comments: ``(line, comment)`` of every real comment naming the gate, in line order
+    :ivar calls: ``(callee, line, function, first, last)`` of every call with a final callee name, in
+        source order: ``function`` its enclosing scope's dotted name, ``first`` to ``last`` the lines
+        its marker may sit on
+    :ivar unreadable: why the module could not be read, or none when it was
+    """
+
+    comments: tuple[tuple[int, str], ...]
+    calls: tuple[tuple[str, int, str, int, int], ...]
+    unreadable: str | None = None
 
 
 @dataclass
@@ -204,7 +221,7 @@ def _region(statement: ast.stmt, call: ast.Call, lines: list[str]) -> range:
 
 def _site_from_markers(
     relative: str,
-    call: ast.Call,
+    line: int,
     callee: str,
     function: str,
     markers: list[_Marker],
@@ -216,8 +233,8 @@ def _site_from_markers(
 
     :param relative: repo-relative path of module
     :ptype relative: str
-    :param call: the site's call
-    :ptype call: ast.Call
+    :param line: line of the site's call
+    :ptype line: int
     :param callee: final callee name
     :ptype callee: str
     :param function: dotted name of the enclosing function or class
@@ -231,7 +248,7 @@ def _site_from_markers(
     :return: the site, with its posture when one valid marker declares it
     :rtype: SubscribeSite
     """
-    where = f"{relative}:{call.lineno}"
+    where = f"{relative}:{line}"
     posture: str | None = None
     open_rows: tuple[str, ...] = ()
     if not markers:
@@ -257,50 +274,91 @@ def _site_from_markers(
                 f"{relative}::{function} is not one; declare what this receiver checks instead"
             )
     return SubscribeSite(
-        path=relative, line=call.lineno, callee=callee, function=function, posture=posture, open_rows=open_rows
+        path=relative, line=line, callee=callee, function=function, posture=posture, open_rows=open_rows
     )
 
 
-def _scan_module(path: Path, config: SenderPostureConfig, scan: _Scan) -> None:
+def _module_receivers(path: Path, tree: ast.Module) -> _ModuleReceivers:
     """
-    walk one module, appending its sites and findings.
+    read one module's gate comments and calls; kept on disk by the file's bytes.
 
-    :param path: module to walk
+    reads the module's own source for its comments, which the tree does not keep.
+
+    :param path: module to read
     :ptype path: Path
+    :param tree: its parse
+    :ptype tree: ast.Module
+    :return: its comments naming the gate and its calls, or why it could not be tokenized
+    :rtype: _ModuleReceivers
+    """
+    source = path.read_text(encoding="utf-8")
+    try:
+        comments = _comment_lines(source)
+    except tokenize.TokenError as exc:
+        return _ModuleReceivers(comments=(), calls=(), unreadable=str(exc))
+    lines = source.splitlines()
+    calls: list[tuple[str, int, str, int, int]] = []
+    for call, statement, function in _calls_with_statements(tree):
+        callee = _callee_name(call)
+        if callee is not None:
+            region = _region(statement, call, lines)
+            calls.append((callee, call.lineno, function, region.start, region.stop - 1))
+    return _ModuleReceivers(
+        comments=tuple((line, comment) for line, comment in comments.items() if _MARKER_WORD in comment),
+        calls=tuple(calls),
+    )
+
+
+def _module_receivers_uncached(path: Path) -> _ModuleReceivers:
+    """
+    read one module the scan cache did not: one it could not parse, or one outside the repo root.
+
+    :param path: module to read
+    :ptype path: Path
+    :return: its fact, or why it could not be parsed
+    :rtype: _ModuleReceivers
+    """
+    try:
+        path.read_text(encoding="utf-8")
+        tree = parse_python_path(path)
+    except (UnicodeDecodeError, SyntaxError) as exc:
+        return _ModuleReceivers(comments=(), calls=(), unreadable=str(exc))
+    return _module_receivers(path, tree)
+
+
+def _judge_module(relative: str, module: _ModuleReceivers, config: SenderPostureConfig, scan: _Scan) -> None:
+    """
+    judge one module's sites and markers, appending its sites and findings.
+
+    :param relative: repo-relative path of module
+    :ptype relative: str
+    :param module: what the module holds for the gate
+    :ptype module: _ModuleReceivers
     :param config: gate configuration
     :ptype config: SenderPostureConfig
     :param scan: accumulator, mutated in place
     :ptype scan: _Scan
     """
-    relative = relative_posix_path(path, config.repo_root)
-    try:
-        source = path.read_text(encoding="utf-8")
-        tree = parse_python_path(path)
-        comments = _comment_lines(source)
-    except (UnicodeDecodeError, SyntaxError, tokenize.TokenError) as exc:
-        scan.findings.append(f"{relative}: could not be parsed ({exc}); the gate cannot see its sites")
+    if module.unreadable is not None:
+        scan.findings.append(f"{relative}: could not be parsed ({module.unreadable}); the gate cannot see its sites")
         return
-    lines = source.splitlines()
     markers: dict[int, _Marker] = {}
-    for line, comment in comments.items():
-        if _MARKER_WORD in comment:
-            marker = _parse_marker(line, comment)
-            if marker.posture is None:
-                scan.findings.append(
-                    f"{relative}:{line}: malformed sender-posture marker {comment.strip()!r}; "
-                    "expected '# sender-posture: <posture> [open <ROW>[,<ROW>]] [-- <text>]'"
-                )
-            else:
-                markers[line] = marker
+    for line, comment in module.comments:
+        marker = _parse_marker(line, comment)
+        if marker.posture is None:
+            scan.findings.append(
+                f"{relative}:{line}: malformed sender-posture marker {comment.strip()!r}; "
+                "expected '# sender-posture: <posture> [open <ROW>[,<ROW>]] [-- <text>]'"
+            )
+        else:
+            markers[line] = marker
     claimed: set[int] = set()
-    for call, statement, function in _calls_with_statements(tree):
-        callee = _callee_name(call)
-        if callee is None or callee not in config.site_callees:
+    for callee, line, function, first, last in module.calls:
+        if callee not in config.site_callees:
             continue
-        region = _region(statement, call, lines)
-        in_region = [markers[line] for line in region if line in markers]
+        in_region = [markers[region_line] for region_line in range(first, last + 1) if region_line in markers]
         claimed.update(marker.line for marker in in_region)
-        scan.sites.append(_site_from_markers(relative, call, callee, function, in_region, config, scan.findings))
+        scan.sites.append(_site_from_markers(relative, line, callee, function, in_region, config, scan.findings))
     for line in sorted(set(markers) - claimed):
         scan.findings.append(f"{relative}:{line}: sender-posture marker sits on no subscribe site; remove it")
 
@@ -319,13 +377,20 @@ def _scan(config: SenderPostureConfig) -> _Scan:
         if not prefix.endswith("/"):
             scan.findings.append(f"excluded prefix {prefix!r} must end with '/', so it names a directory")
     matched: set[str] = set()
+    walked: list[tuple[Path, str]] = []
     for root in config.src_roots:
         for path in iter_python_files(root):
             relative = relative_posix_path(path, config.repo_root)
             excluded_by = [prefix for prefix in config.excluded_prefixes if relative.startswith(prefix)]
             matched.update(excluded_by)
             if not excluded_by:
-                _scan_module(path, config, scan)
+                walked.append((path, relative))
+    inside = [path for path, _ in walked if path.is_relative_to(config.repo_root)]
+    # a module that does not parse is left out of the facts and read again here, for its error
+    facts = file_facts(_module_receivers, inside, root=config.repo_root, unparsable="note")
+    for path, relative in walked:
+        module = facts[path] if path in facts else _module_receivers_uncached(path)
+        _judge_module(relative, module, config, scan)
     for prefix in config.excluded_prefixes:
         if prefix not in matched:
             scan.findings.append(f"excluded prefix {prefix!r} matches no module; remove it")

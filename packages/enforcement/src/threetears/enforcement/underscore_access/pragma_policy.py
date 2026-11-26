@@ -62,7 +62,7 @@ from threetears.enforcement.underscore_access.ledger import (
 )
 from threetears.enforcement.underscore_access.ruff_config import (
     exempted_files,
-    is_vendored,
+    owned_files,
     ruff_configs,
     slf001_globs,
 )
@@ -124,7 +124,7 @@ def scanned_python_files(repo_root: Path) -> list[Path]:
     :return: the files, sorted
     :rtype: list[Path]
     """
-    return sorted(path for path in repo_root.rglob("*.py") if not is_vendored(path, repo_root))
+    return sorted(owned_files(repo_root, repo_root, lambda name: name.endswith(".py")))
 
 
 def _comments(source: str) -> list[tuple[int, str]]:

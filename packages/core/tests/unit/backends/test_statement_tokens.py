@@ -94,6 +94,9 @@ def test_any_mix_of_quotes_comments_and_words_is_labelled_the_same_both_ways() -
     assert plain > 5_000, "the fuzz hardly reached the plain path"
 
 
+# what the loop is held for each statement it labels, read by wall clock: a pool batch's other work stretches it, so
+# it runs apart and serially (#1140)
+@pytest.mark.loop_timing
 def test_a_pages_upsert_is_labelled_in_a_few_milliseconds() -> None:
     rows = ", ".join(f"(${n * 4 + 1}, ${n * 4 + 2}, ${n * 4 + 3}, ${n * 4 + 4})" for n in range(1000))
     # a table of its own per page, as each page's text differs: no label is remembered from the page before

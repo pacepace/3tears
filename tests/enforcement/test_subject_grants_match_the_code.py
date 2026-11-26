@@ -35,7 +35,6 @@ here checks that evidence, so it is a pointer for a reader, not a guarantee.
 from __future__ import annotations
 
 import secrets
-import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +97,9 @@ def _kept_for_older_releases() -> Mapping[Principal, Mapping[str, tuple[str, str
 _AGENT: Final[str] = "019470a8-b5c3-7def-8123-000000000001"
 _AGENT_POD_ID: Final[str] = "01947100-0000-7000-8000-000000000001"
 _TOOL_POD_ID: Final[str] = "01947100-0000-7000-8000-000000000002"
+#: the id a subject carries where the code mints a fresh one per call (a stream, a reply, a result). Any id
+#: gives the subject its shape, and a fixed one keeps the gate free of entropy, so a pool can serve it from cache.
+_MINTED_ID: Final[UUID] = UUID("01947100-0000-7000-8000-0000000000aa")
 #: the tool-name node a tool pod owns, as the host resolves it at connect
 _OWNED_NODE: Final[str] = "pentest"
 
@@ -354,7 +356,7 @@ def _external_receive_sites() -> dict[Principal, tuple[_Site, ...]]:
             ),
             # a core subscribe of the stream subject itself, not a request inbox
             _there(
-                "sdk:src/aibots_agents/runtime/gateway_model.py:593", str(Subjects.gateway_stream(_AGENT, uuid.uuid4()))
+                "sdk:src/aibots_agents/runtime/gateway_model.py:593", str(Subjects.gateway_stream(_AGENT, _MINTED_ID))
             ),
         ),
         Principal.GATEWAY: (
@@ -374,7 +376,7 @@ def _external_receive_sites() -> dict[Principal, tuple[_Site, ...]]:
             _there("hub:src/aibots/agent_router/registration.py:135", str(Subjects.agent_register())),
             _there("hub:src/aibots/agent_router/registration.py:140", str(Subjects.agent_deregister())),
             _there("hub:src/aibots/agent_router/health.py:154", str(Subjects.agent_heartbeat_wildcard())),
-            _there("hub:src/aibots/agent_router/proxy.py:690", str(Subjects.agent_complete(uuid.uuid4()))),
+            _there("hub:src/aibots/agent_router/proxy.py:690", str(Subjects.agent_complete(_MINTED_ID))),
         ),
     }
 
@@ -438,7 +440,7 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _here(server, "Subjects.tools_register()", str(Subjects.tools_register())),
             _here(server, "Subjects.tools_heartbeat(", str(Subjects.tools_heartbeat(inprocess))),
             # the in-process server's durable result, a JetStream publish
-            _here(server, "jetstream_publish(", str(Subjects.tools_result(inprocess, uuid.uuid4()))),
+            _here(server, "jetstream_publish(", str(Subjects.tools_result(inprocess, _MINTED_ID))),
             _here(audit, "Subjects.audit_event(", str(Subjects.audit_event("tool.call"))),
             _here(
                 "packages/agent/knowledge/src/threetears/agent/knowledge/integration.py",
@@ -460,9 +462,9 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _there("sdk:src/aibots_agents/runtime/nats_transport.py:2002", str(Subjects.channels_deliver("slack"))),
             _there(
                 "sdk:src/aibots_agents/runtime/streaming_transport.py:122",
-                str(Subjects.hub_stream(_AGENT, uuid.uuid4())),
+                str(Subjects.hub_stream(_AGENT, _MINTED_ID)),
             ),
-            _there("sdk:src/aibots_agents/runtime/nats_transport.py:1247", str(Subjects.agent_complete(uuid.uuid4()))),
+            _there("sdk:src/aibots_agents/runtime/nats_transport.py:1247", str(Subjects.agent_complete(_MINTED_ID))),
             invalidate,
         ),
         Principal.TOOL_POD: (
@@ -528,7 +530,7 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
                 ".namespace.discover",
                 str(Subjects.namespace_discover()),
             ),
-            _here(server, "jetstream_publish(", str(Subjects.tools_result(_TOOL_POD_ID, uuid.uuid4()))),
+            _here(server, "jetstream_publish(", str(Subjects.tools_result(_TOOL_POD_ID, _MINTED_ID))),
             _here("packages/nats/src/threetears/nats/client.py", "SERVER_USER_INFO_SUBJECT", SERVER_USER_INFO_SUBJECT),
             invalidate,
             _here(
@@ -565,7 +567,7 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _here(
                 "packages/registry/src/threetears/registry/proxy.py",
                 "jetstream_publish(",
-                str(Subjects.tools_reply(_AGENT, uuid.uuid4())),
+                str(Subjects.tools_reply(_AGENT, _MINTED_ID)),
             ),
             # the hub's registry_identity factory, loaded into the registry process, handshakes
             _there("hub:src/aibots/hub/tools/registry_identity.py:281", str(Subjects.hub_handshake())),
@@ -579,7 +581,7 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
         ),
         Principal.GATEWAY: (
             _there(
-                "hub:src/aibots/gateway/handlers/streaming.py:514", str(Subjects.gateway_stream(_AGENT, uuid.uuid4()))
+                "hub:src/aibots/gateway/handlers/streaming.py:514", str(Subjects.gateway_stream(_AGENT, _MINTED_ID))
             ),
             _there("hub:src/aibots/hub/usage/audit_sink.py:419", str(Subjects.hub_usage_track())),
             _there("hub:src/aibots/gateway/media.py:226", str(Subjects.hub_object_resolve())),

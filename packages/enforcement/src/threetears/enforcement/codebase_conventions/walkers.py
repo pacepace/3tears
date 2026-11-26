@@ -21,20 +21,25 @@ four AST-based walkers cover the four conventions:
   annotation. dunder names (``__init__``, ``__repr__``, ...) and
   pytest test functions (``def test_*`` or any function in a
   ``test_*.py`` file) are skipped by construction.
+
+all four read one fact per file, :class:`_ModuleConventions`, which the
+scan cache keeps by the file's bytes (``file_facts``): a file seen before
+is not parsed again, by any of the walkers.
 """
 
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from threetears.enforcement.common import (
     Violation,
     iter_python_files,
-    note_unscanned,
-    parse_python_file,
     relative_posix_path,
 )
+from threetears.enforcement.common.scan_cache import CACHE_DIRECTORY, file_facts
 
 __all__ = [
     "find_missing_future_annotations",
@@ -48,6 +53,101 @@ _PRINT_CATEGORY = "codebase_conventions.print"
 _GETLOGGER_CATEGORY = "codebase_conventions.stdlib_getlogger"
 _FUTURE_ANNOTATIONS_CATEGORY = "codebase_conventions.future_annotations"
 _RETURN_TYPE_CATEGORY = "codebase_conventions.return_type"
+
+
+@dataclass(frozen=True)
+class _ModuleConventions:
+    """what the four walkers read of one module, kept in the scan cache by its bytes.
+
+    :ivar prints: the line of every bare ``print(...)`` call, in :func:`ast.walk` order
+    :ivar getloggers: the line of every stdlib ``getLogger(...)`` call, in :func:`ast.walk` order,
+        with that source line right-stripped (``None`` past the file's last line), for the marker
+    :ivar future_annotations: whether the module imports ``annotations`` from ``__future__`` at top level
+    :ivar untyped: ``(line, name)`` of every non-dunder, non-``test_`` function without a return
+        annotation, in :func:`ast.walk` order
+    """
+
+    prints: tuple[int, ...]
+    getloggers: tuple[tuple[int, str | None], ...]
+    future_annotations: bool
+    untyped: tuple[tuple[int, str], ...]
+
+
+def _module_conventions(path: Path, tree: ast.Module) -> _ModuleConventions:
+    """read one module's fact; the file is read again only when it calls ``getLogger``, for its lines.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed source
+    :ptype tree: ast.Module
+    :return: the module's fact
+    :rtype: _ModuleConventions
+    """
+    prints: list[int] = []
+    getlogger_lines: list[int] = []
+    untyped: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "print":
+                prints.append(node.lineno)
+            if _is_stdlib_getlogger_call(node):
+                getlogger_lines.append(node.lineno)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _is_dunder(node.name) and not node.name.startswith("test_") and node.returns is None:
+                untyped.append((node.lineno, node.name))
+    getloggers: tuple[tuple[int, str | None], ...] = ()
+    if getlogger_lines:
+        source_lines = path.read_text(encoding="utf-8").splitlines()
+        getloggers = tuple(
+            (line, source_lines[line - 1].rstrip() if 0 <= line - 1 < len(source_lines) else None)
+            for line in getlogger_lines
+        )
+    return _ModuleConventions(
+        prints=tuple(prints),
+        getloggers=getloggers,
+        future_annotations=_has_future_annotations(tree),
+        untyped=tuple(untyped),
+    )
+
+
+def _conventions(
+    src_roots: tuple[Path, ...],
+    repo_root: Path,
+    scanned: Callable[[Path], bool],
+) -> list[tuple[Path, _ModuleConventions]]:
+    """each scanned module under the roots, in walk order, with its fact.
+
+    a file that does not parse goes through ``note_unscanned`` and is left out. the files under
+    ``repo_root`` are keyed relative to it, any other root's relative to that root, and every fact
+    lives in ``repo_root``'s scan cache.
+
+    :param src_roots: every src root the scanner should consider
+    :ptype src_roots: tuple[Path, ...]
+    :param repo_root: repo root, where the scan cache lives
+    :ptype repo_root: Path
+    :param scanned: whether a walker reads a file at all, before it is parsed
+    :ptype scanned: Callable[[Path], bool]
+    :return: ``(path, fact)`` pairs, a file under two roots once per root
+    :rtype: list[tuple[Path, _ModuleConventions]]
+    """
+    walked: list[Path] = []
+    by_anchor: dict[Path, list[Path]] = {}
+    for root in src_roots:
+        paths = [path for path in iter_python_files(root) if scanned(path)]
+        walked.extend(paths)
+        by_anchor.setdefault(repo_root if root.is_relative_to(repo_root) else root, []).extend(paths)
+    facts: dict[Path, _ModuleConventions] = {}
+    for anchor, paths in by_anchor.items():
+        facts.update(
+            file_facts(
+                _module_conventions,
+                paths,
+                root=anchor,
+                directory=repo_root / CACHE_DIRECTORY,
+                unparsable="note",
+            )
+        )
+    return [(path, facts[path]) for path in walked if path in facts]
 
 
 # ----------------------------------------------------------------------
@@ -94,33 +194,21 @@ def find_print_calls(
     :return: violations in source order
     :rtype: list[Violation]
     """
-    violations: list[Violation] = []
-    for root in src_roots:
-        for module_path in iter_python_files(root):
-            rel = relative_posix_path(module_path, repo_root)
-            if rel in exempt_files:
-                continue
-            tree = parse_python_file(module_path)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                if not isinstance(func, ast.Name):
-                    continue
-                if func.id != "print":
-                    continue
-                violations.append(
-                    Violation(
-                        category=_PRINT_CATEGORY,
-                        file=module_path,
-                        line=node.lineno,
-                        symbol="print",
-                        reason=("bare print() found; use the project logger (threetears.observe.get_logger) instead."),
-                    )
-                )
-    return violations
+    return [
+        Violation(
+            category=_PRINT_CATEGORY,
+            file=module_path,
+            line=line,
+            symbol="print",
+            reason=("bare print() found; use the project logger (threetears.observe.get_logger) instead."),
+        )
+        for module_path, fact in _conventions(
+            src_roots,
+            repo_root,
+            lambda path: relative_posix_path(path, repo_root) not in exempt_files,
+        )
+        for line in fact.prints
+    ]
 
 
 # ----------------------------------------------------------------------
@@ -180,44 +268,31 @@ def find_stdlib_getlogger_calls(
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in src_roots:
-        for module_path in iter_python_files(root):
-            rel = relative_posix_path(module_path, repo_root)
-            if rel in exempt_files:
+    for module_path, fact in _conventions(
+        src_roots,
+        repo_root,
+        lambda path: relative_posix_path(path, repo_root) not in exempt_files,
+    ):
+        for lineno, source_line in fact.getloggers:
+            if source_line is not None and marker in source_line:
                 continue
-            try:
-                source_text = module_path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                note_unscanned(module_path, "not valid utf-8")
-                continue
-            tree = parse_python_file(module_path)
-            if tree is None:
-                continue
-            source_lines = source_text.splitlines()
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                if not _is_stdlib_getlogger_call(node):
-                    continue
-                if _line_has_marker(source_lines, node.lineno, marker):
-                    continue
-                violations.append(
-                    Violation(
-                        category=_GETLOGGER_CATEGORY,
-                        file=module_path,
-                        line=node.lineno,
-                        symbol="getLogger",
-                        reason=(
-                            "stdlib logging.getLogger() found; use "
-                            "threetears.observe.get_logger instead. "
-                            f"if configuring a third-party logger by "
-                            f"name, add '{marker}' on the call line "
-                            f"with a justification, or add the module "
-                            f"to the config's `getlogger_exempt_files` "
-                            f"mapping."
-                        ),
-                    )
+            violations.append(
+                Violation(
+                    category=_GETLOGGER_CATEGORY,
+                    file=module_path,
+                    line=lineno,
+                    symbol="getLogger",
+                    reason=(
+                        "stdlib logging.getLogger() found; use "
+                        "threetears.observe.get_logger instead. "
+                        f"if configuring a third-party logger by "
+                        f"name, add '{marker}' on the call line "
+                        f"with a justification, or add the module "
+                        f"to the config's `getlogger_exempt_files` "
+                        f"mapping."
+                    ),
                 )
+            )
     return violations
 
 
@@ -251,32 +326,6 @@ def _is_stdlib_getlogger_call(node: ast.Call) -> bool:
     if isinstance(func, ast.Name):
         return func.id == "getLogger"
     return False
-
-
-def _line_has_marker(
-    source_lines: list[str],
-    lineno: int,
-    marker: str,
-) -> bool:
-    """true iff ``source_lines[lineno-1]`` carries the per-line marker.
-
-    ``lineno`` is 1-indexed (matches python AST convention). the
-    marker is matched as a case-sensitive substring after stripping
-    trailing whitespace from the line.
-
-    :param source_lines: file contents split by lines (no newlines)
-    :ptype source_lines: list[str]
-    :param lineno: 1-indexed line number of the offending site
-    :ptype lineno: int
-    :param marker: the marker substring (case-sensitive)
-    :ptype marker: str
-    :return: whether the marker is present on the offending line
-    :rtype: bool
-    """
-    idx = lineno - 1
-    if idx < 0 or idx >= len(source_lines):
-        return False
-    return marker in source_lines[idx].rstrip()
 
 
 # ----------------------------------------------------------------------
@@ -319,33 +368,25 @@ def find_missing_future_annotations(
     :return: violations in source order
     :rtype: list[Violation]
     """
-    violations: list[Violation] = []
-    for root in src_roots:
-        for module_path in iter_python_files(root):
-            if module_path.name in skip_basenames:
-                continue
-            rel = relative_posix_path(module_path, repo_root)
-            if rel in exempt_files:
-                continue
-            tree = parse_python_file(module_path)
-            if tree is None:
-                continue
-            if _has_future_annotations(tree):
-                continue
-            violations.append(
-                Violation(
-                    category=_FUTURE_ANNOTATIONS_CATEGORY,
-                    file=module_path,
-                    line=1,
-                    symbol="__future__",
-                    reason=(
-                        "module is missing 'from __future__ import "
-                        "annotations'; the project depends on PEP 563-style "
-                        "evaluation for all type hints."
-                    ),
-                )
-            )
-    return violations
+    return [
+        Violation(
+            category=_FUTURE_ANNOTATIONS_CATEGORY,
+            file=module_path,
+            line=1,
+            symbol="__future__",
+            reason=(
+                "module is missing 'from __future__ import "
+                "annotations'; the project depends on PEP 563-style "
+                "evaluation for all type hints."
+            ),
+        )
+        for module_path, fact in _conventions(
+            src_roots,
+            repo_root,
+            lambda path: path.name not in skip_basenames and relative_posix_path(path, repo_root) not in exempt_files,
+        )
+        if not fact.future_annotations
+    ]
 
 
 def _has_future_annotations(tree: ast.Module) -> bool:
@@ -415,45 +456,25 @@ def find_missing_return_types(
     :return: violations in source order
     :rtype: list[Violation]
     """
-    violations: list[Violation] = []
-    for root in src_roots:
-        for module_path in iter_python_files(root):
-            if module_path.name in skip_basenames:
-                continue
-            if module_path.name.startswith("test_"):
-                continue
-            rel = relative_posix_path(module_path, repo_root)
-            if rel in exempt_files:
-                continue
-            tree = parse_python_file(module_path)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(
-                    node,
-                    (ast.FunctionDef, ast.AsyncFunctionDef),
-                ):
-                    continue
-                if _is_dunder(node.name):
-                    continue
-                if node.name.startswith("test_"):
-                    continue
-                if node.returns is not None:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_RETURN_TYPE_CATEGORY,
-                        file=module_path,
-                        line=node.lineno,
-                        symbol=node.name,
-                        reason=(
-                            f"function {node.name}() is missing a return "
-                            f"type annotation; add '-> <type>' before the "
-                            f"colon."
-                        ),
-                    )
-                )
-    return violations
+    return [
+        Violation(
+            category=_RETURN_TYPE_CATEGORY,
+            file=module_path,
+            line=line,
+            symbol=name,
+            reason=(f"function {name}() is missing a return type annotation; add '-> <type>' before the colon."),
+        )
+        for module_path, fact in _conventions(
+            src_roots,
+            repo_root,
+            lambda path: (
+                path.name not in skip_basenames
+                and not path.name.startswith("test_")
+                and relative_posix_path(path, repo_root) not in exempt_files
+            ),
+        )
+        for line, name in fact.untyped
+    ]
 
 
 def _is_dunder(name: str) -> bool:

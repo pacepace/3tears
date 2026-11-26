@@ -34,7 +34,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +88,28 @@ def _matches(imported: set[str], refused: frozenset[str]) -> set[str]:
     }
 
 
+def _file_imports(path: Path, tree: ast.Module) -> frozenset[str]:
+    """Return one file's :func:`_imported_modules`, kept in the gitignored scan cache by its bytes.
+
+    :param path: the file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: dotted module names it imports from
+    :rtype: frozenset[str]
+    """
+    return frozenset(_imported_modules(tree))
+
+
+def _imports_by_file() -> dict[Path, frozenset[str]]:
+    """Return each shipped python file's imported module names, in walk order.
+
+    :return: path -> dotted module names it imports from
+    :rtype: dict[Path, frozenset[str]]
+    """
+    return file_facts(_file_imports, _source_files(), root=_REPO_ROOT)
+
+
 def _source_files() -> list[Path]:
     """Return every shipped python file across the workspace's source trees.
 
@@ -123,11 +145,10 @@ def test_only_the_promoted_transport_speaks_smtp_or_builds_mime() -> None:
         client or a MIME composer
     """
     violations: list[str] = []
-    for path in _source_files():
+    for path, imported in _imports_by_file().items():
         relative = path.relative_to(_REPO_ROOT).as_posix()
         if relative == _SANCTIONED_TRANSPORT:
             continue
-        imported = _imported_modules(parse_python_path(path))
         offending = _matches(imported, _SMTP_MODULES) | _matches(imported, _MIME_MODULES)
         violations.extend(f"{relative}: imports {name}" for name in sorted(offending))
     assert not violations, (
@@ -148,8 +169,7 @@ def test_no_package_reaches_a_mail_provider_sdk() -> None:
     :raises AssertionError: if any file imports a mail provider SDK
     """
     violations: list[str] = []
-    for path in _source_files():
-        imported = _imported_modules(parse_python_path(path))
+    for path, imported in _imports_by_file().items():
         relative = path.relative_to(_REPO_ROOT).as_posix()
         violations.extend(f"{relative}: imports {name}" for name in sorted(_matches(imported, _PROVIDER_SDKS)))
     assert not violations, (

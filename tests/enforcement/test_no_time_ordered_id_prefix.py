@@ -37,7 +37,7 @@ import ast
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -97,6 +97,19 @@ def prefix_slices(tree: ast.AST) -> list[int]:
     return sorted(lines)
 
 
+def _prefix_slice_lines(path: Path, tree: ast.Module) -> tuple[int, ...]:
+    """one file's :func:`prefix_slices`, kept in the gitignored scan cache by its bytes.
+
+    :param path: the file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the lines, in order
+    :rtype: tuple[int, ...]
+    """
+    return tuple(prefix_slices(tree))
+
+
 def _scanned_files() -> list[Path]:
     """every python file under a package's ``src/`` or ``tests/``, and the root ``tests/``.
 
@@ -125,7 +138,9 @@ def test_no_name_is_cut_from_the_head_of_a_time_ordered_id() -> None:
     assert len(test_files) > 500, f"the walk found {len(test_files)} test files; the glob has gone wrong"
 
     found = [
-        f"{path.relative_to(_REPO_ROOT)}:{line}" for path in files for line in prefix_slices(parse_python_path(path))
+        f"{path.relative_to(_REPO_ROOT)}:{line}"
+        for path, lines in file_facts(_prefix_slice_lines, files, root=_REPO_ROOT).items()
+        for line in lines
     ]
 
     assert found == [], (

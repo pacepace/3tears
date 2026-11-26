@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from uuid import UUID, uuid7
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -46,10 +46,20 @@ class _Release066ObjectResolve(BaseModel):
 
 
 _CASES: list[tuple[BaseModel, type[BaseModel]]] = [
-    (EngagementScopeRequestModel(identity_token="t", correlation_id=uuid7()), _Release066EngagementScope),
-    (NamespaceDiscoveryRequest(correlation_id=uuid7(), identity_token="t"), _Release066NamespaceDiscovery),
     (
-        ObjectResolveRequestModel(identity_token="t", correlation_id=uuid7(), object_id=uuid7()),
+        EngagementScopeRequestModel(identity_token="t", correlation_id=UUID("019a0000-0000-7000-8000-000000000401")),
+        _Release066EngagementScope,
+    ),
+    (
+        NamespaceDiscoveryRequest(correlation_id=UUID("019a0000-0000-7000-8000-000000000402"), identity_token="t"),
+        _Release066NamespaceDiscovery,
+    ),
+    (
+        ObjectResolveRequestModel(
+            identity_token="t",
+            correlation_id=UUID("019a0000-0000-7000-8000-000000000403"),
+            object_id=UUID("019a0000-0000-7000-8000-000000000404"),
+        ),
         _Release066ObjectResolve,
     ),
 ]

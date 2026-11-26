@@ -27,6 +27,8 @@ refusal surfaces as a JetStream error naming replay.
 no registry has nowhere to record first-existence, and fail-closed is the right answer there --
 but it must be WRITTEN, because the whole defect was a default nobody chose. A construction
 that names ``anchor`` at all passes; one that omits it does not.
+
+Each file's constructions are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from typing import Final
 
 import pytest
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 pytestmark = pytest.mark.enforcement
@@ -45,33 +47,50 @@ pytestmark = pytest.mark.enforcement
 #: the packages' source roots, which is where a production construction lives. Tests build
 #: guards freely and are deliberately out of scope: a test asserting the refusal behaviour has
 #: to be able to construct one without an anchor.
-_SRC_ROOTS: Final[tuple[Path, ...]] = (Path(__file__).resolve().parents[2] / "packages",)
+_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
+_SRC_ROOTS: Final[tuple[Path, ...]] = (_REPO_ROOT / "packages",)
 
 #: the module that DEFINES the guard, whose own docstring example constructs one to explain it.
 _DEFINING_MODULE: Final[str] = "replay_guard.py"
 
 
+def _guard_constructions(path: Path, tree: ast.Module) -> tuple[tuple[int, bool], ...]:
+    """every ``ReplayGuard(...)`` call in one module, and whether it names ``anchor``.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: ``(line, names_anchor)`` per construction, in walk order
+    :rtype: tuple[tuple[int, bool], ...]
+    """
+    found: list[tuple[int, bool]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name != "ReplayGuard":
+            continue
+        names_anchor = any(kw.arg == "anchor" for kw in node.keywords)
+        found.append((node.lineno, names_anchor))
+    return tuple(found)
+
+
 def _constructions() -> list[tuple[str, int, bool]]:
     """every ``ReplayGuard(...)`` call in production source, and whether it names ``anchor``.
+
+    each file's constructions are kept on disk by its bytes, so the sibling test or a later batch
+    parses none again.
 
     :return: ``(path, line, names_anchor)`` per construction
     :rtype: list[tuple[str, int, bool]]
     """
     found: list[tuple[str, int, bool]] = []
     for root in _SRC_ROOTS:
-        for path in sorted(root.rglob("src/**/*.py")):
-            if path.name == _DEFINING_MODULE:
-                continue
-            tree = parse_python_path(path)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
-                if name != "ReplayGuard":
-                    continue
-                names_anchor = any(kw.arg == "anchor" for kw in node.keywords)
-                found.append((str(path), node.lineno, names_anchor))
+        paths = [path for path in sorted(root.rglob("src/**/*.py")) if path.name != _DEFINING_MODULE]
+        for path, constructions in file_facts(_guard_constructions, paths, root=_REPO_ROOT).items():
+            found.extend((str(path), line, names_anchor) for line, names_anchor in constructions)
     return found
 
 

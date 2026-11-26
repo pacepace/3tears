@@ -31,7 +31,9 @@ a rationale that had gone stale, and that ``Any`` is precisely what let two
 arity bugs sit in shipped code. Type the collection.
 
 Static AST parsing only (no imports, no execution), consistent with the rest
-of ``tests/enforcement``.
+of ``tests/enforcement``. Each file's class declarations, which the arity table
+is resolved from, are kept in the gitignored scan cache by its bytes
+(``file_facts``).
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from pathlib import Path
 import pytest
 
 from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -122,27 +125,41 @@ def _bare_name(annotation: ast.expr | None) -> str | None:
     return text.split("[")[0].split(".")[-1]
 
 
+def _class_declarations(path: Path, tree: ast.Module) -> tuple[tuple[str, tuple[str, ...], int | None], ...]:
+    """return every class in one module, as the scan cache keeps it.
+
+    :param path: module under inspection
+    :ptype path: Path
+    :param tree: its syntax tree
+    :ptype tree: ast.Module
+    :return: ``(class name, base names, own pk arity or None)`` per class, in walk order
+    :rtype: tuple[tuple[str, tuple[str, ...], int | None], ...]
+    """
+    return tuple(
+        (node.name, tuple(_bare_name(b) or "" for b in node.bases), _declared_pk_arity(node))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+    )
+
+
 def _pk_arities() -> dict[str, int]:
     """return ``{collection class name: pk arity}`` for composite-pk classes.
 
     a subclass that redeclares wins; one that does not inherits its base's
     arity, which is how ``HubGroupCollection`` is covered by
-    ``GroupCollection``'s declaration.
+    ``GroupCollection``'s declaration. each file's classes are kept on disk
+    by its bytes, so a later process reads them instead of parsing.
 
     :return: mapping of class name to declared pk arity, composite only
     :rtype: dict[str, int]
     """
     declared: dict[str, int] = {}
     bases: dict[str, list[str]] = {}
-    for path in _source_files():
-        tree = parse_python_path(path)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            bases[node.name] = [_bare_name(b) or "" for b in node.bases]
-            arity = _declared_pk_arity(node)
+    for classes in file_facts(_class_declarations, _source_files(), root=_REPO_ROOT).values():
+        for name, parents, arity in classes:
+            bases[name] = list(parents)
             if arity is not None:
-                declared[node.name] = arity
+                declared[name] = arity
     resolved = dict(declared)
     changed = True
     while changed:

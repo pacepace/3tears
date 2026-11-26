@@ -49,7 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from threetears.enforcement.common import Violation, callee_names, iter_python_files, parse_python_file
+from threetears.enforcement.common import Violation, callee_names
 
 from threetears.enforcement.audit_details.config import (
     DEFAULT_AUDIT_CONSTRUCTORS,
@@ -59,8 +59,8 @@ from threetears.enforcement.audit_details.config import (
 from threetears.enforcement.audit_details.event_types import (
     EventTypeResolver,
     FunctionNode,
+    ScannedModules,
     SourceModule,
-    module_name,
     parameter_names,
     source_module,
 )
@@ -196,28 +196,22 @@ def unclassified_detail_paths(
 def collect_audit_details_sites(config: AuditDetailsConfig) -> dict[Path, list[AuditDetailsSite]]:
     """every site under the configured source roots, event types resolved across all of them.
 
+    only the modules that call a constructor or forwarder, and those their event types resolve
+    through, are parsed: each module's call and function names come from the scan cache
+    (:class:`ScannedModules`).
+
     :param config: per-repo enforcement config
     :ptype config: AuditDetailsConfig
     :return: file -> its sites, files with none omitted
     :rtype: dict[Path, list[AuditDetailsSite]]
     """
-    modules: dict[str, SourceModule] = {}
-    paths: dict[str, Path] = {}
-    for root in config.src_roots:
-        for path in iter_python_files(root):
-            tree = parse_python_file(path)
-            if tree is None:
-                continue
-            name, is_package = module_name(path, root)
-            if name not in modules:
-                modules[name] = source_module(tree, name=name, is_package=is_package)
-                paths[name] = path
+    modules = ScannedModules(config.src_roots, config.repo_root)
     resolver = EventTypeResolver(modules, constructors=config.constructors, forwarders=config.forwarders)
     by_file: dict[Path, list[AuditDetailsSite]] = {}
-    for name, module in modules.items():
-        sites = _read_module(module, resolver, config.constructors, config.forwarders)
+    for name in modules.calling(config.constructors | config.forwarders):
+        sites = _read_module(modules[name], resolver, config.constructors, config.forwarders)
         if sites:
-            by_file[paths[name]] = sites
+            by_file[modules.path(name)] = sites
     return by_file
 
 

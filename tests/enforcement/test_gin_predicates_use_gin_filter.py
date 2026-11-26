@@ -30,7 +30,8 @@ What it cannot see: a predicate assembled from fragments that are each innocent 
 own, SQL outside ``packages/*/src``, and ``pg_trgm`` similarity (``name % $n``), which
 YugabyteDB also refuses but whose ``%`` cannot be told from a format specifier, a modulo or a
 LIKE wildcard in a string literal. No package here uses trigram similarity. Static parsing only -- no imports executed, no
-network -- consistent with the rest of ``tests/enforcement``.
+network -- consistent with the rest of ``tests/enforcement``; each file's findings are kept in the gitignored
+scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ import re
 from pathlib import Path
 
 import pytest
+
+from threetears.enforcement.common.scan_cache import file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
@@ -136,7 +139,19 @@ def find_unfiltered_gin_predicates(source: str, rel: str) -> tuple[list[str], in
     :return: offender lines, and how many refused shapes were correctly wrapped
     :rtype: tuple[list[str], int]
     """
-    tree = ast.parse(source)
+    return _unfiltered_in(ast.parse(source), rel)
+
+
+def _unfiltered_in(tree: ast.Module, rel: str) -> tuple[list[str], int]:
+    """Scan one parsed module for refused GIN shapes outside ``gin_filter``.
+
+    :param tree: the module's syntax tree
+    :ptype tree: ast.Module
+    :param rel: repo-relative path, for the report
+    :ptype rel: str
+    :return: offender lines, and how many refused shapes were correctly wrapped
+    :rtype: tuple[list[str], int]
+    """
     skipped = _docstring_nodes(tree) | _call_arguments(tree, gin=False)
     wrapped_ids = _call_arguments(tree, gin=True)
     f_string_parts = {id(value) for node in ast.walk(tree) if isinstance(node, ast.JoinedStr) for value in node.values}
@@ -168,16 +183,27 @@ def _source_files() -> list[Path]:
     return sorted(files)
 
 
+def _gin_findings(path: Path, tree: ast.Module) -> tuple[tuple[str, ...], int]:
+    """One source file's findings, as the scan cache keeps them.
+
+    :param path: the file, under the repo root
+    :ptype path: Path
+    :param tree: its syntax tree
+    :ptype tree: ast.Module
+    :return: offender lines, and how many refused shapes were correctly wrapped
+    :rtype: tuple[tuple[str, ...], int]
+    """
+    offenders, wrapped = _unfiltered_in(tree, path.relative_to(_REPO_ROOT).as_posix())
+    return tuple(offenders), wrapped
+
+
 def test_every_refused_gin_shape_goes_through_gin_filter() -> None:
     files = _source_files()
     assert files, "no package source found -- the scan would pass having read nothing"
     offenders: list[str] = []
     wrapped = 0
-    for path in files:
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        if rel == _DEFINING_MODULE:
-            continue
-        found, ok = find_unfiltered_gin_predicates(path.read_text(encoding="utf-8"), rel)
+    scanned = [path for path in files if path.relative_to(_REPO_ROOT).as_posix() != _DEFINING_MODULE]
+    for found, ok in file_facts(_gin_findings, scanned, root=_REPO_ROOT).values():
         offenders.extend(found)
         wrapped += ok
     assert wrapped, "no gin_filter call found -- the guard's positive case is gone, so it proves nothing"

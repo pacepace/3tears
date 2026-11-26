@@ -36,6 +36,8 @@ import ast
 import re
 from pathlib import Path
 
+from threetears.enforcement.common.scan_cache import file_facts
+
 WORKSPACE = Path(__file__).resolve().parents[2]
 SOURCES = sorted(p for p in (WORKSPACE / "packages").rglob("src") if p.is_dir() and "/tests/" not in str(p))
 
@@ -278,7 +280,10 @@ def _built_late(tree: ast.AST, where: str, waived: set[str] | None = None) -> li
 
 
 def _findings(source: str, where: str) -> list[str]:
-    tree = ast.parse(source)
+    return _tree_findings(ast.parse(source), where)
+
+
+def _tree_findings(tree: ast.AST, where: str) -> list[str]:
     windows = [] if where == WINDOW_MODULE else _trailing_windows(tree, where)
     built = [] if where == WINDOW_MODULE else _built_late(tree, where)
     found = windows + _glued_on(tree, where) + _appended_late(tree, where) + built
@@ -290,16 +295,28 @@ def _findings(source: str, where: str) -> list[str]:
     return list(by_line.values())
 
 
-def _each_source() -> list[tuple[str, str]]:
-    return [
-        (path.read_text(encoding="utf-8"), str(path.relative_to(WORKSPACE)))
-        for root in SOURCES
-        for path in sorted(root.rglob("*.py"))
-    ]
+def _file_notes(path: Path, tree: ast.Module) -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
+    """One source file's late notes, its hand-placed window notes, and the waivers that suppressed a late piece.
+
+    The window's own module defines both renderings, so it places no note and is waived nothing.
+    """
+    where = str(path.relative_to(WORKSPACE))
+    if where == WINDOW_MODULE:
+        return tuple(_tree_findings(tree, where)), (), frozenset()
+    waived: set[str] = set()
+    _built_late(tree, where, waived)
+    return tuple(_tree_findings(tree, where)), tuple(_hand_placed(tree, where)), frozenset(waived)
+
+
+def _each_file() -> list[tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]]:
+    """Each source file's :func:`_file_notes`, in walk order, kept on disk by the file's bytes."""
+    paths = [path for root in SOURCES for path in sorted(root.rglob("*.py"))]
+    found = file_facts(_file_notes, paths, root=WORKSPACE)
+    return [found[path] for path in paths]
 
 
 def test_no_tool_writes_a_note_after_its_body() -> None:
-    hits = [hit for source, where in _each_source() for hit in _findings(source, where)]
+    hits = [hit for findings, _, _ in _each_file() for hit in findings]
     assert not hits, (
         "these write a note after the body it is about, where a reader that keeps only the head of a result "
         "loses it. State the note first (TextWindow.rendered(note_first=True), or append it before the body), "
@@ -308,14 +325,7 @@ def test_no_tool_writes_a_note_after_its_body() -> None:
 
 
 def test_every_hand_placed_window_note_is_listed_with_its_place() -> None:
-    found = sorted(
-        {
-            site
-            for source, where in _each_source()
-            if where != WINDOW_MODULE
-            for site in _hand_placed(ast.parse(source), where)
-        }
-    )
+    found = sorted({site for _, hand_placed, _ in _each_file() for site in hand_placed})
     assert found == sorted(HAND_PLACED), (
         "a window's note is placed by hand (.note(tool=...) or .note(how=...)) somewhere HAND_PLACED does not "
         "list, or HAND_PLACED lists one that is gone. Render with rendered(note_first=True), or list the site "
@@ -328,10 +338,7 @@ def test_the_tables_name_what_is_there() -> None:
         file, opening = key.split(":", 1)
         path = WORKSPACE / file
         assert path.is_file() and opening.strip() in path.read_text(encoding="utf-8"), f"names what is gone: {key}"
-    waived: set[str] = set()
-    for source, where in _each_source():
-        if where != WINDOW_MODULE:
-            _built_late(ast.parse(source), where, waived)
+    waived = {key for _, _, suppressed in _each_file() for key in suppressed}
     assert waived == set(NOTE_BUILT_AFTER_ON_PURPOSE), (
         "NOTE_BUILT_AFTER_ON_PURPOSE must name exactly the late pieces it suppresses. "
         f"listed but suppressing nothing: {sorted(set(NOTE_BUILT_AFTER_ON_PURPOSE) - waived)}"

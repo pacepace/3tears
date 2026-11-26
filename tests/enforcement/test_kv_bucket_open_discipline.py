@@ -22,13 +22,15 @@ Two rules, each pinning a decision whose violation is invisible at runtime.
 
 Mode via ``KV_OPEN_ENFORCEMENT_MODE`` (default ``strict``), mirroring the sibling
 guards. Exemptions live in ``_kv_open_exemptions.txt`` and require a specific
-``# rationale:`` line.
+``# rationale:`` line. Each file's findings are kept in the gitignored scan cache by its bytes
+(``file_facts``).
 """
 
 from __future__ import annotations
 
 import ast
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -42,9 +44,9 @@ from threetears.enforcement.common import (
     find_local_src_roots,
     iter_python_files,
     parse_exemptions_with_rationale,
-    parse_python_file,
     resolve_mode,
 )
+from threetears.enforcement.common.scan_cache import facts_root, file_facts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXEMPTIONS_PATH = _REPO_ROOT / "tests" / "enforcement" / "_kv_open_exemptions.txt"
@@ -85,45 +87,6 @@ def _called_name(func: ast.expr) -> str | None:
     return result
 
 
-def find_unsanctioned_kv_opens(scan_roots: tuple[Path, ...]) -> list[Violation]:
-    """flag every direct KV-bucket open outside the reconcile primitive.
-
-    :param scan_roots: src roots to scan for violations
-    :ptype scan_roots: tuple[Path, ...]
-    :return: violations in source order
-    :rtype: list[Violation]
-    """
-    violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            if source.as_posix().endswith(_SANCTIONED_MODULE):
-                continue
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = _called_name(node.func)
-                if name not in _KV_OPENERS:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_UNSANCTIONED_OPEN_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=name,
-                        reason=(
-                            f"'{name}' opens a KV bucket directly, bypassing the create-or-reconcile "
-                            "primitive; the requested bucket configuration is then silently discarded "
-                            "whenever the bucket already exists. open it through "
-                            "NatsClient.kv_bucket / NatsClient.ensure_kv_bucket instead"
-                        ),
-                    )
-                )
-    return violations
-
-
 def _handler_names(handler: ast.ExceptHandler) -> set[str]:
     """the exception type names one ``except`` clause catches.
 
@@ -143,6 +106,98 @@ def _handler_names(handler: ast.ExceptHandler) -> set[str]:
     return names
 
 
+@dataclass(frozen=True)
+class _OpenFacts:
+    """what both rules read of one module.
+
+    :ivar opens: ``(line, opener name)`` per direct KV-bucket open, in walk order
+    :ivar mismatch_catches: ``(line, mismatch name)`` per ``except`` clause catching the mismatch
+        beside ``KvError``, in walk order
+    """
+
+    opens: tuple[tuple[int, str], ...]
+    mismatch_catches: tuple[tuple[int, str], ...]
+
+
+def _open_facts(path: Path, tree: ast.Module) -> _OpenFacts:
+    """one module's findings for both rules, as the scan cache keeps them.
+
+    :param path: the module's file
+    :ptype path: Path
+    :param tree: its parsed module
+    :ptype tree: ast.Module
+    :return: the module's findings
+    :rtype: _OpenFacts
+    """
+    opens: list[tuple[int, str]] = []
+    mismatch_catches: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = _called_name(node.func)
+            if name in _KV_OPENERS:
+                opens.append((node.lineno, name))
+        elif isinstance(node, ast.ExceptHandler):
+            caught = _handler_names(node)
+            shared = caught & _MISMATCH_NAMES
+            if shared and _DEGRADING_ERROR in caught:
+                mismatch_catches.append((node.lineno, sorted(shared)[0]))
+    return _OpenFacts(opens=tuple(opens), mismatch_catches=tuple(mismatch_catches))
+
+
+def _open_facts_under(scan_roots: tuple[Path, ...], *, skip_sanctioned: bool) -> list[tuple[Path, _OpenFacts]]:
+    """each module's findings under *scan_roots*, root by root in walk order.
+
+    a file's findings are kept on disk by its bytes (``file_facts``), so the sibling rule or a later
+    batch parses none again; a root outside the repo (a planted tree) keeps its own store under
+    itself. a file that does not parse is noted and skipped, as :func:`parse_python_file` does.
+
+    :param scan_roots: src roots to scan
+    :ptype scan_roots: tuple[Path, ...]
+    :param skip_sanctioned: leave the reconcile primitive's own module out, unread
+    :ptype skip_sanctioned: bool
+    :return: ``(file, findings)`` pairs
+    :rtype: list[tuple[Path, _OpenFacts]]
+    """
+    found: list[tuple[Path, _OpenFacts]] = []
+    for root in scan_roots:
+        base = facts_root(root)
+        files = [
+            source
+            for source in iter_python_files(root)
+            if not (skip_sanctioned and source.as_posix().endswith(_SANCTIONED_MODULE))
+        ]
+        found.extend(file_facts(_open_facts, files, root=base, unparsable="note").items())
+    return found
+
+
+def find_unsanctioned_kv_opens(scan_roots: tuple[Path, ...]) -> list[Violation]:
+    """flag every direct KV-bucket open outside the reconcile primitive.
+
+    :param scan_roots: src roots to scan for violations
+    :ptype scan_roots: tuple[Path, ...]
+    :return: violations in source order
+    :rtype: list[Violation]
+    """
+    violations: list[Violation] = []
+    for source, facts in _open_facts_under(scan_roots, skip_sanctioned=True):
+        for line, name in facts.opens:
+            violations.append(
+                Violation(
+                    category=_UNSANCTIONED_OPEN_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=name,
+                    reason=(
+                        f"'{name}' opens a KV bucket directly, bypassing the create-or-reconcile "
+                        "primitive; the requested bucket configuration is then silently discarded "
+                        "whenever the bucket already exists. open it through "
+                        "NatsClient.kv_bucket / NatsClient.ensure_kv_bucket instead"
+                    ),
+                )
+            )
+    return violations
+
+
 def find_mismatch_caught_with_kv_error(scan_roots: tuple[Path, ...]) -> list[Violation]:
     """flag any ``except`` clause catching the mismatch alongside ``KvError``.
 
@@ -152,31 +207,21 @@ def find_mismatch_caught_with_kv_error(scan_roots: tuple[Path, ...]) -> list[Vio
     :rtype: list[Violation]
     """
     violations: list[Violation] = []
-    for root in scan_roots:
-        for source in iter_python_files(root):
-            tree = parse_python_file(source)
-            if tree is None:
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ExceptHandler):
-                    continue
-                caught = _handler_names(node)
-                shared = caught & _MISMATCH_NAMES
-                if not shared or _DEGRADING_ERROR not in caught:
-                    continue
-                violations.append(
-                    Violation(
-                        category=_MISMATCH_SWALLOW_CATEGORY,
-                        file=source,
-                        line=node.lineno,
-                        symbol=sorted(shared)[0],
-                        reason=(
-                            f"'{sorted(shared)[0]}' is caught alongside {_DEGRADING_ERROR}; those "
-                            "handlers degrade to a warning, so a misconfigured bucket would be "
-                            "swallowed and the fleet would run with L2 silently off"
-                        ),
-                    )
+    for source, facts in _open_facts_under(scan_roots, skip_sanctioned=False):
+        for line, symbol in facts.mismatch_catches:
+            violations.append(
+                Violation(
+                    category=_MISMATCH_SWALLOW_CATEGORY,
+                    file=source,
+                    line=line,
+                    symbol=symbol,
+                    reason=(
+                        f"'{symbol}' is caught alongside {_DEGRADING_ERROR}; those "
+                        "handlers degrade to a warning, so a misconfigured bucket would be "
+                        "swallowed and the fleet would run with L2 silently off"
+                    ),
                 )
+            )
     return violations
 
 

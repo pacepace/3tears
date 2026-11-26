@@ -17,7 +17,7 @@ conftest fixture under a name other than ``searxng_container``, escapes the walk
 docker indicators, since they are the services the pool provides. If a new container starter appears, add it to
 ``_STARTERS`` or ``_FIXTURES``.
 
-AST-based and side-effect-free.
+AST-based; each file's findings are kept in the gitignored scan cache by its bytes (``file_facts``).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.enforcement.common import parse_python_path
+from threetears.enforcement.common.scan_cache import file_facts
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -122,13 +122,21 @@ def _declares_module_marker(tree: ast.Module, name: str) -> bool:
     return False
 
 
+def _docker_use(path: Path, tree: ast.Module) -> tuple[tuple[str, ...], bool, bool]:
+    """What one test module does with Docker, and whether it is marked ``docker`` and ``integration``."""
+    return tuple(_drives_docker(tree)), _declares_docker_marker(tree), _declares_module_marker(tree, "integration")
+
+
+def _docker_use_by_file() -> dict[Path, tuple[tuple[str, ...], bool, bool]]:
+    """Each test file's :func:`_docker_use`, kept on disk by the file's bytes."""
+    return file_facts(_docker_use, _test_files(), root=_REPO_ROOT)
+
+
 def test_modules_that_drive_docker_carry_the_docker_marker() -> None:
     """A module that starts a container or runs ``docker exec`` must be marked ``docker``."""
     offenders: list[str] = []
-    for path in _test_files():
-        tree = parse_python_path(path)
-        found = _drives_docker(tree)
-        if found and not _declares_docker_marker(tree):
+    for path, (found, docker_marked, _) in _docker_use_by_file().items():
+        if found and not docker_marked:
             offenders.append(f"{path.relative_to(_REPO_ROOT)}: {found[0]}")
     if offenders:
         listing = "\n".join(f"  - {o}" for o in offenders)
@@ -190,10 +198,8 @@ def test_every_docker_module_is_also_an_integration_module() -> None:
     """
     offenders = [
         str(path.relative_to(_REPO_ROOT))
-        for path in _test_files()
-        if (tree := parse_python_path(path)) is not None
-        and _declares_docker_marker(tree)
-        and not _declares_module_marker(tree, "integration")
+        for path, (_, docker_marked, integration_marked) in _docker_use_by_file().items()
+        if docker_marked and not integration_marked
     ]
     assert not offenders, (
         "module(s) marked `docker` but not `integration` run on no local or pool route; "
@@ -216,5 +222,5 @@ def test_the_walker_sees_the_known_docker_modules() -> None:
         "packages/scrape/tests/integration/test_operator_pipe_sidecar.py",
         "packages/search/tests/test_searxng_live_scoring.py",
     }
-    seen = {str(path.relative_to(_REPO_ROOT)) for path in _test_files() if _drives_docker(parse_python_path(path))}
+    seen = {str(path.relative_to(_REPO_ROOT)) for path, (found, _, _) in _docker_use_by_file().items() if found}
     assert known <= seen, known - seen

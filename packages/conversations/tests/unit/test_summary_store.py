@@ -18,7 +18,7 @@ from threetears.conversations.summary_store import SUMMARY_CURSOR_KEY
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.langgraph import SummaryState
 
-_AGENT = uuid4()
+_AGENT = UUID("00000000-0000-4000-8000-000000000801")
 
 
 def _conversation(conversation_id: UUID, **fields: Any) -> Conversation:
