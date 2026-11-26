@@ -486,43 +486,50 @@ async def test_a_key_fact_quoted_without_its_heading_takes_the_abbreviation_rule
     assert citation.quote == fact
 
 
-#: A fact of two sentences whose second never names its entity, shown as a key fact about Harrow Tales.
-_TWO_SENTENCE_FACT = "Ida Venn wrote it in 1929. It appeared as a bound volume in 1931."
-
-
 @pytest.mark.parametrize(
-    ("kind", "quote", "subject", "repaired"),
+    ("kind", "shown", "quote"),
     [
-        ("key fact", f"A key fact about Harrow Tales: {_TWO_SENTENCE_FACT}", "Harrow Tales", False),
-        ("key fact", _TWO_SENTENCE_FACT, "Ida Venn", True),
-        ("passage", f"Harrow Tales: {_TWO_SENTENCE_FACT}", "Harrow Tales", True),
+        (
+            "key fact",
+            "Ann Lee was born in Leeds. Her brother moved to York.",
+            "A key fact about Ann Lee: Ann Lee was born in Leeds. Her brother moved to York.",
+        ),
+        (
+            "passage",
+            "Ann Lee: Ann Lee was born in Leeds. Her brother moved to York.",
+            "Ann Lee: Ann Lee was born in Leeds. Her brother moved to York.",
+        ),
     ],
-    ids=["subject-in-the-heading-binds-across", "subject-in-the-fact-keeps-one-sentence", "passage-keeps-one-sentence"],
+    ids=["key-fact-heading", "passage"],
 )
-async def test_a_key_facts_heading_names_the_subject_of_each_of_its_sentences_and_a_passage_has_none(
-    kind: str, quote: str, subject: str, repaired: bool
+async def test_a_subject_in_a_key_facts_heading_binds_only_within_one_sentence_as_in_a_passage(
+    kind: str, shown: str, quote: str
 ) -> None:
-    """A key fact is about the one entity its heading names, by construction, so a subject quoted from that heading
-    binds to a value in the fact's second sentence, which never names it. A subject named inside the fact, and a
-    passage of the same shape, where a subject may change from one sentence to the next, keep the one-sentence rule."""
+    """A key fact's heading names its entity, but the fact's later sentences may be about someone else: the heading's
+    subject cited with a value from another sentence is asked again, as in a passage, so "Ann Lee moved to York"
+    never reads supported from her brother's move. The known limit: a key fact of several sentences is cited for the
+    sentence that names its subject."""
     ref = "S1" if kind == "passage" else "K1"
-    shown = quote if kind == "passage" else _TWO_SENTENCE_FACT
-    client = _FakeScriptedClient(
-        [_batch(_answer(0, _cite(ref, quote=quote, subject=subject, value="1931"))), _repair()]
+    claim = _claim(
+        (Segment(text="Ann Lee moved to York.", unit=0),), 0, "Ann Lee moved to York.", "Ann Lee moved to York"
     )
-
-    grade = _grade(
-        (_ABBREVIATED_CLAIM,), await _verify(client, (_ABBREVIATED_CLAIM,), **_as_passage_or_key_fact(kind, shown))
-    )
-
-    if repaired:
-        assert len(client.calls) == 2
-        assert f"its subject and value for {ref} stand in different sentences or rows" in client.calls[1]["user"]
-        assert grade.claims[0].verdict == "unverifiable"
+    if kind == "passage":
+        evidence: dict[str, Any] = {
+            "key": None,
+            "documents": (EvidenceDocument(id="doc", provenance="case", title="Doc", text=shown),),
+        }
     else:
-        assert len(client.calls) == 1, "no repair call"
-        (citation,) = grade.claims[0].truth_citations
-        assert (citation.quote, grade.claims[0].verdict) == (quote, "supported")
+        fact = ReferenceFact(claim=shown, source_url="https://example.org/lee")
+        evidence = {"key": ReferenceKey(core=(ReferenceEntity(name="Ann Lee", facts=(fact,)),)), "documents": ()}
+    client = _FakeScriptedClient(
+        [_batch(_answer(0, _cite(ref, quote=quote, subject="Ann Lee", value="York"))), _repair()]
+    )
+
+    grade = _grade((claim,), await _verify(client, (claim,), **evidence))
+
+    assert len(client.calls) == 2
+    assert f"its subject and value for {ref} stand in different sentences or rows" in client.calls[1]["user"]
+    assert grade.claims[0].verdict == "unverifiable"
 
 
 @pytest.mark.parametrize("kind", ["passage", "key fact"])
@@ -1728,10 +1735,10 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
 
 
 #: The identity of :func:`_verifier` over a client of :data:`_MODEL`, with :data:`_WHOLE` and :data:`_REPAIRS`, from
-#: the shipped prompts, schemas, selection, batch, sentence-break and key-heading rules, quote cap, attempts and fold. Produced by
+#: the shipped prompts, schemas, selection, batch and sentence-break rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:9531ffbfd96d"
+_PINNED_IDENTITY = "scripted/verify|claimverify:37ed43c946bb"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:
