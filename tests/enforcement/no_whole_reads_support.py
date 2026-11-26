@@ -29,6 +29,13 @@ NO_WHOLE_READS_CONFIG = NoWholeReadsConfig(
     # key its consumer declares for the copy relation (reports' COPY_KEYS). The mapping is handed tables of any key, so
     # it declares none of its own
     view_producers={"MappedTables.connect": ()},
+    # quiet-time cleanup's own tables, named at run time in the cleaned tables' schema (QuietCleanup's progress= and
+    # run_markers=, defaulting to CLEANUP_PROGRESS_TABLE and RUN_MARKERS_TABLE): each attribute only ever holds that
+    # table, so each read of one is judged by that table's declared key (CLEANUP_PROGRESS_SCHEMA's, RUN_MARKERS_SCHEMA's)
+    relation_producers={
+        "QuietCleanup._progress": ("table_name", "scope"),
+        "QuietCleanup._run_markers": ("table_name", "scope", "prefix", "epoch"),
+    },
     # the collections, caches and follower: load code, where even one key's count or fingerprint re-verifies by
     # scanning what the epoch already said
     verify_prefixes=(f"{_CORE}/collections/", f"{_CORE}/cache/"),

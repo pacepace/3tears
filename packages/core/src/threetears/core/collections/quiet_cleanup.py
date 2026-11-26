@@ -679,16 +679,15 @@ class QuietCleanup:
         """
         if self._run_markers is None or cleaned_to >= floor:
             return 0
+        # the run-marker table's own columns, spelled as its declaration spells them (RUN_MARKERS_SCHEMA): its key
+        # (table_name, scope, prefix, epoch), read a page at a time past the bound (table_name, scope)
         markers = await keyset_rows(
             self._pool,
             self._run_markers,
-            columns=("prefix", EPOCH_COLUMN),
+            columns=("prefix", "epoch"),
             by={"table_name": table, "scope": TABLE_RESET_SCOPE},
-            order=(Sort("prefix"), Sort(EPOCH_COLUMN, cast="bigint")),
-            where=[
-                Fragment(f't."{EPOCH_COLUMN}" >= $1', (cleaned_to,)),
-                Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,)),
-            ],
+            order=(Sort("prefix"), Sort("epoch", cast="bigint")),
+            where=[Fragment('t."epoch" >= $1', (cleaned_to,)), Fragment('t."epoch" < $1', (floor,))],
         )
         removed = 0
         for marker in markers:
@@ -888,12 +887,12 @@ class QuietCleanup:
             return 0
         key = schema.pk_columns
         casts = tuple(self._cast(schema, column) for column in key)
-        named = KeyBatch(columns=key, keys=[candidates.column(c).combine_chunks() for c in key], casts=casts)
         types = rail_arrow_types([schema.column(name) for name in (*key, EPOCH_COLUMN)])
         held = await read_keyed_arrow(
             self._pool,
             schema.name,
-            keys=named,
+            # the table's own key, written where the read is so the key it binds is the one read
+            keys=KeyBatch(key, keys=[candidates.column(c).combine_chunks() for c in key], casts=casts),
             types=types,
             where=[Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,))],
             # the versions themselves, as stored: a shared read would answer each key's newest live version alone
@@ -937,13 +936,15 @@ class QuietCleanup:
         """
         if self._run_markers is None:
             return True, 0
+        # the run-marker table's own columns, spelled as its declaration spells them (RUN_MARKERS_SCHEMA): its key
+        # (table_name, scope, prefix, epoch), read a page at a time past the bound (table_name, scope)
         markers = await keyset_rows(
             self._pool,
             self._run_markers,
-            columns=("prefix", EPOCH_COLUMN),
+            columns=("prefix", "epoch"),
             by={"table_name": schema.name, "scope": value},
-            order=(Sort("prefix"), Sort(EPOCH_COLUMN, cast="bigint")),
-            where=[Fragment(f't."{EPOCH_COLUMN}" < $1', (floor,))],
+            order=(Sort("prefix"), Sort("epoch", cast="bigint")),
+            where=[Fragment('t."epoch" < $1', (floor,))],
         )
         removed = 0
         stopped = False

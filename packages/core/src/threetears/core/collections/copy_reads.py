@@ -38,6 +38,7 @@ from threetears.core.collections.schema_backed import rail_text
 from threetears.core.collections.volume_fulls import rows_fingerprint
 from threetears.core.frozen_state import frozen
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.rows import KeyColumns
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -141,7 +142,7 @@ def _table_of(answer: Any) -> pa.Table:
     raise TypeError(f"a copy job answers a pyarrow Table or RecordBatchReader, not {type(answer).__name__}")
 
 
-def _keyed_statement(table: FollowedTable, columns: Sequence[str], out: Sequence[str]) -> str:
+def _keyed_statement(table: FollowedTable, columns: KeyColumns, out: Sequence[str]) -> str:
     """the semi-join that reads ``out`` of the copy's rows of ``table`` whose ``columns`` hold a key of
     :data:`_KEYS_TABLE` (:func:`_handed_keys`): each key column compared as the copy's read by key compares it
     (``FollowedTable.held_key``), its text cast to the column's type.
@@ -149,18 +150,18 @@ def _keyed_statement(table: FollowedTable, columns: Sequence[str], out: Sequence
     :param table: the table
     :ptype table: FollowedTable
     :param columns: the key columns named, a leading part of the key in key order
-    :ptype columns: Sequence[str]
+    :ptype columns: KeyColumns
     :param out: the columns read
     :ptype out: Sequence[str]
     :return: the statement, over ``t``, naming :data:`~threetears.core.cache.duckdb_binds.KEYS` for the keys
     :rtype: str
     """
     selected = ", ".join(f"t.{quote_identifier(column)}" for column in out)
-    named = ", ".join(table.held_key(column, "t") for column in columns)
     cast = ", ".join(f"CAST(k{at + 1} AS {table.key_cast(column)})" for at, column in enumerate(columns))
+    # the key's columns compared where the statement is written, so the key it binds is the one read
     return (
         f"SELECT {selected} FROM {quote_identifier(table.name)} AS t "  # noqa: S608 - trusted identifiers
-        f"WHERE ({named}) IN (SELECT {cast} FROM ({KEYS}))"
+        f"WHERE ({', '.join(table.held_key(column, 't') for column in columns)}) IN (SELECT {cast} FROM ({KEYS}))"
     )
 
 
@@ -198,15 +199,15 @@ def _sql_rows(connection: Any, args: Sequence[Any]) -> Any:
 
 
 def keyed_job(
-    table: FollowedTable, columns: Sequence[str], out: Sequence[str], keys: Any
+    table: FollowedTable, columns: KeyColumns, out: Sequence[str], keys: Any
 ) -> tuple[Any, tuple[Any, ...], Mapping[str, Any]]:
     """the job, its arguments and its handed tables that read ``out`` of the rows ``keys`` name by ``columns``
     (:func:`_keyed_statement`).
 
     :param table: the table
     :ptype table: FollowedTable
-    :param columns: the key columns named
-    :ptype columns: Sequence[str]
+    :param columns: the key columns named, a leading part of the key in key order
+    :ptype columns: KeyColumns
     :param out: the columns read
     :ptype out: Sequence[str]
     :param keys: the keys, ``columns`` as text
