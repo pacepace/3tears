@@ -5,7 +5,13 @@ scope: iam-optional-core
 branch: iam/optional-core
 partition: "serial -- one builder; every chunk edits iam's pyproject or the dependency-alignment test, so a split would only merge-conflict"
 last_validated: 2026-10-24
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.93.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan: iam installs without core, NATS or the agent layer (#943)
 

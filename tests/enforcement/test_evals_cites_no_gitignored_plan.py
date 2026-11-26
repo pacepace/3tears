@@ -1,9 +1,9 @@
-"""Enforcement: the evals package's prose cites no plan, chunk, review or question that lives only in a gitignored file.
+"""Enforcement: the evals package's prose cites no plan, chunk, review or question that lives only outside the package.
 
-The evals package is built from plans kept under ``.prawduct/``, which is gitignored. A comment that says "(Q3)",
-"owner ruling Q3", "plan §2.3", "moved at C5b", "chunk 6" or "rev-20261110T032147Z" points every reader who is not
-the author at nothing: the plan is not in the clone, and the id names no commit, issue or document they can open. The
-reason belongs in the comment itself, said in the present tense.
+The evals package is built from plans kept under ``.prawduct/``, which no installed wheel carries and which are
+archived as the work ships. A comment that says "(Q3)", "owner ruling Q3", "plan §2.3", "moved at C5b", "chunk 6" or
+"rev-20261110T032147Z" points every reader who is not the author at nothing: the id names no commit, issue or
+document they can open. The reason belongs in the comment itself, said in the present tense.
 
 What is read is prose: a Python module's comments and docstrings (a bare string statement, wherever it sits), the
 kit's script and stylesheet comments, and Markdown outside ``tests/fixtures/`` (which holds recorded documents a test

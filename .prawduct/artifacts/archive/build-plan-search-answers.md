@@ -9,7 +9,14 @@ depends_on:
   - artifact: search-spec                   # docs/search-spec.md
 partition: "serial -- each slice stacks on the last (contracts, then the adapter against the fixture, then the agent-tools builtin, then discodon), and slice 1 is one risk surface (the transport seam) small enough that a second agent would spend more on coordination than it saves"
 last_validated: 2026-10-24
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.80.0
+unbuilt_at_archive: 2 of 5 chunks not done (Chunk 04, Chunk 05) — the scope shipped, but this plan did not finish with it
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

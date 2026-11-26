@@ -210,7 +210,7 @@ marimo/_lsp/
 __marimo__/
 
 # Claude Code local state
-# .claude/* rather than .claude/ so the one file below can be re-included:
+# .claude/* rather than .claude/ so the files below can be re-included:
 # git never descends into an excluded DIRECTORY, so a negation inside one is
 # silently dead. Excluding the contents instead leaves the directory readable.
 .claude/*
@@ -219,9 +219,25 @@ __marimo__/
 # only on a machine that already has prawduct installed, and a new developer
 # gets none of them.
 !.claude/settings.json
+# Prawduct's rules corpus is shared project state, so it is tracked too.
+!.claude/rules/
 
-# prawduct session evidence (local governance artifacts, never shipped)
-.prawduct/
+# prawduct: session files stay local (listed below); the governance state is
+# tracked. .prawduct/* rather than .prawduct/ for the same reason as .claude/*.
+.prawduct/*
+!.prawduct/project-state.yaml
+!.prawduct/backlog.md
+!.prawduct/changes/
+!.prawduct/artifacts/
+!.prawduct/change-log.md
+!.prawduct/change-log-archive/
+!.prawduct/releases/
+!.prawduct/release-headline.md
+!.prawduct/operator-verification.md
+!.prawduct/owner-rulings.md
+!.prawduct/runbooks/
+# Raw eval data a session kept beside its plans (answer keys, transcripts, judge scores): local only.
+.prawduct/artifacts/blind-read-*/
 
 # macOS folder metadata
 .DS_Store

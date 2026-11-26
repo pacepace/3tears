@@ -7,7 +7,14 @@ depends_on:
   - artifact: no-assumed-pool   # #922's no-pooling-by-assumption ruling (old runs cut off, future runs pool forward)
 partition: "serial -- chunk 02 reads the depth facts chunk 01 computes, and chunk 03 is an opt-in estimator over the same per-case counts; one builder, three commits"
 last_validated: 2026-10-24
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.78.0
+unbuilt_at_archive: 3 of 3 chunks not done (Chunk 01, Chunk 02, Chunk 03) — the scope shipped, but this plan did not finish with it
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

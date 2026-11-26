@@ -1,3 +1,12 @@
+---
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.93.0
+maintained: false
+---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
+
 # Build plan: the tool-call wire protocol moves into core, and registry stops depending on agent-tools
 
 Branch: `tools/wire-in-core` (off origin/develop c65ecdf8c). One PR into develop, its own area (tools/registry).

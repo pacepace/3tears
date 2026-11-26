@@ -6,7 +6,14 @@ branch: feat/durable-coordination
 depends_on: [durable-coordination]
 partition: "serial -- two unrelated chunks that share one release; each is small enough that a second agent would spend more on coordination than it saves, and Chunk 01 must land before identity and hub can be rewired"
 last_validated: 2026-09-16
+lifecycle: completed
+archived: 2026-11-22
+released_in: v0.44.0
+unbuilt_at_archive: 1 of 3 chunks not done (Chunk 03) — the scope shipped, but this plan did not finish with it
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

@@ -227,7 +227,7 @@ This design's own regex assumption didn't survive contact with real data, twice:
    doing something about it is a target whose data is BOTH scanned and genuinely tabular --
    none of the current ones are, which is why it stays unbuilt rather than deferred. The
    condition is written out rather than pointed at, because a pointer is only as durable as the
-   item it names and `.prawduct/` does not travel with a clone.
+   item it names, and a plan under `.prawduct/` is archived once its work ships.
 
 ## Verification
 

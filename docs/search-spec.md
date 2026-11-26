@@ -4,9 +4,9 @@
 **Scope:** the next level down from `search-architecture.md`: decisions taken,
 package and module breakdown, MUST/SHOULD/MAY/MUST NOT requirements, and
 broad-stroke sequencing for the build and for migrating consuming apps. Not a
-build plan -- the build plan derives from this, under prawduct, and lives in the
-planning session's local `.prawduct/` (gitignored here by design), so **this
-document is the durable record** of what was decided and why.
+build plan -- the build plan derives from this, under prawduct, and was kept in
+the planning session's local `.prawduct/`, which was not tracked at the time, so
+**this document is the durable record** of what was decided and why.
 
 **Companions** -- read in the order *direction → need → shape → spec*:
 
