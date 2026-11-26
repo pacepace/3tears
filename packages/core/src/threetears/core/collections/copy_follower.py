@@ -1677,6 +1677,12 @@ class _TableState:
     touched the right ones. Never compared by value (``eq=False``): it holds Arrow batches, whose ``==`` compares
     every row.
 
+    :ivar whole: why the table is read again whole at the next apply (:data:`WHOLE_READ_WHYS`): a cold start, a
+        schema change, or an older writer's whole-table record mid-roll; a second drop before the read is the same
+        read. None: no whole read is due
+    :ivar cleared: for a table that opts in to delta files, the key prefixes a delta file cleared, with the epoch its
+        record names, heard and not yet turned into the keys they reach
+        (:meth:`CopyFollower._keys_of_cleared_prefixes`); one a clear, never a key. Always empty for any other table
     :ivar full_after: the full the table waits for, reset or recreated while the follower ran (:class:`_FullAfter`):
         it is reloaded from the volume alone, never read from L3 (:meth:`CopyFollower._wait_for_reload`). What is heard
         of it meanwhile stays in its batches, taken by no pass (:meth:`CopyFollower._take`), and is judged against the
@@ -1691,6 +1697,8 @@ class _TableState:
         them says so. Empty when no whole read is staged
     """
 
+    whole: str | None = None
+    cleared: tuple[tuple[str, tuple[Mapping[str, str], ...]], ...] = ()
     full_after: _FullAfter | None = None
     file_waits: Mapping[str, _FileWait] = field(default_factory=frozen)
     held_count: int | None = None
@@ -2120,9 +2128,6 @@ class CopyFollower:
         #: each table's keys heard and not yet staged, counted (a key heard twice since the last pass counts twice
         #: until the pass takes them): the status's ``pending``
         self._heard_counts: Mapping[str, int] = frozen(dict.fromkeys(self._tables, 0))
-        #: tables to read again whole at the next apply, and why (:data:`WHOLE_READ_WHYS`): a cold start, a schema
-        #: change, or an older writer's whole-table record mid-roll; a second drop before the read is the same read
-        self._whole: Mapping[str, str] = frozen()
         #: the loads' partitions heard and not yet applied, by table: each the columns its rows hold and their values
         #: (one a load's prefix, never one a key)
         self._partitions: Mapping[str, tuple[Mapping[str, str], ...]] = frozen({name: () for name in self._tables})
@@ -2149,8 +2154,9 @@ class CopyFollower:
         self._staged_touched: Mapping[str, tuple[Any, ...]] = frozen()
         #: the tables staged whole, and why: put back to be read again only when their stage is forgotten
         self._staged_whole: Mapping[str, str] = frozen()
-        #: each table's working state (:class:`_TableState`): what it waits for, and the scopes its staged whole read
-        #: left out; replaced whole, one record a table, in one assignment (:meth:`_put`)
+        #: each table's working state (:class:`_TableState`): its whole read due, its prefixes cleared, what it waits
+        #: for, and the scopes its staged whole read left out; replaced whole, one record a table, in one assignment
+        #: (:meth:`_put`)
         self._states: Mapping[str, _TableState] = frozen({name: _TableState() for name in self._tables})
         #: the scopes each table's stage holds rows of (None: rows of no scope, a table without one); one a state
         self._staged_scopes: Mapping[str, frozenset[str | None]] = frozen()
@@ -2204,11 +2210,6 @@ class CopyFollower:
         self._current_at: Mapping[str, datetime] = frozen()
         #: the task looking for each such table's full (it reads the volume, then hands the owner what it found)
         self._reloads: Mapping[str, asyncio.Task[None]] = frozen()
-        #: for each table that opts in: the key prefixes a delta file cleared, with the epoch its record names, heard
-        #: and not yet turned into the keys they reach (:meth:`_keys_of_cleared_prefixes`); one a clear, never a key
-        self._cleared: Mapping[str, tuple[tuple[str, tuple[Mapping[str, str], ...]], ...]] = frozen(
-            {table.name: () for table in tables if table.delta_files}
-        )
         self._recreate = recreate
         self._file_poll_seconds = FILE_POLL_SECONDS if file_poll_seconds is None else file_poll_seconds
         #: the task looking for each such table's files and asking the writer for them (it reads the volume and asks,
@@ -2516,7 +2517,7 @@ class CopyFollower:
             self._clear_heard(message.table, message.epoch, message.prefixes)
         elif isinstance(message, _WholeHeard):
             if message.force:
-                self._whole = with_entry(self._whole, message.table, message.why)
+                self._put(message.table, replace(self._states[message.table], whole=message.why))
             self._read_whole(message.table, message.why)
         elif isinstance(message, _ReloadHeard):
             self._wait_for_reload(message.table, message.why, message.token, bar=message.bar)
@@ -2666,8 +2667,9 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        if table not in self._whole:
-            self._whole = with_entry(self._whole, table, why)
+        state = self._states[table]
+        if state.whole is None:
+            self._put(table, replace(state, whole=why))
         self._forget_heard(table)
         self._partitions = with_entry(self._partitions, table, ())
         self._poked.set()
@@ -2713,7 +2715,7 @@ class CopyFollower:
             # an older writer's partition on columns no key leads: no index reads it exactly, so it is the table's
             self._read_whole(table, "legacy_whole_record")
             return
-        if table in self._whole:
+        if self._states[table].whole is not None:
             return  # the whole read to come covers it
         self._queue_partition(table, partition)
 
@@ -2731,13 +2733,13 @@ class CopyFollower:
         :return: nothing
         :rtype: None
         """
-        if table not in self._cleared:
+        if not self._tables[table].delta_files:
             return
-        if table in self._whole and self._states[table].full_after is None:
+        state = self._states[table]
+        if state.whole is not None and state.full_after is None:
             return  # the whole read to come covers it
-        self._cleared = with_entry(
-            self._cleared, table, (*self._cleared[table], (epoch, tuple(frozen(prefix) for prefix in prefixes)))
-        )
+        cleared = (*state.cleared, (epoch, tuple(frozen(prefix) for prefix in prefixes)))
+        self._put(table, replace(state, cleared=cleared))
 
     def _file_wanted(self, table: str, file: WantedFile) -> None:
         """an epoch's delta file the registry could not apply (the owner's): the table waits for it (decision 29).
@@ -2836,7 +2838,7 @@ class CopyFollower:
         # a stage of the table from before the reset holds the table it replaced: never applied (its keys are put
         # back heard, then kept or forgotten below)
         self._forget_tables_now([table])
-        self._whole = without_entry(self._whole, table)
+        self._put(table, replace(self._states[table], whole=None))
         if keep:
             # a key heard with no epoch has no change to apply from a file; its epochs say what it waits for
             kept = tuple(batch.filter(pc.is_valid(batch.column(_EPOCH))) for batch in self._heard[table])
@@ -2846,8 +2848,7 @@ class CopyFollower:
         else:
             self._forget_heard(table)
             self._partitions = with_entry(self._partitions, table, ())
-            if table in self._cleared:
-                self._cleared = with_entry(self._cleared, table, ())
+            self._put(table, replace(self._states[table], cleared=()))
             # the waits were for files of the table the reset replaced
             self._end_file_waits(table, "the table was reset or recreated: its full replaces it")
         self._look_for_full(table, why)
@@ -2888,7 +2889,7 @@ class CopyFollower:
         self._set_full_after(table, after)
         # a stage is put back as the keys it held, which are held with the rest of what was heard
         self._forget_tables_now([table])
-        self._whole = without_entry(self._whole, table)
+        self._put(table, replace(self._states[table], whole=None))
         self._look_for_full(table, after.why)
 
     def _count_reload(self, table: str, why: _ReloadWhy) -> None:
@@ -3237,16 +3238,9 @@ class CopyFollower:
                 self._file_read(table, name, why=f"the full at {floor} holds epoch {wait.epoch}")
         self._set_full_after(table, None)
         self._say_waiting_for_full(table, None)
-        if table in self._cleared:
-            self._cleared = with_entry(
-                self._cleared,
-                table,
-                tuple(
-                    (epoch, prefixes)
-                    for epoch, prefixes in self._cleared[table]
-                    if not _held_by_full(epoch, held, after)
-                ),
-            )
+        state = self._states[table]
+        cleared = tuple((epoch, prefixes) for epoch, prefixes in state.cleared if not _held_by_full(epoch, held, after))
+        self._put(table, replace(state, cleared=cleared))
         self._rows_since_mark += rows
         self._status.applied += 1
         log.info(
@@ -3303,7 +3297,7 @@ class CopyFollower:
         await self._drained()
         if self._states[table].full_after is not after:
             return self._stale_full(table, found)
-        cleared = _cleared_past_states(followed, self._cleared.get(table, ()), versions, after)
+        cleared = _cleared_past_states(followed, self._states[table].cleared, versions, after)
         if cleared is None:
             log.warning(
                 "a copy's reload of some states was dropped, never applied: a load it heard cleared a prefix that names "
@@ -3327,8 +3321,7 @@ class CopyFollower:
         heard = (kept, *since) if kept.num_rows else since
         self._heard = with_entry(self._heard, table, heard)
         self._heard_counts = with_entry(self._heard_counts, table, sum(batch.num_rows for batch in heard))
-        if table in self._cleared:
-            self._cleared = with_entry(self._cleared, table, cleared)
+        self._put(table, replace(self._states[table], cleared=cleared))
         floor = split_generation_token(found.marks[table])
         for name, wait in tuple(self._states[table].file_waits.items()):
             # a wait ends only when the parts hold its epoch and it named every state its commit wrote among them
@@ -3757,8 +3750,8 @@ class CopyFollower:
                 on_caught_up=self._on_caught_up,
                 on_partition=self._on_partition(name),
                 on_table_reset=self._on_reset(name),
-                on_file_prefixes=self._on_file_prefixes(name) if name in self._cleared else None,
-                on_file_wanted=self._on_file_wanted(name) if name in self._cleared else None,
+                on_file_prefixes=self._on_file_prefixes(name) if self._tables[name].delta_files else None,
+                on_file_wanted=self._on_file_wanted(name) if self._tables[name].delta_files else None,
                 on_keys=self._on_keys(name),
             )
             self._removers = (*self._removers, remover)
@@ -4341,9 +4334,9 @@ class CopyFollower:
                 name
                 for name in self._tables
                 if not self._heard[name]
-                and name not in self._whole
                 and not self._partitions[name]
-                and not self._cleared.get(name)
+                and self._states[name].whole is None
+                and not self._states[name].cleared
                 and not self._states[name].waiting
             ]
             self._current_marks = with_entries(
@@ -4388,8 +4381,7 @@ class CopyFollower:
         :return: whether one is
         :rtype: bool
         """
-        waiting = self._waiting_tables()
-        return any(queued for name, queued in self._cleared.items() if name not in waiting)
+        return any(state.cleared and not state.waiting for state in self._states.values())
 
     def _nothing_to_read(self) -> bool:
         """whether nothing heard is left for a pass to read: a table waiting for a delta file or its full holds what was
@@ -4401,9 +4393,10 @@ class CopyFollower:
         waiting = self._waiting_tables()
         return (
             not any(batches for name, batches in self._heard.items() if name not in waiting)
-            and not self._whole
             and not any(parts for name, parts in self._partitions.items() if name not in waiting)
-            and not any(queued for name, queued in self._cleared.items() if name not in waiting)
+            and not any(
+                state.whole is not None or (state.cleared and not state.waiting) for state in self._states.values()
+            )
         )
 
     def _touched_batches(self, touched: Mapping[str, frozenset[str] | None]) -> dict[str, tuple[Any, ...]]:
@@ -4763,7 +4756,7 @@ class CopyFollower:
                         continue
                     # one a distinct scope (a state) of the batch, never one a key: under INLINE_KEYS keys in all
                     scopes.update(heard_scopes_of(table.scope[1], batch.column(table.key[at])))
-            reached = [*self._partitions[name], *(p for _, cleared in self._cleared.get(name, ()) for p in cleared)]
+            reached = [*self._partitions[name], *(p for _, cleared in state.cleared for p in cleared)]
             if any(column not in prefix for prefix in reached):
                 return _EVERY_SCOPE
             scopes.update(table.scope_of(prefix[column]) for prefix in reached)
@@ -4810,22 +4803,23 @@ class CopyFollower:
         for name, table in self._tables.items():
             if writing and table.scope is None:
                 continue
-            if self._states[name].full_after is not None:
+            state = self._states[name]
+            if state.full_after is not None:
                 # waiting for its full: what was heard of it is judged against the full once it is reloaded
                 continue
-            if name in self._whole:
-                why = self._whole[name]
+            if state.whole is not None:
+                why = state.whole
                 # a scoped table is read whole again only once no scope is held (a withheld one's rows are part way)
                 if (writing or (held and table.scope is not None)) and why not in ("cold_start", "reset"):
                     continue
                 whole[name] = why
-                self._whole = without_entry(self._whole, name)
+                self._put(name, replace(state, whole=None))
                 self._forget_heard(name)
                 self._partitions = with_entry(self._partitions, name, ())
                 # the whole read holds every file the table waited for
                 self._end_file_waits(name, f"the table is read whole ({why})")
                 continue
-            if self._states[name].file_waits:
+            if state.file_waits:
                 # waiting for a delta file: its keys and partitions stay held, in order, until it reads
                 continue
             batches = self._heard[name]
@@ -5145,10 +5139,10 @@ class CopyFollower:
             why = self._staged_whole.get(name)
             self._staged_whole = without_entry(self._staged_whole, name)
             if why is not None:
-                if name not in self._whole:
-                    self._whole = with_entry(self._whole, name, why)
-                if self._states[name].whole_left_out:
-                    self._put(name, replace(self._states[name], whole_left_out=frozen()))
+                state = self._states[name]
+                self._put(
+                    name, replace(state, whole=why if state.whole is None else state.whole, whole_left_out=frozen())
+                )
             self._dropping = self._dropping | {f"{STAGE_PREFIX}{name}__rows", f"{STAGE_PREFIX}{name}__keys"}
 
     def _stages_lost(self) -> None:
@@ -5192,7 +5186,10 @@ class CopyFollower:
         """
         for name, batches in pending.items():
             self._put_heard_back(name, batches)
-        self._whole = with_entries(self._whole, {name: why for name, why in whole.items() if name not in self._whole})
+        for name, why in whole.items():
+            state = self._states[name]
+            if state.whole is None:
+                self._put(name, replace(state, whole=why))
         for name, parts in partitions.items():
             self._partitions = with_entry(self._partitions, name, (*self._partitions[name], *parts))
         reading, self._reading = self._reading, None
@@ -5234,7 +5231,7 @@ class CopyFollower:
                 self._reading = name
                 await self._forget_tables([name])
                 self._forget_heard(name)  # a whole read covers every key heard before it
-                self._whole = without_entry(self._whole, name)
+                self._put(name, replace(self._states[name], whole=None))
                 self._partitions = with_entry(self._partitions, name, ())
                 why = whole[name]
                 # the reason is known here: each is read by its own function, and declared as that situation
@@ -5399,13 +5396,14 @@ class CopyFollower:
         :rtype: None
         """
         waiting = self._waiting_tables()
-        for name in list(self._cleared):
-            queued = self._cleared[name]
+        for name in [name for name, table in self._tables.items() if table.delta_files]:
+            state = self._states[name]
+            queued = state.cleared
             if not queued or name in waiting:
                 # a table waiting for a delta file or its full keeps its prefixes queued, in order, until it reads
                 continue
-            self._cleared = with_entry(self._cleared, name, ())
-            if name in self._whole:
+            self._put(name, replace(state, cleared=()))
+            if state.whole is not None:
                 continue  # the whole read to come covers it
             table = self._tables[name]
             for epoch, prefixes in queued:
@@ -6462,9 +6460,9 @@ class CopyFollower:
         """
         return (
             not self._heard[name]
-            and name not in self._whole
             and not self._partitions[name]
-            and not self._cleared.get(name)
+            and self._states[name].whole is None
+            and not self._states[name].cleared
             and name not in self._staged
             and not self._states[name].waiting
             and name not in self._status.behind
