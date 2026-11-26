@@ -6,6 +6,12 @@ many rows, NULLs, ties in the sort order, a tenant boundary, a page boundary and
 and the helper call on the same rows, and compares what they return as multisets, and in order when the old statement
 ordered its rows. Each case runs in a transaction rolled back after it, so the table is as the test left it.
 
+A ``ROW_STAMPED`` table (one a declaration registers stamped, ``threetears.interfaces.keyed.keys.stamped_table``) is
+seeded as its own writes leave it: each row stamped with a fresh epoch from the process's clock
+(:func:`~threetears.core.ddl.row_epoch.next_epoch`, its ``executemany`` a statement a row, as each is its own write),
+unless the row names its own. Its ``epoch`` is ``NOT NULL`` with no default, so the database refuses a row seeded
+without one; a caller's row factory names only the columns its statement reads.
+
 It runs on any asyncpg-shaped connection (``fetch``, ``execute``, ``executemany``, ``transaction``): PostgreSQL and
 YugabyteDB in a package's integration tests, the same calls on each.
 
@@ -29,6 +35,10 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
+
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, next_epoch
+from threetears.core.keyed._filters import reads_l3
+from threetears.interfaces.keyed.keys import stamped_table
 
 __all__ = [
     "Seeded",
@@ -239,7 +249,21 @@ def _differ_limited(
     return None
 
 
-async def _seed(conn: Any, table: str, rows: list[Mapping[str, Any]]) -> None:
+def _stamps(conn: Any, table: str) -> bool:
+    """whether a seeded row of ``table`` on ``conn`` is stamped: a ``ROW_STAMPED`` table read from L3, whose epoch the
+    database requires (a local copy, an in-process DuckDB or SQLite, carries none).
+
+    :param conn: the connection
+    :ptype conn: Any
+    :param table: the TRUSTED table name
+    :ptype table: str
+    :return: whether its seeded rows take an epoch
+    :rtype: bool
+    """
+    return stamped_table(table, l3=reads_l3(conn)) is not None
+
+
+async def _seed(conn: Any, table: str, rows: list[Mapping[str, Any]], *, stamped: bool = False) -> None:
     """empty ``table`` and insert ``rows`` (the caller's transaction rolls both back).
 
     :param conn: the connection
@@ -248,16 +272,20 @@ async def _seed(conn: Any, table: str, rows: list[Mapping[str, Any]]) -> None:
     :ptype table: str
     :param rows: the rows, every one with the same columns
     :ptype rows: list[Mapping[str, Any]]
+    :param stamped: the table is ``ROW_STAMPED`` (:func:`_stamps`): a row naming no epoch is stamped with a fresh one
+    :ptype stamped: bool
     :return: nothing
     :rtype: None
     """
     await conn.execute(f"DELETE FROM {table}")  # noqa: S608 - a test's own table, in a transaction rolled back
     if rows:
         columns = list(rows[0])
-        marks = ", ".join(f"${index}" for index in range(1, len(columns) + 1))
+        stamping = stamped and EPOCH_COLUMN not in columns
+        named = [*columns, EPOCH_COLUMN] if stamping else columns
+        marks = ", ".join(f"${index}" for index in range(1, len(named) + 1))
         await conn.executemany(
-            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marks})",  # noqa: S608 - trusted test identifiers
-            [tuple(row[column] for column in columns) for row in rows],
+            f"INSERT INTO {table} ({', '.join(named)}) VALUES ({marks})",  # noqa: S608 - trusted test identifiers
+            [(*(row[column] for column in columns), *((next_epoch(),) if stamping else ())) for row in rows],
         )
 
 
@@ -269,6 +297,8 @@ async def _written(
     state_sql: str,
     write: Callable[[Any], Awaitable[Sequence[Mapping[str, Any]]]],
     related: Callable[[Any, list[Mapping[str, Any]]], Awaitable[None]] | None = None,
+    *,
+    stamped: bool = False,
 ) -> tuple[list[tuple[tuple[str, Any], ...]], list[tuple[tuple[str, Any], ...]]]:
     """one side of a write's comparison, on its own seeded table: the rows it returned and the table after it.
 
@@ -286,13 +316,15 @@ async def _written(
     :ptype write: Callable[[Any], Awaitable[Sequence[Mapping[str, Any]]]]
     :param related: seeds the rows read beside ``table``, after it is seeded; None for none
     :ptype related: Callable[[Any, list[Mapping[str, Any]]], Awaitable[None]] | None
+    :param stamped: the table is ``ROW_STAMPED`` (:func:`_seed`)
+    :ptype stamped: bool
     :return: the returned rows and the table's rows, normalised
     :rtype: tuple[list[tuple[tuple[str, Any], ...]], list[tuple[tuple[str, Any], ...]]]
     """
     transaction = conn.transaction()
     await transaction.start()
     try:
-        await _seed(conn, table, seeded)
+        await _seed(conn, table, seeded, stamped=stamped)
         if related is not None:
             await related(conn, seeded)
         returned = [_normal(dict(found), columns) for found in await write(conn)]
@@ -361,6 +393,7 @@ async def assert_same_results(
     :raises AssertionError: naming each case whose rows differ, and how
     """
     compare_order = bool(_ORDER_BY.search(old_sql)) if ordered is None else ordered
+    stamped = _stamps(conn, table)
     differences: list[str] = []
     answered: list[list[tuple[tuple[str, Any], ...]]] = []
     for case in _cases(page_size):
@@ -369,7 +402,7 @@ async def assert_same_results(
             transaction = conn.transaction()
             await transaction.start()
             try:
-                await _seed(conn, table, seeded)
+                await _seed(conn, table, seeded, stamped=stamped)
                 if related is not None:
                     await related(conn, seeded)
                 old = [_normal(dict(found), columns) for found in await conn.fetch(old_sql, *params)]
@@ -378,9 +411,9 @@ async def assert_same_results(
                 await transaction.rollback()
         else:
             old, old_state = await _written(
-                conn, table, seeded, columns, state_sql, lambda c: c.fetch(old_sql, *params), related
+                conn, table, seeded, columns, state_sql, lambda c: c.fetch(old_sql, *params), related, stamped=stamped
             )
-            new, new_state = await _written(conn, table, seeded, columns, state_sql, helper, related)
+            new, new_state = await _written(conn, table, seeded, columns, state_sql, helper, related, stamped=stamped)
             difference = _differ(f"{case.name} (the table after)", old_state, new_state, None, False)
             if difference is not None:
                 differences.append(difference)
