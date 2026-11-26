@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import tracemalloc
+from concurrent.futures.process import BrokenProcessPool
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from types import FrameType
@@ -19,6 +20,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
+from prometheus_client import REGISTRY
 
 from packages.core.tests.unit.collections import copy_hooks
 from threetears.core import arrow_keys
@@ -358,6 +360,78 @@ class TestShapeAndHooks:
                 for state in _STATES.to_pylist()
             }
             assert dict(zip(totals["state"].to_pylist(), totals["votes"].to_pylist(), strict=True)) == by_state
+        finally:
+            await backend.close()
+
+
+def _failures(why: str) -> float:
+    return REGISTRY.get_sample_value("shared_copy_apply_failures_total", {"why": why}) or 0.0
+
+
+def _room(store: SharedArrowStore) -> tuple[float | None, int]:
+    """the room the copy's gauge says, and the store's room by its own tallies."""
+    return (
+        REGISTRY.get_sample_value("shared_copy_store_room_bytes"),
+        store.max_bytes - int(store.status()["held_bytes"]),
+    )
+
+
+class TestHealth:
+    """the copy's health, which a product's dashboard reads: each failed change counted by why, and the store's room
+    set after each change, failed or not. Each store here has its own bound, so no other test's room can match."""
+
+    async def test_a_change_sets_the_stores_room(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=(1 << 30) - 4_096)
+        backend = await _backend(store, ("results", SCHEMA, BY_STATE))
+        try:
+            await backend.apply([ChangePage(ROWS, "results", _rows(500, 1))])
+            said, room = _room(store)
+            assert room < store.max_bytes
+            assert said == room
+        finally:
+            await backend.close()
+
+    async def test_a_dead_worker_is_counted_died_and_the_room_set(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=(1 << 30) - 8_192)
+        dies = tmp_path / "die"
+        backend = await _backend(
+            store,
+            ("results", SCHEMA, BY_STATE),
+            hooks=copy_hooks.DiesWhile(str(dies), once=False),
+            preload=(copy_hooks.__name__,),
+        )
+        try:
+            await backend.apply([ChangePage(ROWS, "results", _rows(500, 1))])
+            died, failed = _failures("died"), _failures("failed")
+            dies.touch()
+            with pytest.raises(BrokenProcessPool):
+                await backend.apply([ChangePage(ROWS, "results", _rows(500, 2))])
+            assert (_failures("died"), _failures("failed")) == (died + 1, failed)
+            said, room = _room(store)
+            assert said == room
+        finally:
+            await backend.close()
+
+    async def test_any_other_failure_is_counted_failed_and_the_room_set(self, tmp_path: Path) -> None:
+        store = SharedArrowStore(tmp_path / "shm", max_bytes=(1 << 30) - 12_288)
+        fails = tmp_path / "fail"
+        fails.touch()
+        backend = await _backend(
+            store,
+            ("results", SCHEMA, BY_STATE),
+            hooks=copy_hooks.FailsWhile(str(fails)),
+            preload=(copy_hooks.__name__,),
+        )
+        try:
+            died, failed = _failures("died"), _failures("failed")
+            with pytest.raises(RuntimeError, match="failing while"):
+                await backend.apply([ChangePage(ROWS, "results", _rows(500, 1))])
+            # a whole settle with hooks that cannot derive whole fails too
+            with pytest.raises(ValueError, match="derive_whole"):
+                await backend.settle_whole()
+            assert (_failures("died"), _failures("failed")) == (died, failed + 2)
+            said, room = _room(store)
+            assert said == room == store.max_bytes
         finally:
             await backend.close()
 
