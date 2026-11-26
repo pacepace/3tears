@@ -677,6 +677,59 @@ async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
         )
 
 
+#: OpenRouter's budget 403 as its errors page shows it: a guardrail, workspace or key budget spent, rejected before any
+#: provider, with when the window rolls over.
+ROUTER_BUDGET_403: Final[dict[str, Any]] = {
+    "error": {
+        "code": 403,
+        "message": (
+            "Budget limit exceeded (weekly limit). Contact your org admin. $52.00 of $50.00 used; "
+            "resets 2026-10-12T00:00:00.000Z."
+        ),
+        "metadata": {
+            "limit_source": "openrouter_guardrail_budget",
+            "scope": "workspace_default_member",
+            "limit_usd": 50,
+            "spend_usd": 52,
+            "resets_at": "2026-10-12T00:00:00.000Z",
+            "remedy_hint": "Wait for the budget window to reset (see metadata.resets_at).",
+        },
+    }
+}
+
+#: OpenRouter's guardrail 403 as its errors page shows it: the request's content matched a blocked pattern.
+ROUTER_GUARDRAIL_403: Final[dict[str, Any]] = {
+    "error": {
+        "code": 403,
+        "message": "Request blocked: prompt injection patterns detected",
+        "metadata": {"patterns": ["ignore all previous instructions"]},
+    }
+}
+
+#: OpenRouter's moderation 403, its metadata the errors page's ``ModerationErrorMetadata``.
+ROUTER_MODERATION_403: Final[dict[str, Any]] = {
+    "error": {
+        "code": 403,
+        "message": "Input was flagged",
+        "metadata": {
+            "reasons": ["violence"],
+            "flagged_input": "a passage...the rest",
+            "provider_name": "Moderator",
+            "model_slug": "vendor/m",
+        },
+    }
+}
+
+#: OpenRouter's 403 for a key that lacks a permission: its typed ``error_type`` and no content metadata.
+ROUTER_PERMISSION_403: Final[dict[str, Any]] = {
+    "error": {
+        "code": 403,
+        "message": "This key lacks the required permission",
+        "metadata": {"error_type": "permission_denied"},
+    }
+}
+
+
 @pytest.mark.parametrize(
     ("provider_name", "status", "body", "owner"),
     [
@@ -691,6 +744,29 @@ async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
             "account",
         ),
         ("openai", 429, {"error": {"message": "quota", "code": "insufficient_quota"}}, "account"),
+        # OpenRouter's 403 is the account's unless its body says the request's content was blocked: a spent budget,
+        # a key lacking a permission, a message alone, and a body that is not JSON.
+        ("openrouter", 403, ROUTER_BUDGET_403, "account"),
+        ("openrouter", 403, ROUTER_PERMISSION_403, "account"),
+        ("openrouter", 403, {"error": {"message": "flagged by moderation"}}, "account"),
+        ("openrouter", 403, "<html>Forbidden</html>", "account"),
+        ("openrouter", 403, {"error": {"code": 403, "message": "no", "metadata": "patterns"}}, "account"),
+        # A spent budget is the account's whatever else its metadata carries: no filter saw the call.
+        (
+            "openrouter",
+            403,
+            {"error": {"code": 403, "message": "Budget", "metadata": {"limit_source": "x", "patterns": ["y"]}}},
+            "account",
+        ),
+        # Another provider's 403 is the account's, content metadata or not.
+        (
+            "anthropic",
+            403,
+            {"error": {"type": "permission_error", "message": "x", "metadata": {"patterns": []}}},
+            "account",
+        ),
+        ("openai", 403, {"error": {"message": "x", "metadata": {"reasons": ["violence"]}}}, "account"),
+        ("openai", 403, {"error": {"message": "x", "metadata": {"error_type": "content_policy_violation"}}}, "account"),
         # The provider: it declined the call (rate-limited, overloaded or unavailable), which says nothing about the
         # model.
         ("openai", 429, {"error": {"message": "slow down", "code": "rate_limit_exceeded"}}, "provider"),
@@ -705,8 +781,17 @@ async def test_an_error_in_a_200_body_is_a_failure_not_a_reply() -> None:
         ),
         ("openrouter", 503, {"error": {"code": 503, "message": "No available provider"}}, "provider"),
         ("openai", 503, "<html>Service Unavailable</html>", "provider"),
-        # The candidate: everything else, charged as any failure.
-        ("openrouter", 403, {"error": {"message": "flagged by moderation"}}, "candidate"),
+        # The candidate: OpenRouter's 403 for the request's content (a guardrail's patterns, moderation's metadata,
+        # or a typed content flag or refusal, on either wire), and everything else, charged as any failure.
+        ("openrouter", 403, ROUTER_GUARDRAIL_403, "candidate"),
+        ("openrouter", 403, ROUTER_MODERATION_403, "candidate"),
+        (
+            "openrouter",
+            403,
+            {"error": {"code": 403, "message": "flagged", "metadata": {"error_type": "content_policy_violation"}}},
+            "candidate",
+        ),
+        ("openrouter", 403, {"error": {"code": 403, "message": "declined", "error_type": "refusal"}}, "candidate"),
         ("anthropic", 400, {"error": {"type": "invalid_request_error", "message": "bad request"}}, "candidate"),
         ("openai", 500, "<html>oops</html>", "candidate"),
         (
@@ -728,6 +813,69 @@ def test_whose_failure_a_providers_answer_is_read_off_its_status_and_body(
     error = error_from_response(provider_name, status, raw)
     assert error.owner == owner
     assert describe_failure(error).owner == owner
+
+
+def test_an_openrouter_budget_403_says_when_the_budget_resets_and_is_no_spent_credit() -> None:
+    """A spent budget stops the run as the account's until its window rolls over; it is not spent credit."""
+    from threetears.evals.providers.failures import error_from_response
+
+    error = error_from_response("openrouter", 403, json.dumps(ROUTER_BUDGET_403))
+    assert (error.owner, error.credit_spent) == ("account", False)
+    assert error.resets_at == datetime(2026, 10, 12, tzinfo=UTC)
+    assert str(error) == f"openrouter 403: {ROUTER_BUDGET_403['error']['message']}"
+
+
+@pytest.mark.parametrize(
+    ("resets", "expected"),
+    [
+        (None, None),  # a lifetime budget
+        ("not a time", None),
+        ("2026-10-12T02:00:00+02:00", datetime(2026, 10, 12, tzinfo=UTC)),
+        ("2026-10-12T00:00:00", datetime(2026, 10, 12, tzinfo=UTC)),
+    ],
+    ids=["lifetime", "unreadable", "offset", "naive-read-as-utc"],
+)
+def test_a_budget_403_reset_is_an_instant_in_utc_or_none(resets: str | None, expected: datetime | None) -> None:
+    from threetears.evals.providers.failures import error_from_response
+
+    body = {"error": {"code": 403, "message": "Budget", "metadata": {"limit_source": "x", "resets_at": resets}}}
+    error = error_from_response("openrouter", 403, json.dumps(body))
+    assert (error.owner, error.resets_at) == ("account", expected)
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "status", "body"),
+    [
+        ("openrouter", 403, ROUTER_GUARDRAIL_403),
+        ("openrouter", 403, ROUTER_MODERATION_403),
+        ("openrouter", 403, ROUTER_PERMISSION_403),
+        ("openrouter", 403, "<html>Forbidden</html>"),
+        (
+            "openrouter",
+            402,
+            {"error": {"code": 402, "message": "Budget", "metadata": ROUTER_BUDGET_403["error"]["metadata"]}},
+        ),
+        ("anthropic", 403, ROUTER_BUDGET_403),
+        ("openai", 403, ROUTER_BUDGET_403),
+    ],
+)
+def test_no_answer_but_an_openrouter_budget_403_names_a_reset(provider_name: Any, status: int, body: object) -> None:
+    from threetears.evals.providers.failures import error_from_response
+
+    raw = body if isinstance(body, str) else json.dumps(body)
+    assert error_from_response(provider_name, status, raw).resets_at is None
+
+
+@pytest.mark.parametrize(
+    ("body", "owner"),
+    [(ROUTER_GUARDRAIL_403, "candidate"), (ROUTER_BUDGET_403, "account"), (ROUTER_PERMISSION_403, "account")],
+)
+def test_an_openrouter_403_in_a_200_body_is_owned_by_its_metadata(body: dict[str, Any], owner: str) -> None:
+    from threetears.evals.providers.wire import read_reply
+
+    with pytest.raises(ProviderError) as raised:
+        read_reply("openrouter", "vendor/m", 200, body)
+    assert (raised.value.status, raised.value.owner) == (403, owner)
 
 
 @pytest.mark.parametrize(

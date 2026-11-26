@@ -353,7 +353,10 @@ billed; a resend cut at the time bound may already have been, and its spend is n
 back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
-credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
+credit, which stops a run, OpenRouter's 403 among them unless its body says a guardrail or moderation blocked the
+request's content (`error.metadata` with `patterns`, `reasons` or `flagged_input`, or an `error_type` of
+`content_policy_violation` or `refusal`), which is the candidate's; a spent OpenRouter budget's 403 also says when it
+resets (`ProviderError.resets_at`); and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
 has retired and its 400 for a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's
 `model_not_found`; OpenRouter's other 404s, no endpoint taking the request, stay the candidate's), and an `httpx`
 transport error by the host it was sending to.
@@ -527,7 +530,9 @@ ANTHROPIC_API_KEY_FALLBACKS=ANTHROPIC_API_KEY_LUMENS,ANTHROPIC_API_KEY_3
 
 On a spent key's refusal the model sends the same request again on the next key; the refused call was not billed.
 A spent key is never sent again in the process, by any model reading that variable, and each switch is logged once at
-WARNING naming the two variables, never a key. Only that refusal fails over: a refused key (401, 403), a bad request,
+WARNING naming the two variables, never a key. OpenRouter's 403 for the key's own spent limit (`limit_source` `openrouter_key_limit`) fails over the same
+way; its 403 for a guardrail's or a workspace's spent budget does not, since every key shares it. Only those refusals
+fail over: a refused key (401, any other 403), a bad request,
 a 5xx and a timeout keep their behaviour. When every key's credit is spent, the account failure is raised as before,
 naming every variable it tried. A name in the list the environment does not set is refused when the model is built.
 Any provider's variable takes a list; OpenAI's own spent quota (a 429 `insufficient_quota`) is not read as spent

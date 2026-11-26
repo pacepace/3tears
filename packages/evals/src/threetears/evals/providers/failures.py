@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Literal
 
 if TYPE_CHECKING:
@@ -54,6 +55,28 @@ _OPENAI_MODEL_NOT_FOUND: Final = "model_not_found"
 #: Anthropic's error type for a resource it does not have (``error.type``); on the Messages API that is the model.
 _ANTHROPIC_NOT_FOUND: Final = "not_found_error"
 
+#: The ``error.metadata`` keys OpenRouter's errors page documents for a 403 that blocked the request's content: a
+#: guardrail's matched ``patterns`` ("Request blocked: ..."), and moderation's ``reasons`` and ``flagged_input``. A
+#: 403 carrying one is the candidate's; any other OpenRouter 403 (a key lacking a permission, a spent budget, a body
+#: that says nothing) is the account's, as every other provider's 403 is.
+_ROUTER_CONTENT_BLOCK: Final = frozenset({"patterns", "reasons", "flagged_input"})
+
+#: The typed ``error_type`` values OpenRouter's errors page gives a 403 that the content or the model earned: a content
+#: filter's flag, and a provider's refusal reported as an error. It sits in ``error.metadata`` on the chat completions
+#: wire and beside the message on the Messages one.
+_ROUTER_CONTENT_TYPES: Final = frozenset({"content_policy_violation", "refusal"})
+
+#: The ``error.metadata`` key naming which budget an OpenRouter 403 found spent (a guardrail's, a workspace's or the
+#: key's own limit), rejected before any provider saw the call.
+_ROUTER_LIMIT_SOURCE: Final = "limit_source"
+
+#: The ``error.metadata`` key holding when that budget's window rolls over (ISO 8601 UTC), null for a lifetime budget.
+_ROUTER_RESETS_AT: Final = "resets_at"
+
+#: The ``limit_source`` of a budget that is the key's own limit, which another key does not share. A guardrail's or a
+#: workspace's budget (or a source the errors page does not name) is met by every key under the account.
+_ROUTER_KEY_LIMIT: Final = "openrouter_key_limit"
+
 
 def _parsed(body: object) -> object:
     """``body`` as JSON when it is text, else as given; ``None`` when it is text that is not JSON."""
@@ -72,6 +95,60 @@ def _error_object(body: object) -> Mapping[str, object]:
     outer = body if isinstance(body, Mapping) else {}
     inner = outer.get("error")
     return inner if isinstance(inner, Mapping) else outer
+
+
+def _metadata(error: Mapping[str, object]) -> Mapping[str, object]:
+    """The error object's ``metadata`` member, or an empty one when it has none."""
+    metadata = error.get("metadata")
+    return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _router_content_block(provider: Provider, status: int, error: Mapping[str, object]) -> bool:
+    """Whether the answer is OpenRouter's 403 for the request's content: a guardrail's or moderation's block.
+
+    Read off the metadata the errors page documents for one (:data:`_ROUTER_CONTENT_BLOCK`, or a typed
+    :data:`_ROUTER_CONTENT_TYPES` ``error_type``), never off the message, which a permission refusal and a budget share
+    the status with. A 403 naming a spent budget (``limit_source``) is the account's whatever else it carries: the
+    call was rejected before any provider or filter saw it.
+
+    :param provider: The provider that answered.
+    :param status: The HTTP status, or an in-body error's code.
+    :param error: The body's error object.
+    :return: True for a 403 OpenRouter answered with such metadata; False for any other answer.
+    """
+    if provider != "openrouter" or status != 403:
+        return False
+    metadata = _metadata(error)
+    if metadata.get(_ROUTER_LIMIT_SOURCE) is not None:
+        return False
+    error_type = metadata.get("error_type", error.get("error_type"))
+    return error_type in _ROUTER_CONTENT_TYPES or not _ROUTER_CONTENT_BLOCK.isdisjoint(metadata)
+
+
+def _router_budget_resets(provider: Provider, status: int, error: Mapping[str, object]) -> datetime | None:
+    """When the budget OpenRouter's 403 found spent rolls over, or ``None``.
+
+    ``None`` for any answer but OpenRouter's budget 403 (``error.metadata.limit_source``), and for one whose
+    ``resets_at`` is null (a lifetime budget) or not an ISO 8601 instant.
+
+    :param provider: The provider that answered.
+    :param status: The HTTP status, or an in-body error's code.
+    :param error: The body's error object.
+    :return: The instant the budget resets, in UTC.
+    """
+    if provider != "openrouter" or status != 403:
+        return None
+    metadata = _metadata(error)
+    resets = metadata.get(_ROUTER_RESETS_AT)
+    if metadata.get(_ROUTER_LIMIT_SOURCE) is None or not isinstance(resets, str):
+        return None
+    try:
+        when = datetime.fromisoformat(resets)
+    except ValueError:
+        # NOSILENT: a reset that is not an instant names no time to wait for; the failure is still the account's,
+        # and the provider's own message, which the error keeps, says what it said.
+        return None
+    return when.astimezone(UTC) if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
 def _model_unserved(provider: Provider, status: int, error: Mapping[str, object], message: str | None) -> bool:
@@ -117,14 +194,22 @@ class ProviderError(Exception):
     :ivar message: The provider's own message, or ``None`` when its answer carried none.
     :ivar attempts: How many times the call was sent before this answer stood: more than one when the provider
         declined it and the client sent it again (:class:`~threetears.evals.providers.DeclinedRetry`).
-    :ivar owner: Whose failure it was. ``account``: a 401 or 403 (OpenRouter's 403 is moderation, so not there), a
-        402, Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
+    :ivar owner: Whose failure it was. ``account``: a 401 or 403 (on OpenRouter, every 403 but a content block: a key
+        lacking a permission, a spent guardrail, workspace or key budget, a body that says neither), a 402,
+        Anthropic's 400 credit-balance notice, or OpenAI's 429 ``insufficient_quota``. ``provider``: any other
         429, a 529 or a 503. ``unserved``: OpenRouter's 404 for a model it has retired ("is no longer available"; its
         other 404s, no endpoint taking the request, stay the candidate's) and its 400 for a model id it does not know, Anthropic's 404 ``not_found_error``, or OpenAI's
-        ``model_not_found``. ``candidate``: everything else, a 500 and a 502 among it.
-    :ivar credit_spent: Whether the answer says the key's prepaid credit is spent: Anthropic's 400 credit-balance
-        notice, or a 402 (OpenRouter's insufficient credits). An ``account`` failure that another key may not meet,
-        so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``).
+        ``model_not_found``. ``candidate``: OpenRouter's 403 that blocked the request's content, which its body says
+        with a guardrail's ``patterns``, moderation's ``reasons`` or ``flagged_input``, or an ``error_type`` of
+        ``content_policy_violation`` or ``refusal``; and everything else, a 500 and a 502 among it.
+    :ivar credit_spent: Whether the answer says the key's prepaid credit or its own limit is spent: Anthropic's 400
+        credit-balance notice, a 402 (OpenRouter's insufficient credits), or OpenRouter's 403 naming the key's own
+        spent limit (``limit_source`` ``openrouter_key_limit``). An ``account`` failure that another key may not meet,
+        so it is the one answer a model fails over to a fallback key on (``<VARIABLE>_FALLBACKS``). A guardrail's or a
+        workspace's spent budget is not: every key under the account meets it.
+    :ivar resets_at: When the spent budget rolls over, in UTC, for OpenRouter's 403 naming a spent guardrail,
+        workspace or key budget (``error.metadata.limit_source``, its ``resets_at``): an ``account`` failure that
+        lasts until then. ``None`` for every other answer, and for a budget with no reset (a lifetime one).
     """
 
     def __init__(
@@ -149,7 +234,7 @@ class ProviderError(Exception):
         account = (
             status == 401
             or status == 402
-            or (status == 403 and provider != "openrouter")
+            or (status == 403 and not _router_content_block(provider, status, error))
             or credit
             or (status == 429 and code == "insufficient_quota")
         )
@@ -162,7 +247,13 @@ class ProviderError(Exception):
             if _model_unserved(provider, status, error, message)
             else "candidate"
         )
-        self.credit_spent = credit or status == 402
+        key_limit = (
+            provider == "openrouter"
+            and status == 403
+            and _metadata(error).get(_ROUTER_LIMIT_SOURCE) == _ROUTER_KEY_LIMIT
+        )
+        self.credit_spent = credit or status == 402 or key_limit
+        self.resets_at = _router_budget_resets(provider, status, error)
         said = f": {self.message}" if self.message else " (the response carried no message)"
         tried = f" (after {attempts} attempts)" if attempts > 1 else ""
         super().__init__(f"{provider} {status}{said}{tried}")
