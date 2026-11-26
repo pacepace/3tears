@@ -26,6 +26,8 @@ def _ledger() -> BudgetLedger:
     registry.configure(
         l1_backend=SQLiteBackend(db_name=f"ledger_conformance_{uuid.uuid4().hex[:8]}"),
         l2_client=FakeNatsClient(),
+        # the ledger refuses a registry with no L3; this test calls no method, so any pool stands in
+        l3_pool=object(),  # type: ignore[arg-type]
         kv_key_scope="ledger-conformance",
     )
     return BudgetLedger(registry, purpose="pool")

@@ -94,7 +94,15 @@ What must stay possible:
 - Chunks 01 and 04: `test_public_api_has_a_caller` is red at these chunk boundaries for the names chunk 06 calls:
   `UnpricedModelError` (the KP-A4 build refusal), `estimate_input_tokens` (the KP-E1 reservation estimate), and chunk
   04's store and period names. Chunk 06 must leave it green, or ledger a name with a reason. That is the fix for
-  blocking finding rev-20261126T020832Z-d8caf915 (the recorded suite's one red), which rides chunk 06's commit.
+  blocking findings rev-20261126T020832Z-d8caf915 and rev-20261126T021046Z-3fb55497 R-1 (the same red, chunk 04's
+  names added), which ride chunk 06's commit; one verify pass after chunk 06 resolves both.
+- Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
+  every table in that tuple and would fail where it runs before v004 creates them. Money and JSON are TEXT: no float
+  before the budget compare, and JSONB would reorder the reservations the sweep reports in order.
+- Chunk 05: the ledger refuses a registry with no L3 (main session, "do it right"). Spend on L2 alone is lost to a
+  broker restart, and no ledger deployment runs without a database, unlike identity-edge's throttles.
+- Chunk 05: `BudgetLedger` has no caller in this repo's src (models can't import core), so
+  `_public_api_consumers.txt` names Hearsay, whose wiring follows the release. Owner to confirm at the boundary.
 
 **Level:** Medium. The pool logic is well specified. Two foreign surfaces carry the risk, and their verify-api steps
 are what raise the level:

@@ -434,6 +434,10 @@ class TestConstruction:
         with pytest.raises(ValueError, match="needs an L2 client"):
             _ledger(_registry(None, _Store()))
 
+    def test_a_registry_with_no_l3_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="needs an L3 pool"):
+            _ledger(_registry(_Nats(), None))
+
     def test_an_empty_purpose_is_refused(self) -> None:
         with pytest.raises(ValueError, match="purpose"):
             _ledger(purpose="  ")

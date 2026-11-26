@@ -34,9 +34,11 @@ pool's plan accepted: a database write per reserve and per settle.
 
 **Why it refuses a registry with no L2.** The compare-and-swap is the guarantee. Without L2 the
 collection falls back to a read-modify-write through L3, and two processes could both admit a
-reservation the budget held room for once. A registry with no L3 is not refused, as no coordination
-primitive refuses it, and is logged once per table: the ledger then lives in L2 alone and a broker
-restart loses it, which is a wiring gap for anything holding money.
+reservation the budget held room for once.
+
+**Why it refuses a registry with no L3.** The other coordination primitives accept one, because
+identity-edge throttles across replicas with no database. A ledger has no such deployment: on L2 alone a
+broker restart loses every key's spend and each budget silently starts over.
 
 **Errors.** As the Protocol states them by builtin base: a settle or release of a reservation the
 account doesn't hold raises :class:`LedgerReservationNotFound` (a ``LookupError``); a reserve reusing an
@@ -140,7 +142,7 @@ class BudgetLedger:
         """configure the ledger over its registry's coordination tables.
 
         :param registry: the collection registry whose tiers the ledger reads and writes. It needs L2,
-            the fence, and should have L3, the record (see the module docstring)
+            the fence, and L3, the record (see the module docstring)
         :ptype registry: CollectionRegistry
         :param purpose: what this ledger budgets (``"model-key-pool"``), carried in every row's key so
             ledgers over one table never share an account or a record
@@ -148,7 +150,7 @@ class BudgetLedger:
         :param config: core config forwarded when this process first builds the ledger's collections;
             defaults to the framework defaults, which the tables' declared write policy overrides
         :ptype config: CoreConfig | None
-        :raises ValueError: when ``purpose`` is empty, or the registry has no L2 client
+        :raises ValueError: when ``purpose`` is empty, or the registry has no L2 client or no L3 pool
         """
         if not purpose.strip():
             raise ValueError("BudgetLedger purpose must be a non-empty name, e.g. 'model-key-pool'")
@@ -157,6 +159,15 @@ class BudgetLedger:
         self._documents = coordination_collection(registry, CoordinationDocumentsCollection, config)
         self._accounts.require_l2_fence("BudgetLedger")
         self._documents.require_l2_fence("BudgetLedger")
+        # Spend is money an operator budgets by the month: a ledger kept on L2 alone is lost to a
+        # broker restart, and every key's budget silently starts over. The coordination tables
+        # accept a registry with no L3 because identity-edge throttles without a database; a
+        # ledger has no such deployment, so a missing L3 is a wiring mistake and refused here.
+        if self._accounts.l3_pool is None:
+            raise ValueError(
+                "BudgetLedger needs an L3 pool: spend must survive a broker restart, and with no L3 it lives "
+                "only in L2. Pass a registry configured with its database pool"
+            )
 
     @property
     def purpose(self) -> str:
