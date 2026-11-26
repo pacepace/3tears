@@ -177,7 +177,10 @@ async def keyset_page(
         chain_legs=_chains_legs(conn),
         hint=hint,
     )
-    # a versioned table's page in another order sorts its pinned scope's newest versions: under a fill's bounds
+    # a versioned table's page in another order sorts its pinned scope's newest versions: under a fill's bounds.
+    # WHY no LIMIT inside the relation: the page is ordered past the key, and its DISTINCT ON must keep each key's
+    # newest version before the order can tell which rows come first; a LIMIT inside would cut keys, not the page.
+    # The pins inside bound its scope, and work_mem (newest_settings) holds its sort
     answered = list(await newest_sent(conn, newest, False, batch=False).fetch(sql, *params))
     return KeyPage.cut(order, answered if records else [dict(row) for row in answered], limit)
 

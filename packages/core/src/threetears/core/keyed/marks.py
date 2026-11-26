@@ -28,13 +28,14 @@ from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.keyed._filters import (
     Derived,
     Fragment,
+    bounded_sent,
     by_conditions,
+    live_only,
     narrowing,
     newest_of,
     newest_read,
     quoted_table,
     relation,
-    sent_by,
 )
 from threetears.interfaces.keyed.keys import newest_relation
 from threetears.core.sql_fragments import quote_identifier
@@ -144,9 +145,14 @@ async def read_past_marks(
     moved = " OR ".join(conditions)
     clause = " AND ".join([*pinned, f"({moved})"]) if pinned else moved
     selected = ", ".join(quote(column) for column in columns)
-    sql = f"SELECT {selected} FROM {_past_source(conn, relation, quote, clause)} WHERE {clause}"
+    # a stamped L3 table's live rows alone: its live guard beside the marks (keyed.live_only, the stamped half of
+    # live_read; a versioned table's newest relation is _past_source's), never a row its delete marked gone
+    guarded = " AND ".join([clause, *(fragment.sql for fragment in live_only(conn, relation, row=None))])
+    sql = f"SELECT {selected} FROM {_past_source(conn, relation, quote, clause)} WHERE {guarded}"
+    # under a newest read's bounds on a versioned table (bounded_sent): its relation sorts the candidates' versions
+    sender = bounded_sent(conn, relation)
     if types is not None:
-        table = await l3_fetch_arrow(sent_by(conn), sql, *params, types=types)
+        table = await l3_fetch_arrow(sender, sql, *params, types=types)
         newest = dict(marks)
         for stamp in marks:
             # one stamp column's values made Python values, compared with its mark as the dict read compares them
@@ -154,7 +160,7 @@ async def read_past_marks(
                 if value is not None and value > newest[stamp]:
                     newest[stamp] = value
         return MarkedRead(rows=[], marks=newest, table=table)
-    rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
+    rows = [dict(row) for row in await sender.fetch(sql, *params)]
     newest = dict(marks)
     for row in rows:
         for stamp in marks:
@@ -207,9 +213,11 @@ async def read_after(
     conditions.append(f"{quote_identifier(id_column)} > ${len(params) + 1}")
     params.append(after)
     selected = ", ".join(quote_identifier(column) for column in columns)
+    # a versioned table's newest live versions, its key pins inside the relation, a stamped one's live rows; read
+    # under a newest read's bounds (bounded_sent: work_mem holds the relation's sort)
     sql = (
-        f"SELECT {selected} FROM {relation(newest_read(conn, table), 'r', params)} WHERE {' AND '.join(conditions)} "
-        f"ORDER BY {quote_identifier(id_column)} LIMIT {limit}"
+        f"SELECT {selected} FROM {relation(newest_read(conn, table, by=by), 'r', params)} "
+        f"WHERE {' AND '.join(conditions)} ORDER BY {quote_identifier(id_column)} LIMIT {limit}"
     )
-    rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
+    rows = [dict(row) for row in await bounded_sent(conn, table).fetch(sql, *params)]
     return PageAfter(rows=rows, last=rows[-1][id_column] if rows else after, more=len(rows) == limit)

@@ -42,6 +42,7 @@ from threetears.core.ddl.row_epoch import (
 from threetears.core.keyed import (
     AnyOf,
     Count,
+    Joined,
     KeyBatch,
     Sort,
     Sum,
@@ -59,7 +60,11 @@ from threetears.core.keyed import (
     Nearest,
     newest_read,
     read_by,
+    read_by_joined,
+    read_link_chain,
     read_nearest,
+    read_past_marks,
+    read_reached,
     read_keyed,
     read_keyed_arrow,
     read_row,
@@ -439,3 +444,82 @@ async def test_a_vector_read_of_every_column_answers_the_declared_columns_only()
     outer = sql.split(" FROM (", 1)[0]
     assert outer == "SELECT " + ", ".join(f'n."{column}"' for column in _DECLARED), sql
     assert f'NOT t."{GONE_COLUMN}"' in sql, sql
+
+
+class TestStatementReaders:
+    """the readers that write their own statement (joins, walks, a link chain, a read past marks): each answers a
+    stamped table's live rows alone, through the live guard (``keyed.live_read``/``live_only``), or refuses it as it
+    refuses a versioned one where one statement reaches rows no live read guards."""
+
+    async def test_a_joined_read_answers_live_rows_alone(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if read_by_joined answers a gone row of the table it pins or of the table it joins: both are keyed
+        reads (read_by, read_keyed), each through the live guard."""
+        reader = _L3(db)
+        rows = await read_by_joined(
+            reader,
+            _TABLE,
+            by={"state": "CA"},
+            columns=["state", "run_id", "rows"],
+            joins=[Joined(_TABLE, on={"state": "state", "run_id": "run_id"}, columns={"again": "rows"}, left=True)],
+        )
+        assert [(row["run_id"], row["again"]) for row in rows] == [("r1", 10)]
+        joined = await read_by_joined(
+            reader,
+            _TABLE,
+            by={"state": "NV"},
+            columns=["state", "run_id"],
+            joins=[Joined(_TABLE, on={"run_id": "run_id"}, columns={"other_state": "state"})],
+        )
+        assert sorted(row["other_state"] for row in joined) == ["CA", "NV"]
+
+    async def test_a_walk_a_level_a_read_answers_live_rows_alone(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a walk read a level a read (read_by, then read_keyed) reaches a gone row."""
+        reader = _L3(db)
+        reached = await read_reached(
+            reader, _TABLE, start={"state": "CA"}, on="run_id", to="run_id", columns=["state", "run_id"]
+        )
+        assert sorted((row["state"], row["run_id"]) for row in reached) == sorted(_LIVE)
+
+    async def test_one_statement_walks_chains_and_ranked_joins_refuse_a_stamped_table(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a walk in one statement, a link chain or a ranked read joining a stamped table is sent: none names
+        the table's live guard, so each would reach its gone rows (CA r2 here)."""
+        reader = _L3(db)
+        with pytest.raises(ValueError, match="stamped"):
+            await read_reached(
+                reader, _TABLE, start={"state": "CA"}, on="run_id", to="run_id", columns=["run_id"], depth=2
+            )
+        with pytest.raises(ValueError, match="stamped"):
+            await read_link_chain(reader, _TABLE, key="run_id", link="run_id", start="r2", most=2, columns=["rows"])
+        with pytest.raises(ValueError, match="stamped"):
+            await read_nearest(
+                _Sent(),
+                "sg_other",
+                by={"state": "CA"},
+                nearest=Nearest("rows", "[1]"),
+                limit=3,
+                columns=["state"],
+                joins=[Joined(_TABLE, on={"state": "state"}, columns={"j_rows": "rows"}, left=True)],
+            )
+        assert reader.statements == []
+        # a local copy holds live rows alone: its chain is read as it holds
+        chained = await read_link_chain(
+            ThreadedDuckDB(db), _TABLE, key="run_id", link="run_id", start="r2", most=1, columns=["rows"]
+        )
+        assert [int(row["rows"]) for row in chained] == [20]
+
+    async def test_a_read_past_marks_answers_live_rows_alone(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a read of a stamped table's change record past its marks answers a row its delete marked gone
+        (its epoch past the mark like any live row's)."""
+        reader = _L3(db)
+        moved = await read_past_marks(
+            reader, _TABLE, columns=["state", "run_id", "rows", EPOCH_COLUMN], marks={EPOCH_COLUMN: 0}
+        )
+        assert _read(moved.rows) == _LIVE
+        types = {"state": pa.string(), "run_id": pa.string(), "rows": pa.int64(), EPOCH_COLUMN: pa.int64()}
+        arrow = await read_past_marks(
+            reader, _TABLE, columns=["state", "run_id", "rows", EPOCH_COLUMN], marks={EPOCH_COLUMN: 0}, types=types
+        )
+        assert arrow.table is not None
+        assert _read(arrow.table.to_pylist()) == _LIVE

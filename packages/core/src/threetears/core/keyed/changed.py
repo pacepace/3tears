@@ -42,7 +42,15 @@ from typing import Any, Final
 from threetears.core.backends.arrow_reply import _rail_arrow_table
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed import _filters
-from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, live_read, narrowing, sent_by
+from threetears.core.keyed._filters import (
+    Derived,
+    Fragment,
+    Selected,
+    bounded_sent,
+    by_conditions,
+    live_read,
+    narrowing,
+)
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
 from threetears.core.keyed.held import hash_bytes as _hash_bytes
@@ -929,8 +937,11 @@ async def _group_hash_rows(
     ordered = ", ".join(f"s.{alias} NULLS FIRST" for _, _, alias in levels)
     found: list[Mapping[str, Any]] = []
     last: Sequence[Any] | None = None
-    # a versioned table's newest live versions, read in its place, a stamped one's live rows alone
-    read_from, guarded = live_read(conn, relation, where)
+    # a versioned table's newest live versions, read in its place (its key pins inside the relation), a stamped one's
+    # live rows alone; under a newest read's bounds on a versioned table (bounded_sent: work_mem holds its sort). The
+    # page's LIMIT is of groups, past the relation's keys, so it stays outside it
+    read_from, guarded = live_read(conn, relation, where, by=by)
+    sender = bounded_sent(conn, relation)
     while True:
         conditions, params = by_conditions(by, alias="t")
         for fragment in guarded:
@@ -947,7 +958,7 @@ async def _group_hash_rows(
             f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_filters.relation(read_from, 't', params)}{filtered}"
             f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
-        rows = await sent_by(conn).fetch(sql, *params)
+        rows = await sender.fetch(sql, *params)
         found.extend(rows)
         if len(rows) < page:
             return found

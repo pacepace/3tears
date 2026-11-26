@@ -24,13 +24,12 @@ from typing import Annotated, Any, Literal, overload
 
 from threetears.core.keyed._filters import (
     Fragment,
+    bounded_sent,
     Lock,
     Selected,
     live_read,
-    newest_of,
-    newest_sent,
     reads_l3,
-    refuse_versioned,
+    refuse_append_only,
     sent_by,
 )
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
@@ -137,11 +136,13 @@ async def read_by(
     :rtype: list[dict[str, Any]] | list[Any]
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    read_from, where = live_read(conn, table, where, lock=lock)
+    # a versioned table's newest live versions, its key pins named inside the relation, a stamped one's live rows
+    read_from, where = live_read(conn, table, where, lock=lock, by=by)
     sql, params = read_by_statement(read_from, by=by, columns=columns, lock=lock, where=where, order=order)
     # on YugabyteDB, a read names the declared index that serves its pins and order (unordered: binds the most pins)
     sql = (await yugabyte_index_hint(conn, table, by, order, where=where)) + sql
-    rows = list(await sent_by(conn).fetch(sql, *params))
+    # under a newest read's bounds on a versioned table (bounded_sent)
+    rows = list(await bounded_sent(conn, table).fetch(sql, *params))
     return rows if records else [dict(row) for row in rows]
 
 
@@ -209,9 +210,9 @@ async def read_row(
     :rtype: dict[str, Any] | Any | None
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
-    read_from, where = live_read(conn, table, where, lock=lock)
+    read_from, where = live_read(conn, table, where, lock=lock, by=by)
     sql, params = read_row_statement(read_from, by=by, columns=columns, lock=lock, where=where, beside=beside)
-    rows = list(await sent_by(conn).fetch(sql, *params))
+    rows = list(await bounded_sent(conn, table).fetch(sql, *params))
     if not rows:
         return None
     return rows[0] if records else dict(rows[0])
@@ -255,7 +256,7 @@ async def read_row_beside(
     :rtype: list[Any]
     :raises ValueError: when nothing is pinned, or for a limit under one row
     """
-    read_from, where = live_read(conn, table)
+    read_from, where = live_read(conn, table, by=by)
     sql, params = read_row_beside_statement(
         read_from,
         by=by,
@@ -266,7 +267,7 @@ async def read_row_beside(
         first=first,
         where=where,
     )
-    return list(await sent_by(conn).fetch(sql, *params))
+    return list(await bounded_sent(conn, table).fetch(sql, *params))
 
 
 async def read_value(
@@ -289,9 +290,9 @@ async def read_value(
     :rtype: Any
     :raises ValueError: when nothing is pinned
     """
-    read_from, where = live_read(conn, table, where)
+    read_from, where = live_read(conn, table, where, by=by)
     sql, params = read_row_statement(read_from, by=by, columns=(column,), where=where)
-    rows = list(await sent_by(conn).fetch(sql, *params))
+    rows = list(await bounded_sent(conn, table).fetch(sql, *params))
     return rows[0][column] if rows else None
 
 
@@ -354,13 +355,15 @@ async def read_nearest(
     """
     # a versioned table's newest live versions, read in its place, the pins on its key named inside its DISTINCT ON
     # (a ranked read's LIMIT is by its rank, past the key, so it reads its pinned scope's newest versions first), a
-    # stamped one's live rows alone; a joined table is joined inside the statement, where no newest relation reads
-    # it, so a versioned one is refused
+    # stamped one's live rows alone; a joined table is joined inside the statement, where no live read reaches it,
+    # so an append-only one is refused (a versioned one's every version, a stamped one's gone rows)
     read_from, where = live_read(conn, table, where, by=by)
     # sent under a newest read's bounds (work_mem): the relation sorts its pinned scope's versions (a fill's bounds:
-    # no keyed batch's fetch limit, so the engine is not asked)
-    sender = newest_sent(conn, newest_of(conn, table), False, batch=False)
-    refuse_versioned(conn, [join.table for join in joins], f"a ranked read of {table} joining")
+    # no keyed batch's fetch limit, so the engine is not asked). WHY no LIMIT inside the relation: the read's LIMIT is
+    # by its rank, which only each key's newest version holds; a LIMIT inside would cut keys before they are ranked.
+    # The pins inside bound its scope, and work_mem holds its sort
+    sender = bounded_sent(conn, table)
+    refuse_append_only(conn, [join.table for join in joins], f"a ranked read of {table} joining")
     if isinstance(nearest, PatternCount):
         sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins)
         rows = list(await sender.fetch(sql, *params))
@@ -477,10 +480,13 @@ def _pattern_count_statement(
     )
     selected.append(f"({score or '0'}) AS {quote_identifier(rank.rank)}")
     params.append(limit)
+    limited = len(params)
     order = f"{quote_identifier(rank.rank)} DESC{then_terms(rank.then)}"
+    # a versioned table's relation binds its key pins (keyed.versions_read): bound after the limit, renumbered past it
+    source = relation(table, "t", params)
     sql = (
-        f"SELECT {', '.join(selected)} FROM {relation(table, 't')}{''.join(joined)} "
-        f"WHERE {' AND '.join(conditions)} ORDER BY {order} LIMIT ${len(params)}"
+        f"SELECT {', '.join(selected)} FROM {source}{''.join(joined)} "
+        f"WHERE {' AND '.join(conditions)} ORDER BY {order} LIMIT ${limited}"
     )
     return sql, params
 

@@ -47,6 +47,7 @@ __all__ = [
     "counted_type",
     "flag_type",
     "without_counted",
+    "without_full_groups",
     "arrow_schema_text",
     "l3_fetch_arrow",
     "read_reply",
@@ -333,6 +334,28 @@ def without_counted(table: Any, column: str) -> tuple[Any, int]:
     """
     total = pc.sum(table.column(column)).as_py()
     return table.drop_columns([column]), int(total or 0)
+
+
+def without_full_groups(table: Any, columns: Sequence[str], at_least: int) -> tuple[Any, Any]:
+    """``table`` without the rows of each group of ``columns`` holding ``at_least`` rows, and those groups (their
+    ``columns`` alone, a row each): Arrow's own group count and anti-join, no row made a Python object. What a read
+    of several scopes under one ``LIMIT`` each tells apart: a scope that filled its limit is read again on its own.
+
+    :param table: the rows read
+    :ptype table: pyarrow.Table
+    :param columns: the columns naming a group
+    :ptype columns: Sequence[str]
+    :param at_least: the rows a full group holds
+    :ptype at_least: int
+    :return: the rows of the other groups, and the full groups
+    :rtype: tuple[pyarrow.Table, pyarrow.Table]
+    """
+    named = list(columns)
+    counted = table.select(named).group_by(named).aggregate([([], "count_all")])
+    full = counted.filter(pc.greater_equal(counted.column("count_all"), at_least)).select(named)
+    if full.num_rows == 0:
+        return table, full
+    return table.join(full, keys=named, join_type="left anti"), full
 
 
 async def l3_fetch_arrow(l3: Any, query: str, *params: Any, types: Mapping[str, Any]) -> Any:

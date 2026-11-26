@@ -84,8 +84,10 @@ __all__ = [
     "newest_of",
     "newest_read",
     "newest_sent",
+    "bounded_sent",
     "versions_read",
     "refuse_versioned",
+    "refuse_append_only",
     "one_use_each",
     "refuse_in_place",
     "renumbered",
@@ -252,6 +254,36 @@ def refuse_versioned(conn: Any, tables: Sequence[Any], read: str) -> None:
         )
 
 
+def refuse_append_only(conn: Any, tables: Sequence[Any], read: str) -> None:
+    """refuse a read on L3 that names an append-only table in a shape no live read reaches (a recursive walk, a join
+    inside one statement): a versioned table's every version (:func:`refuse_versioned`), or a stamped table's gone
+    rows, which its statement names no live guard for. Such a read is made by keyed reads (``read_by``,
+    ``read_keyed``, a walk a level a read), each through :func:`live_read`. A local copy is read as held.
+
+    WHY refused, not guarded in place: the statement's text is written once a call shape (a walk's,
+    ``joins._HELD_STATEMENTS``) or its joined tables' rows are read beside the ranked ones before the limit cuts
+    (``_pattern_count_statement``), and each spot a gone row could enter is one more place to keep a guard; the keyed
+    reads beside it already answer live rows alone.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param tables: the tables the read names
+    :ptype tables: Sequence[Any]
+    :param read: what the read is, for the refusal
+    :ptype read: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when one of them is a versioned or a stamped L3 table
+    """
+    refuse_versioned(conn, tables, read)
+    named = [table for table in tables if stamped_table(table, l3=reads_l3(conn)) is not None]
+    if named:
+        raise ValueError(
+            f"{read} names the stamped table(s) {', '.join(map(str, named))}, whose gone rows it would read: read them "
+            "by keyed reads (read_keyed, read_by), which see live rows alone"
+        )
+
+
 def versions_read(
     conn: Any, table: str | Derived, *, lock: Any = None, by: Mapping[str, Any] | None = None
 ) -> str | Derived:
@@ -403,6 +435,30 @@ def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool, *, bat
         return sent_by(conn)
     settings = newest_settings(yugabyte=yugabyte, batch=batch)
     return _NewestSettings(conn, settings) if answers_directly(conn) else _NewestBounded(conn, settings)
+
+
+def bounded_sent(conn: Any, *tables: Any) -> Any:
+    """what a shared keyed read that names its relations itself (a count, an aggregate, a point read, a marks read, a
+    changed read) sends its statement through: under a newest read's bounds (``work_mem``,
+    :func:`~threetears.core.backends.read_bounds.bounded_read`) when any of ``tables`` is a versioned L3 table, whose
+    newest relation sorts the versions of the keys it reads; :func:`sent_by` otherwise, as before.
+
+    WHY a fill's bounds (``batch=False``): such a read is no keyed batch of whole keys, so YugabyteDB's fetch limit is
+    not asked (:func:`~threetears.interfaces.keyed.keys.newest_settings`); its relation's sort is the work ``work_mem``
+    is sized for. The one place each of those readers asks, so none is left unbounded on another path.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param tables: the relations the statement reads
+    :ptype tables: Any
+    :return: what to send the statement through
+    :rtype: Any
+    """
+    for table in tables:
+        newest = newest_of(conn, table)
+        if newest is not None:
+            return newest_sent(conn, newest, False, batch=False)
+    return sent_by(conn)
 
 
 def live_only(conn: Any, table: Any, where: Sequence[Fragment] = (), *, row: str | None = "t") -> tuple[Fragment, ...]:

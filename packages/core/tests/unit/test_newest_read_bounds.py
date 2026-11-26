@@ -32,12 +32,37 @@ from threetears.nats import Subject
 
 from threetears.core.backends import dialect
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
-from threetears.core.backends.read_bounds import READ_SETTINGS_FIELD, bounded_read, read_setting_fields
+from threetears.core.backends.read_bounds import READ_SETTINGS_FIELD, bounded_read, read_bounds, read_setting_fields
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.ddl.row_epoch import row_versions
-from threetears.core.keyed import KeyBatch, Sort, ThreadedDuckDB, keyset_page, keyset_rows, read_keyed, read_keyed_arrow
+from threetears.core.keyed import (
+    AnyOf,
+    Count,
+    HashColumn,
+    HashKind,
+    KeyBatch,
+    Sort,
+    ThreadedDuckDB,
+    aggregate_keyed,
+    count_at_most,
+    counts_by,
+    empty_tables,
+    group_hashes,
+    holds_any,
+    keyset_page,
+    keyset_rows,
+    read_after,
+    read_by,
+    read_keyed,
+    read_keyed_arrow,
+    read_past_marks,
+    read_row,
+    read_value,
+)
+from threetears.core.keyed import changed
 from threetears.core.keyset import read_keyset_pages
+from threetears.interfaces.keyed.counts import Dialect
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.interfaces.keyed.keys import NEWEST_FETCH_ROW_LIMIT, NEWEST_WORK_MEM
 
@@ -353,3 +378,128 @@ class TestPrefixBatches:
         assert dict(zip(read.column("id").to_pylist(), read.column("v").to_pylist(), strict=True)) == _NEWEST_CA
         assert len(reader.statements) >= 3
         assert all(re.search(r"DESC LIMIT [12]\) AS n", statement) for statement in reader.statements)
+
+    async def test_a_batch_of_prefixes_reads_each_under_its_own_limit_and_pages_a_big_one(
+        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+    ) -> None:
+        """Flips if a batch of several prefixes (sized by a small first prefix's versions) is one batched DISTINCT ON
+        with no LIMIT inside, which sorts a big prefix's whole scope beside the rest, rather than each prefix under
+        its own LIMIT and the one that fills it read alone a range at a time; or answers other than each key's newest
+        live version."""
+        engine["yugabyte"] = True
+        db.execute(f"INSERT INTO {_TABLE} (state, id, v, epoch, gone) VALUES ('AK', 1, 5, 10, false)")
+        reader = _L3(db)
+        keys = KeyBatch(("state",), [["AK", "CA", "NV"]], ("text",))
+        expected = {
+            ("AK", 1): 5,
+            **{("CA", key): value for key, value in _NEWEST_CA.items()},
+            ("NV", 1): 70,
+            ("NV", 2): 80,
+        }
+        rows = await read_keyed(reader, _TABLE, keys=keys, columns=["state", "id", "v"], batch=3, row_cap=3)
+        assert {(row["state"], int(row["id"])): int(row["v"]) for row in rows} == expected
+        assert all(set(row) == {"state", "id", "v"} for row in rows)
+        # a statement naming several prefixes: each prefix's relation under a LIMIT of its own
+        several = [statement for statement in reader.statements if statement.count("DISTINCT ON") > 1]
+        assert several, reader.statements
+        for statement in reader.statements:
+            assert statement.count("DISTINCT ON") == len(re.findall(r"DESC LIMIT [12]\) AS n", statement)), statement
+        types = {"state": pa.string(), "id": pa.int32(), "v": pa.int32()}
+        reader = _L3(db)
+        read = pa.concat_tables(await read_keyed_arrow(reader, _TABLE, keys=keys, types=types, batch=3, row_cap=3))
+        assert read.column_names == ["state", "id", "v"]
+        assert {(row["state"], row["id"]): row["v"] for row in read.to_pylist()} == expected
+        assert any(statement.count("DISTINCT ON") > 1 for statement in reader.statements)
+        for statement in reader.statements:
+            assert statement.count("DISTINCT ON") == len(re.findall(r"DESC LIMIT [12]\) AS n", statement)), statement
+
+
+class _BoundsSeen(_L3):
+    """an L3 reader answering from DuckDB that keeps, beside each statement, the bounds it was sent under."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        super().__init__(conn)
+        self.bounds: list[tuple[tuple[str, int], ...]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.bounds.append(read_bounds())
+        return await super().fetch(query, *params)
+
+    def check(self) -> None:
+        """every statement reading the versioned table was sent under a fill's bounds (work_mem alone)."""
+        read = [
+            bounds for statement, bounds in zip(self.statements, self.bounds, strict=True) if f'"{_TABLE}"' in statement
+        ]
+        assert read, self.statements
+        assert all(bounds == (("work_mem", NEWEST_WORK_MEM),) for bounds in read), (self.statements, self.bounds)
+
+
+#: a read's key pin named inside the newest relation's DISTINCT ON, never left to the planner to push there
+_PINNED = re.compile(r'DISTINCT ON \([^)]*\) t\.\* FROM "nb_results" AS t WHERE t\."state" = \$\d+ ')
+
+
+class TestEveryOtherRead:
+    """counts, aggregates, point reads, marks reads and changed reads of a versioned table run under a newest read's
+    bounds (``work_mem``), their key pins inside the newest relation where they pin the key."""
+
+    async def test_point_reads_are_bounded_and_pin_inside(
+        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+    ) -> None:
+        """Flips if read_by, read_row or read_value of a versioned table is sent with no bounds, or leaves its key pins
+        outside the relation (the planner then bounds it, or does not)."""
+        engine["yugabyte"] = False
+        reader = _BoundsSeen(db)
+        rows = await read_by(reader, _TABLE, by={"state": "CA"}, columns=["id", "v"])
+        assert {int(row["id"]): int(row["v"]) for row in rows} == _NEWEST_CA
+        row = await read_row(reader, _TABLE, by={"state": "CA", "id": 1}, columns=["v"])
+        assert row is not None and int(row["v"]) == 3
+        assert await read_value(reader, _TABLE, by={"state": "CA", "id": 2}, column="v") is None
+        reader.check()
+        assert all(_PINNED.search(statement) for statement in reader.statements), reader.statements
+
+    async def test_counts_and_aggregates_are_bounded_and_pin_inside(
+        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+    ) -> None:
+        """Flips if a bounded count, a probe, a keyed count, an aggregate or an empty-table probe of a versioned table
+        is sent with no bounds, or a pinned one leaves its key pins outside the relation."""
+        engine["yugabyte"] = False
+        reader = _BoundsSeen(db)
+        counted = await count_at_most(reader, _TABLE, at_most=10, order=["state", "id"], by={"state": "CA"})
+        assert counted.count == 5
+        assert await holds_any(reader, _TABLE, order=["state", "id"], by={"state": "NV"})
+        assert await counts_by(reader, _TABLE, column="id", by={"state": "NV"}, nullable=False, cast="integer") == {
+            1: 1,
+            2: 1,
+        }
+        rows = await aggregate_keyed(reader, _TABLE, aggregates={"n": Count()}, by={"state": "CA"})
+        assert [int(row["n"]) for row in rows] == [5]
+        pinned = list(reader.statements)
+        assert all(_PINNED.search(statement) for statement in pinned), pinned
+        assert await counts_by(reader, _TABLE, column="state", values=AnyOf(["CA", "NV"], "text")) == {"CA": 5, "NV": 2}
+        assert await empty_tables(reader, [_TABLE]) == []
+        reader.check()
+
+    async def test_marks_and_changed_reads_are_bounded(
+        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a read past marks, a page after an id or a changed read's group hashes of a versioned table is
+        sent with no bounds, or a page after an id leaves its key pins outside the relation."""
+        engine["yugabyte"] = False
+        reader = _BoundsSeen(db)
+        moved = await read_past_marks(reader, _TABLE, columns=["state", "id", "v", "epoch"], marks={"epoch": 15})
+        assert {(row["state"], int(row["id"])) for row in moved.rows} == {("CA", 1)}
+        page = await read_after(
+            reader, _TABLE, columns=["id", "v"], id_column="id", after=3, limit=10, by={"state": "CA"}
+        )
+        assert {int(row["id"]): int(row["v"]) for row in page.rows} == {4: 40, 5: 50, 6: 60}
+        assert _PINNED.search(reader.statements[-1]), reader.statements[-1]
+        # the row hash spelled for the DuckDB behind the reader (an L3 reader is PostgreSQL's or YugabyteDB's)
+        async def duckdb_dialect(conn: Any) -> Dialect:
+            return Dialect.DUCKDB
+
+        monkeypatch.setattr(changed, "dialect_of", duckdb_dialect)
+        hashes = await group_hashes(
+            reader, _TABLE, scope="state", scopes=["NV"], group="id", hash_columns=[HashColumn("v", HashKind.INTEGER)]
+        )
+        assert set(hashes) == {"NV"} and len(hashes["NV"]) == 2
+        reader.check()
