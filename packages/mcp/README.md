@@ -73,6 +73,24 @@ McpTool(
 | `title` | `title` | A human-readable display name. `name` stays the identifier the client calls. |
 | `annotations` | `annotations` | `McpToolAnnotations(read_only_hint=, destructive_hint=, idempotent_hint=, open_world_hint=)`, listed as `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint`. A hint left `None` is omitted, so the client applies the spec's default for it (read-only `False`, destructive `True`, idempotent `False`, open-world `True`). Hints are advice to the client, not something the server enforces. |
 
+## Preparing arguments
+
+A tool that accepts a looser form than its schema states keeps its schema and prepares the value:
+`McpTool(..., prepare_arguments=fn)`, where `fn(arguments: Mapping[str, Any]) -> dict[str, Any]` is given the call's
+arguments read-only, before they are checked against `input_schema`, and answers new ones.
+
+```python
+def integers(arguments):
+    prepared = dict(arguments)
+    if isinstance(prepared.get("n"), str) and prepared["n"].isdigit():
+        prepared["n"] = int(prepared["n"])  # "5" was accepted for an integer, and still is
+    return prepared
+```
+
+What it answers is what the schema checks, an authorizer that sees the call sees, and the handler is called with. A
+hook that raises is logged and the call refused as `INVALID_ARGUMENTS`; so is one that answers something other than a
+dict. A tool without one is unchanged.
+
 ## Results and tool errors
 
 What a handler returns becomes the call's result:

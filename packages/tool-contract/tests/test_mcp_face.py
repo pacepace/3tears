@@ -281,3 +281,30 @@ class TestAStructuredToolsFailure:
         tool = _Send(ToolResult(success=False, content='{"ok": false}', metadata={"error_code": "tainted"}))
         result = await _call(_server(tool, error_codes=ErrorCodes([TAINTED])), {"session": "s1"})
         assert (_text(result), result.structured_content) == ('{"ok": false}', None)
+
+
+@pytest.mark.asyncio
+async def test_the_face_passes_its_argument_hook_to_the_tool() -> None:
+    """a ``prepare_arguments`` given to the face prepares each call's arguments before the schema checks them."""
+
+    def options_from_text(arguments: Any) -> dict[str, Any]:
+        prepared = dict(arguments)
+        if prepared.get("options") == "none":
+            prepared["options"] = {}
+        return prepared
+
+    tool = _Send(ToolResult(success=True, content="sent"))
+    registry = ToolRegistry()
+    registry.register(
+        mcp_tool(tool, required_permission="sessions.send", name="session_send", prepare_arguments=options_from_text)
+    )
+    provider = MagicMock()
+    provider.identify = AsyncMock(return_value=Identity(principal_type="user", principal_id=uuid4()))
+    authorizer = MagicMock()
+    authorizer.allows = AsyncMock(return_value=True)
+    authorizer.start = AsyncMock()
+    authorizer.stop = AsyncMock()
+    server = McpServer(name="face", identity_provider=provider, authorizer=authorizer, registry=registry)
+    result = await _call(server, {"session": "s1", "options": "none"})
+    assert result.is_error is False
+    assert tool.calls == [{"session": "s1", "options": {}}]

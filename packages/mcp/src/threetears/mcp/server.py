@@ -601,6 +601,12 @@ class McpServer:
                 tool_name=tool_name, code=UNKNOWN_TOOL, message=f"no tool named {tool_name!r} registered"
             )
 
+        if tool.prepare_arguments is not None:
+            prepared = _prepared(tool, arguments)
+            if isinstance(prepared, mcp_types.CallToolResult):
+                return prepared
+            arguments = prepared
+
         # the SDK's low-level server does not check arguments against the tool's inputSchema: checked
         # here, before the handler runs, against the tool as the provider answers it now
         try:
@@ -1092,6 +1098,41 @@ class McpServer:
             json_response=json_response,
         )
         await serve_mcp_http(app, host=host, port=port)
+
+
+def _prepared(tool: McpTool, arguments: dict[str, Any]) -> dict[str, Any] | mcp_types.CallToolResult:
+    """the arguments a call goes on with, from the tool's ``prepare_arguments``, or the call's refusal.
+
+    The hook is given the arguments read-only and answers new ones. One that raises is logged, once for the call, and
+    the call refused as ``INVALID_ARGUMENTS``, as one that answers something other than a dict is: neither escapes.
+
+    :param tool: the tool, whose ``prepare_arguments`` is set
+    :ptype tool: McpTool
+    :param arguments: the arguments as sent
+    :ptype arguments: dict[str, Any]
+    :return: the prepared arguments, or the refusal
+    :rtype: dict[str, Any] | mcp_types.CallToolResult
+    """
+    prepare = tool.prepare_arguments
+    if prepare is None:
+        return arguments
+    try:
+        prepared = prepare(MappingProxyType(dict(arguments)))
+    except Exception as exc:
+        contain(
+            exc,
+            log=log,
+            what="MCP dispatch: the tool's prepare_arguments raised; the call is refused",
+            extra={"tool_name": tool.name},
+        )
+        return _invalid_arguments_result(f"the arguments could not be prepared: {type(exc).__name__}: {exc}", None)
+    if not isinstance(prepared, dict):
+        log.error(
+            "MCP dispatch: the tool's prepare_arguments answered something other than a dict; the call is refused",
+            extra={"extra_data": {"tool_name": tool.name, "type": type(prepared).__name__}},
+        )
+        return _invalid_arguments_result("the arguments could not be prepared", None)
+    return prepared
 
 
 async def _handled(call: Awaitable[Any], dropped: list[bool]) -> Any:

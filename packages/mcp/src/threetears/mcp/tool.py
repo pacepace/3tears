@@ -129,6 +129,11 @@ class McpTool:
     :ivar title: human-readable display name, listed as ``title``;
         ``name`` stays the identifier the client calls
     :ivar annotations: behaviour hints, listed as ``annotations``
+    :ivar prepare_arguments: called with a call's arguments (read-only) before they are checked against
+        ``input_schema``, answering the arguments the call goes on with, as a new dict: a tool that accepts a
+        looser form than its schema states (``"5"`` for an integer) keeps its schema and prepares the value. What it
+        answers is what the schema checks, an authorizer sees and the handler is called with. One that raises, or
+        answers something other than a dict, refuses the call as ``INVALID_ARGUMENTS``. None: the arguments as sent
     :ivar context_parameter: the name of the handler's parameter annotated
         :class:`~threetears.mcp.context.CallContext`, found from the handler's
         signature at construction; the server passes the call's context in it.
@@ -144,6 +149,7 @@ class McpTool:
     output_schema: dict[str, Any] | None = None
     title: str | None = None
     annotations: McpToolAnnotations | None = None
+    prepare_arguments: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None
     context_parameter: str | None = field(init=False, default=None, compare=False)
 
     def __post_init__(self) -> None:

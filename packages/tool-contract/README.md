@@ -86,6 +86,9 @@ async def execute(self, *, text: str, ctx: CallContext | None = None) -> ToolRes
     ...
 ```
 
+`mcp_tool(..., prepare_arguments=fn)` passes `fn` to the `McpTool` it builds, which prepares each call's arguments
+before the schema checks them (3tears-mcp's README, "Preparing arguments").
+
 `mcp_tool` refuses a tool whose `face_mcp` is `False`: that flag is the tool's own declaration of whether it is
 reachable over MCP. `MCPToolDefinition.timeout_seconds` is not applied by the face; the MCP client's own deadline
 governs the call.

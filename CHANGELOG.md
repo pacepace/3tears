@@ -69,6 +69,15 @@ an install of the contract (with and without its `mcp` extra), of 3tears-mcp's b
 **Release:** the first release with this package needs its PyPI pending trusted publisher registered first
 (`docs/releasing.md`, "A release that adds a package").
 
+### mcp: a tool can prepare its arguments before they are checked
+
+**Added:** `McpTool(..., prepare_arguments: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None)`, and the same
+keyword on `threetears.tool_contract.mcp_face.mcp_tool`. Given a call's arguments read-only before they are checked
+against the input schema, it answers new ones, which the schema checks, a call authorizer sees and the handler is
+called with: a tool keeps accepting a looser form (`"5"` for an integer) without loosening its published schema. A
+hook that raises, or answers something other than a dict, refuses the call as `INVALID_ARGUMENTS`, logged. A tool
+without one is unchanged.
+
 ### mcp: a dropped connection cancels the call it carried
 
 **Fixed:** a stateful session's `tools/call` ran on after the client closed the connection carrying it, with no

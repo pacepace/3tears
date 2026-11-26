@@ -15,7 +15,7 @@ input schema through unchanged, so ``run`` itself does not change. needs the ``m
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 try:
@@ -45,6 +45,7 @@ def mcp_tool(
     name: str | None = None,
     title: str | None = None,
     annotations: McpToolAnnotations | None = None,
+    prepare_arguments: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
 ) -> McpTool:
     """the :class:`~threetears.mcp.tool.McpTool` that serves ``tool`` over MCP.
 
@@ -59,6 +60,9 @@ def mcp_tool(
     :ptype title: str | None
     :param annotations: behaviour hints for the client
     :ptype annotations: McpToolAnnotations | None
+    :param prepare_arguments: prepares a call's arguments before they are checked against the input schema
+        (:attr:`~threetears.mcp.tool.McpTool.prepare_arguments`)
+    :ptype prepare_arguments: Callable[[Mapping[str, Any]], dict[str, Any]] | None
     :return: the MCP tool
     :rtype: McpTool
     :raises ValueError: when the tool's ``face_mcp`` is ``False``, its ``execute`` declares the context in a way
@@ -92,6 +96,7 @@ def mcp_tool(
         output_schema=schema.output_schema,
         title=title,
         annotations=annotations,
+        prepare_arguments=prepare_arguments,
     )
 
 
