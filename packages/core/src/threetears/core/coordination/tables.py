@@ -7,7 +7,11 @@ One table per kind of state, each keyed ``(purpose, key)``:
 - ``coordination_revocations`` -- standing revocations, with the moment revoked from
   (synchronous, negative-cached: nearly every check is of a key nobody revoked);
 - ``coordination_redemptions`` -- single-use redemptions, the durable ledger shape
-  (synchronous).
+  (synchronous);
+- ``coordination_ledger_accounts`` -- a budget ledger's accounts: spend, open reservations and
+  orphaned ones (synchronous, never expiring);
+- ``coordination_documents`` -- versioned JSON documents swapped by compare-and-set (synchronous,
+  never expiring).
 
 **Why ``purpose`` is in the key rather than the table name.** Each primitive used to name a KV
 bucket, and one process builds many of them: identity-core holds three attempt counters and
@@ -27,15 +31,16 @@ deliberate case and a wiring gap look identical from outside and only the log te
 
 **A primitive whose contract is exactly-once refuses a registry with no L2**
 (:meth:`CoordinationCollection.require_l2_fence`): the compare-and-swap IS that guarantee, and
-without L2 two replicas can both be told they were first. That is ``RedemptionLedger`` and
-``IdempotencyKeyStore`` today.
+without L2 two replicas can both be told they were first. That is ``RedemptionLedger``,
+``IdempotencyKeyStore`` and ``BudgetLedger`` today.
 
-**The three compare-and-swap tables carry the swap's order** (``l2_epoch``, ``l2_revision``;
-:func:`~threetears.core.collections.schema_backed.l2_order_columns`). Counters, claims and
-redemptions are mutated only through ``l2_cas_mutate``, whose L3 persists are fenced on that order
-so a late persist of an earlier winner cannot overwrite a later one; ``l2_cas_mutate`` refuses a
-table without them. Revocations are written through ``save_entity`` and carry none. Coordination
-migration v002 adds the columns to tables created before them.
+**The compare-and-swap tables carry the swap's order** (``l2_epoch``, ``l2_revision``;
+:func:`~threetears.core.collections.schema_backed.l2_order_columns`). Counters, claims,
+redemptions, ledger accounts and documents are mutated only through ``l2_cas_mutate``, whose L3
+persists are fenced on that order so a late persist of an earlier winner cannot overwrite a later
+one; ``l2_cas_mutate`` refuses a table without them. Revocations are written through
+``save_entity`` and carry none. Coordination migration v002 adds the columns to tables v001
+created before them; the ledger tables are created with them by v004.
 """
 
 from __future__ import annotations
@@ -76,10 +81,13 @@ from threetears.observe import get_logger
 
 __all__ = [
     "COORDINATION_TABLE_SCHEMAS",
+    "LEDGER_TABLE_SCHEMAS",
     "STORAGE_FAILURES",
     "CoordinationClaimsCollection",
     "CoordinationCollection",
     "CoordinationCountersCollection",
+    "CoordinationDocumentsCollection",
+    "CoordinationLedgerAccountsCollection",
     "CoordinationRedemptionsCollection",
     "CoordinationRevocationsCollection",
     "CoordinationRow",
@@ -416,13 +424,14 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         :ptype now: datetime | None
         :param batch: the most rows to delete in one statement
         :ptype batch: int
-        :return: rows deleted, or 0 when this collection has no L3
+        :return: rows deleted, or 0 when this collection has no L3 or its rows never expire
         :rtype: int
         :raises threetears.core.exceptions.DataLayerUnavailableError: on an L3 failure, and
             whatever else the backend raises
         """
         store = self.l3_pool
-        if store is None:
+        if store is None or self.expires_at_column is None:
+            # a table whose rows never expire has nothing for this statement to find.
             return 0
         cutoff = now or datetime.now(UTC)
         table = self.table_name
@@ -587,12 +596,100 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
     )
 
 
-#: every coordination table, in migration order.
+class CoordinationLedgerAccountsCollection(CoordinationCollection):
+    """a budget ledger's accounts: one row per ``(purpose, account)``.
+
+    The row is the whole account -- what was spent, the reservations open on it and the ones the
+    expiry sweep orphaned -- so "does this reservation fit under the budget" is decided by one
+    compare-and-swap of one row, with no second table to keep in step. Open reservations are
+    bounded by the calls in flight on one account, so the row stays small.
+
+    **Synchronous, because the row is money.** A won swap is in L3 before the call returns, so a
+    broker wipe loses no spend; the next swap on the key seeds from L3.
+
+    **Never expiring.** An account is a period's record (the caller puts the period in the account
+    string), kept as the history of what was spent.
+
+    **No L1 copy.** Every mutation compare-and-swaps L2 and never reads L1; a read that answered
+    from a stale L1 copy would report spend another replica had already moved past. So reads go to
+    L2, which is the fence every replica writes through, as redemptions' do.
+
+    **Money is text.** Each amount is a ``decimal.Decimal`` written as its string, and the two maps
+    are JSON text with Decimal strings inside. Not ``NUMERIC``: a float anywhere between the row
+    and the comparison would let a reservation through at the budget line. Not ``JSONB``: it
+    reorders an object's keys, and the open map's order is the order the reservations were made,
+    which the sweep reports in.
+    """
+
+    caches_in_l1: ClassVar[bool] = False
+
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
+    schema = TableSchema(
+        name="coordination_ledger_accounts",
+        primary_key=("purpose", "key"),
+        columns=[
+            *_common_columns(),
+            # money settled into the account, orphaned reservations included; a Decimal string.
+            Column("spent", STRING_TYPE),
+            # the sum of the open reservations' amounts, kept beside the map for an operator's query;
+            # the map is the truth it is computed from on every write.
+            Column("reserved", STRING_TYPE),
+            # JSON: {reservation id: {"amount": Decimal string, "expires_at": ISO 8601}}, in the
+            # order the reservations were made.
+            Column("open_reservations", STRING_TYPE),
+            # JSON: {reservation id: Decimal string}, the amount the sweep settled each one at.
+            Column("orphaned", STRING_TYPE),
+            # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
+            *l2_order_columns(),
+        ],
+        cas_column="date_updated",
+    )
+
+
+class CoordinationDocumentsCollection(CoordinationCollection):
+    """versioned JSON documents: one row per ``(purpose, name)``, swapped by compare-and-set.
+
+    A writer names the version it read and wins only if the row is still at it, so two processes
+    moving one piece of shared state at once agree on one result. Synchronous and never expiring,
+    for the reasons :class:`CoordinationLedgerAccountsCollection` gives, and with no L1 copy, so a
+    version read here is the one L2 last swapped in. The document is JSON text: the caller's
+    document comes back exactly as written, key order included.
+    """
+
+    caches_in_l1: ClassVar[bool] = False
+
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "synchronous"
+    schema = TableSchema(
+        name="coordination_documents",
+        primary_key=("purpose", "key"),
+        columns=[
+            *_common_columns(),
+            # 1 on the first write, one more on each later one; an absent row is version 0.
+            Column("version", BIGINT_TYPE),
+            Column("document", STRING_TYPE),
+            # mutated only through l2_cas_mutate, whose L3 persists are fenced on this order.
+            *l2_order_columns(),
+        ],
+        cas_column="date_updated",
+    )
+
+
+#: the tables coordination migration v001 creates and v002 gives the order columns, in that order.
+#: Closed: v002 alters every table here that declares the order, so a table added here would be
+#: altered by an install still running v002 before anything had created it. A later table goes in
+#: a tuple of its own, created by a migration of its own.
 COORDINATION_TABLE_SCHEMAS: Final[tuple[TableSchema, ...]] = (
     CoordinationCountersCollection.schema,
     CoordinationClaimsCollection.schema,
     CoordinationRevocationsCollection.schema,
     CoordinationRedemptionsCollection.schema,
+)
+
+#: the budget ledger's tables, which coordination migration v004 creates. A consumer that declares
+#: the coordination tables in its data section instead of migrating declares these too.
+LEDGER_TABLE_SCHEMAS: Final[tuple[TableSchema, ...]] = (
+    CoordinationLedgerAccountsCollection.schema,
+    CoordinationDocumentsCollection.schema,
 )
 
 

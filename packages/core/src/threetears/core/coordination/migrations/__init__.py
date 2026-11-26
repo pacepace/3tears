@@ -1,16 +1,18 @@
 """3tears core coordination migrations.
 
 :func:`register` wires this package's versioned migrations into a shared
-:class:`~threetears.core.data.migrations.runner.MigrationRunner`. The package owns the four tables
-the durable coordination primitives keep their state in: ``coordination_counters``,
-``coordination_claims``, ``coordination_revocations`` and ``coordination_redemptions``.
+:class:`~threetears.core.data.migrations.runner.MigrationRunner`. The package owns the tables the
+durable coordination primitives keep their state in: ``coordination_counters``,
+``coordination_claims``, ``coordination_revocations``, ``coordination_redemptions``, and the budget
+ledger's ``coordination_ledger_accounts`` and ``coordination_documents``.
 
 PLATFORM scope: the tables land in whatever schema the caller binds through ``search_path`` before
 calling :meth:`MigrationRunner.apply_for_platform_schema`. A consumer whose primitives run in an
 agent schema re-registers this package at AGENT scope, as scriob already does for
 ``scheduled_jobs`` and ``epoch``. A consumer that cannot run DDL at all -- an agent or tool pod,
 whose broker refuses it -- declares the same schemas in its data section instead, from
-:data:`~threetears.core.coordination.tables.COORDINATION_TABLE_SCHEMAS`.
+:data:`~threetears.core.coordination.tables.COORDINATION_TABLE_SCHEMAS` and, for the budget ledger,
+:data:`~threetears.core.coordination.tables.LEDGER_TABLE_SCHEMAS`.
 
 version history:
 
@@ -19,6 +21,8 @@ version history:
   claims and redemptions tables, and backfill existing rows to the order floor.
 - v003 -- create ``collection_write_marks`` and the trigger function that fills it, so a committed
   write's generation advance cannot be lost (:mod:`threetears.core.collections.write_marks`).
+- v004 -- create the budget ledger's ``coordination_ledger_accounts`` and ``coordination_documents``,
+  rendered from their collections' declared schemas, order columns included.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from threetears.core.coordination.migrations.v002_add_l2_order_columns import ad
 from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
     create_collection_write_marks,
 )
+from threetears.core.coordination.migrations.v004_create_ledger_tables import create_ledger_tables
 from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -55,6 +60,7 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg.version(1)(create_coordination_tables)
     pkg.version(2)(add_l2_order_columns)
     pkg.version(3)(create_collection_write_marks)
+    pkg.version(4)(create_ledger_tables)
     # the revocation list caches absences: its writes are marked from the run that creates it
     pkg.mark_write_generation(CoordinationRevocationsCollection.schema)
     runner.register(pkg)

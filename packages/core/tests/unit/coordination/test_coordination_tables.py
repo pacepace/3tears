@@ -32,8 +32,10 @@ from threetears.core.coordination.migrations.v002_add_l2_order_columns import ad
 from threetears.core.coordination.migrations.v003_create_collection_write_marks import (
     create_collection_write_marks,
 )
+from threetears.core.coordination.migrations.v004_create_ledger_tables import create_ledger_tables
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
+    LEDGER_TABLE_SCHEMAS,
     CoordinationClaimsCollection,
     CoordinationCountersCollection,
     CoordinationRedemptionsCollection,
@@ -259,7 +261,36 @@ class TestTheMigrationMatchesTheDeclaredSchemas:
             1: create_coordination_tables,
             2: add_l2_order_columns,
             3: create_collection_write_marks,
+            4: create_ledger_tables,
         }
+
+    @pytest.mark.asyncio
+    async def test_v004_creates_exactly_the_ledger_tables_with_their_order_columns(self) -> None:
+        # the ledger tables are compare-and-swap tables v002 never alters, so v004 must create them
+        # with the order columns already in place, and touch nothing v001 created.
+        store = _RecordingStore()
+        await create_ledger_tables(store)  # type: ignore[arg-type]
+        creates = [s for s in store.statements if s.startswith("CREATE TABLE")]
+        assert [statement.split()[5] for statement in creates] == [schema.name for schema in LEDGER_TABLE_SCHEMAS]
+        assert {schema.name for schema in LEDGER_TABLE_SCHEMAS} == {
+            "coordination_ledger_accounts",
+            "coordination_documents",
+        }
+        for statement in creates:
+            assert "l2_epoch TIMESTAMPTZ" in statement and "l2_revision BIGINT" in statement, statement
+            assert "PRIMARY KEY (purpose, key)" in statement, statement
+        for schema in COORDINATION_TABLE_SCHEMAS:
+            assert not [s for s in store.statements if f" {schema.name} " in f"{s} "], (
+                f"v004 touched {schema.name}, which v001 creates"
+            )
+
+    @pytest.mark.asyncio
+    async def test_v002_never_names_a_ledger_table(self) -> None:
+        # an install applying v002 before v004 has no ledger tables yet; an ALTER naming one would fail.
+        store = _RecordingStore()
+        await add_l2_order_columns(store)  # type: ignore[arg-type]
+        for schema in LEDGER_TABLE_SCHEMAS:
+            assert not [s for s in store.statements if schema.name in s], f"v002 altered {schema.name}"
 
     @pytest.mark.asyncio
     async def test_v002_adds_both_columns_then_backfills_each_compare_and_swap_table(self) -> None:
