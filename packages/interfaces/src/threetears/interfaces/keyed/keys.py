@@ -573,8 +573,8 @@ def _unordered_serving(
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
     more of the pins than the primary key (the one binding most, then the one binding more leading columns, then the
     narrower); else the primary key where it binds any (always when it binds all its columns: a point read); else
-    None. A secondary index binds its pinned leading columns and, when it binds at least one, each column its partial
-    predicate names that the read pins to exactly the predicate's text.
+    None. A secondary index binds its leading columns the read pins to a value or a set of values (``sets``) and, when
+    it binds at least one, each column its partial predicate names that the read pins to exactly the predicate's text.
 
     YugabyteDB plans such a read through the primary key's prefix and filters the rest (3tears #95: 100 rows scanned
     for 20); the coordinator's ruling (#96) names the index that binds more of the pins.
@@ -601,12 +601,29 @@ def _unordered_serving(
     keyed = [index for index in indexes if index.unique and not index.primary and set(index.columns) <= pinned | sets]
     if keyed:
         return min(keyed, key=lambda index: len(index.columns))
+    # WHY a set binds a leading column for the ranking (the hub's outside grants, 2026-11-26): an agent's grants on its
+    # namespaces are read by ``scope_namespace_id = ANY(...)`` and ``scope_type = 'namespace'``, the namespace index's
+    # ``IS NOT NULL`` stated. Binding no set, the ranking saw only the constant scope type and hinted YugabyteDB to
+    # (scope_type, assignment_id), every namespace grant read and filtered, rather than the namespace index, which
+    # reads each named namespace's grants alone; the hub read once a namespace to reach it. A set narrows the index's
+    # lead as a value does (one seek a value), so it counts as binding that column here. Against the primary key a set
+    # counts on both sides: an index whose lead only a set binds serves the read only where it binds more than the
+    # primary key binds by the same pins and sets (a set of an agent's ids, which the primary key leads with too,
+    # names no narrower secondary index). An index binding a value outright is admitted as before
+    # (test_keyed_index_hint's ``d7_ds_status`` for a set of ids beside a status)
+    bound = pinned | sets
+    set_floor = _leading_held(primary, bound) if primary is not None else 0
     ranked = [
         ((held + len(index.stated) + len(index.guarded), held, -len(index.columns)), index)
         for index in indexes
         if not index.primary
-        and (held := _leading_held(index, pinned)) > 0
-        and held + len(index.stated) + len(index.guarded) > floor
+        and (held := _leading_held(index, bound)) > 0
+        and (
+            held + len(index.stated) + len(index.guarded) > set_floor
+            or (
+                (valued := _leading_held(index, pinned)) > 0 and valued + len(index.stated) + len(index.guarded) > floor
+            )
+        )
     ]
     if ranked:
         return max(ranked, key=lambda pair: pair[0])[1]

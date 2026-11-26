@@ -661,3 +661,51 @@ class TestAWholeUniqueKeyServesAnyOrder:
         assert live is not None and live.name == "lu_ds_name", live
         stored = serving_index(_LIVE_NAMED, {"name": "a"}, [Sort("id")])
         assert stored is None or stored.name != "lu_ds_name", stored
+
+
+class TestASetOnALeadingColumnBindsIt:
+    """An unordered read pinning an index's leading column to a set of values (``col = ANY(...)``) narrows that index
+    as a value does, one seek a value, so the set counts as binding the column when the indexes are ranked.
+
+    WHY (the hub's outside grants, 2026-11-26): an agent's grants on its namespaces, ``scope_namespace_id = ANY(...)``
+    and ``scope_type = 'namespace'`` with the namespace index's ``IS NOT NULL`` stated, were hinted on YugabyteDB to
+    (scope_type, assignment_id), every namespace grant read and filtered, rather than the namespace index; the hub
+    read once a namespace to reach it."""
+
+    _OUTSIDE = {"scope_ns": AnyOf([1, 2, 3]), "scope_type": "namespace"}
+    _STATED = frozenset({"scope_ns"})
+
+    def test_the_index_whose_lead_a_set_binds_wins_over_one_matching_a_constant(self) -> None:
+        """Flips if the read of a set of namespaces, its partial index's guard stated (both partitions as a set too, or
+        not), is served by the scope-type index, which matches only the constant scope type; or if the partial index is
+        named for the read that does not state its guard, which it would answer without the other rows."""
+        for by in (self._OUTSIDE, {**self._OUTSIDE, "row_scope": AnyOf(["platform", "customer"])}):
+            served = serving_index(_GRANTS, by, [], guarded=self._STATED)
+            assert served is not None and served.name == "ai_grants_ns", (by, served)
+        unstated = serving_index(_GRANTS, self._OUTSIDE, [])
+        assert unstated is not None and unstated.name == "ai_grants_scope_type", unstated
+
+    def test_a_set_the_primary_key_leads_with_names_no_secondary_index(self) -> None:
+        """Flips if a read binding by a set only what the primary key leads with too (a set of agents) is handed a
+        secondary index, or an ordered read by a set takes the index holding the order after that column (a set of
+        leads reads several runs of it, unordered across them), or the read of the namespaces is not hinted on
+        YugabyteDB to the index whose lead its set binds."""
+        assert serving_index(_CONV, {"agent_id": AnyOf([1, 2])}, []) is None
+        assert serving_index(_CONV, {"agent_id": AnyOf([1, 2])}, _BY_STATUS) is None
+        assert serving_index(_GRANTS, {"scope_ns": AnyOf([1, 2])}, [Sort("grant_id")], guarded=self._STATED) is None
+        served = serving_index(_GRANTS, self._OUTSIDE, [], guarded=self._STATED)
+        assert served is not None and served.name == "ai_grants_ns", served
+
+    async def test_read_by_a_set_of_namespaces_names_the_namespace_index_on_yugabyte_only(self) -> None:
+        """Flips if read_by of a set of namespaces with the guard stated is not hinted on YugabyteDB to the namespace
+        index, or carries any hint on PostgreSQL."""
+        for reader, hinted in ((_yugabyte(), True), (_postgres(), False)):
+            await read_by(
+                reader,
+                _GRANTS,
+                by={**self._OUTSIDE, "scope_ns": AnyOf([1, 2, 3], "uuid")},
+                where=[Fragment('t."scope_ns" IS NOT NULL')],
+            )
+            (read,) = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+            assert read.startswith("/*+ IndexOnlyScan(t ai_grants_ns) */ ") is hinted, read
+            assert ("/*+" in read) is hinted, read
