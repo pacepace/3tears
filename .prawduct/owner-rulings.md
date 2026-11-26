@@ -5,6 +5,25 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26.** On the model key pool's cumulative-review asks: "Yes to all recommendations". That covered:
+- R-2/R-3: a per-model forbid skips that key for the one call. It never moves or pulls back the pool's shared active
+  key; moves and pull-backs are decided on whole-key states only. This amends KP-D2 in
+  `docs/model-key-pool-requirements.md`.
+- R-6: the persisted formats are confirmed. Money is a Decimal stored as text, open reservations are a map inside the
+  account row, and migration v004 creates the two coordination tables. Hearsay is confirmed as the sole outside
+  consumer of `BudgetLedger` and `KeyPoolMetrics` (`tests/enforcement/_public_api_consumers.txt`). The fifth inferred
+  decision, the store Protocol in generic ledger terms, was not put to the owner. It stands as inferred because it
+  is a code surface, not a persisted format: changing it later takes no migration.
+- R-7 follow-up: file one issue to confine the 9 pre-existing third-party private reaches in
+  `providers/claude_cli.py` and `providers/openai.py` (underscore shape J) to one module per library.
+- The git-hygiene advisory: tidy the 369 merged local and 24 merged remote branches, from the dry run's list.
+
+**2026-11-26** (relayed by the Discodon session). On the four eval issues Discodon's triage found package-side
+(discodon #3465, #3470, #2755, #3082): "Yes to all recommendations". So each is filed as its own 3tears issue. For
+#3465, a name the reply mentions and declines is handled in the package by an opt-in offered/declined mark that
+`SetGrader` reads, with no host-side filter. In the same answer: the 954-claim agreement run (discodon #3526) is held
+until a no-spend diagnosis of its invented-detail and repetition controls lands, and story-set work leads.
+
 **2026-11-26.** On the three rate-limit follow-ups:
 - A rate limit whose wait exceeds a per-pool threshold (default 120 s) counts as exhaustion and moves to the next
   key, holding the old one until its reset: "yes agreed but I don't think this is a real thing". So it is built as a
