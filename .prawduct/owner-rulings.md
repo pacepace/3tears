@@ -5,6 +5,14 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26** (relayed by the Discodon session). On Discodon's no-spend diagnosis of discodon #3526: "Agreed on all
+recommendations". Two package issues are filed. One redesigns the claim extractor's `restates` pointer so it is
+verifiable, resolved by the quoted earlier excerpt rather than a list position, and scores the tag against the
+claim corpus's 35 `repeat_of` labels. The other covers a planted lie the truth step graded supported. Ruled in the
+same answer, host-side: back-announces ("That was X by Y") are not repetition under R4, which counts world claims
+only, while D9 grades them for order under R5; the runner's R2 follows the goals doc's definition; and the 6-claim
+per-cell web-check cap stays as it is for now.
+
 **2026-11-26.** On the model key pool's cumulative-review asks: "Yes to all recommendations". That covered:
 - R-2/R-3: a per-model forbid skips that key for the one call. It never moves or pulls back the pool's shared active
   key; moves and pull-backs are decided on whole-key states only. This amends KP-D2 in
