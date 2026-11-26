@@ -31,8 +31,8 @@ from threetears.models.key_pool import (
 PROVIDER = "anthropic"
 POOL = "test-pool"
 NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
-MODEL = "claude-test-model"
-OTHER_MODEL = "claude-other-model"
+MODEL = "pool-test-model"
+OTHER_MODEL = "pool-other-model"
 
 
 class ManualClock:

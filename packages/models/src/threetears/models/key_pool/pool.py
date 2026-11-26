@@ -82,7 +82,6 @@ import hmac
 import logging
 import re
 import threading
-import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -112,6 +111,7 @@ from threetears.models.key_pool.store import (
 )
 from threetears.models.providers.claude_cli import is_subscription_token
 from threetears.observe import contained, get_logger
+from uuid_utils import uuid7
 
 __all__ = ["KeyPool", "KeyPoolLease"]
 
@@ -880,7 +880,7 @@ class KeyPool:
         """Reserve ``amount`` on ``key``: its lease, or ``None`` when it doesn't fit."""
         period = period_id(now, self._anchor_day)
         account = self._account(key, period)
-        reservation = uuid.uuid4().hex
+        reservation = uuid7().hex
         expires_at = max(deadline, now) + self._margin if deadline is not None else now + self._margin
         held = await self._call(
             "reserve",

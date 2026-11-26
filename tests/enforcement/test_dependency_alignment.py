@@ -32,6 +32,32 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #: "nothing" is unavailable and "these three" is the promise instead.
 _DEPENDENCY_FLOORS = (
     DependencyFloor(
+        package="packages/models",
+        allowed=(
+            "3tears-interfaces",
+            "3tears-observe",
+            "3tears-tool-schema",
+            "pydantic",
+            "langchain-core",
+            "anthropic",
+            "jsonschema",
+            "langchain-anthropic",
+            "langchain-openai",
+            "langchain-openrouter",
+            "openai",
+            "httpx",
+            "openrouter",
+            "uuid-utils",
+        ),
+        rationale=(
+            "the floor recorded 2026-10-17, plus openai and httpx (model key pool, 2026-11-26). The key pool's "
+            "classifiers read each provider SDK's error types and httpx's responses and transport errors on the "
+            "base install path, and the 429-unretried hook builds openai's default HTTP client, so both are "
+            "imported directly rather than trusted to arrive through langchain-openai and anthropic. Both "
+            "already do arrive through them, so declaring them adds nothing to an install"
+        ),
+    ),
+    DependencyFloor(
         package="packages/search",
         allowed=("3tears-interfaces", "3tears-observe", "pydantic", "pydantic-core"),
         rationale=(
@@ -342,23 +368,6 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "asyncpg",
             "uuid-utils",
             "pydantic",
-        ),
-    ),
-    (
-        "packages/models",
-        (
-            "3tears-interfaces",
-            "3tears-observe",
-            "3tears-tool-schema",
-            "pydantic",
-            "langchain-core",
-            "anthropic",
-            "jsonschema",
-            "langchain-anthropic",
-            "langchain-openai",
-            "langchain-openrouter",
-            "openrouter",
-            "uuid-utils",
         ),
     ),
     (
