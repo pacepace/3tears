@@ -179,8 +179,8 @@ The code contains no prompt-injection filter and no content-trust labelling of t
 ## Direction
 
 Ratified 2026-11-26 from the test-backed candidates below, which the owner approved in bulk once
-duplicates were removed ("Yes to all recommendations"). The candidates with no gate await the
-owner's ruling one at a time and are not ratified.
+duplicates were removed ("Yes to all recommendations"), and the seven gateless candidates the owner
+ruled on the same day.
 
 - **A JWS is verified with a pinned algorithm: reject on the declared header algorithm before a
   key is selected, then pass a literal single-element list to `decode`.**
@@ -190,6 +190,47 @@ owner's ruling one at a time and are not ratified.
   Why: erasure masks unclassified keys on its own; the gate keeps the classification from falling
   behind the code, so no key is masked or kept without a decision. Gate:
   `tests/enforcement/test_audit_details_keys_are_classified.py`.
+
+- **A session token carries identity, never roles or permissions.**
+  Why: authorization is decided elsewhere, so a smuggled `role` claim must be a verification
+  failure, not a field nobody reads yet (`packages/iam/src/threetears/iam/tokens.py`). Evidence: `packages/iam/tests/unit/test_tokens.py` rejects a
+  smuggled role claim. Mechanism: Critic. Owner 2026-11-26 (`.prawduct/owner-rulings.md`).
+- **An admin may write a grant only for actions they hold at every scope it reaches.**
+  Why: otherwise a grant escalates, handing out more than its grantor holds. Evidence:
+  `packages/agent/acl/tests/unit/test_delegation.py`. Mechanism: Critic. Owner 2026-11-26
+  (`.prawduct/owner-rulings.md`).
+- **An unowned namespace matches no caller: an `owner_namespace` of `None` grants nobody.**
+  Why: two `None` values compare equal in Python, so without the explicit guard an unowned
+  namespace would go to any caller whose derived name came out null. Gates:
+  `packages/agent/acl/tests/unit/test_evaluation.py` (`test_a_null_owner_matches_nothing`) and
+  `tests/enforcement/test_namespace_owner_is_always_carried.py`. Owner 2026-11-26
+  (`.prawduct/owner-rulings.md`).
+- **Erasure anonymizes audit rows and never deletes them; the only delete of audit rows is the
+  age-based retention prune (`prune_audit_events`).**
+  Why: the audit trail must survive a person's erasure with their personal details masked.
+  Status: in-transition — no gate yet stops a new erasure path from deleting, tracked in
+  pacepace/3tears#1313; interim: an erasure change that touches audit rows anonymizes through
+  `anonymize_details`, and review checks it issues no `DELETE`.
+  Owner 2026-11-26 (`.prawduct/owner-rulings.md`).
+- **A tool pod's identity comes from a verified token, never from the request body.**
+  Why: the body is whatever the caller wrote; the body's `agent_id` exists only to be compared with
+  the verified agent, answering `AGENT_MISMATCH` when they differ (`erasure.py`). Evidence:
+  `packages/agent/audit/tests/unit/test_erasure_request.py`. Mechanism: Critic. Owner 2026-11-26
+  (`.prawduct/owner-rulings.md`).
+- **The SSRF check runs on every request a guarded fetch sends, redirects and page-chosen links
+  included.**
+  Why: a public URL answering `302 Location: http://169.254.169.254/...` once reached the metadata
+  endpoint after the first check had passed (`_private_hosts.py`).
+  Status: in-transition — holds for the httpx clients the package builds
+  (`packages/scrape/tests/test_private_hosts.py`); a browser-rendered fetch checks only its first
+  URL, tracked in pacepace/3tears#1314; interim: a new fetch path goes through an httpx client the
+  package builds, or states in its docstring that only its first URL is checked.
+  Owner 2026-11-26 (`.prawduct/owner-rulings.md`).
+- **Secrets are referenced, never held by value in config.**
+  Why: resolved at use time, the secret never lands in plaintext in a config file or database and
+  never sits in a long-lived process variable (`secret_refs.py`). Evidence:
+  `packages/core/tests/unit/security/test_secret_refs.py`. Mechanism: Critic. Owner 2026-11-26
+  (`.prawduct/owner-rulings.md`).
 
 ## Candidate norms (unratified)
 
