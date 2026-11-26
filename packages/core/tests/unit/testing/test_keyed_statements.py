@@ -213,3 +213,17 @@ async def test_keyed_fetch_answers_each_read_by_key_in_turn_and_hands_every_othe
     with pytest.raises(AssertionError, match="past the queued answers"):
         await read_keyed(pool, "widgets", keys=keys, columns=("id", "name"))
     assert fetch.await_count == 8
+
+
+async def test_a_stamped_tables_live_guard_is_read_and_a_gone_row_is_not_found() -> None:
+    """Flips if a keyed read of a stamped table (its live guard, ``NOT "gone"``) is not decoded: a test double then
+    reads it as a hand-written statement, and every read by key of a stamped table answers nothing. A row marked gone
+    is never found; one that holds no flag is live."""
+    held = uuid.uuid4()
+    sql = 'SELECT t."id" FROM "table_templates" AS t WHERE t."id" = ANY($1::uuid[]) AND (NOT t."gone")'
+    statement = decode(sql, [[held]])
+    assert (statement.kind, statement.table) == ("select", "table_templates")
+    fetch = keyed_fetch({"id": held}, tables=("table_templates",))
+    assert await fetch(sql, [held]) == [{"id": held}]
+    assert statement.matches({"id": held, "gone": True}) is False
+    assert statement.matches({"id": held}) is True

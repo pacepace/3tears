@@ -490,6 +490,11 @@ def _condition(text: str, args: Sequence[Any]) -> _Condition:
             text,
             lambda row: any(all(_same(row.get(c), v) for c, v in zip(columns, key, strict=True)) for key in keys),
         )
+    negated_flag = re.fullmatch(r"NOT\s+" + _IDENT, text, re.IGNORECASE)
+    if negated_flag is not None:
+        # a stamped table's live guard (``NOT "gone"``, keyed.live_read): a row that holds no flag is live
+        flag = negated_flag.group(1)
+        return _Condition(text, lambda row: not row.get(flag))
     null = re.fullmatch(_IDENT + r"\s+IS\s+(NOT\s+)?NULL", text, re.IGNORECASE)
     if null is not None:
         column, negated = null.group(1), bool(null.group(2))
