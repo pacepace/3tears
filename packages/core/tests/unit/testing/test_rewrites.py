@@ -237,3 +237,62 @@ def test_a_vector_column_is_seeded_as_pgvector_text_of_its_width() -> None:
         assert seed_scalar(column, "U", 8) != seed_scalar(column, "U", 7)
     with pytest.raises(AssertionError, match="no declared width"):
         seed_scalar(CatalogColumn("embedding", "vector", "U", "", True, False, False), "U", 7)
+
+
+def test_a_stamped_table_s_rows_are_seeded_live() -> None:
+    """Flips if a stamped table's seeded rows hold its gone flag true (a boolean's generic value is true on every other
+    row): a keyed read answers live rows alone, so the proof would compare the statement with the helper over rows the
+    helper rightly skips. A plain table's boolean keeps its generic values."""
+    shape = _shape()
+    gone = CatalogColumn("gone", "boolean", "B", "", False, True, False)
+    stamped = CatalogTable(columns={**shape.columns, "gone": gone}, unique=shape.unique, stamped=True)
+    entry = {"table": "agents", "pins": [{"column": "customer_id", "kind": "param", "param": 1, "literal": None}]}
+    row, _ = row_factory(stamped, entry, {})
+    assert [row(_seed(index))["gone"] for index in range(6)] == [False] * 6
+    plain = CatalogTable(columns={**shape.columns, "gone": gone}, unique=shape.unique)
+    row, _ = row_factory(plain, entry, {})
+    assert {row(_seed(index))["gone"] for index in range(6)} == {False, True}
+
+
+_WRITE: dict[str, Any] = {
+    "path": "m.py",
+    "function": "Reader.one",
+    "table": "agents",
+    "helper": "update_keyed",
+    "shape": "write",
+    "pins": [{"column": "id", "kind": "param", "param": 2, "literal": None}],
+    "sets": [{"column": "name", "kind": "param", "param": 1, "literal": None}],
+    "args": ["name", "agent_id"],
+}
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        "{'name': name}",
+        "self.stamped_values({'name': name}, conn=conn)",
+        "stamped_values(SCHEMA, {'name': name}, conn=conn)",
+        "stamped_set(conn, 'agents', {'name': name})",
+    ],
+)
+def test_the_source_check_reads_a_write_s_values_through_the_call_stamping_them(tmp_path: Path, values: str) -> None:
+    """Flips if a write whose values a stamping call wraps (a stamped table's update: ``stamped_values``, a repo's
+    ``stamped_set``) is not found: the call's one dict is what it sets."""
+    root = _module(tmp_path, f"        await update_keyed(conn, 'agents', values={values}, by={{'id': agent_id}})\n")
+    assert_source_says(root, _WRITE)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        "self.stamped_values({'name': other}, conn=conn)",
+        "stamped_set(conn, 'agents', {'name': name, 'slug': name})",
+        "stamped_set(conn, {'name': name}, {'name': name})",
+        "self.stamped_values(values, conn=conn)",
+    ],
+)
+def test_the_source_check_refuses_a_stamping_call_setting_otherwise(tmp_path: Path, values: str) -> None:
+    """Flips if a stamping call passes whose one dict sets other values, or that holds no single dict."""
+    root = _module(tmp_path, f"        await update_keyed(conn, 'agents', values={values}, by={{'id': agent_id}})\n")
+    with pytest.raises(AssertionError, match="as the manifest records it"):
+        assert_source_says(root, _WRITE)

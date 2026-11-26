@@ -51,6 +51,16 @@ table's CHECK constraints are dropped in the test database (:func:`_drop_checks`
 more rows than production can hold, never fewer). A pgvector ``vector(n)`` column is seeded as the text of ``n``
 dimensions. A column no generic value fits takes ``overrides``: column -> value of a :class:`Seeded`, for the seeded
 rows and for a write's SET parameters (:func:`set_value`).
+
+**Stamped tables** (``ROW_STAMPED``, a declaration registered in the process: the repo's test imports its
+declarations). Every seeded row is live, its ``gone`` flag false, the read's own rows and every row seeded beside them
+(a joined table's, a walk's, a chain's, an ``EXISTS`` guard's): a gone row is one no keyed read answers, so a seed of
+gone rows proves the helper skips them, not that it answers what the statement answered. A read of every column
+(``SELECT *``, ``dt.*``) is compared on the table's declared columns (and each join's aliases): ``*`` also answers
+the L3 table's own columns no declaration names (the gone flag, the restore bucket, a moved column's
+``<col>_moved_from`` / ``_moved_epoch``, a retired column), which a keyed read of every column never answers. A
+chain's rows are compared distinct: the walk of a stamped table ends a cycle where it comes back
+(:func:`~threetears.core.keyed.read_link_chain`), where the statement walked it round to its bound.
 """
 
 from __future__ import annotations
@@ -68,6 +78,7 @@ from typing import Any, Final
 from uuid import NAMESPACE_OID, uuid5
 
 from threetears.core.collections.asyncpg_init import register_vector_text_codec
+from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.keyed import (
     AnyOf,
     Count,
@@ -97,8 +108,10 @@ from threetears.core.keyed import (
     serving_index,
     update_keyed,
 )
+from threetears.core.keyed._filters import reads_l3
 from threetears.core.testing.plans import StatementPlan, explain_statement, on_yugabyte
 from threetears.core.testing.same_results import Seeded, assert_same_results
+from threetears.interfaces.keyed.keys import stamped_table
 
 __all__ = [
     "assert_rewrite_same",
@@ -165,6 +178,8 @@ class CatalogTable:
     unique: list[frozenset[str]] = field(default_factory=list)
     #: each partial unique index: its key columns and its ``WHERE`` as the catalog writes it
     partial_unique: list[tuple[frozenset[str], str]] = field(default_factory=list)
+    #: the table is stamped as the proof reads it (a ``ROW_STAMPED`` declaration, on L3): its rows are seeded live
+    stamped: bool = False
 
 
 async def _drop_checks(conn: Any, table: str) -> None:
@@ -207,7 +222,7 @@ async def _catalog(conn: Any, table: str) -> CatalogTable:
         " WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
         found,
     )
-    shape = CatalogTable()
+    shape = CatalogTable(stamped=stamped_table(table, l3=reads_l3(conn)) is not None)
     for attribute in attributes:
         labels: tuple[str, ...] = ()
         if attribute["typtype"] == "e":
@@ -311,6 +326,24 @@ def _value(column: CatalogColumn, n: int) -> Any:
     return seed_scalar(column, column.category, n)
 
 
+def _seed_value(shape: CatalogTable, column: CatalogColumn, n: int) -> Any:
+    """the value a seeded row of ``shape`` holds in an unpinned ``column``: a stamped table's gone flag false (every
+    seeded row live: the module's docstring), else the column's generic value.
+
+    :param shape: the table
+    :ptype shape: CatalogTable
+    :param column: the column
+    :ptype column: CatalogColumn
+    :param n: the value's number
+    :ptype n: int
+    :return: the value
+    :rtype: Any
+    """
+    if shape.stamped and column.name == GONE_COLUMN:
+        return False
+    return _value(column, n)
+
+
 def set_value(column: CatalogColumn, n: int, overrides: Mapping[str, Callable[[Seeded], Any]]) -> Any:
     """the value a write's SET parameter ``n`` binds for ``column``: the table's override for the column when given
     (handed a seed past every seeded row, so no row holds it before the write), else the column's generic value.
@@ -398,7 +431,7 @@ def row_factory(
         if column.name in alone and column.category == "B":
             # a bool unique on its own (a partial "one utility model" index) holds True on one row only
             return n == 0
-        return _value(column, n)
+        return _seed_value(shape, column, n)
 
     seeded = [
         column
@@ -592,7 +625,7 @@ async def _insert_filled(conn: Any, table: str, rows: Sequence[Mapping[str, Any]
     await conn.executemany(
         f"INSERT INTO {table} ({', '.join(names)}) VALUES ({marks}){conflict}",  # noqa: S608 - trusted identifiers
         [
-            (*(row[name] for name in given), *(_value(column, first + index) for column in filled))
+            (*(row[name] for name in given), *(_seed_value(shape, column, first + index) for column in filled))
             for index, row in enumerate(rows)
         ],
     )
@@ -942,7 +975,8 @@ _CHAIN_LINKS: Final[tuple[tuple[int, int | None], ...]] = (
 async def _assert_chain_same(conn: Any, entry: Mapping[str, Any]) -> None:
     """a chain entry's ``read_link_chain`` call gives what its recursive statement gave: the table seeded with a chain
     of four rows, a row linking nowhere, and a cycle of three; walked from the chain's head, from its last row, from the
-    cycle (round it, under a bound of rows), and from a key no row holds, every row and column compared."""
+    cycle (round it, under a bound of rows), and from a key no row holds, every row and column compared. A stamped
+    table's rows are compared distinct (its walk ends a cycle where it comes back: the module's docstring)."""
     table, key, link = entry["table"], entry["chain"]["key"], entry["chain"]["link"]
     await _drop_checks(conn, table)
     shape = await _catalog(conn, table)
@@ -965,7 +999,10 @@ async def _assert_chain_same(conn: Any, entry: Mapping[str, Any]) -> None:
                 new = await read_link_chain(conn, table, key=key, link=link, start=start, most=most, columns=columns)
             finally:
                 await transaction.rollback()
-            if sorted(map(repr, old)) != sorted(map(repr, new)):
+            said, walked = sorted(map(repr, old)), sorted(map(repr, new))
+            if shape.stamped:
+                said, walked = sorted(set(said)), sorted(set(walked))
+            if said != walked:
                 differences.append(f"from {start!r} at most {most}: the statement {old}, the helper {new}")
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
@@ -1167,6 +1204,7 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
             helper=lambda c: read_by_joined(
                 c, table, by=by, columns=columns, joins=joins, where=where, order=order, limit=rows
             ),
+            columns=_compared(conn, entry),
             order_by=[term.get("shown", term["column"]) for term in own] or None,
             ordered=bool(order),
             related=related,
@@ -1174,6 +1212,27 @@ async def _assert_join_same(conn: Any, entry: Mapping[str, Any], *, overrides: _
         )
     finally:
         await conn.execute("SET session_replication_role = DEFAULT")
+
+
+def _compared(conn: Any, entry: Mapping[str, Any]) -> list[str] | None:
+    """the columns a read proof compares: every column (None) unless the entry reads every column (``SELECT *``, a
+    joined read's ``dt.*``: no recorded columns) of a stamped table, whose ``*`` answers its L3 columns no declaration
+    names (the module's docstring); then its declared columns, and each join's aliases (its columns and counts).
+
+    :param conn: the connection the proof runs on
+    :ptype conn: Any
+    :param entry: the manifest entry
+    :ptype entry: Mapping[str, Any]
+    :return: the columns compared, or None for every column
+    :rtype: list[str] | None
+    """
+    if entry.get("columns") is not None:
+        return None
+    declared = stamped_table(entry["table"], l3=reads_l3(conn))
+    if declared is None:
+        return None
+    aliases = [alias for join in entry.get("joins") or () for alias in (*join["columns"], *(join.get("counts") or {}))]
+    return list(dict.fromkeys([*declared.columns, *aliases]))
 
 
 def _sort(term: Mapping[str, Any]) -> Sort:
@@ -1240,6 +1299,7 @@ async def _assert_read_case(
     the old statement's row count in each seed case."""
     table, old_sql, params, where = entry["table"], case.old_sql, case.params, case.where
     proof_sql, proof_columns = _widened(old_sql, columns, entry.get("order", ()))
+    compared = _compared(conn, entry)
     answered = await assert_same_results(
         conn,
         table=table,
@@ -1247,6 +1307,7 @@ async def _assert_read_case(
         old_sql=proof_sql,
         params=params,
         helper=lambda c: read_by(c, table, by=by, columns=proof_columns, records=True, order=order, where=where),
+        columns=compared,
         order_by=[term["column"] for term in entry.get("order", ())] or None,
         ordered=bool(order),
         related=case.related,
@@ -1264,6 +1325,7 @@ async def _assert_read_case(
             old_sql=f"SELECT * FROM ({old_sql}) AS o LIMIT 1",  # noqa: S608 - the manifest's own statement
             params=params,
             helper=one_row,
+            columns=compared,
             related=case.related,
         )
     elif entry["helper"] == "read_value":
@@ -1449,6 +1511,7 @@ async def _assert_first_same(
             old_sql=proof_sql,
             params=case.params,
             helper=first_page,
+            columns=_compared(conn, entry),
             order_by=[term["column"] for term in own],
             ordered=True,
             limited=True,
@@ -1688,8 +1751,24 @@ def _write_says(call: ast.Call, entry: Mapping[str, Any]) -> bool:
     elif returning is not None:
         return False
     if entry["helper"] == "update_keyed":
-        return matches(keywords.get("values"), entry["sets"])
+        return matches(_stamped_dict(keywords.get("values")), entry["sets"])
     return "values" not in keywords
+
+
+def _stamped_dict(values: ast.expr | None) -> ast.expr | None:
+    """a write's ``values=`` as the dict it sets: written as one, or wrapped in the call stamping a stamped table's
+    epoch beside it (``self.stamped_values({...}, conn=c)``, ``stamped_values(SCHEMA, {...})``, a repo's
+    ``stamped_set(conn, table, {...})``): that call's one dict argument. Anything else as written.
+
+    :param values: the call's ``values`` keyword, or None
+    :ptype values: ast.expr | None
+    :return: the dict it sets, or ``values`` as written
+    :rtype: ast.expr | None
+    """
+    if not isinstance(values, ast.Call):
+        return values
+    dicts = [argument for argument in values.args if isinstance(argument, ast.Dict)]
+    return dicts[0] if len(dicts) == 1 else values
 
 
 def _where_says(keywords: Mapping[str | None, ast.expr], entry: Mapping[str, Any]) -> bool:
@@ -1860,7 +1939,7 @@ async def _sweep_rows(conn: Any, entry: Mapping[str, Any]) -> tuple[list[str], d
     names = [*key, column, *(c.name for c in seeded)]
     for n, expiry in enumerate(expiries):
         values: list[Any] = [f"{part}-{n % 2}" if part == key[0] else f"{part}-{n}" for part in key]
-        values += [expiry, *(_value(c, n) for c in seeded)]
+        values += [expiry, *(_seed_value(shape, c, n) for c in seeded)]
         places = ", ".join(f"${i}" for i in range(1, len(values) + 1))
         quoted = ", ".join(f'"{name}"' for name in names)
         await conn.execute(f"INSERT INTO {table} ({quoted}) VALUES ({places})", *values)  # noqa: S608 - test table
