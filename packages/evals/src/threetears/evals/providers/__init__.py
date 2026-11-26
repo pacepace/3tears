@@ -116,16 +116,20 @@ _LAZY_EXPORTS: Mapping[str, str] = MappingProxyType(
 )
 
 
-def __getattr__(name: str) -> Any:  # Any: each name is whatever its defining module holds
-    """Serve each name of ``__all__`` from the module defining it, on first read.
+# Under ``not TYPE_CHECKING``: a checker that saw a module ``__getattr__`` would type every name a host imports from
+# here as its return, ``Any``, so a misspelt or removed name would check. It sees the imports above instead.
+if not TYPE_CHECKING:
 
-    :param name: The attribute asked for.
-    :return: The exported object.
-    :raises AttributeError: When ``name`` is not one this root exports.
-    """
-    if (defined_in := _LAZY_EXPORTS.get(name)) is not None:
-        return getattr(import_module(defined_in), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    def __getattr__(name: str) -> Any:  # Any: each name is whatever its defining module holds
+        """Serve each name of ``__all__`` from the module defining it, on first read.
+
+        :param name: The attribute asked for.
+        :return: The exported object.
+        :raises AttributeError: When ``name`` is not one this root exports.
+        """
+        if (defined_in := _LAZY_EXPORTS.get(name)) is not None:
+            return getattr(import_module(defined_in), name)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:

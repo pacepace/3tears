@@ -1,4 +1,4 @@
-"""A failed request, as the client raises it (:class:`ProviderError`) and as the engine may know it.
+"""A failed request, as the client raises it: :class:`ProviderError`, and the refusal of a setting read off it.
 
 The client speaks HTTP itself, so every failure a provider answers with is one type, :class:`ProviderError`: the
 provider, the status, and the provider's own message, never the envelope around it (on OpenRouter that envelope can
@@ -175,8 +175,9 @@ class ProviderError(Exception):
 
         :return: The refusal, or ``None``.
         """
-        # Imported here, not at the top, so importing ProviderError loads no engine: only a Model raises one, and
-        # model.py has loaded the negotiation root at its own top, so this binds three names and loads nothing.
+        # Imported here, not at the top, so importing ProviderError loads no engine. The one caller is Model's
+        # negotiation loop (model.py, read_refusal), and model.py imports the negotiation root at its top, so by then
+        # this binds three names and loads nothing.
         from threetears.evals.negotiation import read_anthropic_refusal, read_openai_refusal, read_router_refusal
 
         if self.provider == "openrouter":

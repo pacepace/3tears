@@ -16,7 +16,8 @@ below the root; it is still imported from `threetears.evals.providers`, and ever
 unchanged. Importing `Model` still loads the engine.
 
 **For hosts:** nothing to change. A process that imports `ProviderError` only to catch it no longer pays the engine's
-import.
+import. `describe_failure` is imported from `threetears.evals.providers`; its old module path, `providers.failures`,
+no longer has it. A strict type checker still sees each name's real type, and refuses one the root does not export.
 
 ### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
 

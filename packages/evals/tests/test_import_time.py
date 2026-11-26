@@ -64,42 +64,56 @@ def test_the_job_lease_numbers_load_no_engine_module_beyond_schema() -> None:
     assert [name for name in loaded if not name.startswith("threetears.evals.schema")] == []
 
 
-#: The engine packages a host catching a provider's failure must not pay for: each pulls in the analysis and report
-#: stack.
-ENGINE_PACKAGES = ("threetears.evals.actions", "threetears.evals.ops", "threetears.evals.testing")
+#: Every engine module catching a provider's failure may load, each for a reason: ``providers`` is the failure
+#: module's package, which Python runs first, and ``providers.failures`` defines :class:`ProviderError`. The package
+#: root ``threetears.evals`` loads too, as every probe's does, and the probe leaves it out. Nothing else: a top-level
+#: ``schema`` or ``negotiation`` import in ``failures.py`` costs ~0.3s, and the root's model ~1.5s.
+CATCHING_A_FAILURE = ["threetears.evals.providers", "threetears.evals.providers.failures"]
+
+#: A probe that loads ``failures.py`` from its source with one import planted after its ``__future__`` line, as if
+#: the module had it at its top, then imports :class:`ProviderError` as a host does.
+_PLANTED = """\
+import importlib.util
+import pathlib
+import sys
+import threetears.evals.providers as providers
+path = pathlib.Path(providers.__file__).with_name("failures.py")
+future = "from __future__ import annotations\\n"
+source = path.read_text().replace(future, future + "import {planted}\\n", 1)
+spec = importlib.util.spec_from_loader("threetears.evals.providers.failures", loader=None, origin=str(path))
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+exec(compile(source, str(path), "exec"), module.__dict__)
+from threetears.evals.providers import ProviderError
+loaded = sorted(m for m in sys.modules if m.startswith("threetears.evals."))
+print(",".join(loaded))
+"""
 
 
-def _engine_loaded(loaded: list[str]) -> list[str]:
-    return [
-        name for name in loaded if name in ENGINE_PACKAGES or name.startswith(tuple(f"{p}." for p in ENGINE_PACKAGES))
-    ]
+def test_importing_the_client_root_loads_nothing_below_it() -> None:
+    loaded = _loaded_after(_PROBE.replace("import threetears.evals\n", "import threetears.evals.providers\n"))
+
+    assert loaded == ["threetears.evals.providers"]
 
 
 @pytest.mark.parametrize(
     "statement",
-    [
-        "import threetears.evals.providers\n",
-        "import threetears.evals.providers.failures\n",
-        "from threetears.evals.providers import ProviderError\n",
-    ],
+    ["import threetears.evals.providers.failures\n", "from threetears.evals.providers import ProviderError\n"],
 )
-def test_catching_a_provider_failure_loads_no_engine(statement: str) -> None:
+def test_catching_a_provider_failure_loads_its_module_and_nothing_else(statement: str) -> None:
     """A host imports ``ProviderError`` in its own client layer, so every process of its pays for what that loads."""
     loaded = _loaded_after(_PROBE.replace("import threetears.evals\n", statement))
 
-    assert "threetears.evals.providers" in loaded, "the probe imported nothing, so this says nothing"
-    assert _engine_loaded(loaded) == []
-    assert "threetears.evals.providers.model" not in loaded
+    assert loaded == CATCHING_A_FAILURE
 
 
-@pytest.mark.parametrize("package", ENGINE_PACKAGES)
-def test_a_planted_engine_import_is_seen(package: str) -> None:
-    """The check above reads each engine package it names as loaded when a probe does load it."""
-    loaded = _loaded_after(
-        _PROBE.replace("import threetears.evals\n", f"import threetears.evals.providers\nimport {package}\n")
-    )
+@pytest.mark.parametrize("planted", ["threetears.evals.schema", "threetears.evals.negotiation"])
+def test_a_planted_engine_import_in_the_failure_module_is_seen(planted: str) -> None:
+    """The check above turns red when ``failures.py`` imports what it used to at its top."""
+    loaded = _loaded_after(_PLANTED.format(planted=planted))
 
-    assert package in _engine_loaded(loaded)
+    assert planted in loaded
+    assert loaded != CATCHING_A_FAILURE
 
 
 def test_the_client_root_serves_each_name_from_its_defining_module() -> None:
