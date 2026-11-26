@@ -15,10 +15,12 @@ interpreter, since a module another test imported first would read as loaded.
 
 from __future__ import annotations
 
+import pkgutil
 import subprocess
 import sys
 from collections.abc import Mapping
-from types import MappingProxyType
+from importlib import import_module
+from types import MappingProxyType, ModuleType
 
 import pytest
 
@@ -167,11 +169,38 @@ def test_a_planted_engine_import_in_the_failure_module_is_seen(planted: str) -> 
     assert loaded != CATCHING_A_FAILURE
 
 
-def test_the_client_root_serves_each_name_from_its_defining_module() -> None:
-    """The lazy root holds every name of ``__all__``, as an eager one did, and refuses any other by name."""
-    assert set(providers.__all__) <= set(dir(providers))
-    for name in providers.__all__:
-        assert getattr(providers, name) is not None
+#: Every public root that serves its names from their defining modules on first read, through a module
+#: ``__getattr__``, rather than importing them as it loads.
+LAZY_ROOTS = ("threetears.evals.providers", "threetears.evals.testing")
+
+
+def _defining_modules(root: ModuleType) -> list[ModuleType]:
+    """Every module below ``root``, imported: the modules the root's names are defined in."""
+    return [import_module(found.name) for found in pkgutil.iter_modules(root.__path__, f"{root.__name__}.")]
+
+
+@pytest.mark.parametrize("root_name", LAZY_ROOTS)
+def test_a_lazy_root_serves_each_name_from_its_defining_module(root_name: str) -> None:
+    """A lazy root holds every name of ``__all__``, as an eager one did, and refuses any other by name."""
+    root = import_module(root_name)
+    below = _defining_modules(root)
+    assert set(root.__all__) <= set(dir(root))
+    for name in root.__all__:
+        served = getattr(root, name)
+        home = getattr(served, "__module__", None)
+        holders = [module for module in below if name in vars(module)]
+        defined = [module for module in holders if module.__name__ == home] or holders
+        assert defined, f"no module below {root_name} defines {name}"
+        assert all(served is vars(module)[name] for module in defined), f"{root_name}.{name} is not its definition"
+    exported = {*root.__all__, *vars(root)}
+    assert [name for name in dir(root) if not name.startswith("_") and name not in exported] == []
+    for name in sorted({name for module in below for name in vars(module) if not name.startswith("_")} - exported):
+        with pytest.raises(AttributeError, match=f"has no attribute {name!r}"):
+            getattr(root, name)
+
+
+def test_the_client_root_refuses_a_name_its_failure_module_defines() -> None:
+    """Non-vacuity for the refusal walk above: a public name below the root, not exported, is refused by name."""
     assert providers.ProviderError.__module__ == "threetears.evals.providers.failures"
     with pytest.raises(AttributeError, match="has no attribute 'error_from_response'"):
         _ = providers.error_from_response  # type: ignore[attr-defined]
