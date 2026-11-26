@@ -131,6 +131,10 @@ What must stay possible:
   reference to the registry lives, because a dead registry's id is reused.
 - Chunk 08: `KeyPoolMetrics` has no src caller (the pool only reports to an observer it is handed), so
   `_public_api_consumers.txt` names Hearsay. Owner to confirm at the boundary, as for `BudgetLedger`.
+- Chunk 08: the failover event is built (it retires the "no failover event" line above): `KeyPoolObserver.on_failover`, `KeyPool.record_failover`, and `threetears_key_pool_failovers_total{pool, reason}`. Its reason is `MoveReason`, not `VerdictKind`, because it can name `tripped` (a breaker refusing after the key was chosen) and it shares the moves counter's axis.
+- Chunk 08: a failover is counted when the call's next attempt runs on another key. A retry on the same key after its hold, a refusal that ends in `NoKeyAvailableError`, and a partial-stream failure are not failovers. `refresh` starts the five failover reasons and each store method at zero.
+- Chunk 08 (operator check): a move onto a key an operator just reset carries `MoveReason.OPERATOR_RESET`, at INFO. A key made exhausted, revoked or forbidden with no move off it is logged at WARNING. The `NoKeyAvailableError` dedup suppresses only a line whose key states repeat the last logged line; the suppressed count is kept.
+- Chunk 08: the KP-B3 sweep (`test_pooled_chat_secrecy.py`) found no leak. It found a served call whose settle failed raising `KeyPoolStoreError`, because the `finally` settled again. Such a lease now stays open for the sweep, and the answer is returned.
 - Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
   every table in that tuple and would fail where it runs before v004 creates them. Money and JSON are TEXT: no float
   before the budget compare, and JSONB would reorder the reservations the sweep reports in order.

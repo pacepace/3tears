@@ -159,7 +159,8 @@ class FakeFlakyStore:
     ``down`` makes every call raise ``ConnectionError``, as a store whose database is unreachable does;
     ``failing`` maps an operation to what it raises instead. ``calls`` names each operation made, and
     ``seen`` holds the ``repr`` of every argument passed in and every result handed back, for the
-    secrecy test to search.
+    secrecy test to search. ``accounts`` and ``records`` name every account and record an operation
+    touched, so that test can read back everything the store holds.
 
     Each operation yields to the event loop first, as a store across a network does, so concurrent
     callers really interleave; the in-memory store alone never suspends.
@@ -171,6 +172,8 @@ class FakeFlakyStore:
         self.failing: dict[str, Exception] = {}
         self.calls: list[str] = []
         self.seen: list[str] = []
+        self.accounts: set[str] = set()
+        self.records: set[str] = set()
 
     async def _check(self, operation: str, *args: object) -> None:
         await asyncio.sleep(0)
@@ -189,33 +192,40 @@ class FakeFlakyStore:
     async def reserve(
         self, account: str, reservation_id: str, amount: Decimal, budget: Decimal, expires_at: datetime
     ) -> bool:
+        self.accounts.add(account)
         await self._check("reserve", account, reservation_id, amount, budget, expires_at)
         return self._saw(await self.inner.reserve(account, reservation_id, amount, budget, expires_at))
 
     async def settle(self, account: str, reservation_id: str, amount: Decimal) -> None:
+        self.accounts.add(account)
         await self._check("settle", account, reservation_id, amount)
         await self.inner.settle(account, reservation_id, amount)
 
     async def release(self, account: str, reservation_id: str) -> None:
+        self.accounts.add(account)
         await self._check("release", account, reservation_id)
         await self.inner.release(account, reservation_id)
 
     async def sweep_expired(self, accounts: Iterable[str], now: datetime) -> dict[str, list[str]]:
         names = list(accounts)
+        self.accounts.update(names)
         await self._check("sweep_expired", names, now)
         return self._saw(await self.inner.sweep_expired(names, now))
 
     async def snapshot(self, accounts: Iterable[str]) -> dict[str, AccountSnapshot]:
         names = list(accounts)
+        self.accounts.update(names)
         await self._check("snapshot", names)
         return self._saw(await self.inner.snapshot(names))
 
     async def read_record(self, name: str) -> tuple[int, dict[str, Any] | None]:
+        self.records.add(name)
         await self._check("read_record", name)
         return self._saw(await self.inner.read_record(name))
 
     async def compare_and_set_record(
         self, name: str, expected_version: int, document: dict[str, Any]
     ) -> tuple[bool, int, dict[str, Any] | None]:
+        self.records.add(name)
         await self._check("compare_and_set_record", name, expected_version, document)
         return self._saw(await self.inner.compare_and_set_record(name, expected_version, document))

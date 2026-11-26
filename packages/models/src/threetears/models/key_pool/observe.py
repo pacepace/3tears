@@ -20,7 +20,12 @@ __all__ = ["KeyPoolCounters", "KeyPoolObserver", "MoveReason"]
 
 
 class MoveReason(enum.StrEnum):
-    """Why the pool moved its active key (KP-D7)."""
+    """Why the pool moved its active key (KP-D7), or why a call failed over to another key (KP-K1).
+
+    A failover inside a call has one of the first five: the four key-moving verdicts, or ``tripped``
+    for a key whose breaker refused the call after the pool chose it. Moves and failovers share this
+    one vocabulary, so a dashboard reads both counters on one reason axis.
+    """
 
     #: the active key's credit or spend limit is used up (logged at WARNING)
     EXHAUSTED = "exhausted"
@@ -40,6 +45,8 @@ class MoveReason(enum.StrEnum):
     PERIOD_ROLLOVER = "period_rollover"
     #: the stored active key is one this process isn't configured with (logged at INFO)
     NOT_CONFIGURED = "not_configured"
+    #: an operator reset the key moved to, which made it the key the policy holds active (logged at INFO)
+    OPERATOR_RESET = "operator_reset"
 
 
 class KeyPoolObserver(Protocol):
@@ -59,6 +66,16 @@ class KeyPoolObserver(Protocol):
         :param to_label: the key it moved to
         :ptype to_label: str
         :param reason: why
+        :ptype reason: MoveReason
+        """
+        ...
+
+    def on_failover(self, pool: str, reason: MoveReason) -> None:
+        """A call that one key refused ran its next attempt on another key (KP-H1).
+
+        :param pool: the pool's name
+        :ptype pool: str
+        :param reason: why the key refused it: a key-moving verdict's kind, or ``tripped``
         :ptype reason: MoveReason
         """
         ...
@@ -110,6 +127,7 @@ class KeyPoolCounters:
     Safe across threads: every count changes under one lock.
 
     :ivar moves: moves, by ``(from_label, to_label, reason)``
+    :ivar failovers: calls that failed over to another key, by reason
     :ivar room_refusals: reservations refused for room, by key label
     :ivar orphaned: orphaned reservations swept, by key label
     :ivar no_key_available: ``NoKeyAvailableError`` raises
@@ -119,6 +137,7 @@ class KeyPoolCounters:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.moves: Counter[tuple[str, str, MoveReason]] = Counter()
+        self.failovers: Counter[MoveReason] = Counter()
         self.room_refusals: Counter[str] = Counter()
         self.orphaned: Counter[str] = Counter()
         self.no_key_available = 0
@@ -128,6 +147,11 @@ class KeyPoolCounters:
         """Count a move; see :meth:`KeyPoolObserver.on_move`."""
         with self._lock:
             self.moves[(from_label, to_label, reason)] += 1
+
+    def on_failover(self, pool: str, reason: MoveReason) -> None:
+        """Count a failover; see :meth:`KeyPoolObserver.on_failover`."""
+        with self._lock:
+            self.failovers[reason] += 1
 
     def on_room_refusal(self, pool: str, label: str) -> None:
         """Count a refusal for room; see :meth:`KeyPoolObserver.on_room_refusal`."""

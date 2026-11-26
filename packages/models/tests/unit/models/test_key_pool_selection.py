@@ -105,6 +105,55 @@ class TestMoveLogging:
         message = moved[0].getMessage()
         assert "'test-pool'" in message and "'a'" in message and "'b'" in message and reason in message
 
+    @pytest.mark.parametrize(
+        ("verdict", "reason"),
+        [(exhausted(), "exhausted"), (revoked(), "revoked"), (forbidden(), "forbidden")],
+    )
+    async def test_the_last_key_running_out_with_no_move_is_logged_at_warning(
+        self, caplog: pytest.LogCaptureFixture, verdict: object, reason: str
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="threetears.models.key_pool")
+        pool = make_pool(spec("a"), spec("b"))
+        await fail_on(pool, exhausted(VerdictScope.KEY))  # moves a to b: the move's line is a's
+        await fail_on(pool, verdict)  # type: ignore[arg-type]
+        assert len(lines(caplog, logging.WARNING, f"key 'b' is now {reason}; the active key is 'b'")) == 1
+        assert not lines(caplog, logging.WARNING, "key 'a' is now")
+
+    async def test_a_key_that_was_not_active_is_logged_when_its_account_runs_out(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="threetears.models.key_pool")
+        pool = make_pool(spec("a", account="acct"), spec("b"), spec("c", account="acct"))
+        await fail_on(pool, exhausted(VerdictScope.ACCOUNT))  # a and c, sharing an account; a moves to b
+        assert len(lines(caplog, logging.WARNING, "moved its active key from 'a' to 'b': exhausted")) == 1
+        assert lines(caplog, logging.WARNING, "key 'c' is now exhausted; the active key is 'b'")
+        assert not lines(caplog, logging.WARNING, "key 'a' is now")
+
+    async def test_a_state_already_recorded_is_not_logged_again(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="threetears.models.key_pool")
+        pool = make_pool(spec("a"))
+        first = await pool.acquire(MODEL, Decimal("0.01"))
+        second = await pool.acquire(MODEL, Decimal("0.01"))
+        await first.fail(revoked())
+        await second.fail(revoked())  # in flight on a when it was revoked: nothing new to say
+        assert len(lines(caplog, logging.WARNING, "key 'a' is now revoked")) == 1
+
+    async def test_a_reset_move_has_its_own_reason_at_info(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An operator's reset onto a key never reads, or counts, as the active key's exhaustion."""
+        caplog.set_level(logging.INFO, logger="threetears.models.key_pool")
+        pool = make_pool(spec("a"), spec("b"))
+        await fail_on(pool, exhausted(VerdictScope.KEY))
+        await fail_on(pool, exhausted(VerdictScope.KEY))  # b, the last key, is exhausted too: no move
+        caplog.clear()
+        await pool.reset("a")
+        assert await serve(pool) == "a"
+        assert len(lines(caplog, logging.INFO, "moved its active key from 'b' to 'a': operator_reset")) == 1
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+        assert pool.counters.moves == {
+            ("a", "b", MoveReason.EXHAUSTED): 1,
+            ("b", "a", MoveReason.OPERATOR_RESET): 1,
+        }
+
     async def test_a_breaker_trip_moves_at_info(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="threetears.models.key_pool")
         registry, _ = tripping_registry()
@@ -141,6 +190,7 @@ class TestPullBack:
         assert await serve(pool) == "b"
         await pool.reset("a")
         assert await serve(pool) == "a"
+        assert pool.counters.moves[("b", "a", MoveReason.OPERATOR_RESET)] == 1
 
     async def test_after_a_period_rollover(self) -> None:
         clock = ManualClock()

@@ -49,6 +49,27 @@ _KEY = ("pool", "key")
 #: that already tried the key, so it is never a key's state in a snapshot and gets no series.
 _SNAPSHOT_STATES = tuple(state for state in KeyState if state is not KeyState.TRIED)
 
+#: the reasons a call can fail over for: the four key-moving verdicts, and a breaker that refused the
+#: call after the pool chose its key. The other move reasons are the pool's own decisions between calls.
+_FAILOVER_REASONS = (
+    MoveReason.EXHAUSTED,
+    MoveReason.REVOKED,
+    MoveReason.FORBIDDEN,
+    MoveReason.RATE_LIMITED,
+    MoveReason.TRIPPED,
+)
+
+#: the store methods a failure is counted by: every method of the ``KeyPoolStore`` Protocol.
+_STORE_OPERATIONS = (
+    "reserve",
+    "settle",
+    "release",
+    "sweep_expired",
+    "snapshot",
+    "read_record",
+    "compare_and_set_record",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Instruments:
@@ -62,6 +83,7 @@ class _Instruments:
     state: Gauge
     active: Gauge
     moves: Counter
+    failovers: Counter
     room_refusals: Counter
     orphaned: Counter
     no_key_available: Counter
@@ -112,6 +134,12 @@ def _register(registry: CollectorRegistry) -> _Instruments:
             "threetears_key_pool_moves_total",
             "Moves of a pool's active key, by the key moved off, the key moved to and why",
             ("pool", "from", "to", "reason"),
+            registry=registry,
+        ),
+        failovers=Counter(
+            "threetears_key_pool_failovers_total",
+            "Calls a key refused that ran their next attempt on another key, by why the key refused",
+            ("pool", "reason"),
             registry=registry,
         ),
         room_refusals=Counter(
@@ -167,6 +195,7 @@ class KeyPoolMetrics:
     1 for the key's state and 0 for the others); and ``threetears_key_pool_key_active``.
 
     Counters: ``threetears_key_pool_moves_total`` by ``pool``, ``from``, ``to`` and ``reason``;
+    ``threetears_key_pool_failovers_total`` by ``pool`` and ``reason``;
     ``threetears_key_pool_room_refusals_total`` and ``threetears_key_pool_orphaned_reservations_total``
     by ``pool`` and ``key``; ``threetears_key_pool_no_key_available_total`` by ``pool``; and
     ``threetears_key_pool_store_failures_total`` by ``pool`` and ``operation``.
@@ -203,6 +232,10 @@ class KeyPoolMetrics:
         """Write one snapshot into the gauges, and start its keys' counters."""
         metrics = self._instruments
         metrics.no_key_available.labels(status.pool)
+        for reason in _FAILOVER_REASONS:
+            metrics.failovers.labels(status.pool, str(reason))
+        for operation in _STORE_OPERATIONS:
+            metrics.store_failures.labels(status.pool, operation)
         for key in status.keys:
             series = (status.pool, key.label)
             metrics.spent.labels(*series).set(float(key.spent))
@@ -220,6 +253,10 @@ class KeyPoolMetrics:
     def on_move(self, pool: str, from_label: str, to_label: str, reason: MoveReason) -> None:
         """Count a move; see :meth:`~threetears.models.key_pool.observe.KeyPoolObserver.on_move`."""
         self._instruments.moves.labels(pool, from_label, to_label, str(reason)).inc()
+
+    def on_failover(self, pool: str, reason: MoveReason) -> None:
+        """Count a failover; see :meth:`~threetears.models.key_pool.observe.KeyPoolObserver.on_failover`."""
+        self._instruments.failovers.labels(pool, str(reason)).inc()
 
     def on_room_refusal(self, pool: str, label: str) -> None:
         """Count a refusal for room; see :meth:`~threetears.models.key_pool.observe.KeyPoolObserver.on_room_refusal`."""

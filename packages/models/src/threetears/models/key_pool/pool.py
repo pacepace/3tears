@@ -124,8 +124,9 @@ _MAX_CAS_ROUNDS: Final = 16
 #: rotations starts that secret over, from fresh state and zero spend.
 _GENERATIONS_KEPT: Final = 4
 
-#: How often the pool logs a ``NoKeyAvailableError`` (KP-I2): once per this interval, carrying the count
-#: of raises it didn't log. The counter is never deduplicated.
+#: How often the pool logs a ``NoKeyAvailableError`` (KP-I2): once per this interval while its keys'
+#: states stay the same, carrying the count of raises it didn't log; a raise whose states differ from
+#: the last line's is logged at once. The counter is never deduplicated.
 _NO_KEY_LOG_INTERVAL: Final = timedelta(seconds=60)
 
 #: A pool name: short, and safe as a metric label and inside a ledger account name.
@@ -151,6 +152,14 @@ _MOVE_REASON: Final = {
     KeyState.RATE_LIMITED: MoveReason.RATE_LIMITED,
     KeyState.TRIPPED: MoveReason.TRIPPED,
     KeyState.NO_ROOM: MoveReason.LOW_ROOM,
+}
+
+#: The reason, and so the log level, each key-moving verdict gives.
+_VERDICT_REASON: Final = {
+    VerdictKind.EXHAUSTED: MoveReason.EXHAUSTED,
+    VerdictKind.REVOKED: MoveReason.REVOKED,
+    VerdictKind.FORBIDDEN: MoveReason.FORBIDDEN,
+    VerdictKind.RATE_LIMITED: MoveReason.RATE_LIMITED,
 }
 
 
@@ -429,6 +438,7 @@ class KeyPool:
         self._no_key_lock = threading.Lock()
         self._no_key_logged_at: datetime | None = None
         self._no_key_suppressed = 0
+        self._no_key_logged_states: tuple[tuple[str, KeyState], ...] = ()
 
     def __repr__(self) -> str:
         """The pool by provider, name and labels, never a secret."""
@@ -483,7 +493,7 @@ class KeyPool:
 
     @property
     def counters(self) -> KeyPoolCounters:
-        """The pool's event counts: moves, refusals for room, orphans, store failures and
+        """The pool's event counts: moves, failovers, refusals for room, orphans, store failures and
         ``NoKeyAvailableError`` raises.
 
         :return: the counters
@@ -502,6 +512,21 @@ class KeyPool:
         :rtype: Verdict
         """
         return self._classifier.classify(exc, now=self._clock_now(), stream_started=stream_started)
+
+    def record_failover(self, reason: MoveReason) -> None:
+        """Count one call that a key refused running its next attempt on another key (KP-K1).
+
+        The pooled chat model reports each of its failovers here; a caller that closes leases itself
+        reports its own. The failover is counted in :attr:`counters` and reported to the observer.
+
+        :param reason: why the key refused the call: a key-moving verdict's kind, or ``tripped`` for a
+            breaker that refused it after the pool chose the key
+        :ptype reason: MoveReason
+        :raises TypeError: when ``reason`` is not a :class:`MoveReason`
+        """
+        if not isinstance(reason, MoveReason):
+            raise TypeError(f"a failover's reason is a MoveReason, got {type(reason).__name__}")
+        self._notify(lambda observer: observer.on_failover(self._name, reason))
 
     # -- calls -----------------------------------------------------------------------------------
 
@@ -637,7 +662,9 @@ class KeyPool:
 
         Clears exhausted, revoked, forbidden, rate-limit holds and low room for every secret the label
         has held, and resets the key's breakers in this process. Spend is untouched: it is the ledger's.
-        With distinct priorities, a reset key the pool prefers takes over again (KP-D5).
+        With distinct priorities, a reset key the pool prefers takes over again (KP-D5), as does a reset
+        key when the active key can't serve; that move's reason is ``operator_reset``, logged at INFO,
+        not the active key's state, so an operator's reset never reads as a new exhaustion.
 
         :param label: the key to reset
         :ptype label: str
@@ -657,7 +684,7 @@ class KeyPool:
                 generation.update(_cleared_state())
             return False
 
-        await self._commit(now, None, clear)
+        await self._commit(now, None, clear, reset=label)
         logger.info(
             "key pool %r: an operator reset key %r",
             self._name,
@@ -675,19 +702,27 @@ class KeyPool:
             await self._call("settle", _CLOSE_CONTRACT, lambda: self._store.settle(account, reservation, cost))
 
     async def _record_verdict(self, key: _Key, model_id: str | None, verdict: Verdict) -> None:
-        """Record a key-moving verdict on its keys, and move the active key if it can't serve."""
+        """Record a key-moving verdict on its keys, and move the active key if it can't serve.
+
+        A key this makes exhausted, revoked or forbidden -- the states that need an operator -- is
+        logged at WARNING when no move off it follows (the last key that could serve, or a key that
+        wasn't active), so such a change is never left unlogged for want of a move (KP-D7).
+        """
         now = self._clock_now()
-        await self._ready(now)
+        active_before = _active((await self._ready(now)).doc)
         if verdict.scope is VerdictScope.ACCOUNT:
             targets = [other for other in self._keys if other.spec.account_tag == key.spec.account_tag]
         else:
             targets = [key]
         scope = model_id if verdict.scope is VerdictScope.KEY_AND_MODEL and model_id is not None else _WHOLE_KEY
         period = period_id(now, self._anchor_day)
+        changed: list[str] = []
 
         def record(doc: dict[str, Any]) -> bool:
+            changed.clear()
             for target in targets:
                 generation = self._writable_generation(doc, target)
+                previous = copy.deepcopy(generation)
                 if verdict.kind is VerdictKind.EXHAUSTED:
                     generation["exhausted"] = period
                 elif verdict.kind is VerdictKind.REVOKED:
@@ -698,9 +733,26 @@ class KeyPool:
                     holds = self._live_holds(generation["holds"], now)
                     holds[scope] = self._hold(holds.get(scope), verdict.until, now)
                     generation["holds"] = holds
+                if generation != previous:
+                    changed.append(target.label)
             return False
 
-        await self._commit(now, model_id, record)
+        view = await self._commit(now, model_id, record)
+        reason = _VERDICT_REASON[verdict.kind]
+        if reason not in _WARNING_REASONS:
+            return
+        active = _active(view.doc)
+        for label in changed:
+            if label == active_before and active != active_before:
+                continue  # the move off it was logged, with this reason
+            logger.warning(
+                "key pool %r: key %r is now %s; the active key is %r",
+                self._name,
+                label,
+                reason,
+                active,
+                extra={"extra_data": {"pool": self._name, "label": label, "state": str(reason), "active": active}},
+            )
 
     # -- selection -------------------------------------------------------------------------------
 
@@ -950,13 +1002,14 @@ class KeyPool:
         for key in self._keys:
             self._generation[key.label] = self._generation_number(written.doc, key)
 
-    async def _commit(self, now: datetime, model_id: str | None, edit: _Edit) -> _View:
+    async def _commit(self, now: datetime, model_id: str | None, edit: _Edit, *, reset: str | None = None) -> _View:
         """Apply ``edit`` to the record, let the policy settle the active key, and compare-and-set it.
 
         On a conflict the winner's document is adopted and the edit applied to it again, so a loser
         moving the same key from the same place finds it already moved and writes nothing (KP-D4). A
         move first reads every key's room, so it never lands on a key below ``min_headroom``; that read
-        also refreshes each key's low-room mark.
+        also refreshes each key's low-room mark. A move onto ``reset``, the key an operator just reset,
+        is that reset's doing, and carries its reason.
         """
         view = self._require_view()
         rooms: dict[str, Decimal] | None = None
@@ -967,6 +1020,8 @@ class KeyPool:
                 doc, before, target, reason = self._applied(view.doc, edit, model_id, now, rooms)
             if target is not None:
                 doc["active"] = target
+                if target == reset:
+                    reason = MoveReason.OPERATOR_RESET
             if doc == view.doc:
                 return view
             written, version, current = await self._call(
@@ -1159,14 +1214,18 @@ class KeyPool:
         return error
 
     def _report_no_key(self, error: NoKeyAvailableError, now: datetime) -> None:
+        """Count the raise, and log it unless it repeats the keys' states the last line logged within
+        the interval: a line whose states differ is always logged, so the newest line is never stale."""
         self._notify(lambda observer: observer.on_no_key_available(self._name))
+        states = tuple((key.label, key.state) for key in error.keys)
         with self._no_key_lock:
             last = self._no_key_logged_at
-            if last is not None and now - last < _NO_KEY_LOG_INTERVAL:
+            if last is not None and now - last < _NO_KEY_LOG_INTERVAL and states == self._no_key_logged_states:
                 self._no_key_suppressed += 1
                 return
             suppressed, self._no_key_suppressed = self._no_key_suppressed, 0
             self._no_key_logged_at = now
+            self._no_key_logged_states = states
         logger.error(
             "key pool %r: %s (%d more not logged in the last %d s)",
             self._name,

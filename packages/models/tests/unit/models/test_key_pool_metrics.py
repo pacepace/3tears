@@ -14,6 +14,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from threetears.models.key_pool import (
     KeyPool,
     KeyPoolMetrics,
+    KeyPoolStore,
     KeyPoolStoreError,
     KeySpec,
     KeyState,
@@ -62,6 +63,22 @@ class TestCounters:
         moves = "threetears_key_pool_moves_total"
         assert _sample(registry, moves, pool=POOL, **{"from": "a", "to": "b", "reason": "exhausted"}) == 1
         assert pool.counters.moves == {("a", "b", MoveReason.EXHAUSTED): 1}
+
+    async def test_a_failover_is_counted_by_reason(self, registry: CollectorRegistry, metrics: KeyPoolMetrics) -> None:
+        pool = _pool(metrics, spec("a"), spec("b"))
+        pool.record_failover(MoveReason.RATE_LIMITED)
+        pool.record_failover(MoveReason.RATE_LIMITED)
+        pool.record_failover(MoveReason.TRIPPED)
+        failovers = "threetears_key_pool_failovers_total"
+        assert _sample(registry, failovers, pool=POOL, reason="rate_limited") == 2
+        assert _sample(registry, failovers, pool=POOL, reason="tripped") == 1
+        assert pool.counters.failovers == {MoveReason.RATE_LIMITED: 2, MoveReason.TRIPPED: 1}
+
+    async def test_a_failover_reason_outside_the_enum_is_refused(self, metrics: KeyPoolMetrics) -> None:
+        pool = _pool(metrics, spec("a"))
+        with pytest.raises(TypeError, match="MoveReason"):
+            pool.record_failover("rate_limited")  # type: ignore[arg-type]
+        assert not pool.counters.failovers
 
     async def test_a_reservation_too_big_for_a_key_counts_a_refusal_for_room(
         self, registry: CollectorRegistry, metrics: KeyPoolMetrics
@@ -179,6 +196,16 @@ class TestGauges:
             assert _sample(registry, "threetears_key_pool_room_refusals_total", pool=POOL, key=key) == 0
             assert _sample(registry, "threetears_key_pool_orphaned_reservations_total", pool=POOL, key=key) == 0
         assert _sample(registry, "threetears_key_pool_no_key_available_total", pool=POOL) == 0
+        failover_reasons = ("exhausted", "revoked", "forbidden", "rate_limited", "tripped")
+        for reason in failover_reasons:
+            assert _sample(registry, "threetears_key_pool_failovers_total", pool=POOL, reason=reason) == 0
+        for reason in {str(reason) for reason in MoveReason} - set(failover_reasons):
+            # the pool's own decisions between calls are never a failover's reason, so get no series
+            assert _sample(registry, "threetears_key_pool_failovers_total", pool=POOL, reason=reason) is None
+        store_methods = {name for name in vars(KeyPoolStore) if not name.startswith("_")}
+        assert store_methods  # the Protocol's own methods: every operation a failure is counted by
+        for operation in store_methods:
+            assert _sample(registry, "threetears_key_pool_store_failures_total", pool=POOL, operation=operation) == 0
 
     async def test_a_store_failure_raises_from_refresh_and_the_gauges_keep_the_last_snapshot(
         self, registry: CollectorRegistry, metrics: KeyPoolMetrics
