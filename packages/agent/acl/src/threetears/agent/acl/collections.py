@@ -67,6 +67,7 @@ from threetears.agent.acl.types import (
 from threetears.agent.acl.types import Namespace as AclNamespace
 from threetears.core import keyed as k
 from threetears.core.collections import DeleteCascade
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
@@ -80,7 +81,9 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
+    stamped_values,
 )
+from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import (
     AnyOf,
@@ -302,6 +305,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             # assignments; the group is the key, and the rows are read only to be announced
             "read_cascade",
             "announce_cascade",
+            # rationale: the same cascade's rows marked gone, each by its full primary key
+            "mark_cascade_gone",
             # rationale: deletes by its full primary key, which carries the partition
             "delete",
         }
@@ -323,6 +328,10 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     schema = TableSchema(
         name="groups",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: a group is renamed and described in place, a key at a time. agent_acl v006 stamps it
+        row_epoch=ROW_STAMPED,
         primary_key=("row_scope", "group_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
@@ -408,6 +417,9 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             # the group is gone; only the groups table's advance failed. Its cascade is announced
             # all the same, and the failure raised once it has been.
             deletion_failure = exc
+        # the group is marked gone in place (ROW_STAMPED), so the database's ON DELETE CASCADE never runs: its
+        # memberships and grants are marked gone here, or a deleted group's members would keep its roles
+        await self.mark_cascade_gone(cascade)
         try:
             await self.announce_cascade(cascade)
         except GenerationUnavailableError:
@@ -465,6 +477,50 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             members=tuple(dict(row) for row in members),
             assignments=tuple(dict(row) for row in assignments),
         )
+
+    async def mark_cascade_gone(self, cascade: GroupCascade) -> None:
+        """mark gone in place the memberships and grants a group delete reaches: the group is stamped (``ROW_STAMPED``)
+        and marked gone, never deleted, so the database's ``ON DELETE CASCADE`` from ``group_members`` and
+        ``role_assignments`` never fires. Each table one keyed ``UPDATE`` a batch of keys, the gone flag set and the
+        epoch risen past a fresh stamp (``stamped_values``), so a restore of a lost change log hears each, as it hears
+        the group's own. A row already gone is left as it is.
+
+        :param cascade: what :meth:`read_cascade` read before the delete
+        :ptype cascade: GroupCascade
+        :return: nothing
+        :rtype: None
+        """
+        pool = self.l3_pool
+        if pool is None:
+            return
+        gone = Fragment('NOT "gone"')
+        if cascade.members:
+            await update_keyed(
+                pool,
+                "group_members",
+                values=stamped_values(GroupMemberCollection.schema, {"gone": True}),
+                keys=k.KeyBatch(
+                    ("group_id", "id"),
+                    [[cascade.group_id for _ in cascade.members], [row["id"] for row in cascade.members]],
+                    casts=("uuid", "uuid"),
+                ),
+                where=[gone],
+            )
+        if cascade.assignments:
+            await update_keyed(
+                pool,
+                "role_assignments",
+                values=stamped_values(RoleAssignmentCollection.schema, {"gone": True}),
+                keys=k.KeyBatch(
+                    ("row_scope", "assignment_id"),
+                    [
+                        [row["row_scope"] for row in cascade.assignments],
+                        [row["assignment_id"] for row in cascade.assignments],
+                    ],
+                    casts=("text", "uuid"),
+                ),
+                where=[gone],
+            )
 
     async def announce_cascade(self, cascade: GroupCascade) -> None:
         """evict the rows a group delete cascaded away, each table in one advance, naming what each reaches.
@@ -761,6 +817,11 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     schema = TableSchema(
         name="group_members",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: a membership is added and removed, never rewritten: one version a key either way, and versioning
+        # needs a scope its writer takes a turn at (ScopeEpochs), which no access write has. agent_acl v006 stamps it
+        row_epoch=ROW_STAMPED,
         primary_key=("group_id", "id"),
         columns=[
             Column("id", UUID_TYPE),
@@ -1101,6 +1162,10 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     schema = TableSchema(
         name="roles",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: a role is edited in place (its permissions), a key at a time. agent_acl v006 stamps it
+        row_epoch=ROW_STAMPED,
         primary_key="role_id",
         columns=[
             Column("role_id", UUID_TYPE),
@@ -1408,6 +1473,11 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     schema = TableSchema(
         name="role_assignments",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: a grant is made and revoked, never rewritten (its customer backfilled once): one version a key
+        # either way, and versioning needs a scope its writer takes a turn at (ScopeEpochs), which no access write has. agent_acl v006 stamps it
+        row_epoch=ROW_STAMPED,
         primary_key=("row_scope", "assignment_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
@@ -1952,15 +2022,17 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :raises RuntimeError: when the insert was absorbed by a unique index while no row holds the natural key
         """
         pool = self.required_l3_pool
+        granted = datetime.now(UTC)
+        # stamped (ROW_STAMPED): the row carries its write's epoch, a fresh stamp of its own statement
         inserted = await pool.fetchval(
             """
             INSERT INTO role_assignments (
                 row_scope, assignment_id, role_id, group_id, scope_type,
                 scope_namespace_id, scope_namespace_type,
                 scope_customer_id, granted_by, date_granted,
-                managed_by, customer_id
+                managed_by, epoch, customer_id
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9
+                $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8, $9, $10
             )
             ON CONFLICT DO NOTHING
             RETURNING assignment_id
@@ -1971,8 +2043,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             group_id,
             scope_type,
             scope_id,
-            datetime.now(UTC),
+            granted,
             managed_by,
+            CallerTransaction.stamp_for(None, "role_assignments"),
             customer_id,
         )
         if inserted is not None:
@@ -1980,6 +2053,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         # a concurrent ensure inserted the same grant between the lookup and this insert, and the deploying app's
         # natural-key index absorbed ours
         winner_row = await self.grant_winner(group_id, role_id, scope_type, scope_id, managed_by)
+        if winner_row is None:
+            # or a revoke marked the same grant gone (ROW_STAMPED), and its row, still holding the natural key,
+            # absorbed ours: it is made live again as this grant
+            revived = await self._revive_gone_grant(
+                group_id, role_id, scope_type, scope_id, managed_by, customer_id, granted
+            )
+            if revived is not None:
+                return revived[0], revived[1], True
         if winner_row is None:
             raise RuntimeError(
                 f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
@@ -2019,7 +2100,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 await k.update_keyed(
                     pool,
                     "role_assignments",
-                    values={"customer_id": customer},
+                    values=self.stamped_values({"customer_id": customer}),
                     keys=k.KeyBatch(
                         ("row_scope", "assignment_id"),
                         [[row_scope for row_scope, _, _ in rows], [assignment for _, assignment, _ in rows]],
@@ -2028,6 +2109,61 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 )
             written.extend(rows)
         return CustomerBackfillPage(read=plan.read, written=tuple(written), next_cursor=plan.next_cursor)
+
+    async def _revive_gone_grant(
+        self,
+        group_id: UUID,
+        role_id: UUID,
+        scope_type: str,
+        scope_id: UUID | None,
+        managed_by: str,
+        customer_id: UUID | None,
+        granted: datetime,
+    ) -> tuple[UUID, str] | None:
+        """the grant a revoke marked gone that absorbed this insert, made live again in place: its row keeps the
+        grant's natural key (``ROW_STAMPED``: a revoke marks the row gone, never deletes it), so the deploying
+        application's natural-key index absorbs a new insert of the same grant until quiet-time cleanup removes the
+        gone row. One keyed ``UPDATE`` by the natural key, only of a gone row, its epoch risen past a fresh stamp
+        (``stamped_values``) and its grant moment and customer the new grant's.
+
+        :param group_id: the grant's group
+        :ptype group_id: UUID
+        :param role_id: its role
+        :ptype role_id: UUID
+        :param scope_type: its scope
+        :ptype scope_type: str
+        :param scope_id: its namespace, None for none
+        :ptype scope_id: UUID | None
+        :param managed_by: its provenance
+        :ptype managed_by: str
+        :param customer_id: its customer
+        :ptype customer_id: UUID | None
+        :param granted: the new grant's moment
+        :ptype granted: datetime
+        :return: the revived row's ``assignment_id`` and ``row_scope``; None when no gone row holds the grant
+        :rtype: tuple[UUID, str] | None
+        """
+        row = (
+            await update_keyed(
+                self.required_l3_pool,
+                "role_assignments",
+                values=self.stamped_values({"gone": False, "date_granted": granted, "customer_id": customer_id}),
+                by={
+                    "row_scope": k.AnyOf(("platform", "customer"), cast=None),
+                    "group_id": group_id,
+                    "role_id": role_id,
+                    "scope_type": scope_type,
+                    "scope_namespace_id": scope_id,
+                    "managed_by": managed_by,
+                },
+                where=[Fragment('"gone"')],
+                returning=("assignment_id", "row_scope"),
+            )
+        ).row
+        if row is None:
+            return None
+        await self._announce_rows(((row["row_scope"], row["assignment_id"]),), group_id)
+        return row["assignment_id"], row["row_scope"]
 
     async def grant_winner(
         self, group_id: UUID, role_id: UUID, scope_type: str, scope_id: UUID | None, managed_by: str
@@ -2152,10 +2288,12 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 columns=("assignment_id",),
             )
             if matching:
+                # marked gone in place, never deleted (ROW_STAMPED): a restore of a lost change log hears the revoke
                 deleted = (
-                    await k.delete_keyed(
+                    await k.update_keyed(
                         self.l3_pool,
                         "role_assignments",
+                        values=self.stamped_values({"gone": True}),
                         by={
                             "row_scope": row_scope,
                             "group_id": group_id,
@@ -2163,6 +2301,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                             "scope_namespace_id": scope_id,
                             **({} if managed_by is None else {"managed_by": managed_by}),
                         },
+                        where=[Fragment('NOT "gone"')],
                         returning=("assignment_id",),
                     )
                 ).rows
@@ -2338,6 +2477,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     schema = TableSchema(
         name="namespaces",
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and a delete marks a row gone in place, so the restore
+        # hears it. Stamped, not versioned: a namespace is edited and rescoped in place, a key at a time. agent_acl v006 stamps it
+        row_epoch=ROW_STAMPED,
         primary_key=("row_scope", "namespace_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
@@ -2595,7 +2738,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 await update_keyed(
                     self.required_l3_pool,
                     "namespaces",
-                    values={"row_scope": target_scope, "customer_id": customer_id, "date_updated": datetime.now(UTC)},
+                    values=self.stamped_values(
+                        {"row_scope": target_scope, "customer_id": customer_id, "date_updated": datetime.now(UTC)}
+                    ),
                     by={"namespace_id": namespace_id, "row_scope": previous_scope},
                     returning=("namespace_id",),
                 )
@@ -2686,6 +2831,53 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                     result[key] = self.entity_class(data, is_new=False, collection=self)
         return result
 
+    async def _revive_gone_namespace(
+        self,
+        row_scope: str,
+        namespace_id: UUID,
+        *,
+        name: str,
+        namespace_type: str,
+        owner_agent_id: UUID | None,
+        owner_namespace: str | None,
+        customer_id: UUID | None,
+        schema_name: str | None,
+        metadata: dict[str, Any] | None,
+        now: datetime,
+    ) -> bool:
+        """the namespace a delete marked gone that absorbed :meth:`ensure_namespace`'s insert, made live again in place
+        as the new row: a delete marks the row gone (``ROW_STAMPED``), never deletes it, so its key absorbs an insert
+        of the same id until quiet-time cleanup removes it. One keyed ``UPDATE`` by the key, only of a gone row, its
+        epoch risen past a fresh stamp (``stamped_values``).
+
+        :return: whether a gone row was made live
+        :rtype: bool
+        """
+        row = (
+            await update_keyed(
+                self.required_l3_pool,
+                "namespaces",
+                values=self.stamped_values(
+                    {
+                        "gone": False,
+                        "name": name,
+                        "namespace_type": namespace_type,
+                        "owner_agent_id": owner_agent_id,
+                        "owner_namespace": owner_namespace,
+                        "customer_id": customer_id,
+                        "schema_name": schema_name,
+                        "metadata": Fragment("$1::text::jsonb", (_json.dumps(dict(metadata or {})),)),
+                        "date_created": now,
+                        "date_updated": now,
+                    }
+                ),
+                by={"row_scope": row_scope, "namespace_id": namespace_id},
+                where=[Fragment('"gone"')],
+                returning=("namespace_id",),
+            )
+        ).row
+        return row is not None
+
     async def ensure_namespace(
         self,
         *,
@@ -2745,11 +2937,13 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         existing = await self.find_by_id(namespace_id)
         if existing is None:
             now = datetime.now(UTC)
+            row_scope = "platform" if customer_id is None else "customer"
+            # stamped (ROW_STAMPED): the row carries its write's epoch, a fresh stamp of its own statement
             await self.l3_pool.execute(
                 "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, "
-                "owner_namespace, customer_id, schema_name, metadata, date_created, date_updated) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $10) ON CONFLICT DO NOTHING",
-                "platform" if customer_id is None else "customer",
+                "owner_namespace, customer_id, schema_name, metadata, date_created, date_updated, epoch) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $10, $11) ON CONFLICT DO NOTHING",
+                row_scope,
                 namespace_id,
                 name,
                 namespace_type,
@@ -2759,12 +2953,27 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 schema_name,
                 _json.dumps(dict(metadata or {})),
                 now,
+                CallerTransaction.stamp_for(None, "namespaces"),
             )
             # announced whether or not a conflict absorbed it: through the L3 broker the INSERT
             # advanced the table's write generation either way, and an advance no row is heard for
             # drops the table on every follower
             await self.invalidate_cache(("platform" if customer_id is None else "customer", namespace_id))
             existing = await self.find_by_id(namespace_id)
+            if existing is None and await self._revive_gone_namespace(
+                row_scope,
+                namespace_id,
+                name=name,
+                namespace_type=namespace_type,
+                owner_agent_id=owner_agent_id,
+                owner_namespace=owner_namespace,
+                customer_id=customer_id,
+                schema_name=schema_name,
+                metadata=metadata,
+                now=now,
+            ):
+                await self.invalidate_cache((row_scope, namespace_id))
+                existing = await self.find_by_id(namespace_id)
             if existing is None:
                 # absorbed by a unique index other than the id's -- the name, or any unique column the
                 # deploying app added (a schema name, say)
