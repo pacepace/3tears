@@ -1,4 +1,5 @@
-"""a committed write whose epoch advance was lost is announced again, from the change notes, with no L3 write a commit.
+"""a committed write whose epoch advance was lost is announced again, from the tables' own rows, with no L3 write a
+commit.
 
 A write to a generation-switched table commits to L3 and is advanced after, outside its transaction. Three ways an
 advance can be lost, and what announces each one again:
@@ -9,28 +10,31 @@ advance can be lost, and what announces each one again:
 - **The writer died between its commit and its advance.** Each writer process publishes its ledger's watermark W (the
   oldest start of a write that may still lack its advance) to a NATS KV key every :data:`_BEAT_SECONDS`
   (:meth:`WriteBackstop.beat`). The replica holding the recovery lease (:meth:`WriteBackstop.recover_pass`) takes a key
-  whose beat is older than :data:`_STALE_SECONDS` for a dead writer: every switched table with change notes in
-  ``[W - skew, min(beat + grace, now) + skew]`` is advanced from those notes (:func:`announce_window`), and the key is
+  whose beat is older than :data:`_STALE_SECONDS` for a dead writer: every switched table with rows stamped in
+  ``[W - skew, min(beat + grace, now) + skew]`` is advanced from those rows (:func:`announce_window`), and the key is
   deleted. A process stopping cleanly deletes its own key after its repairs land (:meth:`WriteBackstop.stop`).
 - **A data migration wrote rows** (no collection, no advance). The migration runner hands its run's window to
   :meth:`WriteBackstop.announce_window` (``MigrationRunner(announcer=...)``).
 
-**How a window is announced** (:func:`_announce_table_window`). Every committed write to a noted table left a note of
-each row's key in its own transaction, so the window's notes name every row its lost writes changed (and maybe rows
-other writes changed then, which a follower reads again harmlessly). Few enough rows are recorded by name; more are
-recorded keys unknown with the window as their notes bracket, which each follower pages by the ring's
-``(table_name, noted_at)`` index and evicts exactly. A whole-table note (a truncate, a load, an operator's reset) is
-re-recorded whole only when it is stamped inside the window: the ONE whole change this module records, and only for
-the window's own writes (the dead writer's, the failed one's, the migration's); one stamped before is an earlier
-write's, whose advance was heard (2026-11-22: re-recording an old reset made every follower read its table whole,
-three times).
+**How a window is announced** (:func:`_changes_of`; append-only L3, ``design-append-only-l3.md`` decision 3, chunk 7).
+Every committed write stamped each row it wrote with an epoch inside the window (a hybrid logical clock stamp, on a
+writer's clock the skew already widens the window by), so a table's rows stamped in the window's epoch range
+(:func:`~threetears.core.collections.epoch_reads.epoch_range`) name every row its lost writes changed: a versioned
+table's versions and gone markers, a scope at a time through its ``(scope, epoch, key...)`` index; a stamped table's
+rows, gone ones too, in each of its 16 ``(epoch_bucket, epoch)`` ranges (the restore's own read,
+:mod:`~threetears.core.collections.epoch_reads`, narrowed to the window). Maybe rows other writes changed then too,
+which a follower reads again harmlessly. Few enough rows are recorded by name; more are recorded keys unknown with the
+window as their bracket, which each follower pages from the same read (``l3.noted_keys``,
+:func:`~threetears.core.collections.change_notes.noted_keys_page`) and evicts exactly. A run deleted in the window (its
+run marker, :mod:`~threetears.core.ddl.run_markers`) is re-recorded whole by its prefixes: the ONE whole change this
+module records, and only for the window's own deletes.
 
-**What a table is switched on by.** Its change-note row trigger (:data:`~threetears.core.ddl.change_notes
-.NOTE_TRIGGER`): every table whose writes advance a generation carries it from the migration run that creates it, and
-a writer that imports no class for the table (the hub's broker, committing a tool pod's write) reads the switch off
-the catalogue (:func:`tables_switched_by_trigger`). Until 0.95 the per-row write-mark trigger was the switch, and each
-commit inserted a mark the reconciler drained; it is gone (coordination migration v006), and the backstop takes down
-any an older replica puts back mid-roll (:meth:`WriteBackstop.drop_leftover_write_mark_triggers`, until 0.96.0).
+**What a table is switched on by.** Its epoch: every table whose writes advance a generation carries ``epoch BIGINT
+NOT NULL`` (:func:`tables_switched_by_epoch`), versioned or stamped, its restore index declaring it in the catalog
+(:func:`~threetears.core.collections.table_restore.restored_tables`), which a writer that imports no class for the
+table (the hub's broker, committing a tool pod's write) reads. Until 0.95 the change-note row trigger was the switch,
+and before it the per-row write-mark trigger; the backstop takes down any write-mark trigger an older replica puts back
+mid-roll (:meth:`WriteBackstop.drop_leftover_write_mark_triggers`, until 0.96.0).
 """
 
 from __future__ import annotations
@@ -51,12 +55,21 @@ from threetears.observe import contain, get_logger
 from threetears.observe.periodic import PeriodicTask
 from threetears.observe.metrics import counter, gauge
 
-from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, advance_recording
+from threetears.core.collections.epoch_reads import epoch_range, range_rows, tenant_of_relation
+from threetears.core.collections.noted_change import NotedChange
+from threetears.core.collections.table_restore import (
+    RestoredTable,
+    VersionedTable,
+    changed_scopes,
+    restored_tables,
+    run_marker_changes,
+)
 from threetears.core.collections.generation import GenerationSource, tenancy_of_table, written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
-from threetears.core.ddl.change_notes import NOTE_TRIGGER, WHOLE_COPY_ROWS
+from threetears.core.ddl.change_notes import WHOLE_COPY_ROWS
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.epoch_catalog import tables_carrying_epoch
 from threetears.core.ddl.errors import DdlLockTimeoutError
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.exceptions import GenerationUnavailableError
@@ -70,7 +83,7 @@ __all__ = [
     "WriteBackstop",
     "WriterBeats",
     "announce_window",
-    "tables_switched_by_trigger",
+    "tables_switched_by_epoch",
 ]
 
 log = get_logger(__name__)
@@ -147,25 +160,6 @@ class SqlPool(SqlConnection, Protocol):
         ...
 
 
-#: the tables of one schema carrying the change-note row trigger, among those named
-_SWITCHED_SQL: Final[str] = """
-SELECT c.relname::text AS table_name
-FROM pg_trigger g
-JOIN pg_class c ON c.oid = g.tgrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE g.tgname = $1 AND NOT g.tgisinternal AND n.nspname::text = $2 AND c.relname::text = ANY($3::text[])
-"""
-
-#: every table of the database carrying the change-note row trigger, with its schema
-_ALL_SWITCHED_SQL: Final[str] = """
-SELECT n.nspname::text AS table_schema, c.relname::text AS table_name
-FROM pg_trigger g
-JOIN pg_class c ON c.oid = g.tgrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE g.tgname = $1 AND NOT g.tgisinternal
-ORDER BY 1, 2
-"""
-
 #: every write-mark trigger whose function lives in the given schema, with its table
 _MARK_TRIGGERS_SQL: Final[str] = """
 SELECT n.nspname::text AS table_schema, c.relname::text AS table_name
@@ -184,15 +178,15 @@ WHERE p.proname::text = $1 AND n.nspname::text = $2
 """
 
 
-async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: Iterable[str]) -> frozenset[str]:
-    """the named tables of ``schema`` that carry the change-note row trigger: switched on by the database itself.
+async def tables_switched_by_epoch(pool: SqlConnection, schema: str, tables: Iterable[str]) -> frozenset[str]:
+    """the named tables of ``schema`` switched on by the database itself: each carrying an epoch
+    (:func:`~threetears.core.ddl.epoch_catalog.tables_carrying_epoch`, ``epoch BIGINT NOT NULL``), versioned or
+    stamped. The epoch is the switch append-only L3 keeps (chunk 7): every write stamps it, and every reader of what a
+    table changed reads it (:mod:`~threetears.core.collections.epoch_reads`). Until the ring retired the change-note
+    row trigger was the switch, and before it the write-mark trigger.
 
-    A table is switched on by its declaration (a collection class with ``write_generation``), and the migration that
-    creates it gives it its change-note triggers (:meth:`~threetears.core.data.migrations.registry.PackageMigrations
-    .mark_write_generation`). A writer that imports no class for the table -- the hub's broker, committing a tool
-    pod's write to the pod's own tables -- reads the switch here instead: the triggers are installed under the
-    database's DDL lock, so a pod cannot claim a table is switched on without it being so. A catalogue read: no DDL,
-    no lock. (Until 0.95 the write-mark trigger was the switch.)
+    A writer that imports no class for the table -- the hub's broker, committing a tool pod's write to the pod's own
+    tables -- reads the switch here. A catalogue read: no DDL, no lock.
 
     :param pool: the L3 pool, or one connection
     :ptype pool: SqlConnection
@@ -200,35 +194,35 @@ async def tables_switched_by_trigger(pool: SqlConnection, schema: str, tables: I
     :ptype schema: str
     :param tables: the table names
     :ptype tables: Iterable[str]
-    :return: those that carry the trigger
+    :return: those that carry an epoch
     :rtype: frozenset[str]
     """
     names = sorted(set(tables))
     if not names:
         return frozenset()
-    rows = await pool.fetch(_SWITCHED_SQL, NOTE_TRIGGER, schema, names)
-    return frozenset(str(row["table_name"]) for row in rows)
+    return await tables_carrying_epoch(pool, schema, names)
 
 
-async def _switched_tables(pool: SqlConnection) -> dict[str, tuple[str, ...]]:
-    """every table of the database a lost write's window may hold notes of: each one carrying the change-note row
-    trigger, but the tables written L2-first (their epoch is advanced, naming their rows, before the row reaches L3).
+async def _switched_tables(pool: SqlConnection) -> dict[str, tuple[RestoredTable, ...]]:
+    """every table of the database a lost write's window may have changed: each one carrying an epoch, versioned or
+    stamped (its restore index's declaration, :func:`~threetears.core.collections.table_restore.restored_tables`),
+    but the tables written L2-first (their epoch is advanced, naming their rows, before the row reaches L3).
 
     A catalogue read: no DDL, no lock.
 
     :param pool: the L3 pool, or one connection
     :ptype pool: SqlConnection
-    :return: table name -> the schemas holding it with the trigger
-    :rtype: dict[str, tuple[str, ...]]
+    :return: table name -> each relation of that name, in schema order
+    :rtype: dict[str, tuple[RestoredTable, ...]]
     """
-    found: dict[str, list[str]] = {}
-    for row in await pool.fetch(_ALL_SWITCHED_SQL, NOTE_TRIGGER):
-        table = str(row["table_name"])
-        # a table no class declares (a tool pod's own, switched on by its trigger alone) is never written L2-first:
-        # asked of no registry, so no undeclared lookup is reported for it (:data:`_TRIGGER_ONLY`)
+    found: dict[str, list[RestoredTable]] = {}
+    for relation in await restored_tables(pool):
+        table = relation.table
+        # a table no class declares (a tool pod's own) is never written L2-first: asked of no registry, so no
+        # undeclared lookup is reported for it (:data:`_TRIGGER_ONLY`)
         if is_undeclared_table(table) or not written_l2_first(table):
-            found.setdefault(table, []).append(str(row["table_schema"]))
-    return {table: tuple(schemas) for table, schemas in found.items()}
+            found.setdefault(table, []).append(relation)
+    return {table: tuple(relations) for table, relations in found.items()}
 
 
 @dataclass(frozen=True)
@@ -238,8 +232,9 @@ class _Advance:
     :ivar rows: the rows the notes name; ``None`` for a rowless record
     :ivar tenant: a rowless record's tenant, ``None`` for ``_all``
     :ivar keys_unknown: whether no one record names its rows
-    :ivar noted_between: a keys-unknown record's notes bracket, when the notes name its rows (too many for one record)
-    :ivar whole: a whole-table record's change, with the reach its notes named
+    :ivar noted_between: a keys-unknown record's bracket: its rows too many for one record, a follower pages them
+        from the table's versions in it (:func:`~threetears.core.collections.change_notes.noted_keys_page`)
+    :ivar whole: a whole-table record's change, with the reach its run markers named
     """
 
     rows: list[ChangedRow] | None = None
@@ -272,15 +267,20 @@ class _TableAnnounced:
 _TRIGGER_ONLY: Final = "trigger_only"
 
 
-def _tenancy_of(table: str) -> Tenancy | str:
-    """what a lost write's recovery advances ``table`` under: its declared tenancy, or :data:`_TRIGGER_ONLY` for a
-    table no class declares (asked quietly, :func:`~threetears.core.collections.undeclared_tables.is_undeclared_table`).
+def _tenancy_of(table: str, declared: Tenancy) -> Tenancy | str:
+    """what a lost write's recovery advances ``table`` under: the tenancy its restore declaration names; for one that
+    names none, its class's, or :data:`_TRIGGER_ONLY` for a table no class declares (asked quietly,
+    :func:`~threetears.core.collections.undeclared_tables.is_undeclared_table`).
 
     :param table: the table
     :ptype table: str
+    :param declared: the tenancy its restore declaration names
+    :ptype declared: Tenancy
     :return: the tenancy, or :data:`_TRIGGER_ONLY`
     :rtype: Tenancy | str
     """
+    if declared.kind != TENANCY_UNDECLARED.kind:
+        return declared
     return _TRIGGER_ONLY if is_undeclared_table(table) else tenancy_of_table(table)
 
 
@@ -321,68 +321,89 @@ def _tenants(
 async def _changes_of(
     pool: SqlConnection,
     *,
-    notes_schema: str,
+    platform_schema: str,
     table: str,
+    relations: Sequence[RestoredTable],
     since: datetime,
     until: datetime,
     tenants: tuple[str | None, ...],
 ) -> list[_Advance]:
-    """what the window's writes to ``table`` changed, from the notes they left: each advance to record.
+    """what the window's writes to ``table`` changed, from the table's own rows stamped in the window: each advance
+    to record.
 
-    Few enough rows are named, each under its own tenant; a whole-table note stamped inside the window is recorded
-    whole under its own tenant, covering that tenant's rows. More rows than one record names are recorded keys unknown
-    with the window as their notes bracket, under each tenant no whole change covers. When the notes cannot say (the
-    window is older than the ring's coverage, or no ring), the record is keys unknown with no bracket: every follower is
-    behind on the table, never told to drop it. Either is said at WARNING and counted.
+    Every committed write stamped its rows with epochs inside the window (on a writer's clock the skew already widens
+    it by), so the versions (a stamped table's rows) in the window's epoch range name every row its lost writes
+    changed, gone markers included (and maybe rows other writes changed then, which a follower reads again
+    harmlessly). Read as the restore reads them (:func:`~threetears.core.collections.epoch_reads.range_rows`): a
+    scope's or a bucket's index range a keyset page at a time, stopped as soon as more distinct rows are held than one
+    record names. Few enough rows are named, each under its own tenant; a run deleted in the window (its run marker)
+    is recorded whole under its tenant, naming its prefixes. More rows than one record names are recorded keys
+    unknown with the window as their bracket, under each tenant, which each follower pages from the table's versions
+    in it (:func:`~threetears.core.collections.change_notes.noted_keys_page`), said at WARNING and counted.
 
     :param pool: the L3 pool
     :ptype pool: SqlConnection
-    :param notes_schema: the schema holding the ring
-    :ptype notes_schema: str
+    :param platform_schema: the platform schema: an undeclared table there is ``_all``'s
+    :ptype platform_schema: str
     :param table: the table
     :ptype table: str
-    :param since: the window's start, by the database's clock
+    :param relations: its relations the window's writes ran in
+    :ptype relations: Sequence[RestoredTable]
+    :param since: the window's start
     :ptype since: datetime
     :param until: the window's end
     :ptype until: datetime
     :param tenants: the tenants a rowless record goes under
     :ptype tenants: tuple[str | None, ...]
-    :return: each advance to record; empty when the window holds no note of the table
+    :return: each advance to record; empty when the window holds no row of the table
     :rtype: list[_Advance]
     """
-    noted = await noted_rows_since(
-        pool, notes_schema=notes_schema, table=table, since=since, until=until, cap=_MAX_NOTED_ROWS
-    )
-    if noted == "no_notes":
-        return []
-    if isinstance(noted, NotedRows) and not noted.too_many_rows:
+    floor, ceiling = epoch_range((since, until))
+    # function-local: the distinct rows, keyed by tenant and key, at most one record's worth plus one
+    named: dict[tuple[str | None, tuple[str, ...]], dict[str, str | None] | None] = {}
+    too_many = False
+    whole: list[NotedChange] = []
+    for relation in relations:
+        own = tenant_of_relation(relation, platform_schema)
+        by_column = relation.tenancy.kind == "column"
+        async for rows in range_rows(pool, relation, floor, ceiling, page=_MAX_NOTED_ROWS + 1):
+            for row in rows:
+                named.setdefault((row.tenant if by_column else own, row.keys), row.columns)
+            if len(named) > _MAX_NOTED_ROWS:
+                too_many = True
+                break
+        if isinstance(relation, VersionedTable) and relation.run_markers:
+            values = [
+                scope[len(relation.scope_prefix) :]
+                for scope in await changed_scopes(pool, relation.schema, relation.epochs, floor)
+                if scope.startswith(relation.scope_prefix)
+            ]
+            whole.extend(await run_marker_changes(pool, relation, values, floor, ceiling))
+        if too_many:
+            break
+    if not too_many:
         advances: list[_Advance] = []
-        if noted.rows:
-            advances.append(_Advance(rows=list(noted.rows)))
-        advances.extend(_Advance(tenant=change.tenant, whole=change) for change in noted.whole)
+        if named:
+            advances.append(
+                _Advance(
+                    rows=[
+                        ChangedRow(ids=list(keys), columns=columns, tenant=tenant)
+                        for (tenant, keys), columns in named.items()
+                    ]
+                )
+            )
+        advances.extend(_Advance(tenant=change.tenant, whole=change) for change in whole)
         return advances
-    reason = "too_many_rows" if isinstance(noted, NotedRows) else noted
-    _KEYS_UNKNOWN.labels(table=table, reason=reason).inc()
-    whole = noted.whole if isinstance(noted, NotedRows) else ()
-    bracket = (since, until) if isinstance(noted, NotedRows) else None
+    _KEYS_UNKNOWN.labels(table=table, reason="too_many_rows").inc()
     log.warning(
-        "a lost write's window is advanced keys unknown: "
-        + (
-            "more rows than one record names, so each follower reads their keys from the change notes"
-            if bracket is not None
-            else "the change notes cannot name its rows, so every follower is behind on the table until its next start"
-        ),
-        extra={"extra_data": {"table": table, "reason": reason, "whole_changes": len(whole)}},
+        "a lost write's window is advanced keys unknown: more rows than one record names, so each follower pages "
+        "their keys from the table's versions in the window",
+        extra={"extra_data": {"table": table, "reason": "too_many_rows", "whole_changes": len(whole)}},
     )
-    # a whole-table note in the window is a write of its own whose advance may have been lost too: recorded whole
-    # beside the bracket, since a follower applying the bracket's keys never acts on a whole note in it. A plain or
-    # reset change covers its tenant's rows (every tenant's, for _all), so no bracket is recorded under a tenant it covers
-    covering = {change.tenant for change in whole if not change.prefixes}
-    unnamed = [
-        _Advance(tenant=tenant, keys_unknown=True, noted_between=bracket)
-        for tenant in tenants
-        if None not in covering and tenant not in covering
-    ]
+    # a run deleted in the window is a write of its own whose advance may have been lost too: recorded whole beside
+    # the bracket, since a follower applying the bracket's keys never acts on a run in it. A run names its prefixes,
+    # so no tenant is covered whole: the bracket goes under every tenant
+    unnamed = [_Advance(tenant=tenant, keys_unknown=True, noted_between=(since, until)) for tenant in tenants]
     return [*unnamed, *(_Advance(tenant=change.tenant, whole=change) for change in whole)]
 
 
@@ -394,16 +415,16 @@ async def _announce_table_window(
     table: str,
     since: datetime,
     until: datetime,
-    schemas: Sequence[str],
+    relations: Sequence[RestoredTable],
     schema: str | None = None,
 ) -> _TableAnnounced:
-    """advance ``table`` once for each change the window's notes name; nothing when they name none.
+    """advance ``table`` once for each change its rows stamped in the window name; nothing when there are none.
 
-    :param pool: the L3 pool holding the ring
+    :param pool: the L3 pool
     :ptype pool: SqlConnection
     :param generation_source: advances the table (the epoch bucket's writer)
     :ptype generation_source: GenerationSource
-    :param notes_schema: the schema holding the ring (the platform schema)
+    :param notes_schema: the platform schema
     :ptype notes_schema: str
     :param table: the table
     :ptype table: str
@@ -411,19 +432,33 @@ async def _announce_table_window(
     :ptype since: datetime
     :param until: the window's end, likewise
     :ptype until: datetime
-    :param schemas: the schemas holding the table with its trigger (:func:`_switched_tables`)
-    :ptype schemas: Sequence[str]
+    :param relations: the table's relations (:func:`_switched_tables`)
+    :ptype relations: Sequence[RestoredTable]
     :param schema: the one schema the window's writes ran in (a migration run's); ``None`` for any
     :ptype schema: str | None
     :return: what was recorded
     :rtype: _TableAnnounced
     :raises GenerationUnavailableError: when an advance failed; the advances before it stand
     """
-    tenants = _tenants(_tenancy_of(table), schemas, platform_schema=notes_schema, schema=schema)
+    held = [relation for relation in relations if schema is None or relation.schema == schema]
+    if not held:
+        return _TableAnnounced(table=table, tokens=(), records=())
+    tenants = _tenants(
+        _tenancy_of(table, held[0].tenancy),
+        [relation.schema for relation in relations],
+        platform_schema=notes_schema,
+        schema=schema,
+    )
     tokens: list[str | None] = []
     records: list[Mapping[str, Any]] = []
     for advance in await _changes_of(
-        pool, notes_schema=notes_schema, table=table, since=since, until=until, tenants=tenants
+        pool,
+        platform_schema=notes_schema,
+        table=table,
+        relations=held,
+        since=since,
+        until=until,
+        tenants=tenants,
     ):
         whole = advance.whole
         # the caller holds the window itself for a retry: a failed advance here is not handed to the ledger again
@@ -473,7 +508,7 @@ async def announce_window(
     until: datetime,
     why: str,
     schema: str | None = None,
-    tables: Mapping[str, tuple[str, ...]] | None = None,
+    tables: Mapping[str, tuple[RestoredTable, ...]] | None = None,
 ) -> _WindowAnnounced:
     """advance every switched table the window's change notes name, each from its own notes.
 
@@ -495,7 +530,7 @@ async def announce_window(
     :param schema: the one schema the window's writes ran in; ``None`` for any
     :ptype schema: str | None
     :param tables: the switched tables (:func:`_switched_tables`); ``None`` reads them
-    :ptype tables: Mapping[str, tuple[str, ...]] | None
+    :ptype tables: Mapping[str, tuple[RestoredTable, ...]] | None
     :return: what was done
     :rtype: _WindowAnnounced
     """
@@ -504,8 +539,8 @@ async def announce_window(
     switched = tables if tables is not None else await _switched_tables(pool)
     advanced: list[str] = []
     failed: dict[str, str] = {}
-    for table, schemas in sorted(switched.items()):
-        if schema is not None and schema not in schemas:
+    for table, relations in sorted(switched.items()):
+        if schema is not None and all(relation.schema != schema for relation in relations):
             continue
         try:
             done = await _announce_table_window(
@@ -515,7 +550,7 @@ async def announce_window(
                 table=table,
                 since=since,
                 until=until,
-                schemas=schemas,
+                relations=relations,
                 schema=schema,
             )
         # prawduct:allow prawduct/broad-except -- one table that cannot be advanced is reported and retried by the caller; the rest are announced
@@ -908,7 +943,7 @@ class WriteBackstop:
         return again
 
     def _retry_table(
-        self, table: str, schemas: tuple[str, ...], since: datetime, until: datetime, schema: str | None
+        self, table: str, relations: tuple[RestoredTable, ...], since: datetime, until: datetime, schema: str | None
     ) -> Callable[[], Any]:
         async def again() -> _TableAnnounced:
             return await _announce_table_window(
@@ -918,7 +953,7 @@ class WriteBackstop:
                 table=table,
                 since=since,
                 until=until,
-                schemas=schemas,
+                relations=relations,
                 schema=schema,
             )
 
@@ -946,7 +981,7 @@ class WriteBackstop:
         live = 0
         recovered: list[str] = []
         failed: list[str] = []
-        switched: dict[str, tuple[str, ...]] | None = None
+        switched: dict[str, tuple[RestoredTable, ...]] | None = None
         for key in await bucket.list_keys(prefix=prefix):
             entry = await bucket.get_entry(key=key)
             if entry is None:

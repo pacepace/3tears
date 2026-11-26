@@ -222,11 +222,13 @@ from threetears.core.ddl.change_notes import (
     trigger_function_sql,
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.epoch_catalog import refuse_row_triggers, versioned_among
 from threetears.core.ddl.row_epoch import epoch_wall_ms, restore_floor
 from threetears.core.keyed import (
     Fragment,
     Sort,
     delete_before,
+    keyset_page,
     keyset_rows,
 )
 from threetears.core.ddl.index_health import ddl_body, rebuild_unusable_indexes
@@ -272,6 +274,9 @@ _MARKS_SWEEP_PAGE: Final = 500
 
 #: a lost log's marks, in position order (two marks may share a position: the id breaks the tie)
 _MARKS_ORDER: Final = (Sort("seq"), Sort("id"))
+
+#: a log's marks newest first: the window's anchor is the first before its oldest record (keep_window_marks)
+_MARKS_NEWEST: Final = (Sort("seq", cast="bigint", descending=True), Sort("id", cast="uuid", descending=True))
 
 #: notes deleted per statement when the keeper empties the idle table; each batch is its own transaction
 _EMPTY_BATCH: Final = 1000
@@ -472,6 +477,11 @@ _RING_READS = counter(
     "threetears_change_notes_ring_reads_total",
     description="notes written by a statement that read the ring row (no valid cached slot), counted at each switch",
     label_names=("table",),
+)
+_MARKS_DROPPED = counter(
+    "threetears_change_log_marks_dropped_total",
+    description="keeper marks of the change log dropped because no restore of the log's window could need them "
+    "(older than the newest mark before the log's oldest record)",
 )
 _RESTORES = counter(
     "threetears_change_notes_restores_total",
@@ -1119,6 +1129,8 @@ class ChangeNoteKeeper:
         """
         async with self._pool.acquire() as conn:
             await _install_change_notes(conn, self._schema, fence=self._fence, policy=policy)
+            # at every start: no versioned (page-written) table of the database carries a per-row trigger
+            await refuse_row_triggers(conn)
 
     async def install_triggers(self, tables: Iterable[NotedTable], policy: DdlLockPolicy = _LOCK_POLICY) -> list[str]:
         """give every noted table of the keeper's own schema its note function and triggers; say which it gave.
@@ -1189,6 +1201,13 @@ class ChangeNoteKeeper:
             (str(row["table_schema"]), str(row["table_name"]), str(row["trigger_name"]))
             for row in await reader.fetch(_TRIGGERS_SQL, list(NOTE_TRIGGERS))
         }
+        # a versioned table is never given a note trigger (append-only L3, decision 4): its own versions are its record
+        versioned = {
+            (schema, table)
+            for schema in sorted({schema for schema, _ in named})
+            for table in await versioned_among(reader, schema, [table for each, table in named if each == schema])
+        }
+        named = [each for each in named if each not in versioned]
         present = [(schema, table) for schema, table in named if schema == self._schema]
         self._say_untriggered(
             [
@@ -1914,8 +1933,9 @@ class ChangeNoteKeeper:
         self._notes_full = False
         self._counted_at = None
         _SWITCHES.inc()
-        # a mark older than the table the coverage now starts with can floor no restore
-        await self.drop_marks_before(ring.switched_at - self._wait(ring))
+        # WHY no marks are dropped here any more (append-only L3 chunk 7): a restore reads the versioned and stamped
+        # tables from a mark of the lost log, and on a slow day a switch came after the mark the window's oldest record
+        # needed, so the restore lost it (chunk 5's report). Marks are kept by the window's own rule (keep_window_marks)
         log.info(
             "the change-note ring switched",
             extra={"extra_data": {"current": after.current, "switch": after.switch_no, "floor": after.floor}},
@@ -2041,6 +2061,40 @@ class ChangeNoteKeeper:
             state.last_seq,
             read_at,
         )
+        await self.keep_window_marks(state)
+
+    async def keep_window_marks(self, state: ChangeLogState) -> int:
+        """drop only the marks no restore of the log's window could need: those older than the window's anchor.
+
+        The window is every record the log holds (``first_seq`` to ``last_seq``), the same window quiet-time cleanup
+        keeps versions for (``quiet_cleanup.log_window_floor``). A mark at position P vouches for every record after P,
+        so the window needs the newest mark before its first record (the anchor) and every mark after it; a restore
+        then finds a mark at or before any floor inside the window. Every older mark, of this log or a log before it,
+        vouches only for records the log no longer holds, and goes: a page at a time through the marks' time index. With
+        no anchor yet (the log holds every record since its first mark, or a fresh log after a restore) nothing goes:
+        the lost log's marks stay until the new log's window passes them. Never by age or a TTL: a slow day keeps
+        every mark its window needs, a busy one drops marks as fast as the log trims.
+
+        :param state: the log, as this pass read it
+        :ptype state: ChangeLogState
+        :return: the marks dropped
+        :rtype: int
+        """
+        anchor = await keyset_page(
+            self._pool,
+            self._marks_table,
+            columns=("seq", "at", "id"),
+            by={"log_incarnation": state.incarnation},
+            order=_MARKS_NEWEST,
+            limit=1,
+            where=[Fragment('t."seq" < $1', (state.first_seq,))],
+        )
+        if not anchor.rows:
+            return 0
+        dropped = await self.drop_marks_before(anchor.rows[0]["at"])
+        if dropped:
+            _MARKS_DROPPED.inc(dropped)
+        return dropped
 
     async def _restore(
         self, ring: NoteRingState, folder: RestoreFolder, *, incarnation: str | None = None
@@ -2503,7 +2557,12 @@ class ChangeNoteKeeper:
         if self._keeps_log:
             # only the log's owner marks the log, in its own database: a ring beside has no marks to judge by
             result.margin_violations = await self._check_margins(incarnation, records)
+        # a versioned table writes no note (append-only L3, decision 4): its record is its own versions, judged by its
+        # s_min against the mark's floor above, never as a missing note
+        versioned = await versioned_among(self._pool, self._schema, {record.table for record in records})
         for record in records:
+            if record.table in versioned:
+                continue
             seq = int(record.token.rpartition(":")[2])
             where = (ring.current,) if fence is not None and seq > fence else (ring.current, ring.previous)
             missing = _first_unnoted(record, where, found)

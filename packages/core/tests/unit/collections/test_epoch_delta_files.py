@@ -662,7 +662,7 @@ class _RepliedConn(_Conn):
 
 def _trigger_advanced(registry: CollectionRegistry, name: str) -> Any:
     """a collection that advances no generation itself (as a tool pod's own tables declare: the broker advances them by
-    their change-note trigger alone, ``GENERATION_BY_TRIGGER``), its table opted in to delta files."""
+    their change-note trigger alone, ``GENERATION_BY_EPOCH``), its table opted in to delta files."""
     base = collection_for_schema(_schema(name, opted_in=True), entity_class=_Row)
     collection = base(registry, DefaultCoreConfig(), None)
     collection.l3_pool = ConnOnlyPool()

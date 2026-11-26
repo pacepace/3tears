@@ -6,6 +6,53 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the ring's readers read the tables' own epoch ranges; prefix marks and the checkpoint notes rule go
+
+Append-only L3 chunk 7, the readers (``design-append-only-l3.md`` decision 3). No new mechanism: each reader that read
+the change-note ring reads what a table changed in a bracket with the restore's own read, narrowed to the bracket's
+epoch range (``threetears.core.collections.epoch_reads``): a versioned table's changed scopes, each one range of its
+``(scope, epoch, key...)`` index; a stamped table's 16 ``(epoch_bucket, epoch)`` ranges; run markers by their key.
+
+**Changed:** ``lost_writes.announce_window`` (the writers' backstop) announces a dead writer's window from the rows
+stamped in it, for every table carrying an epoch (a versioned table carries no trigger, so its lost advances were never
+announced before). ``noted_keys_page`` (the hub's ``l3.noted_keys`` door, ``PoolNotedKeysReader``, ``DeltaFolds``'
+lost-file recovery) pages a bracket's keys from the same read; ``NotedKeysCursor`` is ``(slot, schema, scope, after)``,
+on the wire ``{slot, schema, scope, after}``. ``tables_switched_by_trigger`` is ``tables_switched_by_epoch`` (the epoch
+alone); ``require_generation_by_trigger``/``GENERATION_BY_TRIGGER`` are ``require_generation_by_epoch``/
+``GENERATION_BY_EPOCH`` (``"generation_by_epoch"`` on the wire). ``keyset_page`` takes ``with_gone``.
+
+**Removed:** ``delete_prefixes``' prefix write marks and no-row delete (``build_no_row_delete_sql``); the copy
+checkpoint's notes-due rule (``note_fence``, ``applied(noted=)``, ``noted_due_in``,
+``copy_checkpoint_notes_unsaved_age_seconds``); the migration run's note-trigger step.
+
+**Added (held):** ``epoch_catalog.refuse_tables_without_epoch`` refuses a switched-on table without an epoch at its
+migration run, held by ``REFUSE_TABLES_WITHOUT_EPOCH = False`` until ``work/0950-stamp-own-tables`` merges; its TODO
+test fails until then.
+
+### core: versioned tables carry no per-row trigger; marks kept for the log's window; the cutover's ring step
+
+Append-only L3 chunk 7, the parts not held for a decision (`design-append-only-l3.md`, decisions 3 and 4).
+
+**Changed:** a versioned (page-written) table is given no change-note trigger: `noted_tables()` leaves it out
+(`generation.is_versioned_class`), and the migration run's note step and the keeper's trigger install skip any table
+the catalog says is versioned (its `(scope, epoch)` index's restore declaration). The scrub judges a versioned table's
+records by their `s_min` alone, never as a missing note. `lost_writes.tables_switched_by_trigger` also answers the
+tables carrying an epoch (`epoch BIGINT NOT NULL`), so the broker advances a versioned table with no trigger.
+
+**Added (refusal):** a per-row trigger on any versioned table is refused, with how to fix
+(`threetears.core.ddl.epoch_catalog.PerRowTriggerError`): at the end of every migration run (its schema) and at the
+keeper's install (every schema). The static half is the enforcement rule `threetears.enforcement.row_triggers`
+(`tests/enforcement/test_no_row_trigger_on_versioned_tables.py`); a consumer runs it over its own tree.
+
+**Fixed:** a ring switch no longer drops the keeper's marks. On a slow day the switch dropped the mark the window's
+oldest record needed, before a restore read the tables from it. `ChangeNoteKeeper.keep_window_marks`, after each mark,
+drops only marks older than the newest mark before the log's oldest record. Never by age. Counted in
+`threetears_change_log_marks_dropped_total`.
+
+**Added:** `threetears.core.data.migrations.ring_cutover.drop_ring`, the outage-window cutover's step. It drops every
+ring trigger, note function and ring table under the DDL lock, by `DROP` only, never `TRUNCATE` or `DELETE`, and keeps
+the marks table. It is not wired until the ring retires.
+
 ### core: a copy follower keeps a versioned table one row a logical key
 
 **Added** (append-only L3, chunk 4): `FollowedTable` refuses a versioned L3 table (`TableSchema(row_epoch=row_versions(...))`)

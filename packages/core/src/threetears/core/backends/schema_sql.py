@@ -64,7 +64,6 @@ __all__ = [
     "build_key_led_delete_sql",
     "build_led_by_select_sql",
     "build_ordered_upsert_sql",
-    "build_no_row_delete_sql",
     "build_prefix_delete_sql",
     "build_select_column_list",
     "build_where_pk",
@@ -1080,20 +1079,6 @@ def build_whole_key_delete_sql(schema: TableSchema) -> str:
         f"DELETE /*+ YbBatchedNL(named doomed) */ FROM {schema.name} AS doomed "
         f"WHERE ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}) AS named)"
     )
-
-
-def build_no_row_delete_sql(schema: TableSchema) -> str:
-    """a ``DELETE`` of the table that no row passes: its statement triggers fire and no row goes. A versioned table's
-    whole run deleted is a run marker (``SqlL3Backend.delete_prefixes``), which deletes nothing of the table, so this
-    statement under the prefix marks fires its whole-write trigger: the one change note naming the prefixes today's
-    delete left (until the change-note ring retires, append-only L3 chunk 7).
-
-    :param schema: table schema
-    :ptype schema: TableSchema
-    :return: the ``DELETE``
-    :rtype: str
-    """
-    return f"DELETE FROM {schema.name} WHERE FALSE"
 
 
 def build_prefix_delete_sql(schema: TableSchema, columns: KeyColumns, *, last_as_array: bool) -> str:

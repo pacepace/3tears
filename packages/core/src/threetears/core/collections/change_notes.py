@@ -17,16 +17,10 @@ needs the ``arrow`` extra now; ``tests/enforcement/test_core_imports_without_arr
 from __future__ import annotations
 
 import json
-from bisect import bisect_right
 from collections.abc import (
-    Awaitable,
-    Callable,
-    Mapping,
     Sequence,
 )
-from contextlib import nullcontext
 from dataclasses import dataclass
-from itertools import accumulate
 from operator import itemgetter, methodcaller
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -37,8 +31,9 @@ from threetears.observe import contain, get_logger
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
     ChangedRow,
-    check_whole_reach,
 )
+from threetears.core.collections.epoch_reads import epoch_keys_page
+from threetears.core.collections.noted_change import NotedChange
 from threetears.core.collections.noted_keys import NotedKeysCursor, NotedKeysPage, NotedKeysReader
 from threetears.core.ddl.change_notes import (
     NOTE_KEY_SEPARATOR,
@@ -53,7 +48,6 @@ from threetears.core.keyed import (
     Fragment,
     Selected,
     distinct,
-    read_row,
     read_keyed,
     read_row_beside,
     read_step,
@@ -82,43 +76,6 @@ log = get_logger(__name__)
 #: switches at half of it (:mod:`threetears.core.collections.change_note_keeper`'s ``_SWITCHES_PER_BUDGET``), so on a
 #: day the switch is not held up the current and the previous table -- the coverage a restore reads -- fit it whole
 RESTORE_BUDGET_RATIO: Final = 0.75
-
-
-@dataclass(frozen=True, slots=True)
-class NotedChange:
-    """what the notes of one table say changed, folded for a restore: its distinct rows, or the whole table.
-
-    :ivar table: the table
-    :ivar rows: each distinct row its notes name, with the invalidation columns they carry
-    :ivar whole_table: a note of the whole table (a truncate, a file load) is among them; :attr:`rows`
-        is then empty, since the whole-table record covers every row
-    :ivar tenant: the tenant the rows belong to (:mod:`threetears.core.tenancy`), whose key the
-        record is restored under; ``None`` for ``_all``
-    :ivar prefixes: for a whole-table change, the key prefixes its notes named (a load's,
-        :data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`): the restored record names them, so a follower
-        reads each as a key range. Rows outside them come back as their own changes
-    :ivar reason: for a whole-table change, the reason its notes named: only an operator's reset
-        (:data:`~threetears.core.collections.epoch_change.RESET_REASON`), restored as a reset
-    :ivar bodies: for a keyed change folded in a worker process (:mod:`threetears.core.change_note_fold`), its rows'
-        records as the log stores them, each within the record bound; :attr:`rows` is then empty
-    :ivar s_min: the lowest row epoch its records name (:attr:`~threetears.core.collections.epoch_change.EpochChange.
-        s_min`): a change rebuilt from the tables' versions names the restore's floor
-        (:mod:`~threetears.core.collections.table_restore`); ``None`` for one from the change notes
-    """
-
-    table: str
-    rows: tuple[ChangedRow, ...] = ()
-    whole_table: bool = False
-    tenant: str | None = None
-    prefixes: tuple[Mapping[str, str], ...] = ()
-    reason: str | None = None
-    bodies: tuple[bytes, ...] = ()
-    s_min: int | None = None
-
-    def __post_init__(self) -> None:
-        check_whole_reach(self.prefixes or None, self.reason, whole_table=self.whole_table)
-        if self.bodies and (self.rows or self.whole_table):
-            raise ValueError("a change carrying its rows' records names no rows itself and is not whole-table")
 
 
 def _columns_of(raw: Any) -> tuple[tuple[str, str | None], ...]:
@@ -680,54 +637,49 @@ async def noted_keys_page(
     max_bytes: int,
     every_tenant: bool = False,
 ) -> NotedKeysPage | str:
-    """a page of the keys ``table``'s notes of ``tenant_token`` name in a commit's notes bracket, or why they cannot be read.
+    """a page of the keys ``table`` changed in a commit's bracket, of ``tenant_token``'s rows, or why they cannot be
+    read: the table's own versions (or stamped rows) in the bracket's epoch range
+    (:func:`~threetears.core.collections.epoch_reads.epoch_keys_page`, the restore's read narrowed to the range).
 
     For the broker's answer to a copy follower holding a keys-unknown record whose commit named too many rows
-    (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`). The commit wrote a note per row in
-    its own transaction, each stamped on its connection's clock inside the bracket, so the bracket's notes name every
-    key it changed (and perhaps keys other commits changed then, which a follower reads again harmlessly). The notes
-    are read from the ring's previous and current tables, one at a time, in ``noted_at`` order through the index, and
-    continued by the last ``noted_at`` read: no offset, no sort. A page ends at ``limit`` notes or ``max_bytes`` of
-    keys and columns, whichever first, over both tables together, at a whole ``noted_at`` (a page never splits the
-    notes of one instant, so continuing past it skips none); one instant's notes past the page's bound are read whole,
-    which only a burst at one microsecond could make large.
+    (:attr:`~threetears.core.collections.epoch_change.EpochChange.noted_between`), and for every
+    :class:`~threetears.core.collections.noted_keys.NotedKeysReader` in this process. The read and the wire are the
+    notes' until 0.95 (the request, the page, a cursor to go on from); only the cursor's place is the range's now.
 
-    :param conn: a connection to the L3 database (the broker's, on the platform schema), or a pool to take one
-        from; the page is read on that one connection, in two round trips (the ring row, then the notes) with no
-        transaction of its own: a page was four (its transaction's start and end besides), on Postgres a fifth of a
-        20,000-note commit's paged read
+    :param conn: a connection to the L3 database (the broker's, on the platform schema), or a pool
     :ptype conn: Any
-    :param notes_schema: the schema holding the ring
+    :param notes_schema: the platform schema: an undeclared table there is ``_all``'s, one in a pod's schema the pod's
     :ptype notes_schema: str
-    :param table: the table, as its notes name it
+    :param table: the table's name
     :ptype table: str
-    :param tenant_token: the tenant whose notes are read (the asker's schema's), ``None`` for ``_all``: never another's
+    :param tenant_token: the tenant whose rows are read (the asker's schema's), ``None`` for ``_all``: never another's
     :ptype tenant_token: str | None
-    :param noted_between: the commit's bracket, ``(from, until)`` on the database's clock
+    :param noted_between: the commit's bracket, ``(from, until)``
     :ptype noted_between: tuple[datetime, datetime]
     :param cursor: where the last page ended; ``None`` for the first
     :ptype cursor: NotedKeysCursor | None
-    :param limit: the most notes a page reads
+    :param limit: the most rows a page reads
     :ptype limit: int
     :param max_bytes: the most bytes of keys a page holds
     :ptype max_bytes: int
-    :param every_tenant: read every tenant's notes of the table, ``tenant_token`` unused: for an operator's check of a
+    :param every_tenant: read every tenant's rows of the table, ``tenant_token`` unused: for an operator's check of a
         table whose rows carry their tenant in their key (a backup's live check), never a tenant's own reader
     :ptype every_tenant: bool
-    :return: the page; or ``"notes_unavailable"`` (no ring) or ``"not_covered"`` (the ring no longer holds every
-        note of the bracket, or moved past the cursor's table between pages)
+    :return: the page; or ``"notes_unavailable"`` (the table carries no epoch) or ``"not_covered"`` (the cursor names
+        a relation the database no longer holds)
     :rtype: NotedKeysPage | str
     """
-    if limit < 1 or max_bytes < 1:
-        raise ValueError("a page reads at least one note and one byte")
-    owner = quote_identifier(notes_schema)
-    since, until = noted_between
-    # one connection: a pool's own, or the one given
-    held = conn.acquire() if not hasattr(conn, "transaction") else nullcontext(conn)
-    async with held as one:
-        return await _noted_keys_page(
-            one, notes_schema, owner, table, tenant_token, since, until, cursor, limit, max_bytes, every_tenant
-        )
+    return await epoch_keys_page(
+        conn,
+        table=table,
+        platform_schema=notes_schema,
+        tenant_token=tenant_token,
+        noted_between=noted_between,
+        cursor=cursor,
+        limit=limit,
+        max_bytes=max_bytes,
+        every_tenant=every_tenant,
+    )
 
 
 class PoolNotedKeysReader:
@@ -805,210 +757,3 @@ class PoolNotedKeysReader:
             # NOSILENT: this role may not read the ring: the registry is behind on the table, said here and there
             contain(exc, log=log, what="a direct pool's role may not read the change notes", extra={"table": table})
             return "notes_unavailable"
-
-
-async def _noted_keys_page(
-    conn: Any,
-    schema: str,
-    owner: str,
-    table: str,
-    tenant: str | None,
-    since: datetime,
-    until: datetime,
-    cursor: NotedKeysCursor | None,
-    limit: int,
-    max_bytes: int,
-    every: bool,
-) -> NotedKeysPage | str:
-    try:
-        # the ring row by its key, and the planner told to keep the index's order for the notes read after it
-        # (_INDEX_ORDER), the settings as they were read first, beside it (_SETTINGS_WERE): one round trip (2026-11-09:
-        # a page in two round trips, not four). Told only where the ring row is
-        ring = await read_row(
-            conn,
-            f"{schema}.{RING_TABLE}",  # the helper quotes it a segment at a time
-            by={"id": 1},
-            columns=_PAGE_RING_COLUMNS,
-            beside=_SETTINGS_WERE,
-            records=True,
-        )
-    except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
-        # NOSILENT: no ring installed here: the asker is behind on the table, said and counted there
-        return "notes_unavailable"
-    if ring is None:
-        return "notes_unavailable"
-    was = (ring["bitmapscan"], ring["seqscan"], ring["sort"])
-    # each notes read puts the settings back as it starts (_RESTORED); a read after another in the page tells the
-    # planner again first. A page that ends with them still told (no notes read since, or a failure) puts them back
-    told = [True]
-
-    async def notes(sql: str, *args: Any) -> Any:
-        if not told[0]:
-            await conn.execute(f"SELECT {_INDEX_ORDER}")
-            told[0] = True
-        found = await conn.fetch(sql, *args, *was)
-        # put back as the read started; a read that failed may not have, and is put back on the way out
-        told[0] = False
-        return found
-
-    try:
-        return await _noted_keys_read(
-            notes, owner, table, tenant, since, until, cursor, limit, max_bytes, ring, every=every
-        )
-    finally:
-        if told[0]:
-            await _put_back(conn, was)
-
-
-async def _put_back(conn: Any, was: tuple[str, str, str]) -> None:
-    """put the planner settings a page told back as they were, saying so if it cannot (the page's own error stands).
-
-    :param conn: the page's connection
-    :ptype conn: Any
-    :param was: ``enable_bitmapscan``, ``enable_seqscan``, ``enable_sort`` as they were
-    :ptype was: tuple[str, str, str]
-    :return: nothing
-    :rtype: None
-    """
-    try:
-        await conn.execute(
-            "SELECT set_config('enable_bitmapscan', $1, false), set_config('enable_seqscan', $2, false), "
-            "set_config('enable_sort', $3, false)",
-            *was,
-        )
-    # prawduct:allow prawduct/broad-except -- a page's own failure is raised by its caller; this one is contained
-    except Exception as exc:
-        contain(
-            exc,
-            log=log,
-            what="a noted keys page could not put its planner settings back on its connection",
-            level="warning",
-        )
-
-
-async def _noted_keys_read(
-    notes: Callable[..., Awaitable[Any]],
-    owner: str,
-    table: str,
-    tenant: str | None,
-    since: datetime,
-    until: datetime,
-    cursor: NotedKeysCursor | None,
-    limit: int,
-    max_bytes: int,
-    ring: Any,
-    *,
-    every: bool = False,
-) -> NotedKeysPage | str:
-    current = int(ring["current_ring"])
-    previous = (current - 1 + NOTE_RING_SIZE) % NOTE_RING_SIZE
-    # a writer's cached slot may name the table it had up to half the wait after a switch (noted_rows_since's reach)
-    reach = since - timedelta(seconds=float(ring["wait_seconds"]) / 2)
-    if int(ring["switch_no"]) != 0 and reach < ring["previous_switched_at"]:
-        return "not_covered"
-    order = (previous, current)
-    # a bracket from after the last writer could still name the previous table holds no note of it: the first page
-    # starts at the current table, one read fewer (as noted_rows_since skips it)
-    first = current if reach >= ring["writes_previous_until"] else previous
-    at = cursor or NotedKeysCursor(slot=first)
-    if at.slot not in order:
-        return "not_covered"
-    keys: list[tuple[str, ...]] = []
-    columns: list[dict[str, str | None] | None] = []
-    whole = False
-    used = 0
-    left = limit
-
-    def page(next_at: NotedKeysCursor | None) -> NotedKeysPage:
-        return NotedKeysPage(keys=tuple(keys), columns=tuple(columns), whole_table=whole, next=next_at)
-
-    def take(notes: Sequence[Any], sizes: list[int | None], held: list[Any], arrays: bool) -> None:
-        # each note by position (_noted_keys_sql's select list): noted_at, keys, columns, bytes (NULL: whole table).
-        # Passes of C (map, itemgetter), never a Python step a note: at 20,000 notes those were the larger part of
-        # the read. A whole-table note or one with columns (few) takes the slower way
-        nonlocal whole
-        if None in sizes:
-            whole = True
-            notes = [note for note, size in zip(notes, sizes, strict=True) if size is not None]
-            held = [each for each, size in zip(held, sizes, strict=True) if size is not None]
-        given = list(map(_KEYS_AT, notes)) if arrays else []
-        if given.count(None) == len(given):
-            # every note's key text splits back into its keys (the separators read checked it, _split_whole)
-            keys.extend(map(tuple, map(_SPLIT_KEYS, map(_KEY_TEXT_AT, notes))))
-        else:
-            # a key value holding the separator (rare): that note's keys as their array
-            keys.extend(
-                tuple(_SPLIT_KEYS(note[4]) if array is None else array)
-                for note, array in zip(notes, given, strict=True)
-            )
-        if held.count(None) == len(held):
-            columns.extend(held)
-        else:
-            columns.extend([None if each is None else dict(_columns_of(each)) or None for each in held])
-
-    for slot in order[order.index(at.slot) :]:
-        # where this table's read starts: the cursor's time in its own table, else the bracket's start
-        start = at.after if slot == at.slot else None
-        # the time read up to, or a microsecond (the clock's grain) before the bracket: one range for the index
-        after = start if start is not None else since - _CLOCK_GRAIN
-        sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None, every_tenant=every)
-        arrays_sql = _noted_keys_sql(owner, slot, all_tenants=tenant is None, every_tenant=every, arrays=True)
-
-        async def read(*args: Any) -> tuple[Any, bool]:
-            # the notes with their separators; again with their keys' arrays only when a key text does not split
-            # back into its keys (_SEPARATORS), or a whole-table note is among them
-            found = await notes(sql, table, tenant, *args)
-            if _split_whole(found):
-                return found, False
-            return await notes(arrays_sql, table, tenant, *args), True
-
-        found, arrays = await read(after, until, left + 1)
-        if not found:
-            continue
-        full = len(found) > left
-        taken: Sequence[Any] = found[:left] if full else found
-        if full:
-            last = taken[-1][0]
-            if taken[0][0] == last:
-                # the notes are in noted_at order, so the first and the last at one time means every one is
-                if left < limit:
-                    # the page already holds the earlier table's notes: this table's first instant starts the next
-                    return page(NotedKeysCursor(slot=slot, after=start))
-                # one instant's notes fill the page: read that instant whole, so continuing past it skips none
-                taken, arrays = await read(_noted_time(last) - _CLOCK_GRAIN, _noted_time(last), None)
-            else:
-                # end at a whole instant: the last instant's notes go to the next page
-                end = len(taken) - 1
-                while taken[end - 1][0] == last:
-                    end -= 1
-                taken = taken[:end]
-        # past the page's bytes, the page ends before the first keyed note that starts an instant, once it holds a
-        # key: the running count says where it passes the bound, and only the notes from there are looked at
-        sizes: list[int | None] = list(map(_BYTES_AT, taken))
-        held: list[Any] = list(map(_COLUMNS_AT, taken))
-        if None in sizes or held.count(None) != len(held):
-            counts = [
-                0 if size is None else size if each is None else size + _key_bytes((), _columns_of(each))
-                for size, each in zip(sizes, held, strict=True)
-            ]
-        else:
-            counts = sizes  # type: ignore[assignment]  # no whole note: every size is an int
-        counted = list(accumulate(counts, initial=used))
-        # counted[i + 1] is the count with note i: the first note past the bound (the first, if the page already is)
-        index = max(bisect_right(counted, max_bytes) - 1, 0)
-        first_keyed = next((at_index for at_index, size in enumerate(sizes) if size is not None), len(sizes))
-        while index < len(taken):
-            note = taken[index]
-            if note[3] is not None and (index == 0 or taken[index - 1][0] < note[0]) and (keys or first_keyed < index):
-                take(taken[:index], sizes[:index], held[:index], arrays)
-                return page(NotedKeysCursor(slot=slot, after=_noted_time(taken[index - 1][0]) if index else start))
-            index += 1
-        take(taken, sizes, held, arrays)
-        used = counted[-1]
-        if full:
-            return page(NotedKeysCursor(slot=slot, after=_noted_time(taken[-1][0])))
-        left -= len(taken)
-        if left < 1:
-            # the page is full at this table's last note; the next page reads on from it
-            return page(NotedKeysCursor(slot=slot, after=_noted_time(taken[-1][0])))
-    return page(None)

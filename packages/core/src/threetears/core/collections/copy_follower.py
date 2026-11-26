@@ -213,7 +213,7 @@ from threetears.core.collections.schema_backed import (
     rail_text,
     sql_cast,
 )
-from threetears.core.backends.broker_generation import GENERATION_BY_TRIGGER
+from threetears.core.backends.broker_generation import GENERATION_BY_EPOCH
 from threetears.core.declared import whole_read
 from threetears.core.keyed import KeyBatch, WholeReads, read_keyed_arrow
 from threetears.core.keyset import keyset_arrow_pages
@@ -247,7 +247,7 @@ __all__ = [
     "FollowerStages",
     "PreparesStaged",
     "is_reload_stage",
-    "require_generation_by_trigger",
+    "require_generation_by_epoch",
     "typed_text",
 ]
 
@@ -517,16 +517,17 @@ class HubCapabilityMissingError(RuntimeError):
         self.capability = capability
         super().__init__(
             f"the hub does not announce {capability!r}: it advances no generation for a pod's own tables switched on "
-            f"by their trigger, so a copy following them would never hear a change. Deploy the hub that announces it "
+            f"by their epoch, so a copy following them would never hear a change. Deploy the hub that announces it "
             f"before this pod; the pod stays not ready until then"
         )
 
 
-async def require_generation_by_trigger(l3: Any) -> None:
-    """refuse, before a copy follower serves, a hub whose broker does not advance trigger-switched tables.
+async def require_generation_by_epoch(l3: Any) -> None:
+    """refuse, before a copy follower serves, a hub whose broker does not advance the tables switched on by their
+    epoch (a pod's own tables, which no class the hub imports declares).
 
     An L3 reached through the hub's broker (anything with ``hub_capabilities``) must announce
-    :data:`~threetears.core.backends.broker_generation.GENERATION_BY_TRIGGER`. An L3 reached directly (a SQL pool, a
+    :data:`~threetears.core.backends.broker_generation.GENERATION_BY_EPOCH`. An L3 reached directly (a SQL pool, a
     test's) has no broker between: its writers advance their own generations, and nothing is asked.
 
     :param l3: the pod's L3
@@ -538,8 +539,8 @@ async def require_generation_by_trigger(l3: Any) -> None:
     probe = getattr(l3, "hub_capabilities", None)
     if probe is None:
         return
-    if GENERATION_BY_TRIGGER not in await probe():
-        raise HubCapabilityMissingError(GENERATION_BY_TRIGGER)
+    if GENERATION_BY_EPOCH not in await probe():
+        raise HubCapabilityMissingError(GENERATION_BY_EPOCH)
 
 
 #: the column of a batch of keys heard naming the epoch each key was heard at (null: heard with none)
@@ -2135,12 +2136,6 @@ class CopyFollower:
         #: falls behind on is resolved from the change notes since then (:meth:`CollectionRegistry
         #: .resolve_behind_from_notes`), never by a warm
         self._current_at: Mapping[str, datetime] = frozen()
-        #: each table whose keys the registry named from the change notes (an epoch recorded keys unknown, or a
-        #: resolve of being behind), onto where the oldest such notes bracket begins: handed to the checkpoint once an
-        #: apply holds the table current past it, so a checkpoint past that epoch is due before the notes can go
-        self._noted: Mapping[str, datetime] = frozen()
-        #: asks for a checkpoint when an epoch applied from the notes makes one due with no change to apply then
-        self._checkpoint_wake: asyncio.TimerHandle | None = None
         #: each opted-in table reset or recreated while the follower runs, onto the full it waits for: it is reloaded
         #: from the volume alone, never read from L3 (:meth:`_wait_for_reload`); every other table is followed meanwhile.
         #: What is heard of it meanwhile stays in its batches, taken by no pass (:meth:`_take`), and is judged against
@@ -4084,11 +4079,6 @@ class CopyFollower:
                     resolved = await self._registry.resolve_behind_from_notes(name, self._current_at[name], token)
                     await self._drained()
                     reason = resolved if resolved is not None else self._registry.behind_reason(name)
-                noted = self._registry.take_notes_resolved(name)
-                # a table loaded from the volume never makes a checkpoint due from the notes: no checkpoint holds it
-                # (refused at construction), and a start loads it from the volume's full and never needs its notes
-                if noted is not None and (self._fulls is None or name not in self._fulls.tables):
-                    self._noted = with_entry(self._noted, name, min(self._noted.get(name, noted), noted))
                 if reason is not None:
                     # the registry's reason (BEHIND_REASONS): the status and collection_epoch_behind_total say the same
                     behind[name] = reason
@@ -4266,7 +4256,7 @@ class CopyFollower:
                 listener(label)
             # the copy is labelled and the pass's state let go: the wait for the keys made distinct holds nothing
             touched_keys = await touching if touching is not None else {}
-            self._checkpoint_when_due(rows, touched, touched_keys, whole_whys, self._noted_held(current))
+            self._checkpoint_when_due(rows, touched, touched_keys, whole_whys)
             # what arrived during the apply, judged now (a reset sends its table waiting for its full)
             await self._drained()
             return True
@@ -4395,22 +4385,8 @@ class CopyFollower:
         )
         for listener in tuple(self._listeners):
             listener(label)
-        self._checkpoint_when_due(0, {}, {}, {}, self._noted_held(self._tables))
+        self._checkpoint_when_due(0, {}, {}, {})
         return True
-
-    def _noted_held(self, current: Iterable[str]) -> datetime | None:
-        """take the notes times of the tables the copy now holds current: their marks, which a checkpoint records, are
-        past every epoch named from the notes so far. A table left pending keeps its own until it is current.
-
-        :param current: the tables whose marks this change moved
-        :ptype current: Iterable[str]
-        :return: where the oldest of their notes brackets begins; None when none was named from the notes
-        :rtype: datetime | None
-        """
-        names = tuple(name for name in current if name in self._noted)
-        held = [self._noted[name] for name in names]
-        self._noted = without_entries(self._noted, names)
-        return min(held) if held else None
 
     def _checkpoint_when_due(
         self,
@@ -4418,7 +4394,6 @@ class CopyFollower:
         touched: Mapping[str, frozenset[str] | None],
         keys: Mapping[str, Any],
         whys: Mapping[str, str],
-        noted: datetime | None = None,
     ) -> None:
         """count a change's rows toward the next checkpoint, and write one beside the follower when it is due.
 
@@ -4431,21 +4406,16 @@ class CopyFollower:
         :param whys: each table read whole, onto why (``cold_start``, ``reset``, ``schema_change``,
             ``legacy_whole_record``)
         :ptype whys: Mapping[str, str]
-        :param noted: where the oldest notes bracket begins of the epochs this change holds that were named from the
-            change notes; None when none was
-        :ptype noted: datetime | None
         :return: nothing
         :rtype: None
         """
         if self._checkpoints is None:
             return
-        self._checkpoints.applied(rows, touched, keys, whys, noted=noted)
+        self._checkpoints.applied(rows, touched, keys, whys)
         self._checkpoint_if_due()
 
     def _checkpoint_if_due(self) -> None:
-        """write a checkpoint beside the follower when one is due and none is being written; otherwise, when an epoch
-        applied from the change notes will make one due, ask again then: after a large commit nothing else may be
-        applied before its notes can no longer be read (:meth:`CopyCheckpoints.noted_due_in`).
+        """write a checkpoint beside the follower when one is due and none is being written.
 
         :return: nothing
         :rtype: None
@@ -4453,16 +4423,9 @@ class CopyFollower:
         assert self._checkpoints is not None  # noqa: S101 -- narrowed by the callers
         if self._checkpointing is not None and not self._checkpointing.done():
             return  # the write's end asks again
-        if self._checkpoint_wake is not None:
-            self._checkpoint_wake.cancel()
-            self._checkpoint_wake = None
         if self._checkpoints.due():
             self._checkpointing = asyncio.create_task(self._write_checkpoint())
             self._checkpointing.add_done_callback(self._checkpoint_done)
-            return
-        wait = self._checkpoints.noted_due_in()
-        if wait is not None:
-            self._checkpoint_wake = asyncio.get_running_loop().call_later(wait, self._checkpoint_if_due)
 
     def _checkpoint_done(self, task: asyncio.Task[Any]) -> None:
         """let go of a checkpoint's write once it is done.
@@ -4504,8 +4467,7 @@ class CopyFollower:
             )
             return
         if written is not None:
-            # a change applied while it was written stays counted: asked again once this write is done, so an epoch
-            # applied from the notes meanwhile is not left waiting for a change that may not come
+            # a change applied while it was written stays counted: asked again once this write is done
             asyncio.get_running_loop().call_soon(self._checkpoint_if_due)
 
     async def checkpointed(self) -> None:
@@ -6619,9 +6581,6 @@ class CopyFollower:
             # a stop outside :meth:`run` leaves the beat to the recovery, which removes it once stale
             self._beating.cancel()
             self._beating = None
-        if self._checkpoint_wake is not None:
-            self._checkpoint_wake.cancel()
-            self._checkpoint_wake = None
         for task in self._reloads.values():
             task.cancel()
         self._reloads = frozen()
