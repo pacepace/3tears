@@ -72,6 +72,7 @@ from threetears.interfaces.keyed.keys import (
     VersionedTable,
 )
 from threetears.interfaces.keyed.rows import DeclaredScope, KeyColumn, KeyColumns
+from threetears.interfaces.keyed.filters import Fragment
 from threetears.core.backends.arrow_copy import (
     arrow_python_columns,
     arrow_python_rows,
@@ -144,6 +145,7 @@ from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUM
 from threetears.core.declared import whole_read
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.ddl.row_epoch import (
+    AppendOnlyWriteError,
     BUCKET_COLUMN,
     EPOCH_COLUMN,
     GONE_COLUMN,
@@ -175,6 +177,7 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; rail_arrow_type
 
 __all__ = [
     "register_sa_table_indexes",
+    "stamped_values",
     "rail_text",
     "sql_cast",
     "BIGINT_TYPE",
@@ -388,6 +391,38 @@ _BUCKET_HASH_KINDS: Final[Mapping[str, str]] = {
     BYTES_TYPE: "bytea",
     JSONB_TYPE: "jsonb",
 }
+
+
+def stamped_values(schema: TableSchema, values: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any]:
+    """``values`` for a keyed ``UPDATE`` of ``schema``'s table (``threetears.core.keyed.update_keyed``), stamped: a
+    stamped table's (``ROW_STAMPED``) epoch set to ``GREATEST(epoch + 1, <a fresh stamp>)``, as its upsert sets it
+    (``rising_epoch_assignment``), so the row a restore reads by its ``(bucket, epoch)`` index is never one an update
+    left at its older stamp. The stamp is drawn from the caller's transaction when ``conn`` is in one
+    (``CallerTransaction.in_place_epoch``, counted in its ``s_min``), else from the process clock (one statement, its
+    own commit). Unchanged for a table that declares no row epoch.
+
+    WHY a helper, not the keyed layer: ``update_keyed`` knows a table by its name alone, and only the schema says it is
+    stamped; an update that left the epoch alone would succeed and be invisible to a restore.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param values: column -> its new value, as ``update_keyed`` takes them
+    :ptype values: Mapping[str, Any]
+    :param conn: the connection the update runs on, or None for the pool
+    :ptype conn: Any
+    :return: the values, the epoch's term added for a stamped table
+    :rtype: dict[str, Any]
+    :raises AppendOnlyWriteError: when the table is versioned (append-only: never updated in place)
+    """
+    declared = schema.row_epoch
+    if declared is None:
+        return dict(values)
+    if declared.versions:
+        raise AppendOnlyWriteError(f"stamped_values: {schema.name} is versioned (append-only), never updated in place")
+    transaction = None if conn is None else CallerTransaction.enclosing(conn)
+    stamp = next_epoch() if transaction is None else transaction.in_place_epoch()
+    quoted = quote_identifier(EPOCH_COLUMN)
+    return {**values, EPOCH_COLUMN: Fragment(f"GREATEST({quoted} + 1, $1::bigint)", (stamp,))}
 
 
 def sql_cast(column_type: str) -> str:
@@ -3172,26 +3207,51 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         any other table. A stamped table's rows are stamped live too (its ``gone`` flag false): a write of a key a
         delete marked gone brings it back, its upsert's ``SET`` naming the flag (``TableSchema._declare_stamped_gone``).
 
+        **A stamped table** (``ROW_STAMPED``) is stamped whether or not its write took a turn: on the caller's
+        transaction from it (:meth:`CallerTransaction.in_place_epoch`, so its ``s_min`` and age refusal count the
+        stamp), and a write that joins none (one statement, its own commit) from the process clock. WHY no turn: its
+        epoch rises on every write (``GREATEST``), so newest-wins needs no fence (``in_place_epoch``: WHY); the hub's
+        own update-in-place tables are written outside any seqlock writer, and every one of their writes is stamped.
+
         :param conn: the connection the write joins, or None
         :ptype conn: Any
         :param writer: the call writing, for the refusal
         :ptype writer: str
         :return: ``{"epoch": ...}`` (and ``{"gone": False}`` for a stamped table), or nothing
         :rtype: dict[str, int]
-        :raises UnstampedWriteError: when the table declares a row epoch and the write joins no transaction that took
-            its write's turn
+        :raises UnstampedWriteError: when the table is versioned and the write joins no transaction that took its
+            write's turn
         """
         if not self.schema.stamps_epoch:
             return {}
         transaction = None if conn is None else CallerTransaction.enclosing(conn)
+        if not self.schema.versioned:
+            # stamped: in place, its epoch risen on every write, so no write's turn is needed (in_place_epoch: WHY);
+            # its row stamped live, so a write of a key a delete marked gone brings it back
+            return {
+                EPOCH_COLUMN: next_epoch() if transaction is None else transaction.in_place_epoch(),
+                GONE_COLUMN: False,
+            }
         if transaction is None:
             raise UnstampedWriteError(
                 f"{type(self).__name__}.{writer}: {self.table_name} declares a row epoch, so every write carries its "
                 f"write's epoch, and this one joins no transaction to take it from: write it on a CallerTransaction "
                 f"that took its write's turn (ScopeEpochs.touch)"
             )
-        stamp = {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
-        return stamp if self.schema.versioned else {**stamp, GONE_COLUMN: False}
+        return {EPOCH_COLUMN: transaction.row_epoch(self.table_name)}
+
+    def stamped_values(self, values: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any]:
+        """``values`` for a keyed ``UPDATE`` of this table, stamped (:func:`stamped_values`).
+
+        :param values: column -> its new value, as ``update_keyed`` takes them
+        :ptype values: Mapping[str, Any]
+        :param conn: the connection the update runs on, or None for the pool
+        :ptype conn: Any
+        :return: the values, the epoch's term added for a stamped table
+        :rtype: dict[str, Any]
+        :raises AppendOnlyWriteError: when the table is versioned (append-only: never updated in place)
+        """
+        return stamped_values(self.schema, values, conn=conn)
 
     def _record_one(self, data: dict[str, Any], conn: Any, writer: str, *, fenced: bool = False) -> None:
         """record one row a store write sends, and the columns its statement sets in a row already held

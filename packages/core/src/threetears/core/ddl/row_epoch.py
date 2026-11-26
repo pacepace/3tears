@@ -391,16 +391,19 @@ _KEY_HASHES: Final[dict[str, str]] = {
 
 def bucket_epoch_index_name(table: str) -> str:
     """the name of a stamped table's ``(bucket, epoch)`` index: ``<table>_bucket_epoch``, a digest past 63 characters.
+    A table named with its schema (``platform_audit.audit_events``, the hub's audit table) names its index by the bare
+    table: an index lives in its table's schema, and its name is one plain identifier.
 
-    :param table: the table
+    :param table: the table, bare or schema-qualified
     :ptype table: str
     :return: the name
     :rtype: str
     """
-    name = f"{table}_bucket_epoch"
+    bare = table.rpartition(".")[2]
+    name = f"{bare}_bucket_epoch"
     if len(name) <= 63:
         return name
-    return f"bucket_epoch_{hashlib.sha256(table.encode()).hexdigest()[:24]}"
+    return f"bucket_epoch_{hashlib.sha256(bare.encode()).hexdigest()[:24]}"
 
 
 def key_hash_sql(column: str, kind: str) -> str:

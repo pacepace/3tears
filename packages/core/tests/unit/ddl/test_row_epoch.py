@@ -33,6 +33,8 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.row_epoch import (
+    AppendOnlyWriteError,
+    bucket_epoch_index_name,
     EPOCH_COLUMN,
     ROW_STAMPED,
     RowEpoch,
@@ -268,6 +270,54 @@ async def test_a_collection_write_on_no_transaction_or_one_that_took_no_turn_is_
         await collection.save_to_store(row)
 
 
+async def test_a_stamped_tables_write_on_no_transaction_is_stamped_from_the_clock_and_rises() -> None:
+    # the hub's own update-in-place tables are written by no seqlock writer: a stamped write takes no turn
+    collection = _collection(_stamped())
+    sent: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(sql: str, *params: Any) -> str:
+        sent.append((sql, params))
+        return "INSERT 0 1"
+
+    collection.l3_pool.execute = execute
+    before = next_epoch()
+    await collection.save_to_store({"run_id": "r1", "state": "done"})
+    [(sql, params)] = sent
+    assert "GREATEST(runs.epoch + 1, EXCLUDED.epoch)" in " ".join(sql.split())
+    # the epoch is the one int sent; the gone flag (a bool, which Python counts an int) stamps the row live
+    [stamp] = [value for value in params if isinstance(value, int) and not isinstance(value, bool)]
+    assert stamp > before
+    assert False in params, "the stamped write does not stamp its row live (gone = false)"
+
+
+async def test_a_stamped_tables_write_on_a_transaction_that_took_no_turn_counts_in_its_s_min() -> None:
+    collection = _collection(_stamped())
+    conn = MagicMock()
+    highest: list[int] = []
+
+    async def before_commit(_conn: Any, s_max: int) -> None:
+        highest.append(s_max)
+
+    async with CallerTransaction(conn) as transaction:
+        transaction.before_commit(before_commit)
+        [stamp] = collection.stamped_values({"state": "done"}, conn=conn)[EPOCH_COLUMN].params
+    # the transaction counted the stamp: its commit's steps ran, with it as the highest
+    assert highest == [stamp]
+
+
+def test_a_keyed_update_of_a_stamped_table_rises_its_epoch_and_a_versioned_one_is_refused() -> None:
+    stamped = _collection(_stamped())
+    before = next_epoch()
+    values = stamped.stamped_values({"state": "done"})
+    assert values["state"] == "done"
+    term = values[EPOCH_COLUMN]
+    assert term.sql == 'GREATEST("epoch" + 1, $1::bigint)'
+    [stamp] = term.params
+    assert stamp > before
+    with pytest.raises(AppendOnlyWriteError, match="never updated in place"):
+        _collection(_versioned()).stamped_values({"votes": 1})
+
+
 async def test_every_store_write_of_a_row_with_no_epoch_is_refused_before_anything_is_sent() -> None:
     pool = MagicMock()
     store = SqlL3Backend(pool)
@@ -317,3 +367,10 @@ def test_a_versioned_tables_cache_holds_one_row_a_key() -> None:
     table = _versioned().to_sqlalchemy_table(MetaData())
     assert [column.name for column in table.primary_key.columns] == ["office_key", "candidate"]
     assert EPOCH_COLUMN in table.columns
+
+
+def test_a_schema_qualified_stamped_tables_restore_index_is_named_by_the_bare_table() -> None:
+    # the hub's audit table is declared platform_audit.audit_events; an index name is one plain identifier
+    schema = _stamped("platform_audit.audit_events")
+    assert bucket_epoch_index_name(schema.name) == "audit_events_bucket_epoch"
+    assert "audit_events_bucket_epoch" in {index.name for index in schema.indexes}

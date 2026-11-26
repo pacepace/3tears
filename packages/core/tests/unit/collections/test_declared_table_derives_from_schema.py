@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+import dataclasses
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -40,6 +41,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import ROW_STAMPED, AppendOnlyWriteError, next_epoch, row_versions
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.tier_parity import tier_parity_findings
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
@@ -267,3 +269,52 @@ class TestACopyThatDisagreesIsRefused:
             class _GeneratedInstants(SchemaBackedCollection[_Row]):
                 schema = _SCHEMA
                 datetime_columns: ClassVar[frozenset[str]] = frozenset({"seen_at"})
+
+
+_STAMPED_SCHEMA = dataclasses.replace(_SCHEMA, name="stamped_rows", row_epoch=ROW_STAMPED)
+
+
+class _Stamped(_Every):
+    """the same table declared ROW_STAMPED: one row a key, updated in place, its epoch rising on every write."""
+
+    schema = _STAMPED_SCHEMA
+
+
+class TestAStampedTablesOwnStatementsStampItsRows:
+    """a collection whose statements are its own stamps a stamped table's rows as the schema-backed writes do."""
+
+    async def test_an_upsert_and_an_update_carry_a_fresh_stamp_that_never_goes_back(self) -> None:
+        config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        collection = _Stamped(registry=CollectionRegistry(), config=config, nats_client=NO_L2)
+        sent: list[tuple[str, tuple[Any, ...]]] = []
+
+        class _Pool:
+            async def execute(self, sql: str, *params: Any) -> str:
+                sent.append((sql, params))
+                return "INSERT 0 1"
+
+        collection.l3_pool = cast(Any, _Pool())
+        before = next_epoch()
+        await collection.write_row(_row())
+        partial = {"id": uuid.uuid4(), "code": "b"}
+        await collection.write_row(partial)
+        (upsert, upsert_params), (update, update_params) = sent
+        assert "epoch = GREATEST(stamped_rows.epoch + 1, EXCLUDED.epoch)" in upsert
+        assert "epoch = GREATEST(epoch + 1, $" in update
+        for params in (upsert_params, update_params):
+            [stamp] = [value for value in params if isinstance(value, int) and value > before]
+            assert stamp > before
+
+    async def test_a_versioned_tables_upsert_is_refused(self) -> None:
+        class _Versioned(_Every):
+            schema = dataclasses.replace(
+                _SCHEMA,
+                name="versioned_rows",
+                row_epoch=row_versions("code"),
+            )
+
+        config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        collection = _Versioned(registry=CollectionRegistry(), config=config, nats_client=NO_L2)
+        collection.l3_pool = cast(Any, object())
+        with pytest.raises(AppendOnlyWriteError, match="versioned"):
+            await collection.write_row(_row())
