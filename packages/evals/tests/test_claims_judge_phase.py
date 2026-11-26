@@ -573,9 +573,11 @@ async def test_a_criterion_never_spends_past_the_ceiling_it_was_admitted_at() ->
 def test_a_criterion_is_priced_per_step_each_with_its_own_repair_budget() -> None:
     judge = _FakeClaimsJudge(usd_per_call=1.0)
     # Two batches (one unit, and the segment outside any unit), three attempts each, and four repairs per step:
-    # the extraction 3 + 4, the truth step 2 x 3 + 4, the ground step 2 x 3 + 4.
-    assert criterion_ceiling(_criterion(), _EVIDENCE, key=_KEY, client=judge) == 7 + 10 + 10
-    assert criterion_ceiling(_criterion(grounded_in=None), _EVIDENCE, key=_KEY, client=judge) == 7 + 10
+    # the extraction 3 + 4, the truth step 2 x 3 + 4 and, since the key states a fact, its one re-ask of three
+    # attempts, the ground step 2 x 3 + 4.
+    assert criterion_ceiling(_criterion(), _EVIDENCE, key=_KEY, client=judge) == 7 + 13 + 10
+    assert criterion_ceiling(_criterion(grounded_in=None), _EVIDENCE, key=_KEY, client=judge) == 7 + 13
+    assert criterion_ceiling(_criterion(grounded_in=None), _EVIDENCE, key=None, client=judge) == 7 + 10
     assert criterion_ceiling(_criterion(), _EVIDENCE, key=_KEY, client=_FakeClaimsJudge()) is None
 
 

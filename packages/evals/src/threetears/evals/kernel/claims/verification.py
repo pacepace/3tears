@@ -25,14 +25,19 @@ take the case's share: truth reads the same case passages whatever an arm fetche
 passage (never elsewhere in its document), or a key fact's line as shown after its ref (``A key fact about <entity>:
 <fact>``, so the entity it names can stand as the subject of a fact that does not name it). Inside that quote it names
 the words that name the claim's subject and the words that state the value. Both are found inside the stored quote,
-and no sentence end (``.``, ``!`` or ``?`` before a space or the end) or line break may lie between them. That
+and no sentence end (``.``, ``!`` or ``?``, with any closing quotes or brackets after it, before a space or the end)
+or line break may lie between them, so 'Ann Lee said, "I stay in Leeds." Her brother moved to York.' parts Ann Lee from
+York. That
 narrows the neighbouring-value error, a value taken from the sentence or row next to the one about this subject, to
 one sentence or row. A full stop after an abbreviation ends no sentence: after initials or a dotted acronym ("J. R.
 R. Tolkien", "the U.S. capital"), or after a capitalised token of at most three letters followed by a capitalised word
 or a digit ("Dr. John", "St. Louis", "Vol. 2", "No. 5"). A "!" or "?" followed by spaces and then "(" or a
 lower-case letter ends none either: it stands inside a title or a phrase ("Revolting Cocks were a Wax Trax! (Chicago)
-act.", "on Wax Trax! in the early 1980s"), while before a capitalised word, a digit or a line break it still does ("He
-left! Then ...", "He left? No."). Each break costs a repair round, so the rule takes the
+act.", "on Wax Trax! in the early 1980s"), as does a "?" before a lower-case letter. Before a capitalised word, a
+digit or a line break each still does ("He left! Then ...", "He left? No."), and so does a "?" before a bracket ("Did
+Ann Lee stay? (Her brother moved to York.)"). The cost, taken so that a title ending in "!" keeps its bracketed
+gloss: an exclamation before a bracketed sentence reads as one sentence with it ("Wow! (Her brother moved to York.)"),
+and an exclamation or question before a lower-case word ("Stop! he said") reads as one, as it is spoken. Each break costs a repair round, so the rule takes the
 cheaper error: a real sentence that ends in one of those shapes before a capitalised word or a digit ("printed in
 May. The bound volume followed in 1932", "in the U.S. The ...") is read as one sentence, and its binding is left to
 the model, as within any sentence. The rule is English-shaped: case is read in any cased script, but the shapes are
@@ -79,30 +84,35 @@ repair budget: its rounds, and the most items one cell may ask again, which each
 claims are asked again. Still failing, or past the budget, fails (``repair_budget_spent``); a reply cut short fails at
 once (``cut_short``).
 
-**A doubted claim is asked again, shown the key facts that name its subject.** The truth batch is shown every key
-fact, but no check can make a model cite one, so a world claim it answers with no citation and marks suspect, though a
-key fact contradicts it, would read ``unverifiable`` wherever the web is off, past the cell's web budget or
-inconclusive. So once the truth step's repairs pass, each such claim is asked again alone, as a truth repair is (a
-``repair`` call), shown only the key facts that name its subject, under their own refs, and told that they do. Code
-decides which those are, never the model: a key fact names the claim's subject when its entity's name, or one of the
-entity's aliases, stands in the claim's proposition as whole words in order, under the verbatim fold. So "Ann Lee"
-stands in "Ann Lee lives in York" and in "Ann Lee's home is York", and neither "Annabel Lee", "Lee Ann" nor "Ann Lee's
-brother" stands in "Ann Lee moved to York". The answer takes every check a truth answer takes. One that cites a key
-fact replaces the batch's: a cited contradiction reads ``contradicted`` and a cited support ``supported``, graded
-against the case, so the web never checks it. One that cites nothing leaves the batch's answer standing, and the claim
-goes on to the web as before. A failing answer is repaired within the rounds, shown the same facts; a restatement takes
-its original's re-ask as it takes its answer. Each re-ask is one of the truth step's ``max_items_per_cell``, counted
-with that step's repairs and its own: the truth step asks at most that many items again in all, re-asks included, and
-the price ceiling, which prices that many truth repairs at the whole evidence, bounds them. A re-ask the budget cannot
-hold, a reply cut short, one unreadable past its repairs, a provider's failure or a protocol defect fails as any truth
-call does, and never leaves the claim ``unverifiable``. Its limits: the match reads names, not reference. A claim that
-names the entity inside a phrase about someone else ("Ann Lee's brother moved to York") is shown Ann Lee's facts; a
-short name or alias inside a longer one ("Lee" for Ann Lee, an entity named "Ann") matches every claim naming the
-longer; and a claim that names its subject only by a pronoun or a description the key lists as no alias is asked
-nothing again. Nor does code hold the relation: a key fact about another attribute of the same subject ("Ann Lee was
-born in Leeds", against "Ann Lee lives in York"), cited as a contradiction that passes every check, reads
-``contradicted``. The re-ask is told that another attribute bears on nothing, and that binding stays the model's, as in
-the truth batch.
+**A doubted claim is asked again, with the key facts about what it names.** The truth batch is shown every key fact,
+but no check can make a model cite one, so a world claim it answers with no citation and marks suspect, though a key
+fact contradicts it, would read ``unverifiable`` wherever the web is off, past the cell's web budget or inconclusive.
+So once the truth step's repairs pass, every such claim that names a key entity is asked again, all of them in one
+call per cell (the re-ask), each listed with the refs of its own entities' facts. Code decides which those are, never
+the model: a claim names a key entity when the entity's name, or one of its aliases, stands in the claim's proposition
+or a restatement's as whole words in order, under the verbatim fold. So "Ann Lee" stands in "Ann Lee lives in York"
+and in "Ann Lee's home is York", and neither the entity "Annabel Lee", "Lee Ann" nor "Ann Lee's brother" stands in
+"Ann Lee moved to York". The re-ask has its own prompt, which asks whether any of a claim's facts states it true or
+false and says nothing of the batch's answer. Each item is checked as a truth answer is, against that claim's facts
+alone, so a ref listed for another claim is no evidence shown for it. An item citing a key fact replaces the batch's
+answer: a cited contradiction reads ``contradicted`` and a cited support ``supported``, graded against the case, so
+the web never checks it. One citing nothing leaves the batch's answer standing, and the claim goes on to the web as
+before. A failing item is repaired as a truth batch's is, shown its own facts, within what the truth step's repairs
+left of ``max_items_per_cell``; a restatement takes its original's outcome. So the re-ask adds one call per cell,
+asked again in full only when its reply cannot be read (at most :data:`_ATTEMPTS` calls), whatever the number of
+claims doubted, and the price ceiling prices it so; ``RepairBudget``'s count is unchanged. No claim's outcome turns on
+its place: every doubted claim naming a key entity is in the one call. A re-ask reply cut short or unreadable in its
+attempts, an item past the repair budget, a provider's failure or a protocol defect fails as any truth call does, and
+never leaves a claim ``unverifiable``. Its limits: the match reads names, not reference. A claim naming the entity
+inside a phrase about someone else ("Ann Lee's brother moved to York") is listed with Ann Lee's facts. A fact filed
+under Ann Lee's own entry that is about someone else ("Her brother moved to York.") is shown, and cited as support
+for "Ann Lee moved to York", with its heading's "Ann Lee" as the subject, it passes every code check: only the model's
+reading stands between it and a false ``supported``. A short name or alias inside a longer one ("Lee" for Ann Lee, an
+entity named "Ann") matches every claim naming the longer. A claim that names its subject only by a pronoun or a
+description the key lists as no alias, or in a script written without spaces between words, is asked nothing again.
+Nor does code hold the relation: a key fact about another attribute of the same subject ("Ann Lee was born in Leeds",
+against "Ann Lee lives in York"), cited as a contradiction that passes every check, reads ``contradicted``. The
+re-ask's prompt says that such a fact bears on nothing, and that binding stays the model's, as in the truth batch.
 
 **Truth and groundedness fail apart.** A truth failure raises
 :class:`~threetears.evals.kernel.claims.failures.ClaimGradingFailed`, costing the cell this criterion. A ground
@@ -204,11 +214,11 @@ _BATCH_RULE: Final = (
 #: The re-ask rule, by revision and in words: part of the identity, raised with any change to which claims are asked
 #: again or which key facts they are shown (:func:`_names_subject`).
 _REASK_RULE: Final = (
-    "reask-v1: once the truth step's repairs pass, each original world claim whose answer cites nothing and is suspect "
-    "is asked again alone as a truth repair, shown only the key facts whose entity's name or an alias stands in its "
-    "proposition as whole folded words in order, under their own refs; each re-ask is one of the truth step's "
-    "max_items_per_cell, its failing answer repaired within the rounds; an answer citing a key fact replaces the "
-    "batch's, one citing nothing leaves it standing"
+    "reask-v1: once the truth step's repairs pass, every original world claim whose answer cites nothing and is "
+    "suspect, and whose proposition or a restatement's names a key entity (the entity's name or an alias standing in "
+    "it as whole folded words in order), is asked again in one call per cell, each listed with the refs of the key "
+    "facts of the entities it names and checked against those alone; its failing items are repaired within the truth "
+    "step's repair budget; an answer citing a key fact replaces the batch's, one citing nothing leaves it standing"
 )
 
 #: What a claim is, for a check: the same fact about the same subject. Shared by every verify prompt.
@@ -236,6 +246,20 @@ _TRUTH_RULES: Final = (
     "A claim you cite evidence for is never suspect."
 )
 
+_REASK_RULES: Final = (
+    "Read each claim against the case facts listed for it, and nothing else: not what you remember. Each is a fact "
+    "about an entity the claim names.\n"
+    "- Does any of them state that the claim is true or false? Cite each that does, by its ref, with its stance: "
+    "supports when it states this same fact about this same subject; contradicts when it states a different value for "
+    "this same subject and relation. A contradiction's value is the value the fact gives instead.\n"
+    "- A fact may state another attribute of the entity, or something about someone or something else (a relative, a "
+    "work, a place): such a fact bears on nothing here. When none of a claim's facts bears on it, cite nothing for "
+    "it.\n"
+    + _CITING_RULES
+    + "\n- A key fact (K) is quoted the same way, from its line as shown after its ref: the entity that line names "
+    "may stand as the subject."
+)
+
 _GROUND_RULES: Final = (
     "Read each claim against the numbered passages given, which come from documents the text's author was given, and "
     "nothing else: not what you remember.\n"
@@ -251,6 +275,13 @@ _ANSWER_LINE: Final = "\n\nAnswer with JSON only, in the shape the response form
 _TRUTH_SYSTEM: Final = (
     "You check the factual claims a text states against numbered evidence. Each claim is numbered; answer for every "
     "claim asked, by its number.\n\n" + _TRUTH_RULES + _ANSWER_LINE
+)
+
+_REASK_SYSTEM: Final = (
+    "You check factual claims a text states against case facts about the entities each claim names. Each claim is "
+    "numbered and followed by the refs of its facts; answer for every claim asked, by its number.\n\n"
+    + _REASK_RULES
+    + _ANSWER_LINE
 )
 
 _GROUND_SYSTEM: Final = (
@@ -275,6 +306,12 @@ _GROUND_REPAIR_SYSTEM: Final = (
 _USER_TEMPLATE: Final = "# Evidence\n\n{evidence}\n\n# Claims\n\n{claims}"
 
 _FACT_TEMPLATE: Final = "{ref}. {fact}"
+
+_REASK_TEMPLATE: Final = "# Case facts\n\n{evidence}\n\n# Claims\n\n{claims}"
+
+#: Beneath a claim the re-ask lists: the refs of the key facts about the entities it names, the only ones it is read
+#: against.
+_REASK_REFS: Final = "Its facts: {refs}"
 
 #: A key fact as a call is shown it after its ref: the text a key citation quotes.
 _FACT_LINE: Final = "A key fact about {entity}: {claim}"
@@ -312,10 +349,10 @@ _REPAIR_TEMPLATE: Final = (
 )
 
 #: What breaks one sentence or table row from the next, between a citation's subject and its value: a sentence end
-#: (``.``, ``!`` or ``?`` before a space or the end) or a line break, unless :func:`_ends_no_sentence` says a full
-#: stop marks an abbreviation, or a ``!`` or ``?`` stands inside a sentence. A semicolon joins clauses of one sentence,
-#: and is no break.
-_SENTENCE_END: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
+#: (``.``, ``!`` or ``?``, and any closing quotes or brackets after it, before a space or the end) or a line break,
+#: unless :func:`_ends_no_sentence` says a full stop marks an abbreviation, or a ``!`` or ``?`` stands inside a sentence.
+#: A semicolon joins clauses of one sentence, and is no break.
+_SENTENCE_END: Final = re.compile(r"[.!?][\"'\u201d\u2019)\]]*(?=\s|$)|[\n\r]")
 
 #: The token a full stop follows: the letters, and full stops between them, up to it.
 _TOKEN_BEFORE: Final = re.compile(r"[^\W\d_](?:[^\W\d_]|\.)*\Z")
@@ -332,14 +369,15 @@ _ABBREVIATION_LETTERS: Final = 3
 #: The sentence-break rule, by revision and in words: part of the identity, raised with any change to
 #: :func:`_ends_no_sentence` or the patterns above.
 _SENTENCE_RULE: Final = (
-    "sentences-v3: a break is a '.', '!' or '?' before a space or the end, or a line break; a '.' is no break after "
-    "initials or a dotted acronym (single letters, each but the last followed by '.'), whatever follows, nor after a "
-    "token of 2 to 3 letters, the first upper case and the rest lower case, followed by spaces and an upper-case "
-    "letter or a digit; a '!' or '?' is no break when followed by spaces and then '(' or a lower-case letter"
+    "sentences-v3: a break is a '.', '!' or '?', with any closing quotes or brackets after it, before a space or the "
+    "end, or a line break; a '.' is no break after initials or a dotted acronym (single letters, each but the last "
+    "followed by '.'), whatever follows, nor after a token of 2 to 3 letters, the first upper case and the rest lower "
+    "case, followed by spaces and an upper-case letter or a digit; a '!' is no break when followed by spaces and then "
+    "'(' or a lower-case letter, a '?' when followed by spaces and then a lower-case letter"
 )
 
-#: What may follow a ``!`` or ``?`` and its spaces inside one sentence, besides a lower-case letter.
-_INSIDE_AFTER_MARK: Final = "("
+#: What may follow a ``!`` and its spaces inside one sentence, besides a lower-case letter.
+_INSIDE_AFTER_BANG: Final = "("
 
 #: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
 #: shown, so part of the identity. ``{kind}`` names what a quote was cut from: a passage, or a key fact.
@@ -347,12 +385,6 @@ _FAULTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "twice": "it cites {refs} more than once; cite each piece of evidence once",
         "suspect": "it is marked suspect and cites evidence; suspect means no evidence given bears on the claim",
-        "reask": (
-            "it cites no evidence and is marked suspect, and the key facts shown here name its subject; cite each that "
-            "states this same fact about this same subject (supports) or a different value for this same subject and "
-            "relation (contradicts); a fact about another attribute of its subject bears on nothing, and if none bears "
-            "on the claim, answer as before"
-        ),
         "unknown_ref": "it cites {ref}, which is no evidence shown here; cite the refs listed under Evidence",
         "no_quote": "its citation of {ref} quotes nothing; a {kind} is cited with the sentence or row that states it",
         "not_shown": (
@@ -449,6 +481,15 @@ class _TruthItem(EvalBaseModel):
 
 class _TruthBatch(EvalBaseModel):
     claims: list[_TruthItem]
+
+
+class _ReaskItem(EvalBaseModel):
+    claim: int = Field(ge=0)
+    citations: list[_Cited]
+
+
+class _ReaskBatch(EvalBaseModel):
+    claims: list[_ReaskItem]
 
 
 class _GroundItem(EvalBaseModel):
@@ -1033,11 +1074,14 @@ class ClaimVerifier:
                 "truth_system": self._system("truth"),
                 "ground_system": self._system("ground"),
                 "truth_repair_system": self._repair_system("truth"),
+                "reask_system": self._reask_system(),
                 "ground_repair_system": self._repair_system("ground"),
                 "templates": [
                     _USER_TEMPLATE,
                     _FACT_TEMPLATE,
                     _FACT_LINE,
+                    _REASK_TEMPLATE,
+                    _REASK_REFS,
                     _PASSAGE_TEMPLATE,
                     _NO_EVIDENCE,
                     _PRECEDENCE_HEADING,
@@ -1053,6 +1097,7 @@ class ClaimVerifier:
                     self.ground_response_format,
                     self.truth_repair_response_format,
                     self.ground_repair_response_format,
+                    self._reask_response_format(),
                 ],
                 "pages": self.pages.model_dump(mode="json"),
                 "faults": dict(_FAULTS),
@@ -1081,7 +1126,9 @@ class ClaimVerifier:
         each asked in full up to its attempts, at the step's evidence bound and the echo allowance for the claims of
         that batch's segments (:func:`~threetears.evals.kernel.claims.extraction.echo_chars`); and the most items the
         repair budget lets the step ask again, each at the evidence bound and the allowance for one claim, its answer
-        and its failure. The evidence bound is the key's facts as shown, and, for the passages, every character the
+        and its failure. Where the key states a fact, the truth step's one re-ask too, asked in full up to its attempts,
+        at every key fact and twice the cell's echo allowance, for its claims and the refs beneath each; its failing
+        items are among the truth step's repairs. The evidence bound is the key's facts as shown, and, for the passages, every character the
         page budget lets the step read of its documents with each passage's heading. The ground step is priced only
         where it is asked: ``grounded_in`` named, and a document of those provenances given.
 
@@ -1140,6 +1187,29 @@ class ClaimVerifier:
             if repair is None:
                 return None
             total += repair * self.repairs.max_items_per_cell
+        if facts:
+            # The re-ask: one call per cell, asked in full up to its attempts, shown at most every key fact, its claims
+            # and the refs beneath each within twice the cell's echo allowance. Its failing items are repaired within
+            # the truth step's items, priced above at the whole evidence.
+            reask = call_ceiling(
+                self.client,
+                system=self._reask_system(),
+                user=_AGAIN_TEMPLATE.format(
+                    user=_REASK_TEMPLATE.format(
+                        evidence="\n\n".join(
+                            _FACT_TEMPLATE.format(ref=f"K{at}", fact=_fact_line(entity, fact))
+                            for at, (entity, fact) in enumerate(facts, start=1)
+                        ),
+                        claims=filler(2 * echo_chars(*(segment.text for segment in cell))),
+                    ),
+                    failure=echo,
+                ),
+                response_format=self._reask_response_format(),
+                attempts=_ATTEMPTS,
+            )
+            if reask is None:
+                return None
+            total += reask
         return total
 
     def _evidence_bound(
@@ -1186,6 +1256,20 @@ class ClaimVerifier:
 
     def _repair_system(self, step: _Step) -> str:
         return self._with_guidance(_TRUTH_REPAIR_SYSTEM if step == "truth" else _GROUND_REPAIR_SYSTEM)
+
+    def _reask_system(self) -> str:
+        return self._with_guidance(_REASK_SYSTEM)
+
+    @staticmethod
+    def _reask_response_format() -> dict[str, Any]:
+        """The strict directive the re-ask sends: ``{"claims": [{"claim", "citations"}]}``, with no suspicion."""
+        item = {
+            "type": "object",
+            "properties": {"claim": {"type": "integer"}, "citations": {"type": "array", "items": _TRUTH_CITATION}},
+        }
+        return strict_response_format(
+            "claim_reask", {"type": "object", "properties": {"claims": {"type": "array", "items": item}}}
+        )
 
     async def verify(
         self,
@@ -1364,59 +1448,47 @@ class ClaimVerifier:
         calls: list[ClaimCall],
         ledger: RoleUsageLedger,
     ) -> None:
-        """Ask each truth claim whose standing answer cites nothing and is suspect again alone, shown only the key
-        facts that name its subject (:func:`_names_subject`), as a truth repair; keep each answer that cites one.
+        """Ask every truth claim whose standing answer cites nothing and is suspect, and that names a key entity
+        (:func:`_names_subject`, over its proposition and its restatements'), again in one call, each listed with the
+        refs of its own entities' facts and checked against those alone; repair its failing items within what the
+        truth step's repairs left; keep each answer that cites a fact.
 
         :param asked: How many of the truth step's ``max_items_per_cell`` its repairs spent.
         :param called: Each key entity's name, and the folded words of its name and of each alias.
-        :raises ClaimGradingFailed: The re-asks would ask more items than the truth step has left, a re-ask still
-            fails its checks after the rounds, or a reply was cut short.
+        :raises ClaimGradingFailed: The reply was cut short or could not be used in its attempts, or a failing item
+            could not be repaired within the truth step's repair budget.
         """
         views: dict[tuple[_Step, int], _Shown] = {}
         for item, found in sorted(checked.items()):
             if item[0] != "truth" or found.citations or not found.answer.suspect:
                 continue
-            claimed = _words(cell[item[1]].claim)
-            if facts := tuple(entry for entry in shown.facts if _names_subject(claimed, called[entry[1]])):
+            said = [_words(claim.claim) for at, claim in enumerate(cell) if item[1] in (at, claim.restates)]
+            if facts := tuple(
+                entry for entry in shown.facts if any(_names_subject(words, called[entry[1]]) for words in said)
+            ):
                 views[item] = _Shown(facts, ())
         if not views:
             return
-        if asked + len(views) > self.repairs.max_items_per_cell:
-            raise ClaimGradingFailed(
-                f"the claim verifier would ask {len(views)} suspect truth claim(s) again, shown the key facts that name "
-                f"each one's subject, with {asked} of the step's {self.repairs.max_items_per_cell} repairs spent: "
-                f"claims {[position for _, position in views]}",
-                loss="repair_budget_spent",
-            )
-        reasked: dict[tuple[_Step, int], _Checked] = {}
-        for item, view in views.items():
-            before = checked[item]
-            content, call = await self._complete(
-                role="repair",
-                system=self._repair_system("truth"),
-                user=_REPAIR_TEMPLATE.format(
-                    evidence=view.numbered(),
-                    claim=_rendered_claim(item[1], cell),
-                    answer=json.dumps(_answer_json("truth", before.answer), ensure_ascii=False),
-                    failure=_FAULTS["reask"],
-                ),
-                response_format=self.truth_repair_response_format,
-                calls=calls,
-                ledger=ledger,
-            )
-            try:
-                answer = _read_repair("truth", content)
-            except ValueError as refused:
-                reasked[item] = _Checked(
-                    answer=before.answer,
-                    call=before.call,
-                    citations=(),
-                    fault=_FAULTS["correction"].format(failure=_FAULTS["reask"], why=_unreadable(refused)),
-                    shown=view,
-                )
-                continue
-            reasked[item] = self._check(answer, call, view)
-        await self._repair("truth", reasked, cell, calls, ledger, asked=asked + len(views))
+        listed = {ref for view in views.values() for ref in view.refs}
+        claims = "\n\n".join(
+            _rendered_claim(position, cell) + "\n" + _REASK_REFS.format(refs=", ".join(ref for ref, _, _ in view.facts))
+            for (_, position), view in views.items()
+        )
+        answers, call = await self._ask(
+            role="truth",
+            system=self._reask_system(),
+            first=_REASK_TEMPLATE.format(
+                evidence=_Shown(tuple(entry for entry in shown.facts if entry[0] in listed), ()).numbered(),
+                claims=claims,
+            ),
+            response_format=self._reask_response_format(),
+            read=lambda content: _read_reask(content, tuple(position for _, position in views)),
+            what=f"re-ask for claims {[position for _, position in views]}",
+            calls=calls,
+            ledger=ledger,
+        )
+        reasked = {item: self._check(answers[item[1]], call, view) for item, view in views.items()}
+        await self._repair("truth", reasked, cell, calls, ledger, asked=asked)
         # A re-ask that cites nothing changes nothing: the batch's answer stands, and the claim goes on to the web.
         checked.update({item: found for item, found in reasked.items() if found.citations})
 
@@ -1456,26 +1528,47 @@ class ClaimVerifier:
 
         :raises ClaimGradingFailed: A reply was cut short, or none of the attempts' replies could be used.
         """
-        first = _USER_TEMPLATE.format(evidence=shown.numbered(), claims=_rendered_claims(batch, cell))
+        return await self._ask(
+            role=step,
+            system=self._system(step),
+            first=_USER_TEMPLATE.format(evidence=shown.numbered(), claims=_rendered_claims(batch, cell)),
+            response_format=self.truth_response_format if step == "truth" else self.ground_response_format,
+            read=lambda content: _read_batch(step, content, batch),
+            what=f"{step} reply for claims {list(batch)}",
+            calls=calls,
+            ledger=ledger,
+        )
+
+    async def _ask(
+        self,
+        *,
+        role: Literal["truth", "ground"],
+        system: str,
+        first: str,
+        response_format: dict[str, Any],
+        read: Callable[[str], dict[int, _Answer]],
+        what: str,
+        calls: list[ClaimCall],
+        ledger: RoleUsageLedger,
+    ) -> tuple[dict[int, _Answer], int]:
+        """A call's answers, by claim position, and its place among the calls, asked again in full, naming why, while
+        a finished reply will not be ``read``.
+
+        :raises ClaimGradingFailed: A reply was cut short, or none of the attempts' replies could be used.
+        """
         user = first
         refused: ValueError | None = None
         for _attempt in range(_ATTEMPTS):
             content, call = await self._complete(
-                role=step,
-                system=self._system(step),
-                user=user,
-                response_format=self.truth_response_format if step == "truth" else self.ground_response_format,
-                calls=calls,
-                ledger=ledger,
+                role=role, system=system, user=user, response_format=response_format, calls=calls, ledger=ledger
             )
             try:
-                return _read_batch(step, content, batch), call
+                return read(content), call
             except ValueError as unusable:
                 refused = unusable
                 user = _AGAIN_TEMPLATE.format(user=first, failure=_unreadable(unusable))
         raise ClaimGradingFailed(
-            f"the claim verifier's {step} reply for claims {list(batch)} could not be used in {_ATTEMPTS} attempts",
-            loss="unreadable",
+            f"the claim verifier's {what} could not be used in {_ATTEMPTS} attempts", loss="unreadable"
         ) from refused
 
     @staticmethod
@@ -1619,16 +1712,37 @@ def _read_batch(step: _Step, content: str, batch: tuple[int, ...]) -> dict[int, 
             (item.claim, _Answer(citations=[cited.as_cited() for cited in item.citations], suspect=False))
             for item in _GroundBatch.model_validate(payload).claims
         ]
+    _answers_exactly(answers, batch)
+    return dict(answers)
+
+
+def _read_reask(content: str, asked: tuple[int, ...]) -> dict[int, _Answer]:
+    """The re-ask reply's answers, by claim position: each claim's citations, and no suspicion.
+
+    :raises ValueError: The reply is not the re-ask's shape, or does not answer each claim asked exactly once.
+    """
+    answers = [
+        (item.claim, _Answer(citations=item.citations, suspect=False))
+        for item in _ReaskBatch.model_validate(extract_json(content)).claims
+    ]
+    _answers_exactly(answers, asked)
+    return dict(answers)
+
+
+def _answers_exactly(answers: Sequence[tuple[int, _Answer]], asked: tuple[int, ...]) -> None:
+    """Refuse a reply that does not answer each claim ``asked`` exactly once.
+
+    :raises ValueError: It leaves one out, answers one not asked, or answers one twice.
+    """
     named = [position for position, _ in answers]
-    if sorted(named) != sorted(batch):
-        missing = sorted(set(batch) - set(named))
-        extra = sorted({position for position in named if position not in batch or named.count(position) > 1})
+    if sorted(named) != sorted(asked):
+        missing = sorted(set(asked) - set(named))
+        extra = sorted({position for position in named if position not in asked or named.count(position) > 1})
         problems = [
             *([_FAULTS["missing"].format(missing=missing)] if missing else []),
             *([_FAULTS["extra"].format(extra=extra)] if extra else []),
         ]
-        raise ValueError(_FAULTS["answers"].format(asked=list(batch), problems="; ".join(problems)))
-    return dict(answers)
+        raise ValueError(_FAULTS["answers"].format(asked=list(asked), problems="; ".join(problems)))
 
 
 def _read_repair(step: _Step, content: str) -> _Answer:
@@ -1750,24 +1864,30 @@ def _breaks_between(text: str, start: int, end: int) -> bool:
     for found in _SENTENCE_END.finditer(text, start):
         if found.start() >= end:
             return False
-        if found.group() in "\n\r" or not _ends_no_sentence(text, found.start()):
+        if found.group() in "\n\r" or not _ends_no_sentence(text, found.start(), found.end()):
             return True
     return False
 
 
-def _ends_no_sentence(text: str, at: int) -> bool:
-    """Whether the mark at ``text[at]`` ends no sentence. A ``!`` or ``?`` ends none when spaces and then ``(`` or a
-    lower-case letter follow it ("Wax Trax! (Chicago)", "Wax Trax! in the early 1980s"). A full stop ends none when it
+def _ends_no_sentence(text: str, at: int, after: int) -> bool:
+    """Whether the mark at ``text[at]``, its closing quotes and brackets running to ``after``, ends no sentence.
+
+    A ``!`` ends none when spaces and then ``(`` or a lower-case letter follow ("Wax Trax! (Chicago)", "Wax Trax! in
+    the early 1980s"); a ``?`` ends none when spaces and then a lower-case letter follow. A full stop ends none when it
     marks an abbreviation: it follows initials or a dotted acronym ("J. R. R. Tolkien", "the U.S. capital"), or a
     capitalised token of at most :data:`_ABBREVIATION_LETTERS` letters before a capitalised word or a digit ("Dr.
-    John", "St. Louis", "Vol. 2", "No. 5"). Case is read by :meth:`str.isupper` and :meth:`str.islower`, so any cased
-    script takes the rule; the shapes themselves are those of English and the languages that abbreviate as it does. It
-    accepts a real sentence end of the same shapes too: one that ends on a single letter, an acronym or a short
-    capitalised word ("in May. The pamphlet ..."), or an exclamation before a lower-case word ("Stop! he said" is one
-    sentence, as it is read)."""
+    John", "St. Louis", "Vol. 2", "No. 5"), read past any closing quote or bracket ("(Dr.) John"). Case is read by
+    :meth:`str.isupper` and :meth:`str.islower`, so any cased script takes the rule; the shapes themselves are those of
+    English and the languages that abbreviate as it does. It accepts a real sentence end of the same shapes too: one
+    that ends on a single letter, an acronym or a short capitalised word ("in May. The pamphlet ..."), an exclamation
+    or a question before a lower-case word ("Stop! he said"), or an exclamation before a bracketed sentence ("Wow!
+    (Her brother moved to York.)")."""
+    following = _NEXT_WORD.match(text, after)
     if text[at] != ".":
-        following = _NEXT_WORD.match(text, at + 1)
-        return following is not None and (following.group(1) == _INSIDE_AFTER_MARK or following.group(1).islower())
+        if following is None:
+            return False
+        word = following.group(1)
+        return word.islower() or (text[at] == "!" and word == _INSIDE_AFTER_BANG)
     token = _TOKEN_BEFORE.search(text, 0, at)
     if token is None:
         return False
@@ -1776,8 +1896,7 @@ def _ends_no_sentence(text: str, at: int) -> bool:
         return True
     if not (word.isalpha() and len(word) <= _ABBREVIATION_LETTERS and word[0].isupper() and word[1:].islower()):
         return False
-    after = _NEXT_WORD.match(text, at + 1)
-    return after is not None and (after.group(1).isupper() or after.group(1).isdigit())
+    return following is not None and (following.group(1).isupper() or following.group(1).isdigit())
 
 
 def _sentence_break_definition() -> list[Any]:
@@ -1789,7 +1908,7 @@ def _sentence_break_definition() -> list[Any]:
         _INITIALS.pattern,
         _NEXT_WORD.pattern,
         _ABBREVIATION_LETTERS,
-        _INSIDE_AFTER_MARK,
+        _INSIDE_AFTER_BANG,
     ]
 
 

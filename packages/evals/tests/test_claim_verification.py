@@ -23,6 +23,7 @@ amends it.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -588,8 +589,11 @@ async def test_a_number_or_a_long_or_lower_case_word_still_ends_a_sentence_and_a
         assert grade.claims[0].verdict == "supported", "a misbinding across an abbreviation shape passes every check"
 
 
-#: Key facts whose "!" or "?" stands inside a sentence, before a bracket or a lower-case word, and two whose "c." does,
-#: each with the subject and value either side of it: the text, its subject and its value.
+#: Text whose "!" stands inside a sentence before a bracket or a lower-case word, whose "?" does before a lower-case
+#: word, whose "c." does, or whose abbreviation sits inside closing quotes or brackets, each with the subject and value
+#: either side of it: the text, its subject and its value. The first six are Discodon's key facts.
+#: ``bang-before-bracketed-sentence`` is the rule's known cost: an exclamation before a bracketed sentence reads as one
+#: sentence with it, so a value in the bracket binds a subject before the mark.
 _EXCLAIMED = {
     "bang-before-bracket": ("Revolting Cocks were a Wax Trax! (Chicago) act.", "Revolting Cocks", "Chicago"),
     "bang-before-bracketed-clause": (
@@ -623,7 +627,10 @@ _EXCLAIMED = {
         "Al Jourgensen",
         "1980s",
     ),
-    "question-before-bracket": ("Who Are You? (1978) was the last album with Keith Moon.", "Who Are You", "Keith Moon"),
+    "question-before-lower-case": ("The bound volume, who knew? was reissued in 1932.", "The bound volume", "1932"),
+    "bang-before-bracketed-sentence": ("Wow! (Her brother moved to York.)", "Wow", "York"),
+    "abbreviation-in-quotes": ('The treaty was signed in "the U.S." capital in 1931.', "The treaty", "1931"),
+    "abbreviation-in-brackets": ("The bound volume was edited by (Dr.) John Hale.", "The bound volume", "John Hale"),
 }
 
 
@@ -632,9 +639,11 @@ _EXCLAIMED = {
 async def test_an_exclamation_or_question_mark_before_a_bracket_or_a_lower_case_word_ends_no_sentence(
     shape: str, kind: str
 ) -> None:
-    """A "!" or "?" followed by spaces and then "(" or a lower-case letter stands inside a title or a phrase ("Wax
-    Trax! (Chicago)", "Wax Trax! in the early 1980s"), so a subject and value either side of one stand in one sentence
-    and need no repair, in a passage and in a key fact's line alike."""
+    """A "!" followed by spaces and then "(" or a lower-case letter stands inside a title or a phrase ("Wax Trax!
+    (Chicago)", "Wax Trax! in the early 1980s"), as does a "?" before a lower-case letter, so a subject and value
+    either side of one stand in one sentence and need no repair, in a passage and in a key fact's line alike; and an
+    abbreviation inside closing quotes or brackets keeps the abbreviation rule. The accepted cost, pinned: "Wow! (Her
+    brother moved to York.)" reads as one sentence."""
     text, subject, value = _EXCLAIMED[shape]
     ref = "S1" if kind == "passage" else "K1"
     client = _FakeScriptedClient([_batch(_answer(0, _cite(ref, quote=text, subject=subject, value=value)))])
@@ -654,14 +663,33 @@ async def test_an_exclamation_or_question_mark_before_a_bracket_or_a_lower_case_
         ("Did the pamphlet sell? No. The bound volume followed in 1932.", "pamphlet", "1932"),
         ("The pamphlet sold out! 1932 saw the bound volume.", "pamphlet", "1932"),
         ("The pamphlet sold out!\n(The bound volume followed in 1932.)", "pamphlet", "1932"),
+        ("Did Ann Lee stay? (Her brother moved to York.)", "Ann Lee", "York"),
+        ("Who Are You? (1978) was the last album with Keith Moon.", "Who Are You", "Keith Moon"),
+        ('Ann Lee said, "I stay in Leeds." Her brother moved to York.', "Ann Lee", "York"),
+        ("(Ann Lee stayed in Leeds.) Her brother moved to York.", "Ann Lee", "York"),
+        ("Ann Lee asked, 'Will I stay?' Her brother moved to York.", "Ann Lee", "York"),
+        ('The pamphlet appeared in "1931." The bound volume followed in 1932.', "bound volume", "1931"),
     ],
-    ids=["bang-before-capital", "question-before-capital", "bang-before-digit", "bang-before-line-break"],
+    ids=[
+        "bang-before-capital",
+        "question-before-capital",
+        "bang-before-digit",
+        "bang-before-line-break",
+        "question-before-bracketed-sentence",
+        "question-before-bracket",
+        "full-stop-inside-quotes",
+        "full-stop-inside-brackets",
+        "question-inside-quotes",
+        "year-inside-quotes",
+    ],
 )
 async def test_an_exclamation_or_question_mark_before_a_capital_a_digit_or_a_line_break_still_ends_a_sentence(
     text: str, subject: str, value: str, kind: str
 ) -> None:
-    """Only a bracket or a lower-case word after a "!" or "?" keeps the sentence going: before a capitalised word, a
-    digit or a line break it still parts two sentences, so a neighbouring value is asked again."""
+    """Only a bracket or a lower-case word after a "!", or a lower-case word after a "?", keeps the sentence going:
+    before a capitalised word, a digit or a line break either still parts two sentences, and a "?" before a bracket
+    does too. A sentence end followed by closing quotes or brackets is a sentence end. So a neighbouring value is
+    asked again."""
     ref = "S1" if kind == "passage" else "K1"
     client = _FakeScriptedClient([_batch(_answer(0, _cite(ref, quote=text, subject=subject, value=value))), _repair()])
 
@@ -758,13 +786,11 @@ async def test_case_support_with_a_case_contradiction_reads_supported_with_a_con
 async def test_a_claim_no_evidence_covers_that_the_model_doubts_is_nominated_and_reads_unverifiable_with_web_off() -> (
     None
 ):
-    client = _FakeScriptedClient(
-        [_batch(_answer(0)), _batch(_answer(1), _answer(2, suspect=True)), _repair(suspect=True)]
-    )
+    client = _FakeScriptedClient([_batch(_answer(0)), _batch(_answer(1), _answer(2, suspect=True)), _reasked((2, []))])
 
     grade = _grade(_CLAIMS, await _verify(client))
 
-    assert "K1. A key fact about Harrow Tales" in client.calls[2]["user"], "the key names Harrow Tales: asked again"
+    assert "Its facts: K1" in client.calls[2]["user"], "it names Harrow Tales, a key entity: asked again"
     chapters = grade.claims[2]
     assert (chapters.suspect, chapters.nominated_by, chapters.verdict, chapters.web) == (
         True,
@@ -1831,7 +1857,7 @@ async def test_the_hosts_guidance_reaches_every_prompt() -> None:
     assert all(call["system"].endswith(guidance) for call in client.calls)
 
 
-# --- a suspect claim is asked again, shown the key facts that name its subject ------------------------------------
+# --- a doubted claim is asked again, with the key facts about what it names -------------------------------------
 
 _LEE = (Segment(text="Ann Lee lives in York. As I said, Ann Lee lives in York.", unit=0),)
 _LIVES_IN_YORK = _claim(_LEE, 0, "Ann Lee lives in York.", "Ann Lee lives in York")
@@ -1843,7 +1869,7 @@ _MOVED_TO_YORK = _claim(
 _LEEDS = "Ann Lee lives in Leeds."
 _BORN_IN_LEEDS = "Ann Lee was born in Leeds."
 
-#: A key fact about someone else, numbered before Ann Lee's, so her fact keeps its own ref (``K2``) when shown alone.
+#: A key fact about someone else, numbered before Ann Lee's, so her fact keeps its own ref (``K2``) when listed alone.
 _ADA = ("Ada Moss", "Ada Moss lives in Hull.")
 
 
@@ -1864,13 +1890,21 @@ def _key(*facts: tuple[str, str], aliases: dict[str, tuple[str, ...]] | None = N
     )
 
 
-def _doubted() -> _Reply:
-    """The truth batch for the Ann Lee cell: claim 0 cites nothing and is doubted."""
-    return _batch(_answer(0, suspect=True))
+def _doubted(*positions: int) -> _Reply:
+    """A truth batch that cites nothing for each claim and doubts it."""
+    return _batch(*(_answer(position, suspect=True) for position in positions or (0,)))
 
 
-#: What a re-ask is told is wrong, in words every re-ask carries.
-_REASKED = "the key facts shown here name its subject"
+def _reasked(*items: tuple[int, list[dict[str, Any]]]) -> _Reply:
+    """The re-ask's reply: each claim's citations, and no suspicion."""
+    return _Reply(content=json.dumps({"claims": [{"claim": c, "citations": cites} for c, cites in items]}))
+
+
+def _schema(call: dict[str, Any]) -> str:
+    return str(call["response_format"]["json_schema"]["name"])
+
+
+_IN_LEEDS = _cite("K1", "contradicts", quote=_LEEDS, subject="Ann Lee", value="Leeds")
 
 
 @pytest.mark.parametrize(
@@ -1881,10 +1915,12 @@ _REASKED = "the key facts shown here name its subject"
 async def test_a_suspect_claim_a_key_fact_about_its_subject_bears_on_is_asked_again_and_read_from_the_key(
     fact: str, stance: str, value: str, verdict: str
 ) -> None:
-    """The truth call cites nothing for a world claim and doubts it, though a key fact about its subject bears on it:
-    the claim is asked again alone, shown only the key facts that name its subject (under their own refs), and a cited
+    """The truth call cites nothing for a world claim and doubts it, though a key fact about the entity it names bears
+    on it: the claim is asked again in the re-ask, listed with the refs of its entity's facts alone, and a cited
     contradiction reads contradicted, a cited support supported, both from the case, with no web check."""
-    client = _FakeScriptedClient([_doubted(), _repair(_cite("K2", stance, quote=fact, subject="Ann Lee", value=value))])
+    client = _FakeScriptedClient(
+        [_doubted(), _reasked((0, [_cite("K2", stance, quote=fact, subject="Ann Lee", value=value)]))]
+    )
 
     verification = await _verify(client, (_LIVES_IN_YORK,), key=_key(_ADA, ("Ann Lee", fact)), documents=(_PRESS,))
     grade = _grade((_LIVES_IN_YORK,), verification)
@@ -1898,21 +1934,34 @@ async def test_a_suspect_claim_a_key_fact_about_its_subject_bears_on_is_asked_ag
         "none",
     )
     assert claim.decided_by == 1, "the re-ask decided it"
-    assert [call.role for call in grade.calls] == ["truth", "repair"]
+    assert [call.role for call in grade.calls] == ["truth", "truth"]
+    assert _schema(client.calls[1]) == "claim_reask"
     asked = client.calls[1]["user"]
-    assert f"K2. A key fact about Ann Lee: {fact}" in asked
-    assert "Ada Moss" not in asked and _PRESS.text not in asked, "the re-ask is shown the subject's key facts alone"
-    assert _REASKED in asked
-    assert client.calls[1]["response_format"] == _verifier(client).truth_repair_response_format
+    assert f"K2. A key fact about Ann Lee: {fact}" in asked and "Its facts: K2" in asked
+    assert "Ada Moss" not in asked and _PRESS.text not in asked, "the re-ask is shown the claim's entities' facts alone"
+
+
+async def test_the_reask_asks_afresh_and_never_says_the_batchs_answer_was_wrong() -> None:
+    """The re-ask has its own prompt: it asks whether any listed fact states the claim true or false, and says nothing
+    of the batch's answer, so it never presses the model to cite where the batch found nothing."""
+    client = _FakeScriptedClient([_doubted(), _reasked((0, []))])
+
+    await _verify(client, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _LEEDS)), documents=())
+
+    system, user = client.calls[1]["system"], client.calls[1]["user"]
+    assert "state that the claim is true or false" in system
+    assert "cite nothing for it" in system
+    for framing in ("correct", "wrong", "your answer", "again", "suspect"):
+        assert not re.search(rf"\b{framing}\b", f"{system}\n{user}", re.IGNORECASE), framing
 
 
 @pytest.mark.parametrize(("outcome", "verdict"), [("inconclusive", "unverifiable"), ("false", "contradicted")])
 async def test_a_reask_that_cites_nothing_leaves_the_claim_nominated_for_the_web(
     outcome: WebOutcome, verdict: str
 ) -> None:
-    """A re-ask that again cites nothing changes nothing: the batch's answer stands, the claim is nominated, and the web
+    """A re-ask that cites nothing changes nothing: the batch's answer stands, the claim is nominated, and the web
     decides it as before."""
-    client = _FakeScriptedClient([_doubted(), _repair(suspect=True)])
+    client = _FakeScriptedClient([_doubted(), _reasked((0, []))])
 
     verification = await _verify(client, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _BORN_IN_LEEDS)), documents=())
     (claim,) = graded_claims((_LIVES_IN_YORK,), verification, calls_before=0, web={0: WebGraded(outcome)})
@@ -1927,11 +1976,40 @@ async def test_a_reask_that_cites_nothing_leaves_the_claim_nominated_for_the_web
     )
 
 
+async def test_more_doubted_claims_than_the_repair_budget_are_all_asked_in_one_reask_and_all_graded() -> None:
+    """Every doubted claim naming a key entity is in the one re-ask, whatever their number and wherever they stand: a
+    cell with more of them than its truth step may repair loses nothing and grades them all from the key."""
+    segments = (Segment(text="Ann Lee lives in York. Ada Moss lives in York. Bo Finch lives in York.", unit=0),)
+    claims = tuple(
+        _claim(segments, 0, f"{name} lives in York.", f"{name} lives in York")
+        for name in ("Ann Lee", "Ada Moss", "Bo Finch")
+    )
+    facts = [("Ann Lee", _LEEDS), ("Ada Moss", "Ada Moss lives in Hull."), ("Bo Finch", "Bo Finch lives in Ely.")]
+    client = _FakeScriptedClient(
+        [
+            _doubted(0, 1, 2),
+            _reasked(
+                *(
+                    (at, [_cite(f"K{ref}", "contradicts", quote=fact, subject=name, value=fact.split()[-1][:-1])])
+                    for at, (ref, (name, fact)) in enumerate(((2, facts[0]), (1, facts[1]), (3, facts[2])))
+                )
+            ),
+        ]
+    )
+
+    verification = await _verify(
+        client, claims, key=_key(*facts), documents=(), repairs=RepairBudget(rounds=1, max_items_per_cell=2)
+    )
+
+    assert len(client.calls) == 2, "one re-ask for the cell"
+    assert [claim.verdict for claim in _grade(claims, verification).claims] == ["contradicted"] * 3
+
+
 @pytest.mark.parametrize("other", ["Ann Lee's brother", "Annabel Lee", "Lee Ann", "Ann Leeson"])
-async def test_a_key_fact_about_an_entity_sharing_words_with_the_subject_is_never_shown_to_a_reask(other: str) -> None:
-    """Only a key fact whose entity's whole name stands in the claim is about its subject: one about an entity whose
-    name merely shares words with it ("Ann Lee's brother moved to York") asks nothing again, so it neither supports nor
-    contradicts "Ann Lee moved to York", which stays nominated."""
+async def test_a_key_entity_whose_name_only_shares_words_with_the_subject_is_never_listed(other: str) -> None:
+    """Only a key entity whose whole name stands in the claim is one it names: an entity whose name merely shares
+    words with its subject ("Ann Lee's brother", against "Ann Lee moved to York") asks nothing again, so its facts
+    neither support nor contradict the claim, which stays nominated."""
     client = _FakeScriptedClient([_doubted()])
 
     verification = await _verify(client, (_MOVED_TO_YORK,), key=_key((other, f"{other} moved to York.")), documents=())
@@ -1941,42 +2019,71 @@ async def test_a_key_fact_about_an_entity_sharing_words_with_the_subject_is_neve
     assert (claim.verdict, claim.nominated_by) == ("unverifiable", "judge")
 
 
-async def test_a_reask_citing_a_key_fact_about_another_entity_cites_no_evidence_it_was_shown() -> None:
-    """Where the key holds facts about the subject and about an entity sharing its words, the re-ask is shown the
-    subject's alone: citing the other's ref is a ref to no evidence shown, asked again, and never reads supported."""
+async def test_a_reask_citing_a_fact_not_listed_for_its_claim_cites_no_evidence_shown_for_it() -> None:
+    """Where the key holds facts about the subject and about an entity sharing its words, the claim is listed with its
+    subject's alone: citing the other's ref is a ref to no evidence shown for it, repaired, and never reads
+    supported."""
     brother = "Ann Lee's brother moved to York."
     client = _FakeScriptedClient(
         [
             _doubted(),
-            _repair(_cite("K2", quote=brother, subject="Ann Lee", value="York")),
+            _reasked((0, [_cite("K2", quote=brother, subject="Ann Lee", value="York")])),
             _repair(suspect=True),
         ]
     )
 
     verification = await _verify(
-        client,
-        (_MOVED_TO_YORK,),
-        key=_key(("Ann Lee", _BORN_IN_LEEDS), ("Ann Lee's brother", brother)),
-        documents=(),
+        client, (_MOVED_TO_YORK,), key=_key(("Ann Lee", _BORN_IN_LEEDS), ("Ann Lee's brother", brother)), documents=()
     )
 
     assert "brother" not in client.calls[1]["user"]
     assert "it cites K2, which is no evidence shown here" in client.calls[2]["user"]
-    assert "brother" not in client.calls[2]["user"].split("# The claim")[0], "the repair is shown the same facts"
+    assert "brother" not in client.calls[2]["user"].split("# The claim")[0], "the repair is shown the claim's facts"
     assert _grade((_MOVED_TO_YORK,), verification).claims[0].verdict == "unverifiable"
+
+
+async def test_a_fact_filed_under_the_subject_about_someone_else_passes_every_code_check_and_is_left_to_the_model() -> (
+    None
+):
+    """The known limit: the match reads the key entity, never the fact. A fact filed under Ann Lee's own entry that is
+    about someone else ("Her brother moved to York.") is listed for "Ann Lee moved to York", and cited as support with
+    its heading's "Ann Lee" as the subject it passes every code check (one sentence, subject and value inside the
+    quote). Only the model's reading, which the re-ask's prompt asks for, stands between it and a false supported."""
+    line = "A key fact about Ann Lee: Her brother moved to York."
+    client = _FakeScriptedClient(
+        [_doubted(), _reasked((0, [_cite("K1", quote=line, subject="Ann Lee", value="York")]))]
+    )
+
+    verification = await _verify(
+        client, (_MOVED_TO_YORK,), key=_key(("Ann Lee", "Her brother moved to York.")), documents=()
+    )
+
+    assert "about someone or something else (a relative" in client.calls[1]["system"]
+    assert _grade((_MOVED_TO_YORK,), verification).claims[0].verdict == "supported", "code passes it"
 
 
 async def test_an_alias_names_the_subject_as_the_entitys_name_does() -> None:
     claim = _claim((Segment(text="Lee lives in York.", unit=0),), 0, "Lee lives in York.", "Lee lives in York")
-    client = _FakeScriptedClient(
-        [_doubted(), _repair(_cite("K1", "contradicts", quote=_LEEDS, subject="Ann Lee", value="Leeds"))]
-    )
+    client = _FakeScriptedClient([_doubted(), _reasked((0, [_IN_LEEDS]))])
 
     verification = await _verify(
         client, (claim,), key=_key(("Ann Lee", _LEEDS), aliases={"Ann Lee": ("Lee",)}), documents=()
     )
 
     assert _grade((claim,), verification).claims[0].verdict == "contradicted"
+
+
+async def test_a_restatement_that_names_the_entity_lists_its_original() -> None:
+    """The match reads the original's proposition and each restatement's, so an original that names its subject by a
+    pronoun is asked again when its restatement names the entity."""
+    segments = (Segment(text="She lives in York. Ann Lee lives in York, I said.", unit=0),)
+    original = _claim(segments, 0, "She lives in York.", "She lives in York")
+    again = _claim(segments, 0, "Ann Lee lives in York.", "Ann Lee lives in York", restates=0)
+    client = _FakeScriptedClient([_doubted(), _reasked((0, [_IN_LEEDS]))])
+
+    verification = await _verify(client, (original, again), key=_key(("Ann Lee", _LEEDS)), documents=())
+
+    assert [claim.verdict for claim in _grade((original, again), verification).claims] == ["contradicted"] * 2
 
 
 @pytest.mark.parametrize(
@@ -1998,10 +2105,10 @@ async def test_a_reask_contradiction_from_another_attribute_that_fails_a_check_n
     cited: dict[str, Any], failure: str
 ) -> None:
     """A key fact naming the subject and another attribute ("Ann Lee was born in Leeds" against "Ann Lee lives in
-    York") is shown to the re-ask; a contradiction cited from it that fails any check (the claim's own value, words the
-    fact does not hold, no value) is asked again like any failing answer, and reads contradicted only when its quote
-    passes every check."""
-    client = _FakeScriptedClient([_doubted(), _repair(cited), _repair(suspect=True)])
+    York") is listed for the claim; a contradiction cited from it that fails any check (the claim's own value, words
+    the fact does not hold, no value) is repaired like a truth batch's failing item, and reads contradicted only when
+    its quote passes every check."""
+    client = _FakeScriptedClient([_doubted(), _reasked((0, [cited])), _repair(suspect=True)])
 
     verification = await _verify(client, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _BORN_IN_LEEDS)), documents=())
 
@@ -2014,20 +2121,20 @@ async def test_a_well_formed_contradiction_from_another_attribute_passes_every_c
     None
 ):
     """The known limit: code holds the quote, the subject and the value to the fact and to one sentence, never the
-    relation. A birthplace quoted as contradicting where Ann Lee lives passes every check, so the binding is the model's,
-    as in the truth batch, and the re-ask is told that another attribute bears on nothing."""
+    relation. A birthplace quoted as contradicting where Ann Lee lives passes every check, so the binding is the
+    model's, as in the truth batch; the re-ask's prompt says that another attribute bears on nothing."""
     cited = _cite("K1", "contradicts", quote=_BORN_IN_LEEDS, subject="Ann Lee", value="Leeds")
-    client = _FakeScriptedClient([_doubted(), _repair(cited)])
+    client = _FakeScriptedClient([_doubted(), _reasked((0, [cited]))])
 
     verification = await _verify(client, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _BORN_IN_LEEDS)), documents=())
 
-    assert "another attribute of its subject bears on nothing" in client.calls[1]["user"]
+    assert "another attribute of the entity" in client.calls[1]["system"]
     assert _grade((_LIVES_IN_YORK,), verification).claims[0].verdict == "contradicted"
 
 
 async def test_a_suspect_claim_that_cites_a_key_fact_is_repaired_as_before_shown_all_the_evidence() -> None:
     """A claim that cites a key fact and is marked suspect fails a check: it is repaired as any failing answer is,
-    shown every piece of evidence, told that fault alone, and is no re-ask."""
+    shown every piece of evidence, and is never re-asked."""
     support = _cite("K2", quote="Ann Lee lives in York.", subject="Ann Lee", value="York")
     client = _FakeScriptedClient([_batch(_answer(0, support, suspect=True)), _repair(support)])
 
@@ -2036,7 +2143,7 @@ async def test_a_suspect_claim_that_cites_a_key_fact_is_repaired_as_before_shown
     )
 
     asked = client.calls[1]["user"]
-    assert "it is marked suspect and cites evidence" in asked and _REASKED not in asked
+    assert "it is marked suspect and cites evidence" in asked
     assert "Ada Moss" in asked and _PRESS.text in asked
     grade = _grade((_LIVES_IN_YORK,), verification)
     assert [call.role for call in grade.calls] == ["truth", "repair"]
@@ -2044,13 +2151,11 @@ async def test_a_suspect_claim_that_cites_a_key_fact_is_repaired_as_before_shown
 
 
 async def test_a_restatement_takes_its_originals_reask_outcome() -> None:
-    client = _FakeScriptedClient(
-        [_doubted(), _repair(_cite("K1", "contradicts", quote=_LEEDS, subject="Ann Lee", value="Leeds"))]
-    )
+    client = _FakeScriptedClient([_doubted(), _reasked((0, [_IN_LEEDS]))])
 
     verification = await _verify(client, (_LIVES_IN_YORK, _SAID_AGAIN), key=_key(("Ann Lee", _LEEDS)), documents=())
 
-    assert len(client.calls) == 2, "the restatement is asked again with its original, never alone"
+    assert len(client.calls) == 2, "the restatement rides with its original"
     assert 'It is said again, as claim 1: "As I said, Ann Lee lives in York"' in client.calls[1]["user"]
     claims = _grade((_LIVES_IN_YORK, _SAID_AGAIN), verification).claims
     assert [(claim.verdict, claim.graded_against, claim.decided_by) for claim in claims] == [
@@ -2060,7 +2165,7 @@ async def test_a_restatement_takes_its_originals_reask_outcome() -> None:
 
 
 async def test_a_restatement_takes_its_originals_web_outcome_after_a_reask_that_cites_nothing() -> None:
-    client = _FakeScriptedClient([_doubted(), _repair(suspect=True)])
+    client = _FakeScriptedClient([_doubted(), _reasked((0, []))])
 
     verification = await _verify(client, (_LIVES_IN_YORK, _SAID_AGAIN), key=_key(("Ann Lee", _LEEDS)), documents=())
     claims = graded_claims((_LIVES_IN_YORK, _SAID_AGAIN), verification, calls_before=0, web={0: WebGraded("false")})
@@ -2073,11 +2178,11 @@ async def test_a_restatement_takes_its_originals_web_outcome_after_a_reask_that_
     [
         (RuntimeError("the provider refused the call"), RuntimeError, None),
         (
-            _Reply(content=json.dumps({"citations": [], "suspect": True}), sent_settings="fast"),
+            _Reply(content=json.dumps({"claims": [{"claim": 0, "citations": []}]}), sent_settings="fast"),
             CompletionProtocolDefect,
             None,
         ),
-        (_Reply(content='{"citations": [', stop_reason="max_tokens"), ClaimGradingFailed, "cut_short"),
+        (_Reply(content='{"claims": [', stop_reason="max_tokens"), ClaimGradingFailed, "cut_short"),
     ],
     ids=["provider", "protocol", "cut-short"],
 )
@@ -2093,28 +2198,12 @@ async def test_a_reask_that_fails_is_the_callers_to_see_never_an_unverifiable(
         assert isinstance(failed.value, ClaimGradingFailed) and failed.value.loss == loss
 
 
-async def test_a_reask_past_the_truth_steps_repair_budget_is_a_loss() -> None:
-    """A re-ask is an item the truth step asks again, counted with its repairs against ``max_items_per_cell``: one the
-    budget cannot hold fails the criterion, naming the re-ask, rather than leaving the claim unverifiable."""
-    client = _FakeScriptedClient([_doubted()])
-
-    with pytest.raises(ClaimGradingFailed, match="ask 1 suspect truth claim") as failed:
-        await _verify(
-            client,
-            (_LIVES_IN_YORK,),
-            key=_key(("Ann Lee", _LEEDS)),
-            documents=(),
-            repairs=RepairBudget(rounds=2, max_items_per_cell=0),
-        )
-
-    assert failed.value.loss == "repair_budget_spent"
-    assert len(client.calls) == 1
-
-
-async def test_a_reask_shares_the_truth_steps_items_with_its_repairs() -> None:
-    """The truth step's repairs and its re-asks draw on one ``max_items_per_cell``: a repair that spends the one item
-    leaves none for the re-ask."""
-    client = _FakeScriptedClient([_batch(_answer(0, _cite("K9"))), _repair(suspect=True)])
+async def test_a_failing_reask_item_is_repaired_within_what_the_truth_steps_repairs_left() -> None:
+    """A re-ask item that fails a check is repaired as a truth batch's is, from the same ``max_items_per_cell``: a
+    batch repair that spent the one item leaves none, and the failing item is the criterion's loss."""
+    client = _FakeScriptedClient(
+        [_batch(_answer(0, _cite("K9"))), _repair(suspect=True), _reasked((0, [_cite("K1", "contradicts")]))]
+    )
 
     with pytest.raises(ClaimGradingFailed, match="1 of the step's 1 repairs spent") as failed:
         await _verify(
@@ -2128,42 +2217,40 @@ async def test_a_reask_shares_the_truth_steps_items_with_its_repairs() -> None:
     assert failed.value.loss == "repair_budget_spent"
 
 
-async def test_an_unreadable_reask_is_repaired_and_one_still_unreadable_is_a_loss() -> None:
-    contradiction = _repair(_cite("K1", "contradicts", quote=_LEEDS, subject="Ann Lee", value="Leeds"))
-    repaired = _FakeScriptedClient([_doubted(), _Reply(content="not json"), contradiction])
+async def test_an_unreadable_reask_is_asked_again_in_full_and_one_never_readable_is_a_loss() -> None:
+    readable = _FakeScriptedClient([_doubted(), _Reply(content="not json"), _reasked((0, [_IN_LEEDS]))])
 
-    verification = await _verify(repaired, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _LEEDS)), documents=())
+    verification = await _verify(readable, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _LEEDS)), documents=())
 
-    assert "the last correction could not be used" in repaired.calls[2]["user"]
+    assert "It could not be used" in readable.calls[2]["user"] and _schema(readable.calls[2]) == "claim_reask"
     assert _grade((_LIVES_IN_YORK,), verification).claims[0].verdict == "contradicted"
     unreadable = _FakeScriptedClient([_doubted(), *[_Reply(content="not json")] * 3])
     with pytest.raises(ClaimGradingFailed) as failed:
         await _verify(unreadable, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _LEEDS)), documents=())
-    assert failed.value.loss == "repair_budget_spent"
+    assert failed.value.loss == "unreadable"
 
 
-async def test_the_price_ceiling_bounds_a_reask() -> None:
-    """A re-ask is priced as a truth repair is: one of the step's ``max_items_per_cell`` items, shown no more than the
-    whole evidence."""
-    repairs = RepairBudget(rounds=0, max_items_per_cell=1)
-    ceiling = _verifier(_FakeBytePricedClient([]), repairs=repairs).price_ceiling(
-        _LEE[:1], key=_key(("Ann Lee", _LEEDS)), documents=(_PRESS,)
-    )
-    client = _FakeScriptedClient(
-        [_doubted(), _repair(_cite("K1", "contradicts", quote=_LEEDS, subject="Ann Lee", value="Leeds"))]
-    )
+async def test_the_price_ceiling_bounds_the_reask() -> None:
+    """The re-ask is priced once per cell, asked in full up to its attempts, at every key fact."""
+    repairs = RepairBudget(rounds=0, max_items_per_cell=0)
+    key = _key(("Ann Lee", _LEEDS))
+    ceiling = _verifier(_FakeBytePricedClient([]), repairs=repairs).price_ceiling(_LEE, key=key, documents=(_PRESS,))
+    unkeyed = _verifier(_FakeBytePricedClient([]), repairs=repairs).price_ceiling(_LEE, key=None, documents=(_PRESS,))
+    client = _FakeScriptedClient([_doubted(), *[_Reply(content="not json")] * 2, _reasked((0, [_IN_LEEDS]))])
 
-    await _verify(client, (_LIVES_IN_YORK,), key=_key(("Ann Lee", _LEEDS)), documents=(_PRESS,), repairs=repairs)
+    await _verify(client, (_LIVES_IN_YORK,), key=key, documents=(_PRESS,), repairs=repairs)
 
-    spent = sum((len(call["system"].encode()) + len(call["user"].encode())) * 1e-6 for call in client.calls)
-    assert len(client.calls) == 2 and ceiling is not None and spent <= ceiling
+    reasks = [call for call in client.calls if _schema(call) == "claim_reask"]
+    spent = sum((len(call["system"].encode()) + len(call["user"].encode())) * 1e-6 for call in reasks)
+    assert ceiling is not None and unkeyed is not None
+    assert len(reasks) == 3 and spent <= ceiling - unkeyed
 
 
 #: The identity of :func:`_verifier` over a client of :data:`_MODEL`, with :data:`_WHOLE` and :data:`_REPAIRS`, from
 #: the shipped prompts, schemas, selection, batch and sentence-break rules, quote cap, attempts and fold. Produced by
 #: ``ClaimVerifier.identity`` itself; it moves with any change to them, and with the fold's tables or Unicode
 #: version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/verify|claimverify:8f3635b5f05b"
+_PINNED_IDENTITY = "scripted/verify|claimverify:21a9a6b8ab71"
 
 
 def test_the_identity_names_the_model_and_moves_with_every_budget_and_setting() -> None:
