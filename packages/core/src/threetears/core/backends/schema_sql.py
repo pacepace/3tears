@@ -28,7 +28,7 @@ from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn, KeyColumns
-from threetears.core.ddl.row_epoch import EPOCH_COLUMN, rising_epoch_assignment
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, rising_epoch_assignment
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
@@ -1093,7 +1093,28 @@ def build_whole_key_select_sql(schema: TableSchema) -> str:
     if len(arrays) > 1:
         key = ", ".join(as_written(name) for name in schema.pk_columns)
         pk_where += f" AND ({key}) IN (SELECT * FROM unnest({', '.join(arrays)}))"
-    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {pk_where}"
+    return f"SELECT {build_select_column_list(schema)} FROM {schema.name} WHERE {pk_where}{_live_condition(schema)}"
+
+
+def _stamped(schema: TableSchema) -> bool:
+    """whether ``schema`` declares a stamped table (``row_epoch=ROW_STAMPED``: one row a key, updated in place, a
+    delete marking it gone); a stand-in schema with no declaration is not one."""
+    declared = getattr(schema, "row_epoch", None)
+    return declared is not None and not declared.versions
+
+
+def _live_condition(schema: TableSchema) -> str:
+    """the condition (`` AND ...``) an L3 read of a stamped table's rows by its key adds, so it answers only live rows,
+    never one a delete marked gone (``TableSchema``: a stamped delete is an update in place setting the flag, so a
+    restore hears it). Empty for any other table. FOLD NOTE: the stamped twin of append-only chunk 3's
+    ``newest_condition``.
+
+    :param schema: table schema, read as ``FROM <schema.name>`` with no alias
+    :ptype schema: TableSchema
+    :return: the condition with its leading `` AND ``, or the empty string
+    :rtype: str
+    """
+    return f" AND NOT {as_written(GONE_COLUMN)}" if _stamped(schema) else ""
 
 
 def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
@@ -1113,7 +1134,7 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     lead_key = schema.pk_columns[0]
     return (
         f"SELECT {build_select_column_list(schema, columns)} FROM {schema.name} "
-        f"WHERE {as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)})"
+        f"WHERE {as_written(lead_key)} = ANY($1::{_required_array_type(schema, lead_key)}){_live_condition(schema)}"
     )
 
 
@@ -1505,7 +1526,13 @@ def build_select_column_list(schema: TableSchema, columns: Sequence[str] | None 
     :rtype: str
     """
     text_cast_types = (_VECTOR_TYPE, _TSVECTOR_TYPE)
-    chosen = list(schema.columns) if columns is None else [schema.column(name) for name in columns]
+    # a stamped table's gone flag is no column of a row a read answers: a read sees only live rows (live_condition),
+    # whose flag is always false; its L3 restore bucket is no declared column at all
+    chosen = (
+        [col for col in schema.columns if not (_stamped(schema) and col.name == GONE_COLUMN)]
+        if columns is None
+        else [schema.column(name) for name in columns]
+    )
     parts: list[str] = []
     for col in chosen:
         name = as_written(col.name)
@@ -1523,7 +1550,7 @@ def build_fetch_sql(schema: TableSchema) -> str:
     """
     pk_where, _ = build_where_pk(schema, start=1)
     columns = build_select_column_list(schema)
-    return f"SELECT {columns} FROM {schema.name} WHERE {pk_where}"
+    return f"SELECT {columns} FROM {schema.name} WHERE {pk_where}{_live_condition(schema)}"
 
 
 def build_delete_sql(schema: TableSchema) -> str:

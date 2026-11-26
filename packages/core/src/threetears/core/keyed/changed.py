@@ -42,7 +42,7 @@ from typing import Any, Final
 from threetears.core.backends.arrow_reply import _rail_arrow_table
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed import _filters
-from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, narrowing, sent_by
+from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, live_only, narrowing, sent_by
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
 from threetears.core.keyed.held import hash_bytes as _hash_bytes
@@ -931,7 +931,7 @@ async def _group_hash_rows(
     last: Sequence[Any] | None = None
     while True:
         conditions, params = by_conditions(by, alias="t")
-        for fragment in where:
+        for fragment in live_only(conn, relation, where):
             conditions.append(narrowing(fragment, len(params)))
             params.extend(fragment.params)
         if last is not None:

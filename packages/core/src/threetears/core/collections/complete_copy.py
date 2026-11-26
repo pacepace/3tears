@@ -21,6 +21,7 @@ from threetears.observe import get_logger
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.collections.schema_backed import rail_arrow_types
+from threetears.core.keyed._filters import live_only
 from threetears.core.keyset import keyset_arrow_pages, keyset_pages, read_keyset_pages
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 
@@ -136,6 +137,8 @@ async def read_l3_rows(
         where=where,
         where_any=where_any,
         page_size=page_size,
+        # a stamped table's live rows alone (keyed.live_only)
+        conditions=live_only(l3, table, row=None),
         lead_array=lead_array,
     )
     return read.rows
@@ -176,7 +179,15 @@ def l3_row_pages(
     :rtype: AsyncGenerator[list[dict[str, Any]], None]
     :raises ValueError: when ``page_size`` is under one (at the first page)
     """
-    return keyset_pages(l3, _select_from(table, columns), key, where=where, page_size=page_size, lead_array=lead_array)
+    return keyset_pages(
+        l3,
+        _select_from(table, columns),
+        key,
+        where=where,
+        page_size=page_size,
+        conditions=live_only(l3, table, row=None),
+        lead_array=lead_array,
+    )
 
 
 async def read_l3_arrow(
@@ -273,6 +284,7 @@ def _l3_arrow_pages(
         where=where,
         where_any=where_any,
         page_size=page_size,
+        conditions=live_only(l3, table, row=None),
         lead_array=lead_array,
     )
 

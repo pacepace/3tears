@@ -53,6 +53,7 @@ from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort
 from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
+from threetears.interfaces.keyed.keys import default_projection
 from threetears.interfaces.keyed.steps import Match, Quoted, Rel, Step, change_relation
 
 __all__ = [
@@ -123,9 +124,12 @@ class _Statement:
         return Step(sql, tuple(self.params))
 
 
-def _columns(columns: Sequence[str | Selected] | None, alias: str = "t") -> str:
+def _columns(columns: Sequence[str | Selected] | None, alias: str = "t", rel: Rel | None = None) -> str:
+    """a step's select list: ``columns``, or every column of ``rel`` read as ``alias`` when None (``<alias>.*``; a
+    stamped table's declared columns, never its L3 restore bucket: :func:`~threetears.interfaces.keyed.keys.
+    default_projection`)."""
     if columns is None:
-        return f"{alias}.*"
+        return f"{alias}.*" if rel is None else default_projection(rel, alias)
     if not columns:
         raise ValueError("a step selects at least one column (None selects every one)")
     return ", ".join(selected_column(column, alias) for column in columns)
@@ -150,7 +154,7 @@ def scan(rel: Rel, columns: Sequence[str | Selected] | None = None, *, where: Se
     statement = _Statement()
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
-    return statement.step(f"SELECT {_columns(columns)} FROM {source}{_where(conditions)}")
+    return statement.step(f"SELECT {_columns(columns, rel=rel)} FROM {source}{_where(conditions)}")
 
 
 def _matched(
@@ -171,7 +175,7 @@ def _matched(
     inner = [match.condition("t", "k") for match in on] + statement.fragments(also)
     exists = f"{'' if present else 'NOT '}EXISTS (SELECT 1 FROM {other} WHERE {' AND '.join(inner)})"
     conditions = [exists, *statement.fragments(where)]
-    return statement.step(f"SELECT {_columns(columns)} FROM {source}{_where(conditions)}")
+    return statement.step(f"SELECT {_columns(columns, rel=rel)} FROM {source}{_where(conditions)}")
 
 
 def semi(
@@ -267,7 +271,7 @@ def joined(
     conditions = statement.fragments(where)
     kind = "LEFT JOIN" if left else "JOIN"
     return statement.step(
-        f"SELECT {_columns(columns)} FROM {source} {kind} {joined_to} ON {' AND '.join(matched)}{_where(conditions)}"
+        f"SELECT {_columns(columns, rel=rel)} FROM {source} {kind} {joined_to} ON {' AND '.join(matched)}{_where(conditions)}"
     )
 
 
@@ -301,7 +305,7 @@ def distinct(
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
     after = _where(conditions) + (" OFFSET 0" if fenced else "")
-    return statement.step(f"SELECT DISTINCT {_columns(columns)} FROM {source}{after}")
+    return statement.step(f"SELECT DISTINCT {_columns(columns, rel=rel)} FROM {source}{after}")
 
 
 def largest(column: str, *, cast: str | None = None, default: str | None = None, alias: str | None = None) -> Selected:
@@ -458,7 +462,7 @@ def latest_per_key(
         ]
     )
     return statement.step(
-        f"SELECT DISTINCT ON ({keyed}) {_columns(columns)} FROM {source}{_where(conditions)} ORDER BY {ordered}"
+        f"SELECT DISTINCT ON ({keyed}) {_columns(columns, rel=rel)} FROM {source}{_where(conditions)} ORDER BY {ordered}"
     )
 
 
@@ -853,7 +857,7 @@ def windowed(
     statement = _Statement()
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
-    inner = ", ".join(["t.*", *(selected_column(window) for window in windows)])
+    inner = ", ".join([_columns(None, rel=rel), *(selected_column(window) for window in windows)])
     kept = statement.fragments(keep)
     if columns is None:
         hidden = ", ".join(quote_identifier(window.alias) for window in windows)

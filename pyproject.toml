@@ -661,6 +661,8 @@ module = [
     # and a write's delta files built and saved in a worker process (Arrow IPC across)
     "threetears.core.collections.delta_save",
     "threetears.core.collections.schema_backed",
+    # and quiet-time cleanup of a stamped table's gone rows, a page of their keys read and deleted as Arrow
+    "threetears.core.collections.stamped_cleanup",
     "threetears.core.backends.arrow_reply",
     # and a copy's rows sent as Arrow
     "threetears.core.backends.arrow_copy",

@@ -40,11 +40,20 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, reads_l3, sent_by, yugabyte_index_hint
+from threetears.core.keyed._filters import (
+    Derived,
+    Fragment,
+    Lock,
+    Selected,
+    live_only,
+    reads_l3,
+    sent_by,
+    yugabyte_index_hint,
+)
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
-from threetears.interfaces.keyed.keys import refuse_non_unique_order
+from threetears.interfaces.keyed.keys import declared_columns, refuse_non_unique_order
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -121,6 +130,10 @@ async def keyset_page(
         registered keys (:func:`~threetears.interfaces.keyed.keys.refuse_non_unique_order`)
     :raises CursorError: when ``cursor`` is not one this sort issued
     """
+    # every column of a stamped table is its declared ones, never its L3 restore bucket (keys.declared_columns); its
+    # rows are its live ones alone (live_only)
+    columns = declared_columns(table) if columns is None else columns
+    where = live_only(conn, table, where)
     check_page(table, columns, order, limit)
     if cursor is not None:
         # a page past a cursor skips every row sharing its last row's order values unless the order holds a key
@@ -233,6 +246,7 @@ async def keyset_rows(
     :raises ValueError: as :func:`keyset_page`
     """
     check_page(table, columns, order, page)
+    where = live_only(conn, table, where)
     # every statement after the first starts past the last row read: the order must hold a key
     refuse_non_unique_order(table, by, order, l3=reads_l3(conn))
     rows: list[dict[str, Any]] = []
@@ -276,6 +290,7 @@ async def copy_keyed(
     order: Sequence[Sort],
     where: Sequence[Fragment] = (),
     force_quote: Sequence[str] = (),
+    with_gone: bool = False,
 ) -> bytes:
     """every row of ``table`` that ``by`` names, in ``order``, as PostgreSQL ``COPY`` CSV text (no header): the read
     :func:`keyset_rows` makes, streamed as the server writes it, never a row decoded here.
@@ -299,13 +314,17 @@ async def copy_keyed(
     :ptype where: Sequence[Fragment]
     :param force_quote: the columns (by their names) always quoted
     :ptype force_quote: Sequence[str]
+    :param with_gone: read a stamped table's gone rows too (:func:`~threetears.core.keyed.live_only` left out): a
+        restore of a lost change log, which hears each delete by its gone row. Every other read sees live rows alone
+    :ptype with_gone: bool
     :return: the text, a line per row
     :rtype: bytes
     :raises ValueError: as :func:`keyset_page`
     """
     # no cursor is made from the rows, so a sort column need not be read (a time sorted by, read as its text)
     check_page(table, [*columns, *(sort.column for sort in order if sort.expression is None)], order, 1)
-    sql, params = page_statement(table, columns, by, order, 1, None, False, (), where, None)
+    read = where if with_gone else live_only(conn, table, where)
+    sql, params = page_statement(table, columns, by, order, 1, None, False, (), read, None)
     sql = sql.removesuffix(" LIMIT 1")
     chunks: list[bytes] = []
 

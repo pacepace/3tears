@@ -32,6 +32,7 @@ from threetears.core.keyed._filters import (
     by_conditions,
     quoted_table,
     narrowing,
+    refuse_stamped_delete,
 )
 from threetears.core.keyed.counts import rows_affected
 from threetears.core.keyed.binding import binder_for
@@ -169,7 +170,9 @@ async def delete_keyed(
     :return: the count deleted, and the rows returned
     :rtype: KeyedWrite
     :raises ValueError: when neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix is empty or not text
+    :raises AppendOnlyWriteError: when ``table`` is a stamped L3 table
     """
+    refuse_stamped_delete(conn, table)
     statements = delete_keyed_statements(
         table,
         by=by,

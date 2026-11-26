@@ -63,7 +63,13 @@ from threetears.interfaces.keyed.page import Sort
 
 __all__ = [
     "DeclaredIndex",
+    "StampedTable",
     "TableKey",
+    "declared_columns",
+    "default_projection",
+    "live_guard",
+    "register_stamped_table",
+    "stamped_table",
     "index_hint",
     "not_null_predicate",
     "null_predicate",
@@ -621,3 +627,127 @@ def index_hint(index: DeclaredIndex | None, alias: str = "t") -> str:
     if index is None or index.primary:
         return ""
     return f"/*+ IndexOnlyScan({alias} {index.name}) */ "
+
+
+@dataclass(frozen=True, slots=True)
+class StampedTable:
+    """a stamped L3 table (``ROW_STAMPED``: one row a key, updated in place) as a read of it sees it: only its live
+    rows, never one its delete marked gone, and only its declared columns.
+
+    A delete of a stamped row updates it in place, its ``gone`` flag set and its epoch risen, so a restore of a lost
+    change log reads it back by its ``(bucket, epoch)`` index (append-only L3, decision 2: "deletes become markers
+    everywhere, because a real delete leaves nothing for a restore to find"). Every shared keyed read then skips it
+    (:func:`live_guard`), and a read of every column names the declared ones (:func:`default_projection`), never the
+    L3 table's own restore bucket or the flag.
+
+    The stamped twin of the versioned declaration (``VersionedTable`` and ``newest_guard``, append-only chunk 3, on its
+    own branch): FOLD NOTE for the append-only fold, one registration a table and one guard function beside the read.
+
+    :ivar name: the table's name as declared
+    :ivar gone: the column its delete sets (``gone``)
+    :ivar columns: its declared columns but the flag, in order: what a read of every column reads
+    """
+
+    name: str
+    gone: str
+    columns: tuple[str, ...]
+
+
+#: every ``(relation, stamped table)`` a declaration registered, once each, a tuple replaced whole (as the keys are)
+_STAMPED: tuple[tuple[Relation, StampedTable], ...] = ()
+
+
+def register_stamped_table(declared: StampedTable) -> None:
+    """record that the L3 table ``declared.name`` names is a stamped one (:class:`StampedTable`), replacing any earlier
+    registration of that same relation (a schema built again names the same columns).
+
+    :param declared: the table
+    :ptype declared: StampedTable
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when its name is no relation's name, or a column is no plain column name
+    """
+    relation = _relation(declared.name)
+    if relation is None:
+        raise ValueError(f"{declared.name!r} names no table (schema.table, or a bare table): it cannot be registered")
+    for column in (declared.gone, *declared.columns):
+        if _COLUMN.fullmatch(column) is None:
+            raise ValueError(f"{declared.name}: {column!r} is not a plain column name")
+    global _STAMPED
+    _STAMPED = (*((named, held) for named, held in _STAMPED if named != relation), (relation, declared))
+
+
+def _stamped(table: Any) -> StampedTable | None:
+    """the stamped declaration of the relation ``table`` names, wherever it is read; None for any other.
+
+    :param table: the relation a read names
+    :ptype table: Any
+    :return: the declaration, or None
+    :rtype: StampedTable | None
+    """
+    relation = _relation(table) if isinstance(table, str) else None
+    if relation is None:
+        return None
+    return next((declared for named, declared in _STAMPED if named == relation), None)
+
+
+def stamped_table(table: Any, *, l3: bool) -> StampedTable | None:
+    """the stamped declaration of the L3 table a read names: None for a read that does not go to L3 (a local copy
+    holds only live rows: it is filled from reads that skip the gone ones), a derived relation, or a table no stamped
+    declaration names.
+
+    :param table: the relation read
+    :ptype table: Any
+    :param l3: whether the read goes to L3
+    :ptype l3: bool
+    :return: the declaration, or None
+    :rtype: StampedTable | None
+    """
+    return _stamped(table) if l3 else None
+
+
+def live_guard(declared: StampedTable, row: str | None = "t") -> str:
+    """the condition a read of a stamped table adds so it answers only live rows: ``NOT <row>."gone"``.
+
+    :param declared: the table
+    :ptype declared: StampedTable
+    :param row: how the statement names the row read (its alias, or the quoted relation); None for a read naming its
+        columns unqualified (one relation, no alias)
+    :ptype row: str | None
+    :return: the condition
+    :rtype: str
+    """
+    column = f'"{declared.gone}"'
+    return f"NOT {column}" if row is None else f"NOT {row}.{column}"
+
+
+def declared_columns(table: Any) -> tuple[str, ...] | None:
+    """the columns a read of every column of ``table`` names: a stamped table's declared ones but its gone flag
+    (:class:`StampedTable`), never the L3 table's restore bucket; None for any other relation, read as ``t.*``.
+
+    :param table: the relation read
+    :ptype table: Any
+    :return: the columns, or None
+    :rtype: tuple[str, ...] | None
+    """
+    declared = _stamped(table)
+    return None if declared is None else declared.columns
+
+
+def default_projection(table: Any, alias: str = "t") -> str:
+    """what a read of every column of ``table`` selects: ``<alias>.*``, or a stamped table's declared columns one by
+    one, so neither the L3 table's restore bucket (``epoch_bucket``, a stored generated column no cache, entity or
+    write names) nor its gone flag is ever answered. The same wherever the relation is read: a local copy holds the
+    declared columns too.
+
+    :param table: the relation read
+    :ptype table: Any
+    :param alias: the alias the statement reads it by
+    :ptype alias: str
+    :return: the select list
+    :rtype: str
+    """
+    columns = declared_columns(table)
+    if columns is None:
+        return f"{alias}.*"
+    return ", ".join(f'{alias}."{column}"' for column in columns)

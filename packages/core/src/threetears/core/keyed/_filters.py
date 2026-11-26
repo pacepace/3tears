@@ -13,10 +13,11 @@ from typing import Any, Final
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.ddl.row_epoch import AppendOnlyWriteError
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
-from threetears.interfaces.keyed.keys import index_hint, not_null_guards, serving_index
+from threetears.interfaces.keyed.keys import index_hint, live_guard, not_null_guards, serving_index, stamped_table
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
@@ -62,8 +63,10 @@ __all__ = [
     "reads_yugabyte",
     "selected_column",
     "relation",
+    "live_only",
     "narrowing",
     "one_use_each",
+    "refuse_stamped_delete",
     "renumbered",
     "sent_by",
     "yugabyte_index_hint",
@@ -190,6 +193,56 @@ def reads_l3(conn: Any) -> bool:
     # answers any name it is asked, and is no datasource
     named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
     return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
+
+
+def live_only(conn: Any, table: Any, where: Sequence[Fragment] = (), *, row: str | None = "t") -> tuple[Fragment, ...]:
+    """a keyed read's filters, with a stamped L3 table's live guard beside them: the read then answers only live
+    rows, never one a delete marked gone (:func:`~threetears.interfaces.keyed.keys.live_guard`). Unchanged for a read
+    that does not go to L3 (a local copy holds only live rows), a derived relation, or a table no stamped declaration
+    names.
+
+    The one place every shared keyed read asks it, so no read of a stamped table answers a gone row. FOLD NOTE: the
+    stamped twin of append-only chunk 3's ``newest_only`` (its own branch); the fold asks both in one place.
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: Any
+    :param where: the read's own filters
+    :ptype where: Sequence[Fragment]
+    :param row: how the statement names the row read: its alias, the quoted relation where it has none, or None for
+        a statement naming its columns unqualified
+    :ptype row: str | None
+    :return: the filters to read by
+    :rtype: tuple[Fragment, ...]
+    """
+    declared = stamped_table(table, l3=reads_l3(conn))
+    if declared is None:
+        return tuple(where)
+    return (*where, Fragment(live_guard(declared, row)))
+
+
+def refuse_stamped_delete(conn: Any, table: Any) -> None:
+    """refuse a keyed ``DELETE`` of a stamped L3 table (``ROW_STAMPED``): a delete of one of its keys marks its row
+    gone in place (``SqlL3Backend.mark_gone``, the collection's ``delete_rows``), so a restore of a lost change log
+    hears it; a real delete leaves nothing for one to find (append-only L3, decision 2). Only quiet-time cleanup
+    deletes from it, below the restore window, through its own statements
+    (:func:`~threetears.core.collections.stamped_cleanup.clear_stamped_gone`). FOLD NOTE: append-only chunk 3 refuses
+    a versioned table's here too (``_refuse_in_place``); the fold names both in one refusal.
+
+    :param conn: the connection the delete would run on; None for a collection's own L3 pool
+    :ptype conn: Any
+    :param table: the table deleted from
+    :ptype table: Any
+    :return: nothing
+    :rtype: None
+    :raises AppendOnlyWriteError: when ``table`` is a stamped L3 table
+    """
+    if stamped_table(table, l3=conn is None or reads_l3(conn)) is not None:
+        raise AppendOnlyWriteError(
+            f"{table} is stamped (ROW_STAMPED): a keyed delete would leave nothing for a restore to find; delete its "
+            "keys as gone marks through its collection (delete_rows) or the L3 backend (mark_gone)"
+        )
 
 
 async def reads_yugabyte(conn: Any) -> bool:

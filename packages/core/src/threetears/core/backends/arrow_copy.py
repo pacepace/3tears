@@ -512,20 +512,28 @@ def with_typed_constants(table: Any, values: Mapping[str, tuple[Any, Any]]) -> A
     return table
 
 
-def with_constant_columns(table: Any, values: Mapping[str, datetime | int]) -> Any:
+def with_constant_columns(table: Any, values: Mapping[str, datetime | int | bool]) -> Any:
     """``table`` with each of ``values`` as a column holding it in every row: replacing a column of that name, else
     added after the rest. Laid out by Arrow, never a Python value a row. A write's stamps: its times (``date_created``,
-    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``; its epoch (``epoch``), an int, as ``int64``.
+    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``; its epoch (``epoch``), an int, as ``int64``; a
+    stamped table's ``gone`` flag, a bool, as ``bool``.
 
     :param table: the rows
     :ptype table: pyarrow.Table
-    :param values: each column's one value, an aware datetime or an int
-    :ptype values: Mapping[str, datetime | int]
+    :param values: each column's one value, an aware datetime, an int or a bool
+    :ptype values: Mapping[str, datetime | int | bool]
     :return: the rows with them
     :rtype: pyarrow.Table
     """
     for name, value in values.items():
-        kind = pa.int64() if isinstance(value, int) else pa.timestamp("us", tz="UTC")
+        # a bool before an int: Python's bool is an int
+        kind = (
+            pa.bool_()
+            if isinstance(value, bool)
+            else pa.int64()
+            if isinstance(value, int)
+            else pa.timestamp("us", tz="UTC")
+        )
         column = pa.repeat(pa.scalar(value, kind), table.num_rows, memory_pool=_POOL)
         position = table.schema.get_field_index(name)
         table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)

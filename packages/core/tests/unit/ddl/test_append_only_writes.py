@@ -103,7 +103,15 @@ def test_a_versioned_table_declares_its_gone_flag_false_unless_written() -> None
     gone = _CANDIDATES.column(GONE_COLUMN)
     assert (gone.column_type, gone.nullable, gone.server_default, gone.immutable) == (BOOL_TYPE, False, "false", True)
     assert _CANDIDATES.versioned and not _RUNS.versioned
-    assert _RUNS.get_column(GONE_COLUMN) is None
+    # a stamped table's flag is set in place by its delete, and cleared by its next write: mutable
+    # (test_stamped_gone)
+    stamped = _RUNS.column(GONE_COLUMN)
+    assert (stamped.column_type, stamped.nullable, stamped.server_default, stamped.immutable) == (
+        BOOL_TYPE,
+        False,
+        "false",
+        False,
+    )
 
 
 def test_a_gone_marker_carries_the_key_the_scope_the_epoch_and_the_flag() -> None:
