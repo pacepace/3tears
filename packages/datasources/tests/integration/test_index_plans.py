@@ -2,7 +2,8 @@
 
 The no-whole-reads rule (:mod:`threetears.enforcement.no_whole_reads`) keys a read by an index only when the index
 names that read as its ``purpose``; these are the ``plan_test`` each names. The hub's migrations build these tables
-and their indexes; each test builds the table and the index as the hub leaves them, seeds it past the size where the
+and their indexes; each test builds the table and its indexes from the package's declarations
+(:mod:`.declared_tables`), never a hand-written copy that drifts from them, seeds it past the size where the
 planner would rather scan, runs the purpose's own statement through ``EXPLAIN ANALYZE``
 (:class:`threetears.core.testing.plans.PlanRecorder`), and asks the plan whether it found its rows through the index by
 an index condition (:func:`~threetears.core.testing.plans.plan_uses_index`).
@@ -16,9 +17,6 @@ from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
-from sqlalchemy import MetaData
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.schema import CreateTable
 
 from threetears.core.collections.delete_cascade import read_delete_cascade
 from threetears.core.collections.registry import CollectionRegistry
@@ -26,39 +24,16 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.captured import CapturedL3
 from threetears.core.testing.plans import PlanRecorder, explain_statement, plan_uses_index
 from threetears.datasources.collections import (
+    DATASOURCE_CUSTOMERS_SCHEMA,
     CapabilitySourceCollection,
     DataSourceTableCollection,
     TableTemplateCollection,
 )
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
+from .declared_tables import create_declared
+
 pytestmark = pytest.mark.integration
-
-#: ``datasource_tables`` as hub v001, v006, v010 and v033 leave it, the columns a cascade's read names
-_DATASOURCE_TABLES_DDL = """
-CREATE TABLE datasource_tables (
-    id uuid NOT NULL PRIMARY KEY,
-    datasource_id uuid NOT NULL,
-    schema_name character varying(255) NOT NULL,
-    table_name character varying(255) NOT NULL,
-    template_id uuid,
-    date_created timestamp with time zone NOT NULL DEFAULT now(),
-    date_updated timestamp with time zone NOT NULL DEFAULT now(),
-    epoch bigint NOT NULL DEFAULT 1,
-    gone boolean NOT NULL DEFAULT false
-)
-"""
-
-#: hub v146's index (``USING lsm (template_id HASH)`` on YugabyteDB, the database's default first column there)
-_BY_TEMPLATE_DDL = (
-    "CREATE INDEX datasource_tables_by_template ON datasource_tables (template_id) WHERE template_id IS NOT NULL"
-)
-
-#: the hub's natural-key index, among live rows only (datasources' LIVE_UNIQUE_INDEXES)
-_NATURAL_KEY_DDL = (
-    "CREATE UNIQUE INDEX datasource_tables_datasource_id_schema_name_table_name_key"
-    " ON datasource_tables (datasource_id, schema_name, table_name) WHERE NOT gone"
-)
 
 #: rows seeded: past the size where the planner would rather scan than use an index
 _ROWS = 5000
@@ -69,19 +44,19 @@ _TEMPLATES = 500
 
 @pytest.fixture
 async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
-    """A connection on a fresh schema holding ``datasource_tables`` and its template index, seeded."""
+    """A connection on a fresh schema holding ``datasource_tables`` and its indexes as declared, seeded."""
     schema = f"dsplan_{uuid.uuid4().hex[:12]}"
     connection = await asyncpg.connect(db_container)
     try:
         await connection.execute(f'CREATE SCHEMA "{schema}"')
         await connection.execute(f'SET search_path TO "{schema}"')
-        await connection.execute(_DATASOURCE_TABLES_DDL)
-        await connection.execute(_BY_TEMPLATE_DDL)
+        await create_declared(connection, DataSourceTableCollection.schema)
         templates = [uuid.uuid4() for _ in range(_TEMPLATES)]
         await connection.execute(
-            "INSERT INTO datasource_tables (id, datasource_id, schema_name, table_name, template_id)"
+            "INSERT INTO datasource_tables"
+            " (id, datasource_id, schema_name, table_name, template_id, date_created, date_updated, epoch)"
             " SELECT gen_random_uuid(), gen_random_uuid(), 's', 't' || g,"
-            " CASE WHEN g % 10 <> 0 THEN ($1::uuid[])[1 + g % $2] END FROM generate_series(1, $3) g",
+            " CASE WHEN g % 10 <> 0 THEN ($1::uuid[])[1 + g % $2] END, now(), now(), 1 FROM generate_series(1, $3) g",
             templates,
             _TEMPLATES,
             _ROWS,
@@ -114,8 +89,6 @@ async def test_a_template_delete_reads_the_tables_it_unbinds_through_datasource_
 async def test_a_table_is_read_by_its_natural_key_through_its_live_unique_index(conn: asyncpg.Connection) -> None:
     """Flips if the introspector's read of one table by its natural key (datasource, schema, name) stops reading the
     hub's live unique index on it (datasources' LIVE_UNIQUE_INDEXES), or answers another row."""
-    await conn.execute(_NATURAL_KEY_DDL)
-    await conn.execute("ANALYZE datasource_tables")
     wanted = await conn.fetchrow("SELECT id, datasource_id FROM datasource_tables WHERE table_name = 't7'")
     recorder = PlanRecorder(conn)
     tables = DataSourceTableCollection(registry=CollectionRegistry(), config=DefaultCoreConfig())
@@ -128,22 +101,6 @@ async def test_a_table_is_read_by_its_natural_key_through_its_live_unique_index(
     ]
 
 
-#: ``datasources`` as hub v001 leaves it, the columns the sweep's read names (and the name it is unique on)
-_DATASOURCES_DDL = """
-CREATE TABLE datasources (
-    id uuid NOT NULL PRIMARY KEY,
-    name character varying(255) NOT NULL,
-    status character varying(50) NOT NULL,
-    date_created timestamp with time zone NOT NULL DEFAULT now(),
-    date_updated timestamp with time zone NOT NULL DEFAULT now(),
-    epoch bigint NOT NULL DEFAULT 1,
-    gone boolean NOT NULL DEFAULT false
-)
-"""
-
-#: hub v001's index (``USING lsm (status HASH)`` on YugabyteDB, the database's default first column there)
-_BY_STATUS_DDL = "CREATE INDEX idx_datasources_status ON datasources (status)"
-
 #: the sweep's read as it was written before the keyed pages: the equivalence proof's reference
 _OLD_ACTIVE_IDS = "SELECT id FROM datasources WHERE status = $1 ORDER BY date_created, id"
 
@@ -155,19 +112,18 @@ _ACTIVE_EVERY = 8
 
 @pytest.fixture
 async def sources(db_container: str) -> AsyncIterator[asyncpg.Connection]:
-    """A connection on a fresh schema holding ``datasources`` and its status index, seeded (some rows sharing a
+    """A connection on a fresh schema holding ``datasources`` and its indexes as declared, seeded (some rows sharing a
     ``date_created``, so the order's tie-break by id is exercised)."""
     schema = f"dsplan_{uuid.uuid4().hex[:12]}"
     connection = await asyncpg.connect(db_container)
     try:
         await connection.execute(f'CREATE SCHEMA "{schema}"')
         await connection.execute(f'SET search_path TO "{schema}"')
-        await connection.execute(_DATASOURCES_DDL)
-        await connection.execute(_BY_STATUS_DDL)
+        await create_declared(connection, CapabilitySourceCollection.schema)
         await connection.execute(
-            "INSERT INTO datasources (id, name, status, date_created)"
+            "INSERT INTO datasources (id, name, status, date_created, date_updated, epoch)"
             " SELECT gen_random_uuid(), 'ds' || g, CASE WHEN g % $1 = 0 THEN 'active' ELSE 'disabled' END,"
-            " timestamptz '2026-01-01' + (g / 3) * interval '1 minute' FROM generate_series(1, $2) g",
+            " timestamptz '2026-01-01' + (g / 3) * interval '1 minute', now(), 1 FROM generate_series(1, $2) g",
             _ACTIVE_EVERY,
             _ROWS,
         )
@@ -214,7 +170,8 @@ async def test_the_sweep_answers_the_active_ids_the_unkeyed_read_answered(source
             )
         elif step == 1:
             await sources.execute(
-                "INSERT INTO datasources (id, name, status, date_created) VALUES ($1, 'late', 'active', $2)",
+                "INSERT INTO datasources (id, name, status, date_created, date_updated, epoch)"
+                " VALUES ($1, 'late', 'active', $2, now(), 1)",
                 uuid.uuid4(),
                 await sources.fetchval("SELECT max(date_created) FROM datasources"),
             )
@@ -229,18 +186,13 @@ async def test_schema_priming_reads_its_names_through_the_unique_name_index(db_c
     try:
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
-        table = CapabilitySourceCollection.schema.to_sqlalchemy_table(MetaData())
-        for column in table.columns:
-            column.server_default = None
-        await conn.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))  # type: ignore[no-untyped-call]
-        # the hub's status index (the one the hint named before)
-        await conn.execute("CREATE INDEX idx_datasources_status ON datasources (status)")
-        # the hub's name index, among live rows only (datasources' LIVE_UNIQUE_INDEXES): the read names NOT gone
-        await conn.execute("CREATE UNIQUE INDEX idx_datasources_name ON datasources (name) WHERE NOT gone")
-        await conn.execute("CREATE TABLE datasource_customers (datasource_id uuid NOT NULL, customer_id uuid NOT NULL)")
+        # the hub's status index (the one the hint named before) and its name index among live rows only
+        # (datasources' LIVE_UNIQUE_INDEXES): the read names NOT gone; both declared
+        await create_declared(conn, CapabilitySourceCollection.schema, DATASOURCE_CUSTOMERS_SCHEMA)
         columns = await conn.fetch(
             "SELECT column_name, data_type FROM information_schema.columns"
             " WHERE table_schema = current_schema() AND table_name = 'datasources' AND is_nullable = 'NO'"
+            " AND is_generated = 'NEVER'"
         )
         by_type = {
             "uuid": "gen_random_uuid()",
