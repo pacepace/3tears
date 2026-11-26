@@ -119,6 +119,18 @@ What must stay possible:
   the fix commit: the open caller blocker pins every other inner review to the whole branch.
 - Chunk 08's consumer note must say: anthropic's floor moves from 0.116 to 1.12, and openai and httpx are now direct
   dependencies of models.
+- Chunk 08: `KeyPoolMetrics` gauges refresh by an explicit `await metrics.refresh(pool)`, which returns the snapshot, not
+  by a scrape-time callback: `status()` is a coroutine over the store, a scrape is synchronous on the `/metrics` thread
+  (deadlock where that is the pool's loop), and a store failure must raise to a caller, not vanish in a scrape.
+- Chunk 08: `KeyPoolObserver` has no failover event, so KP-K1's failovers-by-reason counter is not built; chunk 07's
+  integration adds the event to the Protocol, `KeyPoolCounters` and `KeyPoolMetrics`.
+- Chunk 08: store failures are exported too (`operation` label, bounded by the store's methods), since the Protocol
+  reports them; key state is a 0/1 gauge per state (`TRIED` excluded: never in a snapshot).
+- Chunk 08: `KeyPoolMetrics` without the extra raises `ImportError` naming it (an explicit build, as the claude-cli
+  and voyageai extras do); instruments are built once per registry through `BuildOnce`, current only while a weak
+  reference to the registry lives, because a dead registry's id is reused.
+- Chunk 08: `KeyPoolMetrics` has no src caller (the pool only reports to an observer it is handed), so
+  `_public_api_consumers.txt` names Hearsay. Owner to confirm at the boundary, as for `BudgetLedger`.
 - Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
   every table in that tuple and would fail where it runs before v004 creates them. Money and JSON are TEXT: no float
   before the budget compare, and JSONB would reorder the reservations the sweep reports in order.
