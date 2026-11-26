@@ -36,6 +36,8 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 __all__ = [
+    "CANONICAL_CASTS",
+    "canonical_texts",
     "distinct_keys",
     "key_codes",
     "last_rows",
@@ -371,3 +373,33 @@ def numeric_texts(values: pa.ChunkedArray | pa.Array) -> pa.Array:
     for pattern, replacement in _NUMERIC_REWRITES:
         text = pc.replace_substring_regex(text, pattern=pattern, replacement=replacement)
     return text
+
+
+#: the SQL types (``FollowedTable.key_cast``) of a key column held as text whose values have one spelling the copy keeps
+#: (:func:`canonical_texts`): a ``NUMERIC``'s (and an integer's held as text) by :func:`numeric_texts`, a UUID's lower
+#: case. An instant's has its own (:func:`stored_instants`, the copy's ``instants``)
+CANONICAL_CASTS: Final = frozenset({"numeric", "bigint", "uuid"})
+
+
+def canonical_texts(values: pa.ChunkedArray | pa.Array, cast: str) -> pa.ChunkedArray | pa.Array:
+    """a key column held as text in its type's one spelling: a ``NUMERIC``'s (or an integer's) by
+    :func:`numeric_texts` (``1.50`` is ``1.5``), a UUID's lower-cased; a column of any other type as it is. In Arrow's
+    kernels alone, never a Python object a value.
+
+    **Why** (3tears' copy, 2026-11-25). A lookup of the copy by key compared a NUMERIC or UUID held as text by value,
+    respelling the held column across the whole part on every lookup. The copy now stores this spelling once, as each
+    change is applied (``shared_copy.SharedCopyBackend``'s ``canonical``), and a lookup spells only its asked keys so.
+
+    :param values: the column
+    :ptype values: pa.ChunkedArray | pa.Array
+    :param cast: the column's SQL type
+    :ptype cast: str
+    :return: the column in its one spelling; a null stays null
+    :rtype: pa.ChunkedArray | pa.Array
+    """
+    if cast in ("numeric", "bigint"):
+        return numeric_texts(values)
+    if cast == "uuid":
+        lowered: pa.ChunkedArray | pa.Array = pc.utf8_lower(pc.cast(values, pa.string()))
+        return lowered
+    return values

@@ -110,6 +110,9 @@ def store(tmp_path: Path) -> SharedArrowStore:
 async def _backend(
     store: SharedArrowStore, *tables: tuple[str, pa.Schema, PartRule], **kwargs: Any
 ) -> SharedCopyBackend:
+    """a backend over ``tables``. This module pins the cut by scope and by tier itself, so its small scopes are not
+    packed (``pack_below=0``) unless a test says so; packing is ``test_copy_bounded_files``'."""
+    kwargs.setdefault("pack_below", 0)
     return SharedCopyBackend(
         store, {name: schema for name, schema, _ in tables}, {name: rule for name, _, rule in tables}, **kwargs
     )

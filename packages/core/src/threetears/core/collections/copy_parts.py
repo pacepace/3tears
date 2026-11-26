@@ -20,6 +20,12 @@ escaped (``e.`` and each other byte as ``.XX``), or for a value too long even so
 value names a part the store takes, and a part's name gives its value back (:func:`scope_of_part`; a hashed one's
 value is its rows' scope column).
 
+**Small scopes are packed** (``design-copy-worker-backend.md``, decision 2b). A split table's scope values holding
+under :data:`PACK_BELOW_BYTES` share a pack (:func:`pack_name`), filled to :data:`PACK_TARGET_BYTES`, so a version
+holds few, large files: each file is one more set of arrays a reader maps and frees, and DuckDB scans a chunk a file.
+The shared copy (``shared_copy``) cuts, routes and merges the packs; a scope value is in one pack or in parts of its
+own, never both.
+
 **Arrow end to end.** Rows are split by one sort and one run-end encoding of the scope column, each part a slice of
 the sorted rows; a locator is a two-column Arrow table, matched by Arrow's hash kernels (``index_in``, ``is_in``),
 never Acero (``tests/enforcement/test_no_acero_tables.py``). Python objects here are one a table or one a part, never
@@ -43,8 +49,12 @@ if TYPE_CHECKING:
     from threetears.core.collections.copy_follower import FollowedTable
 
 __all__ = [
+    "PACK_BELOW_BYTES",
+    "PACK_TARGET_BYTES",
     "SPLIT_FLOOR_BYTES",
     "WHOLE_PART",
+    "is_pack",
+    "pack_name",
     "Locator",
     "Part",
     "PartRule",
@@ -94,6 +104,35 @@ WHOLE_PART: Final = "all"
 #: until now: every table it held whole was under 16 MB at the end of cobalt dev's 2026-10-30 night, and its long
 #: tables were split (``aibots_reports.pod.shared_backend.PER_STATE_TABLES``).
 SPLIT_FLOOR_BYTES: Final = 16 << 20
+
+#: a split table's scope value holding fewer bytes than this (Arrow ``nbytes``, all its runs) is packed with others
+#: (:func:`pack_name`), not held in parts of its own; one at or over it keeps its own.
+#:
+#: **Why** (decision 2b; ``research-shared-arrow-free.md``, 2026-11-25). Freeing a version's files frees each file's
+#: arrays' small C++ objects, and glibc consolidated the pile of them in one ``free()`` under the GIL: 35-37 ms on Linux
+#: for the replay's 2,240 files of ~200 arrays, 12.9 ms for 500 such files, 2.6 ms for 100 (the microbenchmark there:
+#: the stall grows with the arrays freed, never the bytes). Reports' long tables were a part a state, 51 parts, most
+#: of a few hundred KB (a 17 MiB table over 52 states averages 330 KB), and per-run tables a part a state and run. A
+#: part's rebuild costs its bytes (``SPLIT_FLOOR_BYTES``' table: 0.74 MB 1.35 ms, 1.5 MB 3.23 ms, 3.8 MB 7.59 ms), so a
+#: scope under 1 MiB held alone saves a change at most ~2 ms over a pack of :data:`PACK_TARGET_BYTES`, and costs every
+#: version a file and every read a chunk (0.9-1.9 ms a read for 51 chunks against one, the same table).
+PACK_BELOW_BYTES: Final = 1 << 20
+
+#: a pack is filled with small scope values (in their parts' name order) until it holds this many bytes, then closed:
+#: a pack holds under ``PACK_TARGET_BYTES + PACK_BELOW_BYTES``, and a change to one of its scopes rebuilds it whole.
+#:
+#: **Why 2 MiB.** The rebuild of a pack lands on the copy's one serial apply worker, which every change waits on (the
+#: hot path on election night; ``SPLIT_FLOOR_BYTES``' reasoning leans to the apply the same way): at most 3 MiB rebuilt
+#: is ~3-6 ms (1.5 MB 3.23 ms, 3.8 MB 7.59 ms measured), against ~0.3 ms for one small scope alone, and only for a
+#: change landing in a small scope. In return a table's small scopes are ``bytes / 2 MiB`` files, not one a scope: the
+#: 17 MiB table of 52 states is 9 packs at most, not 52 parts. A change replacing held rows one for one writes in place
+#: (``shared_copy._in_place``) and pays less.
+PACK_TARGET_BYTES: Final = 2 << 20
+
+#: a pack's name: this and the part name of the first scope value it was filled with. The scope's part names never
+#: hold this (a plain name holds no ``.``; an escaped one starts ``e.``, a hashed one ``h.``), so a pack's name is no
+#: scope value's, and at 98 characters at most it is a name the store takes
+_PACK_MARK: Final = "k."
 
 #: between a scope value and its runs in a per-run part's name: ``VA-r000000005001-000000005010-1`` (scope value, first
 #: run, last run, level), so a scope's parts sort by their runs and a merged part sorts into its group's place (the
@@ -302,16 +341,38 @@ def part_name(value: str) -> str:
     return _HASHED + hashlib.sha256(value.encode()).hexdigest()[:32]
 
 
+def pack_name(scope: str) -> str:
+    """the name of a pack filled first with ``scope`` (a scope value's part name, :func:`part_name`).
+
+    :param scope: the first scope value's part name
+    :ptype scope: str
+    :return: the pack's name
+    :rtype: str
+    """
+    return f"{_PACK_MARK}{scope}"
+
+
+def is_pack(part: str) -> bool:
+    """whether a part is a pack of several scope values (:func:`pack_name`).
+
+    :param part: the part's name
+    :ptype part: str
+    :return: True for a pack
+    :rtype: bool
+    """
+    return part.startswith(_PACK_MARK)
+
+
 def scope_of_part(name: str) -> str | None:
     """the scope value's text a part's name (:func:`part_name`, or a tier's scope, :func:`tier_of`) names; None for a
-    hashed name (its value is its rows' scope column).
+    hashed name (its value is its rows' scope column) and for a pack (:func:`pack_name`: its values are its rows').
 
     :param name: the part's name
     :ptype name: str
     :return: the value's text, or None
     :rtype: str | None
     """
-    if name.startswith(_HASHED):
+    if name.startswith(_HASHED) or is_pack(name):
         return None
     if not name.startswith(_ESCAPED):
         return name

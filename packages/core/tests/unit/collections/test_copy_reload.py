@@ -20,7 +20,7 @@ import pytest
 
 from packages.core.tests.unit.collections import copy_hooks
 from threetears.core.collections.copy_lane import ApplyLane, ReloadCancelled, ReloadOverrun
-from threetears.core.collections.copy_parts import PartRule
+from threetears.core.collections.copy_parts import PACK_BELOW_BYTES, PartRule
 from threetears.core.collections.copy_reload import ReloadLane, ReloadWorkerDied
 from threetears.core.collections.shared_copy import (
     KEYS,
@@ -122,6 +122,7 @@ async def _copy(
     hooks: ApplyHooks | None = None,
     check: ApplyHooks | None = None,
     max_replay_bytes: int = 1 << 20,
+    pack_below: int = PACK_BELOW_BYTES,
 ) -> Copy:
     backend = SharedCopyBackend(
         store,
@@ -129,6 +130,7 @@ async def _copy(
         {"results": BY_STATE, "small": WHOLE, "other": OTHER},
         hooks=hooks,
         preload=(copy_hooks.__name__,),
+        pack_below=pack_below,
     )
     lane = ApplyLane(backend)
     reloads = ReloadLane(backend, lane, check=check, preload=(copy_hooks.__name__,), max_replay_bytes=max_replay_bytes)
@@ -326,7 +328,8 @@ class TestCancel:
 
 class TestPerScope:
     async def test_a_per_scope_reload_replaces_its_scopes_parts_alone(self, store: SharedArrowStore) -> None:
-        copy = await _copy(store)
+        # scopes in parts of their own, unpacked (a packed scope's reload: test_copy_bounded_files)
+        copy = await _copy(store, pack_below=0)
         try:
             await copy.lane.apply([_page("VA", range(0, 10), 1), _page("NC", range(0, 10), 1)])
             current = store.current

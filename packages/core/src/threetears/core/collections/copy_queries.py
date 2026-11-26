@@ -12,7 +12,8 @@ process; only its SQL, its scalar binds and the worker's pid cross pickled.
 **A query** is SQL with ``?`` binds (:meth:`CopyQueries.run`), or a declared query (:meth:`CopyQueries.run_named`: a
 module-level function, named at construction, pickled to the worker by name, given the connection and the binds,
 answering a ``pyarrow.Table`` or ``RecordBatchReader``). Either sees every table of its version as a view (the
-locator tables a split table keeps, :data:`~threetears.core.collections.shared_copy.LOCATED_PREFIX`, dropped), the
+locator and packs index tables a split table keeps, :data:`~threetears.core.collections.shared_copy.INDEX_PREFIXES`,
+dropped), the
 tables it was handed (``tables=``: keys to join, say) under their own names, and what the copy's ``prepare`` hook made
 (a module-level function run on each query's connection: a product's views). Binds are scalars, at most
 :data:`_MAX_BINDS`: a list of keys is rows, and goes as a handed table.
@@ -75,11 +76,10 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 
-from threetears.core.arrow_keys import numeric_texts, rows_named, stored_instants
-from threetears.core.collections.shared_copy import LOCATED_PREFIX, MARK_TABLE
+from threetears.core.arrow_keys import CANONICAL_CASTS, canonical_texts, rows_named, stored_instants
+from threetears.core.collections.shared_copy import INDEX_PREFIXES, MARK_TABLE
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
     JobContext,
@@ -101,6 +101,7 @@ __all__ = [
     "QueryTimeout",
     "QueryWorkerDied",
     "query_workers",
+    "rows_found",
 ]
 
 log = get_logger(__name__)
@@ -340,7 +341,7 @@ def _connected(context: JobContext, threads: int, prepare: Callable[[Any], objec
     connection = version.connect(config={"threads": threads})
     try:
         for name in version.tables:
-            if name.startswith(LOCATED_PREFIX):
+            if name.startswith(INDEX_PREFIXES):
                 connection.execute(f'DROP VIEW "{name}"')
         for name, table in handed.items():
             connection.register(name, table)
@@ -405,24 +406,21 @@ def _write_answer(context: JobContext, batches: pa.RecordBatchReader) -> int:
     return rows
 
 
-#: the SQL types (``FollowedTable.key_cast``) whose values a key column held as text compares by, not by their text:
-#: a NUMERIC's (and an integer's held as text) by its value's one spelling (``arrow_keys.numeric_texts``), a UUID's by
-#: its lower case
-_BY_NUMBER: Final = frozenset({"numeric", "bigint"})
-_BY_LOWER: Final = frozenset({"uuid"})
-
-
 def _compared(
     column: pa.ChunkedArray | pa.Array, cast: str | None, held: pa.DataType, *, asked: bool
 ) -> pa.ChunkedArray | pa.Array:
-    """a key column as a lookup compares it: an asked key's or a held row's, the same way on both sides.
+    """a key column as a lookup compares it: an asked key's or a held row's.
 
     A column held typed (an integer, a decimal, a boolean) is compared as it is held, the asked keys cast to its type
     (``arrow_keys.rows_named``, Arrow's cast). A column held as text whose type is not text is compared by value, as
-    the copy's read by key compared it in SQL, both sides cast to the column's type (``FollowedTable.held_key``): a
-    NUMERIC's text by :func:`~threetears.core.arrow_keys.numeric_texts` (``1.50`` is ``1.5``), a UUID's lower-cased,
-    and an instant's asked text in the copy's stored spelling (``arrow_keys.stored_instants``; the copy keeps its rows'
-    so already, so the held side is compared as it is). In Arrow's kernels alone, never a Python object a key.
+    the copy's read by key compared it in SQL cast to the column's type (``FollowedTable.held_key``): the asked keys in
+    the one spelling the copy stores (``arrow_keys.canonical_texts``: a NUMERIC's ``1.50`` is ``1.5``, a UUID
+    lower-cased; an instant's ``arrow_keys.stored_instants``), and the held column as it is, never respelled.
+
+    **Why only the asked side** (2026-11-25). Respelled on both sides, every lookup rewrote the held column across the
+    whole part it probed, a cost of the part's rows, not the keys'. The copy now stores that spelling once, as each
+    change is applied (``shared_copy.SharedCopyBackend``'s ``canonical`` and ``instants``), so a lookup's cost is its
+    keys'. In Arrow's kernels alone, never a Python object a key.
 
     :param column: the column
     :ptype column: pa.ChunkedArray | pa.Array
@@ -435,18 +433,16 @@ def _compared(
     :return: the column as compared
     :rtype: pa.ChunkedArray | pa.Array
     """
-    if cast is None or not (pa.types.is_string(held) or pa.types.is_large_string(held)):
+    if not asked or cast is None or not (pa.types.is_string(held) or pa.types.is_large_string(held)):
         return column
-    if cast in _BY_NUMBER:
-        return numeric_texts(column)
-    if cast in _BY_LOWER:
-        return pc.utf8_lower(pc.cast(column, pa.string()))
-    if cast == "timestamptz" and asked:
+    if cast in CANONICAL_CASTS:
+        return canonical_texts(column, cast)
+    if cast == "timestamptz":
         return stored_instants(column)
     return column
 
 
-def _found(rows: pa.Table, keys: pa.Table, key: Sequence[str], casts: Mapping[str, str] = EMPTY) -> pa.Table:
+def rows_found(rows: pa.Table, keys: pa.Table, key: Sequence[str], casts: Mapping[str, str] = EMPTY) -> pa.Table:
     """the rows of ``rows`` whose key ``keys`` names, in their order in ``rows`` (Arrow's hash kernels, no Python
     object a key), each key column compared as :func:`_compared` compares it.
 
@@ -474,7 +470,7 @@ def _lookup_in_worker(
     context: JobContext, table: str, key: Sequence[str], casts: Sequence[tuple[str, str]] = ()
 ) -> int:
     """a keyed lookup in its worker: the version's table probed by the handed keys (each key column compared as
-    :func:`_found` compares it), the rows found written as the answer.
+    :func:`rows_found` compares it), the rows found written as the answer.
 
     :param context: the job's context
     :ptype context: JobContext
@@ -493,7 +489,7 @@ def _lookup_in_worker(
     rows = context.version.tables.get(table)
     if rows is None:
         raise LookupError(f"the copy's version {context.version.name} holds no table {table!r}")
-    return _write_answer(context, _batches(_found(rows, context.tables.tables[_KEYS], key, dict(casts))))
+    return _write_answer(context, _batches(rows_found(rows, context.tables.tables[_KEYS], key, dict(casts))))
 
 
 def query_job(context: JobContext, ticket: int, query: _Query) -> tuple[int, int]:
@@ -1200,9 +1196,9 @@ class CopyQueries:
 
         Each key column is compared as the copy holds it, the asked keys cast to its type there; one the copy holds as
         text though its type is not (a ``NUMERIC``, a UUID, an instant: ``schema_backed.rail_text``) is compared by
-        value when ``casts`` names its SQL type (``FollowedTable.key_cast``), both sides spelled one way in the worker
-        (:func:`_compared`), as the copy's read by key compared them cast in SQL: a key spelled ``1.5`` finds the row
-        held as ``1.50``.
+        value when ``casts`` names its SQL type (``FollowedTable.key_cast``), the asked keys spelled in the worker as
+        the copy stores that column (:func:`_compared`; the copy's backend keeps it so, ``canonical`` and ``instants``):
+        a key spelled ``1.50`` finds the row a change wrote as ``1.5`` or ``1.50``.
 
         Why no inline path (Pace, 2026-11-25): a lookup in the serving process lost to the worker's round trip at every
         key count and table size measured (``scripts/measure-copy-lookup-cutoff.py``, 2026-11-25, macOS arm64, CPU ms

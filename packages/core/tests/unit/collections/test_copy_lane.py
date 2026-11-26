@@ -22,7 +22,7 @@ from threetears.core.collections.copy_lane import (
     ApplyWorkerDied,
     EarlierChangeFailed,
 )
-from threetears.core.collections.copy_parts import PartRule, tier_part
+from threetears.core.collections.copy_parts import PACK_BELOW_BYTES, PartRule, tier_part
 from threetears.core.collections.shared_copy import (
     MARK_TABLE,
     ROWS,
@@ -112,10 +112,16 @@ def store(tmp_path: Path) -> SharedArrowStore:
 
 
 async def _backend(
-    store: SharedArrowStore, hooks: ApplyHooks | None = None, *, runs: bool = False
+    store: SharedArrowStore,
+    hooks: ApplyHooks | None = None,
+    *,
+    runs: bool = False,
+    pack_below: int = PACK_BELOW_BYTES,
 ) -> SharedCopyBackend:
     table, schema, rule = ("runs", RUN_SCHEMA, BY_RUN) if runs else ("results", SCHEMA, BY_STATE)
-    return SharedCopyBackend(store, {table: schema}, {table: rule}, hooks=hooks, preload=(copy_hooks.__name__,))
+    return SharedCopyBackend(
+        store, {table: schema}, {table: rule}, hooks=hooks, preload=(copy_hooks.__name__,), pack_below=pack_below
+    )
 
 
 @pytest.fixture
@@ -241,7 +247,8 @@ class TestBackPressure:
 
 class TestMerges:
     async def test_a_merge_runs_after_the_changes_that_make_it_due(self, store: SharedArrowStore) -> None:
-        backend = await _backend(store, runs=True)
+        # tier merges themselves, the small scopes unpacked (packing: test_copy_bounded_files)
+        backend = await _backend(store, runs=True, pack_below=0)
         lane = ApplyLane(backend)
         try:
             outcomes = await asyncio.gather(*(lane.apply([_run(run)]) for run in range(1, 13)))

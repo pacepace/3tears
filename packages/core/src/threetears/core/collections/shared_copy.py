@@ -20,6 +20,15 @@ found through its locator (:class:`~threetears.core.collections.copy_parts.Locat
 it as ``__located__<table>`` (:data:`LOCATED_PREFIX`), so the worker reads it with the parts and the serving process
 holds no copy of it.
 
+**Few, large files a version** (decision 2b). A split table's scope values under ``copy_parts.PACK_BELOW_BYTES``
+share packs (``copy_parts.pack_name``) filled to ``copy_parts.PACK_TARGET_BYTES``, named in the version beside it as
+``__packed__<table>`` (:data:`PACKED_PREFIX`: each packed scope value's part name and its pack). A row of a packed
+scope lands in its pack, whatever its run; every other row as above. A whole change cuts the table afresh, packed; a
+change rewrites the packs and parts it lands in alone, a pack grown past ``PACK_TARGET_BYTES + PACK_BELOW_BYTES``
+re-cut as it is rewritten; and the small parts a change leaves (a new small scope, a pack emptied) are packed by
+:meth:`SharedCopyBackend.merge`, a publish of its own, like a tier merge. A version holding more files than its bound
+(:data:`MAX_VERSION_FILES`) makes a merge due, which then packs every scope under ``PACK_TARGET_BYTES``.
+
 A whole change of a per-run table (a cold start, a reload) lands in the tiers its :class:`MergePolicy`'s merges would
 leave, never a part a run (:func:`_merged_tiers`). A part's name is its scope value's (``copy_parts.part_name``):
 escaped, or hashed, for a value the store would refuse as a name.
@@ -39,6 +48,11 @@ table, a part or a page.
 **An instant in a key.** A table's key columns named in ``instants`` hold an instant as text in one spelling
 (``arrow_keys.stored_instants``, in Arrow), of the rows and the keys alike: a key a change record names
 (``2026-11-03T23:59:00.000000+00:00``) finds the row the rail wrote (``2026-11-03T23:59:00Z``).
+
+**A key held as text in one spelling.** A table's key columns named in ``canonical`` (a ``NUMERIC`` or a UUID the
+copy holds as the rail's text) are kept in their type's one spelling (``arrow_keys.canonical_texts``: ``1.50`` is
+``1.5``, a UUID lower-cased), of the rows and the keys alike, once as each change is applied: a lookup
+(``copy_queries.CopyQueries.lookup``) then spells only the keys it is asked, never the held column.
 
 **One change at a time, in order.** :class:`SharedCopyBackend` applies the change it is given; its callers give
 changes through :class:`~threetears.core.collections.copy_lane.ApplyLane`, which orders them, bounds them, schedules
@@ -62,7 +76,7 @@ import asyncio
 import os
 import re
 from collections.abc import Collection, Coroutine, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -71,14 +85,25 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 
-from threetears.core.arrow_keys import distinct_keys, key_codes, last_rows, rows_named, stored_instants
+from threetears.core.arrow_keys import (
+    CANONICAL_CASTS,
+    canonical_texts,
+    distinct_keys,
+    key_codes,
+    last_rows,
+    rows_named,
+    stored_instants,
+)
 from threetears.core.collections.copy_parts import (
+    PACK_BELOW_BYTES,
+    PACK_TARGET_BYTES,
     WHOLE_PART,
     Locator,
     PartRule,
+    is_pack,
+    pack_name,
     part_name,
     parts_of_keys,
-    split_parts,
     tier_of,
     tier_part,
 )
@@ -99,9 +124,12 @@ from threetears.core.shared_arrow import (
 from threetears.observe import get_logger
 
 __all__ = [
+    "INDEX_PREFIXES",
     "KEYS",
     "LOCATED_PREFIX",
     "MARK_TABLE",
+    "MAX_VERSION_FILES",
+    "PACKED_PREFIX",
     "ROWS",
     "Applied",
     "AppliedTables",
@@ -119,6 +147,7 @@ __all__ = [
     "apply_job",
     "file_name",
     "held_parts",
+    "reload_piece_bytes",
 ]
 
 log = get_logger(__name__)
@@ -135,6 +164,26 @@ _TABLE_SUFFIX: Final = ".arrow"
 
 #: a split table's locator is published beside it as this prefix and its name, one part (:data:`WHOLE_PART`)
 LOCATED_PREFIX: Final = "__located__"
+
+#: a split table's packs index is published beside it as this prefix and its name, one part (:data:`WHOLE_PART`): each
+#: packed scope value's part name and its pack (``copy_parts.pack_name``)
+PACKED_PREFIX: Final = "__packed__"
+
+#: the prefixes of the tables a version holds beside the copy's own (a locator, a packs index): no query sees them
+INDEX_PREFIXES: Final = (LOCATED_PREFIX, PACKED_PREFIX)
+
+#: the most files a version of the copy holds before a merge is due to pack its small parts (every table's parts, its
+#: schema file, its locator and packs index, the mark). A version over it makes a merge due (:meth:`SharedCopyBackend.
+#: merge`) that packs every scope value under ``copy_parts.PACK_TARGET_BYTES``, not only those under
+#: ``PACK_BELOW_BYTES``, until it is under again or nothing is left to pack (said at WARNING).
+#:
+#: **Why 512** (decision 2b; ``research-shared-arrow-free.md``). Letting a version go frees every array of its files,
+#: and glibc consolidated the small frees in one ``free()`` holding the GIL: 35-37 ms for the replay's 2,240 files
+#: (~200 arrays each), 12.9 ms for 500, 2.6 ms for 100, growing with the arrays, never the bytes. Packed, reports'
+#: small scopes no longer add a file each, so a version is its tables' schema files and big parts: a quarter of the
+#: replay's count at most, and a fifth of its stall. The let-go lateness test on the Linux pool is the proof at size
+#: (``test_shared_arrow_let_go_loop``).
+MAX_VERSION_FILES: Final = 512
 
 #: the one-row table each change's mark is published as (``mark``, int64): a reader of a version reads the mark of
 #: the rows it maps, never a newer one. Moved from reports (``follower_parts.MARK_TABLE``)
@@ -154,6 +203,21 @@ _APPLY_PIECE_BYTES: Final = 1 << 30
 #: reports (``shared_backend.SHARED_COPY_PIECE_MINIMUM_BYTES``): the largest file a change wrote in its 2026-11-03
 #: replay's cold start was a few MiB (a 123 MB table in 53 parts)
 _APPLY_PIECE_MINIMUM_BYTES: Final = 16 << 20
+
+#: a reload's result piece is reserved at its largest table's bytes and this share more (an IPC file's padding and
+#: metadata, its locator and packs index), at :data:`_APPLY_PIECE_MINIMUM_BYTES` at least
+_RELOAD_PIECE_SLACK_DIVISOR: Final = 8
+
+#: a reload's result piece takes at most this share of the store's ``max_bytes``.
+#:
+#: **Why** (inventory ``apply_staged`` / ``reserve_pieces``, 2026-11-25). A reload stages in its own worker for as long
+#: as its rows take, holding its open piece's room all the while; at :data:`_APPLY_PIECE_BYTES` (1 GiB) every reload
+#: took a GiB, or all the room a smaller store had, and a change's apply beside it found less than its 16 MiB minimum
+#: and was refused. A reload's largest file is one part of one table, never more than that table's rows, so its piece
+#: is sized to its largest table (most reloads are a state's: a few MiB; the largest table the 2026-11-03 replay's
+#: cold start wrote was 123 MB, in 53 parts), and never past a quarter of the store, leaving the applies three
+#: quarters (2 GiB of reports' 8 GiB store, ``values.yaml``' ``maxBytes``)
+_RELOAD_STORE_SHARE: Final = 4
 
 #: an apply worker holding more private memory than this after a change is replaced before the next, so what a
 #: change's scratch copies allocated goes back to the system. Judged by private (anonymous) memory
@@ -291,6 +355,8 @@ class Applied:
     :ivar rows: the rows upserted
     :ivar written_bytes: the bytes of the parts written
     :ivar worker: the process the apply ran in
+    :ivar files: the files the version holds
+    :ivar merge_due: whether a merge is due after it: small parts to pack, or more files than the bound
     """
 
     version: str
@@ -298,6 +364,8 @@ class Applied:
     rows: int
     written_bytes: int
     worker: int
+    files: int = 0
+    merge_due: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,14 +374,16 @@ class Merged:
 
     :ivar version: the version published
     :ivar table: the table
-    :ivar into: the merged part
+    :ivar into: the merged part (a tier merge's), or the first part written (a packing's)
     :ivar parts: the parts merged into it, dropped
+    :ivar written: every part written: ``into`` alone for a tier merge, the packs and parts a packing wrote
     """
 
     version: str
     table: str
     into: str
     parts: tuple[str, ...]
+    written: tuple[str, ...] = ()
 
 
 class ReloadStale(LookupError):
@@ -343,6 +413,7 @@ class Reloaded:
     :ivar located: its locator's file (:data:`LOCATED_PREFIX`); None for none
     :ivar scope: the scope values it replaces; None for the whole table
     :ivar rule: the rule it was cut by
+    :ivar packed: its packs index's file (:data:`PACKED_PREFIX`), a whole reload's; None for none
     """
 
     table: str
@@ -350,6 +421,7 @@ class Reloaded:
     located: str | None
     scope: ReloadScope | None
     rule: PartRule
+    packed: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +439,12 @@ class ApplyPlan:
         (``arrow_keys.stored_instants``)
     :ivar reloads: the tables a reload staged, put in place of the version's before the pages apply over them
         (:meth:`SharedCopyBackend.publish_reload`); none for a change
+    :ivar pack_below: a split table's scope value under this many bytes is packed (``copy_parts.PACK_BELOW_BYTES``);
+        0 packs none
+    :ivar pack_target: a pack is filled to this many bytes (``copy_parts.PACK_TARGET_BYTES``)
+    :ivar unpacked: tables cut without packs (a per-scope reload's staging: its parts swap in by scope)
+    :ivar canonical: each table and its key columns held as text in one spelling, with their SQL types
+        (``arrow_keys.canonical_texts``)
     """
 
     root: str
@@ -378,18 +456,23 @@ class ApplyPlan:
     merges: MergePolicy = ByCount()
     instants: tuple[tuple[str, frozenset[str]], ...] = ()
     reloads: tuple[Reloaded, ...] = ()
+    pack_below: int = PACK_BELOW_BYTES
+    pack_target: int = PACK_TARGET_BYTES
+    unpacked: frozenset[str] = frozenset()
+    canonical: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _Outcome:
     """what the apply worker gives back: each part written (its result table's name) or dropped (None), and each part
-    a reload staged that the publish links as it is (its file)."""
+    a reload staged that the publish links as it is (its file), and whether a packing of its small parts is due."""
 
     parts: tuple[tuple[str, str, str | None], ...]
     rows: int
     written_bytes: int
     worker: int
     staged: tuple[tuple[str, str, str], ...] = ()
+    pack_due: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,6 +480,28 @@ class _MergePlan:
     root: str
     rules: tuple[tuple[str, PartRule], ...]
     policy: MergePolicy
+    schemas: tuple[tuple[str, pa.Schema], ...] = ()
+    pack_below: int = PACK_BELOW_BYTES
+    pack_target: int = PACK_TARGET_BYTES
+    max_files: int = MAX_VERSION_FILES
+
+
+@dataclass(frozen=True, slots=True)
+class _MergeOutcome:
+    """one merge the merge job wrote: a tier merge's one part, or a packing's packs and parts.
+
+    :ivar table: the table
+    :ivar written: each part written and its result's name
+    :ivar dropped: the parts it replaces
+    :ivar index: the packs index's result name; None for the index as it was
+    :ivar index_dropped: the packs index is dropped (nothing of the table is packed now)
+    """
+
+    table: str
+    written: tuple[tuple[str, str], ...]
+    dropped: tuple[str, ...]
+    index: str | None = None
+    index_dropped: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +513,14 @@ class _Tables:
     whole: frozenset[str]
     merges: MergePolicy = ByCount()
     instants: Mapping[str, frozenset[str]] = EMPTY
+    pack_below: int = PACK_BELOW_BYTES
+    pack_target: int = PACK_TARGET_BYTES
+    unpacked: frozenset[str] = frozenset()
+    canonical: Mapping[str, Mapping[str, str]] = EMPTY
+
+    def packing(self, table: str) -> bool:
+        """whether ``table``'s small scopes are packed as it is cut."""
+        return self.rules[table].split and self.pack_below > 0 and table not in self.unpacked
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,11 +584,15 @@ def _map(path: Path, schema: pa.Schema | None = None) -> pa.Table:
 # -- the change, settled -------------------------------------------------------------------------------------------
 
 
-def _respelled(page: pa.Table, instants: Collection[str]) -> pa.Table:
-    """a page with each of its instant key columns in its stored spelling (``arrow_keys.stored_instants``)."""
+def _respelled(page: pa.Table, instants: Collection[str], canonical: Mapping[str, str] = EMPTY) -> pa.Table:
+    """a page with each of its instant key columns in its stored spelling (``arrow_keys.stored_instants``) and each
+    canonical key column in its type's one spelling (``arrow_keys.canonical_texts``)."""
     for column in sorted(instants):
         if column in page.column_names:
             page = page.set_column(page.column_names.index(column), column, stored_instants(page[column]))
+    for column, cast in sorted(canonical.items()):
+        if column in page.column_names:
+            page = page.set_column(page.column_names.index(column), column, canonical_texts(page[column], cast))
     return page
 
 
@@ -484,6 +601,7 @@ def _settled(
     key: Sequence[str],
     pages: Sequence[tuple[str, pa.Table]],
     instants: Collection[str] = frozenset(),
+    canonical: Mapping[str, str] = EMPTY,
 ) -> _Settled:
     """a table's pages, in order, as the rows they leave upserted and the keys deleted: each key's last page wins.
 
@@ -499,6 +617,8 @@ def _settled(
     :ptype pages: Sequence[tuple[str, pa.Table]]
     :param instants: its key columns holding an instant as text
     :ptype instants: Collection[str]
+    :param canonical: its key columns held as text in one spelling, and their SQL types
+    :ptype canonical: Mapping[str, str]
     :return: the change settled
     :rtype: _Settled
     """
@@ -509,7 +629,7 @@ def _settled(
     for kind, page in pages:
         if not page.num_rows:
             continue
-        page = _respelled(page, instants)
+        page = _respelled(page, instants, canonical)
         keys = page.select(list(key)).cast(key_schema)
         if kind == ROWS:
             rows.append(page.select(schema.names).cast(schema))
@@ -630,39 +750,75 @@ def _run_parts(
     return named
 
 
-def _row_parts(rule: PartRule, rows: pa.Table, held: Collection[str], merges: MergePolicy | None = None) -> pa.Array:
+#: a packs index's columns (:data:`PACKED_PREFIX`): each packed scope value's part name and its pack, a locator's shape
+_INDEX: Final = Locator().located.schema
+_INDEX_SCOPE: Final = _INDEX.names[0]
+_INDEX_PACK: Final = _INDEX.names[1]
+
+
+def _index_of(files: Mapping[str, Any], table: str) -> pa.Table:
+    """a split table's packs index as a version holds it; empty for none."""
+    held = _parts_of(files, f"{PACKED_PREFIX}{table}")
+    return _map(held[WHOLE_PART]).cast(_INDEX) if WHOLE_PART in held else _INDEX.empty_table()
+
+
+def _routed(names: pa.Array, scopes: pa.Array, index: pa.Table | None) -> pa.Array:
+    """each row's part with a packed scope's rows in its pack (``index``), whatever their run; every other's as
+    ``names`` names it. One hash lookup, no Python object a row."""
+    if index is None or not index.num_rows:
+        return names
+    at = pc.index_in(scopes, value_set=index[_INDEX_SCOPE].combine_chunks())
+    packs = index[_INDEX_PACK].combine_chunks().take(at)
+    routed: pa.Array = pc.if_else(pc.is_valid(packs), packs, names)
+    return routed
+
+
+def _row_parts(
+    rule: PartRule,
+    rows: pa.Table,
+    held: Collection[str],
+    merges: MergePolicy | None = None,
+    index: pa.Table | None = None,
+) -> pa.Array:
     """each row's part, by its own columns (a split table's rows hold its scope column); with ``merges``, a whole
-    change's runs in the tiers those merges leave (:func:`_merged_tiers`)."""
+    change's runs in the tiers those merges leave (:func:`_merged_tiers`); a packed scope's in its pack (``index``)."""
     if not rule.split:
         return pa.repeat(pa.scalar(WHOLE_PART, pa.string()), rows.num_rows)
     scopes = parts_of_keys(rule, rows)
+    names = scopes
     if rule.run_column is not None:
         merged = None if merges is None else (rule, merges)
-        scopes = _run_parts(scopes, rows[rule.run_column].combine_chunks(), held, merged)
-    return scopes
+        names = _run_parts(scopes, rows[rule.run_column].combine_chunks(), held, merged)
+    return _routed(names, scopes, index)
 
 
-def _key_parts(rule: PartRule, keys: pa.Table, held: Collection[str], locator: Locator) -> pa.Array:
-    """each key's held part: by its scope column, or its locator value's part as the version held it; null for none."""
+def _key_parts(
+    rule: PartRule, keys: pa.Table, held: Collection[str], locator: Locator, index: pa.Table | None = None
+) -> pa.Array:
+    """each key's held part: by its scope column, or its locator value's part as the version held it, a packed scope's
+    in its pack (``index``); null for none."""
     if not rule.split:
         return pa.repeat(pa.scalar(WHOLE_PART, pa.string()), keys.num_rows)
     scopes = parts_of_keys(rule, keys, locator)
+    names = scopes
     if rule.run_column is not None:
-        scopes = _run_parts(scopes, keys[rule.run_column].combine_chunks(), held)
-    return scopes
+        names = _run_parts(scopes, keys[rule.run_column].combine_chunks(), held)
+    return _routed(names, scopes, index)
 
 
 def _cut(
-    rule: PartRule, rows: pa.Table, held: Collection[str], merges: MergePolicy | None = None
+    rule: PartRule,
+    rows: pa.Table,
+    held: Collection[str],
+    merges: MergePolicy | None = None,
+    index: pa.Table | None = None,
 ) -> Mapping[str, pa.Table]:
-    """rows by part, each part's rows a slice in their order in ``rows``: ``copy_parts.split_parts``' cut, and for a
-    per-run table the same cut (one stable sort of the parts' names, one run-end encoding) by each row's tier; with
-    ``merges`` (a whole change), the tiers those merges leave."""
+    """rows by part, each part's rows a slice in their order in ``rows``: one stable sort of each row's part's name
+    and one run-end encoding (``copy_parts.split_parts``' cut, by tier for a per-run table); with ``merges`` (a whole
+    change), the tiers those merges leave; with ``index``, a packed scope's rows in its pack."""
     if not rows.num_rows:
         return EMPTY
-    if rule.run_column is None:
-        return frozen((part.name, part.rows) for part in split_parts(rule, rows))
-    names = _row_parts(rule, rows, held, merges)
+    names = _row_parts(rule, rows, held, merges, index)
     order = pc.sort_indices(names)
     ordered = rows.take(order)
     runs = pc.run_end_encode(names.take(order))
@@ -676,14 +832,123 @@ def _cut(
     return frozen(cut)
 
 
+def _packed_cut(rule: PartRule, rows: pa.Table, tables: _Tables) -> tuple[Mapping[str, pa.Table], pa.Table]:
+    """a split table's rows cut afresh with its small scopes packed: each scope value under ``tables.pack_below``
+    bytes (all its runs) filled into a pack, in their part names' order, until the pack holds ``tables.pack_target``;
+    every other scope cut as a whole change's (by tier, the merges' tiers, for a per-run table). A pack of one scope is
+    that scope's own part.
+
+    One stable sort of the scope's part names and one run-end encoding, each scope a slice; Python objects one a scope.
+
+    :param rule: the table's rule, split
+    :ptype rule: PartRule
+    :param rows: the rows
+    :ptype rows: pa.Table
+    :param tables: the job's tables (the pack bounds, the merges)
+    :ptype tables: _Tables
+    :return: the parts by name, and the packs index (each packed scope's part name and its pack)
+    :rtype: tuple[Mapping[str, pa.Table], pa.Table]
+    """
+    if not rows.num_rows:
+        return EMPTY, _INDEX.empty_table()
+    scopes = parts_of_keys(rule, rows)
+    order = pc.sort_indices(scopes)
+    ordered = rows.take(order)
+    runs = pc.run_end_encode(scopes.take(order))
+    ends = runs.run_ends.to_numpy()
+    values = runs.values
+    own: list[pa.Table] = []
+    packs: list[list[tuple[str, pa.Table]]] = []
+    filling: list[tuple[str, pa.Table]] = []
+    filled = 0
+    start = 0
+    for at, end in enumerate(ends):
+        scope_rows = ordered.slice(start, int(end) - start)
+        start = int(end)
+        size = scope_rows.nbytes
+        if size >= tables.pack_below:
+            own.append(scope_rows)
+            continue
+        filling.append((str(values[at].as_py()), scope_rows))
+        filled += size
+        if filled >= tables.pack_target:
+            packs.append(filling)
+            filling, filled = [], 0
+    if filling:
+        packs.append(filling)
+    parts: list[tuple[str, pa.Table]] = []
+    packed_scopes: list[str] = []
+    packed_into: list[str] = []
+    for pack in packs:
+        if len(pack) == 1:
+            own.append(pack[0][1])
+            continue
+        name = pack_name(pack[0][0])
+        parts.append((name, pa.concat_tables([scope_rows for _, scope_rows in pack])))
+        packed_scopes.extend(scope for scope, _ in pack)
+        packed_into.extend([name] * len(pack))
+    if own:
+        parts.extend(_cut(rule, pa.concat_tables(own), (), tables.merges).items())
+    index = pa.Table.from_arrays(
+        [pa.array(packed_scopes, pa.string()), pa.array(packed_into, pa.string())], schema=_INDEX
+    )
+    return frozen(sorted(parts)), index
+
+
 def _misshapen(rule: PartRule, held: Collection[str]) -> bool:
-    """whether a table's held parts are not the shape its rule names now (it crossed the size floor, say)."""
+    """whether a table's held parts are not the shape its rule names now (it crossed the size floor, say). A split
+    table's packs are its shape at every rule but one part."""
     if not held:
         return False
     if not rule.split:
         return set(held) != {WHOLE_PART}
-    tiered = [tier_of(part) is not None for part in held]
-    return WHOLE_PART in held or (any(tiered) != (rule.run_column is not None)) or len(set(tiered)) > 1
+    own = [part for part in held if not is_pack(part)]
+    tiered = [tier_of(part) is not None for part in own]
+    return WHOLE_PART in held or (bool(own) and any(tiered) != (rule.run_column is not None)) or len(set(tiered)) > 1
+
+
+def _packing_due(sizes: Mapping[str, int], below: int, target: int) -> tuple[int, int, tuple[str, ...]]:
+    """what packing a split table's small parts would leave: the files they are now, the files they would be, and the
+    parts. A small unit is a scope value whose own parts hold under ``below`` bytes, or a pack under ``target``; they
+    are filled into packs in name order as :func:`_packed_cut` fills them (a group of one stays as it is).
+
+    :param sizes: each part of the table and its file's bytes
+    :ptype sizes: Mapping[str, int]
+    :param below: a scope under this is small
+    :ptype below: int
+    :param target: a pack is filled to this
+    :ptype target: int
+    :return: the files now, the files after, the parts packed
+    :rtype: tuple[int, int, tuple[str, ...]]
+    """
+    by_scope: dict[str, list[str]] = {}
+    units: list[tuple[str, int, tuple[str, ...]]] = []
+    for part in sorted(sizes):
+        if part == WHOLE_PART:
+            continue
+        if is_pack(part):
+            if sizes[part] < target:
+                units.append((part[len(pack_name("")) :], sizes[part], (part,)))
+            continue
+        by_scope.setdefault(_scope_part(part), []).append(part)
+    for scope, scope_parts in by_scope.items():
+        size = sum(sizes[part] for part in scope_parts)
+        if size < below:
+            units.append((scope, size, tuple(scope_parts)))
+    units.sort()
+    now = sum(len(parts) for _, _, parts in units)
+    after = 0
+    group: list[tuple[str, ...]] = []
+    filled = 0
+    for _, size, parts in units:
+        group.append(parts)
+        filled += size
+        if filled >= target:
+            after += 1 if len(group) > 1 else len(group[0])
+            group, filled = [], 0
+    if group:
+        after += 1 if len(group) > 1 else len(group[0])
+    return now, after, tuple(part for _, _, parts in units for part in parts)
 
 
 # -- a part's rows (moved from reports' follower_parts) ------------------------------------------------------------
@@ -813,10 +1078,16 @@ class _Result:
     step: Any
     parts: list[tuple[str, str, str | None]]
     written_bytes: int = 0
+    #: each part written and its file's bytes, the last write's
+    sizes: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def write(self, table: str, part: str, rows: pa.Table) -> None:
         name = f"p{len(self.parts)}"
-        self.written_bytes += self.step({name: rows})
+        # one record batch a file: a reader maps each batch as arrays of its own, and letting a version go frees
+        # every array (``MAX_VERSION_FILES``' why); a pack's scopes, concatenated, were a batch a scope
+        wrote = self.step({name: rows.combine_chunks()})
+        self.written_bytes += wrote
+        self.sizes[(table, part)] = wrote
         self.parts.append((table, part, name))
 
     def drop(self, table: str, part: str) -> None:
@@ -837,6 +1108,8 @@ def _apply_table(
     key = rule.key
     held = _parts_of(files, table)
     located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
+    packed = f"{PACKED_PREFIX}{table}"
+    index = _index_of(files, table) if rule.split else _INDEX.empty_table()
     if table in locators:
         locator = locators[table]
     else:
@@ -851,13 +1124,18 @@ def _apply_table(
         if held and table not in tables.whole:
             before = pa.concat_tables([_map(path, schema) for _, path in sorted(held.items())])
         rows = change.rows if before is None else (_part_rows(schema, before, written, key, named) or before)
-        # a per-run table's runs land in the tiers the merges would leave them in, never a part a run
-        cut = _cut(rule, rows, (), tables.merges)
+        # a per-run table's runs land in the tiers the merges would leave them in, never a part a run; small scopes
+        # land in packs
+        if tables.packing(table):
+            cut, fresh_index = _packed_cut(rule, rows, tables)
+        else:
+            cut, fresh_index = _cut(rule, rows, (), tables.merges), _INDEX.empty_table()
         for part, part_rows in cut.items():
             after[part] = _in_key_order(part_rows, key)
             result.write(table, part, after[part])
         for part in sorted(set(held) - set(cut)):
             result.drop(table, part)
+        _write_index(result, packed, fresh_index)
         located_rows = rows if rule.locator is not None and rule.split else None
         fresh = Locator() if located_rows is None else Locator().extended(rule, located_rows)
         if fresh.located.num_rows:
@@ -865,11 +1143,19 @@ def _apply_table(
         elif located:
             result.drop(f"{LOCATED_PREFIX}{table}", WHOLE_PART)
         return frozen(after)
-    by_part = _cut(rule, change.rows, held)
+    by_part = _cut(rule, change.rows, held, index=index)
+    #: the index pairs of packs this change made new or cut again
+    recut: list[pa.Table] = []
+    if tables.packing(table):
+        by_part, fresh = _new_scopes_packed(rule, by_part, held, tables)
+        if fresh.num_rows:
+            recut.append(fresh)
     targets = set(by_part)
     if named is not None:
-        named_parts = _key_parts(rule, named, held, locator)
+        named_parts = _key_parts(rule, named, held, locator, index)
         targets |= set(pc.unique(named_parts.drop_null()).to_pylist()) & set(held)
+    #: the packs this change emptied or cut again
+    repacked: list[str] = []
     for part in sorted(targets):
         held_rows = _map(held[part], schema) if part in held else None
         rows = _part_rows(schema, held_rows, by_part.get(part), key, named)
@@ -878,12 +1164,70 @@ def _apply_table(
         if not rows.num_rows:
             if part in held:
                 result.drop(table, part)
+            if is_pack(part):
+                repacked.append(part)
+            continue
+        if is_pack(part) and tables.packing(table) and rows.nbytes >= tables.pack_target + tables.pack_below:
+            # a pack outgrown: cut again as it is rewritten anyway, its big scopes to parts of their own
+            cut, cut_index = _packed_cut(rule, rows, tables)
+            for name, part_rows in cut.items():
+                after[name] = _in_key_order(part_rows, key)
+                result.write(table, name, after[name])
+            if part not in cut:
+                result.drop(table, part)
+            repacked.append(part)
+            recut.append(cut_index)
             continue
         result.write(table, part, rows)
         after[part] = rows
+    if repacked or recut:
+        kept = index.filter(pc.invert(pc.is_in(index[_INDEX_PACK], value_set=pa.array(repacked, pa.string()))))
+        _write_index(result, packed, pa.concat_tables([kept, *recut]))
     if rule.locator is not None and rule.split and written is not None:
         result.write(f"{LOCATED_PREFIX}{table}", WHOLE_PART, locator.extended(rule, change.rows).located)
     return frozen(after)
+
+
+def _new_scopes_packed(
+    rule: PartRule, by_part: Mapping[str, pa.Table], held: Collection[str], tables: _Tables
+) -> tuple[Mapping[str, pa.Table], pa.Table]:
+    """a change's rows by part with the scope values it brings new (held in no pack and no part of their own) cut as
+    :func:`_packed_cut` cuts them: its small new scopes packed together in its own publish, never a file each, and no
+    held part read for it. A single new scope keeps its own part (a later merge packs it with others).
+
+    :return: the rows by part, and the new packs' index pairs
+    :rtype: tuple[Mapping[str, pa.Table], pa.Table]
+    """
+    scopes = {_scope_part(part) for part in held if not is_pack(part)}
+    new = sorted(part for part in by_part if part not in held and not is_pack(part) and _scope_part(part) not in scopes)
+    if len({_scope_part(part) for part in new}) < 2:
+        return by_part, _INDEX.empty_table()
+    cut, index = _packed_cut(rule, pa.concat_tables([by_part[part] for part in new]), tables)
+    if not index.num_rows:
+        return by_part, index
+    kept = [(part, rows) for part, rows in by_part.items() if part not in set(new)]
+    return frozen(sorted([*kept, *cut.items()])), index
+
+
+def _write_index(result: _Result, packed: str, index: pa.Table) -> None:
+    """a table's packs index written, or dropped when it packs nothing (a drop of an index never held is left out)."""
+    if index.num_rows:
+        result.write(packed, WHOLE_PART, index.combine_chunks())
+    else:
+        result.drop(packed, WHOLE_PART)
+
+
+def _sizes_after(files: Mapping[str, Any], table: str, result: _Result) -> Mapping[str, int]:
+    """each part of ``table`` and its file's bytes as the job leaves it: the version's, then the job's writes and drops."""
+    sizes = {part: files[file_name(table, part)].nbytes for part in _parts_of(files, table)}
+    for written, part, name in result.parts:
+        if written != table:
+            continue
+        if name is None:
+            sizes.pop(part, None)
+        else:
+            sizes[part] = result.sizes[(table, part)]
+    return frozen(sizes.items())
 
 
 def _apply_pages(
@@ -905,7 +1249,11 @@ def _apply_pages(
         (
             table,
             _settled(
-                tables.schemas[table], tables.rules[table].key, table_pages, tables.instants.get(table, frozenset())
+                tables.schemas[table],
+                tables.rules[table].key,
+                table_pages,
+                tables.instants.get(table, frozenset()),
+                tables.canonical.get(table, EMPTY),
             ),
         )
         for table, table_pages in sorted(by_table.items())
@@ -940,6 +1288,10 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
         whole=plan.whole,
         merges=plan.merges,
         instants=frozen(plan.instants),
+        pack_below=plan.pack_below,
+        pack_target=plan.pack_target,
+        unpacked=plan.unpacked,
+        canonical=frozen((table, frozen(columns)) for table, columns in plan.canonical),
     )
     slot = context.result
     if not isinstance(slot, (PiecedSlot, SegmentSlot)):
@@ -973,8 +1325,20 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
                     view.locators,
                 )
                 rows += sum(change.rows.num_rows for change in more.values())
+        touched = sorted({table for table, _, _ in result.parts if table in tables.rules and tables.packing(table)})
+        due = False
+        for table in touched:
+            now, packed, _ = _packing_due(_sizes_after(files, table, result), tables.pack_below, tables.pack_target)
+            due = due or packed < now
     parts, staged = _settled_parts(base, view.swaps, result.parts)
-    return _Outcome(parts=parts, rows=rows, written_bytes=result.written_bytes, worker=os.getpid(), staged=staged)
+    return _Outcome(
+        parts=parts,
+        rows=rows,
+        written_bytes=result.written_bytes,
+        worker=os.getpid(),
+        staged=staged,
+        pack_due=due,
+    )
 
 
 def _reload_job(
@@ -1007,7 +1371,9 @@ def _reload_job(
             outside = pc.sum(pc.invert(pc.fill_null(pc.is_in(values, value_set=allowed), False))).as_py()
             if outside:
                 raise ValueError(f"a reload of {table}'s {sorted(scope.values)} holds {outside} rows of other values")
-    return apply_job(context, replace(plan, hooks=None if check is None else _Checked(check)))
+    # a per-scope reload's parts swap in by scope, so they are staged unpacked; its publish packs what lands in a pack
+    unpacked = plan.unpacked | frozenset(table for table, _ in scopes)
+    return apply_job(context, replace(plan, hooks=None if check is None else _Checked(check), unpacked=unpacked))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1067,6 +1433,7 @@ def _reloaded(tables: _Tables, files: Mapping[str, Any], reloads: Sequence[Reloa
         rule, schema = tables.rules[table], tables.schemas[table]
         held = _parts_of(files, table)
         located_name = f"{LOCATED_PREFIX}{table}"
+        packed_name = f"{PACKED_PREFIX}{table}"
         if scope is not None and rule != reload.rule:
             raise ReloadStale(
                 f"{table} is held by another rule than its reload was staged by; the reload is read again"
@@ -1085,13 +1452,37 @@ def _reloaded(tables: _Tables, files: Mapping[str, Any], reloads: Sequence[Reloa
         stray = sorted(part for part, _ in reload.parts if names is not None and _scope_part(part) not in names)
         if stray:
             raise ValueError(f"a reload of {table} staged parts outside its scope: {stray}")
+        # a per-scope reload's scopes held in packs: each pack loses their rows by a keys page, and their staged rows
+        # land in it as rows pages (the pack is rewritten, the other scopes it holds kept)
+        in_packs: frozenset[str] = frozenset()
+        if names is not None:
+            index = _index_of(files, table)
+            asked = pa.array(sorted(names), pa.string())
+            hit = index.filter(pc.is_in(index[_INDEX_SCOPE], value_set=asked))
+            in_packs = frozenset(hit[_INDEX_SCOPE].to_pylist())
+            for pack in sorted(set(hit[_INDEX_PACK].to_pylist()) & set(held)):
+                rows = _map(held[pack], schema)
+                gone = rows.filter(pc.is_in(parts_of_keys(rule, rows), value_set=asked))
+                pages.append((KEYS, table, gone.select(list(rule.key))))
         for part in sorted(held):
-            if names is None or _scope_part(part) in names:
+            if names is None or (not is_pack(part) and _scope_part(part) in names):
                 del view[file_name(table, part)]
                 swaps.append((table, part, None))
         for part, path in reload.parts:
+            if _scope_part(part) in in_packs:
+                pages.append((ROWS, table, _map(Path(path), schema)))
+                continue
             view[file_name(table, part)] = VersionFile(Path(path), Path(path).stat().st_size)
             swaps.append((table, part, path))
+        if scope is None:
+            # a whole reload's packs index is its own
+            if WHOLE_PART in _parts_of(files, packed_name):
+                del view[file_name(packed_name, WHOLE_PART)]
+                swaps.append((packed_name, WHOLE_PART, None))
+            if reload.packed is not None:
+                path = reload.packed
+                view[file_name(packed_name, WHOLE_PART)] = VersionFile(Path(path), Path(path).stat().st_size)
+                swaps.append((packed_name, WHOLE_PART, path))
         held_located = _parts_of(files, located_name)
         if scope is None:
             if WHOLE_PART in held_located:
@@ -1158,16 +1549,17 @@ def _level(part: str) -> int:
     return -1 if tier is None else tier[1]
 
 
-def _merge_job(context: JobContext, plan: _MergePlan) -> tuple[str, str, tuple[str, ...]] | None:
-    """one tier merge due, the lowest level first, written into the job's result as ``m``: the group's rows copied
-    once from their mapped files (``shared_arrow.merged_rows``), nothing else read.
+def _merge_job(context: JobContext, plan: _MergePlan) -> _MergeOutcome | None:
+    """one merge due, written into the job's result: a tier merge, the lowest level first (the group's rows copied
+    once from their mapped files, ``shared_arrow.merged_rows``, as ``m``), else the packing of one table's small parts
+    (:func:`_pack_job`). Nothing else is read.
 
     :param context: the job's version and result slot
     :ptype context: JobContext
-    :param plan: the tables' rules and the merge policy
+    :param plan: the tables' rules, the merge policy and the pack bounds
     :ptype plan: _MergePlan
-    :return: the table, the merged part and the parts it replaces; None when none is due
-    :rtype: tuple[str, str, tuple[str, ...]] | None
+    :return: what it wrote; None when none is due
+    :rtype: _MergeOutcome | None
     """
     if context.version is None or not isinstance(context.result, (PiecedSlot, SegmentSlot)):
         raise ValueError("a merge reads a version and writes into a result slot")
@@ -1183,12 +1575,77 @@ def _merge_job(context: JobContext, plan: _MergePlan) -> tuple[str, str, tuple[s
             if due is not None and (best is None or due[0] < best[0]):
                 best = (due[0], table, tuple(due[1]))
     if best is None:
-        return None
+        return _pack_job(context, plan, files)
     level, table, group = best
     ends = [tier for tier in (tier_of(group[0]), tier_of(group[-1])) if tier is not None]
     into = tier_part(ends[0][0], level + 1, ends[0][2], ends[-1][3])
     context.result.write({"m": merged_rows(plan.root, version, table, group)()})
-    return table, into, group
+    return _MergeOutcome(table=table, written=((into, "m"),), dropped=tuple(group))
+
+
+def _pack_job(context: JobContext, plan: _MergePlan, files: Mapping[str, Any]) -> _MergeOutcome | None:
+    """the packing of the split table whose small parts it saves the most files of (:func:`_packing_due`): their rows
+    mapped, cut afresh with :func:`_packed_cut`, written as ``m<n>``, and the table's packs index rewritten as ``i``.
+    A version over ``plan.max_files`` packs every scope under ``plan.pack_target``, not only those under
+    ``plan.pack_below``. Only the small parts are read and written, never the table.
+
+    :param context: the job's version and result slot
+    :ptype context: JobContext
+    :param plan: the tables, the merge policy and the pack bounds
+    :ptype plan: _MergePlan
+    :param files: the version's files
+    :ptype files: Mapping[str, Any]
+    :return: what it wrote; None when no packing saves a file
+    :rtype: _MergeOutcome | None
+    """
+    if plan.pack_below <= 0 or not isinstance(context.result, (PiecedSlot, SegmentSlot)):
+        return None
+    below = plan.pack_target if len(files) > plan.max_files else plan.pack_below
+    rules = frozen(plan.rules)
+    best: tuple[int, str, tuple[str, ...]] | None = None
+    for table, rule in sorted(rules.items()):
+        if not rule.split:
+            continue
+        sizes = frozen((part, files[file_name(table, part)].nbytes) for part in _parts_of(files, table))
+        now, after, small = _packing_due(sizes, below, plan.pack_target)
+        if after < now and (best is None or now - after > best[0]):
+            best = (now - after, table, small)
+    if best is None:
+        return None
+    _, table, small = best
+    rule, schema = rules[table], frozen(plan.schemas)[table]
+    held = _parts_of(files, table)
+    rows = pa.concat_tables([_map(held[part], schema) for part in small])
+    tables = _Tables(
+        schemas=frozen(plan.schemas),
+        rules=rules,
+        whole=frozenset(),
+        merges=plan.policy,
+        pack_below=below,
+        pack_target=plan.pack_target,
+    )
+    cut, cut_index = _packed_cut(rule, rows, tables)
+    if len(cut) >= len(small):
+        return None
+    index = _index_of(files, table)
+    dropped_packs = pa.array([part for part in small if is_pack(part)], pa.string())
+    kept = index.filter(pc.invert(pc.is_in(index[_INDEX_PACK], value_set=dropped_packs)))
+    fresh = pa.concat_tables([kept, cut_index]).combine_chunks()
+    written: list[tuple[str, str]] = []
+    with context.result.writing() as step:
+        for at, (part, part_rows) in enumerate(cut.items()):
+            step({f"m{at}": _in_key_order(part_rows, rule.key).combine_chunks()})
+            written.append((part, f"m{at}"))
+        if fresh.num_rows:
+            step({"i": fresh})
+    held_index = WHOLE_PART in _parts_of(files, f"{PACKED_PREFIX}{table}")
+    return _MergeOutcome(
+        table=table,
+        written=tuple(written),
+        dropped=tuple(part for part in small if part not in cut),
+        index="i" if fresh.num_rows else None,
+        index_dropped=not fresh.num_rows and held_index,
+    )
 
 
 # -- the serving process's side ------------------------------------------------------------------------------------
@@ -1240,6 +1697,7 @@ async def _staged(
             located=dict(staged.get(f"{LOCATED_PREFIX}{table}", ())).get(WHOLE_PART),
             scope=scopes.get(table),
             rule=rule,
+            packed=dict(staged.get(f"{PACKED_PREFIX}{table}", ())).get(WHOLE_PART),
         )
         for table, rule in sorted(rules.items())
     )
@@ -1277,8 +1735,19 @@ class SharedCopyBackend:
         text): kept in one spelling, of rows and keys alike (``arrow_keys.stored_instants``), so a key named in any
         ISO spelling finds its row
     :ptype instants: Mapping[str, Collection[str]]
-    :raises ValueError: for a rule of a table with no schema, a schema missing a rule's column, or an instant column
-        that is not a text key column of its table
+    :param canonical: each table's key columns held as text whose type has one spelling, and that type
+        (``arrow_keys.CANONICAL_CASTS``: a ``NUMERIC``, a UUID): kept in it, of rows and keys alike, as each change is
+        applied (``copy_reads.canonical_keys`` names them from the followed tables), so a lookup spells only its keys
+    :ptype canonical: Mapping[str, Mapping[str, str]]
+    :param pack_below: a split table's scope value under this many bytes is packed (``copy_parts.PACK_BELOW_BYTES``);
+        0 packs none
+    :ptype pack_below: int
+    :param pack_target: a pack is filled to this many bytes (``copy_parts.PACK_TARGET_BYTES``)
+    :ptype pack_target: int
+    :param max_files: a version holding more files than this makes a merge due (:data:`MAX_VERSION_FILES`)
+    :ptype max_files: int
+    :raises ValueError: for a rule of a table with no schema, a schema missing a rule's column, an instant or canonical
+        column that is not a text key column of its table, or a canonical type with no one spelling
     """
 
     def __init__(
@@ -1292,10 +1761,22 @@ class SharedCopyBackend:
         private_bytes: int = _APPLY_PRIVATE_BYTES,
         preload: Sequence[str] = (),
         instants: Mapping[str, Collection[str]] = EMPTY,
+        canonical: Mapping[str, Mapping[str, str]] = EMPTY,
+        pack_below: int = PACK_BELOW_BYTES,
+        pack_target: int = PACK_TARGET_BYTES,
+        max_files: int = MAX_VERSION_FILES,
     ) -> None:
+        if pack_below < 0 or pack_target <= 0 or max_files <= 0:
+            raise ValueError(f"pack bounds and a file bound are positive: {pack_below}, {pack_target}, {max_files}")
         self._schemas = frozen(schemas)
         self._rules = _checked(self._schemas, rules)
         self._instants = _instant_keys(self._schemas, self._rules, instants)
+        self._canonical = _canonical_keys(self._schemas, self._rules, canonical)
+        self._pack_below = pack_below
+        self._pack_target = pack_target
+        self._max_files = max_files
+        #: whether the last version published was over ``max_files`` (said once a crossing)
+        self._over = False
         self._store = store
         self._hooks = hooks
         self._merges = ByCount() if merges is None else merges
@@ -1362,6 +1843,9 @@ class SharedCopyBackend:
             merges=self._merges,
             instants=self._instants,
             reloads=reloads,
+            pack_below=self._pack_below,
+            pack_target=self._pack_target,
+            canonical=self._canonical,
         )
 
     async def apply(
@@ -1434,11 +1918,12 @@ class SharedCopyBackend:
             outcome: _Outcome = done.value
             version = f"c-{self._next}"
             try:
-                await asyncio.to_thread(self._publish_change, version, base, outcome, done.segment, mark)
+                files = await asyncio.to_thread(self._publish_change, version, base, outcome, done.segment, mark)
             finally:
                 if done.segment is not None:
                     await asyncio.to_thread(done.segment.close)
             self._next += 1
+            over = self._said_over(version, files)
         parts: dict[str, dict[str, bool]] = {}
         for table, part, _path in outcome.staged:
             parts.setdefault(table, {})[part] = True
@@ -1450,7 +1935,20 @@ class SharedCopyBackend:
             rows=outcome.rows,
             written_bytes=outcome.written_bytes,
             worker=outcome.worker,
+            files=files,
+            merge_due=outcome.pack_due or over,
         )
+
+    def _said_over(self, version: str, files: int) -> bool:
+        """whether a version holds more files than the bound, said at WARNING as the copy crosses it."""
+        over = files > self._max_files
+        if over and not self._over:
+            log.warning(
+                "the copy's version holds more files than its bound: a merge packs its small parts",
+                extra={"extra_data": {"version": version, "files": files, "max_files": self._max_files}},
+            )
+        self._over = over
+        return over
 
     def reload_run(
         self,
@@ -1502,16 +2000,16 @@ class SharedCopyBackend:
             check,
             read=False,
             tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
-            result_pieces=_APPLY_PIECE_BYTES,
+            result_pieces=reload_piece_bytes(self._store.max_bytes, sent),
             result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
         )
         return _staged(running, rules, frozen(scopes))
 
     def _publish_change(
         self, version: str, base: str | None, outcome: _Outcome, segment: MappedSegment | None, mark: int | None
-    ) -> None:
+    ) -> int:
         """publish a change's result on its base (a thread's: IO alone, each written part linked, never copied; a
-        reload's staged parts linked from where it staged them)."""
+        reload's staged parts linked from where it staged them); the files the version holds."""
         files = EMPTY if segment is None else segment.files
         by_table: dict[str, dict[str, Path | None]] = {}
         for table, part, path in outcome.staged:
@@ -1527,20 +2025,25 @@ class SharedCopyBackend:
         if mark is not None:
             tables[MARK_TABLE] = pa.table({"mark": pa.array([int(mark)], pa.int64())})
         self._store.publish(version, tables, base=base)
+        return len(version_files(self._store.root, version))
 
     def _schema_of(self, table: str) -> pa.Schema:
         if table.startswith(LOCATED_PREFIX):
             return Locator().located.schema
+        if table.startswith(PACKED_PREFIX):
+            return _INDEX
         return self._schemas[table]
 
     async def merge(self) -> Merged | None:
-        """one tier merge due (:class:`MergePolicy`), the lowest level first, written in the apply worker and
-        published as a version of its own: never between a change and the version showing it.
+        """one merge due, written in the apply worker and published as a version of its own, never between a change
+        and the version showing it: a tier merge (:class:`MergePolicy`), the lowest level first, else the packing of
+        one split table's small parts (a scope that came new and small, a pack a change emptied or a version over
+        the file bound: ``copy_parts.pack_name``).
 
         :return: what it merged; None when none is due
         :rtype: Merged | None
         """
-        if not any(rule.run_column is not None and rule.split for rule in self._rules.values()):
+        if not any(rule.split for rule in self._rules.values()):
             return None
         async with self._applying:
             current = self._store.current
@@ -1548,7 +2051,15 @@ class SharedCopyBackend:
                 return None
             done = await self._pool.run(
                 _merge_job,
-                _MergePlan(root=str(self._store.root), rules=tuple(self._rules.items()), policy=self._merges),
+                _MergePlan(
+                    root=str(self._store.root),
+                    rules=tuple(self._rules.items()),
+                    policy=self._merges,
+                    schemas=tuple(self._schemas.items()),
+                    pack_below=self._pack_below,
+                    pack_target=self._pack_target,
+                    max_files=self._max_files,
+                ),
                 read=current.name,
                 result_pieces=_APPLY_PIECE_BYTES,
                 result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
@@ -1557,21 +2068,30 @@ class SharedCopyBackend:
                 if done.segment is not None:
                     await asyncio.to_thread(done.segment.close)
                 return None
-            table, into, group = done.value
+            outcome: _MergeOutcome = done.value
+            table = outcome.table
             version = f"c-{self._next}"
             segment = done.segment
             if segment is None:
-                raise RuntimeError(f"a merge of {table!r} into {into!r} wrote nothing")
+                raise RuntimeError(f"a merge of {table!r} wrote nothing")
             try:
-                parts: dict[str, Path | None] = {**dict.fromkeys(group), into: segment.files["m"]}
-                await asyncio.to_thread(
-                    self._store.publish, version, {table: Parts(self._schemas[table], parts)}, base=current.name
-                )
+                parts: dict[str, Path | None] = {
+                    **dict.fromkeys(outcome.dropped),
+                    **{part: segment.files[name] for part, name in outcome.written},
+                }
+                tables: dict[str, Parts] = {table: Parts(self._schemas[table], parts)}
+                if outcome.index is not None or outcome.index_dropped:
+                    index = None if outcome.index is None else segment.files[outcome.index]
+                    tables[f"{PACKED_PREFIX}{table}"] = Parts(_INDEX, {WHOLE_PART: index})
+                await asyncio.to_thread(self._store.publish, version, tables, base=current.name)
+                files = await asyncio.to_thread(lambda: len(version_files(self._store.root, version)))
             finally:
                 await asyncio.to_thread(segment.close)
             self._next += 1
-        log.debug("tier merge", extra={"extra_data": {"table": table, "into": into, "parts": len(group)}})
-        return Merged(version=version, table=table, into=into, parts=tuple(group))
+            self._said_over(version, files)
+        written = tuple(part for part, _ in outcome.written)
+        log.debug("copy merge", extra={"extra_data": {"table": table, "written": written, "parts": outcome.dropped}})
+        return Merged(version=version, table=table, into=written[0], parts=outcome.dropped, written=written)
 
     async def close(self) -> None:
         """stop the apply worker.
@@ -1604,6 +2124,56 @@ def _instant_keys(
         if columns:
             found.append((table, frozenset(columns)))
     return tuple(found)
+
+
+def _canonical_keys(
+    schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule], canonical: Mapping[str, Mapping[str, str]]
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    """each table's canonical key columns and their types, as the plan carries them: each a text key column of a table
+    the copy holds, of a type with one spelling (``arrow_keys.CANONICAL_CASTS``)."""
+    found: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    for table, columns in sorted(canonical.items()):
+        if table not in rules:
+            raise ValueError(f"canonical key columns for {table!r}, a table the copy does not hold")
+        wrong = sorted(
+            column
+            for column, cast in columns.items()
+            if column not in rules[table].key
+            or cast not in CANONICAL_CASTS
+            or not (
+                pa.types.is_string(schemas[table].field(column).type)
+                or pa.types.is_large_string(schemas[table].field(column).type)
+            )
+        )
+        if wrong:
+            raise ValueError(
+                f"{table}: a key kept in one spelling is a text key column of type {sorted(CANONICAL_CASTS)}, not "
+                f"{wrong}"
+            )
+        if columns:
+            found.append((table, tuple(sorted(columns.items()))))
+    return tuple(found)
+
+
+def reload_piece_bytes(max_bytes: int, pages: Sequence[ChangePage]) -> int:
+    """the most one piece of a reload's result may take: its largest table's bytes and an eighth more, at least
+    ``_APPLY_PIECE_MINIMUM_BYTES`` (16 MiB), at most ``_APPLY_PIECE_BYTES`` (1 GiB) and a quarter of the store
+    (:data:`_RELOAD_STORE_SHARE`'s why). Arrow ``nbytes``, no row read.
+
+    :param max_bytes: the store's bound
+    :ptype max_bytes: int
+    :param pages: the reload's pages
+    :ptype pages: Sequence[ChangePage]
+    :return: bytes
+    :rtype: int
+    """
+    by_table: dict[str, int] = {}
+    for page in pages:
+        by_table[page.table] = by_table.get(page.table, 0) + page.rows.nbytes
+    largest = max(by_table.values(), default=0)
+    wanted = largest + largest // _RELOAD_PIECE_SLACK_DIVISOR + _APPLY_PIECE_MINIMUM_BYTES
+    bound = min(_APPLY_PIECE_BYTES, max(_APPLY_PIECE_MINIMUM_BYTES, max_bytes // _RELOAD_STORE_SHARE))
+    return max(_APPLY_PIECE_MINIMUM_BYTES, min(wanted, bound))
 
 
 def _checked(schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule]) -> Mapping[str, PartRule]:

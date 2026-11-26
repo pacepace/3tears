@@ -31,10 +31,12 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import pyarrow as pa
 
+from threetears.core.arrow_keys import CANONICAL_CASTS
 from threetears.core.cache.duckdb_binds import KEYS
 from threetears.core.collections.copy_queries import CopyQueries, CopyVersion
 from threetears.core.collections.schema_backed import rail_text
 from threetears.core.collections.volume_fulls import rows_fingerprint
+from threetears.core.frozen_state import frozen
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
@@ -45,6 +47,7 @@ __all__ = [
     "CopyReads",
     "PinnedCopy",
     "QueriedReads",
+    "canonical_keys",
     "keyed_job",
 ]
 
@@ -229,6 +232,25 @@ def _fingerprinted(connection: Any, args: Sequence[Any]) -> pa.Table:
     job, job_args, kinds = args
     rows = _table_of(job(connection, job_args))
     return pa.table({_FINGERPRINT: pa.array([rows_fingerprint(rows, kinds)], pa.string())})
+
+
+def canonical_keys(tables: Sequence[FollowedTable]) -> Mapping[str, Mapping[str, str]]:
+    """each table's key columns the copy keeps as text in one spelling, and their SQL types: what
+    ``shared_copy.SharedCopyBackend`` is given as ``canonical``, so a lookup (``CopyQueries.lookup``, its ``casts``
+    named by :func:`_key_casts`) spells only its asked keys. Those a lookup compares by value whose type has one
+    spelling (``arrow_keys.CANONICAL_CASTS``: a ``NUMERIC``, a UUID); an instant's is the copy's ``instants``.
+
+    :param tables: the copied tables
+    :ptype tables: Sequence[FollowedTable]
+    :return: table -> its canonical key columns -> their SQL types, read-only
+    :rtype: Mapping[str, Mapping[str, str]]
+    """
+    found: list[tuple[str, Mapping[str, str]]] = []
+    for table in tables:
+        columns = {column: cast for column, cast in _key_casts(table, table.key).items() if cast in CANONICAL_CASTS}
+        if columns:
+            found.append((table.name, frozen(columns.items())))
+    return frozen(found)
 
 
 def _key_casts(table: FollowedTable, columns: Sequence[str]) -> dict[str, str]:

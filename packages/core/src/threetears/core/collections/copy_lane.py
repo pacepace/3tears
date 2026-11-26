@@ -537,7 +537,11 @@ class ApplyLane:
 
     def _merge_after(self, applied: Applied) -> None:
         rules = self._backend.rules
-        if any(rules[table].split and rules[table].run_column is not None for table in applied.parts if table in rules):
+        # a per-run table's change may make a tier merge due; the backend says when small parts are due a packing, or
+        # the version holds more files than its bound (``shared_copy.MAX_VERSION_FILES``)
+        if applied.merge_due or any(
+            rules[table].split and rules[table].run_column is not None for table in applied.parts if table in rules
+        ):
             self._merge_due = True
             self._merge_turn = True
 
