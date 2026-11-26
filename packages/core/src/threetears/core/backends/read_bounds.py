@@ -20,7 +20,7 @@ broker bounds them by comparing numbers, never by parsing a unit, and a statemen
 alone (``SET LOCAL work_mem = 65536``).
 
 **Pods have no scratch volume** (no disk spill, by design): the work a newest read asks is bounded by its rows read
-(:data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ`), and ``work_mem`` is the memory that bound is sized
+(:data:`~threetears.interfaces.keyed.keys._NEWEST_ROWS_A_READ`), and ``work_mem`` is the memory that bound is sized
 against, so its sort never spills.
 """
 

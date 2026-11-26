@@ -797,14 +797,14 @@ async def _page_bounds(l3: Any) -> tuple[tuple[str, int], ...]:
 
 def _first_rows(page_size: int, *, shape_newest: _Newest | None) -> int:
     """the rows (keys) a read's first page asks for: its page, or for a versioned read as many keys as hold
-    :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the measured worst (it knows nothing yet
-    of its versions; :data:`~threetears.interfaces.keyed.keys.NEWEST_FIRST_KEYS`)."""
+    :data:`~threetears.interfaces.keyed.keys._NEWEST_ROWS_A_READ` versions at the measured worst (it knows nothing yet
+    of its versions; :data:`~threetears.interfaces.keyed.keys._NEWEST_FIRST_KEYS`)."""
     return page_size if shape_newest is None else next_newest_keys(0, 0, page_size)
 
 
 def _next_keys(read: int, versions: int, rows: int, page_size: int) -> int:
     """the rows (keys) a versioned page's next statement asks for: what the transport fits, at most as many keys as
-    hold :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the versions a key this page read."""
+    hold :data:`~threetears.interfaces.keyed.keys._NEWEST_ROWS_A_READ` versions at the versions a key this page read."""
     return min(rows, next_newest_keys(read, versions, page_size))
 
 
