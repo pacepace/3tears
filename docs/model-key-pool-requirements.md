@@ -1,6 +1,8 @@
 # Model key pool: requirements
 
-**Status:** Requirements, owner-reviewed 2026-11-26 (Q1, Q2 and Q4 ruled; Q3 takes its recommendation). No design and no code.
+**Status:** Requirements, owner-reviewed 2026-11-26 (Q1 and Q2 ruled; Q3 takes its recommendation; Q4 superseded by the
+owner's later ruling the same day that separates rate limiting from quota exhaustion, `.prawduct/owner-rulings.md`).
+Every requirement that ruling changed carries an "Amended 2026-11-26" note.
 **Package:** `3tears-models` (`threetears.models`), plus one durable store whose home is open question Q1.
 **Source:** Hearsay's request (owner-approved 2026-11-25), as modified by the owner's three directions:
 provider-agnostic, 1..n keys, sticky rotation. Where they disagree, the owner's directions win. §5 lists
@@ -13,9 +15,10 @@ every change made to Hearsay's request.
 A **key pool** is a set of 1..n credentials for **one** provider. Each credential has an operator label, a
 budget for each billing period, and an optional priority. A chat model built from the pool runs every call on
 the pool's **active key**. That key stays active until it can't serve: it is exhausted, revoked, forbidden,
-rate-limited, tripped, or too low on budget. The pool then moves the active key to the next eligible key. The
-move is a state change, recorded in a store that every process sharing the pool reads. Later calls start on
-the new key, so they don't begin with a failure on the dead one.
+tripped, or too low on budget. The pool then moves the active key to the next eligible key. The move is a state
+change, recorded in a store that every process sharing the pool reads. Later calls start on the new key, so they
+don't begin with a failure on the dead one. A rate limit is not one of these: it is retried on the same key, and
+never moves it (amended 2026-11-26).
 
 Spend is reserved before each call and settled after it, so concurrent calls can't take a key past its budget,
 whether they run in one process or in several. Provider-specific behaviour sits behind a per-provider
@@ -30,7 +33,8 @@ returns `None`.
 **Purpose.** Let a 3tears consumer run its model calls on several keys, with these properties:
 
 - each key stays inside an operator-set budget;
-- an exhausted, revoked or rate-limited key is moved off once, durably, not rediscovered by every call;
+- an exhausted or revoked key is moved off once, durably, not rediscovered by every call;
+- a rate-limited call is retried on the same key, and a rate limit never moves a key (amended 2026-11-26);
 - a consumer with one key gets the same budgeting, state and errors as a consumer with ten.
 
 **In scope (v1):**
@@ -117,43 +121,54 @@ Every requirement must be testable without a network (KP-L1).
 
 - **KP-C1.** Provider knowledge lives behind one classifier per provider. The pool core contains no status codes,
   error types or header names. Given what an attempt raised, the classifier returns:
-  - a **verdict**: `exhausted`, `revoked`, `forbidden`, `rate_limited(until)`, or `not_key_related`;
+  - a **verdict**: `exhausted(until?)`, `revoked`, `forbidden`, `rate_limited(until?)`, `oversized`, or
+    `not_key_related`. `rate_limited` is retried, never recorded; `oversized` (one request larger than the key may
+    spend at all) skips the key for that call only, never recorded;
   - a **scope** for the verdict: this key, this key and model, or the key's whole account;
   - whether the provider **may have billed** the attempt.
 
   An exception the classifier doesn't recognise is `not_key_related`. An unknown error never burns a key.
+
+  The same classifier also decides, from a raw response (status, headers, and a 429's body), whether the provider
+  SDK may retry it on the same key (KP-H4), so the SDK hook and the verdict share one rule. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*
 - **KP-C2.** v1 ships classifiers for `anthropic`, `openai` and `openrouter`. Each rule is pinned by a recorded
   response fixture. The intended mapping, to be confirmed against each provider's documentation when the
   classifier is built:
 
   | Signal | Verdict |
   |---|---|
-  | Anthropic 402 `billing_error`; a 400 whose body says the credit balance is too low or that an organisation or workspace spend limit was reached; a 429 with `error.details.error_code = enforced_spend_limit_reached` | `exhausted` (account scope) |
-  | OpenAI 429 with code `insufficient_quota`; OpenRouter 402 | `exhausted` |
+  | Anthropic 402 `billing_error`; a 400 whose body says the credit balance is too low or that an organisation or workspace spend limit was reached; a 429 whose `error.details.error_code` is `enforced_spend_limit_reached` or `contract_spend_limit_reached` | `exhausted` (account scope) |
+  | OpenAI 429 whose `error.code` (or `type`) is `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, `organization_usage_limit_exceeded` or `billing_hard_limit_reached` | `exhausted` (account scope) |
+  | OpenRouter 402 `openrouter_key_limit` (key scope), `openrouter_credits` without `weight_exceeds_budget` (account scope), or naming no limit (key scope) | `exhausted` |
+  | OpenRouter 403 whose `limit_source` is `openrouter_guardrail_budget`, `openrouter_workspace_budget` or `openrouter_key_limit` | `exhausted` until its `resets_at`; key scope for `metadata.scope` `key_limit` or `api_key`, account scope otherwise |
+  | OpenRouter 402 `openrouter_credits` with `reason: weight_exceeds_budget` | `oversized` (this call skips the key) |
   | 401, or the provider's authentication error type | `revoked` (key scope) |
-  | 403, or the provider's permission error type | `forbidden` (key and model scope) |
-  | Any other 429, including OpenRouter's mid-stream `(code: 429)` (`errors.py:375`) | `rate_limited`, until the provider's `retry-after` (or its reset header) |
-  | 5xx, 529, timeouts, connection errors, refusals, other 4xx | `not_key_related` |
+  | 403, or the provider's permission error type, except as below | `forbidden` (key and model scope) |
+  | Any other 429: Anthropic `rate_limit_error` with any other code (`ramp_limit_exceeded` included); OpenAI `rate_limit_exceeded`, `slow_down`, type `rate_limit_error`; OpenRouter 429, its mid-stream `(code: 429)` (`errors.py:375`), and its 402 `openrouter_in_flight_budget` carrying `Retry-After` | `rate_limited`, until the provider's `retry-after` (or its reset header: Anthropic's and OpenAI's of a used-up limit, OpenRouter's `X-RateLimit-Reset` in epoch milliseconds) |
+  | OpenRouter 403 whose `error_type` is `content_policy_violation` or `refusal`, or that carries moderation metadata; 5xx, 529, timeouts, connection errors, other 4xx | `not_key_related` |
 
   Message matching is a last resort, used only where a provider gives no type or code for the case. Each such
-  rule names its fixture.
-- **KP-C3.** Rate-limit holds have a floor (default 30 s) when the provider gives no `retry-after`. A key
-  rate-limited again within 10 minutes of its last hold has its next hold doubled, up to a cap (default
-  15 min), so a priority key can't flap.
+  rule names its fixture. A Claude Code workspace's spend message is not matched. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).* The exhaustion codes
+  were checked against each provider's documentation that day.
+- **KP-C3.** A rate limit is not held. A rate limit whose wait (`retry-after`, `retry-after-ms`, or a documented reset
+  header) runs past a per-pool threshold (`rate_limit_exhaustion_wait`, default 120 s) counts as exhaustion: the
+  call moves to the next key, and the old key is `exhausted` until the wait ends, on the whole key (a key's state is
+  not kept per model). It guards against provider daily caps; the owner doubts the case is real, so it stays small.
+  *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).* It replaces the rate-limit hold, its 30 s floor and its doubling, which had no case left.
 - **KP-C4.** State lifetimes:
 
   | State | Ends when |
   |---|---|
-  | `exhausted` | the period rolls over, the label's fingerprint changes, or an operator resets it |
+  | `exhausted` | the reset the provider named passes (an OpenRouter budget's `resets_at`, a long rate-limit wait's end), else the period rolls over; or the label's fingerprint changes, or an operator resets it |
   | `revoked`, `forbidden` | the label's fingerprint changes, or an operator resets it |
-  | `rate_limited` | its `until` passes |
   | breaker `tripped` | the breaker closes; this state is process-local and read from the breaker |
 
-  `exhausted`, `revoked`, `forbidden` and `rate_limited` live in the shared store, so a fact one process learns
-  about a key, every process sees. Breaker state stays process-local, as it is today.
+  `exhausted`, `revoked` and `forbidden` live in the shared store, so a fact one process learns about a key, every
+  process sees. Breaker state stays process-local, as it is today. There is no `rate_limited` state. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*
 - **KP-C5.** A verdict with account scope applies to every key sharing that `account`. Rate limits and credit
   shared across one Anthropic organisation are exactly this case; without it, the pool would fail over from
-  one key to another key that shares the same exhausted credit.
+  one key to another key that shares the same exhausted credit. (Rate limits shared across an organisation no
+  longer need this: a rate limit records nothing. Amended 2026-11-26.)
 - **KP-C6.** The pool reads each key's breaker state without side effects. It never calls `check()` to decide
   eligibility, because `check()` admits a probe. Per-key models keep both the credential breaker and the
   per-model rate-limit breaker that `create_chat_model` wires today. Meeting both rules needs a public way to
@@ -166,19 +181,21 @@ Every requirement must be testable without a network (KP-L1).
   whenever the store reports a change, or within 5 s otherwise. Selecting a key doesn't read every key's state
   on every call.
 - **KP-D2.** A call starts on the active key. The active key **moves** only when it becomes ineligible:
-  - its state turns `exhausted`, `revoked`, `forbidden` (for this model), or `rate_limited`;
+  - its state turns `exhausted`, `revoked` or `forbidden` (for this model); a rate limit never moves it
+    (amended 2026-11-26);
   - its breaker is OPEN;
   - its room falls below `min_headroom` (default 1% of its budget).
 - **KP-D3.** A call whose reservation doesn't fit on a key that still has room above `min_headroom` **skips**
   that key for this call only. The active key stays put, so one large call doesn't strand the room that small
-  calls can still use.
+  calls can still use. A call the provider refuses as larger than the key may spend at all (OpenRouter's
+  `weight_exceeds_budget`) skips the key the same way, and nothing is marked exhausted. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*
 - **KP-D4.** The next key is the first eligible key after the current one, ordered by `(priority, config
   order)` and wrapping around. Two processes moving the pointer at the same time agree: the move is a
   compare-and-set from the old key, and the loser adopts the winner's choice.
 - **KP-D5.** **Returning to an earlier key.**
   - With **distinct priorities**, the pool pulls traffic back to the most-preferred eligible key as soon as it
-    sees that key eligible again: a period rollover, a `rate_limited.until` passing, its breaker closing, an
-    operator reset, or a fingerprint change. Priority means "use B only while A can't serve."
+    sees that key eligible again: a period rollover, an exhaustion's named reset passing, its breaker closing, an
+    operator reset, or a fingerprint change (amended 2026-11-26: a rate limit holds nothing to pass). Priority means "use B only while A can't serve."
   - With **equal priorities**, which is the default, the pool doesn't pull back. It stays on the current key
     until that key is forced off, then moves on in order.
   - A **period rollover** always resets the active key to the most-preferred key (the first configured key when
@@ -192,10 +209,10 @@ Every requirement must be testable without a network (KP-L1).
   - It makes every process touch every key's ledger, which multiplies store contention.
 
   Spreading load only helps a caller bound by rate limits whose keys sit in separate accounts. Sticky rotation
-  already rotates on 429.
+  doesn't rotate on a rate limit (amended 2026-11-26), so such a caller is Q3's case.
 - **KP-D7.** Each move logs once:
   - at WARNING for `exhausted`, `revoked` and `forbidden`;
-  - at INFO for `rate_limited`, low room and a breaker trip.
+  - at INFO for low room and a breaker trip. A rate limit moves nothing and logs no move (amended 2026-11-26).
 
   The log line names the pool, both labels and the reason, and the move is counted (KP-K1).
 
@@ -259,22 +276,37 @@ Every requirement must be testable without a network (KP-L1).
 
 ### H. Failover inside one call
 
-- **KP-H1.** On a key-moving verdict (KP-C2), the pool records the state, moves the active key if the failed key
-  was the active one, and retries the call on the next eligible key, transparently to the caller.
-- **KP-H2.** Each key is tried at most once per call. A key skipped for room (KP-D3) counts as tried.
+- **KP-H1.** On a key-moving verdict (KP-C2: `exhausted`, `revoked`, `forbidden`), the pool records the state,
+  moves the active key if the failed key was the active one, and retries the call on the next eligible key,
+  transparently to the caller. An `oversized` verdict retries on the next key and records nothing.
+- **KP-H2.** Each key is tried at most once per call. A key skipped for room (KP-D3), or refused as `oversized`,
+  counts as tried. Retries of a rate limit on the same key (KP-H4) are not tries of another key. *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).* It
+  removes the exception that let a rate-limited key serve once more after the pool's wait.
 - **KP-H3.** A `not_key_related` failure is not retried on another key. It propagates unchanged, with today's
   breaker behaviour, so 5xx and connection errors behave as they do now.
 - **KP-H4.** A key-moving failure reaches the pool on its first occurrence. The SDK must not first sleep on it
-  and retry on the same key (the Anthropic SDK retries 429 twice by default, honouring `retry-after`;
-  `providers/anthropic.py:210`). Retries of `not_key_related` failures on the same key keep today's count.
+  and retry on the same key (the Anthropic SDK retries every 429, honouring `retry-after` uncapped). A rate limit is
+  the reverse: it is retried on the same key, honouring `retry-after`, and then reaches the caller unchanged, with
+  its reservation released and nothing about the key changed.
+  - Anthropic and OpenAI: the SDK retries it with the caller's `max_retries`. The pool's hook marks
+    `x-should-retry: false` only on a 401, 402 or 403, a 429 whose body reports a quota, and a 429 whose wait passes
+    the KP-C3 threshold. It reads the body of a 429 only, never a 2xx stream; a body that doesn't parse stays
+    retriable.
+  - OpenRouter, whose SDK never retries a 429: the pool retries the call on the same key twice, honouring
+    `retry-after` up to the KP-C3 threshold, through its injected sleep and clock. These are not failovers.
+
+  Retries of `not_key_related` failures on the same key keep today's count. Each key's per-model rate-limit breaker
+  (KP-C6) still counts rate limits, as on an `api_key=` model: repeated ones that open it make the key `tripped` for
+  that model in this process, which moves it (an inference kept from KP-C6, for the owner to confirm). *Amended 2026-11-26 (owner: a rate limit means retry; a quota means move to the next key).*
 - **KP-H5.** Once any streamed output has reached the caller, the pool never retries. It records the key's
   state, settles per KP-E4, and raises the provider's error.
 
 ### I. Errors
 
 - **KP-I1.** When no key is eligible, or every eligible key has been tried, the pool raises `NoKeyAvailableError`.
-  It names each key's label and state (`exhausted`, `revoked`, `forbidden`, `rate_limited until T`, `tripped`,
-  `no room: R of B`) and the earliest time any key could serve again. When there is nothing to try, it is raised
+  It names each key's label and state (`exhausted`, `revoked`, `forbidden`, `tripped until T`, `no room: R of B`,
+  `tried`) and the earliest time any key could serve again. A rate limit never raises it: the provider's own error
+  reaches the caller (KP-H4; amended 2026-11-26). When there is nothing to try, it is raised
   before any network call.
 - **KP-I2.** `NoKeyAvailableError` is a `ModelProviderError`, so `is_provider_error()` (`errors.py:420`) is true
   for it and `friendly_api_error()` gives a fixed message. Every raise is logged at ERROR and counted. The log may
@@ -308,12 +340,14 @@ Every requirement must be testable without a network (KP-L1).
 - **KP-K1.** Per `(pool, key label)`:
   - gauges: period spend, reserved, remaining, budget, state, and whether the key is active;
   - counters: moves by `from`, `to` and `reason`; failovers inside a call by `reason`; calls refused for room;
-    orphaned reservations;
+    orphaned reservations. No state, reason or failover names a rate limit: a rate limit is retried, not counted as
+    a key event (amended 2026-11-26);
   - per pool: a counter of `NoKeyAvailableError` raises.
 
   Labels are bounded by configuration. The metrics sit behind the existing `prometheus` extra.
 - **KP-K2.** `pool.status()` returns a snapshot for health endpoints: each key's label, state, `until`, spend,
-  reserved, remaining, and the active key. It contains no secrets.
+  reserved, remaining, and the active key. It contains no secrets. (Amended 2026-11-26: no per-model rate-limit
+  list, since a rate limit is no state.)
 
 ### L. Tests (no network)
 
@@ -326,6 +360,8 @@ Every requirement must be testable without a network (KP-L1).
   - each classifier rule, against its fixture;
   - account-scoped verdicts;
   - failover for each verdict; at most once per key; no retry after partial stream output;
+  - a rate limit retried on the same key (by the SDK, or twice by the pool for OpenRouter) and then raised, with no
+    state or move; the long-wait threshold; the hook reading a 429's body only (amended 2026-11-26);
   - concurrent reservations never exceeding the budget;
   - settlement including cache reads and writes; reservation release versus full settlement on failure;
   - orphan expiry; period rollover and the anchor day;
@@ -359,8 +395,8 @@ Every requirement must be testable without a network (KP-L1).
 | `errors.py` "already classifies credit balance too low" | It doesn't: it only shows the provider's message. The classifier is new work | Checked against `errors.py:353` |
 | "Credit balance too low" makes the key exhausted | Also covers 402, spend-limit 400s, the spend-cap 429, OpenAI `insufficient_quota` and OpenRouter 402, and spreads to every key in the same `account` | Credit and limits are per provider account, not per key; without this the pool fails over into the same empty account |
 | 401/403 make the key revoked until the pool is rebuilt | 401 means revoked; 403 means forbidden for that key and model. Both last until the label's secret changes or an operator resets the key, not until a rebuild | State is shared and durable, so a rebuild in one process clears nothing. A 403 is usually a permission on a resource, not a dead key |
-| 429: hold for retry-after | Plus a floor and doubling for repeated holds; scoped per model where the provider limits per model | Prevents flapping under priority pull-back; OpenRouter limits per model (`errors.py:375`) |
-| 5xx and connection errors keep SDK and breaker behaviour | Kept, but the SDK must not retry key-moving errors (429) on the same key first (KP-H4) | Otherwise every call sleeps on a rate-limited key before failing over |
+| 429: hold for retry-after | A rate limit is retried on the same key and never held or moved; only a used-up quota (told apart by the body) moves, and a wait past 120 s counts as one (KP-C3, KP-H4) | Owner, 2026-11-26: "rate limit means retry. Quota exhaustion means move to next key" |
+| 5xx and connection errors keep SDK and breaker behaviour | Kept, and so does a rate limit; the SDK must not retry a key-moving error (401-403, a quota 429) on the same key first (KP-H4) | Otherwise every call sleeps on a used-up key before failing over |
 | Short keyed fingerprint "like the breaker registry's" | A stable fingerprint, never exported | The breaker's fingerprint is random per process (`circuit_breaker.py:738`) and can't be shared |
 | Store "e.g. DataStore/PostgreSQL-backed" | Protocol in models; durable store on L3 with an optional L2 fence | `docs/design-durable-coordination.md`: NATS KV is memory-only, L3 is durable |
 | Settle to "the actual usage the tracker records" | Settle inline from reported usage, with one shared cost function that prices cache reads and writes | Tracker sinks are fire-and-forget (`tracking.py:777`), and its cost ignores cache prices (`tracking.py:1106`) |
@@ -387,7 +423,9 @@ Every requirement must be testable without a network (KP-L1).
 - **Q4. When every key is only rate-limited, should a call wait for the earliest `until`, up to a cap, instead of
   raising at once?** A one-key pool otherwise loses the SDK's current retry-after wait (KP-H4).
   Recommendation: yes, with a per-pool cap that defaults to 0 (raise at once).
-  **Ruled 2026-11-26: yes, a per-pool cap defaulting to 0.**
+  **Ruled 2026-11-26: yes, a per-pool cap defaulting to 0.** **Superseded 2026-11-26** by the owner's later ruling
+  that a rate limit means retry: a rate limit no longer takes a key out, so no call is left waiting on held keys,
+  and the SDK's own `retry-after` wait is kept (KP-H4). The cap is removed.
 
 The change is an API addition to the family, so it ships in a MINOR bump
 (`tests/enforcement/test_api_growth_requires_a_minor_bump.py`), with every `3tears*` package moved in lockstep.

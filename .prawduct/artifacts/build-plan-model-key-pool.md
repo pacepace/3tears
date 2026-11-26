@@ -34,7 +34,8 @@ document's. This plan says how to build it, and in what order.
 out of scope, and the owner ruled its open questions on 2026-11-26 (`.prawduct/owner-rulings.md`).
 
 **Product:** Hearsay, and any 3tears consumer, runs its model calls on 1..n keys for one provider, each inside an
-operator-set budget. A dead or rate-limited key is moved off once, durably, for every process sharing the pool. The
+operator-set budget. A dead or used-up key is moved off once, durably, for every process sharing the pool; a rate
+limit is retried on the same key and moves nothing (owner, 2026-11-26). The
 owner's three directions shape it: provider-agnostic, 1..n keys with no special case for one, sticky rotation.
 
 **Architecture:** what must hold:
@@ -132,7 +133,7 @@ What must stay possible:
 - Chunk 08: `KeyPoolMetrics` has no src caller (the pool only reports to an observer it is handed), so
   `_public_api_consumers.txt` names Hearsay. Owner to confirm at the boundary, as for `BudgetLedger`.
 - Chunk 08: the failover event is built (it retires the "no failover event" line above): `KeyPoolObserver.on_failover`, `KeyPool.record_failover`, and `threetears_key_pool_failovers_total{pool, reason}`. Its reason is `MoveReason`, not `VerdictKind`, because it can name `tripped` (a breaker refusing after the key was chosen) and it shares the moves counter's axis.
-- Chunk 08: a failover is counted when the call's next attempt runs on another key. A retry on the same key after its hold, a refusal that ends in `NoKeyAvailableError`, and a partial-stream failure are not failovers. `refresh` starts the five failover reasons and each store method at zero.
+- Chunk 08: a failover is counted when the call's next attempt runs on another key. A retry on the same key after its hold, a refusal that ends in `NoKeyAvailableError`, and a partial-stream failure are not failovers. `refresh` starts the five failover reasons and each store method at zero. *Rate-limited reason superseded 2026-11-26; see the rate-limit lines below.*
 - Chunk 08 (operator check): a move onto a key an operator just reset carries `MoveReason.OPERATOR_RESET`, at INFO. A key made exhausted, revoked or forbidden with no move off it is logged at WARNING. The `NoKeyAvailableError` dedup suppresses only a line whose key states repeat the last logged line; the suppressed count is kept.
 - Chunk 08: the KP-B3 sweep (`test_pooled_chat_secrecy.py`) found no leak. It found a served call whose settle failed raising `KeyPoolStoreError`, because the `finally` settled again. Such a lease now stays open for the sweep, and the answer is returned.
 - Chunk 05: the ledger tables live in `LEDGER_TABLE_SCHEMAS`, not `COORDINATION_TABLE_SCHEMAS`, because v002 alters
@@ -147,7 +148,8 @@ What must stay possible:
   loop (the core ledger's NATS and database clients) must be driven through the async paths; the docstring says so.
 - Chunk 07: Q4 over KP-H2: a key refused for a rate limit stays eligible for that call once more, so the pool's wait
   can serve it after its hold (a one-key pool keeps the SDK's retry-after wait); with the default cap of 0 the call
-  raises at once. Every other verdict marks the key tried. [DECISION | owner can veto]
+  raises at once. Every other verdict marks the key tried. [DECISION | owner can veto] *Superseded 2026-11-26: the owner
+  separated rate limiting from quota exhaustion, so the exception and the Q4 wait are removed (lines below).*
 - Chunk 07: settlement uses only provider-reported usage; "estimated" or "unavailable" usage keeps the reservation as
   spend. A not-key-related failure after reported usage (a structured answer that fails to parse) settles the
   reported cost. A settle that fails after a served call is logged and the answer returned: the open reservation
@@ -157,6 +159,34 @@ What must stay possible:
   counts as output for KP-H5. `breaker`, `breaker_registry` and `unretried_key_errors` are refused with `key_pool`.
 - Chunk 05: `BudgetLedger` has no caller in this repo's src (models can't import core), so
   `_public_api_consumers.txt` names Hearsay, whose wiring follows the release. Owner to confirm at the boundary.
+- Rate-limit change (owner, 2026-11-26): a rate limit is no key state and no move reason. Removed outright, no shims:
+  the hold with its floor and doubling, `rate_limited until T`, `MoveReason.RATE_LIMITED`, `KeyState.RATE_LIMITED`,
+  `KeyStatus.rate_limited_models`, `max_rate_limit_wait` and the chunk 07 one-more-attempt exception.
+- Rate-limit change: the classifier keeps a `rate_limited` verdict (the pool needs it to retry), which no longer moves
+  the key. `Verdict.moves_key` is exhausted, revoked or forbidden; `tries_another_key` adds `oversized`.
+- Rate-limit change: the SDK hook's rule is the classifier's `refuses_retry(status, headers, body, now, exhaustion_wait)`,
+  reached through `KeyPool.refuses_retry`, which the factory hands each key's model as `unretried_key_errors`. The
+  provider factories' `unretried_key_errors` changes from a bool to that rule (`None` = the SDK's own policy):
+  injection, because a provider module importing `key_pool.classify` closes an import cycle (classify imports the
+  providers' names). `KEY_MOVING_STATUSES` is gone.
+- Rate-limit change: the classifiers share their two halves by composition (module-level per-provider readers passed
+  to `_refuses_retry` and `_long_wait_exhausts`), not a base class with private hooks, which the underscore contract
+  forbids overriding.
+- Rate-limit change: the long-wait reading lives in the classifier (`classify(exhaustion_wait=)`), so the hook and the
+  verdict compare the same `until`. A long wait from a per-model (`KEY_AND_MODEL`) rate limit is held on the whole
+  key, since key state is not kept per model. A wait of exactly the threshold is still a rate limit.
+- Rate-limit change: an exhausted record is `{"period", "until"}`. With a provider-named `until` it holds until then,
+  across a rollover; without one, to the period's end as before. The record layout stays 1: nothing was released.
+- Rate-limit change: OpenRouter's pool-side retries are `KeyPool.wait_to_retry(verdict, retries)`: two, through the
+  pool's sleep, waiting the provider's `until` capped at the threshold, else 0.5 s then 1 s (the Stainless SDKs'
+  starting backoff). Whether to retry is the classifier's `sdk_retries_rate_limits`, so the core names no provider.
+- Rate-limit change: an `oversized` refusal (OpenRouter `weight_exceeds_budget`) counts as a `low_room` failover: it
+  is a room refusal the provider reported, on the failover counter's existing axis. The failover reasons are
+  exhausted, revoked, forbidden, tripped, low_room.
+- Rate-limit change: each key's per-model rate-limit breaker still counts rate limits (KP-C6, unchanged), so repeated
+  429s can trip a key for a model and move off it. Kept as an inference for the owner to confirm, not changed here.
+- Rate-limit change: `_Call.abandoned`'s docstring now says what the code does: a cancelled call settles at the
+  reported cost when every model run reported usage, else at no less than its reservation.
 
 **Level:** Medium. The pool logic is well specified. Two foreign surfaces carry the risk, and their verify-api steps
 are what raise the level:
@@ -175,6 +205,10 @@ After chunk 07, a script in the scratchpad builds a two-key pool against a fake 
 exhausted, and its `status()` and log lines are read as an operator would read them.
 
 ## Build chunks
+
+*The rate-limit parts of chunks 03, 04, 06 and 07 below (the 429-unretried mode, holds with a floor and doubling, the
+Q4 wait) were replaced on 2026-11-26 by the owner's ruling that a rate limit means retry; the decisions above say
+what replaced them. The chunks are kept as built.*
 
 ### Chunk 01: One cost function, and a public token estimate
 
