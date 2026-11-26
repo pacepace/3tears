@@ -86,7 +86,7 @@ from threetears.core.collections.epoch_change import EpochChange, EpochWalk
 from threetears.core.collections.table_restore import RestoredTable, StampedTable, TableChanges, restored_tables
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
-from threetears.core.ddl.epoch_catalog import refuse_row_triggers
+from threetears.core.ddl.epoch_catalog import refuse_moveable_without_moves, refuse_row_triggers
 from threetears.core.ddl.index_health import ddl_body, rebuild_unusable_indexes
 from threetears.core.ddl.keeper_marks import MARKS_TABLE, keeper_marks_ddl
 from threetears.core.ddl.row_epoch import epoch_wall_ms, restore_floor
@@ -519,7 +519,9 @@ class LogKeeper:
     async def install(self, policy: DdlLockPolicy | None = None) -> None:
         """create the marks table where missing, under the database's DDL lock, every index of it usable: one a failed
         build left unusable is dropped and built again from its own statement. Then refuse a per-row trigger on any
-        versioned table of the database (:func:`~threetears.core.ddl.epoch_catalog.refuse_row_triggers`).
+        versioned table of the database (:func:`~threetears.core.ddl.epoch_catalog.refuse_row_triggers`), and a
+        moveable stamped table whose schema holds no moves table
+        (:func:`~threetears.core.ddl.epoch_catalog.refuse_moveable_without_moves`).
 
         :param policy: how long to wait for the DDL lock; the default waits until it is free
         :ptype policy: DdlLockPolicy | None
@@ -527,6 +529,7 @@ class LogKeeper:
         :rtype: None
         :raises IndexStillUnusableError: when a marks index is still unusable after it was built again
         :raises PerRowTriggerError: when a versioned table carries a per-row trigger
+        :raises MovesTableMissingError: when a moveable stamped table's schema holds no moves table
         """
         statements = keeper_marks_ddl(self._schema)
         # each index's name, as its own statement creates it (CREATE INDEX IF NOT EXISTS "<name>" ON ...), past the
@@ -554,6 +557,8 @@ class LogKeeper:
                 )
             # at every start: no versioned (page-written) table of the database carries a per-row trigger
             await refuse_row_triggers(conn)
+            # at every start: every moveable stamped table's schema holds the moves table its moving writes append to
+            await refuse_moveable_without_moves(conn)
 
     async def run_pass(self) -> KeeperPass:
         """keep the log for one pass: put back a lost log, take a new one, mark, scrub.

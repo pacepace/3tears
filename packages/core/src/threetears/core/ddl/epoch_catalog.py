@@ -18,20 +18,32 @@ the second, so it needs no class of the table: the hub's process, which imports 
 ``BIGINT NOT NULL``: a write that carries none is refused by the database itself. Every versioned and stamped table
 carries it (:func:`tables_carrying_epoch`).
 
+**Whether a moveable table's schema holds the moves table.** A stamped table a write may move between tenants
+(``TableSchema(moveable=...)``, :mod:`~threetears.core.ddl.tenant_moves`) names its moveable columns in its declaration
+(``"moveable"``), and every write that moves a row appends to
+:data:`~threetears.core.ddl.tenant_moves.TENANT_MOVES_TABLE` in the same schema, in the same statement. Without that
+table every such write fails at write time ("relation does not exist"), so it is refused where the database is checked
+at start (:func:`refuse_moveable_without_moves`): at each migration run's end and at the keeper's install.
+
 A leaf module of catalog statements: it imports no collection and no Arrow, so the migration runner reaches it.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any, Final, Protocol
 
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 
 __all__ = [
     "REFUSE_TABLES_WITHOUT_EPOCH",
+    "MovesTableMissingError",
     "PerRowTriggerError",
     "TableWithoutEpochError",
+    "moveable_without_moves",
+    "refuse_moveable_without_moves",
     "refuse_tables_without_epoch",
     "refuse_row_triggers",
     "row_triggers_on_versioned",
@@ -52,6 +64,8 @@ class _Fetching(Protocol):
 #: spaces, ``separators=(",", ":")``)
 _DECLARED: Final = f'{{"{RESTORE_DECLARATION_MARK}":%'
 _STAMPED: Final = '%"kind":"stamped"%'
+#: what a stamped declaration carries when its table names moveable columns (``stamped_restore_declaration``)
+_MOVEABLE: Final = '%"moveable":[%'
 
 #: the relations whose index carries a versioned table's restore declaration (not a stamped one's), as a subquery of
 #: ``(table_schema, table_name, relid)``: a catalog read, its size the declared indexes
@@ -92,6 +106,59 @@ WHERE n.nspname::text = $1 AND c.relname::text = ANY($2::text[]) AND a.attname::
   AND a.attnotnull AND NOT a.attisdropped AND a.atttypid = 'int8'::regtype
 ORDER BY 1
 """
+
+#: every stamped table that declares a moveable column, of one schema or of every schema (``$5`` null), whose schema
+#: holds no moves table (``$4``), with its declaration: a catalog read, its size the declared indexes
+_MOVEABLE_WITHOUT_MOVES_SQL: Final = """
+SELECT DISTINCT n.nspname::text AS table_schema, c.relname::text AS table_name, d.description::text AS declaration
+FROM pg_description d
+JOIN pg_index i ON i.indexrelid = d.objoid
+JOIN pg_class c ON c.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE d.classoid = 'pg_class'::regclass AND d.objsubid = 0
+  AND d.description LIKE $1 AND d.description LIKE $2 AND d.description LIKE $3
+  AND ($5::text IS NULL OR n.nspname::text = $5::text)
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_class m WHERE m.relnamespace = n.oid AND m.relname::text = $4::text AND m.relkind IN ('r', 'p')
+  )
+ORDER BY 1, 2
+"""
+
+
+class MovesTableMissingError(RuntimeError):
+    """stamped tables declare a moveable column, but their schema holds no moves table: every write that moves a row
+    would fail at write time.
+
+    :ivar found: ``schema.table (moveable: columns)`` for each one found
+    :ivar schemas: the schemas that lack the moves table
+    """
+
+    def __init__(self, found: tuple[str, ...], schemas: tuple[str, ...]) -> None:
+        self.found = found
+        self.schemas = schemas
+        listed = "\n".join(f"  - {each}" for each in found)
+        missing = "\n".join(f"  - {schema}.{TENANT_MOVES_TABLE}" for schema in schemas)
+        super().__init__(
+            "\n\n"
+            "=====================================================================================================\n"
+            f"REFUSED: a moveable stamped table's schema has no {TENANT_MOVES_TABLE} table\n"
+            "=====================================================================================================\n"
+            f"{listed}\n\n"
+            "Missing:\n"
+            f"{missing}\n\n"
+            "Each table above declares TableSchema(moveable=(...)): a write that changes that column moves the row\n"
+            f"between tenants and, in the same statement, appends the move to {TENANT_MOVES_TABLE} in the table's\n"
+            "own schema. Without that table every such write fails at write time with 'relation does not exist'.\n\n"
+            "How to fix:\n"
+            "  1. In a migration of the same package (the same schema) that creates the moveable table, create the\n"
+            "     moves table beside it:\n"
+            "         from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA\n"
+            "         for statement in TENANT_MOVES_SCHEMA.create_statements(yugabyte=<True on YugabyteDB>):\n"
+            "             await store.execute(statement)\n"
+            "  2. Run the migrations again; this check runs at the end of every migration run and at the keeper's\n"
+            "     install.\n"
+            "=====================================================================================================\n"
+        )
 
 
 class PerRowTriggerError(RuntimeError):
@@ -172,6 +239,50 @@ async def refuse_row_triggers(conn: _Fetching, schema: str | None = None) -> Non
     found = await row_triggers_on_versioned(conn, schema)
     if found:
         raise PerRowTriggerError(found)
+
+
+async def moveable_without_moves(
+    conn: _Fetching, schema: str | None = None
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """every stamped table of ``schema`` (None: of every schema) that declares a moveable column while its schema holds
+    no :data:`~threetears.core.ddl.tenant_moves.TENANT_MOVES_TABLE`. One catalog read.
+
+    :param conn: a pool or a connection
+    :ptype conn: _Fetching
+    :param schema: the one schema judged; None judges every schema
+    :ptype schema: str | None
+    :return: ``(schema, table, moveable columns)`` of each, in schema and table order
+    :rtype: tuple[tuple[str, str, tuple[str, ...]], ...]
+    """
+    rows = await conn.fetch(_MOVEABLE_WITHOUT_MOVES_SQL, _DECLARED, _STAMPED, _MOVEABLE, TENANT_MOVES_TABLE, schema)
+    return tuple(
+        (
+            str(row["table_schema"]),
+            str(row["table_name"]),
+            tuple(str(column) for column in json.loads(row["declaration"]).get("moveable", ())),
+        )
+        for row in rows
+    )
+
+
+async def refuse_moveable_without_moves(conn: _Fetching, schema: str | None = None) -> None:
+    """refuse a stamped table of ``schema`` (None: of every schema) that declares a moveable column while its schema
+    holds no moves table (:func:`moveable_without_moves`). One catalog read.
+
+    :param conn: a pool or a connection
+    :ptype conn: _Fetching
+    :param schema: the one schema judged; None judges every schema
+    :ptype schema: str | None
+    :return: nothing
+    :rtype: None
+    :raises MovesTableMissingError: when one is found, naming each table, its schema and how to create the moves table
+    """
+    found = await moveable_without_moves(conn, schema)
+    if found:
+        raise MovesTableMissingError(
+            tuple(f"{owner}.{table} (moveable: {', '.join(columns)})" for owner, table, columns in found),
+            tuple(sorted({owner for owner, _, _ in found})),
+        )
 
 
 async def tables_carrying_epoch(conn: _Fetching, schema: str, tables: Iterable[str]) -> frozenset[str]:
