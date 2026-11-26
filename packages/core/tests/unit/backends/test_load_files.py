@@ -26,7 +26,7 @@ import pytest
 from threetears.nats import Subject
 from threetears.nats.errors import RequestError
 
-from threetears.core.backends.broker_generation import BrokerGenerationSource
+from threetears.core.backends.broker_generation import STAMPS_EPOCH_FIELD, BrokerGenerationSource
 from threetears.core.backends.nats_proxy import (
     CONSTRAINT_VIOLATION_ERROR_CODE,
     NatsProxyL3Backend,
@@ -140,7 +140,10 @@ async def test_a_load_sends_one_request_carrying_every_field_of_the_contract() -
         "format",
         "rows_per_transaction",
         "timeout_ms",
+        STAMPS_EPOCH_FIELD,
     }
+    # a load the store did not stamp says so (test_stamp_wire)
+    assert body[STAMPS_EPOCH_FIELD] is False
     assert body["identity_token"] == "test-identity-token"
     assert body["namespace"] == "agents.agent-123"
     assert body["table"] == "lsf_rows"

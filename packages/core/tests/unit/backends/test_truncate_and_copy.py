@@ -19,7 +19,7 @@ import asyncpg
 import pytest
 from threetears.nats import Subject
 
-from threetears.core.backends.broker_generation import BrokerGenerationSource
+from threetears.core.backends.broker_generation import STAMPS_EPOCH_FIELD, BrokerGenerationSource
 from threetears.core.backends.nats_proxy import CONSTRAINT_VIOLATION_ERROR_CODE, NatsProxyL3Backend
 from threetears.core.backends.schema_sql import build_insert_params
 from threetears.core.backends.sql import SqlL3Backend, bound_request_connection
@@ -230,7 +230,9 @@ async def test_copy_sends_the_rows_on_the_transaction_as_a_statement_s_parameter
     assert tag == "COPY 1"
     subject, body = broker.requests[1]
     assert subject == "test.l3.tx.copy"
-    assert set(body) == {"correlation_id", "identity_token", "tx_id", "table", "columns", "rows"}
+    assert set(body) == {"correlation_id", "identity_token", "tx_id", "table", "columns", "rows", STAMPS_EPOCH_FIELD}
+    # a copy of rows no stamped table's write sent says it stamps nothing (test_stamp_wire)
+    assert body[STAMPS_EPOCH_FIELD] is False
     assert body["tx_id"] == _TX_ID
     assert body["table"] == "lsf_rows"
     assert body["columns"] == columns

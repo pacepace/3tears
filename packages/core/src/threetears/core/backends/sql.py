@@ -45,7 +45,8 @@ from threetears.interfaces.keyed.rows import DeclaredKey, KeyValues
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
-from threetears.core.backends.arrow_copy import arrow_copy_available, planned_write_table, write_type
+from threetears.core.backends.arrow_copy import arrow_copy_available, column_min, planned_write_table, write_type
+from threetears.core.backends.broker_generation import stamping_write
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import (
@@ -258,6 +259,50 @@ def _refuse_unstamped_arrow(schema: Any, table: str, rows: Any) -> None:
         raise _unstamped(table)
 
 
+def _stamps(schema: Any) -> bool:
+    """whether a write of ``schema``'s table stamps row epochs: it declares one (``TableSchema.stamps_epoch``,
+    ``row_versions`` or ``ROW_STAMPED``). Read duck-typed, as this module reads a schema.
+
+    :param schema: the table's registered schema, or None
+    :ptype schema: TableSchema | None
+    :return: whether it does
+    :rtype: bool
+    """
+    return getattr(schema, "row_epoch", None) is not None
+
+
+def _stamp_of(schema: Any, epoch: Any) -> int | None:
+    """the lowest row epoch a write of ``schema``'s table sends as its stamp (``stamping_write``), from the one epoch
+    its rows carry: None for a table that stamps none, whatever column of that name it holds (``scope_epochs``).
+
+    :param schema: the table's registered schema, or None
+    :ptype schema: TableSchema | None
+    :param epoch: the rows' epoch
+    :ptype epoch: Any
+    :return: the stamp, or None
+    :rtype: int | None
+    """
+    return int(epoch) if _stamps(schema) and epoch is not None else None
+
+
+def _planned_stamped(rows: Any, plan: ArrowWritePlan, stamps: bool) -> tuple[Any, int | None]:
+    """an Arrow write's request table (:func:`~threetears.core.backends.arrow_copy.planned_write_table`) and, for a
+    table that stamps, the lowest epoch its rows carry, read by Arrow; pure, for a thread.
+
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :param plan: the write's plan
+    :ptype plan: ArrowWritePlan
+    :param stamps: whether the table stamps row epochs
+    :ptype stamps: bool
+    :return: the request table, and the lowest stamp or None
+    :rtype: tuple[pyarrow.Table, int | None]
+    """
+    planned = planned_write_table(rows, plan.columns, sort_by=plan.sort_by)
+    lowest = column_min(rows, EPOCH_COLUMN) if stamps else None
+    return planned, None if lowest is None else int(lowest)
+
+
 def _refuse_versioned_delete(schema: Any, table: str) -> None:
     """refuse a ``DELETE`` of a versioned table (``TableSchema.versioned``) before anything is sent: it is append-only,
     a delete of a key a "gone" marker (``SchemaBackedCollection.delete_rows``, :meth:`SqlL3Backend.mark_gone`), a whole
@@ -453,8 +498,9 @@ def _request_measure(transport: Any) -> Callable[[str, list[Any]], int | None] |
 
 def _bulk_params(
     schema: TableSchema, table: str, rows: Sequence[Mapping[str, Any]], form: str, turns: LoopTurns | None = None
-) -> tuple[list[Any], list[list[Any]]]:
-    """the columns a bulk write names, and every row's parameters for them, in the rows' order.
+) -> tuple[list[Any], list[list[Any]], int | None]:
+    """the columns a bulk write names, every row's parameters for them, in the rows' order, and the lowest row epoch
+    the rows carry, for a table that stamps (``stamping_write``).
 
     :param schema: the table's schema
     :ptype schema: TableSchema
@@ -466,29 +512,34 @@ def _bulk_params(
     :ptype form: str
     :param turns: the building thread's turns with the caller's loop, taken a row at a time; None to take none
     :ptype turns: LoopTurns | None
-    :return: the columns, and each row's parameters
-    :rtype: tuple[list[Any], list[list[Any]]]
+    :return: the columns, each row's parameters, and the rows' lowest stamp (None for a table that stamps none)
+    :rtype: tuple[list[Any], list[list[Any]], int | None]
     :raises ValueError: when the rows disagree on which columns they supply
     :raises UnstampedWriteError: when the table declares a row epoch and a row carries none
     """
     columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
     names = [c.name for c in columns]
     params: list[list[Any]] = []
-    # checked here, a row at a time on the building thread, never in a pass of its own on the loop
-    stamped = getattr(schema, "row_epoch", None) is not None
+    # checked here, a row at a time on the building thread, never in a pass of its own on the loop; the lowest stamp
+    # read in the same pass
+    stamped = _stamps(schema)
+    lowest: int | None = None
     for row in rows:
         if turns is not None:
             turns.take()
         data = dict(row)
-        if stamped and data.get(EPOCH_COLUMN) is None:
-            raise _unstamped(table)
+        if stamped:
+            epoch = data.get(EPOCH_COLUMN)
+            if epoch is None:
+                raise _unstamped(table)
+            lowest = int(epoch) if lowest is None else min(lowest, int(epoch))
         if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
             raise ValueError(
                 f"{table}: rows of one bulk {form} must supply the same columns; "
                 f"a server-default column is supplied by some rows and not others"
             )
         params.append(schema_sql.build_insert_params(schema, data))
-    return list(columns), params
+    return list(columns), params, lowest
 
 
 def _upsert_batches(
@@ -500,8 +551,9 @@ def _upsert_batches(
     max_bytes: int,
     measure: Callable[[str, list[Any]], int | None] | None,
     loop: asyncio.AbstractEventLoop | None = None,
-) -> tuple[list[Any], list[list[list[Any]]]]:
-    """:meth:`SqlBackend.upsert_many`'s columns and statement batches: the CPU half of the write, run off the loop.
+) -> tuple[list[Any], list[list[list[Any]]], int | None]:
+    """:meth:`SqlBackend.upsert_many`'s columns, statement batches and lowest stamp (:func:`_bulk_params`): the CPU
+    half of the write, run off the loop.
 
     Every row's parameters are built and each candidate statement is measured as the transport sends it,
     which for a page of a thousand rows is tens of milliseconds of Python: on the event loop it held every
@@ -523,16 +575,20 @@ def _upsert_batches(
         built and measured a row at a time, 33,786 rows of 179 columns a second of Python that held the loop 15 ms at
         a time under the default switch interval (the WD2 bench, 2026-11-16); None off any loop
     :ptype loop: asyncio.AbstractEventLoop | None
-    :return: the columns, and the batches of rows' parameters
-    :rtype: tuple[list[Any], list[list[list[Any]]]]
+    :return: the columns, the batches of rows' parameters, and the rows' lowest stamp
+    :rtype: tuple[list[Any], list[list[list[Any]]], int | None]
     :raises ValueError: when the rows disagree on which columns they supply
     """
     turns = LoopTurns(loop)
-    columns, params = _bulk_params(schema, table, rows, "upsert", turns)
-    batches = schema_sql.bulk_insert_batches(
-        schema, columns, params, max_rows=max_rows, max_bytes=max_bytes, request_bytes=measure, turns=turns
-    )
-    return columns, list(batches)
+    columns, params, lowest = _bulk_params(schema, table, rows, "upsert", turns)
+    # measured as sent: each statement says whether its rows stamp, with their lowest stamp (stamping_write)
+    with stamping_write(lowest):
+        batches = list(
+            schema_sql.bulk_insert_batches(
+                schema, columns, params, max_rows=max_rows, max_bytes=max_bytes, request_bytes=measure, turns=turns
+            )
+        )
+    return columns, batches, lowest
 
 
 #: a bulk statement binding more parameters than this has its text and parameters laid out on a thread
@@ -578,8 +634,9 @@ def _copy_batches(
     max_bytes: int,
     conn: Any,
     loop: asyncio.AbstractEventLoop | None = None,
-) -> tuple[list[str], list[list[tuple[Any, ...]]]]:
-    """:meth:`SqlBackend.copy_many`'s column names and copy batches: the CPU half of the copy, run off the loop.
+) -> tuple[list[str], list[list[tuple[Any, ...]]], int | None]:
+    """:meth:`SqlBackend.copy_many`'s column names, copy batches and lowest stamp (:func:`_bulk_params`): the CPU
+    half of the copy, run off the loop.
 
     As :func:`_upsert_batches`: every row's values built, ordered by key and each sized as the request
     sends it, which on the event loop held the process's every call a page at a time.
@@ -599,13 +656,13 @@ def _copy_batches(
     :param loop: the caller's event loop, handed the thread's turns as :func:`_upsert_batches` hands them; None off
         any loop
     :ptype loop: asyncio.AbstractEventLoop | None
-    :return: the column names, and the batches of records
-    :rtype: tuple[list[str], list[list[tuple[Any, ...]]]]
+    :return: the column names, the batches of records, and the rows' lowest stamp
+    :rtype: tuple[list[str], list[list[tuple[Any, ...]]], int | None]
     :raises ValueError: when the rows disagree on which columns they supply, or a column is one a
         copy cannot write
     """
     turns = LoopTurns(loop)
-    columns, params = _bulk_params(schema, table, rows, "copy", turns)
+    columns, params, lowest = _bulk_params(schema, table, rows, "copy", turns)
     names = [c.name for c in columns]
     unwritable = [c for c in columns if not schema_sql.copy_writes(c)]
     if unwritable:
@@ -619,10 +676,17 @@ def _copy_batches(
     if not callable(measure):
         # a direct connection streams a copy, so nothing bounds its bytes: rows alone cut it, and no row is
         # encoded only to be measured (a third of a 50,000-row copy's preparation)
-        return names, [
-            [tuple(values) for values in params[start : start + max_rows]] for start in range(0, len(params), max_rows)
-        ]
-    measured = measure(table, names, [])
+        return (
+            names,
+            [
+                [tuple(values) for values in params[start : start + max_rows]]
+                for start in range(0, len(params), max_rows)
+            ],
+            lowest,
+        )
+    # measured as sent: each copy says whether its rows stamp, with their lowest stamp (stamping_write)
+    with stamping_write(lowest):
+        measured = measure(table, names, [])
     base = measured if isinstance(measured, int) and not isinstance(measured, bool) else 0
     batches = schema_sql.bulk_batches(
         params,
@@ -635,7 +699,7 @@ def _copy_batches(
         position_bytes=lambda position: 2 if position else 0,
         turns=turns,
     )
-    return names, [[tuple(values) for values in batch] for batch in batches]
+    return names, [[tuple(values) for values in batch] for batch in batches], lowest
 
 
 def _key_led_deletes(
@@ -1098,7 +1162,9 @@ class SqlL3Backend:
         schema = self._schemas.get(table)
         if schema is not None:
             _refuse_unstamped_rows(schema, table, (row,))
-            return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
+            # a stamped table's upsert or fenced update says so on its request, with its one stamp
+            with stamping_write(_stamp_of(schema, row.get(EPOCH_COLUMN))):
+                return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
 
         if pk is None:
             raise ValueError("upsert without a registered schema requires the pk argument")
@@ -1174,7 +1240,7 @@ class SqlL3Backend:
         if rows:
             # the rows' parameters built and each statement measured on a thread: tens of milliseconds of
             # Python a page, which on the loop held every call the process answers (_upsert_batches)
-            columns, batches = await asyncio.to_thread(
+            columns, batches, lowest = await asyncio.to_thread(
                 _upsert_batches,
                 schema,
                 table,
@@ -1188,14 +1254,18 @@ class SqlL3Backend:
             # (32,000 of them at 179 columns) and its parameters are flattened a value at a time, 7-8 ms a statement
             # on the loop, 187 statements a 33,786-row write (the WD2 bench, 2026-11-16). One text a statement size
             texts: dict[int, str] = {}
-            for batch in batches:
-                sql, params = (
-                    await asyncio.to_thread(_bulk_statement, schema, columns, batch, texts, asyncio.get_running_loop())
-                    if len(batch) * len(columns) > _STATEMENT_ON_THREAD_PARAMS
-                    else _bulk_statement(schema, columns, batch, texts)
-                )
-                await self._execute(sql, *params, conn=conn)
-                written += len(batch)
+            # each statement says whether its rows stamp, with the rows' lowest stamp, as it was measured
+            with stamping_write(lowest):
+                for batch in batches:
+                    sql, params = (
+                        await asyncio.to_thread(
+                            _bulk_statement, schema, columns, batch, texts, asyncio.get_running_loop()
+                        )
+                        if len(batch) * len(columns) > _STATEMENT_ON_THREAD_PARAMS
+                        else _bulk_statement(schema, columns, batch, texts)
+                    )
+                    await self._execute(sql, *params, conn=conn)
+                    written += len(batch)
             # the rows' parameters are this call's alone: freed as it returned, 33,786 rows of 179 held the loop
             # 10-15 ms (the WD2 bench, 2026-11-16), so they are freed on a thread, taking turns with the loop
             await asyncio.to_thread(emptied, [*batches, batches], asyncio.get_running_loop())
@@ -1256,7 +1326,7 @@ class SqlL3Backend:
         if not rows:
             return 0
         # the rows' values built, ordered and sized on a thread, as an upsert's are (_copy_batches)
-        names, batches = await asyncio.to_thread(
+        names, batches, lowest = await asyncio.to_thread(
             _copy_batches,
             schema,
             table,
@@ -1272,9 +1342,11 @@ class SqlL3Backend:
         # on the rail an append says so, for the broker's own marking; a direct connection's copy takes no such word
         appending: dict[str, bool] = {"append": True} if append and rail else {}
         written = 0
-        for batch in batches:
-            await conn.copy_records_to_table(table, records=batch, columns=names, **appending)
-            written += len(batch)
+        # each copy says whether its rows stamp, with the rows' lowest stamp, as it was measured
+        with stamping_write(lowest):
+            for batch in batches:
+                await conn.copy_records_to_table(table, records=batch, columns=names, **appending)
+                written += len(batch)
         # the records are this call's alone, freed on a thread as an upsert's parameters are (upsert_many)
         await asyncio.to_thread(emptied, [*batches, batches], asyncio.get_running_loop())
         _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
@@ -1398,21 +1470,27 @@ class SqlL3Backend:
         """
         if not rows.num_rows:
             return 0
+        schema = self._schemas.get(table)
         if plan.kind != "delete":
-            _refuse_unstamped_arrow(self._schemas.get(table), table, rows)
-        planned = await asyncio.to_thread(planned_write_table, rows, plan.columns, sort_by=plan.sort_by)
+            _refuse_unstamped_arrow(schema, table, rows)
+        # the request's table, and the rows' lowest stamp for a table that stamps (a key delete carries none), by Arrow
+        planned, lowest = await asyncio.to_thread(
+            _planned_stamped, rows, plan, plan.kind != "delete" and _stamps(schema)
+        )
         # an append (a versioned table's versions or gone markers) says so, so the hub copies the rows into the table
         # and notes them a row each, as the upsert they replace was noted; named only then, for a door that predates it
         appending: dict[str, bool] = {"append": True} if plan.kind == "append" else {}
-        written: int = await conn.write_arrow_rows(
-            table,
-            planned,
-            conflict_columns=plan.conflict_columns,
-            update_columns=plan.update_columns,
-            delete=plan.kind == "delete",
-            max_rows=max_rows,
-            **appending,
-        )
+        # every request of the write says whether its rows stamp: the hub reads it, never the table's catalog
+        with stamping_write(lowest):
+            written: int = await conn.write_arrow_rows(
+                table,
+                planned,
+                conflict_columns=plan.conflict_columns,
+                update_columns=plan.update_columns,
+                delete=plan.kind == "delete",
+                max_rows=max_rows,
+                **appending,
+            )
         _logger.debug(
             "Arrow write", extra={"extra_data": {"table": table, "kind": plan.kind, "rows": int(rows.num_rows)}}
         )
@@ -1577,15 +1655,23 @@ class SqlL3Backend:
             # the checks above are the schema's, so both paths refuse alike; what follows is this
             # path's own: the broker copies parquet with its own codecs (so a column a binary copy
             # of bound values cannot write is for it to judge) and admits a URL by its own rule
-            return await self._pool.load_files(
-                table,
-                files,
-                columns=columns,
-                constants=constants,
-                rows_per_transaction=rows_per_transaction,
-                timeout_ms=timeout_ms,
-                **({"key_prefixes": key_prefixes} if key_prefixes else {}),
-            )
+            if _stamps(schema) and constants.get(EPOCH_COLUMN) is None:
+                # the broker commits the load and names its lowest stamp on its records: a stamp read from files
+                # only the broker sees is one this request cannot name
+                raise UnstampedWriteError(
+                    f"{table} declares a row epoch: a load through the broker stamps its rows with one epoch, named "
+                    f"as a constant ({EPOCH_COLUMN!r}), so its request names its stamp; this one reads it from the files"
+                )
+            with stamping_write(_stamp_of(schema, constants.get(EPOCH_COLUMN))):
+                return await self._pool.load_files(
+                    table,
+                    files,
+                    columns=columns,
+                    constants=constants,
+                    rows_per_transaction=rows_per_transaction,
+                    timeout_ms=timeout_ms,
+                    **({"key_prefixes": key_prefixes} if key_prefixes else {}),
+                )
         unwritable = [declared[name] for name in names if not schema_sql.copy_writes(declared[name])]
         if unwritable:
             raise ValueError(
@@ -1851,19 +1937,23 @@ class SqlL3Backend:
         width = len(columns)
         per_statement = max(1, min(max_rows, schema_sql.MAX_STATEMENT_PARAMS // width))
         names = ", ".join(column.name for column in columns)
-        for start in range(0, len(rows), per_statement):
-            batch = rows[start : start + per_statement]
-            values = ", ".join(
-                "("
-                + ", ".join(
-                    schema_sql.render_param(column, row * width + place + 1) for place, column in enumerate(columns)
+        # every marker carries the delete's one stamp, and each statement says so
+        with stamping_write(_stamp_of(schema, epoch)):
+            for start in range(0, len(rows), per_statement):
+                batch = rows[start : start + per_statement]
+                values = ", ".join(
+                    "("
+                    + ", ".join(
+                        schema_sql.render_param(column, row * width + place + 1) for place, column in enumerate(columns)
+                    )
+                    + ")"
+                    for row in range(len(batch))
                 )
-                + ")"
-                for row in range(len(batch))
-            )
-            await self._execute(
-                f"INSERT INTO {table} ({names}) VALUES {values}", *(value for row in batch for value in row), conn=conn
-            )
+                await self._execute(
+                    f"INSERT INTO {table} ({names}) VALUES {values}",
+                    *(value for row in batch for value in row),
+                    conn=conn,
+                )
         _logger.debug("gone markers appended", extra={"extra_data": {"table": table, "keys": len(rows)}})
         return len(rows)
 
@@ -1919,7 +2009,9 @@ class SqlL3Backend:
                 if epoch is None or schema is None or schema.row_epoch is None
                 else {"epoch": epoch, "scope": schema.row_epoch.scope}
             )
-            deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes], **marking)
+            # a versioned table's run markers carry the delete's stamp, and the request says so
+            with stamping_write(_stamp_of(schema, epoch)):
+                deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes], **marking)
             return int(deleted)
         statements = (
             self._run_marker_statements(table, prefixes, epoch)
@@ -2373,7 +2465,8 @@ class SqlL3Backend:
         data = dict(row)
         sql = schema_sql.build_ordered_upsert_sql(schema, data)
         params = schema_sql.build_insert_params(schema, data)
-        return parse_rowcount(await self._execute(sql, *params, conn=conn))
+        with stamping_write(_stamp_of(schema, data.get(EPOCH_COLUMN))):
+            return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
     async def delete(self, table: str, pk: KeyValues, *, conn: Any = None) -> None:
         """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error).

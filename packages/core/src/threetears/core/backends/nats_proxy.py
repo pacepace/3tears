@@ -68,6 +68,7 @@ from threetears.core.backends.broker_generation import (
     named_commit_scopes,
     named_delta_files,
     note_load_answer,
+    stamp_fields,
     record_reply_generations,
 )
 from threetears.core.backends.protocol import (
@@ -1581,6 +1582,8 @@ class NatsProxyL3Backend:
             "format": "parquet",
             "rows_per_transaction": rows_per_transaction,
             "timeout_ms": timeout_ms,
+            # a load of a table that stamps carries its one stamp: the broker commits the load, so its records name it
+            **stamp_fields(),
         }
 
     def forwarded_identity_token(self) -> str:
@@ -1694,6 +1697,9 @@ class NatsProxyL3Backend:
                 for q in queries
             ],
             "transaction": transaction,
+            # whether the batch's writes stamp row epochs: the broker commits them, so it names the stamp on their
+            # records
+            **stamp_fields(),
         }
         named = named_changed_rows()
         if named:
@@ -1719,7 +1725,8 @@ class NatsProxyL3Backend:
         *,
         customer_scope: UUID | None = None,
     ) -> dict[str, Any]:
-        """the ``l3.query`` request for one statement, as it is sent and as it is measured.
+        """the ``l3.query`` request for one statement, as it is sent and as it is measured. It says whether its write
+        stamps row epochs (:func:`~threetears.core.backends.broker_generation.stamp_fields`), a read too.
 
         :param query: SQL query string
         :ptype query: str
@@ -1743,6 +1750,7 @@ class NatsProxyL3Backend:
             "query": query,
             "params": [transport_param(p) for p in params],
             "timeout_ms": self.timeout_ms,
+            **stamp_fields(),
         }
         if customer_scope is not None:
             # convert at border: NATS l3.query request payload field.
@@ -2370,7 +2378,8 @@ class _ProxyConnection:
     def _tx_payload(
         self, query: str, params: Sequence[Any], loop: asyncio.AbstractEventLoop | None = None
     ) -> dict[str, Any]:
-        """the ``l3.tx.*`` request for one statement in the open transaction.
+        """the ``l3.tx.*`` request for one statement in the open transaction, saying whether its write stamps row
+        epochs (:func:`~threetears.core.backends.broker_generation.stamp_fields`).
 
         :param query: parameterized SQL
         :ptype query: str
@@ -2389,6 +2398,7 @@ class _ProxyConnection:
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [transport_param(p) for p in (params if loop is None else stepped(params, LoopTurns(loop)))],
+            **stamp_fields(),
         }
 
     def statement_request_bytes(self, query: str, params: Sequence[Any]) -> int:
@@ -2504,6 +2514,8 @@ class _ProxyConnection:
             "tx_id": str(self.tx_id),  # convert at border: NATS l3.tx.delete_prefixes request payload field
             "table": table,
             "prefixes": [{column: transport_param(value) for column, value in prefix.items()} for prefix in prefixes],
+            # a versioned table's run markers carry the delete's stamp
+            **stamp_fields(),
         }
         if epoch is not None:
             payload["epoch"] = epoch
@@ -2662,7 +2674,8 @@ class _ProxyConnection:
         return rows
 
     def _copy_payload(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> dict[str, Any]:
-        """the ``l3.tx.copy`` request for rows of ``table`` in the open transaction.
+        """the ``l3.tx.copy`` request for rows of ``table`` in the open transaction, saying whether its rows stamp row
+        epochs (:func:`~threetears.core.backends.broker_generation.stamp_fields`).
 
         each row's values cross the rail as a statement's parameters do
         (:func:`~threetears.core.backends.schema_sql.transport_param`), in the order of ``columns``.
@@ -2683,6 +2696,7 @@ class _ProxyConnection:
             "table": table,
             "columns": list(columns),
             "rows": [[transport_param(value) for value in record] for record in records],
+            **stamp_fields(),
         }
 
     def _copy_envelope(self, table: str, columns: Sequence[str], rows: ArrowCopyRows) -> dict[str, Any]:
@@ -2706,6 +2720,9 @@ class _ProxyConnection:
             "columns": list(columns),
             ROWS_DIGEST_FIELD: rows.digest,
             JSON_COLUMNS_FIELD: rows.json_columns,
+            # whether the rows stamp row epochs: the broker reads it, never the table's catalog (a scope_epochs
+            # row's epoch is no row epoch)
+            **stamp_fields(),
         }
 
     def _copy_arrow_rows(

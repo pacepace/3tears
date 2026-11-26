@@ -40,6 +40,7 @@ from threetears.core.backends.arrow_copy import (
     rows_digest,
     split_copy_request,
 )
+from threetears.core.backends.broker_generation import STAMPS_EPOCH_FIELD
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.schema_sql import json_default, transport_param
 from threetears.core.security import (
@@ -169,6 +170,7 @@ async def test_a_hub_that_reads_arrow_is_sent_the_rows_the_json_request_carries_
     envelope, ipc = _arrow_parts(data)
     assert set(envelope) == {
         "correlation_id", "identity_token", "tx_id", "table", "columns", ROWS_DIGEST_FIELD, JSON_COLUMNS_FIELD,
+        STAMPS_EPOCH_FIELD,
     }  # fmt: skip
     assert (envelope["tx_id"], envelope["table"], envelope["columns"]) == (_TX_ID, "rows", _COLUMNS)
     assert envelope[ROWS_DIGEST_FIELD] == rows_digest(ipc)
