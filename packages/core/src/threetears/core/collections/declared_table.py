@@ -45,6 +45,7 @@ from threetears.core.collections.schema_backed import (
     schema_datetime_columns,
     schema_field_types,
 )
+from threetears.core.ddl.row_epoch import AppendOnlyWriteError, EPOCH_COLUMN, next_epoch, rising_epoch_assignment
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
@@ -323,6 +324,40 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
             if name not in carried and not self._column(name).nullable and self._column(name).server_default is None
         ]
 
+    def _rises_epoch(self) -> bool:
+        """whether this is a stamped table (``ROW_STAMPED``: one row a key, updated in place), whose write sets its epoch
+        to ``GREATEST(epoch + 1, <new>)`` (``rising_epoch_assignment``).
+
+        :return: whether it is
+        :rtype: bool
+        """
+        declared = self.schema.row_epoch
+        return declared is not None and not declared.versions
+
+    def _stamped_row(self, data: dict[str, Any], conn: Any) -> dict[str, Any]:
+        """``data`` with its write's epoch, for a table that declares a row epoch: a stamped table's write carries a
+        fresh stamp, from the caller's transaction when ``conn`` is in one (``CallerTransaction.in_place_epoch``, so its
+        ``s_min`` counts it), else the process clock (one statement, its own commit). Unchanged for any other table.
+
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :param conn: the caller's connection, or None
+        :ptype conn: Any
+        :return: the row, stamped
+        :rtype: dict[str, Any]
+        :raises AppendOnlyWriteError: when the table is versioned: its own statements are upserts, never appends
+        """
+        declared = self.schema.row_epoch
+        if declared is None:
+            return data
+        if declared.versions:
+            raise AppendOnlyWriteError(
+                f"{type(self).__name__}.write_row: {self.table_name} is versioned (append-only); its writes append "
+                f"through SchemaBackedCollection, never this upsert"
+            )
+        transaction = None if conn is None else CallerTransaction.enclosing(conn)
+        return {**data, EPOCH_COLUMN: next_epoch() if transaction is None else transaction.in_place_epoch()}
+
     def write_statement(self, data: dict[str, Any], *, returning: bool = False) -> tuple[str, list[Any]]:
         """the statement writing exactly the columns ``data`` carries, with its parameters.
 
@@ -353,7 +388,13 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         if not self.missing_required(data):
             placeholders = ", ".join(render_param(self._column(name), index) for index, name in enumerate(carried, 1))
             if updated:
-                assignments = ", ".join(f"{name} = EXCLUDED.{name}" for name in updated)
+                # a stamped table's epoch never goes back, whichever process's clock stamped the write
+                assignments = ", ".join(
+                    rising_epoch_assignment(table)
+                    if name == EPOCH_COLUMN and self._rises_epoch()
+                    else f"{name} = EXCLUDED.{name}"
+                    for name in updated
+                )
                 action = f"DO UPDATE SET {assignments}"
             else:
                 action = "DO NOTHING"
@@ -366,7 +407,10 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
             if not updated:
                 raise KeyError(f"{table}: a write of an existing row must carry a column to update")
             assignments = ", ".join(
-                f"{name} = {render_param(self._column(name), index)}" for index, name in enumerate(updated, 1)
+                f"{name} = GREATEST({name} + 1, {render_param(self._column(name), index)})"
+                if name == EPOCH_COLUMN and self._rises_epoch()
+                else f"{name} = {render_param(self._column(name), index)}"
+                for index, name in enumerate(updated, 1)
             )
             keys = " AND ".join(
                 f"{name} = {render_param(self._column(name), index)}"
@@ -399,6 +443,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return 0
+        data = self._stamped_row(data, conn)
         pk = self.schema.pk_columns
         if self.conflict_columns != pk:
             sql, params = self.write_statement(data, returning=True)
