@@ -5,6 +5,16 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26.** On the seven security-model rules with no enforcement gate: "yes to all", as proposed. Rules
+1, 2, 5 and 7 (session token carries identity only; an admin grants only what they hold at every scope; tool-pod
+identity from a verified token; secrets by reference) are ratified Critic-only. Rules 4 and 6 are ratified
+in-transition: erasure never deletes audit rows (tracked in #1313), and the SSRF check on every request (tracked in
+#1314, retitled to the gap the code names: browser-rendered fetches check only their first URL). Rule 3 (an unowned
+namespace matches no caller) was proposed in-transition on the premise that the evaluator had no gate; it has one
+(`test_a_null_owner_matches_nothing` in `packages/agent/acl/tests/unit/test_evaluation.py`, with
+`tests/enforcement/test_namespace_owner_is_always_carried.py` over construction sites), so it was recorded
+steady-state and no tracking issue was filed. Landed in `security-model.md` § Direction.
+
 **2026-11-26.** On the governance advisories report: "Yes to all recommendations." That covered:
 - Ratify the strategy artifacts' test-backed candidate norms in bulk, once duplicates are removed. Security-model
   rules with no gate are not ratified; each goes to the owner for its own ruling.
