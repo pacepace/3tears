@@ -13,7 +13,7 @@ in-transition: erasure never deletes audit rows (tracked in #1313), and the SSRF
 namespace matches no caller) was proposed in-transition on the premise that the evaluator had no gate; it has one
 (`test_a_null_owner_matches_nothing` in `packages/agent/acl/tests/unit/test_evaluation.py`, with
 `tests/enforcement/test_namespace_owner_is_always_carried.py` over construction sites), so it was recorded
-steady-state and no tracking issue was filed. Landed in `security-model.md` § Direction.
+steady-state and no tracking issue was filed. Landed in `security-model.md` § Direction. The owner confirmed rule 3 as steady-state, test-enforced ("yes confirm", 2026-11-26).
 
 **2026-11-26.** On the governance advisories report: "Yes to all recommendations." That covered:
 - Ratify the strategy artifacts' test-backed candidate norms in bulk, once duplicates are removed. Security-model
