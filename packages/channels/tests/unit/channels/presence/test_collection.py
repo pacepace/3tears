@@ -386,6 +386,19 @@ class TestAPresenceWriteL2RefusedRaises:
         peer, _ = make_pod(bus)
         assert await peer.connections.get("conn-1") is not None
 
+    async def test_a_delete_joining_a_callers_transaction_is_refused_and_the_row_stays(
+        self, bus: InMemoryNatsBus
+    ) -> None:
+        """Flips if presence's delete takes a caller's L3 transaction (``BaseCollection.delete(conn=...)``) and
+        deletes outside it: presence holds no L3 row, so its delete is never part of one."""
+        collection, _ = make_pod(bus)
+        await collection.connections.save_entity(collection.connections.create(_connection_row()))
+
+        with pytest.raises(ValueError, match="joins no L3 transaction"):
+            await collection.connections.delete("conn-1", conn=object())
+
+        assert await collection.connections.get("conn-1") is not None
+
     async def test_a_join_whose_presence_row_l2_refused_raises(self, bus: InMemoryNatsBus) -> None:
         collection, _ = make_pod(bus)
         state = RoomState(collection, pod_id="pod-a")

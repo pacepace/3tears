@@ -125,6 +125,19 @@ class TestTheCollectionRaisesForAnL2Failure:
         assert await collection.get("pod-1") is not None
 
     @pytest.mark.asyncio
+    async def test_a_delete_joining_a_callers_transaction_is_refused_and_the_row_stays(self) -> None:
+        """Flips if a heartbeat's delete takes a caller's L3 transaction (``BaseCollection.delete(conn=...)``) and
+        deletes outside it: a heartbeat holds no L3 row, so its delete is never part of one."""
+        nats = FakeNatsClient()
+        collection = _collection(nats)
+        await collection.save_entity(collection.create(_row("pod-1")))
+
+        with pytest.raises(ValueError, match="joins no L3 transaction"):
+            await collection.delete("pod-1", conn=object())
+
+        assert await collection.get("pod-1") is not None
+
+    @pytest.mark.asyncio
     async def test_a_read_l2_could_not_answer_raises_rather_than_reading_absent(self) -> None:
         nats = FakeNatsClient()
         collection = _collection(nats)

@@ -98,6 +98,29 @@ _RUNS = TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
+#: a stamped table whose rows link to one another (``origin_id``), as the hub's knowledge tables' origin chains do
+_CHAIN = "sg_chain"
+
+_CHAIN_SCHEMA = TableSchema(
+    name=_CHAIN,
+    primary_key=("id",),
+    columns=[Column("id", STRING_TYPE), Column("origin_id", STRING_TYPE, nullable=True)],
+    row_epoch=ROW_STAMPED,
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: the chain's rows, (id, origin_id, gone): a -> b -> c (gone) -> d; x -> y -> z -> x, a cycle; n links nowhere
+_CHAIN_ROWS = (
+    ("a", "b", False),
+    ("b", "c", False),
+    ("c", "d", True),
+    ("d", None, False),
+    ("x", "y", False),
+    ("y", "z", False),
+    ("z", "x", False),
+    ("n", None, False),
+)
+
 _GONE_ONLY_SCHEMA = TableSchema(
     name=_GONE_ONLY,
     primary_key=("state", "run_id"),
@@ -361,6 +384,22 @@ class TestReadsSkipGoneRows:
         whole = await _whole_read(reader)
         assert _read(whole) == _LIVE
 
+    async def test_a_drain_with_gone_reads_the_table_as_stored(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if ``keyset_rows(with_gone=True)`` skips a gone row (CA r2) or names the live guard: a walk that must
+        reach deleted rows too (an erasure) drains them as ``keyset_page(with_gone=True)`` pages them."""
+        reader = _L3(db)
+        drained = await keyset_rows(
+            reader,
+            _TABLE,
+            columns=["state", "run_id", "rows"],
+            by={"state": "CA"},
+            order=[Sort("run_id")],
+            page=1,
+            with_gone=True,
+        )
+        assert _read(drained) == {("CA", "r1"): 10, ("CA", "r2"): 20}
+        assert reader.statements and not any('"gone"' in sql for sql in reader.statements), reader.statements
+
     async def test_counts_count_live_rows_alone(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a count, a probe or an aggregate takes a gone row in."""
         reader = _L3(db)
@@ -502,18 +541,35 @@ class TestStatementReaders:
         )
         assert sorted((row["state"], row["run_id"]) for row in reached) == sorted(_LIVE)
 
-    async def test_a_link_chain_refuses_a_stamped_table(self, db: duckdb.DuckDBPyConnection) -> None:
-        """Flips if a link chain of a stamped table is sent: its recursive statement names no live guard, so it would
-        reach its gone rows (CA r2 here)."""
+    async def test_a_link_chain_of_a_stamped_table_walks_its_live_rows_once_in_one_statement(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a link chain of a stamped L3 table is refused, reaches a gone row or past it (c, and d beyond it),
+        walks a cycle round (x y z answered twice under the bound), or is sent as more than one statement: the hub's
+        origin chains of its stamped knowledge tables walk this way."""
+        db.execute(f"CREATE TABLE {_CHAIN} (id VARCHAR PRIMARY KEY, origin_id VARCHAR, gone BOOLEAN NOT NULL)")
+        db.executemany(f"INSERT INTO {_CHAIN} VALUES ($1, $2, $3)", [list(row) for row in _CHAIN_ROWS])
         reader = _L3(db)
-        with pytest.raises(ValueError, match="stamped"):
-            await read_link_chain(reader, _TABLE, key="run_id", link="run_id", start="r2", most=2, columns=["rows"])
-        assert reader.statements == []
-        # a local copy holds live rows alone: its chain is read as it holds
-        chained = await read_link_chain(
-            ThreadedDuckDB(db), _TABLE, key="run_id", link="run_id", start="r2", most=1, columns=["rows"]
+
+        async def walked(start: str, most: int) -> list[str]:
+            chained = await read_link_chain(
+                reader, _CHAIN, key="id", link="origin_id", start=start, most=most, columns=["id", "origin_id"]
+            )
+            return [row["id"] for row in chained]
+
+        assert await walked("a", 10) == ["a", "b"]  # stops at the gone row c, never reaching d
+        assert await walked("c", 10) == []  # a gone start is no chain
+        assert sorted(await walked("x", 10)) == ["x", "y", "z"]  # a cycle ends where it comes back
+        assert sorted(await walked("y", 2)) == ["y", "z"]  # most rows
+        assert await walked("n", 10) == ["n"]  # a NULL link ends it
+        assert await walked("missing", 10) == []
+        assert len(reader.statements) == 6
+        assert all(sql.count('NOT t."gone"') == 2 and sql.startswith("WITH RECURSIVE") for sql in reader.statements)
+        # a local copy holds live rows alone and no gone flag: its chain is read as it holds, a cycle walked round
+        local = await read_link_chain(
+            ThreadedDuckDB(db), _CHAIN, key="id", link="origin_id", start="x", most=4, columns=["id"]
         )
-        assert [int(row["rows"]) for row in chained] == [20]
+        assert [row["id"] for row in local] == ["x", "y", "z", "x"]
 
     async def test_a_walk_in_one_statement_reads_a_stamped_tables_live_rows_alone(
         self, db: duckdb.DuckDBPyConnection
