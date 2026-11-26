@@ -281,14 +281,19 @@ async def test_two_writes_of_one_key_in_one_version_land_two_versions_the_later_
 
 
 async def test_a_write_with_no_epoch_is_refused_and_writes_nothing(held: _Held, tmp_path: Path) -> None:
+    # A versioned table's write takes its epoch from its write's turn: with none it has no version to stamp with. A
+    # stamped table's write needs no turn, 3tears stamps it itself (b9caf4eb0, ``_epoch_stamp``: WHY), so it never
+    # carries no epoch (the next test); only a statement that bypasses 3tears could, and the database refuses that.
     # a transaction that took no write's turn has no version to stamp with
     with pytest.raises(UnstampedWriteError, match="took no write's turn"):
         await _in_transaction(held.pool, lambda conn: held.results.save_rows(_rows(["a"]), conn=conn))
     with pytest.raises(UnstampedWriteError, match="took no write's turn"):
-        await _in_transaction(held.pool, lambda conn: held.runs.save_rows([{"run_id": "r1"}], conn=conn))
+        await _in_transaction(
+            held.pool, lambda conn: held.results.save_arrow(pa.Table.from_pylist(_rows(["b"])), conn=conn)
+        )
     # one row on no transaction at all
     with pytest.raises(UnstampedWriteError, match="joins no transaction"):
-        await held.runs.save_to_store({"run_id": "r1"})
+        await held.results.save_to_store({**_rows(["c"])[0], "date_created": _WHEN, "date_updated": _WHEN})
     # a load naming no version
     with pytest.raises(UnstampedWriteError, match="write_version"):
         await held.results.load_files(
@@ -306,3 +311,14 @@ async def test_a_write_with_no_epoch_is_refused_and_writes_nothing(held: _Held, 
         await held.pool.execute(f"INSERT INTO {_RUNS.name} (run_id) VALUES ('x')")  # noqa: S608
     assert await held.pool.fetchval(f"SELECT count(*) FROM {_RESULTS.name}") == 0  # noqa: S608
     assert await held.pool.fetchval(f"SELECT count(*) FROM {_RUNS.name}") == 0  # noqa: S608
+
+
+async def test_a_stamped_tables_write_with_no_turn_lands_stamped(held: _Held) -> None:
+    # what stands in for the refusal on a stamped table: its write with no turn, on a transaction or on none, lands a
+    # row carrying a fresh epoch, never one without
+    begun = next_epoch()
+    await _in_transaction(held.pool, lambda conn: held.runs.save_rows([{"run_id": "r1"}], conn=conn))
+    await held.runs.save_to_store({"run_id": "r2"})
+    runs = await held.pool.fetch(f"SELECT run_id, {EPOCH_COLUMN} FROM {_RUNS.name} ORDER BY run_id")  # noqa: S608
+    assert [row["run_id"] for row in runs] == ["r1", "r2"]
+    assert all(row[EPOCH_COLUMN] > begun for row in runs)
