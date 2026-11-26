@@ -535,13 +535,14 @@ async def export_counted_partitions(
         ``partition_by`` as ``MALFORMED_REQUEST``; a datasource with no export location as
         ``EXPORT_UNSUPPORTED``): nothing was written. Any other failure of the ask (a timeout, a
         warehouse error midway) is deleted under ``destination`` before it is raised
-    :raises asyncio.CancelledError: when the caller is cancelled: once the hub answered the ask in
-        flight and the export was deleted
+    :raises asyncio.CancelledError: when the caller is cancelled: once the export's delete was asked, at
+        once while the ask is in flight (the hub runs it when the ``UNLOAD`` ends)
     """
     expected = None if counts is None else {part: rows for part, rows in counts.items() if rows}
     # the export's place is known before it is asked (the hub writes and deletes it under ``destination``):
     # an ask that ends in no answer -- a cancel while it was in flight, a transport failure, a warehouse
-    # error midway -- is deleted before it is raised, once the hub has stopped writing
+    # error midway -- is deleted before it is raised; under a cancel the delete is asked at once and the hub
+    # runs it when its UNLOAD ends
     result = await _asked_export(
         client,
         datasource_name,
