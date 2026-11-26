@@ -8,15 +8,15 @@ accepts, never a silent miss.
 
 What :func:`drop_ring` takes down, under the database's DDL lock, in this order:
 
-1. every change-note trigger on every table of the database (:data:`~threetears.core.ddl.change_notes.NOTE_TRIGGERS`
-   and the older truncate trigger's name), by ``DROP TRIGGER IF EXISTS``, a table at a time from the catalog;
+1. every change-note trigger on every table of the database (the ring's three trigger names and the older truncate
+   trigger's), by ``DROP TRIGGER IF EXISTS``, a table at a time from the catalog;
 2. every note function of the ring's schemas (the per-table ``threetears_note_*`` and the ring's own
    ``threetears_change_note_*``), by ``DROP FUNCTION IF EXISTS`` with its exact arguments, never ``CASCADE``;
 3. the ring's tables (its three note tables, its ring row, the note buffer's guard tables), by one ``DROP TABLE IF
    EXISTS``. WHY ``DROP TABLE`` and never ``TRUNCATE`` or a ``DELETE``: the tables go whole during the outage, and
    ``TRUNCATE`` bumps YugabyteDB's catalog version cluster-wide.
 
-What it keeps: the keeper's marks table (:data:`~threetears.core.ddl.change_notes.MARKS_TABLE`). The log's keeper
+What it keeps: the keeper's marks table (:data:`~threetears.core.ddl.keeper_marks.MARKS_TABLE`). The log's keeper
 still marks the log's position, and a restore from the tables reads X from a mark (``table_restore``).
 
 Idempotent: a second run finds nothing and drops nothing. Each step is said at WARNING with what it dropped, and the
@@ -28,8 +28,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from threetears.core.ddl.change_notes import MARKS_TABLE, NOTE_RING_SIZE, NOTE_TRIGGERS, RING_TABLE, note_table
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.keeper_marks import MARKS_TABLE
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
@@ -38,16 +38,25 @@ __all__ = ["RING_TABLES", "RingDropped", "drop_ring"]
 
 log = get_logger(__name__)
 
-#: the trigger an older release named the truncate note by (``ddl.change_notes._LEGACY_TRUNCATE_TRIGGER``)
-_LEGACY_TRUNCATE_TRIGGER: Final = "threetears_change_note_truncate"
+#: the ring's one-row table, naming its current note table: a schema holding it held a ring
+RING_TABLE: Final = "threetears_change_note_ring"
 
-#: every ring trigger name a table may carry
-_TRIGGER_NAMES: Final = (*NOTE_TRIGGERS, _LEGACY_TRUNCATE_TRIGGER)
+#: the ring's three note tables, ``threetears_change_notes_0`` to ``_2``
+_NOTE_TABLES: Final = tuple(f"threetears_change_notes_{index}" for index in range(3))
+
+#: every ring trigger name a table may carry: the row note, the truncate note, the whole-write note, and the name an
+#: older release gave the truncate note. Spelled here, since the ring's own DDL module retired with it
+_TRIGGER_NAMES: Final = (
+    "threetears_change_note",
+    "threetears_change_note_truncate_table",
+    "threetears_change_note_whole_write",
+    "threetears_change_note_truncate",
+)
 
 #: the ring's tables: its note tables, its ring row, and the note buffer's guard tables (a connection's buffer is a
 #: temporary table, gone with its session). Never the marks table
 RING_TABLES: Final = (
-    *(note_table(index) for index in range(NOTE_RING_SIZE)),
+    *_NOTE_TABLES,
     RING_TABLE,
     "threetears_note_buffer_guard",
     "threetears_note_buffer_never",

@@ -72,7 +72,7 @@ references) and works on it on a thread, and what it leaves pending goes back as
 
 **Never a drop, never a rebuild.** An epoch the log cannot give (lost, aged out, keys unknown) leaves the registry
 behind on the table (``CollectionRegistry.behind_on``): the copy keeps the stamp it has and says it is behind until
-the log is put back (``ChangeNoteKeeper``) and the catch-up applies it. A record that names the whole table (a
+the log is put back (``LogKeeper``) and the catch-up applies it. A record that names the whole table (a
 truncate, a file load) reads that table again beside the copy and swaps it in whole, in the same one transaction as
 everything else.
 

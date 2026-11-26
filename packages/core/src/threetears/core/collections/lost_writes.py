@@ -67,7 +67,6 @@ from threetears.core.collections.table_restore import (
 )
 from threetears.core.collections.generation import GenerationSource, tenancy_of_table, written_l2_first
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
-from threetears.core.ddl.change_notes import WHOLE_COPY_ROWS
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
 from threetears.core.ddl.epoch_catalog import tables_carrying_epoch
 from threetears.core.ddl.errors import DdlLockTimeoutError
@@ -103,9 +102,9 @@ _BEAT_PREFIX: Final = WRITER_BEAT_KEY_SCOPE
 _LEASE_KEY: Final = "write-ledger-recovery"
 _LEASE_TTL_SECONDS: Final = 15
 
-#: the most rows one announced table's epoch names from the change notes; more are advanced as keys unknown with the
-#: window as their notes bracket. A copy of more rows is noted whole (the same count)
-_MAX_NOTED_ROWS: Final = WHOLE_COPY_ROWS
+#: the most rows one announced table's epoch names from the table's epoch range; more are advanced as keys unknown with
+#: the window as their bracket (the count the ring's whole-copy rule kept, unchanged)
+_MAX_NOTED_ROWS: Final = 10_000
 
 #: how long the leftover write-mark sweep waits for the DDL lock before trying again on its next run
 _SWEEP_LOCK_POLICY: Final = DdlLockPolicy(poll_interval=0.5, max_wait=5.0)

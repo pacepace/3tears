@@ -48,7 +48,7 @@ from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.ddl.session import MigrationSession
-from threetears.core.data.migrations.change_notes import refuse_row_triggers_here, switched_tables_without_epoch
+from threetears.core.data.migrations.epoch_refusals import refuse_row_triggers_here, switched_tables_without_epoch
 from threetears.core.data.store import DataStore
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
 from threetears.observe import contain, get_logger, traced

@@ -45,10 +45,6 @@ WholeReadKind = Literal[
     "drain",
     "operator_reset",
     "rolling_upgrade",
-    # the change-note ring's upkeep (Pace 2026-11-14): emptying an idle slot whole, and a lost log's restore from the
-    # coverage; the gate admits them over the ring's slots alone
-    "ring_empty",
-    "restore",
     # emptying a process's own L1 copy of a table whole when the table is dropped (Pace 2026-11-15); the gate admits
     # one DELETE with no WHERE of a relation no declared L3 table is
     "l1_table_drop",
@@ -65,8 +61,6 @@ _KINDS: Final[frozenset[str]] = frozenset(
         "drain",
         "operator_reset",
         "rolling_upgrade",
-        "ring_empty",
-        "restore",
         "l1_table_drop",
     }
 )

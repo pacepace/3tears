@@ -11,8 +11,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from threetears.core.data.migrations.ring_cutover import RING_TABLES, drop_ring
-from threetears.core.ddl.change_notes import MARKS_TABLE, NOTE_TRIGGER, NOTE_TRUNCATE_TRIGGER, RING_TABLE
+from threetears.core.data.migrations.ring_cutover import RING_TABLE, RING_TABLES, drop_ring
+from threetears.core.ddl.keeper_marks import MARKS_TABLE
+
+#: the ring's row trigger and truncate trigger, as a database cut over still carries them (the ring's DDL is gone)
+NOTE_TRIGGER = "threetears_change_note"
+NOTE_TRUNCATE_TRIGGER = "threetears_change_note_truncate_table"
 
 
 class _Conn:

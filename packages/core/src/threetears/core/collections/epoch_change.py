@@ -192,9 +192,9 @@ def key_text(value: Any, *, instant: bool = False) -> str:
     """a key's or an invalidation column's value as a change record, a row message and a change note name it.
 
     A time zone-aware ``datetime`` (a ``timestamptz``) is named in UTC, to the microsecond, in ISO form
-    (``2026-11-09T10:22:10.082658+00:00``): the form the note trigger writes it in
-    (:mod:`threetears.core.ddl.change_notes`), whatever zone the value came in, so a note and a record of one row
-    name it in one spelling, and a key read back from the notes binds as the same instant. Anything else is its
+    (``2026-11-09T10:22:10.082658+00:00``): the form a table restore's read spells it in, whatever zone the value
+    came in, so a restored record and a written record of one row name it in one spelling, and a key read back from
+    the table binds as the same instant. Anything else is its
     ``str``. Every key derived from a row's key values (its L2 key, its fence key) is built from these forms too, so a
     message's text values land on the key the typed values made.
 

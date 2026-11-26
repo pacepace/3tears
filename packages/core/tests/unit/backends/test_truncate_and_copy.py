@@ -34,7 +34,6 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
-from threetears.core.ddl.change_notes import NOTE_REACH_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
@@ -188,17 +187,12 @@ async def test_a_direct_pool_truncates_on_one_connection_holding_the_ddl_lock() 
     assert "pg_advisory_unlock" in statements[3]
 
 
-async def test_a_direct_pool_s_reset_names_its_reach_for_the_truncate_s_note_and_clears_it_after() -> None:
+async def test_a_direct_pool_s_reset_sets_no_note_setting_around_its_truncate() -> None:
+    """Flips if a direct pool's reset still sets a change note's session setting around its TRUNCATE: no trigger reads
+    it since the ring retired, so it is two statements for nothing (the collection records the reset's epoch itself)."""
     pool = _DirectPool()
     await SqlL3Backend(pool).truncate("lsf_rows", reason=RESET_REASON)
-    executed = pool.conn.params
-    truncate = [sql for sql, _ in executed].index("TRUNCATE TABLE lsf_rows")
-    named = [params for sql, params in executed[:truncate] if NOTE_REACH_SETTING in params]
-    assert [json.loads(params[-1]) for params in named] == [{"reason": RESET_REASON}], (
-        "the truncate's whole-table note names the reset"
-    )
-    cleared = [params for sql, params in executed[truncate + 1 :] if NOTE_REACH_SETTING in params]
-    assert [params[-1] for params in cleared] == [""], "the connection goes back to the pool naming no reach"
+    assert not [sql for sql, _ in pool.conn.params if "set_config" in sql], pool.conn.params
 
 
 async def test_truncate_is_refused_inside_a_request_s_bound_transaction() -> None:

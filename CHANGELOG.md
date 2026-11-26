@@ -6,6 +6,48 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the change-note ring retires; the log keeper restores from the tables
+
+Append-only L3 chunk 7 (``design-append-only-l3.md`` decision 3: the ring is retired entirely). Nothing writes or reads
+change notes; every table a restore puts back carries its epoch.
+
+**Changed (renamed):** ``threetears.core.collections.change_note_keeper`` is ``threetears.core.collections.log_keeper``:
+``ChangeNoteKeeper(pool, notes_schema=, log=, fence=, switch_bytes=, ...)`` is ``LogKeeper(pool, schema=, log=,
+mark_every=, scrub_every=, scrub_batch=, keeps_log=)``; ``ChangeNoteKeeping`` is ``LogKeeping`` (no
+``install_triggers``); ``run_change_note_keeper`` is ``run_log_keeper``; ``CHANGE_NOTE_KEEPER_CLAIM_EVERY`` is
+``LOG_KEEPER_CLAIM_EVERY``. ``KeeperPass`` keeps ``started``, ``restored``, ``adopted``, ``put_back`` and ``scrub``, and
+gains ``marked``; ``NoteRingState`` and ``ring()`` go. The keeper keeps the marks table
+(``threetears.core.ddl.keeper_marks``, the same ``threetears_change_note_marks``) for the log's window, and knows the log
+its newest mark names: no ring row. A lost log is put back from the tables (``table_restore``) since the lost log's
+oldest mark, sized first against the restore budget and cut at a later mark when it does not fit; a keeper beside
+(``keeps_log=False``) marks its own database and puts its own tables back. The scrub reports a record of a table a
+restore cannot read back (no epoch) on ``threetears_change_notes_missing_total{table}``, and margin violations as before.
+``threetears.core.data.migrations.change_notes`` is ``epoch_refusals`` (its two refusals);
+``session_settings_connection_class`` takes no ``note_slot``.
+
+**Metrics kept** (the dashboards and alerts read them): ``threetears_change_notes_keeper_last_pass_timestamp_seconds``,
+``_missing_total`` (now: a record of a table carrying no epoch), ``_restores_total``, ``_restores_refused_total``,
+``_restore_truncated_total``, ``_put_backs_total``, ``_put_back_short_total``, ``_scrub_behind``,
+``threetears_change_log_marks_dropped_total``, ``threetears_restore_unvouched_total``,
+``threetears_restore_margin_violations_total``. **Removed:** ``threetears_change_notes_switches_total``,
+``_emptied_total``, ``_empty_timeouts_total``, ``_emptied_rows_total``, ``_switch_waits_total``,
+``_switch_held_since_timestamp_seconds``, ``_current_bytes``, ``_switch_at_bytes``, ``_ring_reads_total``,
+``_untriggered_tables``, ``_current_count_seconds``, ``_current_count_notes``,
+``threetears_change_note_slot_refreshes_total``.
+
+**Removed:** ``threetears.core.ddl.change_notes`` (the ring's DDL, functions and per-row triggers, the note buffer,
+``NOTE_WHOLE_SETTING``, ``NOTE_REACH_SETTING``, ``WHOLE_COPY_ROWS``, ``note_buffer_open_sql``, ``note_flush_sql``);
+``noted_rows_since``, ``NotedRows`` and ``whole_noted_change``; ``threetears.core.testing.note_ring``;
+``threetears.core.utils.change_note_slot`` (``ChangeNoteSlot``, ``change_note_slot_connection_class``); the note settings
+``SqlL3Backend`` set around a copy, a file load and a truncate; ``generation.NotedTable``, ``noted_tables`` and
+``switched_tables_not_noted``; ``give_noted_tables_their_note_trigger`` and ``switched_tables_without_notes``;
+``switch_off``'s note triggers and function (it drops the write-mark trigger alone); the census's
+``unnoted_switched_tables`` and ``find_unnoted_switched_tables``; the no-whole-reads ``ring_empty`` and ``restore`` kinds;
+``docs/writing-to-l3-on-yugabytedb.md``. ``ring_cutover.drop_ring`` stays: the cutover's step.
+
+**Held:** ``REFUSE_TABLES_WITHOUT_EPOCH`` stays ``False`` (``work/0950-stamp-own-tables`` has not landed); its TODO test
+fails until it does.
+
 ### core: the ring's readers read the tables' own epoch ranges; prefix marks and the checkpoint notes rule go
 
 Append-only L3 chunk 7, the readers (``design-append-only-l3.md`` decision 3). No new mechanism: each reader that read

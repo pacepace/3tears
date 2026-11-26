@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
+from threetears.core.collections.log_keeper import LogKeeper
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
 
 _INDEX_DEF = 'CREATE INDEX "ring_key" ON ring.notes USING lsm (k)'
@@ -133,11 +133,11 @@ class _Pool:
         return self._acquire()
 
 
-async def test_installing_the_change_note_ring_holds_the_database_ddl_lock_around_its_ddl() -> None:
-    """Flips if the change-note ring's install runs its CREATE statements without the database's DDL lock held
-    (the lock is taken in the install's own body, so no caller of it can run the ring's DDL unlocked)."""
+async def test_installing_the_log_keepers_marks_holds_the_database_ddl_lock_around_its_ddl() -> None:
+    """Flips if the log keeper's install runs its CREATE statements without the database's DDL lock held
+    (the lock is taken in the install's own body, so no caller of it can run the marks' DDL unlocked)."""
     conn = _Conn(unusable=False)
-    keeper = ChangeNoteKeeper(_Pool(conn), notes_schema="ring", log=None)  # type: ignore[arg-type]
+    keeper = LogKeeper(_Pool(conn), schema="ring", log=None)  # type: ignore[arg-type]
     await keeper.install()
     assert any(_ddl(s) for s in conn.statements)
     assert _locked_around_every_ddl(conn.statements), conn.statements

@@ -40,7 +40,7 @@ from threetears.core.backends.arrow_copy import distinct_scopes
 from threetears.core.backends.protocol import LoadFile
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
+from threetears.core.collections.log_keeper import LogKeeper
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     UntouchedScopesError,
@@ -133,7 +133,7 @@ async def test_a_writer_that_touches_no_scope_still_has_every_scope_its_rows_nam
         for row in l3.rows
     ]
     assert restore_floor(int(mark_at.timestamp() * 1000)) <= epoch
-    await ChangeNoteKeeper(pool, notes_schema=_RING, log=source).run_pass()
+    await LogKeeper(pool, schema=_RING, log=source).run_pass()
     records = [record for record in await _restored_records(source) if record.table == _TABLE]
     heard = sorted(tuple(row.ids) for record in records for row in record.rows)
     assert heard == [("CA", "r0", "cCA0"), ("NV", "r0", "cNV0")], "the restore hears every scope the write wrote"

@@ -23,9 +23,8 @@ class NotedChange:
         is then empty, since the whole-table record covers every row
     :ivar tenant: the tenant the rows belong to (:mod:`threetears.core.tenancy`), whose key the
         record is restored under; ``None`` for ``_all``
-    :ivar prefixes: for a whole-table change, the key prefixes its notes named (a load's,
-        :data:`~threetears.core.ddl.change_notes.NOTE_REACH_SETTING`): the restored record names them, so a follower
-        reads each as a key range. Rows outside them come back as their own changes
+    :ivar prefixes: for a whole-table change, the key prefixes it names (a run deleted, from its run marker): the
+        restored record names them, so a follower reads each as a key range. Rows outside them come back as their own changes
     :ivar reason: for a whole-table change, the reason its notes named: only an operator's reset
         (:data:`~threetears.core.collections.epoch_change.RESET_REASON`), restored as a reset
     :ivar bodies: for a keyed change folded in a worker process (:mod:`threetears.core.change_note_fold`), its rows'

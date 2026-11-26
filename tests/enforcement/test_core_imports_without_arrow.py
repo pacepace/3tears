@@ -3,8 +3,9 @@
 **The ruling** (Pace 2026-11-15): pyarrow stays an optional extra of core (``3tears[arrow]``, or ``[snapshot]`` with
 DuckDB). 26dabec04 made it a base dependency by accident: ``core.collections.change_notes`` imported the restore's
 Arrow fold (``core.change_note_fold``) at module top, so every process following the epoch log needed pyarrow, and the
-SDK's unit suite failed 111 tests on ``ModuleNotFoundError: pyarrow``. The keeper, the one importer of the fold, now
-lives in ``core.collections.change_note_keeper``; this gate keeps the rest of core free of Arrow.
+SDK's unit suite failed 111 tests on ``ModuleNotFoundError: pyarrow``. The keeper, an importer of the fold, lives in
+``core.collections.log_keeper`` (``change_note_keeper`` until the ring retired); this gate keeps the rest of core free
+of Arrow.
 
 **How.** ``uv export --frozen`` names, from ``uv.lock``, the distributions core and the epoch package install with
 every core extra but the Arrow ones. A fresh venv (stdlib ``venv``, no pip) gets exactly those: each one's installed
@@ -55,10 +56,9 @@ _ARROW_MODULES: dict[str, str] = {
         "quiet-time cleanup of versioned tables: works out what a page of versions supersedes in Arrow; run by the "
         "process that owns the tables' writes, which installs the arrow extra"
     ),
-    "threetears.core.collections.change_note_keeper": (
-        "the change-note keeper: its restore folds through change_note_fold; run by the hub alone"
+    "threetears.core.collections.log_keeper": (
+        "the change log's keeper: its restore folds through change_note_fold; run by the hub and identity-core alone"
     ),
-    "threetears.core.testing.note_ring": "test support installing the ring through ChangeNoteKeeper.install",
     "threetears.core.arrow_keys": (
         "Arrow rows matched by a key in Arrow's hash kernels (never Acero): Arrow tables in, NumPy row numbers out"
     ),

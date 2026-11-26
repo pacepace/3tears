@@ -40,10 +40,9 @@ from packages.core.tests.unit.collections.epoch_range_db import (
 from threetears.core.collections.change_notes import PoolNotedKeysReader, noted_keys_page
 from threetears.core.collections.delta_fold import DeltaFolds
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
-from threetears.core.collections.lost_writes import announce_window
+from threetears.core.collections.lost_writes import _MAX_NOTED_ROWS, announce_window
 from threetears.core.collections.noted_keys import NotedKeysPage, noted_key_pages
 from threetears.core.ddl.row_epoch import RESTORE_BUCKETS
-from threetears.core.ddl.change_notes import WHOLE_COPY_ROWS
 from threetears.core.tenancy import schema_tenant
 from threetears.enforcement.no_whole_reads.schema import collect_schema
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
@@ -182,7 +181,7 @@ async def test_more_rows_than_a_record_names_are_announced_keys_unknown_and_page
     bracket, or if paging that bracket back (the follower's ``l3.noted_keys`` read) misses a key, names one outside it,
     splits a page past its row bound, or stops before the last page."""
     db = RangeDb()
-    db.bulk_versions("CA", "big", WHOLE_COPY_ROWS + 1, _FLOOR + 1)
+    db.bulk_versions("CA", "big", _MAX_NOTED_ROWS + 1, _FLOOR + 1)
     db.version("CA", "small", "late", _CEILING + 5)
     source = _Source()
 
@@ -199,7 +198,7 @@ async def test_more_rows_than_a_record_names_are_announced_keys_unknown_and_page
         pages += 1
         keys.update(page.keys)
     assert pages == 2, pages
-    assert keys == {("CA", "big", f"c{index}") for index in range(WHOLE_COPY_ROWS + 1)}
+    assert keys == {("CA", "big", f"c{index}") for index in range(_MAX_NOTED_ROWS + 1)}
     _assert_bounded(db, tmp_path)
 
 
