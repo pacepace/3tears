@@ -720,7 +720,14 @@ async def _sender(l3: Any, statement: _KeysetStatement) -> Any:
     newest = statement.newest
     if newest is None:
         return l3
-    return newest_sent(l3, newest.table, await known_on_yugabyte(l3))
+    return newest_sent(l3, newest.table, await known_on_yugabyte(l3), batch=False)
+
+
+def _first_rows(page_size: int, *, shape_newest: _Newest | None) -> int:
+    """the rows (keys) a read's first page asks for: its page, or for a versioned read as many keys as hold
+    :data:`~threetears.interfaces.keyed.keys.NEWEST_ROWS_A_READ` versions at the measured worst (it knows nothing yet
+    of its versions; :data:`~threetears.interfaces.keyed.keys.NEWEST_FIRST_KEYS`)."""
+    return page_size if shape_newest is None else next_newest_keys(0, 0, page_size)
 
 
 def _next_keys(read: int, versions: int, rows: int, page_size: int) -> int:
@@ -934,7 +941,7 @@ async def _cursor_pages(
     :return: the pages
     :rtype: AsyncGenerator[Any, None]
     """
-    asked = ask if ask is not None else _Ask(statement.page_size)
+    asked = ask if ask is not None else _Ask(_first_rows(statement.page_size, shape_newest=statement.newest))
     more = True
     while more:
         read = await reads.page(statement, cursor, asked.rows)
@@ -1029,7 +1036,8 @@ async def _set_pages(
     :rtype: AsyncGenerator[Any, None]
     """
     statement = shape.statement(row_seek=True)
-    read = await reads.page(statement, None if after is None else tuple(after), statement.page_size)
+    first = _first_rows(statement.page_size, shape_newest=statement.newest)
+    read = await reads.page(statement, None if after is None else tuple(after), first)
     kept = read.kept
     if not read.more or read.last is None:
         yield kept
@@ -1145,7 +1153,7 @@ async def _lead_walk(
     handed = False
     # the rows a page asks for, carried from lead to lead: each lead's statement has the same columns, so the same
     # bytes a row
-    ask = _Ask(shape.page_size)
+    ask = _Ask(_first_rows(shape.page_size, shape_newest=shape.newest))
     while True:
         values = await leads.take(group)
         if not values:
@@ -1344,6 +1352,8 @@ class _KeysetStatement:
         self._order = ", ".join(quote(column) for column in key)
         self._page_size = page_size
         self._newest = newest
+        #: the columns the equality filters pin (to a value: a NULL pin names no key column's place)
+        self._pinned = frozenset(column for column, value in (where or {}).items() if value is not None)
         self._filters, self._values = equality_conditions(where, first=1, quote=quote)
         #: each filter on its own, as a versioned page judges it inside its newest relation or after (key_only)
         #: (the equality filters one a column: "col" = $n or "col" IS NULL, joined by AND)
@@ -1362,7 +1372,7 @@ class _KeysetStatement:
         self._quoted = [quote(column) for column in key]
         self._row_seek = row_seek
 
-    def _past(self, before: int) -> str:
+    def _past(self, before: int, skip: int = 0) -> str:
         """the condition naming the rows past the cursor, its values the parameters after the first ``before``.
 
         The leading bound, the row comparison and its expansion (the module's "How a page steps past its
@@ -1371,20 +1381,33 @@ class _KeysetStatement:
 
         :param before: how many parameters the filters bind
         :ptype before: int
+        :param skip: the leading key columns the filters pin by equality, left out of the comparison (their cursor
+            values are not bound)
+        :ptype skip: int
         :return: the condition
         :rtype: str
         """
+        key, quoted = self._key[skip:], self._quoted[skip:]
         marks = [
             self._mark(column, before + index) if self._mark is not None else f"${before + index}"
-            for index, column in enumerate(self._key, start=1)
+            for index, column in enumerate(key, start=1)
         ]
-        row = f"({self._order}) > ({', '.join(marks)})"
-        if len(self._key) == 1 or self._row_seek:
-            return row
-        expanded = f"{self._quoted[-1]} > {marks[-1]}"
-        for column, mark in zip(reversed(self._quoted[:-1]), reversed(marks[:-1]), strict=True):
+        row = f"({', '.join(quoted)}) > ({', '.join(marks)})"
+        if len(key) == 1 or self._row_seek:
+            return row if len(key) > 1 or not skip else f"{quoted[0]} > {marks[0]}"
+        expanded = f"{quoted[-1]} > {marks[-1]}"
+        for column, mark in zip(reversed(quoted[:-1]), reversed(marks[:-1]), strict=True):
             expanded = f"{column} > {mark} OR ({column} = {mark} AND ({expanded}))"
-        return f"{self._quoted[0]} >= {marks[0]} AND {row} AND ({expanded})"
+        return f"{quoted[0]} >= {marks[0]} AND {row} AND ({expanded})"
+
+    def _pinned_lead(self) -> int:
+        """how many leading key columns the equality filters pin, at most all but the last."""
+        pinned = 0
+        for column in self._key[:-1]:
+            if column not in self._pinned:
+                break
+            pinned += 1
+        return pinned
 
     @property
     def key(self) -> list[str]:
@@ -1452,8 +1475,12 @@ class _KeysetStatement:
         outside = [part for part in self._parts if part not in inside]
         params = list(self._values)
         if cursor is not None:
-            inside.append(self._past(len(self._values)))
-            params += list(cursor)
+            # the cursor past the leading key columns the filters pin: YugabyteDB seeks by a comparison of the columns
+            # after a pinned (hashed) lead, and takes one naming the lead too as a filter over the whole state, read
+            # again from its start each page (20,000 versions read as 50,941 in 4 pages, 2026-11-25)
+            skip = self._pinned_lead()
+            inside.append(self._past(len(self._values), skip))
+            params += list(cursor)[skip:]
         relation = newest_relation(
             newest.table, newest.read_as, within=inside, limit=str(limit), counted=True, flagged=True
         )

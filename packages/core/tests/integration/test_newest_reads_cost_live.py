@@ -10,7 +10,15 @@ runs its own statements at a small size on the session ``db_container`` (Postgre
 - on YugabyteDB the batched ``DISTINCT ON`` key reads (``distinct``, ``distinct_join``) read each batch key's
   versions and no more: rows read grow with the versions, never with the table.
 
-It asserts no speed budget: the mechanism is not chosen yet. The numbers are logged.
+The shipped reads (Pace's choice, 2026-11-25: ``keys.newest_relation`` / ``newest_lateral``) are driven through the
+helpers themselves, their statements captured and explained under the bounds each read sets (``newest_settings``):
+
+- a fill's pages read each version of the scope once (rows read about the scope's versions, never a re-read a page);
+- on YugabyteDB a keyed batch reads only its keys' versions, in few storage requests;
+- at 50 versions a key a batch's and a page's sorts stay in memory under the read's ``work_mem`` (no external sort)
+  on both engines, where the default 4 MB spills the same batch's sort on YugabyteDB.
+
+It asserts no speed budget. The numbers are logged.
 """
 
 from __future__ import annotations
@@ -25,6 +33,10 @@ from typing import Any
 
 import asyncpg
 import pytest
+
+from threetears.core.keyed import KeyBatch, read_keyed
+from threetears.core.keyset import read_keyset_pages
+from threetears.interfaces.keyed.keys import NEWEST_FIRST_KEYS, newest_settings, register_versioned_table
 
 pytestmark = pytest.mark.integration
 
@@ -109,3 +121,139 @@ async def test_every_mechanism_answers_each_key_s_newest_live_version(
         batch = len(range(0, script.KEYS_A_SCOPE, 7))
         for versions in (1, 10):
             assert read[(versions, mechanism)] <= batch * versions * 1.1 + 50, (mechanism, versions, read)
+
+
+class _Recorder:
+    """an L3 reader over one asyncpg connection that keeps every statement it sends: it is no asyncpg connection, so
+    the helpers send their statements as they are and the test explains each under the read's bounds itself."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.sent: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[Any]:
+        self.sent.append((query, params))
+        return list(await self._conn.fetch(query, *params))
+
+
+async def _explained(
+    conn: Any, script: ModuleType, sql: str, params: Any, yugabyte: bool, *, text: bool, batch: bool
+) -> Any:
+    """the statement's plan, run under the bounds a newest read (a keyed batch, or a fill page) sets for its own
+    transaction."""
+    async with conn.transaction():
+        for name, value in newest_settings(yugabyte=yugabyte, batch=batch):
+            await conn.execute(f"SET LOCAL {name} = '{value}'")
+        return await script.explain(conn, sql, params, yugabyte, text=text)
+
+
+def _spilled(plan: str) -> bool:
+    return "external" in plan.lower() or "disk:" in plan.lower()
+
+
+async def test_the_shipped_reads_read_each_version_once_and_a_batch_its_keys_alone(
+    measured: tuple[Any, ModuleType, bool],
+) -> None:
+    """Flips if a fill's pages read a version of the scope more than about once (a re-read of the scope a page, as
+    the retired guard's), if a keyed batch on YugabyteDB reads past its keys' versions or takes many storage requests,
+    or if either answers an older version or a gone key."""
+    conn, script, yugabyte = measured
+    versions = 10
+    await script.load(conn, versions, _ROWS, yugabyte)
+    name = f"{script.SCHEMA}.{script.table_name(versions)}"
+    register_versioned_table(script.declaration(versions))
+    expected = [
+        int(row["id"])
+        for row in await conn.fetch(
+            f"SELECT id FROM {name} WHERE state = 's000' AND epoch = $1 AND NOT gone ORDER BY id", versions - 1
+        )
+    ]
+    fill = _Recorder(conn)
+    read = await read_keyset_pages(
+        fill,
+        f"SELECT state, id, v, payload FROM {name}",
+        ["state", "id"],
+        where={"state": "s000"},
+        page_size=script.PAGE,
+        table=name,
+    )
+    assert [int(row["id"]) for row in read.rows] == expected
+    pages = [(sql, params) for sql, params in fill.sent if "DISTINCT ON" in sql]
+    assert pages, fill.sent
+    filled = 0
+    for sql, params in pages:
+        filled += script.rows_read(
+            await _explained(conn, script, sql, params, yugabyte, text=False, batch=False), yugabyte
+        )
+    scope = script.KEYS_A_SCOPE * versions
+    _log.warning("fill of %d versions: %d rows read in %d pages", scope, filled, len(pages))
+    # each version once, give or take the key past each page (read again by the next), YugabyteDB's one storage
+    # request read past a page's LIMIT (its default 1,024 rows) and the markers' rows
+    past = 1_024 if yugabyte else versions
+    if filled > scope * 1.02 + len(pages) * past + 50:
+        plan_text = await _explained(conn, script, *pages[1], yugabyte, text=True, batch=False)
+        raise AssertionError(f"{filled} rows read for {scope} in {len(pages)} pages; page 2:\n{plan_text}")
+    batch = _Recorder(conn)
+    keys = [("s000", key) for key in range(0, script.KEYS_A_SCOPE, 7)]
+    rows = await read_keyed(
+        batch,
+        name,
+        keys=KeyBatch(("state", "id"), [[k[0] for k in keys], [k[1] for k in keys]], ("text", "bigint")),
+        columns=["state", "id", "v"],
+    )
+    assert sorted(int(row["id"]) for row in rows) == [key for _, key in keys if key in set(expected)]
+    sql, params = batch.sent[-1]
+    plan = await _explained(conn, script, sql, params, yugabyte, text=False, batch=True)
+    batched = script.rows_read(plan, yugabyte)
+    _log.warning(
+        "batch of %d keys: %d rows read, %s requests", len(keys), batched, script.read_requests(plan, yugabyte)
+    )
+    if not yugabyte:
+        # PostgreSQL seeks each key's newest once (LATERAL): one row a key
+        assert batched <= len(keys) * 1.1 + 10, batched
+        return
+    assert "DISTINCT ON" in sql and "YbBatchedNL" in sql, sql
+    assert batched <= len(keys) * versions * 1.1 + 50, batched
+    # 2,860 versions at yb_fetch_row_limit 10,000: a request or two, never one a key
+    assert (script.read_requests(plan, yugabyte) or 0) <= 10, plan
+
+
+async def test_a_50_version_batch_and_page_sort_in_memory(measured: tuple[Any, ModuleType, bool]) -> None:
+    """Flips if, at 50 versions a key, the first keyed batch (NEWEST_FIRST_KEYS keys) or a fill page sorts on disk
+    under the read's own work_mem; on YugabyteDB the same batch under the default 4 MB must spill, so the bound is what
+    keeps it in memory."""
+    conn, script, yugabyte = measured
+    versions = 50
+    await script.load(conn, versions, 200_000, yugabyte)
+    name = f"{script.SCHEMA}.{script.table_name(versions)}"
+    register_versioned_table(script.declaration(versions))
+    held = [(row["state"], int(row["id"])) for row in await conn.fetch(f"SELECT DISTINCT state, id FROM {name}")]
+    keys = sorted(held)[:NEWEST_FIRST_KEYS]
+    batch = _Recorder(conn)
+    await read_keyed(
+        batch,
+        name,
+        keys=KeyBatch(("state", "id"), [[k[0] for k in keys], [k[1] for k in keys]], ("text", "bigint")),
+        columns=["state", "id", "v", "payload"],
+        batch=NEWEST_FIRST_KEYS,
+    )
+    sql, params = batch.sent[-1]
+    bounded = await _explained(conn, script, sql, params, yugabyte, text=True, batch=True)
+    _log.warning("50-version batch of %d keys, bounded:\n%s", len(keys), bounded)
+    assert not _spilled(bounded), bounded
+    if yugabyte:
+        unbounded = await script.explain(conn, sql, params, yugabyte, text=True)
+        assert _spilled(unbounded), unbounded
+    fill = _Recorder(conn)
+    await read_keyset_pages(
+        fill,
+        f"SELECT state, id, v, payload FROM {name}",
+        ["state", "id"],
+        where={"state": "s000"},
+        page_size=script.PAGE,
+        table=name,
+    )
+    for sql, params in fill.sent:
+        if "DISTINCT ON" in sql:
+            plan = await _explained(conn, script, sql, params, yugabyte, text=True, batch=False)
+            assert not _spilled(plan), plan

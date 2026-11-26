@@ -796,17 +796,22 @@ NEWEST_LIVE: Final = "_newest_live"
 NEWEST_VERSIONS: Final = "_newest_versions"
 
 
-def newest_settings(*, yugabyte: bool) -> tuple[tuple[str, str], ...]:
-    """the settings each newest read sets for its own transaction (``SET LOCAL``): :data:`NEWEST_WORK_MEM`, and on
-    YugabyteDB :data:`NEWEST_FETCH_ROW_LIMIT`.
+def newest_settings(*, yugabyte: bool, batch: bool = True) -> tuple[tuple[str, str], ...]:
+    """the settings each newest read sets for its own transaction (``SET LOCAL``): :data:`NEWEST_WORK_MEM`, and for a
+    keyed batch on YugabyteDB :data:`NEWEST_FETCH_ROW_LIMIT`. WHY not a fill page's: a page stops at its ``LIMIT``, and
+    YugabyteDB fetches a storage request's rows whole, so 10,000 a request read up to 10,000 rows past a page's last
+    key (4 pages of 501 keys at 10 versions: 65,581 rows read for 20,000, test_newest_reads_cost_live, 2026-11-25); at
+    the default 1,024 a page reads at most a request past it (the measured fills: 105 requests for 101,880 rows).
 
     :param yugabyte: whether the read runs on YugabyteDB
     :ptype yugabyte: bool
+    :param batch: whether the read is a keyed batch (else a fill page)
+    :ptype batch: bool
     :return: each setting's name and value
     :rtype: tuple[tuple[str, str], ...]
     """
     settings: tuple[tuple[str, str], ...] = (("work_mem", NEWEST_WORK_MEM),)
-    if yugabyte:
+    if yugabyte and batch:
         settings += (("yb_fetch_row_limit", str(NEWEST_FETCH_ROW_LIMIT)),)
     return settings
 

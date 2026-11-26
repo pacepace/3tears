@@ -304,7 +304,7 @@ class _NewestSettings:
         return await self._on(self._conn, query, params)
 
 
-def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool) -> Any:
+def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool, *, batch: bool = True) -> Any:
     """what a newest read of a versioned table sends its statement through: on a direct asyncpg connection or pool,
     each statement in a transaction of its own setting the read's bounds first (``work_mem``, and YugabyteDB's
     ``yb_fetch_row_limit``: :func:`~threetears.interfaces.keyed.keys.newest_settings`), so its sort stays in memory
@@ -320,11 +320,13 @@ def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool) -> Any
     :ptype newest: VersionedTable | None
     :param yugabyte: whether the read runs on YugabyteDB
     :ptype yugabyte: bool
+    :param batch: whether the read is a keyed batch (else a fill page, which sets ``work_mem`` alone)
+    :ptype batch: bool
     :return: what to send the statement through
     :rtype: Any
     """
     if newest is not None and isinstance(conn, asyncpg.Connection | PoolConnectionProxy | asyncpg.Pool):
-        return _NewestSettings(conn, newest_settings(yugabyte=yugabyte))
+        return _NewestSettings(conn, newest_settings(yugabyte=yugabyte, batch=batch))
     return sent_by(conn)
 
 

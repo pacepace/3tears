@@ -374,14 +374,17 @@ class TestEngineForms:
     async def test_a_prefix_batch_answers_each_of_its_keys_newest(
         self, db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Flips if a batch of a prefix of the key (states) answers one row a prefix, or an older version."""
+        """Flips if a batch of a prefix of the key (states) answers one row a prefix or an older version, or is not each
+        prefix's own LATERAL DISTINCT ON over the rest of the key."""
 
         async def postgres(conn: Any) -> bool:
             return False
 
         monkeypatch.setattr(keyed_rows, "reads_yugabyte", postgres)
         keys = KeyBatch(("state",), [["CA", "NV", "OR", "TX"]], ("text",))
-        assert _read(await read_keyed(_L3(db), _TABLE, keys=keys, columns=["state", "id", "v"])) == _NEWEST
+        reader = _L3(db)
+        assert _read(await read_keyed(reader, _TABLE, keys=keys, columns=["state", "id", "v"])) == _NEWEST
+        assert 'LATERAL (SELECT DISTINCT ON (t."id")' in reader.statements[-1]
 
     def test_a_batch_is_sized_by_the_versions_its_last_read(self) -> None:
         """Flips if a batch's keys are not sized by the versions the batch before read a key."""
@@ -394,23 +397,31 @@ class TestEngineForms:
 class TestFillPages:
     async def test_a_filter_past_the_key_is_judged_on_the_newest_version(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a fill's filter on a column past the key picks an older version that matched it (v = 2 is CA 1's
-        middle version), or loses the newest that does."""
+        middle version), or loses the newest that does, or judges it inside the page's DISTINCT ON (before the newest
+        version is chosen)."""
         select = f"SELECT state, id, v FROM {_TABLE}"
-        older = await read_keyset_pages(_L3(db), select, ["state", "id"], where={"v": 2}, page_size=1, table=_TABLE)
+        reader = _L3(db)
+        older = await read_keyset_pages(reader, select, ["state", "id"], where={"v": 2}, page_size=1, table=_TABLE)
         assert older.rows == []
+        page = reader.statements[-1]
+        chosen = page[page.index("SELECT DISTINCT ON") : page.index(") AS n")]
+        assert '"v"' not in chosen and '"v" = $1' in page
         newest = await read_keyset_pages(_L3(db), select, ["state", "id"], where={"v": 3}, page_size=1, table=_TABLE)
         assert _read(newest.rows) == {("CA", 1): 3}
 
     async def test_arrow_pages_step_past_keys_they_keep_none_of(self, db: duckdb.DuckDBPyConnection) -> None:
-        """Flips if an Arrow fill stops at a page whose keys are all gone (TX, OR), answers an older version, or
-        hands over its own columns."""
+        """Flips if an Arrow fill stops at a page whose keys are all gone (TX, OR), answers an older version, hands
+        over its own columns, or reads its pages by anything but each range's DISTINCT ON."""
         types = {"state": pa.string(), "id": pa.int32(), "v": pa.int32()}
+        reader = _L3(db)
         pages = [
             page
             async for page in keyset_arrow_pages(
-                _L3(db), f"SELECT state, id, v FROM {_TABLE}", ["state", "id"], types=types, page_size=1, table=_TABLE
+                reader, f"SELECT state, id, v FROM {_TABLE}", ["state", "id"], types=types, page_size=1, table=_TABLE
             )
         ]
+        assert all("DISTINCT ON" in sql for sql in reader.statements if "_newest_kept" in sql)
+        assert any("_newest_kept" in sql for sql in reader.statements)
         assert all(page.column_names == ["state", "id", "v"] for page in pages)
         assert _read(pa.concat_tables(pages).to_pylist()) == _NEWEST
 
