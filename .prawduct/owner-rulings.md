@@ -154,3 +154,8 @@ with `interfaces`. In the same answer the owner agreed to push the 2026-11-24 ru
 On how to build it without governance loaded: "1305 has the prawduct onboarding. Should we switch to that branch,
 reload plugins, and build on top of that?" The key pool branch `feat/model-key-pool` stacks on #1305's branch. Landed in
 the requirements doc §6.
+
+**2026-11-26 (late evening).** Asked (1) whether Discodon runs the fresh paid story pass that measures the
+claim grader fixes (restate baseline 3/12, plant_lie 4/6) and (2) which filed evals issues go next, with the
+recommendation #1326, #1331, #1330 and #1332 built in parallel, the owner said: "yes to all. Of those next steps".
+The paid pass is Discodon's to run at evals/main 8a92fd132; the four issues build as one batch on evals/next.
