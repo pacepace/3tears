@@ -278,6 +278,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.kernel.spend import ExternalRateTable
 from threetears.evals.kernel.storage import (
     CaseSetStore,
+    DefinitionStore,
     DerivedDropped,
     DroppedJudgeProfile,
     EvalStorage,
@@ -327,7 +328,7 @@ from threetears.evals.kernel.result_reading import (
     UsageReading,
     UsageView,
 )
-from threetears.evals.kernel.run_pages import ResultKey, UnreadableResultKey
+from threetears.evals.kernel.run_pages import ResultKey, RunResultsStore, UnreadableResultKey
 from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     ArmGuardrails,
@@ -466,6 +467,7 @@ __all__ = [
     "CassetteMode",
     "CassetteSeams",
     "CaseSetStore",
+    "DefinitionStore",
     "CellCassettes",
     "CellFacts",
     "CellPending",
@@ -638,6 +640,7 @@ __all__ = [
     "SetGrader",
     "SetRefusal",
     "RunIndexEntry",
+    "RunResultsStore",
     "RunStore",
     "SeedPrompt",
     "SeedSection",

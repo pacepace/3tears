@@ -92,20 +92,26 @@ _LAZY_EXPORTS: Mapping[str, str] = MappingProxyType(
 )
 
 
-def __getattr__(name: str) -> Any:  # Any: __version__ is a str, and a lazy export is whatever its module defines
-    """Resolve :data:`__version__` from the distribution's metadata, and each name of ``_LAZY_EXPORTS``, on first read.
+# Under ``not TYPE_CHECKING``: a checker that saw a module ``__getattr__`` would type every name a host imports from
+# here as its return, ``Any``, so a misspelt or removed name would check. It sees the imports above and the
+# ``__version__: str`` declaration instead (``tests/test_root_names_are_typed.py``).
+if not TYPE_CHECKING:
 
-    :param name: The attribute asked for: ``__version__``, or one of the exported names (``Eval``, ``Model``, ...).
-    :return: The installed distribution's version string, or the exported object.
-    :raises AttributeError: For any other name, as a module normally would.
-    :raises importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
-        version cannot be stated; a host records the version only from an installed build.
-    """
-    if name == "__version__":
-        return _distribution_version("3tears-evals")
-    if (defined_in := _LAZY_EXPORTS.get(name)) is not None:
-        return getattr(import_module(defined_in), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    def __getattr__(name: str) -> Any:  # Any: __version__ is a str, and a lazy export is whatever its module defines
+        """Resolve :data:`__version__` from the distribution's metadata, and each name of ``_LAZY_EXPORTS``, on first
+        read.
+
+        :param name: The attribute asked for: ``__version__``, or one of the exported names (``Eval``, ``Model``, ...).
+        :return: The installed distribution's version string, or the exported object.
+        :raises AttributeError: For any other name, as a module normally would.
+        :raises importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
+            version cannot be stated; a host records the version only from an installed build.
+        """
+        if name == "__version__":
+            return _distribution_version("3tears-evals")
+        if (defined_in := _LAZY_EXPORTS.get(name)) is not None:
+            return getattr(import_module(defined_in), name)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:

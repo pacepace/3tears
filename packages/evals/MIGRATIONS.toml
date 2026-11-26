@@ -760,15 +760,14 @@ dimension's verdicts on WorldConformanceReport.for_dimension.
 [[release.change]]
 from = "threetears.evals.kernel"
 to = "removed"
-names = ["CassetteStore", "DefinitionStore", "RunRecordStore"]
+names = ["CassetteStore", "RunRecordStore"]
 why = """
 Demoted by the 2026-11-15 owner ruling that a public name is admitted by criteria, not by a count: no declared
-operation takes or returns any of them, so no host is handed one or must implement one. The engine implements all
-three with its own storage and keeps using them inside. RunStore, ResultStore and JobStore hold no cassette or
-definition method, so none replaces CassetteStore or DefinitionStore. Port: type a CassetteStore or DefinitionStore
-parameter as threetears.evals.kernel.EvalStorage, which implements both; a RunRecordStore parameter as
-threetears.evals.kernel.EvalStorage too, or as RunStore where only runs are read and ResultStore where only results
-are
+operation takes or returns either, so no host is handed one or must implement one. The engine implements both with
+its own storage and keeps using them inside. RunStore, ResultStore and JobStore hold no cassette method, so none
+replaces CassetteStore. Port: type a CassetteStore parameter as threetears.evals.kernel.EvalStorage, which implements
+it; a RunRecordStore parameter as threetears.evals.kernel.EvalStorage too, or as RunStore where only runs are read and
+ResultStore where only results are
 """
 
 [[release.change]]

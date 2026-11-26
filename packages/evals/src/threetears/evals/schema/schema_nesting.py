@@ -16,17 +16,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import Any, Literal, NamedTuple
 
-__all__ = ["NestedSchema", "NestingKeyword", "nested_schemas"]
-
-#: The keywords under which a schema holds another schema.
-NestingKeyword = Literal["items", "properties", "additionalProperties", "anyOf"]
+__all__ = ["NestedSchema", "nested_schemas"]
 
 
 class NestedSchema(NamedTuple):
     """One schema written inside another, and where it sits."""
 
-    keyword: NestingKeyword
-    """The keyword that holds it."""
+    keyword: Literal["items", "properties", "additionalProperties", "anyOf"]
+    """The keyword that holds it: one of the keywords under which a schema holds another schema."""
 
     key: str | int | None
     """The property name under ``properties``, the branch index under ``anyOf``; None otherwise."""
