@@ -101,6 +101,9 @@ class NotedChange:
         (:data:`~threetears.core.collections.epoch_change.RESET_REASON`), restored as a reset
     :ivar bodies: for a keyed change folded in a worker process (:mod:`threetears.core.change_note_fold`), its rows'
         records as the log stores them, each within the record bound; :attr:`rows` is then empty
+    :ivar s_min: the lowest row epoch its records name (:attr:`~threetears.core.collections.epoch_change.EpochChange.
+        s_min`): a change rebuilt from the tables' versions names the restore's floor
+        (:mod:`~threetears.core.collections.table_restore`); ``None`` for one from the change notes
     """
 
     table: str
@@ -110,6 +113,7 @@ class NotedChange:
     prefixes: tuple[Mapping[str, str], ...] = ()
     reason: str | None = None
     bodies: tuple[bytes, ...] = ()
+    s_min: int | None = None
 
     def __post_init__(self) -> None:
         check_whole_reach(self.prefixes or None, self.reason, whole_table=self.whole_table)

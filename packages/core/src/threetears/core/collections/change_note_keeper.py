@@ -199,6 +199,7 @@ from threetears.core.collections.epoch_change import (
     keyed_record_form,
 )
 from threetears.core.collections.generation import NotedTable, noted_tables, split_generation_token
+from threetears.core.collections.table_restore import TableChanges, VersionedTable, versioned_tables
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
@@ -221,6 +222,7 @@ from threetears.core.ddl.change_notes import (
     trigger_function_sql,
 )
 from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.row_epoch import epoch_wall_ms, restore_floor
 from threetears.core.keyed import (
     Fragment,
     Sort,
@@ -487,6 +489,15 @@ _PUT_BACKS = counter(
     "threetears_change_notes_put_backs_total",
     description="restored change logs a ring beside the log's owner put its own notes back into",
 )
+_RESTORE_UNVOUCHED = counter(
+    "threetears_restore_unvouched_total",
+    description="lost change logs whose versioned tables no keeper mark vouched for: every follower behind",
+)
+_MARGIN_VIOLATIONS = counter(
+    "threetears_restore_margin_violations_total",
+    description="log records after a keeper mark whose lowest stamp is below the mark's restore floor X; alert on any",
+    label_names=("table",),
+)
 _PUT_BACK_SHORT = counter(
     "threetears_change_notes_put_back_short_total",
     description="a ring beside the log's owner put back less than the restore's label vouches for: its floor is "
@@ -721,12 +732,15 @@ class ScrubPass:
     :ivar position: the newest epoch checked, ``incarnation:seq``; ``None`` when none was
     :ivar others: epochs skipped: of tables another database notes, in its own ring. The log's owner reads and skips
         them; a ring beside never reads them, and counts the range's epochs not of its tables
+    :ivar margin_violations: records after a keeper mark whose lowest stamp (``s_min``) is below the mark's restore
+        floor X: a restore from that mark would miss part of them (:meth:`ChangeNoteKeeper._check_margins`)
     """
 
     checked: int = 0
     missing: int = 0
     position: str | None = None
     others: int = 0
+    margin_violations: int = 0
 
 
 @dataclass(slots=True)
@@ -2068,6 +2082,12 @@ class ChangeNoteKeeper:
         if covered is None:
             covered = _seq_under(ring.fence_seq, lost)
         began = time.monotonic()
+        # the versioned tables come back from their own versions since a mark of the lost log, never from the ring
+        # (append-only L3 chunk 5, table_restore); the ring still puts back every table it notes until it retires
+        versioned = await versioned_tables(self._pool)
+        marks = await self.marks_past(lost, None) if versioned else []
+        label, table_floor = self._restore_point(versioned, marks, lost, covered)
+        table_changes: TableChanges | None = None
         state = await self._log.log_state()
         budget = None if state is None or not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
         # WHY the sizing runs beside the stream (owner #101, 2026-11-14, test_change_note_restore_speed_live's
@@ -2096,9 +2116,13 @@ class ChangeNoteKeeper:
         try:
             if verdict is not None:
                 changes = self._changes_since(ring, None, folder)
+                table_changes = self._table_changes(versioned, table_floor, folder)
                 try:
                     appended = await self._log.finish_restore(
-                        _Gated(changes, verdict), incarnation=incarnation, lost=lost, covered_from=covered
+                        _chained(_Gated(changes, verdict), table_changes),
+                        incarnation=incarnation,
+                        lost=lost,
+                        covered_from=label,
                     )
                     total = verdict.result()[0]
                 except _CoverageOverflows:
@@ -2107,6 +2131,7 @@ class ChangeNoteKeeper:
                     assert budget is not None  # narrow: a verdict is asked only under a budget
                     chosen = await self._cut(ring, lost, covered, budget)
                     changes = None
+                    table_changes = None
         finally:
             if verdict is not None and not verdict.done():
                 # the stream failed before the sizing ruled: stop it, so its connection goes back
@@ -2129,8 +2154,12 @@ class ChangeNoteKeeper:
             # streamed a page at a time, so the keeper's memory follows one change, not the coverage; should the log
             # have grown past the estimate meanwhile, finish_restore stops unlabelled and the next pass sizes again
             changes = self._changes_since(ring, since, folder)
-            appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=floor)
-        tables = changes.tables
+            label, table_floor = self._restore_point(versioned, marks, lost, floor)
+            table_changes = self._table_changes(versioned, table_floor, folder)
+            appended = await self._log.finish_restore(
+                _chained(changes, table_changes), incarnation=incarnation, lost=lost, covered_from=label
+            )
+        tables = changes.tables + (0 if table_changes is None else table_changes.tables)
         if kept < total:
             _RESTORES_TRUNCATED.inc()
             log.error(
@@ -2166,9 +2195,12 @@ class ChangeNoteKeeper:
                 "extra_data": {
                     "lost": lost,
                     "restored": incarnation,
-                    "covered_from": floor,
+                    "covered_from": label,
                     "notes": kept,
                     "tables": tables,
+                    "versioned_tables": len(versioned),
+                    "versions_from_epoch": table_floor,
+                    "scope_reads": 0 if table_changes is None else table_changes.scopes,
                     "records": appended,
                     "seconds": round(time.monotonic() - began, 3),
                 }
@@ -2338,6 +2370,76 @@ class ChangeNoteKeeper:
         """
         return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since, folder, self._form)
 
+    def _restore_point(
+        self, versioned: Sequence[VersionedTable], marks: Sequence[dict[str, Any]], lost: str, floor: int | None
+    ) -> tuple[int | None, int | None]:
+        """the label a restore covering the ring's notes from ``floor`` and the versioned tables gives the new log, and
+        the epoch X the versioned tables are read from: from a mark (P, T) of the lost log, X = (T - M) << 15
+        (:func:`~threetears.core.ddl.row_epoch.restore_floor`) vouches for every record after P.
+
+        The newest mark at or before ``floor`` vouches for everything the ring's floor does, so the label stays the
+        floor. Without one (the marks before it pruned), the oldest mark after it does, and the label moves up to that
+        mark: a follower between the two is behind (``record_lost``), never carried over past a record the restore
+        missed. With no mark at all nothing vouches for the versioned tables: the label is ``None`` (every follower
+        behind until it restarts), said at ERROR. With no versioned table, the ring's floor as before.
+
+        :param versioned: the versioned tables
+        :ptype versioned: Sequence[VersionedTable]
+        :param marks: the lost log's marks, in position order (``seq``, ``at``)
+        :ptype marks: Sequence[dict[str, Any]]
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :param floor: the ring's floor under it; ``None`` when it vouches for none
+        :ptype floor: int | None
+        :return: ``(label, X)``; X ``None`` when the versioned tables are not read
+        :rtype: tuple[int | None, int | None]
+        """
+        if not versioned:
+            return floor, None
+        if not marks:
+            _RESTORE_UNVOUCHED.inc()
+            log.error(
+                "a lost change log's versioned tables cannot be restored: the keeper holds no mark of it, so nothing "
+                "says from which epoch to read them. Every follower of the lost log is behind until it restarts",
+                extra={"extra_data": {"lost": lost, "tables": [table.relation for table in versioned]}},
+            )
+            return None, None
+        before = [mark for mark in marks if floor is not None and int(mark["seq"]) <= floor]
+        mark = before[-1] if before else marks[0]
+        x = restore_floor(int(mark["at"].timestamp() * 1000))
+        if floor is None:
+            return None, x
+        if not before:
+            log.warning(
+                "a restore's label moves up from the ring's floor to the oldest mark of the lost log: no mark at or "
+                "before the floor vouches for the versioned tables. A follower between the two is behind until it "
+                "restarts",
+                extra={
+                    "extra_data": {"lost": lost, "floor": _token(lost, floor), "mark": _token(lost, int(mark["seq"]))}
+                },
+            )
+            return int(mark["seq"]), x
+        return floor, x
+
+    def _table_changes(
+        self, versioned: Sequence[VersionedTable], floor: int | None, folder: RestoreFolder
+    ) -> TableChanges | None:
+        """the versioned tables' changes since ``floor``, streamed (:class:`~threetears.core.collections.table_restore.
+        TableChanges`); ``None`` when none is read.
+
+        :param versioned: the versioned tables
+        :ptype versioned: Sequence[VersionedTable]
+        :param floor: X; ``None`` reads none
+        :ptype floor: int | None
+        :param folder: the restore's worker
+        :ptype folder: RestoreFolder
+        :return: the stream, or ``None``
+        :rtype: TableChanges | None
+        """
+        if not versioned or floor is None:
+            return None
+        return TableChanges(self._pool, versioned, floor, folder, self._database)
+
     async def _scrub(self, ring: NoteRingState, state: ChangeLogState) -> ScrubPass:
         """check that the epochs after the floor, up to the log's head one pass ago, have their notes.
 
@@ -2395,6 +2497,9 @@ class ChangeNoteKeeper:
         fence = _seq_under(ring.fence_seq, incarnation)
         found = await self.notes_found(ring, records)
         result = ScrubPass(checked=len(records), position=_token(incarnation, end), others=others)
+        if self._keeps_log:
+            # only the log's owner marks the log, in its own database: a ring beside has no marks to judge by
+            result.margin_violations = await self._check_margins(incarnation, records)
         for record in records:
             seq = int(record.token.rpartition(":")[2])
             where = (ring.current,) if fence is not None and seq > fence else (ring.current, ring.previous)
@@ -2421,6 +2526,61 @@ class ChangeNoteKeeper:
             self._scrubbed = (incarnation, end)
         _SCRUB_BEHIND.set(max(0, state.last_seq - end))
         return result
+
+    async def _check_margins(self, incarnation: str, records: Sequence[EpochChange]) -> int:
+        """the records after a keeper mark whose lowest stamp is below that mark's restore floor X: each is said at
+        ERROR with its table, scopes and epochs, and counted (``threetears_restore_margin_violations_total``).
+
+        A restore from a mark (P, T) reads the versioned tables' versions with ``epoch >= X``, X = (T - M) << 15
+        (:func:`~threetears.core.ddl.row_epoch.restore_floor`); it is complete only while every record appended after P
+        carries ``s_min >= X``. Each record is judged against the newest mark before it (the highest X a restore could
+        start from), so a record that held under it held under every older one. A record naming no ``s_min`` stamped
+        nothing. Checks only, with no note lookups.
+
+        :param incarnation: the log's incarnation
+        :ptype incarnation: str
+        :param records: the records the scrub read
+        :ptype records: Sequence[EpochChange]
+        :return: the violations found
+        :rtype: int
+        """
+        stamped = [record for record in records if record.s_min is not None]
+        if not stamped:
+            return 0
+        marks = [(int(mark["seq"]), mark["at"]) for mark in await self.marks_past(incarnation, None)]
+        violations = 0
+        for record in stamped:
+            seq = int(record.token.rpartition(":")[2])
+            before = [mark for mark in marks if mark[0] < seq]
+            if not before:
+                continue
+            mark_seq, at = before[-1]
+            floor = restore_floor(int(at.timestamp() * 1000))
+            s_min = record.s_min
+            assert s_min is not None  # narrow: filtered above
+            if s_min >= floor:
+                continue
+            violations += 1
+            _MARGIN_VIOLATIONS.labels(table=record.table).inc()
+            log.error(
+                "a change-log record after a keeper mark carries a stamp below the mark's restore floor: a restore from "
+                "that mark would read its tables from X and miss what it wrote below X. Its writer held a transaction "
+                "or its append longer than the margin M covers",
+                extra={
+                    "extra_data": {
+                        "table": record.table,
+                        "scopes": record.scopes,
+                        "keys": [row.ids for row in record.rows[:5]],
+                        "epoch": record.token,
+                        "s_min": s_min,
+                        "s_min_wall_ms": epoch_wall_ms(s_min),
+                        "floor": floor,
+                        "floor_wall_ms": epoch_wall_ms(floor),
+                        "mark": _token(incarnation, mark_seq),
+                    }
+                },
+            )
+        return violations
 
     async def _own_tables(self, tables: set[str]) -> set[str]:
         """which of ``tables`` the log owner's database notes (:data:`_OWN_TABLES_SQL`; module docstring). A ring
@@ -2554,6 +2714,25 @@ def _coverage_sql(owner: str, current: int, previous: int) -> str:
         f'(SELECT {_COVERAGE_COLUMNS} FROM {owner}."threetears_change_notes_{current:d}" '  # noqa: S608 - trusted identifiers
         f'UNION ALL SELECT {_COVERAGE_COLUMNS} FROM {owner}."threetears_change_notes_{previous:d}")'
     )
+
+
+async def _chained(
+    first: AsyncIterable[NotedChange], then: AsyncIterable[NotedChange] | None
+) -> AsyncIterator[NotedChange]:
+    """``first``'s changes, then ``then``'s: a restore's ring changes and its versioned tables' in one stream.
+
+    :param first: the first stream
+    :ptype first: AsyncIterable[NotedChange]
+    :param then: the stream after it, or ``None``
+    :ptype then: AsyncIterable[NotedChange] | None
+    :return: the changes
+    :rtype: AsyncIterator[NotedChange]
+    """
+    async for change in first:
+        yield change
+    if then is not None:
+        async for change in then:
+            yield change
 
 
 class _CoverageOverflows(Exception):

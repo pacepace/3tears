@@ -43,9 +43,11 @@ log record carries its commit's lowest stamp (``s_min``, ``EpochChange.s_min``),
   the first key column stays hashed and ``epoch DESC`` is the last range column (:func:`versioned_primary_key_sql`), so
   every version of a key sits together in one tablet, newest first. On Postgres a primary key takes no sort order; its
   B-tree is read backwards for ``ORDER BY epoch DESC`` and stops at the first entry just the same. The declaration names
-  the scope a restore reads "what changed since epoch X" by; its ``(scope, epoch)`` index (the scope hashed on
-  YugabyteDB, so the rising end of the epochs spreads across scopes) is declared with that read (append-only chunk 5):
-  the no-whole-reads rule refuses an index no keyed read names.
+  the scope a restore reads "what changed since epoch X" by, and its ``(scope, epoch)`` index answers that read (the
+  scope hashed on YugabyteDB, so the rising end of the epochs spreads across scopes;
+  :mod:`~threetears.core.collections.table_restore`). The index carries the restore's declaration as its comment
+  (:func:`restore_declaration`), so the keeper that restores a lost log finds every versioned table, and how to read
+  it, from the catalog alone: it runs in the hub, which imports no consumer's table classes.
 - **Stamped** (:data:`ROW_STAMPED`), the small tables updated in place (``lsf_runs``, ``state_fingerprints``): one row a
   key, carrying its last write's epoch.
 
@@ -65,6 +67,8 @@ A leaf module: the collections and backends both import it, and it imports neith
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -81,6 +85,10 @@ __all__ = [
     "UnstampedWriteError",
     "epoch_wall_ms",
     "next_epoch",
+    "RESTORE_DECLARATION_MARK",
+    "restore_declaration",
+    "restore_floor",
+    "scope_epoch_index_name",
     "observe_epoch",
     "rising_epoch_assignment",
     "row_versions",
@@ -147,11 +155,18 @@ class RowEpoch:
     :ivar versions: whether every write keeps its own version of the key (the stored key the key and then the epoch);
         False for a table of one row a key, updated in place and stamped
     :ivar scope: for versions, the column a restore reads "changed since epoch X" by, a scope at a time (the state a row
-        is of, as the writer's seqlock names scopes); its ``(scope, epoch)`` index lands with that read. None for stamped
+        is of, as the writer's seqlock names scopes) through its ``(scope, epoch)`` index. None for stamped
+    :ivar epochs: for versions, the scope epochs table (``ScopeEpochs``) of the table's schema whose scopes name the
+        table's: a restore reads the scopes changed since X from it (``last_epoch``), never by scanning this table
+    :ivar scope_prefix: how that table names a scope of this one: ``prefix + <the row's scope value>`` (reports:
+        ``state:`` before ``join_state_code``). A write of a row of scope value ``v`` touches the scope
+        ``scope_prefix + v`` (``ScopeEpochs.touch``), so its stamp raises that scope's ``last_epoch``
     """
 
     versions: bool
     scope: str | None = None
+    epochs: str | None = None
+    scope_prefix: str = ""
 
     def __post_init__(self) -> None:
         """refuse a versioned table without a scope, or a stamped one with one.
@@ -160,21 +175,105 @@ class RowEpoch:
         :rtype: None
         :raises ValueError: when ``scope`` does not fit ``versions``
         """
-        if self.versions and not self.scope:
-            raise ValueError("a versioned table names the scope column a restore reads it by")
-        if not self.versions and self.scope is not None:
+        if self.versions and not (self.scope and self.epochs):
+            raise ValueError(
+                "a versioned table names the scope column a restore reads it by, and its scope epochs table"
+            )
+        if not self.versions and (self.scope is not None or self.epochs is not None or self.scope_prefix):
             raise ValueError("a stamped table keeps one row a key and is restored by its key; give no scope")
 
 
-def row_versions(scope: str) -> RowEpoch:
+#: the scope epochs table a versioned table's scopes are named in, by default (``ScopeEpochs``' own default name)
+_DEFAULT_EPOCHS: Final[str] = "scope_epochs"
+
+
+def row_versions(scope: str, *, epochs: str = _DEFAULT_EPOCHS, scope_prefix: str = "") -> RowEpoch:
     """a versioned table's declaration: every write keeps its own version of the key, newest first.
 
     :param scope: the column a restore reads the table by, a scope at a time
     :ptype scope: str
+    :param epochs: the scope epochs table of the table's schema whose scopes name this table's
+    :ptype epochs: str
+    :param scope_prefix: what that table writes before a row's scope value (``state:``)
+    :ptype scope_prefix: str
     :return: the declaration
     :rtype: RowEpoch
     """
-    return RowEpoch(versions=True, scope=scope)
+    return RowEpoch(versions=True, scope=scope, epochs=epochs, scope_prefix=scope_prefix)
+
+
+#: what a restore declaration's comment opens with: the keeper finds the declared indexes by it
+RESTORE_DECLARATION_MARK: Final[str] = "threetears_restore"
+
+
+def scope_epoch_index_name(table: str) -> str:
+    """the name of a versioned table's ``(scope, epoch)`` index: ``<table>_scope_epoch``, a digest past 63 characters.
+
+    :param table: the table
+    :ptype table: str
+    :return: the name
+    :rtype: str
+    """
+    name = f"{table}_scope_epoch"
+    if len(name) <= 63:
+        return name
+    # an identifier is bounded (NAMEDATALEN): a digest keeps it one per table
+    return f"scope_epoch_{hashlib.sha256(table.encode()).hexdigest()[:24]}"
+
+
+def restore_declaration(
+    declared: RowEpoch,
+    keys: tuple[str, ...],
+    instants: tuple[str, ...],
+    tenancy: tuple[str, str | None],
+) -> str:
+    """what a versioned table's ``(scope, epoch)`` index says of the table as its comment, for the restore to read it by.
+
+    JSON: the mark, the scope column, the key columns in order (``instants`` those a record spells as their UTC text),
+    the scope epochs table and prefix, and the tenancy (``schema``, ``column`` with its column, or none). The keeper
+    reads it back from the catalog (:mod:`~threetears.core.collections.table_restore`).
+
+    :param declared: the table's declaration
+    :ptype declared: RowEpoch
+    :param keys: its primary key's columns, in order (the epoch not among them)
+    :ptype keys: tuple[str, ...]
+    :param instants: those of them that are ``timestamptz``
+    :ptype instants: tuple[str, ...]
+    :param tenancy: the table's tenancy kind and its tenant column (or None)
+    :ptype tenancy: tuple[str, str | None]
+    :return: the comment's text
+    :rtype: str
+    :raises ValueError: when the declaration is not a versioned table's
+    """
+    if not declared.versions or declared.scope is None or declared.epochs is None:
+        raise ValueError("only a versioned table's (scope, epoch) index carries a restore declaration")
+    kind, column = tenancy
+    return json.dumps(
+        {
+            RESTORE_DECLARATION_MARK: 1,
+            "scope": declared.scope,
+            "keys": list(keys),
+            "instants": list(instants),
+            "epochs": declared.epochs,
+            "scope_prefix": declared.scope_prefix,
+            "tenancy": kind,
+            "tenant_column": column,
+        },
+        separators=(",", ":"),
+    )
+
+
+def restore_floor(mark_ms: int) -> int:
+    """X, the lowest epoch a restore from a keeper's mark taken at ``mark_ms`` reads: ``(mark_ms - M) << 15``.
+
+    Every record appended after the mark's log position carries stamps at or above it (:data:`_RESTORE_MARGIN_MS`).
+
+    :param mark_ms: the mark's time, in wall milliseconds
+    :ptype mark_ms: int
+    :return: the floor
+    :rtype: int
+    """
+    return max(0, mark_ms - _RESTORE_MARGIN_MS) << _LOGICAL_BITS
 
 
 #: a stamped table's declaration: one row a key, carrying its last write's epoch

@@ -1252,11 +1252,14 @@ class KeyedRecordForm:
     max_bytes: int
 
 
-def keyed_record_form(database: str | None = None) -> KeyedRecordForm:
+def keyed_record_form(database: str | None = None, *, s_min: int | None = None) -> KeyedRecordForm:
     """the stored form of a keyed change in its fixed pieces, cut out of :func:`epoch_change_body`'s output.
 
     :param database: the database its records name (:attr:`EpochChange.database`), carried in the form's tail
     :ptype database: str | None
+    :param s_min: the lowest row epoch its records name (:attr:`EpochChange.s_min`): a restore from the tables names
+        its floor, the lowest stamp any row it read may carry
+    :ptype s_min: int | None
     :return: the form
     :rtype: KeyedRecordForm
     """
@@ -1264,7 +1267,7 @@ def keyed_record_form(database: str | None = None) -> KeyedRecordForm:
     columns: dict[str, str | None] = {"C": "V"}
     bare = ChangedRow(ids=ids).model_dump_json(exclude_none=True).encode("utf-8")
     carried = ChangedRow(ids=ids, columns=columns).model_dump_json(exclude_none=True).encode("utf-8")
-    body = epoch_change_body(table, [ChangedRow(ids=ids)], database=database)
+    body = epoch_change_body(table, [ChangedRow(ids=ids)], database=database, s_min=s_min)
     ids_json, table_json = json.dumps(ids, separators=(",", ":")).encode(), json.dumps(table).encode()
     columns_json = json.dumps(columns, separators=(",", ":")).encode()
     head, _, rest = body.partition(table_json)
