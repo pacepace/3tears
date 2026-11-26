@@ -18,7 +18,7 @@ offered (a sleep); `MappedTables.close` and `MappedSegment.close` take `loop=` f
 
 ### core, agent/acl: the visible-customer set's fixed Python cost, cut
 
-**Changed:** `Joined` copies its mappings read-only when it is built and carries its `shape`, computed once, which a
+**Changed:** `Joined` copies its mappings read-only when it is built and carries its `shape`, computed once from every field, which a
 walk held by its call's shape (`read_reached` with `depth`) keys each join by: the key was rebuilt from every join's
 mappings on every call, half of the walk's Python. `visible_customers` answers whether a role's stored permissions
 act on a type once a process (bounded at 1,024 pairs), not once a call. On the pool's PostgreSQL runners the set
@@ -54,7 +54,11 @@ locally installs no NATS client, Postgres driver, LangGraph or LangChain. `Tears
 
 **Changed:** `threetears.agent.tools.base_tool` and `threetears.agent.tools.coercion` re-export the contract's
 objects (the same classes and functions; every existing import keeps working), and 3tears-agent-tools depends on
-3tears-tool-contract.
+3tears-tool-contract. Two
+effects of the move: the warning `TearsTool.run` logs when its input coercion falls back is logged under
+`threetears.tool_contract.tool`, not `threetears.agent.tools.base_tool`; and patching `normalize_kwargs` on
+`threetears.agent.tools.base_tool` or `.coercion` no longer reaches `TearsTool.run`, which calls the contract's own
+(patch `threetears.tool_contract.tool.normalize_kwargs`).
 
 **Tests:** `tests/enforcement/test_tool_contract_installs_light.py` reads `uv.lock` (`uv export --frozen`) for what
 an install of the contract (with and without its `mcp` extra), of 3tears-mcp's base, of 3tears-tool-schema and of
@@ -62,6 +66,24 @@ an install of the contract (with and without its `mcp` extra), of 3tears-mcp's b
 
 **Release:** the first release with this package needs its PyPI pending trusted publisher registered first
 (`docs/releasing.md`, "A release that adds a package").
+
+### mcp: resources and tool calls under one gate; the call context read through type aliases
+
+**Added:** `ResourceRequest(uri, variables, required_permission, action)` and the `ResourceAuthorizer` protocol
+(`threetears.mcp.auth`, exported from `threetears.mcp`). An authorizer whose class defines
+`authorize_resource(identity, request) -> bool | Refusal` decides each fixed resource a listing would hold and every
+read, subscription and listen stream naming a resource, with the URI's template variables, as `authorize_call`
+decides a tool call; a refusal carries its own code. A gate written only in `authorize_call` does not reach resources.
+
+**Added:** `threetears.mcp.tool.context_parameter_of(tool_name, handler, input_schema)`: a handler's call-context
+parameter found as `McpTool` finds it, for a host wrapping a callable of its own (the TearsTool MCP face uses it).
+
+**Fixed:** a handler parameter annotated with a PEP 695 alias of the call context (`type Ctx = CallContext | None`)
+was not passed the context, and nothing was logged; an alias is now read as what it stands for.
+
+**Changed:** a connection's `logging/setLevel` level is kept until the connection's own teardown, as the push
+registry keeps a connection, not until its initialize parameters are collected. The once-per-code logs of an
+unregistered error code are bounded.
 
 ### mcp: resources
 

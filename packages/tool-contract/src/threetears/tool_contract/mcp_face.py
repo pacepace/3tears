@@ -21,6 +21,7 @@ from typing import Any
 try:
     import mcp.types as mcp_types
     from threetears.mcp import CallContext, McpTool, McpToolAnnotations, tool_error
+    from threetears.mcp.tool import context_parameter_of
     from threetears.mcp.errors import BUILTIN_ERROR_CODES, ErrorCode
 except ImportError as _exc:
     raise ImportError(
@@ -70,14 +71,8 @@ def mcp_tool(
         )
     schema = tool.mcp_schema()
     tool_name = name if name is not None else tool.mcp_name()
-    # the same rule a plain handler's context parameter has, read from execute's signature by McpTool itself
-    context_parameter = McpTool(
-        name=tool_name,
-        description=schema.description,
-        input_schema=schema.input_schema,
-        required_permission=required_permission,
-        handler=tool.execute,
-    ).context_parameter
+    # the same rule a plain handler's context parameter has, read from execute's signature
+    context_parameter = context_parameter_of(tool_name, tool.execute, schema.input_schema)
     structured = schema.output_schema is not None
 
     async def handler(*, tears_call_context: CallContext, **arguments: Any) -> mcp_types.CallToolResult:

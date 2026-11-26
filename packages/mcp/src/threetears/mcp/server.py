@@ -6,7 +6,8 @@ owns three things on top of the SDK:
    :class:`ToolRegistry` and registers them with the underlying SDK
    server so the client sees them at ``tools/list`` time.
 2. RBAC gating: every dispatch flows through
-   :meth:`Authorizer.allows(identity, tool.required_permission)`
+   :meth:`Authorizer.allows(identity, tool.required_permission)`, or
+   :meth:`CallAuthorizer.authorize_call` for an authorizer that has it,
    before the handler runs. denied dispatches return a
    :class:`mcp.types.CallToolResult` with ``isError=True`` so the
    MCP client sees the failure at the protocol level (not as
@@ -32,9 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import warnings
-import weakref
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast, get_args
@@ -49,8 +48,9 @@ from mcp.server.stdio import stdio_server as _stdio_server
 from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPDeprecationWarning
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
-from threetears.observe import contain, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
+from threetears.mcp._mcp_sdk_internals import connection_of
 from threetears.mcp.auth import (
     Authorizer,
     CallAuthorizer,
@@ -246,8 +246,9 @@ class McpServer:
             cast("CallAuthorizer", authorizer) if callable(getattr(type(authorizer), "authorize_call", None)) else None
         )
         self._error_codes = error_codes if error_codes is not None else ErrorCodes()
-        # a failure naming a code the set does not hold is logged once per code: every such call is the same bug
-        self._unregistered_codes_logged: frozenset[str] = frozenset()
+        # a failure naming a code the set does not hold is logged once per code: every such call is the same bug.
+        # Bounded: a tool naming codes without end is logged on each past the bound, never held without end
+        self._unregistered_codes_logged: BuildOnce[str, bool] = BuildOnce(cost=lambda _: 1, max_cost=256)
         self._started = False
         # one ERROR per grant-cache outage, not one traceback per refused call: the authorizer
         # already logged the failed reload with its traceback, and an outage refuses every call.
@@ -255,13 +256,11 @@ class McpServer:
         # one WARNING per server, the first time a handler's progress or log entry is dropped because
         # the HTTP transport answers in plain JSON: every such call drops them the same way
         self._undeliverable_notifications_logged = False
-        # the level each connection asked for with logging/setLevel (handshake-era protocols), keyed by the identity of
-        # the connection's initialize parameters, which live exactly as long as the connection; an entry goes when they
-        # do. A connection that never asked is absent: every level is sent, as before
+        # the level each connection asked for with logging/setLevel (handshake-era protocols), keyed by the SDK's
+        # connection, whose teardown stack drops the entry as the connection closes (the push registry's lifecycle,
+        # threetears.mcp.push). A connection that never asked is absent: every level is sent, as before. Changed only
+        # on the serving loop (a request's handler, a connection's teardown), so a snapshot replaced whole needs no lock
         self._log_levels: Mapping[int, LogLevel] = MappingProxyType({})
-        # a closed connection's entry is dropped by a weakref finalizer, which runs on whatever thread collects its
-        # parameters: each change of the mapping is made whole under this lock, so neither change loses the other
-        self._log_levels_lock = threading.Lock()
         # the connections and listen streams this server's change notifications go to
         self._pushes = Pushes()
         if resources is not None and resource_provider is not None:
@@ -271,7 +270,11 @@ class McpServer:
             None
             if provider is None
             else ResourceService(
-                provider=provider, identity_provider=identity_provider, authorizer=authorizer, pushes=self._pushes
+                provider=provider,
+                identity_provider=identity_provider,
+                authorizer=authorizer,
+                pushes=self._pushes,
+                error_codes=self._error_codes,
             )
         )
         self._listen = ListenHandler(self._pushes.bus)
@@ -359,12 +362,12 @@ class McpServer:
         async def _on_subscribe(
             ctx: ServerRequestContext[Any, Any], params: mcp_types.SubscribeRequestParams
         ) -> mcp_types.EmptyResult:
-            return await service.subscribe(ctx, str(params.uri))
+            return await service.watch(ctx, str(params.uri))
 
         async def _on_unsubscribe(
             ctx: ServerRequestContext[Any, Any], params: mcp_types.UnsubscribeRequestParams
         ) -> mcp_types.EmptyResult:
-            return service.unsubscribe(ctx, str(params.uri))
+            return service.unwatch(ctx, str(params.uri))
 
         return {
             "on_list_resources": _on_list_resources,
@@ -450,8 +453,9 @@ class McpServer:
     def _set_log_level(self, ctx: ServerRequestContext[Any, Any], level: LogLevel) -> None:
         """remember the level a connection asked for, for the log entries its later calls send.
 
-        A connection is known by its initialize parameters. One that has none (a stateless HTTP request is a
-        connection of its own, with no handshake before it) has no later calls to apply a level to, so nothing is kept.
+        The level is the connection's (:func:`~threetears.mcp._mcp_sdk_internals.connection_of`), kept until its
+        teardown: a stateless HTTP request is a connection of its own, so a level it asks for is gone with it and narrows
+        no later call.
 
         :param ctx: the SDK's context for the ``logging/setLevel`` request
         :ptype ctx: mcp.server.context.ServerRequestContext
@@ -460,14 +464,11 @@ class McpServer:
         :return: nothing
         :rtype: None
         """
-        connection = ctx.session.client_params
-        if connection is None:
-            return
+        connection = connection_of(ctx.session)
         key = id(connection)
-        with self._log_levels_lock:
-            if key not in self._log_levels:
-                weakref.finalize(connection, self._forget_log_level, key)
-            self._log_levels = MappingProxyType({**self._log_levels, key: level})
+        if key not in self._log_levels:
+            connection.exit_stack.callback(self._forget_log_level, key)
+        self._log_levels = MappingProxyType({**self._log_levels, key: level})
 
     def _forget_log_level(self, key: int) -> None:
         """drop a closed connection's level.
@@ -477,10 +478,7 @@ class McpServer:
         :return: nothing
         :rtype: None
         """
-        with self._log_levels_lock:
-            self._log_levels = MappingProxyType(
-                {held: level for held, level in self._log_levels.items() if held != key}
-            )
+        self._log_levels = MappingProxyType({held: level for held, level in self._log_levels.items() if held != key})
 
     def _log_levels_for(self, request: ServerRequestContext[Any, Any]) -> frozenset[LogLevel]:
         """the log levels a call may send: the protocol's rule, narrowed by the connection's ``logging/setLevel``.
@@ -493,8 +491,7 @@ class McpServer:
         # the SDK's own reading of the protocol's rule: on 2026-07-28+ a client opts in per request, at a level; on
         # earlier versions every level may be sent, unless the connection asked for a level with logging/setLevel
         allowed: frozenset[LogLevel] = allowed_log_levels(request.protocol_version, request.meta)
-        connection = request.session.client_params
-        chosen = None if connection is None else self._log_levels.get(id(connection))
+        chosen = self._log_levels.get(id(connection_of(request.session)))
         if chosen is None or request.protocol_version in MODERN_PROTOCOL_VERSIONS:
             return allowed
         return allowed & frozenset(_LOG_LEVELS[_LOG_LEVELS.index(chosen) :])
@@ -840,14 +837,17 @@ class McpServer:
         known = self._error_codes.get(code)
         if known is not None:
             return known
-        if code not in self._unregistered_codes_logged:
-            self._unregistered_codes_logged = self._unregistered_codes_logged | {code}
+
+        def warn() -> bool:
             log.error(
                 "MCP dispatch: a call failed with an error code the server never registered; answering %s. "
                 "Register it in the server's ErrorCodes. Logged once per code.",
                 fallback.code,
                 extra={"extra_data": {"tool_name": tool_name, "code": code}},
             )
+            return True
+
+        self._unregistered_codes_logged.get(code, warn)
         return fallback
 
     def _with_error_code(self, result: mcp_types.CallToolResult, tool_name: str) -> mcp_types.CallToolResult:

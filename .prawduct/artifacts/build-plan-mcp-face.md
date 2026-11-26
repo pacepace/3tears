@@ -109,9 +109,16 @@ question and is not built.
   distinct permission asked once) | a resource's URI can name data (a session); `tools/list` is unchanged and
   lists every tool, as before]
 - [DECISION: resource failures are JSON-RPC errors (the protocol has no `isError` result for resources):
-  `-32002` for an unknown URI as the specification says, and a server error carrying the same code set in its
-  `data` (`IDENTITY_UNAVAILABLE`, `PERMISSION_DENIED`, `AUTHZ_ERROR`, `HANDLER_ERROR`) | one vocabulary across
-  tools and resources]
+  `-32602` (`INVALID_PARAMS`) for an unknown URI, and `-32010` (`RESOURCE_REFUSED`, the implementation-defined band)
+  for an identity or permission refusal, `-32603` for a reader that raised, each carrying the error model's detail in
+  its `data` (`UNKNOWN_RESOURCE`, `IDENTITY_UNAVAILABLE`, `PERMISSION_DENIED`, `AUTHZ_ERROR`, `HANDLER_ERROR`) | one
+  vocabulary across tools and resources. Not `-32002`: the 2026-07-28 revision retires it (reserved, never reused, the
+  SDK's own note in `mcp_types/jsonrpc.py`), and one server answers both eras; corrected 2026-11-26 from a first
+  draft that named -32002 while the code answered -32602]
+- [DECISION: an authorizer whose class defines `authorize_resource(identity, request)` decides each resource request
+  (a `ResourceRequest`: URI, the template's variables, permission, action) as `authorize_call` decides a tool call |
+  a gate on a session a URI names must reach the session's resources as well as its tools; without it a server
+  following the README's tool gate served every session's resources (found 2026-11-26)]
 - [DECISION: U09 is a new family package, `3tears-tool-contract` (import `threetears.tool_contract`), holding
   `TearsTool`, `ToolResult`, `MCPToolDefinition`, the result codes and the input coercion, with only
   `3tears-observe` and `3tears-tool-schema` as dependencies; `threetears.agent.tools.base_tool` and
@@ -164,7 +171,7 @@ question and is not built.
 
 - `http_server.py`: whether the transport can push (`current_transport_pushes`); the per-message bearer, documented
   as the SDK's per-message contextvars carry it.
-- `_mcp_sdk_internals.py`, `notifications.py` (the connections a server pushes to, the subscription bus),
+- `_mcp_sdk_internals.py`, `push.py` (the connections a server pushes to, the subscription bus),
   `server.py` (`notify_tools_changed`, capabilities, the listen handler).
 - Tests: `packages/mcp/tests/unit/test_stateful_mode.py`: a revoked token refused on the next message of an
   open session and no tool run; a rotated token served; `tools/list_changed` in stateful HTTP and on 2026-07-28

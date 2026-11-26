@@ -25,12 +25,16 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.client.subscriptions import ResourceUpdated
 from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
 from threetears.mcp import (
+    ErrorCode,
+    ErrorCodes,
     Identity,
     McpResource,
     McpResourceTemplate,
     McpServer,
+    Refusal,
     ResourceContent,
     ResourceRegistry,
+    ResourceRequest,
     ToolRegistry,
 )
 from threetears.mcp.resources import RESOURCE_REFUSED
@@ -450,3 +454,105 @@ class TestTheTypes:
                 resources=registry,
                 resource_provider=registry.all,
             )
+
+
+TAINTED = ErrorCode("tainted", "the session is tainted")
+
+
+class _SessionGate:
+    """grants every permission, and decides on each resource request by the session its URI names."""
+
+    def __init__(self) -> None:
+        self.requests: list[ResourceRequest] = []
+        self.allows_calls = 0
+
+    async def allows(self, identity: Identity, permission: str) -> bool:
+        self.allows_calls += 1
+        return True
+
+    async def authorize_resource(self, identity: Identity, request: ResourceRequest) -> bool | Refusal:
+        self.requests.append(request)
+        if request.uri == "app://secret":
+            return False
+        if request.variables.get("name") == "bad":
+            return Refusal(TAINTED, "session bad is tainted")
+        if request.variables.get("name") == "odd":
+            return Refusal("never_registered", "refused")
+        return True
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def _gated(gate: _SessionGate) -> McpServer:
+    return McpServer(
+        name="resources",
+        identity_provider=_Identity(),
+        authorizer=gate,
+        registry=ToolRegistry(),
+        resources=_registry(),
+        error_codes=ErrorCodes([TAINTED]),
+    )
+
+
+class TestAnAuthorizerThatSeesTheRequest:
+    """an authorizer whose class defines ``authorize_resource`` decides on each request's URI and variables."""
+
+    @pytest.mark.asyncio
+    async def test_a_read_is_decided_by_the_uris_variables_with_its_own_code(self, loopback_mcp: LoopbackMcp) -> None:
+        gate = _SessionGate()
+        async with loopback_mcp(_gated(gate), stateless=True, json_response=False) as url:
+            async with _client(url, modern=False) as client:
+                served = await client.read_resource("app://sessions/s1/status")
+                with pytest.raises(MCPError) as tainted:
+                    await client.read_resource("app://sessions/bad/status")
+                with pytest.raises(MCPError) as unregistered:
+                    await client.read_resource("app://sessions/odd/status")
+        [line] = served.contents
+        assert isinstance(line, mcp_types.TextResourceContents)
+        assert line.text == "s1: idle"
+        assert (tainted.value.code, tainted.value.data["code"]) == (RESOURCE_REFUSED, "tainted")
+        assert unregistered.value.data["code"] == "PERMISSION_DENIED"
+        read = [request for request in gate.requests if request.action == "read"]
+        assert [(request.uri, dict(request.variables)) for request in read][0] == (
+            "app://sessions/s1/status",
+            {"name": "s1"},
+        )
+        assert read[0].required_permission == "app.read"
+        assert gate.allows_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_a_listing_asks_for_each_fixed_resource_and_leaves_out_what_it_refuses(
+        self, loopback_mcp: LoopbackMcp
+    ) -> None:
+        gate = _SessionGate()
+        async with loopback_mcp(_gated(gate), stateless=True, json_response=False) as url:
+            async with _client(url, modern=False) as client:
+                listed = await client.list_resources()
+        assert "app://secret" not in [resource.uri for resource in listed.resources]
+        assert {request.uri for request in gate.requests if request.action == "list"} == {
+            "app://config",
+            "app://secret",
+            "app://logo",
+            "app://pair",
+            "app://broken",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_subscription_and_a_listen_stream_are_decided_the_same_way(self, loopback_mcp: LoopbackMcp) -> None:
+        gate = _SessionGate()
+        server = _gated(gate)
+        async with loopback_mcp(server, stateless=False, json_response=False) as url:
+            async with _client(url, modern=False) as session:
+                await _subscribe(session, "app://sessions/s1/status")
+                with pytest.raises(MCPError) as refused:
+                    await _subscribe(session, "app://sessions/bad/status")
+            async with _client(url, modern=True) as client:
+                with pytest.raises(MCPError) as listen_refused:
+                    async with client.listen(resource_subscriptions=["app://sessions/bad/status"]):
+                        pass
+        assert refused.value.data["code"] == listen_refused.value.data["code"] == "tainted"
+        assert {request.action for request in gate.requests} >= {"subscribe", "listen"}

@@ -256,7 +256,8 @@ a request of its own, resolved and authorized as every request is.
 A resource request has no failed result, so a refusal is a JSON-RPC error whose `data` is the error model's
 detail (`{"code", "message", "retryable"}`): `UNKNOWN_RESOURCE` with `-32602`, `IDENTITY_UNAVAILABLE`,
 `PERMISSION_DENIED` and `AUTHZ_ERROR` with `RESOURCE_REFUSED` (`-32010`), and `HANDLER_ERROR` (a reader that
-raised, logged) with `-32603`. A resource asks the authorizer's `allows`; `authorize_call` is for tool calls. A
+raised, logged) with `-32603`. A resource asks the authorizer's `allows`, or its `authorize_resource` when it has one
+(an authorizer that sees the request, below); `authorize_call` is for tool calls. A
 server given no resources serves none and declares no `resources` capability, as before.
 
 ## Stateful mode
@@ -334,7 +335,9 @@ SDK's versions are served once the lock moves to it.
 
 Per-tool, default-deny. Each `McpTool` declares a `required_permission` string (e.g. `"conversations.read"`, `"audit.read"`). On every dispatch:
 
-1. The framework calls `Authorizer.allows(identity, required_permission)`.
+1. The framework calls `Authorizer.allows(identity, required_permission)`, or, for an authorizer whose class defines
+   it, `authorize_call(identity, call)` (a tool call) or `authorize_resource(identity, request)` (a resource request):
+   below.
 2. `LocalGrantAuthorizer` checks whether the caller's identity matches an active grant in `McpToolGrantCollection` for the requested permission.
 3. If denied, the framework returns a structured MCP error to the client (not a Python exception in the response body).
 
@@ -352,7 +355,7 @@ handler, and answers `True`, `False` (`PERMISSION_DENIED`) or a `Refusal(code, m
 with a code of the server's set:
 
 ```python
-from threetears.mcp import ErrorCode, ErrorCodes, Refusal, ToolCall
+from threetears.mcp import ErrorCode, ErrorCodes, Refusal, ResourceRequest, ToolCall
 
 TAINTED = ErrorCode("tainted", "the session is tainted")
 
@@ -366,6 +369,13 @@ class SessionGate:
             return Refusal(TAINTED, f"session {session!r} is tainted", argument="session")
         return True
 
+    async def authorize_resource(self, identity, request: ResourceRequest) -> bool | Refusal:
+        # app://sessions/{name}/status: the same gate on the session a resource's URI names
+        session = request.variables.get("name")
+        if session in tainted_sessions:
+            return Refusal(TAINTED, f"session {session!r} is tainted")
+        return True
+
     async def start(self): ...
     async def stop(self): ...
 
@@ -375,6 +385,14 @@ server = McpServer(..., authorizer=SessionGate(), error_codes=ErrorCodes([TAINTE
 `call.arguments` is read-only. A refusal naming a code the server never registered answers `PERMISSION_DENIED`
 and logs an error once per code. An authorizer that raises denies with `AUTHZ_ERROR`, as `allows` does. The
 `CallAuthorizer` protocol states the shape; an authorizer with `allows` alone is called exactly as before.
+
+Resources have the same gate. An authorizer whose class defines `authorize_resource(identity, request)` is given a
+`ResourceRequest(uri, variables, required_permission, action)` in place of `allows` for each fixed resource a
+listing would hold (`action="list"`; one it refuses is left out) and for every read, `resources/subscribe` and
+`subscriptions/listen` naming a resource (`"read"`, `"subscribe"`, `"listen"`). `variables` is what the URI binds in
+its template, read-only. It answers as `authorize_call` does, and a refusal is the JSON-RPC error of a refused
+resource request, carrying the refusal's code. The `ResourceAuthorizer` protocol states the shape. A gate written only
+in `authorize_call` does not reach resources: a server serving per-session resources writes it in both, as above.
 
 ## Identity in v1
 

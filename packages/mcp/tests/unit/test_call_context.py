@@ -30,7 +30,7 @@ from starlette.applications import Starlette
 from threetears.mcp import CallContext, LogLevel
 from threetears.mcp.auth import Identity
 from threetears.mcp.server import McpServer
-from threetears.mcp.tool import McpTool, ToolRegistry
+from threetears.mcp.tool import context_parameter_of, McpTool, ToolRegistry
 
 from . import relative_type_checking_handlers, type_checking_handlers
 from .conftest import LoopbackMcp
@@ -575,3 +575,41 @@ class TestOverTheWire:
                         await anyio.sleep(0.01)
         assert contexts[0].cancelled is True
         assert woke == [True]
+
+
+type _ContextAlias = CallContext
+type _MaybeContextAlias = CallContext | None
+type _NotContextAlias = int | None
+type _ListOfContexts = list[CallContext]
+
+
+class TestATypeAliasIsReadAsWhatItStandsFor:
+    """a PEP 695 alias answered "no context" with no warning and the handler ran with ``ctx=None``."""
+
+    def test_an_alias_of_the_context_or_the_context_or_none_is_found(self) -> None:
+        async def plain(*, ctx: _ContextAlias) -> str:
+            return "ok"
+
+        async def maybe(*, ctx: _MaybeContextAlias = None) -> str:
+            return "ok"
+
+        assert _tool(plain).context_parameter == "ctx"
+        assert _tool(maybe).context_parameter == "ctx"
+
+    def test_an_alias_of_another_type_is_not_and_one_naming_the_context_otherwise_is_refused(self) -> None:
+        async def other(*, count: _NotContextAlias = None) -> str:
+            return "ok"
+
+        async def listed(*, contexts: _ListOfContexts) -> str:
+            return "ok"
+
+        assert _tool(other).context_parameter is None
+        with pytest.raises(ValueError, match="names CallContext in a form"):
+            _tool(listed)
+
+
+def test_context_parameter_of_finds_what_a_tool_built_from_the_handler_finds() -> None:
+    assert context_parameter_of("t", _with_context, {"type": "object", "properties": {}}) == "ctx"
+    assert context_parameter_of("t", _plain, {"type": "object", "properties": {}}) is None
+    with pytest.raises(ValueError, match="also an input"):
+        context_parameter_of("t", _with_context, {"type": "object", "properties": {"ctx": {"type": "string"}}})

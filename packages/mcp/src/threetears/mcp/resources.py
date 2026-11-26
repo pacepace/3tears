@@ -31,7 +31,7 @@ import base64
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal, cast
 
 import mcp.types as mcp_types
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST
@@ -39,9 +39,17 @@ from mcp.server.context import ServerRequestContext
 from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.shared.uri_template import UriTemplate
-from threetears.observe import contain, get_logger
+from threetears.observe import BuildOnce, contain, get_logger
 
-from threetears.mcp.auth import Authorizer, GrantCacheUnavailableError, Identity, IdentityProvider
+from threetears.mcp.auth import (
+    Authorizer,
+    GrantCacheUnavailableError,
+    Identity,
+    IdentityProvider,
+    Refusal,
+    ResourceAuthorizer,
+    ResourceRequest,
+)
 from threetears.mcp.errors import (
     AUTHZ_ERROR,
     HANDLER_ERROR,
@@ -49,6 +57,7 @@ from threetears.mcp.errors import (
     PERMISSION_DENIED,
     UNKNOWN_RESOURCE,
     ErrorCode,
+    ErrorCodes,
     error_detail,
 )
 from threetears.mcp.http_server import current_transport_pushes
@@ -290,6 +299,8 @@ class ResourceService:
     :ptype authorizer: Authorizer
     :param pushes: the connections and listen streams updates go to
     :ptype pushes: Pushes
+    :param error_codes: the server's codes, which a :class:`~threetears.mcp.auth.Refusal` names
+    :ptype error_codes: ErrorCodes
     """
 
     def __init__(
@@ -299,6 +310,7 @@ class ResourceService:
         identity_provider: IdentityProvider,
         authorizer: Authorizer,
         pushes: Pushes,
+        error_codes: ErrorCodes,
     ) -> None:
         """capture what each request is answered from.
 
@@ -310,12 +322,24 @@ class ResourceService:
         :ptype authorizer: Authorizer
         :param pushes: where updates go
         :ptype pushes: Pushes
+        :param error_codes: the server's codes
+        :ptype error_codes: ErrorCodes
         :return: nothing
         :rtype: None
         """
         self._provider = provider
         self._identity_provider = identity_provider
         self._authorizer = authorizer
+        # an authorizer whose class defines authorize_resource is given each request; read from the class, as the
+        # server reads authorize_call, so a stand-in that answers any attribute is not taken for one
+        self._resource_authorizer: ResourceAuthorizer | None = (
+            cast("ResourceAuthorizer", authorizer)
+            if callable(getattr(type(authorizer), "authorize_resource", None))
+            else None
+        )
+        self._error_codes = error_codes
+        # a refusal naming a code the server never registered is logged once a code (bounded: past it, every time)
+        self._unregistered_logged: BuildOnce[str, bool] = BuildOnce(cost=lambda _: 1, max_cost=256)
         self._pushes = pushes
         self._listen = ListenHandler(pushes.bus)
 
@@ -398,46 +422,132 @@ class ResourceService:
                 return template, variables
         raise refuse_unknown_resource(uri)
 
-    async def _gate(self, uri: str) -> tuple[McpResource | McpResourceTemplate, dict[str, str | list[str]]]:
-        """the entry at ``uri``, once the caller is resolved and holds its permission.
+    async def _decision(
+        self,
+        identity: Identity,
+        entry: McpResource | McpResourceTemplate,
+        uri: str,
+        variables: Mapping[str, Any],
+        action: Literal["list", "read", "subscribe", "listen"],
+    ) -> bool | Refusal:
+        """the authorizer's answer to one request: ``authorize_resource`` when its class defines it, else ``allows``.
+
+        :param identity: the caller
+        :ptype identity: Identity
+        :param entry: the resource or template
+        :ptype entry: McpResource | McpResourceTemplate
+        :param uri: the URI
+        :ptype uri: str
+        :param variables: what the URI binds in its template
+        :ptype variables: Mapping[str, Any]
+        :param action: what the request is for
+        :ptype action: Literal["list", "read", "subscribe", "listen"]
+        :return: the answer
+        :rtype: bool | Refusal
+        :raises MCPError: ``AUTHZ_ERROR`` when the authorizer cannot decide
+        """
+        if self._resource_authorizer is None:
+            return await self._allows(identity, entry.required_permission)
+        request = ResourceRequest(
+            uri=uri,
+            variables=MappingProxyType(dict(variables)),
+            required_permission=entry.required_permission,
+            action=action,
+        )
+        try:
+            return await self._resource_authorizer.authorize_resource(identity, request)
+        except GrantCacheUnavailableError as exc:
+            raise _refused(AUTHZ_ERROR, "authorization is temporarily unavailable; retry") from exc
+        except Exception as exc:
+            contain(exc, log=log, what="MCP resources: authorizer raised; denying by default")
+            raise _refused(AUTHZ_ERROR, "authorizer evaluation failed") from exc
+
+    def _refusal_code(self, refusal: Refusal, uri: str) -> ErrorCode:
+        """the code a refusal answers: its own when the server registered it, else ``PERMISSION_DENIED``, logged.
+
+        :param refusal: the refusal
+        :ptype refusal: Refusal
+        :param uri: the URI refused
+        :ptype uri: str
+        :return: the code
+        :rtype: ErrorCode
+        """
+        named = refusal.code.code if isinstance(refusal.code, ErrorCode) else refusal.code
+        known = self._error_codes.get(named)
+        if known is not None:
+            return known
+
+        def warn() -> bool:
+            log.error(
+                "MCP resources: a refusal named an error code the server never registered; answering "
+                "PERMISSION_DENIED. Register it in the server's ErrorCodes. Logged once per code.",
+                extra={"extra_data": {"uri": uri, "code": named}},
+            )
+            return True
+
+        self._unregistered_logged.get(named, warn)
+        return PERMISSION_DENIED
+
+    async def _gate(
+        self, uri: str, action: Literal["read", "subscribe", "listen"]
+    ) -> tuple[McpResource | McpResourceTemplate, dict[str, str | list[str]]]:
+        """the entry at ``uri``, once the caller is resolved and the authorizer serves the request.
 
         an unknown URI is answered only to a caller with an identity, so a caller without one learns nothing of
         what exists.
 
         :param uri: the URI
         :ptype uri: str
+        :param action: what the request is for
+        :ptype action: Literal["read", "subscribe", "listen"]
         :return: the entry and its variables
         :rtype: tuple[McpResource | McpResourceTemplate, dict[str, str | list[str]]]
-        :raises MCPError: as :meth:`_identify`, :meth:`_find` and :meth:`_allows`, or ``PERMISSION_DENIED``
+        :raises MCPError: as :meth:`_identify`, :meth:`_find` and :meth:`_decision`, ``PERMISSION_DENIED``, or a
+            refusal's own code
         """
         identity = await self._identify()
         entry, variables = self._find(uri)
-        if not await self._allows(identity, entry.required_permission):
-            log.info(
-                "MCP resources: denied",
-                extra={
-                    "extra_data": {
-                        "uri": uri,
-                        "principal_id": str(identity.principal_id),
-                        "required_permission": entry.required_permission,
-                    }
-                },
-            )
-            raise _refused(PERMISSION_DENIED, f"identity lacks required permission {entry.required_permission!r}")
-        return entry, variables
+        decision = await self._decision(identity, entry, uri, variables, action)
+        if decision is True:
+            return entry, variables
+        if isinstance(decision, Refusal):
+            code = self._refusal_code(decision, uri)
+            message = decision.message
+        else:
+            code = PERMISSION_DENIED
+            message = f"identity lacks required permission {entry.required_permission!r}"
+        log.info(
+            "MCP resources: denied",
+            extra={
+                "extra_data": {
+                    "uri": uri,
+                    "principal_id": str(identity.principal_id),
+                    "required_permission": entry.required_permission,
+                    "code": code.code,
+                }
+            },
+        )
+        raise MCPError(RESOURCE_REFUSED, message, data=error_detail(code, message))
 
     async def list_resources(self) -> mcp_types.ListResourcesResult:
-        """the resources the caller may read.
+        """the resources the caller may read: each one the authorizer serves a ``"list"`` request for, when it asks for
+        requests, else each whose permission it grants (each permission asked once).
 
         :return: the listing
         :rtype: mcp.types.ListResourcesResult
         """
         identity = await self._identify()
         resources, _ = self._entries()
-        granted = await self._permitted(identity, (resource.required_permission for resource in resources))
-        return mcp_types.ListResourcesResult(
-            resources=[resource.listed() for resource in resources if resource.required_permission in granted]
-        )
+        if self._resource_authorizer is None:
+            granted = await self._permitted(identity, (resource.required_permission for resource in resources))
+            listed = [resource for resource in resources if resource.required_permission in granted]
+        else:
+            listed = [
+                resource
+                for resource in resources
+                if await self._decision(identity, resource, resource.uri, {}, "list") is True
+            ]
+        return mcp_types.ListResourcesResult(resources=[resource.listed() for resource in listed])
 
     async def list_templates(self) -> mcp_types.ListResourceTemplatesResult:
         """the templates whose resources the caller may read.
@@ -461,7 +571,7 @@ class ResourceService:
         :rtype: mcp.types.ReadResourceResult
         :raises MCPError: when refused, or ``HANDLER_ERROR`` when the reader raises (logged)
         """
-        entry, variables = await self._gate(uri)
+        entry, variables = await self._gate(uri, "read")
         try:
             contents = _contents(uri, entry.mime_type, await entry.reader(**variables))
         except Exception as exc:
@@ -469,7 +579,7 @@ class ResourceService:
             raise _refused(HANDLER_ERROR, f"{type(exc).__name__}: {exc}", jsonrpc_code=INTERNAL_ERROR) from exc
         return mcp_types.ReadResourceResult(contents=contents)
 
-    async def subscribe(self, ctx: ServerRequestContext[Any, Any], uri: str) -> mcp_types.EmptyResult:
+    async def watch(self, ctx: ServerRequestContext[Any, Any], uri: str) -> mcp_types.EmptyResult:
         """record a stateful session's subscription to ``uri``.
 
         :param ctx: the request's context
@@ -480,15 +590,15 @@ class ResourceService:
         :rtype: mcp.types.EmptyResult
         :raises MCPError: when refused, or ``INVALID_REQUEST`` when the connection cannot be pushed to (stateless)
         """
-        await self._gate(uri)
-        if not current_transport_pushes() or not self._pushes.subscribe(ctx.session, uri):
+        await self._gate(uri, "subscribe")
+        if not current_transport_pushes() or not self._pushes.watch(ctx.session, uri):
             raise MCPError(
                 INVALID_REQUEST,
                 "resource subscriptions need a stateful session (the server's transport is stateless)",
             )
         return mcp_types.EmptyResult()
 
-    def unsubscribe(self, ctx: ServerRequestContext[Any, Any], uri: str) -> mcp_types.EmptyResult:
+    def unwatch(self, ctx: ServerRequestContext[Any, Any], uri: str) -> mcp_types.EmptyResult:
         """drop a session's subscription to ``uri``.
 
         :param ctx: the request's context
@@ -498,7 +608,7 @@ class ResourceService:
         :return: nothing to answer
         :rtype: mcp.types.EmptyResult
         """
-        self._pushes.unsubscribe(ctx.session, uri)
+        self._pushes.unwatch(ctx.session, uri)
         return mcp_types.EmptyResult()
 
     async def listen(
@@ -516,7 +626,7 @@ class ResourceService:
         """
         await self._identify()
         for uri in params.notifications.resource_subscriptions or ():
-            await self._gate(uri)
+            await self._gate(uri, "listen")
         return await self._listen(ctx, params)
 
 

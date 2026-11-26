@@ -153,6 +153,8 @@ __all__ = [
     "LocalGrantAuthorizer",
     "PrincipalType",
     "Refusal",
+    "ResourceAuthorizer",
+    "ResourceRequest",
     "TokenSource",
     "ToolCall",
 ]
@@ -497,6 +499,48 @@ class CallAuthorizer(Authorizer, Protocol):
         :ptype call: ToolCall
         :return: ``True`` to run it, ``False`` to refuse it with ``PERMISSION_DENIED``, or a :class:`Refusal` to
             refuse it with a code of its own
+        :rtype: bool | Refusal
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceRequest:
+    """one request for a resource as an authorizer that asks for it sees it, before the resource is read or listed.
+
+    :ivar uri: the URI asked for; a listing asks once for each fixed resource it would list
+    :ivar variables: what the URI binds in its template (``{"name": "s1"}`` for ``app://sessions/{name}/status``),
+        read-only; empty for a fixed resource
+    :ivar required_permission: the permission the resource or template requires
+    :ivar action: ``"list"``, ``"read"``, ``"subscribe"`` (``resources/subscribe``) or ``"listen"`` (a 2026-07-28
+        ``subscriptions/listen`` stream naming it)
+    """
+
+    uri: str
+    variables: Mapping[str, Any]
+    required_permission: str
+    action: Literal["list", "read", "subscribe", "listen"]
+
+
+@runtime_checkable
+class ResourceAuthorizer(Authorizer, Protocol):
+    """an :class:`Authorizer` that decides on a resource request: its URI, the template's variables, its permission.
+
+    :class:`~threetears.mcp.server.McpServer` calls :meth:`authorize_resource` in place of :meth:`Authorizer.allows`
+    for a fixed resource it would list and for every read, subscription and listen stream naming a resource, when its
+    authorizer's class defines it; a gate on a session or a tenant a URI names belongs here as a tool call's belongs
+    in :meth:`CallAuthorizer.authorize_call`. A template's listing (it names no URI) asks ``allows``.
+    """
+
+    async def authorize_resource(self, identity: Identity, request: ResourceRequest) -> bool | Refusal:
+        """decide whether ``identity`` may make ``request``.
+
+        :param identity: the caller
+        :ptype identity: Identity
+        :param request: the request
+        :ptype request: ResourceRequest
+        :return: ``True`` to serve it, ``False`` to refuse it with ``PERMISSION_DENIED`` (a listing leaves it out), or
+            a :class:`Refusal` to refuse it with a code of its own
         :rtype: bool | Refusal
         """
         ...

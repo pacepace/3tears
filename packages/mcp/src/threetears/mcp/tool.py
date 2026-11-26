@@ -9,6 +9,7 @@ records the tool into a per-process registry the server consumes at
 each tool MUST declare a ``required_permission`` string (e.g.
 ``"myapp.conversations.read"``). a tool with ``required_permission``
 set runs only when :meth:`Authorizer.allows(identity, permission)`
+(or :meth:`CallAuthorizer.authorize_call`, for an authorizer that has it)
 returns True; the framework defaults to default-deny. an AST
 enforcement test forbids ``required_permission=None`` in production
 ``register_tool`` call sites.
@@ -38,6 +39,7 @@ __all__ = [
     "McpTool",
     "McpToolAnnotations",
     "ToolHandler",
+    "context_parameter_of",
     "ToolProvider",
     "ToolRegistry",
     "register_tool",
@@ -411,6 +413,11 @@ def _context_annotation(annotation: Any, names: _LazyNames) -> bool | None:
         annotation = annotation.__forward_arg__
     if isinstance(annotation, str):
         return _text_verdict(annotation.strip(), names.get())
+    if isinstance(annotation, typing.TypeAliasType):
+        # a PEP 695 alias (``type Ctx = CallContext | None``): what it stands for decides, read as any annotation is.
+        # Unread, it answered "no context" with no warning, the annotation having evaluated, and the handler ran
+        # with ``ctx=None`` (2026-11-26)
+        return _context_annotation(annotation.__value__, names)
     origin = typing.get_origin(annotation)
     if origin is typing.Annotated:
         return _context_annotation(typing.get_args(annotation)[0], names)
@@ -480,6 +487,24 @@ def _warn_unread_annotation(tool_name: str, parameter: str, annotation: str) -> 
         parameter,
     )
     return True
+
+
+def context_parameter_of(tool_name: str, handler: ToolHandler, input_schema: dict[str, Any]) -> str | None:
+    """the name of ``handler``'s parameter that takes the call's :class:`CallContext`, as an :class:`McpTool` built
+    from it would find it, or ``None``: for a host that wraps a callable of its own in a handler (the TearsTool MCP
+    face passes the context on to ``execute``) and must find the parameter the same way.
+
+    :param tool_name: the tool's name, for a refusal's message
+    :ptype tool_name: str
+    :param handler: the callable whose parameters are read
+    :ptype handler: ToolHandler
+    :param input_schema: the tool's input schema: a parameter named as one of its properties is refused
+    :ptype input_schema: dict[str, Any]
+    :return: the parameter's name, or ``None`` when it declares none
+    :rtype: str | None
+    :raises ValueError: as :class:`McpTool` refuses a handler's context parameter
+    """
+    return _context_parameter(tool_name, handler, input_schema)
 
 
 def _context_parameter(tool_name: str, handler: ToolHandler, input_schema: dict[str, Any]) -> str | None:

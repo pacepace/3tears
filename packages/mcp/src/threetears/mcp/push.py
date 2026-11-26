@@ -90,7 +90,7 @@ class Pushes:
         """
         self._peers = MappingProxyType({held: peer for held, peer in self._peers.items() if held != key})
 
-    def subscribe(self, session: ServerSession, uri: str) -> bool:
+    def watch(self, session: ServerSession, uri: str) -> bool:
         """record that the connection ``session`` arrived on wants updates of ``uri``.
 
         :param session: the ``resources/subscribe`` request's session
@@ -107,7 +107,7 @@ class Pushes:
         self._peers = MappingProxyType({**self._peers, key: _Peer(peer.connection, peer.uris | {uri})})
         return True
 
-    def unsubscribe(self, session: ServerSession, uri: str) -> None:
+    def unwatch(self, session: ServerSession, uri: str) -> None:
         """record that the connection ``session`` arrived on no longer wants updates of ``uri``.
 
         :param session: the ``resources/unsubscribe`` request's session
