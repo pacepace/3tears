@@ -29,6 +29,15 @@ version like any other: its key comes back, and a follower evicts it. A run mark
 (:mod:`~threetears.core.ddl.run_markers`) comes back as the whole-table record of its prefix (:func:`_run_marker_changes`),
 read by its own key ``(table_name, scope)``. Every record names X as its ``s_min``: the lowest stamp any row it carries
 may hold.
+
+**Stamped tables, a bucket at a time.** A stamped table (``ROW_STAMPED``: one row a key, updated in place, its epoch
+risen on every write) keeps no versions and no scope: its rows written since X are those whose epoch is at or above X,
+gone markers aside (it has none; see below). Its ``(bucket, epoch)`` index carries a stamped declaration
+(:func:`~threetears.core.ddl.row_epoch.stamped_restore_declaration`); the bucket is a stored column the database derives
+from the key's hash, one of :data:`~threetears.core.ddl.row_epoch.RESTORE_BUCKETS`. A restore reads each bucket's
+``epoch >= X`` as one range of that index (:func:`_bucket_rows`), every bucket whatever changed (no table says which
+did): :data:`~threetears.core.ddl.row_epoch.RESTORE_BUCKETS` statements a table, folded in the same worker, every record
+naming X as its ``s_min``. A row deleted from a stamped table leaves nothing to read: the restore hears no delete of one.
 """
 
 from __future__ import annotations
@@ -51,7 +60,7 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.core.tenancy import Tenancy, schema_tenant, value_tenant
 from threetears.observe import get_logger
 
-__all__ = ["VersionedTable", "TableChanges", "versioned_tables"]
+__all__ = ["RestoredTable", "StampedTable", "VersionedTable", "TableChanges", "restored_tables", "versioned_tables"]
 
 log = get_logger(__name__)
 
@@ -123,7 +132,58 @@ class VersionedTable:
         return f"{self.schema}.{self.table}"
 
 
-def _declared(schema: str, table: str, text: str, run_markers: bool) -> VersionedTable:
+@dataclass(frozen=True, slots=True)
+class StampedTable:
+    """one stamped table as its restore declaration names it.
+
+    :ivar schema: its schema
+    :ivar table: its name
+    :ivar bucket: the bucket column its (bucket, epoch) index leads with
+    :ivar buckets: how many buckets: the values ``0`` to ``buckets - 1``
+    :ivar keys: its primary key's columns, in order
+    :ivar instants: those of them spelled as their UTC text
+    :ivar tenancy: its tenancy
+    """
+
+    schema: str
+    table: str
+    bucket: str
+    buckets: int
+    keys: tuple[str, ...]
+    instants: frozenset[str]
+    tenancy: Tenancy
+
+    @property
+    def relation(self) -> str:
+        """the table as the keyed helpers name it, ``schema.table``.
+
+        :return: it
+        :rtype: str
+        """
+        return f"{self.schema}.{self.table}"
+
+
+#: a table a restore reads: versioned, a scope at a time; or stamped, a bucket at a time
+RestoredTable = VersionedTable | StampedTable
+
+
+def _tenancy(value: dict[str, Any]) -> Tenancy:
+    """the tenancy a restore declaration names; a table of no tenant (none, undeclared) is restored on ``_all``, as its
+    change notes were.
+
+    :param value: the declaration
+    :ptype value: dict[str, Any]
+    :return: the tenancy
+    :rtype: Tenancy
+    """
+    kind = str(value["tenancy"])
+    column = value.get("tenant_column")
+    if kind == "column":
+        return Tenancy("column", str(column))
+    return Tenancy("schema") if kind == "schema" else Tenancy("undeclared")
+
+
+def _declared(schema: str, table: str, text: str, run_markers: bool) -> RestoredTable:
     """the table a restore declaration names.
 
     :param schema: the table's schema
@@ -135,15 +195,23 @@ def _declared(schema: str, table: str, text: str, run_markers: bool) -> Versione
     :param run_markers: whether its schema holds the run-marker table
     :ptype run_markers: bool
     :return: the table
-    :rtype: VersionedTable
+    :rtype: RestoredTable
     :raises ValueError: when the comment is not a restore declaration
     """
     value = json.loads(text)
     if not isinstance(value, dict) or value.get(RESTORE_DECLARATION_MARK) != 1:
-        raise ValueError(f"{schema}.{table}'s (scope, epoch) index names no restore declaration: {text!r}")
-    kind = str(value["tenancy"])
-    column = value.get("tenant_column")
-    tenancy = Tenancy("column", str(column)) if kind == "column" else Tenancy("schema") if kind == "schema" else None
+        raise ValueError(f"{schema}.{table}'s restore index names no restore declaration: {text!r}")
+    tenancy = _tenancy(value)
+    if value.get("kind") == "stamped":
+        return StampedTable(
+            schema=schema,
+            table=table,
+            bucket=str(value["bucket"]),
+            buckets=int(value["buckets"]),
+            keys=tuple(str(key) for key in value["keys"]),
+            instants=frozenset(str(key) for key in value["instants"]),
+            tenancy=tenancy,
+        )
     return VersionedTable(
         schema=schema,
         table=table,
@@ -152,25 +220,36 @@ def _declared(schema: str, table: str, text: str, run_markers: bool) -> Versione
         instants=frozenset(str(key) for key in value["instants"]),
         epochs=str(value["epochs"]),
         scope_prefix=str(value["scope_prefix"]),
-        # a table of no tenant (none, undeclared) is restored on _all, as its change notes were
-        tenancy=tenancy if tenancy is not None else Tenancy("undeclared"),
+        tenancy=tenancy,
         run_markers=run_markers,
     )
 
 
-async def versioned_tables(pool: Any) -> list[VersionedTable]:
-    """every versioned table the database holds, from the restore declarations of their (scope, epoch) indexes.
+async def restored_tables(pool: Any) -> list[RestoredTable]:
+    """every versioned and stamped table the database holds, from the restore declarations of their restore indexes
+    (a versioned table's (scope, epoch), a stamped table's (bucket, epoch)): one catalog statement.
 
     :param pool: the keeper's L3 pool
     :ptype pool: Any
     :return: the tables, in schema and name order
-    :rtype: list[VersionedTable]
+    :rtype: list[RestoredTable]
     """
     rows = await pool.fetch(_VERSIONED_TABLES_SQL, f'{{"{RESTORE_DECLARATION_MARK}":%')
     return [
         _declared(str(row["table_schema"]), str(row["table_name"]), str(row["declared"]), bool(row["run_markers"]))
         for row in rows
     ]
+
+
+async def versioned_tables(pool: Any) -> list[VersionedTable]:
+    """every versioned table the database holds (:func:`restored_tables`, the stamped ones left out).
+
+    :param pool: the keeper's L3 pool
+    :ptype pool: Any
+    :return: the tables, in schema and name order
+    :rtype: list[VersionedTable]
+    """
+    return [table for table in await restored_tables(pool) if isinstance(table, VersionedTable)]
 
 
 async def _changed_scopes(pool: Any, schema: str, epochs: str, floor: int) -> list[str]:
@@ -210,11 +289,11 @@ def _literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def _key_term(table: VersionedTable, column: str) -> str:
-    """a key column of a version as a record spells it: its text, a ``timestamptz`` as its UTC instant.
+def _key_term(table: RestoredTable, column: str) -> str:
+    """a key column of a row as a record spells it: its text, a ``timestamptz`` as its UTC instant.
 
     :param table: the table
-    :ptype table: VersionedTable
+    :ptype table: RestoredTable
     :param column: the column
     :ptype column: str
     :return: the expression
@@ -226,12 +305,12 @@ def _key_term(table: VersionedTable, column: str) -> str:
     return f"{value}::text"
 
 
-def _fold_columns(table: VersionedTable) -> list[str | Selected]:
-    """what a scope's ``COPY`` selects: the four JSON texts the restore's fold reads, as a change note's restore
-    ``COPY`` writes them (the table, the tenant, the key's values, the invalidation columns).
+def _fold_columns(table: RestoredTable) -> list[str | Selected]:
+    """what a scope's (or a bucket's) ``COPY`` selects: the four JSON texts the restore's fold reads, as a change note's
+    restore ``COPY`` writes them (the table, the tenant, the key's values, the invalidation columns).
 
     :param table: the table
-    :ptype table: VersionedTable
+    :ptype table: RestoredTable
     :return: the columns
     :rtype: list[str | Selected]
     """
@@ -279,6 +358,33 @@ async def _scope_versions(pool: Any, table: VersionedTable, value: str, floor: i
         columns=_fold_columns(table),
         by={table.scope: value},
         # the index's own order after its bound scope: one range, no sort
+        order=[Sort(EPOCH_COLUMN, cast="bigint")],
+        where=[Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,))],
+        force_quote=_FOLD_COLUMNS[:3],
+    )
+
+
+async def _bucket_rows(pool: Any, table: StampedTable, bucket: int, floor: int) -> bytes:
+    """every row of the stamped ``table`` in ``bucket`` stamped at ``floor`` or later, as the fold's ``COPY`` text: the
+    bucket bound, one range of the ``(bucket, epoch)`` index (its own tablet on YugabyteDB).
+
+    :param pool: the keeper's L3 pool
+    :ptype pool: Any
+    :param table: the table
+    :ptype table: StampedTable
+    :param bucket: the bucket, ``0`` to ``table.buckets - 1``
+    :ptype bucket: int
+    :param floor: X
+    :ptype floor: int
+    :return: the text, a line per row
+    :rtype: bytes
+    """
+    return await copy_keyed(
+        pool,
+        table.relation,
+        columns=_fold_columns(table),
+        by={table.bucket: bucket},
+        # the index's own order after its bound bucket: one range, no sort
         order=[Sort(EPOCH_COLUMN, cast="bigint")],
         where=[Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,))],
         force_quote=_FOLD_COLUMNS[:3],
@@ -335,17 +441,19 @@ async def _run_marker_changes(pool: Any, table: VersionedTable, values: Sequence
 
 
 class TableChanges:
-    """the versioned tables' changes since X, as a stream of changes a restore appends: each table's run markers, then
-    its scopes' versions a scope at a time, folded in the restore's worker.
+    """the restored tables' changes since X, as a stream of changes a restore appends: each versioned table's run
+    markers, then its scopes' versions a scope at a time; each stamped table's rows a bucket at a time; all folded in the
+    restore's worker.
 
     :ivar tables: the tables a change was streamed of
     :ivar scopes: the scope reads made (one statement each)
+    :ivar buckets: the bucket reads made (one statement each)
     """
 
     def __init__(
         self,
         pool: Any,
-        tables: Sequence[VersionedTable],
+        tables: Sequence[RestoredTable],
         floor: int,
         folder: RestoreFolder,
         database: str | None,
@@ -354,9 +462,9 @@ class TableChanges:
 
         :param pool: the keeper's L3 pool
         :ptype pool: Any
-        :param tables: the versioned tables
-        :ptype tables: Sequence[VersionedTable]
-        :param floor: X: every version stamped at or after it is read
+        :param tables: the versioned and stamped tables
+        :ptype tables: Sequence[RestoredTable]
+        :param floor: X: every version (or stamped row) stamped at or after it is read
         :ptype floor: int
         :param folder: the restore's worker
         :ptype folder: RestoreFolder
@@ -372,6 +480,7 @@ class TableChanges:
         self._pieces = (form.head, form.middle, form.tail, form.row_head, form.row_columns, form.row_tail)
         self.tables = 0
         self.scopes = 0
+        self.buckets = 0
 
     def __aiter__(self) -> AsyncIterator[NotedChange]:
         return self._stream()
@@ -380,6 +489,10 @@ class TableChanges:
         # the scopes each epochs table names changed, read once a table even when several tables share it
         changed: dict[tuple[str, str], list[str]] = {}
         for table in self._tables:
+            if isinstance(table, StampedTable):
+                async for change in self._stamped(table):
+                    yield change
+                continue
             named = (table.schema, table.epochs)
             if named not in changed:
                 changed[named] = await _changed_scopes(self._pool, table.schema, table.epochs, self._floor)
@@ -397,6 +510,24 @@ class TableChanges:
                     yield change
             if streamed:
                 self.tables += 1
+
+    async def _stamped(self, table: StampedTable) -> AsyncIterator[NotedChange]:
+        """a stamped table's rows stamped since X, a bucket at a time: every bucket, one statement each.
+
+        :param table: the table
+        :ptype table: StampedTable
+        :return: the changes
+        :rtype: AsyncIterator[NotedChange]
+        """
+        streamed = False
+        for bucket in range(table.buckets):
+            self.buckets += 1
+            text = await _bucket_rows(self._pool, table, bucket, self._floor)
+            async for change in self._folded(text):
+                streamed = True
+                yield change
+        if streamed:
+            self.tables += 1
 
     async def _folded(self, text: bytes) -> AsyncIterator[NotedChange]:
         """one scope's ``COPY`` text folded into changes a page at a time, each page cut at a line's end.

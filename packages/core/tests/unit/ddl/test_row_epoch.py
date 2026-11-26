@@ -130,7 +130,12 @@ def test_a_stamped_table_keeps_its_key_and_sets_the_epoch_on_each_write() -> Non
     schema = _stamped()
     assert schema.stored_key == schema.pk_columns == ("run_id",)
     assert EPOCH_COLUMN in [column.name for column in schema.mutable_columns()]
-    assert schema.indexes == ()
+    # its (bucket, epoch) index, which a restore of a lost change log reads it by, a bucket at a time; the bucket is the
+    # L3 table's stored column, never one of the schema's
+    [index] = schema.indexes
+    assert (index.name, tuple(index.columns)) == ("runs_bucket_epoch", ("epoch_bucket", EPOCH_COLUMN))
+    assert "packages/core/src/threetears/core/collections/table_restore.py::_bucket_rows" in str(index.purpose)
+    assert schema.get_column("epoch_bucket") is None
 
 
 def test_a_table_that_declares_no_epoch_is_as_before() -> None:
@@ -165,10 +170,13 @@ def test_the_epoch_is_last_in_the_stored_key_whatever_the_columns_order() -> Non
     assert "PRIMARY KEY ((b) HASH, a ASC, epoch DESC)" in create
 
 
-def test_a_stamped_table_carries_the_column_and_no_other_change() -> None:
-    [create] = _stamped().create_statements(yugabyte=True)
+def test_a_stamped_table_carries_the_column_its_restore_bucket_and_no_other_change() -> None:
+    create, index, comment = _stamped().create_statements(yugabyte=True)
     assert "epoch BIGINT NOT NULL" in create
     assert "PRIMARY KEY (run_id)" in create
+    assert "epoch_bucket SMALLINT GENERATED ALWAYS AS" in create
+    assert index.strip().startswith("CREATE INDEX runs_bucket_epoch ON runs (epoch_bucket ASC, epoch) SPLIT AT VALUES")
+    assert comment.startswith('COMMENT ON INDEX "runs_bucket_epoch" IS \'{"threetears_restore":1,"kind":"stamped",')
 
 
 @pytest.mark.parametrize(
