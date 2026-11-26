@@ -11,22 +11,22 @@ from __future__ import annotations
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
 from threetears.core.collections.table_restore import StampedTable, moves_relation
 from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
-from threetears.core.ddl.run_markers import RUN_MARKER_COLUMNS, RUN_MARKERS_TABLE
-from threetears.core.ddl.tenant_moves import TENANT_MOVES_KEY, TENANT_MOVES_TABLE
+from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
+from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 from threetears.core.tenancy import Tenancy
 
 
 def test_the_run_marker_declaration_names_the_table_and_key_its_statements_write() -> None:
     """Flips if the run-marker table's declaration and its statements' constants name another table or key."""
     assert RUN_MARKERS_SCHEMA.name == RUN_MARKERS_TABLE
-    assert tuple(RUN_MARKERS_SCHEMA.pk_columns) == RUN_MARKER_COLUMNS
-    assert tuple(column.name for column in RUN_MARKERS_SCHEMA.columns) == RUN_MARKER_COLUMNS
+    assert tuple(RUN_MARKERS_SCHEMA.pk_columns) == ("table_name", "scope", "prefix", "epoch")
+    assert tuple(column.name for column in RUN_MARKERS_SCHEMA.columns) == ("table_name", "scope", "prefix", "epoch")
 
 
 def test_the_moves_declaration_names_the_table_and_key_its_statements_write() -> None:
     """Flips if the moves table's declaration and its statements' constants name another table or key."""
     assert TENANT_MOVES_SCHEMA.name == TENANT_MOVES_TABLE
-    assert tuple(TENANT_MOVES_SCHEMA.pk_columns) == TENANT_MOVES_KEY
+    assert tuple(TENANT_MOVES_SCHEMA.pk_columns) == ("table_name", "scope", "epoch", "keys")
     assert tuple(column.name for column in TENANT_MOVES_SCHEMA.columns) == (
         "table_name",
         "scope",

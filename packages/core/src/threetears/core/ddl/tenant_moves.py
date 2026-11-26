@@ -72,7 +72,6 @@ from threetears.core.tenancy import column_tenant_sql
 from threetears.interfaces.keyed.filters import Fragment, quote_identifier
 
 __all__ = [
-    "TENANT_MOVES_KEY",
     "TENANT_MOVES_TABLE",
     "MoveRecord",
     "MoveStamp",
@@ -96,7 +95,7 @@ TENANT_MOVES_TABLE: Final[str] = "threetears_tenant_moves"
 _TENANT_MOVE_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys", "tenant", "columns")
 
 #: its key: a restore reads one table's bucket's moves since X as one range of it
-TENANT_MOVES_KEY: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys")
+_TENANT_MOVES_KEY: Final[tuple[str, ...]] = ("table_name", "scope", "epoch", "keys")
 
 #: the row's restore bucket column (``row_epoch.BUCKET_COLUMN``, named here so this module stays a leaf)
 _BUCKET: Final[str] = "epoch_bucket"

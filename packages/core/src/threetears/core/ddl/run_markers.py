@@ -42,7 +42,6 @@ from threetears.interfaces.keyed.keys import prefix_text
 
 __all__ = [
     "RUN_MARKERS_TABLE",
-    "RUN_MARKER_COLUMNS",
     "TABLE_RESET_SCOPE",
     "record_table_reset",
     "run_marker_insert_sql",
@@ -52,7 +51,7 @@ __all__ = [
 RUN_MARKERS_TABLE: Final[str] = "threetears_run_markers"
 
 #: its columns, in order: the table marked, the prefix's scope value, the prefix and the delete's epoch
-RUN_MARKER_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "prefix", "epoch")
+_RUN_MARKER_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "prefix", "epoch")
 
 #: what a marker's ``prefix`` joins the prefix's values with: chr(31), as a change note's ``key_text`` joins a key's
 _PREFIX_SEPARATOR: Final[str] = "\x1f"
@@ -99,7 +98,7 @@ def run_marker_insert_sql(declared: Sequence[str], scope_position: int, *, table
         raise ValueError(f"a run marker's scope is one of its prefix's {len(declared)} columns, got {scope_position}")
     terms = [_text_term(f"${index + 3}", kind) for index, kind in enumerate(declared)]
     return (
-        f"INSERT INTO {table} ({', '.join(RUN_MARKER_COLUMNS)}) "
+        f"INSERT INTO {table} ({', '.join(_RUN_MARKER_COLUMNS)}) "
         f"VALUES ($1, {terms[scope_position]}, "
         f"array_to_string(ARRAY[{', '.join(terms)}], chr({ord(_PREFIX_SEPARATOR)})), $2)"
     )
@@ -118,7 +117,7 @@ def _table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
     :return: the ``INSERT``
     :rtype: str
     """
-    return f"INSERT INTO {table} ({', '.join(RUN_MARKER_COLUMNS)}) VALUES ($1, chr({ord(TABLE_RESET_SCOPE)}), '', $2)"
+    return f"INSERT INTO {table} ({', '.join(_RUN_MARKER_COLUMNS)}) VALUES ($1, chr({ord(TABLE_RESET_SCOPE)}), '', $2)"
 
 
 class _TableResetUnrecordedError(RuntimeError):

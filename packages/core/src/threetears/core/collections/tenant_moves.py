@@ -32,7 +32,7 @@ __all__ = ["TENANT_MOVES_SCHEMA", "clear_moves"]
 #: the moves table: the table a row of moved, the row's bucket, the move's epoch, the key, the tenant and the
 #: invalidation columns it left (``tenant_moves``)
 TENANT_MOVES_SCHEMA: Final = TableSchema(
-    # the name and key spelled here, not by TENANT_MOVES_TABLE and TENANT_MOVES_KEY: the no-whole-reads walk reads a
+    # the name and key spelled here, not by TENANT_MOVES_TABLE and its key constant: the no-whole-reads walk reads a
     # declaration's names only from its own module, and judges every read of the table by this key
     # (test_run_markers_schema holds them equal)
     name="threetears_tenant_moves",
