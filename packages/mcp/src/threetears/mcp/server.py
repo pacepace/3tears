@@ -84,6 +84,13 @@ from threetears.mcp.http_server import (
     serve_mcp_http,
 )
 from threetears.mcp.push import Pushes
+from threetears.mcp.resources import (
+    ResourceProvider,
+    ResourceRegistry,
+    ResourceService,
+    identify_or_refuse,
+    refuse_unknown_resource,
+)
 from threetears.mcp.tool import McpTool, ToolProvider, ToolRegistry
 
 if TYPE_CHECKING:
@@ -177,6 +184,12 @@ class McpServer:
     :param error_codes: the server's closed set of error codes and the exceptions mapped to them; the
         built-in codes alone when not given
     :ptype error_codes: ErrorCodes | None
+    :param resources: a fixed set of resources and templates to serve; the server serves none (and declares no
+        resources capability) when neither this nor ``resource_provider`` is given
+    :ptype resources: ResourceRegistry | None
+    :param resource_provider: called on every resource request for the resources as they stand, in place of
+        ``resources``
+    :ptype resource_provider: ResourceProvider | None
     """
 
     def __init__(
@@ -188,6 +201,8 @@ class McpServer:
         registry: ToolRegistry | None = None,
         tool_provider: ToolProvider | None = None,
         error_codes: ErrorCodes | None = None,
+        resources: ResourceRegistry | None = None,
+        resource_provider: ResourceProvider | None = None,
     ) -> None:
         """capture deps; no I/O until :meth:`serve_stdio`.
 
@@ -203,10 +218,15 @@ class McpServer:
         :ptype tool_provider: ToolProvider | None
         :param error_codes: the server's error codes
         :ptype error_codes: ErrorCodes | None
+        :param resources: a fixed set of resources
+        :ptype resources: ResourceRegistry | None
+        :param resource_provider: the live resource set, in place of ``resources``
+        :ptype resource_provider: ResourceProvider | None
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``name`` is empty, or not exactly one of
-            ``registry`` and ``tool_provider`` is given
+        :raises ValueError: when ``name`` is empty, not exactly one of
+            ``registry`` and ``tool_provider`` is given, or both
+            ``resources`` and ``resource_provider`` are
         """
         if not name:
             raise ValueError("server name must be non-empty")
@@ -244,6 +264,17 @@ class McpServer:
         self._log_levels_lock = threading.Lock()
         # the connections and listen streams this server's change notifications go to
         self._pushes = Pushes()
+        if resources is not None and resource_provider is not None:
+            raise ValueError("McpServer takes at most one of resources= and resource_provider=")
+        provider = resources.all if resources is not None else resource_provider
+        self._resources: ResourceService | None = (
+            None
+            if provider is None
+            else ResourceService(
+                provider=provider, identity_provider=identity_provider, authorizer=authorizer, pushes=self._pushes
+            )
+        )
+        self._listen = ListenHandler(self._pushes.bus)
         self._sdk_server: _SdkServer[Any] = self._build_sdk_server(name)
 
     @property
@@ -300,10 +331,91 @@ class McpServer:
                 on_list_tools=_on_list_tools,
                 on_call_tool=_on_call_tool,
                 on_set_logging_level=_on_set_logging_level,
-                on_subscriptions_listen=ListenHandler(self._pushes.bus),
+                on_subscriptions_listen=self._on_listen,
+                **self._resource_handlers(),
             )
         sdk_server.middleware.append(self._track_connection)
         return sdk_server
+
+    def _resource_handlers(self) -> dict[str, Any]:
+        """the SDK handlers of the resource requests, when this server serves resources; none otherwise.
+
+        :return: the handlers, by the SDK server's keyword
+        :rtype: dict[str, Any]
+        """
+        service = self._resources
+        if service is None:
+            return {}
+
+        async def _on_list_resources(_ctx: Any, _params: Any) -> mcp_types.ListResourcesResult:
+            return await service.list_resources()
+
+        async def _on_list_templates(_ctx: Any, _params: Any) -> mcp_types.ListResourceTemplatesResult:
+            return await service.list_templates()
+
+        async def _on_read(_ctx: Any, params: mcp_types.ReadResourceRequestParams) -> mcp_types.ReadResourceResult:
+            return await service.read(str(params.uri))
+
+        async def _on_subscribe(
+            ctx: ServerRequestContext[Any, Any], params: mcp_types.SubscribeRequestParams
+        ) -> mcp_types.EmptyResult:
+            return await service.subscribe(ctx, str(params.uri))
+
+        async def _on_unsubscribe(
+            ctx: ServerRequestContext[Any, Any], params: mcp_types.UnsubscribeRequestParams
+        ) -> mcp_types.EmptyResult:
+            return service.unsubscribe(ctx, str(params.uri))
+
+        return {
+            "on_list_resources": _on_list_resources,
+            "on_list_resource_templates": _on_list_templates,
+            "on_read_resource": _on_read,
+            "on_subscribe_resource": _on_subscribe,
+            "on_unsubscribe_resource": _on_unsubscribe,
+        }
+
+    async def _on_listen(
+        self, ctx: ServerRequestContext[Any, Any], params: mcp_types.SubscriptionsListenRequestParams
+    ) -> mcp_types.SubscriptionsListenResult:
+        """serve a 2026-07-28 ``subscriptions/listen`` stream to a caller with an identity.
+
+        a stream that names resources is served only when the caller may read each of them.
+
+        :param ctx: the request's context
+        :ptype ctx: mcp.server.context.ServerRequestContext
+        :param params: the listen request
+        :ptype params: mcp.types.SubscriptionsListenRequestParams
+        :return: the stream's closing result
+        :rtype: mcp.types.SubscriptionsListenResult
+        """
+        if self._resources is not None:
+            return await self._resources.listen(ctx, params)
+        await identify_or_refuse(self._identity_provider)
+        for uri in params.notifications.resource_subscriptions or ():
+            raise refuse_unknown_resource(uri)
+        return await self._listen(ctx, params)
+
+    async def notify_resources_changed(self) -> None:
+        """tell every connected client that the resource list changed, as :meth:`notify_tools_changed` does for tools.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self._pushes.resources_changed()
+
+    async def notify_resource_updated(self, uri: str) -> None:
+        """tell the clients subscribed to ``uri`` that it changed, so they read it again.
+
+        sends ``notifications/resources/updated`` to each stateful session that subscribed to it with
+        ``resources/subscribe`` and on each 2026-07-28 listen stream that named it. only the URI is sent; reading
+        it again is a request of its own, resolved and authorized as every request is.
+
+        :param uri: the resource's URI
+        :ptype uri: str
+        :return: nothing
+        :rtype: None
+        """
+        await self._pushes.resource_updated(uri)
 
     async def _track_connection(self, ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
         """keep the connection every inbound message arrives on, when it is one the server can push to.

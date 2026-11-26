@@ -18,6 +18,9 @@ modules:
 - :mod:`threetears.mcp.errors` -- the error model: :class:`ErrorCode`,
   :class:`ErrorCodes` (a server's closed code set and its exception mapping),
   :class:`McpToolError`, the built-in codes and :data:`ERROR_META_KEY`
+- :mod:`threetears.mcp.resources` -- :class:`McpResource`,
+  :class:`McpResourceTemplate`, :class:`ResourceRegistry`, :data:`ResourceProvider`,
+  :class:`ResourceContent`: MCP resources, each with a required permission
 - :mod:`threetears.mcp.tool` -- :class:`McpTool`, :class:`McpToolAnnotations`,
   :class:`ToolRegistry`, :data:`ToolProvider`, :func:`register_tool` decorator
 - :mod:`threetears.mcp.http_client` -- :class:`PlatformHttpClient`
@@ -81,6 +84,14 @@ from threetears.mcp.http_server import (
     current_bearer_token,
     serve_mcp_http,
 )
+from threetears.mcp.resources import (
+    McpResource,
+    McpResourceTemplate,
+    ResourceContent,
+    ResourceProvider,
+    ResourceReader,
+    ResourceRegistry,
+)
 from threetears.mcp.server import McpServer, tool_error
 from threetears.mcp.tool import (
     McpTool,
@@ -120,6 +131,8 @@ __all__ = [
     "LocalGrantAuthorizer",
     "LogLevel",
     "McpHttpTransport",
+    "McpResource",
+    "McpResourceTemplate",
     "McpServer",
     "McpTool",
     "McpToolAnnotations",
@@ -130,6 +143,10 @@ __all__ = [
     "PlatformHttpError",
     "PrincipalType",
     "Refusal",
+    "ResourceContent",
+    "ResourceProvider",
+    "ResourceReader",
+    "ResourceRegistry",
     "TokenSource",
     "ToolHandler",
     "ToolCall",

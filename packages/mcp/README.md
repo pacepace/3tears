@@ -19,6 +19,8 @@ uvicorn only. Everything below that needs the rest of the family -- `LocalGrantA
 |---|---|
 | `server` | `McpServer` -- wraps the official `mcp.server.Server`. Owns tool registration, RBAC gating before handler dispatch, structured error mapping per the MCP spec. `tool_error` builds a tool-execution error a handler returns. |
 | `errors` | The error model: `ErrorCode`, `ErrorCodes` (a server's closed code set and the exceptions it maps), `McpToolError`, the built-in codes, `ERROR_META_KEY`. |
+| `resources` | `McpResource`, `McpResourceTemplate`, `ResourceRegistry`, `ResourceProvider`, `ResourceContent`: resources served beside the tools, each with a required permission. |
+| `push` | `Pushes`: the stateful sessions and 2026-07-28 listen streams the server's change notifications go to. |
 | `tool` | `McpTool` dataclass (name, description, input_schema, required_permission, handler, and optional output_schema, title, annotations), `McpToolAnnotations`, `ToolRegistry`, `ToolProvider`, and the `register_tool` decorator. |
 | `context` | `CallContext`, the per-call context a handler asks for by signature: the progress token and reporter, a log channel to the client, and a cancellation signal. |
 | `http_server` | The Streamable-HTTP transport: `McpHttpTransport` for a host app to embed, `build_mcp_http_app` / `serve_mcp_http` to serve standalone, `current_bearer_token` for `BearerTokenIdentityProvider`. |
@@ -218,6 +220,45 @@ Tool names must be unique in each answer. If the provider raises, or returns two
 error. When the set changes, `await server.notify_tools_changed()` tells the clients that can be told
 (stateful mode, below); every other client sees the changed set on its next `tools/list`.
 
+## Resources
+
+A server serves MCP resources when it is given a `ResourceRegistry` (`resources=`) or a live `ResourceProvider`
+(`resource_provider=`, called on every resource request, as `tool_provider` is for tools). Each resource and
+template declares the permission a caller needs:
+
+```python
+from threetears.mcp import McpResource, McpResourceTemplate, ResourceRegistry
+
+resources = ResourceRegistry()
+resources.register(
+    McpResource(uri="app://config", name="config", required_permission="app.read", reader=read_config,
+                mime_type="application/json")
+)
+resources.register(
+    McpResourceTemplate(uri_template="app://sessions/{name}/status", name="session status",
+                        required_permission="app.read", reader=read_status)  # read_status(name="s1")
+)
+server = McpServer(..., resources=resources)
+```
+
+| Request | What it answers |
+|---|---|
+| `resources/list`, `resources/templates/list` | the resources (templates) the caller may read: its identity resolved, each distinct permission asked of the authorizer once |
+| `resources/read` | the resource at the URI, or the first template it matches (RFC 6570, the SDK's matcher), read with the URI's variables as keywords. A reader answers `str` (text), `bytes` (a blob), a `ResourceContent` or an iterable of them |
+| `resources/subscribe`, `resources/unsubscribe` | a stateful session's subscription to a URI it may read (handshake era); refused with `INVALID_REQUEST` on a stateless transport, which has nothing to push to |
+| `subscriptions/listen` (2026-07-28) | a stream of the changes it names; a URI it names must be one the caller may read |
+
+`await server.notify_resource_updated(uri)` sends `notifications/resources/updated` to each session subscribed to
+the URI and each listen stream that named it; `notify_resources_changed()` sends
+`notifications/resources/list_changed` as `notify_tools_changed()` does. Only the URI travels: reading it again is
+a request of its own, resolved and authorized as every request is.
+
+A resource request has no failed result, so a refusal is a JSON-RPC error whose `data` is the error model's
+detail (`{"code", "message", "retryable"}`): `UNKNOWN_RESOURCE` with `-32602`, `IDENTITY_UNAVAILABLE`,
+`PERMISSION_DENIED` and `AUTHZ_ERROR` with `RESOURCE_REFUSED` (`-32010`), and `HANDLER_ERROR` (a reader that
+raised, logged) with `-32603`. A resource asks the authorizer's `allows`; `authorize_call` is for tool calls. A
+server given no resources serves none and declares no `resources` capability, as before.
+
 ## Stateful mode
 
 Stateless is the default: each HTTP request is a connection of its own. `stateless=False` (on
@@ -234,7 +275,7 @@ await server.notify_tools_changed()            # notifications/tools/list_change
 | | stateless (default) | stateful |
 |---|---|---|
 | the bearer | resolved for every message | resolved for every message: a token revoked while a session is open is refused (`IDENTITY_UNAVAILABLE`) on the session's next message, and no tool runs |
-| `tools.listChanged` capability (handshake era) | not declared | declared |
+| `tools.listChanged`, `resources.listChanged`, `resources.subscribe` capabilities (handshake era) | not declared | declared |
 | `notify_tools_changed()` | reaches no handshake-era client (it lists again on its next request) | sent on each open session's standalone stream |
 | cancellation (`notifications/cancelled`, the client deleting its session, a dropped stream) | cancels the handler with an SSE transport (the progress table above) | cancels the handler, and `ctx.cancelled` is set |
 

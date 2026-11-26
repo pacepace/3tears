@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### mcp: resources
+
+**Added:** `threetears.mcp.resources`: `McpResource`, `McpResourceTemplate` (RFC 6570, read with the URI's
+variables), `ResourceRegistry`, `ResourceProvider`, `ResourceContent`, `RESOURCE_REFUSED`, all exported from
+`threetears.mcp` but the last. `McpServer(resources=...)` or `McpServer(resource_provider=...)` serves
+`resources/list`, `resources/templates/list` and `resources/read`, each resource and template with a required
+permission: a listing holds what the caller may read. `resources/subscribe` and `resources/unsubscribe` in
+stateful mode, and resource URIs on a 2026-07-28 `subscriptions/listen` stream, which the server now checks
+against the caller's identity and permissions. `McpServer.notify_resource_updated(uri)` and
+`notify_resources_changed()`. A refusal is a JSON-RPC error carrying the error model's detail in `data`. A server
+given no resources declares no `resources` capability, as before.
+
+**Changed:** a `subscriptions/listen` request is served only to a caller whose identity resolves.
+
 ### mcp: stateful mode pushes list changes, and resolves the bearer for every message
 
 **Added:** `McpServer.notify_tools_changed()`: `notifications/tools/list_changed` to every handshake-era connection
