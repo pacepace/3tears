@@ -22,8 +22,8 @@ hold exactly its count. A part asked for that holds no rows is handed back empty
 tell "now empty" from "not read".
 
 **Then deleted, always**: once every part was handed back, when the caller stops early or fails, and
-when a proof refuses it -- from the moment the warehouse answered the export, no way out leaves a
-copy of warehouse rows behind (Pace's ruling: delete after load, no timer). A refused export is
+when a proof refuses it -- from the moment the export is asked, a cancel or a failed ask among
+them, no way out leaves a copy of warehouse rows behind (Pace's ruling: delete after load, no timer). A refused export is
 logged at WARNING with what was refused (the proof, the counts and fingerprints) so an operator can
 tell why without the files.
 
@@ -59,6 +59,7 @@ from threetears.datasources.export_read import (
     _counted_total,
     _delete_after_load,
     _manifest_entries,
+    _asked_export,
     _ManifestFile,
     _parquet_rows,
     _parquet_table,
@@ -241,7 +242,14 @@ async def export_partitions(
 
     before = await grouped()
     select = export_select(relation, columns, where_in=where_in)
-    result = await client.export(datasource_name, select, destination=destination, partition_by=partition_by)
+    # an ask that ends in no answer (a cancel while it was in flight among them) is deleted before it is raised
+    result = await _asked_export(
+        client,
+        datasource_name,
+        client.export(datasource_name, select, destination=destination, partition_by=partition_by),
+        destination=destination,
+        what=relation,
+    )
     # from here every way out deletes the export, refused or read, failed or stopped: no copy of
     # warehouse rows outlives the load (delete after load, Pace's ruling)
     read = 0
@@ -288,22 +296,25 @@ async def export_partitions(
         unwinding = exc
         raise
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-            await asyncio.wait({pending})
-        deleted = await _delete_after_load(
-            client,
-            datasource_name,
-            result,
-            destination=destination,
-            what=relation,
-            refused=refused,
-            unwinding=unwinding,
-            refusal_detail={
-                "warehouse_rows": result.row_count,
-                "parts": {str(v): [f.row_count, f.digest] for v, f in before.items()},
-            },
-        )
+        try:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                await asyncio.wait({pending})
+        finally:
+            # a cancel landing while the part read ahead stops still deletes the export
+            deleted = await _delete_after_load(
+                client,
+                datasource_name,
+                result,
+                destination=destination,
+                what=relation,
+                refused=refused,
+                unwinding=unwinding,
+                refusal_detail={
+                    "warehouse_rows": result.row_count,
+                    "parts": {str(v): [f.row_count, f.digest] for v, f in before.items()},
+                },
+            )
         if refused is None and unwinding is None:
             log.info(
                 "partitioned export read",
@@ -522,11 +533,23 @@ async def export_counted_partitions(
     :raises IncompleteExportError: naming the proof that refused it
     :raises DatasourceQueryError: when the hub refuses the export (an older hub refuses
         ``partition_by`` as ``MALFORMED_REQUEST``; a datasource with no export location as
-        ``EXPORT_UNSUPPORTED``): nothing was written
+        ``EXPORT_UNSUPPORTED``): nothing was written. Any other failure of the ask (a timeout, a
+        warehouse error midway) is deleted under ``destination`` before it is raised
+    :raises asyncio.CancelledError: when the caller is cancelled: once the hub answered the ask in
+        flight and the export was deleted
     """
     expected = None if counts is None else {part: rows for part, rows in counts.items() if rows}
-    result = await client.export(datasource_name, select, destination=destination, partition_by=partition_by)
-    # from here the export exists: a refusal, or any error, deletes it before it is raised
+    # the export's place is known before it is asked (the hub writes and deletes it under ``destination``):
+    # an ask that ends in no answer -- a cancel while it was in flight, a transport failure, a warehouse
+    # error midway -- is deleted before it is raised, once the hub has stopped writing
+    result = await _asked_export(
+        client,
+        datasource_name,
+        client.export(datasource_name, select, destination=destination, partition_by=partition_by),
+        destination=destination,
+        what=destination,
+    )
+    # from here the export exists: a refusal, or any error or cancel, deletes it before it is raised
     refused: IncompleteExportError | None = None
     try:
         try:

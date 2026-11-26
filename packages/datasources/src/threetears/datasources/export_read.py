@@ -21,8 +21,10 @@ warning:
   says).
 
 **Then it is deleted, always** (Pace's ruling, 2026-10-09: delete after load, no timer, no lifecycle
-rule): from the moment the hub answered the export, every way out -- the part proven and read, a
-proof refusing it, a read failing -- asks the hub to delete every version under the destination
+rule): from the moment the export is asked, every way out -- the part proven and read, a
+proof refusing it, a read failing, the ask failing or the caller cancelled while it was in flight (the
+hub's answer is still waited for, so the delete comes after the last file) -- asks the hub to delete
+every version under the destination
 (``export_delete``), with a delete-only grant the reader does not hold, so no copy of warehouse rows
 outlives the load. A refused export is logged at WARNING with what was refused (the proof and the
 counts) so an operator can tell why without the files. A delete that fails is raised
@@ -52,7 +54,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadFile
 from threetears.core.keyed import Selected
@@ -68,8 +70,15 @@ except ImportError:  # NOSILENT: the export extra is optional; reading an export
 
 from threetears.datasources.export import sql_string_literal
 from threetears.datasources.query_client import (
+    _ACCESS_DENIED,
+    _MALFORMED_REQUEST,
+    DATASOURCE_BUSY,
+    EXPORT_NOT_GRANTED,
+    EXPORT_REFUSED,
+    EXPORT_UNSUPPORTED,
     DatasourceExportResult,
     DatasourceQueryClient,
+    DatasourceQueryError,
     RelationFingerprintRequest,
     plain_columns,
     select_list,
@@ -96,6 +105,24 @@ __all__ = [
 DEFAULT_PRESIGN_SECONDS = LOAD_FILES_MAX_WAIT_SECONDS + 900
 
 log = get_logger(__name__)
+
+#: the hub's answers to an export ask that it gives before the warehouse runs anything, so nothing sits
+#: under the destination and there is nothing to delete: not granted, not exportable, a ``SELECT`` or
+#: destination refused (or one overlapping an export not yet deleted), busy (the hub released its claim
+#: unrun), a request it could not read, a caller with no read. Every other end of the ask -- a transport
+#: failure or timeout, a warehouse error midway (an ``UNLOAD`` that failed can leave some of its files),
+#: an unknown code, a cancel while it was in flight -- may have left files, and is deleted
+_REFUSED_BEFORE_WRITING: Final = frozenset(
+    {
+        EXPORT_NOT_GRANTED,
+        EXPORT_UNSUPPORTED,
+        EXPORT_REFUSED,
+        DATASOURCE_BUSY,
+        _MALFORMED_REQUEST,
+        _ACCESS_DENIED,
+        "INVALID_DATASOURCE_NAME",
+    }
+)
 
 
 class IncompleteExportError(RuntimeError):
@@ -561,7 +588,15 @@ async def _export_part(
     before = await client.relation_fingerprint(
         datasource_name, relation=relation, key=plain_columns(columns), where=filters
     )
-    result = await client.export(datasource_name, select, destination=destination)
+    what = f"{relation} {filters or ''}".rstrip()
+    # an ask that ends in no answer (a cancel while it was in flight among them) is deleted before it is raised
+    result = await _asked_export(
+        client,
+        datasource_name,
+        client.export(datasource_name, select, destination=destination),
+        destination=destination,
+        what=what,
+    )
     # from here every way out deletes the export, refused or read: no copy of warehouse rows
     # outlives the load (delete after load, Pace's ruling)
     rows: Any = []
@@ -600,7 +635,7 @@ async def _export_part(
             datasource_name,
             result,
             destination=destination,
-            what=f"{relation} {filters or ''}".rstrip(),
+            what=what,
             refused=refused,
             unwinding=unwinding,
             refusal_detail={"warehouse_rows": result.row_count, "fingerprint": [before.row_count, before.digest]},
@@ -621,10 +656,106 @@ async def _export_part(
     return rows
 
 
+async def _to_its_end[T](work: Awaitable[T]) -> T:
+    """run ``work`` to its end even when the caller is cancelled, and only then let the cancel through.
+
+    A bare ``asyncio.shield`` lets the cancel out at once while the shielded work goes on: the caller
+    unwinds (a pod's ``close`` returns, its loop ends) before the work is done. Here the cancel waits
+    for it, a second cancel too, and is raised once it has finished; a failure of the work under a
+    cancel is read (the work logs its own), the cancel is what is raised.
+
+    :param work: what must not be cut short
+    :ptype work: Awaitable[T]
+    :return: its result
+    :rtype: T
+    """
+    task = asyncio.ensure_future(work)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError:
+                # NOSILENT: cancelled again while the work finishes; the cancel is raised once it has
+                continue
+        if not task.cancelled():
+            task.exception()  # read, so a failure under a cancel isn't reported as never retrieved
+        raise
+
+
+async def _asked_export(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    ask: Awaitable[DatasourceExportResult],
+    *,
+    destination: str,
+    what: str,
+) -> DatasourceExportResult:
+    """the hub's answer to an export ask, and the export deleted when the ask does not end in one.
+
+    The export's location is known before it is asked: the hub writes it under ``destination``, and
+    deletes it by that destination alone, so an ask that ends in anything but an answer -- the caller
+    cancelled while it was in flight, a transport failure or a timeout, a warehouse error midway -- is
+    deleted there too, unless the hub refused it before anything ran (:data:`_REFUSED_BEFORE_WRITING`).
+
+    A cancel does not stop the hub: the ``UNLOAD`` goes on writing after the caller stops waiting, and
+    a delete sent meanwhile would delete what was there so far and the hub's record of it, leaving the
+    files written after it with nothing to find them. So under a cancel the hub's answer is still
+    waited for (the client's export deadline outlasts the hub's statement deadline, so a timeout too
+    means the ``UNLOAD`` is over), then the export deleted, then the cancel raised.
+
+    :param client: the caller's datasource client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource
+    :ptype datasource_name: str
+    :param ask: the export ask (``client.export(...)``), not yet awaited
+    :ptype ask: Awaitable[DatasourceExportResult]
+    :param destination: the destination it is asked at (what the hub deletes under)
+    :ptype destination: str
+    :param what: what is read, for the messages
+    :ptype what: str
+    :return: the hub's answer
+    :rtype: DatasourceExportResult
+    :raises asyncio.CancelledError: when the caller was cancelled, once the export is deleted
+    :raises DatasourceQueryError: when the hub refused the export, or the ask failed (deleted first)
+    """
+    asking = asyncio.ensure_future(ask)
+    stopped: asyncio.CancelledError | None = None
+    while not asking.done():
+        try:
+            await asyncio.wait({asking})
+        except asyncio.CancelledError as exc:
+            # NOSILENT: the caller stopped waiting while the hub may still be writing; the cancel is
+            # raised once the hub answered and the export was deleted
+            stopped = stopped or exc
+    if asking.cancelled():
+        stopped = stopped or asyncio.CancelledError()
+    failure = None if asking.cancelled() else asking.exception()
+    handed_back = failure is None and stopped is None
+    nothing_written = isinstance(failure, DatasourceQueryError) and failure.error_code in _REFUSED_BEFORE_WRITING
+    if not handed_back and not nothing_written:
+        await _delete_after_load(
+            client,
+            datasource_name,
+            asking.result() if failure is None and not asking.cancelled() else None,
+            destination=destination,
+            what=what,
+            refused=None,
+            unwinding=stopped or failure,
+            refusal_detail={},
+        )
+    if stopped is not None:
+        raise stopped
+    if failure is not None:
+        raise failure
+    return asking.result()
+
+
 async def _delete_after_load(
     client: DatasourceQueryClient,
     datasource_name: str,
-    result: DatasourceExportResult,
+    result: DatasourceExportResult | None,
     *,
     destination: str,
     what: str,
@@ -632,18 +763,22 @@ async def _delete_after_load(
     unwinding: BaseException | None,
     refusal_detail: Mapping[str, Any],
 ) -> int | None:
-    """delete an export on its way out, whatever the way: the one rule both export readers keep.
+    """delete an export on its way out, whatever the way: the one rule every export reader keeps.
 
     A refused export is logged at WARNING with its proof first, then deleted all the same. A delete
     that fails is raised as :class:`ExportNotDeletedError` when nothing is unwinding; when an error
     already is (a refusal among them), that error wins and the failed delete is logged at ERROR.
 
+    The delete runs to its end even when the caller is cancelled meanwhile (:func:`_to_its_end`): a
+    cancel landing on the delete would otherwise leave the export it was deleting. The cancel is
+    raised once the delete is done.
+
     :param client: the caller's datasource client
     :ptype client: DatasourceQueryClient
     :param datasource_name: the datasource
     :ptype datasource_name: str
-    :param result: the export the hub answered
-    :ptype result: DatasourceExportResult
+    :param result: the export the hub answered; None when the ask ended without an answer
+    :ptype result: DatasourceExportResult | None
     :param destination: the destination the export was asked at (what the hub deletes under)
     :ptype destination: str
     :param what: what was read, for the messages
@@ -657,7 +792,14 @@ async def _delete_after_load(
     :return: the versions deleted; None when the delete failed under an unwinding error
     :rtype: int | None
     :raises ExportNotDeletedError: when the delete failed and nothing else is unwinding
+    :raises asyncio.CancelledError: when the caller was cancelled during the delete, once it is done
     """
+    object_prefix = None if result is None else result.object_prefix
+    where = (
+        f"under its destination {destination!r}"
+        if result is None
+        else f"at s3://{result.bucket}/{result.object_prefix}"
+    )
     if refused is not None:
         log.warning(
             "an export was refused; it is deleted all the same",
@@ -665,29 +807,35 @@ async def _delete_after_load(
                 "extra_data": {
                     "datasource": datasource_name,
                     "read": what,
-                    "object_prefix": result.object_prefix,
+                    "object_prefix": object_prefix,
+                    "destination": destination,
                     "proof": str(refused),
                     **refusal_detail,
                 }
             },
         )
-    try:
-        return await client.delete_export(datasource_name, destination=destination)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- raised as the named failure when nothing else is; logged when an error already unwinds, which wins
-        log.error(
-            "an export could not be deleted; its rows are still in the bucket",
-            extra={
-                "extra_data": {
-                    "datasource": datasource_name,
-                    "object_prefix": result.object_prefix,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "unwinding": None if unwinding is None else type(unwinding).__name__,
-                }
-            },
-        )
-        if unwinding is None:
-            raise ExportNotDeletedError(
-                f"{what}: the export was read, but it could not be deleted and is still at "
-                f"s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
-            ) from exc
-        return None
+
+    async def delete() -> int | None:
+        try:
+            return await client.delete_export(datasource_name, destination=destination)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- raised as the named failure when nothing else is; logged when an error already unwinds, which wins
+            log.error(
+                "an export could not be deleted; its rows are still in the bucket",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "object_prefix": object_prefix,
+                        "destination": destination,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "unwinding": None if unwinding is None else type(unwinding).__name__,
+                    }
+                },
+            )
+            if unwinding is None:
+                raise ExportNotDeletedError(
+                    f"{what}: the export was read, but it could not be deleted and is still {where}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            return None
+
+    return await _to_its_end(delete())

@@ -8,6 +8,7 @@ knows when neither is asked for.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from uuid import UUID
@@ -320,3 +321,48 @@ async def test_a_failure_after_the_export_before_any_proof_still_deletes_it() ->
 def test_an_interpolated_identifier_that_is_not_one_is_refused(build: Any) -> None:
     with pytest.raises(ValueError):
         build()
+
+
+@pytest.mark.asyncio
+async def test_a_read_cancelled_while_the_export_is_asked_deletes_it_once_the_hub_answered() -> None:
+    """Flips if a cancel landing while the hub still writes leaves the export, or deletes before its last file.
+
+    As on the bus, the cancel stops only the caller's wait: the hub goes on and answers.
+    """
+    groups: dict[str | None, RelationFingerprintResult] = {"TX": _fp(3)}
+    asking, answer = asyncio.Event(), asyncio.Event()
+
+    class _HeldHub(_Client):
+        async def export(
+            self, datasource_name: str, select: str, *, destination: str, partition_by: str | None = None
+        ) -> Any:
+            async def hub() -> Any:
+                asking.set()
+                await answer.wait()
+                self.asked.append(("answered", destination))
+                return await _Client.export(
+                    self, datasource_name, select, destination=destination, partition_by=partition_by
+                )
+
+            self.running = asyncio.ensure_future(hub())
+            return await asyncio.shield(self.running)
+
+        async def delete_export(self, datasource_name: str, *, destination: str) -> int:
+            self.asked.append(("delete", destination))
+            return await super().delete_export(datasource_name, destination=destination)
+
+    client = _HeldHub([groups, dict(groups)], row_count=3)
+    task = asyncio.create_task(_read(client, _Store(_export({"TX": [_rows("TX", 3)]}))))
+    await asking.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    answer.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait({client.running})
+
+    kinds = [kind for kind, _ in client.asked]
+    assert "delete" in kinds and kinds.index("answered") < kinds.index("delete"), (
+        "the export was left, or deleted before the hub stopped writing"
+    )
+    assert client.deleted == [_DESTINATION]
