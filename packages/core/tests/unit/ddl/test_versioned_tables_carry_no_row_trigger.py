@@ -8,7 +8,7 @@ it switches off YugabyteDB's write batching (1.58 ms a row against 0.43 without,
 - a per-row trigger found on one is refused at the end of every migration run, with a how-to-fix error;
 - "switched on" counts it by the epoch it carries (``test_switched_by_trigger``).
 
-The live check, on Postgres and YugabyteDB, is ``test_versioned_tables_carry_no_row_trigger_live`` (integration).
+No live check yet: the catalog statements (pg_trigger.tgtype, the index comment) are unproven on YugabyteDB.
 """
 
 from __future__ import annotations
