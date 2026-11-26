@@ -6,6 +6,7 @@ through a real MCP ``ClientSession`` over the server's own Streamable-HTTP app. 
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -204,3 +205,65 @@ def test_the_protocols_recognise_each_shape() -> None:
     assert isinstance(_SessionGate(), CallAuthorizer)
     assert isinstance(_PermissionOnly(), Authorizer)
     assert not isinstance(_PermissionOnly(), CallAuthorizer)
+
+
+_ENVELOPE = {
+    "ok": False,
+    "error": "session s1 is tainted",
+    "error_code": "tainted",
+    "data": {"tainted": {"at": "2026-11-26T10:00:00Z", "trigger": "web_fetch", "domain": "example.org"}},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_with_content_answers_exactly_that_content_and_its_code() -> None:
+    ran: list[dict[str, Any]] = []
+    gate = _SessionGate(Refusal(TAINTED, "session s1 is tainted", argument="session", content=_ENVELOPE))
+    result = await _call(_server(gate, ran, error_codes=ErrorCodes([TAINTED])), {"session": "s1"})
+    assert result.is_error is True
+    [block] = result.content
+    assert isinstance(block, mcp_types.TextContent)
+    assert json.loads(block.text) == _ENVELOPE
+    assert result.structured_content == _ENVELOPE
+    assert result.meta == {
+        ERROR_META_KEY: {
+            "code": "tainted",
+            "message": "session s1 is tainted",
+            "retryable": False,
+            "argument": "session",
+        }
+    }
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_with_text_content_answers_that_text_alone() -> None:
+    gate = _SessionGate(Refusal(TAINTED, "tainted", content='{"ok": false, "error_code": "tainted"}'))
+    result = await _call(_server(gate, [], error_codes=ErrorCodes([TAINTED])), {"session": "s1"})
+    [block] = result.content
+    assert isinstance(block, mcp_types.TextContent)
+    assert block.text == '{"ok": false, "error_code": "tainted"}'
+    assert result.structured_content is None
+    assert result.meta is not None
+    assert result.meta[ERROR_META_KEY] == {"code": "tainted", "message": "tainted", "retryable": False}
+
+
+@pytest.mark.asyncio
+async def test_content_with_an_unregistered_code_keeps_the_content_and_answers_permission_denied() -> None:
+    gate = _SessionGate(Refusal("never_registered", "no", content=_ENVELOPE))
+    result = await _call(_server(gate, []), {"session": "s1"})
+    assert result.structured_content == _ENVELOPE
+    assert _code(result) == "PERMISSION_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_without_content_answers_the_frameworks_refusal_text_as_before() -> None:
+    gate = _SessionGate(Refusal(TAINTED, "session s1 is tainted"))
+    result = await _call(_server(gate, [], error_codes=ErrorCodes([TAINTED])), {"session": "s1"})
+    [block] = result.content
+    assert isinstance(block, mcp_types.TextContent)
+    assert json.loads(block.text) == {
+        "tool_name": "send",
+        "error": {"code": "tainted", "message": "session s1 is tainted", "retryable": False},
+    }
+    assert result.structured_content is None

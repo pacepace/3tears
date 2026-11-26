@@ -678,12 +678,15 @@ class McpServer:
                     }
                 },
             )
-            return _error_result(
-                tool_name=tool_name,
-                code=code,
-                message=decision.message if code.code == refused else f"refused: {decision.message}",
-                argument=decision.argument,
-            )
+            message = decision.message if code.code == refused else f"refused: {decision.message}"
+            if decision.content is not None:
+                # the server's own refusal shape is the content, as a tool's failure is; the code rides _meta
+                content = decision.content if isinstance(decision.content, str) else dict(decision.content)
+                answered = tool_error(content, code=code, message=message, argument=decision.argument)
+                return answered.model_copy(
+                    update={"meta": {ERROR_META_KEY: error_detail(code, message, decision.argument)}}
+                )
+            return _error_result(tool_name=tool_name, code=code, message=message, argument=decision.argument)
         if decision is not True:
             log.info(
                 "MCP dispatch: denied",

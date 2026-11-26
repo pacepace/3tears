@@ -67,6 +67,14 @@ an install of the contract (with and without its `mcp` extra), of 3tears-mcp's b
 **Release:** the first release with this package needs its PyPI pending trusted publisher registered first
 (`docs/releasing.md`, "A release that adds a package").
 
+### mcp: an authorizer's refusal can carry the server's own content
+
+**Added:** `Refusal(..., content: Mapping[str, Any] | str | None = None)`. A call refused with `content` is answered as
+`tool_error` answers a tool's failure: `isError`, the content as the text block (and as `structuredContent` when it
+is a mapping), the refusal's code, message and argument under `_meta["threetears.mcp/error"]`. A server whose
+failures keep one envelope for its clients keeps it for refusals too. Without `content`, the refusal answers as
+before. A resource refusal, a JSON-RPC error, does not use it.
+
 ### mcp: a server advertises its version and instructions
 
 **Added:** `McpServer(..., version: str = "", instructions: str | None = None)`, passed to the SDK server. On the

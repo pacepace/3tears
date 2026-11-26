@@ -402,6 +402,13 @@ class SessionGate:
 server = McpServer(..., authorizer=SessionGate(), error_codes=ErrorCodes([TAINTED]))
 ```
 
+A server whose failures have a shape of their own (an envelope its clients read) gives the refusal that shape:
+`Refusal(TAINTED, message, content={"ok": False, "error": message, "error_code": "tainted"})` is answered as
+`tool_error` answers it. A mapping is the text block's JSON and the `structuredContent`, a string the text block
+alone, and the refusal's code, message and argument go under `_meta["threetears.mcp/error"]`, with `retryable` from
+the registered code. Without `content`, the refusal carries the framework's text, `{"tool_name", "error": {...}}`. A
+resource refusal is a JSON-RPC error, whose `data` is the error model's detail, so `content` is not used there.
+
 `call.arguments` is read-only. A refusal naming a code the server never registered answers `PERMISSION_DENIED`
 and logs an error once per code. An authorizer that raises denies with `AUTHZ_ERROR`, as `allows` does. The
 `CallAuthorizer` protocol states the shape; an authorizer with `allows` alone is called exactly as before.

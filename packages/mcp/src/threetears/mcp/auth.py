@@ -472,11 +472,17 @@ class Refusal:
         never registered answers ``PERMISSION_DENIED`` and is logged
     :ivar message: why the call is refused, for the caller
     :ivar argument: the argument the refusal is about, when one is
+    :ivar content: the refused call's result content, when the server's own failures have a shape of their own (an
+        envelope its clients read): answered as :func:`~threetears.mcp.server.tool_error` answers it, a mapping as
+        the text block's JSON and the ``structuredContent``, a string as the text block, the code under ``_meta``.
+        None answers the framework's refusal text, as before. A resource refusal is a JSON-RPC error, whose ``data``
+        is the error model's detail: there ``content`` is not used
     """
 
     code: ErrorCode | str
     message: str
     argument: str | None = None
+    content: Mapping[str, Any] | str | None = None
 
 
 @runtime_checkable
