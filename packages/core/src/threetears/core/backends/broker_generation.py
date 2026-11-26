@@ -112,6 +112,7 @@ __all__ = [
     "note_advanced_generation",
     "cleanup_delete_floor",
     "cleanup_deleting",
+    "note_statement_stamp",
     "record_reply_generations",
     "reply_generations_since",
     "StampedScopes",
@@ -120,6 +121,7 @@ __all__ = [
     "stamp_fields",
     "stamped_send",
     "stamping_write",
+    "taken_statement_stamp",
 ]
 
 _logger = get_logger(__name__)
@@ -402,14 +404,20 @@ _STAMPED_WRITE: ContextVar[int | None] = ContextVar("threetears_stamped_write", 
 
 
 @contextmanager
-def stamping_write(s_min: int | None) -> Iterator[None]:
+def stamping_write(s_min: int | None, *, table: str | None = None) -> Iterator[None]:
     """send every L3 request made inside this block as a stamped write whose rows' lowest row epoch is ``s_min``
     (:data:`STAMPS_EPOCH_FIELD`, :data:`STAMP_S_MIN_FIELD`); None sends them unstamped. Replaces what an enclosing
     block named. The one place a write says it stamps: the store's writes of a table that declares a row epoch enter
     it around their requests (``SqlL3Backend``), and every request's payload reads it (:func:`stamp_fields`).
 
+    Given ``table``, a block that sent its requests without raising notes ``s_min`` as that table's statement stamp
+    (:func:`note_statement_stamp`), so the epoch record this process writes for the write names it, in a transaction
+    or not (:func:`taken_statement_stamp`). A block that only measures requests names no table.
+
     :param s_min: the lowest stamp the block's rows carry, a positive BIGINT; None when they carry none
     :ptype s_min: int | None
+    :param table: the table the block's requests write, or None for a block that sends nothing
+    :ptype table: str | None
     :return: a context in which the requests say so
     :rtype: Iterator[None]
     :raises ValueError: when ``s_min`` is no row epoch
@@ -421,6 +429,53 @@ def stamping_write(s_min: int | None) -> Iterator[None]:
         yield
     finally:
         _STAMPED_WRITE.reset(token)
+    # reached only when the block raised nothing: a write that failed names its stamp on no record
+    if table is not None and s_min is not None:
+        note_statement_stamp(table, s_min)
+
+
+#: the stamps the stamped writes made in this context carried since their table's last advance, as ``(table, lowest)``
+#: pairs, one a table: what the epoch record of a write that joined no transaction names as its ``s_min``
+#: (:func:`taken_statement_stamp`). An immutable tuple, replaced whole: never shared mutable state. WHY a context, not
+#: an argument: the stamp is drawn (``CallerTransaction.stamp_for``) and sent (``SqlL3Backend``, :func:`stamping_write`)
+#: below the collection whose advance writes the record (``advance_for_write``), in the same task, and every write path
+#: between them would otherwise carry it. A one-statement write is its own commit, so its ``s_min`` is its own stamp; a
+#: transaction's commit names its own (:func:`naming_commit_s_min`), never above a stamp noted here
+_STATEMENT_STAMPS: ContextVar[tuple[tuple[str, int], ...]] = ContextVar("threetears_statement_stamps", default=())
+
+
+def note_statement_stamp(table: str, s_min: int) -> None:
+    """note that a stamped write of ``table`` made in this context carried ``s_min``: the table's next advance in this
+    context names the lowest noted since its last one as its record's ``s_min`` (:func:`taken_statement_stamp`).
+
+    :param table: the table written
+    :ptype table: str
+    :param s_min: the lowest stamp the write's rows carry, a positive BIGINT
+    :ptype s_min: int
+    :raises ValueError: when ``s_min`` is no row epoch
+    """
+    if not 0 < s_min < 1 << 63:
+        raise ValueError(f"a stamped write's s_min is a row epoch, a positive BIGINT: got {s_min}")
+    held = _STATEMENT_STAMPS.get()
+    lowest = min([s_min, *(stamp for name, stamp in held if name == table)])
+    _STATEMENT_STAMPS.set((*(pair for pair in held if pair[0] != table), (table, lowest)))
+
+
+def taken_statement_stamp(table: str) -> int | None:
+    """the lowest stamp the stamped writes of ``table`` made in this context carried since its last advance
+    (:func:`note_statement_stamp`), taken: the advance writing the table's record names it, and the next starts afresh.
+
+    :param table: the table being advanced
+    :ptype table: str
+    :return: the stamp; None when no stamped write of the table was noted
+    :rtype: int | None
+    """
+    held = _STATEMENT_STAMPS.get()
+    found = [stamp for name, stamp in held if name == table]
+    if not found:
+        return None
+    _STATEMENT_STAMPS.set(tuple(pair for pair in held if pair[0] != table))
+    return found[0]
 
 
 #: the request field marking a delete as quiet-time cleanup's (:mod:`~threetears.core.collections.quiet_cleanup`):
@@ -546,7 +601,9 @@ def releasing_touched_scopes(token: Token[Any]) -> None:
 
 
 @contextmanager
-def stamped_send(conn: Any, s_min: int | None, touched: StampedScopes | None = None) -> Iterator[None]:
+def stamped_send(
+    conn: Any, s_min: int | None, touched: StampedScopes | None = None, *, table: str | None = None
+) -> Iterator[None]:
     """send a stamped write's requests (:func:`stamping_write`), its scopes first handed to the transaction open on
     ``conn`` that commits it: the one path every write the store makes of a table that declares a row epoch goes through,
     so no writer can leave a scope its rows name untouched (``ddl.row_epoch``).
@@ -557,6 +614,9 @@ def stamped_send(conn: Any, s_min: int | None, touched: StampedScopes | None = N
     :ptype s_min: int | None
     :param touched: a versioned table's write's scopes and stamps, read off its rows; None for any other write
     :ptype touched: StampedScopes | None
+    :param table: the table the requests write, its statement stamp noted when the block raised nothing
+        (:func:`stamping_write`'s ``table``); None for a block that sends nothing
+    :ptype table: str | None
     :return: a context in which the requests say they stamp
     :rtype: Iterator[None]
     :raises UntouchedScopesError: when the write names scopes and no transaction open on ``conn`` takes them: nothing
@@ -571,7 +631,7 @@ def stamped_send(conn: Any, s_min: int | None, touched: StampedScopes | None = N
                 f"CallerTransaction's connection"
             )
         sink(touched)
-    with stamping_write(s_min):
+    with stamping_write(s_min, table=table):
         yield
 
 

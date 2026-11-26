@@ -1413,7 +1413,7 @@ class SqlL3Backend:
             _refuse_unstamped_rows(schema, table, (row,))
             # a stamped table's upsert or fenced update says so on its request, with its one stamp; a versioned table's
             # row hands its scope to the transaction that commits it
-            with stamped_send(conn, _stamp_of(schema, row.get(EPOCH_COLUMN)), _row_touched(schema, row)):
+            with stamped_send(conn, _stamp_of(schema, row.get(EPOCH_COLUMN)), _row_touched(schema, row), table=table):
                 return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
 
         if pk is None:
@@ -1506,7 +1506,7 @@ class SqlL3Backend:
             texts: dict[int, str] = {}
             # each statement says whether its rows stamp, with the rows' lowest stamp, as it was measured; a versioned
             # table's rows hand their scopes to the transaction that commits them
-            with stamped_send(conn, lowest, touched):
+            with stamped_send(conn, lowest, touched, table=table):
                 for batch in batches:
                     sql, params = (
                         await asyncio.to_thread(
@@ -1595,7 +1595,7 @@ class SqlL3Backend:
         written = 0
         # each copy says whether its rows stamp, with the rows' lowest stamp, as it was measured; a versioned table's
         # rows hand their scopes to the transaction that commits them
-        with stamped_send(conn, lowest, touched):
+        with stamped_send(conn, lowest, touched, table=table):
             for batch in batches:
                 await conn.copy_records_to_table(table, records=batch, columns=names, **appending)
                 written += len(batch)
@@ -1734,7 +1734,7 @@ class SqlL3Backend:
         appending: dict[str, bool] = {"append": True} if plan.kind == "append" else {}
         # every request of the write says whether its rows stamp: the hub reads it, never the table's catalog; a
         # versioned table's rows hand their scopes to the transaction that commits them
-        with stamped_send(conn, lowest, touched):
+        with stamped_send(conn, lowest, touched, table=table):
             written: int = await conn.write_arrow_rows(
                 table,
                 planned,
@@ -1915,7 +1915,7 @@ class SqlL3Backend:
                     f"{table} declares a row epoch: a load through the broker stamps its rows with one epoch, named "
                     f"as a constant ({EPOCH_COLUMN!r}), so its request names its stamp; this one reads it from the files"
                 )
-            with stamping_write(_stamp_of(schema, constants.get(EPOCH_COLUMN))):
+            with stamping_write(_stamp_of(schema, constants.get(EPOCH_COLUMN)), table=table):
                 return await self._pool.load_files(
                     table,
                     files,
@@ -2229,7 +2229,7 @@ class SqlL3Backend:
         names = ", ".join(column.name for column in columns)
         # every marker carries the delete's one stamp, and each statement says so; their scopes are handed to the
         # transaction that commits them
-        with stamped_send(conn, _stamp_of(schema, epoch), touched):
+        with stamped_send(conn, _stamp_of(schema, epoch), touched, table=table):
             for start in range(0, len(rows), per_statement):
                 batch = rows[start : start + per_statement]
                 values = ", ".join(
@@ -2367,7 +2367,7 @@ class SqlL3Backend:
         epoch_column = quote_identifier(EPOCH_COLUMN)
         gone = quote_identifier(GONE_COLUMN)
         # every row carries the delete's one stamp, and each statement says so
-        with stamping_write(_stamp_of(schema, epoch)):
+        with stamping_write(_stamp_of(schema, epoch), table=schema.name):
             await update_keyed(
                 self._pool if conn is None else conn,
                 schema.name,
@@ -2460,7 +2460,7 @@ class SqlL3Backend:
                 else {"epoch": epoch, "scope": schema.row_epoch.scope}
             )
             # a versioned table's run markers carry the delete's stamp, and the request says so
-            with stamped_send(conn, _stamp_of(schema, epoch), touched):
+            with stamped_send(conn, _stamp_of(schema, epoch), touched, table=table):
                 deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes], **marking)
             return int(deleted)
         statements = (
@@ -2917,7 +2917,7 @@ class SqlL3Backend:
         data = dict(row)
         sql = schema_sql.build_ordered_upsert_sql(schema, data)
         params = schema_sql.build_insert_params(schema, data)
-        with stamped_send(conn, _stamp_of(schema, data.get(EPOCH_COLUMN)), _row_touched(schema, data)):
+        with stamped_send(conn, _stamp_of(schema, data.get(EPOCH_COLUMN)), _row_touched(schema, data), table=table):
             return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
     async def delete(self, table: str, pk: KeyValues, *, conn: Any = None) -> None:

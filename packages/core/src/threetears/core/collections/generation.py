@@ -40,6 +40,7 @@ from threetears.core.backends.broker_generation import (
     named_delta_files,
     named_unconfirmed_delta_files,
     note_advanced_generation,
+    taken_statement_stamp,
 )
 from threetears.core.collections.epoch_change import advance_recording, records_changes
 from threetears.core.collections.undeclared_tables import report_undeclared_table
@@ -1058,7 +1059,8 @@ async def advance_for_write(
     :ptype repair: bool
     :param s_min: the commit's lowest row epoch (``EpochChange.s_min``), named by every record of the advance: the
         broker passes the one its commit request named (``COMMIT_S_MIN_FIELD``); ``None`` takes the one the commit
-        being settled in this context named (``naming_commit_s_min``), none when it named none
+        being settled in this context named (``naming_commit_s_min``); a write that joined no transaction, the lowest
+        stamp its statements carried (``taken_statement_stamp``); none when none is named
     :ptype s_min: int | None
     :return: the token the advance wrote, as :func:`~threetears.core.collections.epoch_change.advance_recording`
     :rtype: str | None
@@ -1084,6 +1086,11 @@ async def advance_for_write(
         if unconfirmed_delta_file is not None
         else named_unconfirmed_delta_files().get(table_name)
     )
+    # a one-statement stamped write is its own commit, so its record names its own stamp (taken_statement_stamp); a
+    # transaction's commit names its lowest (naming_commit_s_min). Taken either way, so the next advance starts afresh
+    statement = taken_statement_stamp(table_name)
+    committed = named_commit_s_min()
+    lowest = s_min if s_min is not None else committed if committed is not None else statement
     token = await advance_recording(
         source,
         table_name,
@@ -1100,7 +1107,7 @@ async def advance_for_write(
         unconfirmed_delta_file=unconfirmed,
         unconfirmed_writer=unconfirmed_writer if unconfirmed is not None else None,
         repair=repair,
-        s_min=s_min if s_min is not None else named_commit_s_min(),
+        s_min=lowest,
     )
     if isinstance(token, str) and token:
         # a commit settling in this context collects it: a writer folds its delta files by the generation it wrote
