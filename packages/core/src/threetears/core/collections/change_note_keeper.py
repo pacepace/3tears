@@ -199,7 +199,7 @@ from threetears.core.collections.epoch_change import (
     keyed_record_form,
 )
 from threetears.core.collections.generation import NotedTable, noted_tables, split_generation_token
-from threetears.core.collections.table_restore import TableChanges, VersionedTable, versioned_tables
+from threetears.core.collections.table_restore import RestoredTable, StampedTable, TableChanges, restored_tables
 from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
@@ -2082,9 +2082,10 @@ class ChangeNoteKeeper:
         if covered is None:
             covered = _seq_under(ring.fence_seq, lost)
         began = time.monotonic()
-        # the versioned tables come back from their own versions since a mark of the lost log, never from the ring
-        # (append-only L3 chunk 5, table_restore); the ring still puts back every table it notes until it retires
-        versioned = await versioned_tables(self._pool)
+        # the versioned tables come back from their own versions since a mark of the lost log, the stamped ones from
+        # their rows stamped since it, never from the ring (append-only L3 chunk 5, table_restore); the ring still puts
+        # back every table it notes until it retires
+        versioned = await restored_tables(self._pool)
         marks = await self.marks_past(lost, None) if versioned else []
         label, table_floor = self._restore_point(versioned, marks, lost, covered)
         table_changes: TableChanges | None = None
@@ -2198,9 +2199,11 @@ class ChangeNoteKeeper:
                     "covered_from": label,
                     "notes": kept,
                     "tables": tables,
-                    "versioned_tables": len(versioned),
+                    "versioned_tables": sum(not isinstance(table, StampedTable) for table in versioned),
+                    "stamped_tables": sum(isinstance(table, StampedTable) for table in versioned),
                     "versions_from_epoch": table_floor,
                     "scope_reads": 0 if table_changes is None else table_changes.scopes,
+                    "bucket_reads": 0 if table_changes is None else table_changes.buckets,
                     "records": appended,
                     "seconds": round(time.monotonic() - began, 3),
                 }
@@ -2371,7 +2374,7 @@ class ChangeNoteKeeper:
         return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since, folder, self._form)
 
     def _restore_point(
-        self, versioned: Sequence[VersionedTable], marks: Sequence[dict[str, Any]], lost: str, floor: int | None
+        self, versioned: Sequence[RestoredTable], marks: Sequence[dict[str, Any]], lost: str, floor: int | None
     ) -> tuple[int | None, int | None]:
         """the label a restore covering the ring's notes from ``floor`` and the versioned tables gives the new log, and
         the epoch X the versioned tables are read from: from a mark (P, T) of the lost log, X = (T - M) << 15
@@ -2383,8 +2386,8 @@ class ChangeNoteKeeper:
         missed. With no mark at all nothing vouches for the versioned tables: the label is ``None`` (every follower
         behind until it restarts), said at ERROR. With no versioned table, the ring's floor as before.
 
-        :param versioned: the versioned tables
-        :ptype versioned: Sequence[VersionedTable]
+        :param versioned: the versioned and stamped tables
+        :ptype versioned: Sequence[RestoredTable]
         :param marks: the lost log's marks, in position order (``seq``, ``at``)
         :ptype marks: Sequence[dict[str, Any]]
         :param lost: the lost log's incarnation
@@ -2422,13 +2425,13 @@ class ChangeNoteKeeper:
         return floor, x
 
     def _table_changes(
-        self, versioned: Sequence[VersionedTable], floor: int | None, folder: RestoreFolder
+        self, versioned: Sequence[RestoredTable], floor: int | None, folder: RestoreFolder
     ) -> TableChanges | None:
         """the versioned tables' changes since ``floor``, streamed (:class:`~threetears.core.collections.table_restore.
         TableChanges`); ``None`` when none is read.
 
-        :param versioned: the versioned tables
-        :ptype versioned: Sequence[VersionedTable]
+        :param versioned: the versioned and stamped tables
+        :ptype versioned: Sequence[RestoredTable]
         :param floor: X; ``None`` reads none
         :ptype floor: int | None
         :param folder: the restore's worker

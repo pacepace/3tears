@@ -20,13 +20,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import sqlalchemy as sa
 
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import scope_epochs_schema
 from threetears.core.ddl.change_notes import MARKS_TABLE, RING_TABLE
-from threetears.core.ddl.row_epoch import restore_floor, row_versions
+from threetears.core.ddl.row_epoch import (
+    BUCKET_COLUMN,
+    RESTORE_BUCKETS,
+    ROW_STAMPED,
+    bucket_epoch_index_name,
+    restore_floor,
+    row_versions,
+)
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant
@@ -60,17 +68,30 @@ _RESULTS = TableSchema(
 #: the restore read the (scope, epoch) index names as its purpose
 _READ = "packages/core/src/threetears/core/collections/table_restore.py::_scope_versions"
 
+_STAMPED_TABLE = "restore_runs"
+
+#: a stamped table a consumer declares (``lsf_runs``' shape): one row a key, updated in place
+_RUNS = TableSchema(
+    name=_STAMPED_TABLE,
+    primary_key=(_SCOPE, "run_id"),
+    columns=[Column(_SCOPE, STRING_TYPE), Column("run_id", STRING_TYPE), Column("rows", BIGINT_TYPE)],
+    tenancy=TENANT_BY_SCHEMA,
+    row_epoch=ROW_STAMPED,
+    l1_eviction=Declared(Policy.EVICTABLE, "a test's stamped table"),
+)
+
+#: the restore read the (bucket, epoch) index names as its purpose
+_STAMPED_READ = "packages/core/src/threetears/core/collections/table_restore.py::_bucket_rows"
+
 
 @pytest.fixture(autouse=True)
 def _namespace() -> None:
     set_default_namespace("tablerestore")
 
 
-def _declaration() -> str:
-    """the restore declaration the table's DDL gives its (scope, epoch) index, as the catalog then holds it."""
-    [comment] = [
-        statement for statement in _RESULTS.create_statements(yugabyte=True) if statement.startswith("COMMENT")
-    ]
+def _declaration(schema: TableSchema = _RESULTS) -> str:
+    """the restore declaration the table's DDL gives its restore index, as the catalog then holds it."""
+    [comment] = [statement for statement in schema.create_statements(yugabyte=True) if statement.startswith("COMMENT")]
     found = re.search(r"IS '(.*)'$", comment)
     assert found is not None, comment
     return found.group(1).replace("''", "'")
@@ -123,6 +144,10 @@ class _Pool:
         self.run_markers: list[tuple[str, str, int]] = []
         #: the tables the owner's scrub judges as its own
         self.own: list[str] = []
+        #: the catalog's restore declarations: (table, declaration)
+        self.catalog: list[tuple[str, str]] = [(_TABLE, _declaration())]
+        #: (state, run, bucket, epoch) of the stamped table
+        self.stamped: list[tuple[str, str, int, int]] = []
 
     @staticmethod
     def _floor(args: tuple[Any, ...]) -> int:
@@ -134,7 +159,10 @@ class _Pool:
         if f'"{RING_TABLE}"' in query and query.startswith("SELECT"):
             return [dict(self.ring)]
         if "pg_description" in query:
-            return [{"table_schema": _SCHEMA, "table_name": _TABLE, "declared": _declaration(), "run_markers": True}]
+            return [
+                {"table_schema": _SCHEMA, "table_name": table, "declared": declared, "run_markers": True}
+                for table, declared in self.catalog
+            ]
         if MARKS_TABLE in query:
             return [mark for mark in self.marks if mark["log_incarnation"] in args]
         if f'"{_EPOCHS}"' in query:
@@ -172,9 +200,17 @@ class _Pool:
     async def copy_from_query(self, query: str, *args: Any, output: Any, **_: Any) -> str:
         """a scope's versions since the floor, as the restore's fold reads them: the table, the tenant, the key."""
         self.sent.append((query, args))
-        state = next(arg for arg in args if isinstance(arg, str))
         floor = self._floor(args)
         tenant = schema_tenant(_SCHEMA)
+        if f'"{_STAMPED_TABLE}"' in query:
+            bucket = next(arg for arg in args if isinstance(arg, int) and arg < RESTORE_BUCKETS)
+            for state, run, held, epoch in self.stamped:
+                if held == bucket and epoch >= floor:
+                    fields = (json.dumps(_STAMPED_TABLE), json.dumps(tenant), json.dumps([state, run]))
+                    line = ",".join('"' + field.replace('"', '""') + '"' for field in fields) + ",\n"
+                    await output(line.encode())
+            return "COPY"
+        state = next(arg for arg in args if isinstance(arg, str))
         for scope, run, candidate, epoch, _gone in self.versions:
             if scope == state and epoch >= floor:
                 fields = (json.dumps(_TABLE), json.dumps(tenant), json.dumps([scope, run, candidate]))
@@ -314,3 +350,74 @@ def test_a_versioned_table_declares_its_scope_epoch_index_and_its_restore_declar
     assert declared["keys"] == [_SCOPE, "run_id", "candidate"] and declared["tenancy"] == "schema"
     epochs = scope_epochs_schema(_EPOCHS).create_statements(yugabyte=True)
     assert any(f"{_EPOCHS}_last_epoch" in each and "last_epoch ASC, scope" in each for each in epochs), epochs
+
+
+async def test_a_lost_log_is_rebuilt_from_a_stamped_table_s_rows_since_x_a_bucket_at_a_time(tmp_path: Path) -> None:
+    """Flips if a restore does not put a stamped table's in-place changes back from its own rows (the ring holds no
+    note here, so the old code restored none of them), misses a row stamped at X or later in any bucket, reads one
+    stamped before X, names no ``s_min`` on a record, or reads the table by anything but one statement a bucket, each
+    binding its bucket and the epoch floor (the statement spy, and the no-whole-reads rule's judgement)."""
+    _bus, source, lost = await _lost_log()
+    now = datetime.now(UTC)
+    mark_at = now - timedelta(minutes=1)
+    floor = restore_floor(int(mark_at.timestamp() * 1000))
+    pool = _Pool(lost, now, [{"log_incarnation": lost, "seq": 0, "at": mark_at, "id": 1}])
+    pool.catalog = [(_STAMPED_TABLE, _declaration(_RUNS))]
+    # a row in every bucket stamped since X, and one in every bucket stamped before it
+    pool.stamped = [
+        *((f"S{bucket:02d}", "new", bucket, floor + bucket) for bucket in range(RESTORE_BUCKETS)),
+        *((f"S{bucket:02d}", "old", bucket, floor - 1 - bucket) for bucket in range(RESTORE_BUCKETS)),
+    ]
+    keeper = ChangeNoteKeeper(pool, notes_schema=_RING, log=source)
+
+    done = await keeper.run_pass()
+
+    assert done.restored is not None
+    state = await source.log_state()
+    assert state is not None and state.continues == lost and state.covered_from == 0, state
+    records = [record for record in await _restored_records(source) if record.table == _STAMPED_TABLE]
+    keyed = sorted(tuple(row.ids) for record in records for row in record.rows)
+    assert keyed == [(f"S{bucket:02d}", "new") for bucket in range(RESTORE_BUCKETS)], "every in-place change since X"
+    assert records and {record.s_min for record in records} == {floor}, "every rebuilt record names the restore's floor"
+
+    reads = [(query, args) for query, args in pool.sent if f'"{_STAMPED_TABLE}"' in query]
+    assert len(reads) == RESTORE_BUCKETS == 16, "one statement a bucket"
+    assert sorted(args for _, args in reads) == [(bucket, floor) for bucket in range(RESTORE_BUCKETS)]
+    (tmp_path / "src").mkdir()
+    ddl = "\n".join(
+        [
+            *_RUNS.create_statements(yugabyte=False)[:1],
+            f"-- purpose: {_STAMPED_READ}",
+            f"CREATE INDEX x ON {_STAMPED_TABLE} ({BUCKET_COLUMN}, epoch);",
+        ]
+    )
+    (tmp_path / "src" / "v001.sql").write_text(ddl.replace('"', ""), encoding="utf-8")
+    catalog = collect_schema(tmp_path, (tmp_path / "src",))
+    for query, _args in reads:
+        assert f't."{BUCKET_COLUMN}" = $1' in query and 't."epoch" >= $2' in query, query
+        statement = re.sub(r"\$\d+", "$1", query.replace('"rpt".', "").replace("rpt.", ""))
+        assert judge_sql(statement, Reader(catalog, frozenset({_STAMPED_READ}))) == [], "each bucket's read is keyed"
+
+
+def test_a_stamped_table_declares_its_bucket_epoch_index_and_its_restore_declaration() -> None:
+    """Flips if a stamped table's L3 DDL lacks the stored bucket column derived from its key's hash, the (bucket, epoch)
+    index a restore reads it by (split a tablet a bucket on YugabyteDB, plain on Postgres), or the comment the keeper
+    finds it by in the catalog; or if a cache's table carries the bucket column or its index."""
+    index = bucket_epoch_index_name(_STAMPED_TABLE)
+    on_yugabyte = _RUNS.create_statements(yugabyte=True)
+    on_postgres = _RUNS.create_statements(yugabyte=False)
+    for statements in (on_yugabyte, on_postgres):
+        create = statements[0]
+        assert f"{BUCKET_COLUMN} SMALLINT GENERATED ALWAYS AS (" in create and ") STORED" in create, create
+        assert 'hashtext("join_state_code")' in create and 'hashtext("run_id")' in create and "& 15" in create, create
+    [yb_index] = [each for each in on_yugabyte if f"{index} ON" in each]
+    splits = ", ".join(f"({value})" for value in range(1, 16))
+    assert f"({BUCKET_COLUMN} ASC, epoch) SPLIT AT VALUES ({splits})" in yb_index, yb_index
+    [pg_index] = [each for each in on_postgres if f"{index} ON" in each]
+    assert pg_index.endswith(f"({BUCKET_COLUMN} ASC, epoch)"), pg_index
+    declared = json.loads(_declaration(_RUNS))
+    assert declared["kind"] == "stamped" and declared["bucket"] == BUCKET_COLUMN and declared["buckets"] == 16
+    assert declared["keys"] == [_SCOPE, "run_id"] and declared["tenancy"] == "schema"
+    assert any(each.startswith(f'COMMENT ON INDEX "{index}"') for each in on_postgres), on_postgres
+    cache = _RUNS.to_sqlalchemy_table(sa.MetaData())
+    assert BUCKET_COLUMN not in cache.c and not any(each.name == index for each in cache.indexes)

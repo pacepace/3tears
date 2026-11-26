@@ -1,7 +1,10 @@
 """Integration: a restore from the tables reads each scope through its (scope, epoch) index, and finds its scopes through
 the scope epochs table's last_epoch index; never a whole read of either.
 
-The plan tests the two indexes name (``TableSchema(row_epoch=row_versions(...))``'s ``<table>_scope_epoch``, and
+A stamped table (``ROW_STAMPED``) is read a bucket at a time through its ``(bucket, epoch)`` index: 16 statements, each
+planned through it, and on YugabyteDB the index split a tablet a bucket.
+
+The plan tests the three indexes name (``TableSchema(row_epoch=row_versions(...))``'s ``<table>_scope_epoch``, and
 ``scope_epochs_schema``'s ``<name>_last_epoch``). A versioned table and its scope epochs table are seeded past where the
 planner would rather scan (56 states of versions, most of them older than X; thousands of race scopes beside the
 states), and the restore's own stream (:class:`~threetears.core.collections.table_restore.TableChanges`) runs against
@@ -25,8 +28,16 @@ from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import scope_epochs_schema
-from threetears.core.collections.table_restore import TableChanges, versioned_tables
-from threetears.core.ddl.row_epoch import restore_floor, row_versions, scope_epoch_index_name
+from threetears.core.collections.table_restore import StampedTable, TableChanges, restored_tables, versioned_tables
+from threetears.core.ddl.row_epoch import (
+    BUCKET_COLUMN,
+    RESTORE_BUCKETS,
+    ROW_STAMPED,
+    bucket_epoch_index_name,
+    restore_floor,
+    row_versions,
+    scope_epoch_index_name,
+)
 from threetears.core.eviction import Declared, Policy
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.core.testing.plans import StatementPlan, explain_statement, on_yugabyte, plan_uses_index
@@ -59,11 +70,27 @@ _RESULTS = TableSchema(
 )
 
 
+_STAMPED_TABLE = "plan_restore_runs"
+#: a stamped table's rows (one a key), and of them how many were stamped at X or later
+_STAMPED_ROWS = 20_000
+_STAMPED_RECENT = 300
+
+_RUNS = TableSchema(
+    name=_STAMPED_TABLE,
+    primary_key=(_SCOPE, "run_id"),
+    columns=[Column(_SCOPE, STRING_TYPE), Column("run_id", STRING_TYPE), Column("rows", BIGINT_TYPE)],
+    tenancy=TENANT_BY_SCHEMA,
+    row_epoch=ROW_STAMPED,
+    l1_eviction=Declared(Policy.EVICTABLE, "a plan test's stamped table"),
+)
+
+
 @dataclass
 class _Seeded:
     conn: asyncpg.Connection
     schema: str
     floor: int
+    yugabyte: bool = False
 
 
 @dataclass
@@ -143,9 +170,22 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
             floor + 7,
             floor - 7,
         )
+        for statement in _RUNS.create_statements(yugabyte=yugabyte):
+            await conn.execute(statement)
+        # one row a key, most stamped far below X, the last _STAMPED_RECENT at X or later; the bucket the database's
+        await conn.execute(
+            f"INSERT INTO {_STAMPED_TABLE} ({_SCOPE}, run_id, rows, epoch) "  # noqa: S608 - test identifiers
+            "SELECT 'S' || lpad((g % 56)::text, 2, '0'), 'run' || g, g, "
+            "CASE WHEN g > $2 - $3 THEN $1::bigint + g ELSE $1::bigint - (1000000 + g) END "
+            "FROM generate_series(1, $2) g",
+            floor,
+            _STAMPED_ROWS,
+            _STAMPED_RECENT,
+        )
         await conn.execute(f"ANALYZE {_TABLE}")
         await conn.execute(f"ANALYZE {_EPOCHS}")
-        yield _Seeded(conn=conn, schema=schema, floor=floor)
+        await conn.execute(f"ANALYZE {_STAMPED_TABLE}")
+        yield _Seeded(conn=conn, schema=schema, floor=floor, yugabyte=yugabyte)
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         await conn.close()
@@ -155,6 +195,12 @@ async def _restored(seeded: _Seeded) -> tuple[_Recorder, int, float, int]:
     """the restore's stream run whole: its recorder, the keyed rows its records name, its seconds, its changes."""
     tables = [table for table in await versioned_tables(seeded.conn) if table.schema == seeded.schema]
     assert [table.table for table in tables] == [_TABLE], tables
+    return await _streamed(seeded, tables)
+
+
+async def _streamed(seeded: _Seeded, tables: Any) -> tuple[_Recorder, int, float, int]:
+    """the restore's stream of ``tables`` run whole: its recorder, the keyed rows its records name, its seconds, its
+    changes."""
     recorder = _Recorder(seeded.conn)
     rows = 0
     changes = 0
@@ -202,3 +248,46 @@ async def test_a_restore_finds_its_scopes_through_the_last_epoch_index(seeded: _
     assert plans and all(plan_uses_index(plan, f"{_EPOCHS}_last_epoch") for plan in plans), [p.plan for p in plans]
     markers = await _plans(seeded, recorder, "fetch", "threetears_run_markers")
     assert markers, "the run markers of the changed scopes are read by their key"
+
+
+async def test_a_restore_reads_a_stamped_table_a_bucket_at_a_time_on_its_own_tablet(seeded: _Seeded) -> None:
+    """Flips if a restore's read of a stamped table stops being 16 statements, one a bucket, each planned through the
+    (bucket, epoch) index; misses a row stamped at X or later; or, on YugabyteDB, the index's 16 buckets stop landing
+    on 16 tablets of their own (range-sharded, split at every bucket)."""
+    tables = [
+        table
+        for table in await restored_tables(seeded.conn)
+        if table.schema == seeded.schema and isinstance(table, StampedTable)
+    ]
+    assert [table.table for table in tables] == [_STAMPED_TABLE], tables
+    recorder, rows, took, changes = await _streamed(seeded, tables)
+    copies = [args for sent, query, args in recorder.sent if sent == "copy" and _STAMPED_TABLE in query]
+    assert len(copies) == RESTORE_BUCKETS == 16, "one statement a bucket"
+    assert sorted(args[0] for args in copies) == list(range(RESTORE_BUCKETS)), copies
+    assert rows == _STAMPED_RECENT, "every row stamped at X or later"
+    held = await seeded.conn.fetchval(f"SELECT count(DISTINCT {BUCKET_COLUMN}) FROM {_STAMPED_TABLE}")  # noqa: S608
+    assert held == RESTORE_BUCKETS, "the key's hash spreads the rows over every bucket"
+    plans = await _plans(seeded, recorder, "copy", _STAMPED_TABLE)
+    index = bucket_epoch_index_name(_STAMPED_TABLE)
+    assert len(plans) == 16 and all(plan_uses_index(plan, index) for plan in plans), [plan.plan for plan in plans]
+    tablets = "not YugabyteDB"
+    if seeded.yugabyte:
+        properties = await seeded.conn.fetchrow(
+            "SELECT num_tablets, num_hash_key_columns FROM yb_table_properties($1::regclass)",
+            f"{seeded.schema}.{index}",
+        )
+        assert properties is not None
+        assert properties["num_tablets"] == RESTORE_BUCKETS and properties["num_hash_key_columns"] == 0, properties
+        # every bucket's rows in a tablet of their own: the tablets' bounds, read from the node that holds them
+        bounds = await seeded.conn.fetch(
+            "SELECT partition_key_start, partition_key_end FROM yb_local_tablets "
+            "WHERE namespace_name = current_database() AND table_name = $1 ORDER BY partition_key_start NULLS FIRST",
+            index,
+        )
+        assert len(bounds) == RESTORE_BUCKETS, bounds
+        tablets = f"{properties['num_tablets']} tablets, range-sharded, bounds {[row[0] for row in bounds]}"
+    print(  # noqa: T201 -- the measure the brief asks for, read in the run's output
+        f"stamped restore: {len(copies)} bucket reads, {rows} rows, {changes} changes, {took * 1000:.1f} ms, of it the "
+        f"database {recorder.seconds * 1000:.1f} ms; index {index}: {tablets}; plans: "
+        f"{[(plan.plan.get('Node Type'), plan.plan.get('Index Name'), plan.rows_scanned) for plan in plans]}"
+    )

@@ -142,13 +142,19 @@ from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUM
 from threetears.core.declared import whole_read
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE
 from threetears.core.ddl.row_epoch import (
+    BUCKET_COLUMN,
     EPOCH_COLUMN,
     GONE_COLUMN,
     RowEpoch,
     UnstampedWriteError,
+    bucket_epoch_index_name,
+    bucket_split_sql,
+    bucket_sql,
+    key_hash_sql,
     restore_declaration,
     scope_epoch_index_name,
     next_epoch,
+    stamped_restore_declaration,
     versioned_primary_key_sql,
 )
 from threetears.core.keyset import keyset_pages
@@ -225,6 +231,13 @@ _RESTORE_READ: Final = "packages/core/src/threetears/core/collections/table_rest
 _RESTORE_PLAN_TEST: Final = (
     "packages/core/tests/integration/test_table_restore_plans_live.py::"
     "test_a_restore_reads_a_scope_through_the_scope_epoch_index"
+)
+
+#: the restore read a stamped table's ``(bucket, epoch)`` index serves, and the plan test proving it does
+_STAMPED_RESTORE_READ: Final = "packages/core/src/threetears/core/collections/table_restore.py::_bucket_rows"
+_STAMPED_RESTORE_PLAN_TEST: Final = (
+    "packages/core/tests/integration/test_table_restore_plans_live.py::"
+    "test_a_restore_reads_a_stamped_table_a_bucket_at_a_time_on_its_own_tablet"
 )
 
 
@@ -357,6 +370,21 @@ _SQL_CASTS: Final[Mapping[str, str]] = {
     BOOL_TYPE: "boolean",
     NUMERIC_TYPE: "numeric",
     DATETIMETZ_TYPE: "timestamptz",
+}
+
+#: the kind of hash (:func:`~threetears.core.ddl.row_epoch.key_hash_sql`) a stamped table's key column of each type tag
+#: feeds its restore bucket; a key column of any other type refuses the table
+_BUCKET_HASH_KINDS: Final[Mapping[str, str]] = {
+    STRING_TYPE: "text",
+    UUID_TYPE: "uuid",
+    INT_TYPE: "int4",
+    BIGINT_TYPE: "int8",
+    DATETIMETZ_TYPE: "timestamptz",
+    NUMERIC_TYPE: "numeric",
+    BOOL_TYPE: "bool",
+    ENUM_TYPE: "enum",
+    BYTES_TYPE: "bytea",
+    JSONB_TYPE: "jsonb",
 }
 
 
@@ -1579,7 +1607,8 @@ class TableSchema:
                     )
         for idx in self.indexes:
             for col_name in idx.columns:
-                if col_name not in by_name:
+                # a stamped table's bucket column is the L3 table's alone, declared with its restore index
+                if col_name not in by_name and not (col_name == BUCKET_COLUMN and self._stamped()):
                     raise ValueError(
                         f"TableSchema(name={self.name!r}): index name={idx.name!r} "
                         f"references col={col_name!r} which is not declared in columns",
@@ -1667,6 +1696,7 @@ class TableSchema:
                 f"immutable on a versioned table"
             )
         if not versions:
+            self._declare_bucket_index()
             return
         # the "gone" marker's flag: a delete appends the key's version at its epoch with it set (append-only L3, chunk 2)
         gone = Column(GONE_COLUMN, BOOL_TYPE, immutable=True, nullable=False, server_default="false")
@@ -1709,6 +1739,70 @@ class TableSchema:
                 reason="a lost change log is rebuilt from each scope's versions since the keeper's mark",
             )
             object.__setattr__(self, "indexes", (*self.indexes, restore))
+
+    def _declare_bucket_index(self) -> None:
+        """give a stamped table its ``(bucket, epoch)`` index, the read a restore of a lost change log makes of it a
+        bucket at a time (:mod:`~threetears.core.collections.table_restore`). The bucket column is the L3 table's alone
+        (:data:`~threetears.core.ddl.row_epoch.BUCKET_COLUMN`, rendered by :meth:`_sqlalchemy_table` when stored): no
+        cache, entity or write names it.
+
+        WHY a stored generated column, not an expression index: the keyed helpers, the declared indexes and the
+        no-whole-reads rule all know an index by its columns, so a read pinning ``epoch_bucket = $1`` is one range of a
+        declared index, judged keyed like any other; an expression index serves only a read that repeats its
+        expression word for word, which none of them can check. Both engines store a generated column (Postgres 12+,
+        YugabyteDB 2.25+).
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a key column's type has no hash a bucket can be made of
+        """
+        self._bucket_expression()  # refused where declared: a key no bucket can hash refuses the table
+        name = bucket_epoch_index_name(self.name)
+        if any(index.name == name for index in self.indexes):
+            return
+        # WHY the bucket leads, range-sharded on YugabyteDB (``asc``) and split a tablet a bucket (create_statements):
+        # the epochs rise, so an index led by them sends every write to the last tablet; led by the bucket, the rising
+        # end is spread over RESTORE_BUCKETS tablets, and a restore reads one bucket's rows since X as one range
+        restore = Index(
+            name,
+            BUCKET_COLUMN,
+            EPOCH_COLUMN,
+            asc=BUCKET_COLUMN,
+            purpose=_STAMPED_RESTORE_READ,
+            plan_test=_STAMPED_RESTORE_PLAN_TEST,
+            reason="a lost change log is rebuilt from each bucket's rows stamped since the keeper's mark",
+        )
+        object.__setattr__(self, "indexes", (*self.indexes, restore))
+
+    def _stamped(self) -> bool:
+        """whether this is a stamped table (``ROW_STAMPED``: one row a key, updated in place).
+
+        :return: whether it is
+        :rtype: bool
+        """
+        return self.row_epoch is not None and not self.row_epoch.versions
+
+    def _bucket_expression(self) -> str:
+        """a stamped table's :data:`~threetears.core.ddl.row_epoch.BUCKET_COLUMN` expression, from its key columns.
+
+        :return: the expression
+        :rtype: str
+        :raises ValueError: when a key column's type has no hash a bucket can be made of
+        """
+        pk = self.primary_key
+        keys = (pk,) if isinstance(pk, str) else tuple(pk)
+        by_name = {column.name: column for column in self.columns}
+        hashes = []
+        for key in keys:
+            column = by_name.get(key)
+            kind = None if column is None else _BUCKET_HASH_KINDS.get(column.column_type)
+            if kind is None:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): ROW_STAMPED key column {key!r} is of no type a restore bucket "
+                    f"can hash ({sorted(_BUCKET_HASH_KINDS)})"
+                )
+            hashes.append(key_hash_sql(quote_identifier(key), kind))
+        return bucket_sql(tuple(hashes))
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
@@ -2126,12 +2220,31 @@ class TableSchema:
                 tuple(quote(name) for name in self._pk_columns), quote(EPOCH_COLUMN), yugabyte=True
             )
             create = create.replace(rendered, ordered)
-        indexes = tuple(str(CreateIndex(index).compile(dialect=dialect)) for index in table.indexes)
+        indexes = tuple(self._index_statement(index, dialect, yugabyte) for index in table.indexes)
         return (create, *indexes, *self._restore_comment())
 
+    def _index_statement(self, index: sa.Index, dialect: Dialect, yugabyte: bool) -> str:
+        """an index's ``CREATE INDEX``; a stamped table's restore index split a tablet a bucket on YugabyteDB
+        (:func:`~threetears.core.ddl.row_epoch.bucket_split_sql`: WHY there).
+
+        :param index: the index
+        :ptype index: sa.Index
+        :param dialect: the dialect it is rendered in
+        :ptype dialect: Dialect
+        :param yugabyte: whether the database is YugabyteDB
+        :ptype yugabyte: bool
+        :return: the statement
+        :rtype: str
+        """
+        statement = str(CreateIndex(index).compile(dialect=dialect))
+        if yugabyte and self._stamped() and index.name == bucket_epoch_index_name(self.name):
+            statement = f"{statement} {bucket_split_sql()}"
+        return statement
+
     def _restore_comment(self) -> tuple[str, ...]:
-        """a versioned table's ``COMMENT ON INDEX`` naming how a restore reads it (:func:`~threetears.core.ddl.
-        row_epoch.restore_declaration`); nothing for any other table.
+        """a versioned or stamped table's ``COMMENT ON INDEX`` naming how a restore reads it (:func:`~threetears.core.ddl.
+        row_epoch.restore_declaration`, :func:`~threetears.core.ddl.row_epoch.stamped_restore_declaration`); nothing
+        for any other table.
 
         WHY in the catalog: the keeper that restores a lost change log runs in the hub, which imports no consumer's
         table classes; the comment rides with the index the read goes through, created and dropped with it.
@@ -2140,12 +2253,18 @@ class TableSchema:
         :rtype: tuple[str, ...]
         """
         declared = self.row_epoch
-        if declared is None or not declared.versions:
+        if declared is None:
             return ()
         instants = tuple(name for name in self._pk_columns if self._by_name[name].column_type == DATETIMETZ_TYPE)
         tenancy = (self.tenancy.kind, self.tenancy.column)
-        text = restore_declaration(declared, self._pk_columns, instants, tenancy).replace("'", "''")
-        return (f"COMMENT ON INDEX {quote_identifier(scope_epoch_index_name(self.name))} IS '{text}'",)
+        if declared.versions:
+            text = restore_declaration(declared, self._pk_columns, instants, tenancy)
+            index = scope_epoch_index_name(self.name)
+        else:
+            text = stamped_restore_declaration(self._pk_columns, instants, tenancy)
+            index = bucket_epoch_index_name(self.name)
+        quoted = text.replace("'", "''")
+        return (f"COMMENT ON INDEX {quote_identifier(index)} IS '{quoted}'",)
 
     def _live_check(self) -> Any:
         """a versioned table's ``CHECK`` that a live version holds every required column a "gone" marker leaves out
@@ -2411,6 +2530,17 @@ class TableSchema:
             sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
         ]
 
+        bucketed = stored and self._stamped()
+        if bucketed:
+            # the stamped table's restore bucket, derived by the database on every write (_declare_bucket_index: WHY)
+            sa_columns.append(
+                sa.Column(
+                    BUCKET_COLUMN,
+                    sa.SmallInteger(),
+                    sa.Computed(self._bucket_expression(), persisted=True),
+                    nullable=False,
+                )
+            )
         table = sa.Table(
             self.name,
             metadata,
@@ -2426,6 +2556,9 @@ class TableSchema:
         # column can be emitted as ``column.desc()``; an Index over bound
         # columns attaches itself to their table.
         for idx in self.indexes:
+            if not bucketed and BUCKET_COLUMN in idx.columns and self._stamped():
+                # the restore index of a stamped table is the L3 table's alone: a cache holds no bucket column
+                continue
             idx_kwargs: dict[str, Any] = {
                 "unique": idx.unique,
             }

@@ -49,7 +49,12 @@ log record carries its commit's lowest stamp (``s_min``, ``EpochChange.s_min``),
   (:func:`restore_declaration`), so the keeper that restores a lost log finds every versioned table, and how to read
   it, from the catalog alone: it runs in the hub, which imports no consumer's table classes.
 - **Stamped** (:data:`ROW_STAMPED`), the small tables updated in place (``lsf_runs``, ``state_fingerprints``): one row a
-  key, carrying its last write's epoch.
+  key, carrying its last write's epoch. A restore reads "what changed since epoch X" from them by a ``(bucket, epoch)``
+  index (:func:`bucket_epoch_index_name`): the bucket a stored column the database derives from the key's hash
+  (:data:`BUCKET_COLUMN`, :func:`bucket_sql`), one of :data:`RESTORE_BUCKETS`, so the rising end of the epochs is
+  spread over that many ranges (one tablet each on YugabyteDB, :func:`bucket_split_sql`) and a restore reads each
+  bucket's ``epoch >= X`` as one range. The index carries the restore's declaration as its comment
+  (:func:`stamped_restore_declaration`), as a versioned table's does.
 
 **Append-only (versions).** A versioned table is never upserted and never deleted from: a write appends the key's new
 version (an ``INSERT`` with no ``ON CONFLICT``, its own epoch, so it never meets an older version's), and a delete
@@ -87,6 +92,7 @@ from typing import Final
 
 __all__ = [
     "AppendOnlyWriteError",
+    "BUCKET_COLUMN",
     "EPOCH_COLUMN",
     "GONE_COLUMN",
     "MAX_TRANSACTION_AGE_MS",
@@ -97,9 +103,16 @@ __all__ = [
     "UntouchedScopesError",
     "epoch_wall_ms",
     "next_epoch",
+    "RESTORE_BUCKETS",
     "RESTORE_DECLARATION_MARK",
+    "bucket_epoch_index_name",
+    "bucket_split_sql",
+    "bucket_sql",
+    "key_hash_sql",
     "restore_declaration",
     "declared_versions",
+
+    "stamped_restore_declaration",
     "restore_floor",
     "scope_epoch_index_name",
     "touch_last_epoch_sql",
@@ -341,6 +354,142 @@ def touch_last_epoch_sql(quoted_table: str) -> str:
 
 #: a stamped table's declaration: one row a key, carrying its last write's epoch
 ROW_STAMPED: Final = RowEpoch(versions=False)
+
+
+#: the stored column a stamped table's restore index leads with: the key's hash, cut to one of :data:`RESTORE_BUCKETS`.
+#: ``SMALLINT GENERATED ALWAYS AS (...) STORED``, so the database derives it on every write (no writer names it: a write
+#: that does is refused) and it is in the L3 table only, never a cache's or an entity's
+BUCKET_COLUMN: Final[str] = "epoch_bucket"
+
+#: how many buckets a stamped table's restore index spreads its rows over. WHY 16 (Pace 2026-11-25, research-shared-clock
+#: risk 3, 8 to 16): an index led by the epoch alone sends every write to the rising end of one YugabyteDB tablet; 16
+#: buckets are 16 rising ends, one tablet each (:func:`bucket_split_sql`), more than the nodes of any of our clusters, so
+#: the writes land on every node. A restore pays one short range read a bucket (16 statements a table, a handful of
+#: stamped tables), so a few more would buy no spread and cost reads. A power of two: the bucket is the hash's low bits
+RESTORE_BUCKETS: Final[int] = 16
+
+if RESTORE_BUCKETS & (RESTORE_BUCKETS - 1):
+    raise ValueError(
+        f"RESTORE_BUCKETS must be a power of two (the bucket is the hash's low bits), got {RESTORE_BUCKETS}"
+    )
+
+#: the immutable hash of a key column's value, by its kind, the same on Postgres and YugabyteDB (the functions each
+#: type's hash operator class names). A generated column takes only immutable expressions: a ``timestamptz`` is hashed as
+#: its UTC ``timestamp`` (``timezone('UTC', ts)`` is immutable, its text is not), a ``bool`` as an integer
+_KEY_HASHES: Final[dict[str, str]] = {
+    "text": "hashtext({})",
+    "uuid": "uuid_hash({})",
+    "int4": "hashint4({})",
+    "int8": "hashint8({})",
+    "timestamptz": "timestamp_hash({} AT TIME ZONE 'UTC')",
+    "numeric": "hash_numeric({})",
+    "bool": "hashint4({}::integer)",
+    "enum": "hashenum({})",
+    "bytea": "hashtext(encode({}, 'hex'))",
+    "jsonb": "jsonb_hash({})",
+}
+
+
+def bucket_epoch_index_name(table: str) -> str:
+    """the name of a stamped table's ``(bucket, epoch)`` index: ``<table>_bucket_epoch``, a digest past 63 characters.
+
+    :param table: the table
+    :ptype table: str
+    :return: the name
+    :rtype: str
+    """
+    name = f"{table}_bucket_epoch"
+    if len(name) <= 63:
+        return name
+    return f"bucket_epoch_{hashlib.sha256(table.encode()).hexdigest()[:24]}"
+
+
+def key_hash_sql(column: str, kind: str) -> str:
+    """the immutable hash (an ``integer``) of a key column's value, as a generated column may compute it.
+
+    :param column: the column, quoted as the DDL quotes it
+    :ptype column: str
+    :param kind: its kind: one of ``text``, ``uuid``, ``int4``, ``int8``, ``timestamptz``, ``numeric``, ``bool``,
+        ``enum``, ``bytea``, ``jsonb``
+    :ptype kind: str
+    :return: the expression
+    :rtype: str
+    :raises ValueError: when the kind has no hash here
+    """
+    template = _KEY_HASHES.get(kind)
+    if template is None:
+        raise ValueError(f"a stamped table's key column of kind {kind!r} has no hash a restore bucket can be made of")
+    return template.format(column)
+
+
+def bucket_sql(hashes: tuple[str, ...]) -> str:
+    """a stamped table's :data:`BUCKET_COLUMN` expression: its key columns' hashes folded into one, its low bits.
+
+    One column: its hash. More: each folded in as ``hashint8(<so far>::bigint * 31 + <next>)``, so the order of the
+    columns counts (a key ``(a, b)`` and ``(b, a)`` part) and nothing overflows (an ``integer`` times 31 plus an
+    ``integer`` fits a ``bigint``). ``& (RESTORE_BUCKETS - 1)`` keeps the low bits of a negative hash too, ``0`` to
+    ``RESTORE_BUCKETS - 1``.
+
+    :param hashes: each key column's hash (:func:`key_hash_sql`), in the key's order
+    :ptype hashes: tuple[str, ...]
+    :return: the expression, a ``smallint``
+    :rtype: str
+    :raises ValueError: when there is no key column
+    """
+    if not hashes:
+        raise ValueError("a stamped table's restore bucket hashes its key; none given")
+    folded = hashes[0]
+    for term in hashes[1:]:
+        folded = f"hashint8(({folded})::bigint * 31 + {term})"
+    return f"(({folded}) & {RESTORE_BUCKETS - 1})::smallint"
+
+
+def bucket_split_sql() -> str:
+    """the clause a stamped table's restore index is split by on YugabyteDB: a tablet a bucket.
+
+    WHY a range split, not the bucket hashed: YugabyteDB hashes a hashed column's value to a 16-bit code and gives each
+    tablet a range of codes, and 16 small values' codes fall where they fall (measured on the local YugabyteDB
+    2026.1: the codes of 0 to 15 land in 10 of 16 equal ranges, four buckets in one). Range-sharded and split at every
+    bucket value, each bucket is its own tablet, whatever the hash.
+
+    :return: ``SPLIT AT VALUES ((1), (2), ...)``
+    :rtype: str
+    """
+    return "SPLIT AT VALUES (" + ", ".join(f"({value})" for value in range(1, RESTORE_BUCKETS)) + ")"
+
+
+def stamped_restore_declaration(
+    keys: tuple[str, ...], instants: tuple[str, ...], tenancy: tuple[str, str | None]
+) -> str:
+    """what a stamped table's ``(bucket, epoch)`` index says of the table as its comment, for the restore to read it by.
+
+    JSON: the mark, ``"kind": "stamped"``, the bucket column and the number of buckets, the key columns in order
+    (``instants`` those a record spells as their UTC text), and the tenancy. A versioned table's declaration
+    (:func:`restore_declaration`) names no kind.
+
+    :param keys: the table's primary key's columns, in order
+    :ptype keys: tuple[str, ...]
+    :param instants: those of them that are ``timestamptz``
+    :ptype instants: tuple[str, ...]
+    :param tenancy: the table's tenancy kind and its tenant column (or None)
+    :ptype tenancy: tuple[str, str | None]
+    :return: the comment's text
+    :rtype: str
+    """
+    kind, column = tenancy
+    return json.dumps(
+        {
+            RESTORE_DECLARATION_MARK: 1,
+            "kind": "stamped",
+            "bucket": BUCKET_COLUMN,
+            "buckets": RESTORE_BUCKETS,
+            "keys": list(keys),
+            "instants": list(instants),
+            "tenancy": kind,
+            "tenant_column": column,
+        },
+        separators=(",", ":"),
+    )
 
 
 def _wall_ms() -> int:
