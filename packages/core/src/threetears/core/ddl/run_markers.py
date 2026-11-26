@@ -19,6 +19,15 @@ request carrying the epoch), on a direct connection 3tears' ``SqlL3Backend.delet
 :func:`run_marker_insert_sql`, so the text form of every value is the database's own. Its declaration, the table's DDL
 for Postgres and YugabyteDB, is :data:`threetears.core.collections.run_markers.RUN_MARKERS_SCHEMA`.
 
+**A table reset is one row too** (:func:`table_reset_marker_sql`). A ``TRUNCATE`` (an operator's reset, a
+super-admin's) leaves no row for a restore or the writers' backstop to read ``epoch >= X`` from, and since the
+change-note ring retired (0.95) no note says so. So whatever resets a table that carries an epoch writes, before its
+``TRUNCATE`` and on the same connection, the table's reset marker: ``scope`` :data:`TABLE_RESET_SCOPE` and an empty
+``prefix``, the whole table, at the reset's epoch. A restore, the backstop and a keys-unknown page read it by the key
+``(table_name, scope)`` (``table_restore.table_resets``) and hear the whole table cleared, as a reset. No run's marker
+takes that key: a run's ``scope`` is a value of the table's scope column, which a scope epochs table names, and
+:data:`TABLE_RESET_SCOPE` is no such value; nor does a read of a row probe it, since every row's prefix names values.
+
 A leaf module: the backends and the hub import it, and it imports nothing of 3tears but the dependency-free
 interfaces' spelling of a prefix value's text.
 """
@@ -33,7 +42,9 @@ from threetears.interfaces.keyed.keys import prefix_text
 __all__ = [
     "RUN_MARKERS_TABLE",
     "RUN_MARKER_COLUMNS",
+    "TABLE_RESET_SCOPE",
     "run_marker_insert_sql",
+    "table_reset_marker_sql",
 ]
 
 #: the run-marker table, in the same schema as the versioned tables it marks
@@ -44,6 +55,10 @@ RUN_MARKER_COLUMNS: Final[tuple[str, ...]] = ("table_name", "scope", "prefix", "
 
 #: what a marker's ``prefix`` joins the prefix's values with: chr(31), as a change note's ``key_text`` joins a key's
 _PREFIX_SEPARATOR: Final[str] = "\x1f"
+
+#: the ``scope`` of a table's reset marker (its ``prefix`` empty): the whole table, emptied at the marker's epoch.
+#: chr(30), the record separator: no scope column's value a scope epochs table names, and no run's prefix
+TABLE_RESET_SCOPE: Final[str] = "\x1e"
 
 
 def _text_term(placeholder: str, declared: str) -> str:
@@ -87,3 +102,19 @@ def run_marker_insert_sql(declared: Sequence[str], scope_position: int, *, table
         f"VALUES ($1, {terms[scope_position]}, "
         f"array_to_string(ARRAY[{', '.join(terms)}], chr({ord(_PREFIX_SEPARATOR)})), $2)"
     )
+
+
+def table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
+    """the statement that writes one table's reset marker: ``$1`` the table reset, ``$2`` the reset's epoch; its scope
+    :data:`TABLE_RESET_SCOPE`, its prefix empty (the whole table).
+
+    Written before the reset's ``TRUNCATE``, on its connection (``SqlL3Backend.truncate``; the hub's broker and its
+    data-space truncate the same way): a marker whose ``TRUNCATE`` then fails only has followers read the table again.
+
+    :param table: the run-marker table as the statement names it: bare (the session's ``search_path``), or
+        ``schema.table`` quoted by the caller, TRUSTED
+    :ptype table: str
+    :return: the ``INSERT``
+    :rtype: str
+    """
+    return f"INSERT INTO {table} ({', '.join(RUN_MARKER_COLUMNS)}) VALUES ($1, chr({ord(TABLE_RESET_SCOPE)}), '', $2)"

@@ -1580,6 +1580,11 @@ class TableSchema:
     # tenancy (invalidation) columns that can change. Each gets its L3-only <column>_moved_from and _moved_epoch, which
     # the write that moves the row fills in the same statement, so the tenant it left hears of it live and on a restore
     moveable: tuple[str, ...] = ()
+    # the columns, beyond the key, whose values every change of a row names (BaseCollection.invalidation_columns, read
+    # by the collection class from here as it reads tenancy): a stamped or versioned table's restore declaration names
+    # them, so a restore's records and the epoch-range readers carry each one, as the change notes did until 0.95. A
+    # class over a table that carries an epoch declares them here, not on the class (refused there)
+    invalidation_columns: tuple[str, ...] = ()
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     # the key the table stores rows by: the primary key, then the epoch for a versioned table (row_epoch)
@@ -1612,6 +1617,7 @@ class TableSchema:
             # the table's own, added where not declared
             self._declare_row_epoch()
         self._refuse_unsound_moveable()
+        self._refuse_unsound_invalidation_columns()
         if self.delta_files:
             # refused where it is declared, not at the first write: a column no file can type would refuse every one
             rail_arrow_types(self.columns)
@@ -1959,6 +1965,33 @@ class TableSchema:
                 )
         if len(set(self.moveable)) != len(self.moveable):
             raise ValueError(f"TableSchema(name={self.name!r}): moveable names a column twice: {self.moveable!r}")
+
+    def _refuse_unsound_invalidation_columns(self) -> None:
+        """refuse an :attr:`invalidation_columns` declaration no change could name: a column not declared, or one named
+        twice.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the declaration is either
+        """
+        if not isinstance(self.invalidation_columns, tuple) or not all(
+            isinstance(name, str) and name for name in self.invalidation_columns
+        ):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): invalidation_columns must be a tuple of column names; got "
+                f"{self.invalidation_columns!r}"
+            )
+        declared = {column.name for column in self.columns}
+        for name in self.invalidation_columns:
+            if name not in declared:
+                raise ValueError(
+                    f"TableSchema(name={self.name!r}): invalidation column {name!r} is not one of its columns"
+                )
+        if len(set(self.invalidation_columns)) != len(self.invalidation_columns):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): invalidation_columns names a column twice: "
+                f"{self.invalidation_columns!r}"
+            )
 
     @property
     def moved_from_columns(self) -> tuple[tuple[str, str, str], ...]:
@@ -2444,11 +2477,13 @@ class TableSchema:
             return ()
         instants = tuple(name for name in self._pk_columns if self._by_name[name].column_type == DATETIMETZ_TYPE)
         tenancy = (self.tenancy.kind, self.tenancy.column)
+        # every declared invalidation column, so a restore's records carry each one as the change notes did
+        columns = self.invalidation_columns
         if declared.versions:
-            text = restore_declaration(declared, self._pk_columns, instants, tenancy)
+            text = restore_declaration(declared, self._pk_columns, instants, tenancy, columns)
             index = scope_epoch_index_name(self.name)
         else:
-            text = stamped_restore_declaration(self._pk_columns, instants, tenancy, self.moveable)
+            text = stamped_restore_declaration(self._pk_columns, instants, tenancy, self.moveable, columns)
             index = bucket_epoch_index_name(self.name)
         quoted = text.replace("'", "''")
         return (f"COMMENT ON INDEX {quote_identifier(index)} IS '{quoted}'",)

@@ -753,6 +753,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             cls.tenancy = declared_tenancy
         if not isinstance(cls.tenancy, Tenancy):
             raise TypeError(f"{cls.__name__}.tenancy must be a Tenancy; got {cls.tenancy!r}")
+        schema_columns = getattr(schema, "invalidation_columns", ())
+        if isinstance(schema_columns, tuple) and isinstance(cls.invalidation_columns, tuple):
+            if getattr(schema, "row_epoch", None) is not None:
+                # a table carrying an epoch is restored from its own rows by the declaration its DDL writes, which
+                # reads the schema alone: a column only the class names would be missing from every restored record
+                # and every epoch-range read, a coarser eviction than its notes gave (Pace 2026-11-25)
+                unnamed = [
+                    column
+                    for column in cls.invalidation_columns
+                    if column not in schema_columns and column != cls.tenancy.column
+                ]
+                if unnamed:
+                    raise TypeError(
+                        f"{cls.__name__} declares invalidation_columns {unnamed!r} its schema "
+                        f"{getattr(schema, 'name', '?')!r} does not: a table carrying an epoch names them on its "
+                        f"TableSchema (invalidation_columns=...), so its restore declaration carries them"
+                    )
+            # the schema's declared invalidation columns ride with every changed row, as the class's own do
+            cls.invalidation_columns = tuple(dict.fromkeys((*cls.invalidation_columns, *schema_columns)))
         if cls.tenancy.column is not None and cls.tenancy.column not in cls.invalidation_columns:
             # the tenant column rides with every changed row, so its record and its note name the tenant
             cls.invalidation_columns = (*cls.invalidation_columns, cls.tenancy.column)
