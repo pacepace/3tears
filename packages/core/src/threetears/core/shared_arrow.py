@@ -994,19 +994,29 @@ def stamped(table: Any, base: Path | None) -> Any:
     ``{"rows": token, "columns": {column: token}}``): a column takes the token of ``base``'s same-named column only
     when ``base`` holds tokens, as many rows, and that column equal to it (``ChunkedArray.equals``: values and nulls
     position by position, the same type); the row token is kept when the row count is. Every other token is fresh, and
-    every token is fresh when ``base`` is None, holds no tokens, or cannot be read. Other metadata is kept.
+    every token is fresh when ``base`` is None, holds no tokens, or cannot be read. Other metadata is kept. A
+    ``RecordBatchReader`` (a merge's rows, streamed once into its file: :func:`merged_rows`) is stamped fresh whatever
+    ``base`` is, its rows never held to compare: a file written from it holds tokens, so a later write of the same
+    part keeps those of the columns it leaves.
 
     The compare is Arrow's own over the memory-mapped base: no Python per value. Run it where the file is written (a
     worker, :func:`stamping`), never on a serving process's loop.
 
     :param table: the rows as they are written
-    :ptype table: pa.Table
+    :ptype table: pa.Table | pa.RecordBatchReader
     :param base: the file holding the same rows in the version this one is made from; None when there is none
     :ptype base: Path | None
     :return: the rows, stamped
-    :rtype: pa.Table
+    :rtype: pa.Table | pa.RecordBatchReader
     """
     _require_arrow()
+    if isinstance(table, pa.RecordBatchReader):
+        fresh = {name: _fresh_token() for name in table.schema.names}
+        held_metadata = dict(table.schema.metadata or {})
+        held_metadata[COLUMN_TOKENS_KEY] = json.dumps(
+            {"rows": _fresh_token(), "columns": fresh}, sort_keys=True
+        ).encode()
+        return pa.RecordBatchReader.from_batches(table.schema.with_metadata(held_metadata), table)
     rows = _fresh_token()
     columns = {name: _fresh_token() for name in table.column_names}
     if base is not None:

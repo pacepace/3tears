@@ -244,6 +244,44 @@ class TestSettleInputs:
         finally:
             await backend.close()
 
+    async def test_a_table_over_the_floor_still_one_part_is_read_by_scope(self, store: SharedArrowStore) -> None:
+        """Flips if ``AppliedTables.table(scopes=)`` skips a split table's one part as no scope's: ``lookup`` crossed
+        into split (its rule now cuts by state) but no change has re-cut it, so its rows are all in its one part; read
+        by the touched state, it gives that state's rows of it, never none (reports R-1: a derived table's old rows
+        were left in place, 2026-11-25)."""
+        gone_rule = PartRule(copy_hooks.GONE, _KEY)
+        seen_rule = PartRule(copy_hooks.SEEN, ("state",))
+        backend = await _backend(
+            store,
+            [
+                ("results", SCHEMA, BY_STATE),
+                ("lookup", SCHEMA, PartRule("lookup", _KEY)),
+                (copy_hooks.GONE, SCHEMA, gone_rule),
+                (copy_hooks.SEEN, copy_hooks.SEEN_SCHEMA, seen_rule),
+            ],
+            hooks=copy_hooks.SettleInputs(),
+        )
+
+        def lookup_parts() -> set[str]:
+            current = store.current
+            assert current is not None
+            return set(held_parts(store.root, current.name, "lookup"))
+
+        try:
+            lookup = pa.concat_tables([_rows(state, n + 1) for n, state in enumerate(_STATES)])
+            # held as one part, and touching no scope (a table held whole names none): nothing is seen yet
+            await backend.apply([ChangePage(ROWS, "lookup", lookup)])
+            assert lookup_parts() == {WHOLE_PART}
+            assert _held(store, copy_hooks.SEEN, copy_hooks.SEEN_SCHEMA).num_rows == 0
+            backend.use_rules({**backend.rules, "lookup": PartRule("lookup", _KEY, scope_column="state")})
+            await backend.apply([ChangePage(ROWS, "results", _rows("GA", 3))])
+            # the change carried no lookup row: it is still one part, read by GA
+            assert lookup_parts() == {WHOLE_PART}
+            seen = _held(store, copy_hooks.SEEN, copy_hooks.SEEN_SCHEMA)
+            assert dict(zip(seen["state"].to_pylist(), seen["rows"].to_pylist(), strict=True)) == {"GA": 2}
+        finally:
+            await backend.close()
+
 
 class TestWholeSettle:
     async def test_changes_before_a_whole_settle_derive_nothing_and_it_settles_every_scope_in_one_publish(

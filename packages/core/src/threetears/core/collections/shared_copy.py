@@ -140,6 +140,7 @@ from threetears.core.shared_arrow import (
     SharedArrowStore,
     VersionFile,
     merged_rows,
+    stamped,
     version_files,
 )
 from threetears.observe import contain, get_logger
@@ -377,7 +378,7 @@ class AppliedTables:
         :param table: the table
         :ptype table: str
         :param scopes: the scope values' part names whose rows are read (:attr:`touched`, say) of a split table; a
-            table held as one part is read whole. None for every row
+            table held as one part by its rule is read whole. None for every row
         :ptype scopes: Collection[str] | None
         :return: the rows, in the table's schema
         :rtype: pa.Table
@@ -392,11 +393,13 @@ class AppliedTables:
         wanted = None if scopes is None or not rule.split else frozenset(scopes)
         chunks: list[pa.Table] = []
         for part, source in sorted(held.items()):
-            if wanted is not None and not is_pack(part) and _scope_part(part) not in wanted:
+            # a pack holds many scopes, and so does a split table's one part (it crossed the floor and is re-cut by its
+            # next change): only the asked scopes' rows of either
+            many = is_pack(part) or part == WHOLE_PART
+            if wanted is not None and not many and _scope_part(part) not in wanted:
                 continue
             rows = source if isinstance(source, pa.Table) else _map(source, schema)
-            if wanted is not None and is_pack(part):
-                # a pack holds many scopes: only the asked scopes' rows of it
+            if wanted is not None and many:
                 rows = rows.filter(pc.is_in(parts_of_keys(rule, rows), value_set=pa.array(sorted(wanted), pa.string())))
             chunks.append(rows.select(schema.names).cast(schema))
         return pa.concat_tables(chunks) if chunks else schema.empty_table()
@@ -1429,10 +1432,20 @@ def _part_rows(
 
 @dataclass(slots=True)
 class _Result:
-    """one job's writes into its result slot, named ``p<n>`` in the order written: local to the job, never shared."""
+    """one job's writes into its result slot, named ``p<n>`` in the order written: local to the job, never shared.
+
+    Each part is written stamped with its column tokens against ``base``'s same part (``shared_arrow.stamped``): a
+    column the write leaves as the version held it keeps its token, every other column a fresh one.
+
+    **Why** (reports R-1, 2026-11-25): reports' page memo (``build_memo``) runs again only the statements reading a
+    column whose token moved. Written unstamped, a part held no tokens and printed as its file, so every vote-only
+    change ran every statement reading the part's static columns too.
+    """
 
     step: Any
     parts: list[tuple[str, str, str | None]]
+    #: the version's files the job's writes are made from (``version_files``), each part stamped against its own
+    base: Mapping[str, Any] = EMPTY
     written_bytes: int = 0
     #: each part written and its file's bytes, the last write's
     sizes: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -1443,7 +1456,8 @@ class _Result:
         name = f"p{len(self.parts)}"
         # one record batch a file: a reader maps each batch as arrays of its own, and letting a version go frees
         # every array (``MAX_VERSION_FILES``' why); a pack's scopes, concatenated, were a batch a scope
-        wrote = self.step({name: rows.combine_chunks()})
+        held = self.base.get(file_name(table, part))
+        wrote = self.step({name: stamped(rows.combine_chunks(), None if held is None else held.path)})
         self.written_bytes += wrote
         self.sizes[(table, part)] = wrote
         self.parts.append((table, part, name))
@@ -2023,7 +2037,7 @@ def _let_go_job(context: JobContext, plan: _LetGoPlan) -> _Outcome:
         canonical=frozen((table, frozen(columns)) for table, columns in plan.canonical),
     )
     with context.result.writing() as step:
-        result = _Result(step, [])
+        result = _Result(step, [], files)
         lost = _let_go(tables, files, [(table, _map(Path(path))) for table, path in plan.let_go], result)
         due = _pack_due(tables, files, result)
     parts, _ = _settled_parts(files, (), result.parts)
@@ -2055,7 +2069,7 @@ def _settle_whole_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     files = version_files(plan.root, version)
     tables = replace(_tables_of(plan), whole=frozenset())
     with context.result.writing() as step:
-        result = _Result(step, [])
+        result = _Result(step, [], files)
         applied = AppliedTables(
             root=plan.root,
             version=version,
@@ -2155,7 +2169,9 @@ def apply_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
     rows = 0
     let_go: tuple[tuple[str, str], ...] = ()
     with slot.writing() as step:
-        result = _Result(step, [])
+        # stamped against the version itself, a reloaded table's parts too: a column the reload and the pages over it
+        # leave as the version held it keeps the token its readers last saw
+        result = _Result(step, [], base)
         view = _reloaded(tables, base, plan.reloads, result)
         files = view.files
         settled, after = _apply_pages(
@@ -2466,7 +2482,8 @@ def _merge_job(context: JobContext, plan: _MergePlan) -> _MergeOutcome | None:
     level, table, group = best
     ends = [tier for tier in (tier_of(group[0]), tier_of(group[-1])) if tier is not None]
     into = tier_part(ends[0][0], level + 1, ends[0][2], ends[-1][3])
-    context.result.write({"m": merged_rows(plan.root, version, table, group)()})
+    # stamped fresh as it streams (its rows are never held to compare), so the next change to it keeps tokens
+    context.result.write({"m": stamped(merged_rows(plan.root, version, table, group)(), None)})
     return _MergeOutcome(table=table, written=((into, "m"),), dropped=tuple(group))
 
 
@@ -2523,7 +2540,15 @@ def _pack_job(context: JobContext, plan: _MergePlan, files: Mapping[str, Any]) -
     written: list[tuple[str, str]] = []
     with context.result.writing() as step:
         for at, (part, part_rows) in enumerate(cut.items()):
-            step({f"m{at}": _in_key_order(part_rows, rule.key).combine_chunks()})
+            held_file = files.get(file_name(table, part))
+            step(
+                {
+                    f"m{at}": stamped(
+                        _in_key_order(part_rows, rule.key).combine_chunks(),
+                        None if held_file is None else held_file.path,
+                    )
+                }
+            )
             written.append((part, f"m{at}"))
         if fresh.num_rows:
             step({"i": fresh})

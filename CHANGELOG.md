@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the copy's apply worker keeps column tokens, and reads an unsplit part by scope
+
+**Fixed:** `shared_copy` wrote every part unstamped, so `shared_arrow.file_tokens` gave none and a product's memo
+(reports' `build_memo`) ran every statement again on each change. Each part the apply worker writes (a change's, a
+derived table's, a let-go's, a whole settle's, a pack's) is now stamped against the base version's same part
+(`shared_arrow.stamped`): a vote-only change keeps every static column's token and moves the counts'. A tier merge
+and a packing stamp the parts they write too, so the next change to them keeps tokens. `stamped` takes a
+`RecordBatchReader` and stamps it fresh. A reload's staged parts are stamped fresh (staged over no version).
+
+**Fixed:** `AppliedTables.table(name, scopes=)` read nothing of a table over the split floor still held as one part
+(`all`, re-cut on its next change). That part is now read like a pack: mapped, filtered to the asked scopes by its
+scope column.
+
 ### core: a copy's whole settle is a step of its apply lane
 
 **Fixed:** `SharedCopyStages.settle_whole` called `SharedCopyBackend.settle_whole` directly, past the `ApplyLane`: a
