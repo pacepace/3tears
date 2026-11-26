@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
+
+**Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it
+repeats, and checked only that the position was earlier and of the same scope. Lists run to a hundred claims and the
+model miscounts, so a wrong target passed, and since a restatement is never asked about on its own it took that
+claim's verdict. A restatement now quotes the earlier claim's whole excerpt, and the extractor resolves the quote among
+the excerpts of the earlier claims of its scope: an excerpt equal to the quote names its claim ahead of a longer one
+that holds it, and a quote equal to none names a claim only where it could name no other. A number, a fragment, a quote
+no earlier excerpt matches, or one that could name claims of different facts is asked again with the excerpts shown;
+where two facts share the excerpt, the repair offers null, which leaves the claim to be checked on its own. A quote
+still naming no single claim fails the cell's criterion as `repair_budget_spent`. A sentence said word for word in two
+segments resolves to its first saying.
+
+**Changed:** the extractor's prompts and reply schema change, so every claims criterion's fingerprint moves: grades
+made before this never pool with grades made after it, and a repeat of an older grade is refused as another
+definition. The stored grade is unchanged; `restates` is still the earlier claim's place among the grade's claims.
+
+**For hosts:** nothing to change in code. Claims readings from before and after a pin that includes this are two
+definitions, so compare across it only on fresh grades; a repeat of a grade made before it is refused by name.
+
 ### evals: a run a host keeps open is held under a lease, and the names that do it are stable
 
 **Changed:** `RUN_JOB` and `JobFenced` (`threetears.evals.kernel`) and `JobRecorder` (`threetears.evals.run`) move
