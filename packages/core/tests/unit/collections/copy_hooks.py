@@ -123,6 +123,35 @@ class LetsGo:
         return DerivedPages(let_go=[LetGoRows(self.table, rows)])
 
 
+@dataclass(frozen=True, slots=True)
+class LetsGoWith:
+    """:class:`LetsGo`, only after a change carrying rows of ``when``: a change to ``table`` itself lets nothing go,
+    so the table can be left as that change wrote it.
+
+    :ivar table: the table
+    :ivar columns: the columns matched
+    :ivar values: the rows let go, a tuple of values a row, in ``columns``' order
+    :ivar when: the table a change must carry rows of for anything to be let go
+    """
+
+    table: str
+    columns: tuple[str, ...]
+    values: tuple[tuple[str | int, ...], ...]
+    when: str
+
+    def derive(self, applied: AppliedTables) -> DerivedPages:
+        """the rows let go after a change carrying ``when``'s rows; nothing otherwise.
+
+        :param applied: what the change did
+        :ptype applied: AppliedTables
+        :return: the let-go rows
+        :rtype: DerivedPages
+        """
+        if self.when not in applied.rows:
+            return DerivedPages()
+        return LetsGo(self.table, self.columns, self.values).derive(applied)
+
+
 #: the settle-inputs tests' derived tables: the rows a change deleted as they were held, and each touched state's rows
 #: of an unchanged table read from the version with the change applied
 GONE = "gone"

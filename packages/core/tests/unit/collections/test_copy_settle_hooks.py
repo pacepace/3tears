@@ -206,6 +206,34 @@ class TestLetGo:
         finally:
             await backend.close()
 
+    async def test_a_run_is_let_go_from_a_table_over_the_floor_still_one_part(self, store: SharedArrowStore) -> None:
+        """Flips if a let-go by scope and run skips a split table's one part as no scope's: ``by_run`` crossed into
+        split (its rule now cuts by state) but no change has re-cut it, so its rows are all in its one part; a run of
+        one state let go by its scope and run is let go from that part, every other row kept (reports R-2: a replica
+        rebuilt from L3 kept every run its whole settle let go, 2026-11-25)."""
+        backend = await _backend(
+            store,
+            [("results", SCHEMA, BY_STATE), ("by_run", RUN_SCHEMA, PartRule("by_run", _RUN_KEY))],
+            hooks=copy_hooks.LetsGoWith("by_run", ("state", "run_id"), (("VA", 1),), when="results"),
+        )
+        try:
+            rows = pa.concat_tables([_run_rows(state, run, 20) for state in ("AZ", "GA", "VA") for run in (1, 2, 3)])
+            await backend.apply([ChangePage(ROWS, "by_run", rows)])
+            current = store.current
+            assert current is not None
+            assert set(held_parts(store.root, current.name, "by_run")) == {WHOLE_PART}
+            backend.use_rules({**backend.rules, "by_run": BY_RUN})
+            applied = await backend.apply([ChangePage(ROWS, "results", _rows("GA", 3))])
+            assert applied.let_go is not None
+            assert applied.let_go.rows == {"by_run": 20}
+            assert applied.let_go.parts == {"by_run": {WHOLE_PART: True}}
+            after = _held(store, "by_run", RUN_SCHEMA)
+            assert after.num_rows == 160
+            left = after.filter(pc.equal(after["state"], "VA"))
+            assert sorted(set(left["run_id"].to_pylist())) == [2, 3]
+        finally:
+            await backend.close()
+
 
 class TestSettleInputs:
     async def test_the_settle_sees_deleted_rows_as_held_and_reads_the_applied_version(
