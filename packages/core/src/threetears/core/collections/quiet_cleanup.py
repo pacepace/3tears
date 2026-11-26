@@ -60,12 +60,13 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, runtime_checkable
 
 import pyarrow as pa
 import pyarrow.compute as pc
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
+from threetears.core.backends.broker_generation import cleanup_deleting
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.schema_sql import key_array_type
 from threetears.core.collections.cleanup_progress import CLEANUP_PROGRESS_TABLE
@@ -88,7 +89,7 @@ from threetears.interfaces.keyed.keys import index_hint, serving_index
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 
-__all__ = ["CleanupPass", "LoadGate", "QuietCleanup", "log_window_floor"]
+__all__ = ["ChangeLogWindow", "CleanupPass", "LoadGate", "QuietCleanup", "log_window_floor"]
 
 log = get_logger(__name__)
 
@@ -123,8 +124,10 @@ _PAUSES = counter(
 )
 
 
-class _OldestRecord(Protocol):
-    """what :func:`log_window_floor` reads of the change log: an ``EpochGenerationSource`` satisfies it."""
+@runtime_checkable
+class ChangeLogWindow(Protocol):
+    """what :func:`log_window_floor` reads of the change log: an ``EpochGenerationSource`` satisfies it. The hub's
+    broker reads the same window through it, to bound the floor a cleanup delete names (``CLEANUP_FLOOR_FIELD``)."""
 
     async def log_state(self) -> Any:
         """the log's state (``first_seq``, ``last_seq``), or None when absent."""
@@ -133,13 +136,13 @@ class _OldestRecord(Protocol):
         """the record at ``seq`` (its ``s_min``), or None."""
 
 
-async def log_window_floor(log_reader: _OldestRecord) -> int | None:
+async def log_window_floor(log_reader: ChangeLogWindow) -> int | None:
     """the restore window's floor F: :func:`~threetears.core.ddl.row_epoch.cleanup_floor` of the lowest stamp of the
     oldest record the change log holds. None when that cannot be known (no log, an empty one, or an oldest record that
     names no stamp): cleanup then removes nothing.
 
     :param log_reader: the change log (an ``EpochGenerationSource``)
-    :ptype log_reader: _OldestRecord
+    :ptype log_reader: ChangeLogWindow
     :return: the floor, or None
     :rtype: int | None
     """
@@ -598,15 +601,20 @@ class QuietCleanup:
         stored = (*key, EPOCH_COLUMN)
         count = 0
         if doomed.num_rows:
-            written = await delete_keyed(
-                self._pool,
-                schema.name,
-                keys=KeyBatch(
-                    columns=stored,
-                    keys=[doomed.column(c).combine_chunks() for c in stored],
-                    casts=(*casts, "bigint"),
-                ),
-            )
+            # marked cleanup's with its floor (CLEANUP_DELETE_FIELD), and bounded by it in the statement itself: the
+            # broker takes a delete of a versioned table only so, and only for a floor no higher than its own reading
+            # of the log's window, so no version at or above F can go whatever keys a delete names
+            with cleanup_deleting(floor):
+                written = await delete_keyed(
+                    self._pool,
+                    schema.name,
+                    keys=KeyBatch(
+                        columns=stored,
+                        keys=[doomed.column(c).combine_chunks() for c in stored],
+                        casts=(*casts, "bigint"),
+                    ),
+                    where=[Fragment(f'"{EPOCH_COLUMN}" < $1', (floor,))],
+                )
             count = written.count
             _REMOVED.labels(table=schema.name, kind="version").inc(count)
         return count
@@ -641,17 +649,19 @@ class QuietCleanup:
             prefix = self._prefix_of(schema, text)
             swept_all = False
             while not (swept_all or self._gate.stirred):
-                swept = await delete_before(
-                    schema.name,
-                    collection=None,
-                    key=schema.stored_key,
-                    column=EPOCH_COLUMN,
-                    before=epoch,
-                    page=self._batch,
-                    by=prefix,
-                    most_pages=1,
-                    conn=self._pool,
-                )
+                # marked cleanup's with its floor: the broker takes a run's rows only below a marker under F
+                with cleanup_deleting(floor):
+                    swept = await delete_before(
+                        schema.name,
+                        collection=None,
+                        key=schema.stored_key,
+                        column=EPOCH_COLUMN,
+                        before=epoch,
+                        page=self._batch,
+                        by=prefix,
+                        most_pages=1,
+                        conn=self._pool,
+                    )
                 removed += swept.deleted
                 _REMOVED.labels(table=schema.name, kind="run_row").inc(swept.deleted)
                 swept_all = swept.deleted < self._batch
