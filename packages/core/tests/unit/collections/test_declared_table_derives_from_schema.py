@@ -305,6 +305,25 @@ class TestAStampedTablesOwnStatementsStampItsRows:
             [stamp] = [value for value in params if isinstance(value, int) and value > before]
             assert stamp > before
 
+    def test_a_natural_key_upsert_arbitrates_on_live_rows_only(self) -> None:
+        """a stamped table's natural name holds its live rows only (``UNIQUE (...) WHERE NOT gone``), so an upsert on
+        it names that predicate (PostgreSQL infers the partial index only from it), and an update by it reaches a live
+        row only; the primary key keeps its plain target (a write on it revives a gone row in place)."""
+
+        class _StampedByCode(_Stamped):
+            conflict_columns: ClassVar[tuple[str, ...]] = ("code",)
+
+        config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        by_code = _StampedByCode(registry=CollectionRegistry(), config=config, nats_client=NO_L2)
+        stamped = {**_row(), "epoch": 1, "gone": False}
+        upsert, _ = by_code.write_statement(stamped, returning=True)
+        assert "ON CONFLICT (code) WHERE NOT gone DO UPDATE SET" in upsert
+        update, _ = by_code.write_statement({"id": uuid.uuid4(), "code": "b", "price": 1, "epoch": 1, "gone": False})
+        assert update.startswith("UPDATE stamped_rows SET") and update.endswith("AND NOT gone")
+        by_key = _Stamped(registry=CollectionRegistry(), config=config, nats_client=NO_L2)
+        keyed, _ = by_key.write_statement({**_row(), "epoch": 1, "gone": False})
+        assert "ON CONFLICT (id) DO UPDATE SET" in keyed and "WHERE NOT gone" not in keyed
+
     async def test_a_versioned_tables_upsert_is_refused(self) -> None:
         class _Versioned(_Every):
             schema = dataclasses.replace(

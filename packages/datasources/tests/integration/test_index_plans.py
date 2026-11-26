@@ -39,7 +39,9 @@ CREATE TABLE datasource_tables (
     table_name character varying(255) NOT NULL,
     template_id uuid,
     date_created timestamp with time zone NOT NULL DEFAULT now(),
-    date_updated timestamp with time zone NOT NULL DEFAULT now()
+    date_updated timestamp with time zone NOT NULL DEFAULT now(),
+    epoch bigint NOT NULL DEFAULT 1,
+    gone boolean NOT NULL DEFAULT false
 )
 """
 
@@ -106,7 +108,9 @@ CREATE TABLE datasources (
     name character varying(255) NOT NULL,
     status character varying(50) NOT NULL,
     date_created timestamp with time zone NOT NULL DEFAULT now(),
-    date_updated timestamp with time zone NOT NULL DEFAULT now()
+    date_updated timestamp with time zone NOT NULL DEFAULT now(),
+    epoch bigint NOT NULL DEFAULT 1,
+    gone boolean NOT NULL DEFAULT false
 )
 """
 
@@ -204,12 +208,20 @@ async def test_schema_priming_reads_its_names_through_the_unique_name_index(db_c
         await conn.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))  # type: ignore[no-untyped-call]
         # the hub's status index (the one the hint named before)
         await conn.execute("CREATE INDEX idx_datasources_status ON datasources (status)")
+        # the hub's name index, among live rows only (datasources' LIVE_UNIQUE_INDEXES): the read names NOT gone
+        await conn.execute("CREATE UNIQUE INDEX idx_datasources_name ON datasources (name) WHERE NOT gone")
         await conn.execute("CREATE TABLE datasource_customers (datasource_id uuid NOT NULL, customer_id uuid NOT NULL)")
         columns = await conn.fetch(
             "SELECT column_name, data_type FROM information_schema.columns"
             " WHERE table_schema = current_schema() AND table_name = 'datasources' AND is_nullable = 'NO'"
         )
-        by_type = {"uuid": "gen_random_uuid()", "boolean": "false", "jsonb": "'{}'::jsonb", "integer": "0"}
+        by_type = {
+            "uuid": "gen_random_uuid()",
+            "boolean": "false",
+            "jsonb": "'{}'::jsonb",
+            "integer": "0",
+            "bigint": "1",
+        }
         values = {"name": "'ds-' || g", "status": "CASE WHEN g % 50 = 0 THEN 'disabled' ELSE 'active' END"}
         names = [c["column_name"] for c in columns]
         exprs = [
