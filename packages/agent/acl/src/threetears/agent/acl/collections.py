@@ -129,7 +129,11 @@ _GRANT_WINNER_ORDER: Final[tuple[k.Sort, ...]] = (k.Sort("date_granted"), k.Sort
 #: can meet the winner's commit with SerializationError ("query layer retry isn't possible, READ COMMITTED transaction
 #: was aborted and some data was already sent to the user", kConflict on the natural-key index), which YugabyteDB asks
 #: the client to retry: about one race in three of twelve ensures on the integration YugabyteDB
-#: (test_role_assignment_ensure_race, 2026-11-21). The winner has committed, so the insert tried again is absorbed and
+#: (test_role_assignment_ensure_race, 2026-11-21). A namespace's racing inserts also DEADLOCK: one statement writes the
+#: row and each of its index entries to their own tablets at once, every entry the same for both racers (the row's
+#: key is its ybctid), so each racer can take some first and wait on the other for the rest; YugabyteDB aborts one
+#: ("aborted to break a deadlock cycle", 40P01): 113 deadlocks and 6 conflicts in 23,280 rounds of eight racing
+#: ensures, six rounds at once (2026-11-26). The winner has committed, so the insert tried again is absorbed and
 #: answers it: one more is almost always enough; the waits (5 ms .. 40 ms) only space them. PostgreSQL never raises it
 #: here: one run.
 _ENSURE_ATTEMPTS: Final[int] = 5
@@ -3007,41 +3011,57 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         if existing is None:
             now = datetime.now(UTC)
             row_scope = "platform" if customer_id is None else "customer"
-            # stamped (ROW_STAMPED): the row carries its write's epoch, a fresh stamp of its own statement
-            await self.l3_pool.execute(
-                "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, "
-                "owner_namespace, owner_namespace_id, customer_id, schema_name, metadata, date_created, date_updated, "
-                "epoch) VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9::text::jsonb, $10, $10, $11) "
-                "ON CONFLICT DO NOTHING",
-                row_scope,
-                namespace_id,
-                name,
-                namespace_type,
-                owner_agent_id,
-                owner_namespace,
-                customer_id,
-                schema_name,
-                _json.dumps(dict(metadata or {})),
-                now,
-                CallerTransaction.stamp_for(None, "namespaces"),
-                owner_namespace_id,
+            pool = self.l3_pool
+
+            async def insert_if_absent() -> None:
+                # stamped (ROW_STAMPED): the row carries its write's epoch, a fresh stamp of its own statement
+                await pool.execute(
+                    "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, owner_agent_id, "
+                    "owner_namespace, owner_namespace_id, customer_id, schema_name, metadata, date_created, "
+                    "date_updated, epoch) VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9::text::jsonb, $10, $10, $11) "
+                    "ON CONFLICT DO NOTHING",
+                    row_scope,
+                    namespace_id,
+                    name,
+                    namespace_type,
+                    owner_agent_id,
+                    owner_namespace,
+                    customer_id,
+                    schema_name,
+                    _json.dumps(dict(metadata or {})),
+                    now,
+                    CallerTransaction.stamp_for(None, "namespaces"),
+                    owner_namespace_id,
+                )
+
+            # every replica ensures the same namespace at once; on YugabyteDB the racing inserts of one row deadlock
+            # or conflict, which YugabyteDB asks the client to retry (_ENSURE_ATTEMPTS). The aborted attempt wrote
+            # nothing and the winner has committed, so the next is absorbed by the row's key
+            await retry_serialization_conflicts(
+                insert_if_absent, attempts=_ENSURE_ATTEMPTS, first_wait=_ENSURE_FIRST_WAIT
             )
             # announced whether or not a conflict absorbed it: through the L3 broker the INSERT
             # advanced the table's write generation either way, and an advance no row is heard for
             # drops the table on every follower
             await self.invalidate_cache_many([namespace_id], rows=[{"row_scope": row_scope}])
             existing = await self.find_by_id(namespace_id)
-            if existing is None and await self._revive_gone_namespace(
-                namespace_id,
-                name=name,
-                namespace_type=namespace_type,
-                owner_agent_id=owner_agent_id,
-                owner_namespace=owner_namespace,
-                owner_namespace_id=owner_namespace_id,
-                customer_id=customer_id,
-                schema_name=schema_name,
-                metadata=metadata,
-                now=now,
+            # the revive races as the insert does (racing writes of one row, _ENSURE_ATTEMPTS); tried again, it
+            # finds the row the winner made live and writes nothing
+            if existing is None and await retry_serialization_conflicts(
+                lambda: self._revive_gone_namespace(
+                    namespace_id,
+                    name=name,
+                    namespace_type=namespace_type,
+                    owner_agent_id=owner_agent_id,
+                    owner_namespace=owner_namespace,
+                    owner_namespace_id=owner_namespace_id,
+                    customer_id=customer_id,
+                    schema_name=schema_name,
+                    metadata=metadata,
+                    now=now,
+                ),
+                attempts=_ENSURE_ATTEMPTS,
+                first_wait=_ENSURE_FIRST_WAIT,
             ):
                 # the revive announced its row (_revive_gone_namespace)
                 existing = await self.find_by_id(namespace_id)

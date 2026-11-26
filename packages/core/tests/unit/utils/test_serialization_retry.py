@@ -11,15 +11,18 @@ from threetears.core.utils.serialization_retry import retry_serialization_confli
 class _Unit:
     """conflicts ``conflicts`` times, then answers ``"done"`` (or raises ``then``)."""
 
-    def __init__(self, conflicts: int, then: BaseException | None = None) -> None:
+    def __init__(
+        self, conflicts: int, then: BaseException | None = None, conflict: type[Exception] = asyncpg.SerializationError
+    ) -> None:
         self.conflicts = conflicts
         self.then = then
+        self.conflict = conflict
         self.runs = 0
 
     async def __call__(self) -> str:
         self.runs += 1
         if self.runs <= self.conflicts:
-            raise asyncpg.SerializationError("conflict with concurrently committed data")
+            raise self.conflict("conflict with concurrently committed data")
         if self.then is not None:
             raise self.then
         return "done"
@@ -30,6 +33,22 @@ async def test_a_conflicting_unit_is_run_again_and_answers() -> None:
     unit = _Unit(conflicts=2)
     assert await retry_serialization_conflicts(unit, attempts=3, first_wait=0) == "done"
     assert unit.runs == 3
+
+
+async def test_a_deadlocked_unit_is_run_again_and_answers() -> None:
+    """Flips if a unit YugabyteDB aborted to break a deadlock cycle (40P01) is not run again: racing inserts of one
+    row deadlock there (NamespaceCollection.ensure_namespace)."""
+    unit = _Unit(conflicts=2, conflict=asyncpg.DeadlockDetectedError)
+    assert await retry_serialization_conflicts(unit, attempts=3, first_wait=0) == "done"
+    assert unit.runs == 3
+
+
+async def test_a_unit_that_always_deadlocks_raises_the_deadlock_after_its_attempts() -> None:
+    """Flips if a deadlock that never clears is swallowed, or retried past the attempts."""
+    unit = _Unit(conflicts=99, conflict=asyncpg.DeadlockDetectedError)
+    with pytest.raises(asyncpg.DeadlockDetectedError):
+        await retry_serialization_conflicts(unit, attempts=4, first_wait=0)
+    assert unit.runs == 4
 
 
 async def test_a_unit_that_always_conflicts_raises_after_its_attempts() -> None:
