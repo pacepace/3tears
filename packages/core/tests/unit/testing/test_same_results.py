@@ -15,6 +15,9 @@ from typing import Any
 import duckdb
 import pytest
 
+from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, ROW_STAMPED
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 
@@ -251,3 +254,58 @@ async def test_related_rows_are_seeded_in_each_case_and_the_old_rows_answered(co
     assert seen == [0, 1, 25, 12, 12, 12, 5, 6]
     assert [len(rows) for rows in answered] == [0, 1, 13, 6, 6, 3, 3, 3]
     assert await conn.fetch("SELECT * FROM p") == []
+
+
+#: a ``ROW_STAMPED`` table: its declaration registers it stamped (``keys.stamped_table``), as a product table's does
+_STAMPED = TableSchema(
+    name="same_results_stamped",
+    primary_key="k",
+    columns=[Column("tenant", STRING_TYPE), Column("k", INT_TYPE), Column("v", STRING_TYPE)],
+    row_epoch=ROW_STAMPED,
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: its L3 shape as the seed meets it: the epoch NOT NULL with no default, so an unstamped row is refused
+_STAMPED_DDL = (
+    f"CREATE TABLE {_STAMPED.name} (tenant VARCHAR NOT NULL, k INTEGER NOT NULL, v VARCHAR, "
+    f"{EPOCH_COLUMN} BIGINT NOT NULL, gone BOOLEAN NOT NULL DEFAULT false)"
+)
+
+_OLD_STAMPED = f"SELECT k, v, {EPOCH_COLUMN} FROM {_STAMPED.name} WHERE tenant = $1 ORDER BY k"
+
+
+def _stamped_row(seed: Seeded) -> Mapping[str, Any]:
+    return {"tenant": f"t{seed.tenant}", "k": seed.index, "v": None if seed.null else f"v{seed.index}"}
+
+
+async def test_a_stamped_tables_rows_are_seeded_with_an_epoch_each(conn: _Duck) -> None:
+    """Flips if a ``ROW_STAMPED`` table's seed names no epoch (the database refuses the row: its epoch is NOT NULL with
+    no default), or if its rows share one rather than each its own fresh stamp, as each write's is; a row naming its own
+    epoch keeps it."""
+    await conn.execute(_STAMPED_DDL)
+    answered = await assert_same_results(
+        conn,
+        table=_STAMPED.name,
+        row=_stamped_row,
+        old_sql=_OLD_STAMPED,
+        params=["t0"],
+        helper=_asking(_OLD_STAMPED, "t0"),
+    )
+    epochs = [dict(row)[EPOCH_COLUMN] for rows in answered for row in rows]
+    assert epochs and all(epoch > 0 for epoch in epochs)
+    assert len(set(epochs)) == len(epochs)
+
+    answered = await assert_same_results(
+        conn,
+        table=_STAMPED.name,
+        row=lambda seed: {**_stamped_row(seed), EPOCH_COLUMN: 7},
+        old_sql=_OLD_STAMPED,
+        params=["t0"],
+        helper=_asking(_OLD_STAMPED, "t0"),
+    )
+    assert {dict(row)[EPOCH_COLUMN] for rows in answered for row in rows} == {7}
+
+
+async def test_an_unstamped_tables_rows_take_no_epoch(conn: _Duck) -> None:
+    """Flips if a table no stamped declaration names is seeded with an epoch column (it has none)."""
+    await assert_same_results(conn, table="t", row=_row, old_sql=_OLD, params=["t0"], helper=_asking(_OLD, "t0"))
