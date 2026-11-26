@@ -113,7 +113,7 @@ class TestMoveLogging:
 
     @pytest.mark.parametrize(
         ("verdict", "reason"),
-        [(exhausted(), "exhausted"), (revoked(), "revoked"), (forbidden(), "forbidden")],
+        [(exhausted(), "exhausted"), (revoked(), "revoked"), (forbidden(VerdictScope.KEY), "forbidden")],
     )
     async def test_the_last_key_running_out_with_no_move_is_logged_at_warning(
         self, caplog: pytest.LogCaptureFixture, verdict: object, reason: str
@@ -124,6 +124,15 @@ class TestMoveLogging:
         await fail_on(pool, verdict)  # type: ignore[arg-type]
         assert len(lines(caplog, logging.WARNING, f"key 'b' is now {reason}; the active key is 'b'")) == 1
         assert not lines(caplog, logging.WARNING, "key 'a' is now")
+
+    async def test_a_forbid_for_one_model_is_logged_naming_that_model(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="threetears.models.key_pool")
+        pool = make_pool(spec("a"), spec("b"))
+        await fail_on(pool, forbidden())
+        assert (
+            len(lines(caplog, logging.WARNING, f"key 'a' is now forbidden for model {MODEL!r}; the active key is 'a'"))
+            == 1
+        )
 
     async def test_a_key_that_was_not_active_is_logged_when_its_account_runs_out(
         self, caplog: pytest.LogCaptureFixture

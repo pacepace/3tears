@@ -819,6 +819,9 @@ class KeyPool:
         if reason not in _WARNING_REASONS:
             return
         active = _active(view.doc)
+        # A forbid for one model leaves the key serving every other model, so the line names that model: an
+        # operator reading "forbidden" alone would take the whole key for unusable.
+        state = str(reason) if scope == _WHOLE_KEY else f"{reason} for model {scope!r}"
         for label in changed:
             if label == active_before and active != active_before:
                 continue  # the move off it was logged, with this reason
@@ -826,9 +829,17 @@ class KeyPool:
                 "key pool %r: key %r is now %s; the active key is %r",
                 self._name,
                 label,
-                reason,
+                state,
                 active,
-                extra={"extra_data": {"pool": self._name, "label": label, "state": str(reason), "active": active}},
+                extra={
+                    "extra_data": {
+                        "pool": self._name,
+                        "label": label,
+                        "state": str(reason),
+                        "model": None if scope == _WHOLE_KEY else scope,
+                        "active": active,
+                    }
+                },
             )
 
     # -- selection -------------------------------------------------------------------------------
