@@ -220,8 +220,9 @@ async def test_the_statements_and_the_rows_read_are_the_same_for_1k_and_100k_row
                 assert await collection.delete_prefixes([_GONE], conn=conn) == gone_rows
             costs.append((conn.statements, conn.rows_read))
         assert await _counts(db) == {("PA", 6): _KEPT_ROWS, ("OH", 7): _KEPT_ROWS}
-    # the marks' one row, the delete, the marks put back: nothing of the table read
-    assert costs[0] == costs[1] == (3, 1)
+    # the one key-led delete: nothing read. Until 07eb63301 (0.95, prefix deletes set no marks) it was (3, 1): the
+    # change-note marks set (one row read), the delete, the marks put back; the ring retired, so the marks went with it
+    assert costs[0] == costs[1] == (1, 0)
 
 
 def _metadata() -> MetaData:
