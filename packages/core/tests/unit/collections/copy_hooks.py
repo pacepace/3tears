@@ -252,3 +252,58 @@ class WaitThenBulk:
         WaitFor(self.path).derive(applied)
         ids = pa.array(np.arange(self.rows, dtype=np.int64))
         return [ChangePage(ROWS, BULK, pa.table({"id": ids, "value": ids}, schema=BULK_SCHEMA))]
+
+
+#: the follower's whole-settle test's derived table: each state's votes in the followed ``votes`` table, and ``how``
+#: they were derived (``change`` by a change's ``derive``, ``whole`` by the whole settle's ``derive_whole``)
+VOTE_TOTALS = "vote_totals"
+VOTE_TOTALS_SCHEMA = pa.schema(
+    [pa.field("state", pa.string()), pa.field("votes", pa.int64()), pa.field("how", pa.string())]
+)
+
+
+def _vote_totals(votes: pa.Table, how: str) -> pa.Table:
+    summed = votes.group_by("state").aggregate([("votes", "sum")])
+    return pa.table(
+        {
+            "state": summed["state"],
+            "votes": pc.cast(summed["votes_sum"], pa.int64()),
+            "how": pa.array([how] * summed.num_rows, pa.string()),
+        },
+        schema=VOTE_TOTALS_SCHEMA,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class VoteTotals:
+    """derives :data:`VOTE_TOTALS` from the followed ``votes`` table: the changed states' totals marked ``change`` on a
+    change, and every state's marked ``whole`` at a whole settle (a ``WholeHooks``)."""
+
+    def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """the totals of the states the change wrote or deleted, read from the applied version.
+
+        :param applied: what the change did
+        :ptype applied: AppliedTables
+        :return: one rows page of totals, or none
+        :rtype: Sequence[ChangePage]
+        """
+        rows = applied.rows.get("votes")
+        deleted = applied.deleted.get("votes")
+        states = set(rows["state"].to_pylist()) if rows is not None else set()
+        states |= set(deleted["state"].to_pylist()) if deleted is not None else set()
+        if not states:
+            return []
+        votes = applied.table("votes")
+        votes = votes.filter(pc.is_in(votes["state"], value_set=pa.array(sorted(states), pa.string())))
+        return [ChangePage(ROWS, VOTE_TOTALS, _vote_totals(votes, "change"))]
+
+    def derive_whole(self, applied: AppliedTables) -> DerivedPages:
+        """every state's totals, replacing the table whole.
+
+        :param applied: the version read whole
+        :ptype applied: AppliedTables
+        :return: the totals
+        :rtype: DerivedPages
+        """
+        totals = _vote_totals(applied.table("votes"), "whole")
+        return DerivedPages(pages=[ChangePage(ROWS, VOTE_TOTALS, totals)], whole=frozenset({VOTE_TOTALS}))

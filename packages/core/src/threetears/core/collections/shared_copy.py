@@ -2721,6 +2721,16 @@ class SharedCopyBackend:
         return self._rules
 
     @property
+    def derives_whole(self) -> bool:
+        """whether the hooks derive from the whole copy at once (:class:`WholeHooks`): a whole settle may be deferred
+        to (:meth:`defer_hooks_until_whole`).
+
+        :return: True for :class:`WholeHooks`
+        :rtype: bool
+        """
+        return isinstance(self._hooks, WholeHooks)
+
+    @property
     def schemas(self) -> Mapping[str, pa.Schema]:
         """each table's columns, read-only.
 

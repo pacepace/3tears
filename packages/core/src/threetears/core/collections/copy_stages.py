@@ -37,6 +37,12 @@ them, in one version. A reload the reload worker could not stage, or that was ca
 raises ``LookupError`` and the follower looks for the full again. A per-state reload (a keys stage and a rows stage, not
 whole) and any change the reload lane cannot take apply as an ordinary change through the apply lane, under the lock.
 
+**A whole settle after a start that read L3 whole** (``copy_follower._SettlesWhole``). With hooks that derive whole
+(``shared_copy.WholeHooks``), the follower's start tells this backend it read L3 whole
+(:meth:`SharedCopyStages.defer_settles_until_whole`): the backend applies each change with nothing derived
+(``SharedCopyBackend.defer_hooks_until_whole``) until the follower's first pass labelled with one stamp asks
+:meth:`SharedCopyStages.settle_whole`, which derives every scope at once in the apply worker as one publish.
+
 **Calls and state.** The staging methods are called on threads (the follower's ``asyncio.to_thread``); they replace
 the stages, a read-only mapping of read-only stages, whole under a lock, and nothing else: no CPU, no IO. The apply and
 the reload's prepare are coroutines on the event loop the lanes serve. The prepared reloads are a tuple replaced whole
@@ -62,6 +68,7 @@ from threetears.core.collections.shared_copy import (
     KEYS,
     LEAVE,
     ROWS,
+    Applied,
     ApplyHooks,
     ChangePage,
     SharedCopyBackend,
@@ -417,6 +424,31 @@ class SharedCopyStages:
         applied = await self._lane.apply(_joined(pages, first), whole=whole, mark=mark)
         self._dropped(names)
         return int(applied.rows)
+
+    # -- the whole settle after a start that read L3 whole: on the loop ------------------------------------------------
+
+    def defer_settles_until_whole(self) -> bool:
+        """the follower's start read L3 whole (``copy_follower._SettlesWhole``): until :meth:`settle_whole` publishes,
+        each change applies with nothing derived (``SharedCopyBackend.defer_hooks_until_whole``). Whether a whole
+        settle is due: False when the backend's hooks derive nothing whole.
+
+        :return: whether :meth:`settle_whole` is due
+        :rtype: bool
+        """
+        if not self._backend.derives_whole:
+            return False
+        self._backend.defer_hooks_until_whole()
+        return True
+
+    async def settle_whole(self) -> Applied | None:
+        """settle the whole copy in the apply worker as one publish (``SharedCopyBackend.settle_whole``), under the
+        backend's apply turn, so no change of the lane lands between. On the event loop.
+
+        :return: what it published; None when the copy holds no version yet
+        :rtype: Applied | None
+        :raises ValueError: as ``SharedCopyBackend.settle_whole``
+        """
+        return await self._backend.settle_whole()
 
     async def _published(self, prepared: _Prepared, names: frozenset[str], mark: int | None) -> int:
         """a prepared reload's publish, with ``mark``; its stages dropped however it ends (its pages went with it)."""

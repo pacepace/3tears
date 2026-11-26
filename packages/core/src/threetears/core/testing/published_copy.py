@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
@@ -36,7 +36,7 @@ from threetears.core.collections.copy_parts import PartRule, part_rules
 from threetears.core.collections.copy_queries import CopyQueries
 from threetears.core.collections.copy_stages import SharedCopyStages
 from threetears.core.collections.schema_backed import rail_arrow_types
-from threetears.core.collections.shared_copy import MARK_TABLE, SharedCopyBackend, held_parts
+from threetears.core.collections.shared_copy import MARK_TABLE, ApplyHooks, SharedCopyBackend, held_parts
 from threetears.core.shared_arrow import Parts, SharedArrowStore, version_files
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.rows import DeclaredKey
@@ -164,19 +164,35 @@ class SharedCopy:
     :ptype workers: int
     :param rules: each table's parts; None holds each as one part (under the size floor)
     :ptype rules: Mapping[str, PartRule] | None
+    :param derived: tables the hooks derive, beside the followed ones: each one's columns and parts
+    :ptype derived: Mapping[str, tuple[pa.Schema, PartRule]] | None
+    :param hooks: the backend's hooks (``shared_copy.ApplyHooks``, ``WholeHooks``); None for none
+    :ptype hooks: ApplyHooks | None
+    :param preload: modules the apply worker holds from its start (the hooks')
+    :ptype preload: Sequence[str]
     """
 
     def __init__(
-        self, tables: Sequence[FollowedTable], *, workers: int = 1, rules: dict[str, PartRule] | None = None
+        self,
+        tables: Sequence[FollowedTable],
+        *,
+        workers: int = 1,
+        rules: dict[str, PartRule] | None = None,
+        derived: Mapping[str, tuple[pa.Schema, PartRule]] | None = None,
+        hooks: ApplyHooks | None = None,
+        preload: Sequence[str] = (),
     ) -> None:
         self._root = Path(tempfile.mkdtemp(prefix="shared-copy-"))
         #: the store the copy publishes in
         self.store = SharedArrowStore(self._root / "shm", max_bytes=_STORE_BYTES)
         schemas = {table.name: pa.schema(list(rail_arrow_types(table.columns).items())) for table in tables}
-        held = part_rules(tables, dict.fromkeys(schemas, 0)) if rules is None else rules
+        held = dict(part_rules(tables, dict.fromkeys(schemas, 0)) if rules is None else rules)
+        for name, (schema, rule) in (derived or {}).items():
+            schemas[name] = schema
+            held[name] = rule
         self.store.publish("c-0", {table: Parts(schema=schema, parts={}) for table, schema in schemas.items()})
         #: the follower's backend
-        self.copy = SharedCopyStages(SharedCopyBackend(self.store, schemas, held))
+        self.copy = SharedCopyStages(SharedCopyBackend(self.store, schemas, held, hooks=hooks, preload=preload))
         #: the follower's query pool over the store
         self.queries = CopyQueries(self.store, workers=workers)
         _OPEN.append(self)

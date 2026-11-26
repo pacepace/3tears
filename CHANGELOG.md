@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a follower on the worker backend settles its copy whole after a start that read L3 whole
+
+**Added:** the whole settle wired into `CopyFollower`'s start (R-1 of `design-copy-worker-backend.md`; reports'
+`followed_copy` did it beside its own backend). A start not wholly from a checkpoint tells a backend that settles whole
+(`SharedCopyStages.defer_settles_until_whole`, over `SharedCopyBackend.defer_hooks_until_whole`) that its changes apply
+with nothing derived; the first pass that labels the copy with a stamp then asks `SharedCopyStages.settle_whole`
+(`SharedCopyBackend.settle_whole`): every scope derived at once in the apply worker, one publish. A failed whole settle
+fails the pass (counted, retried after the pass's wait); a backend whose hooks derive nothing whole is asked for none.
+`SharedCopyBackend.derives_whole`; `testing.published_copy.SharedCopy(derived=, hooks=, preload=)`.
+
 ### core: a copy follower runs on the copy's worker backend
 
 **Added:** `threetears.core.collections.copy_stages.SharedCopyStages`, the step the 3T-2 entry left for later

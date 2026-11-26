@@ -11,7 +11,10 @@
   (``test_copy_follower_reads``' spy), L3's own fake aside;
 - a reload prepared from reload stages stages in the reload worker, holds no pages in its stages, and publishes only
   when its swap applies it, with the swap's mark and with a change given to its table meanwhile applied over it
-  (decision 52).
+  (decision 52);
+- with hooks that derive whole, a start that read L3 whole defers the hooks, and the first pass labelled with a
+  stamp settles the copy whole (``SharedCopyBackend.settle_whole``) through the stages; a failed whole settle fails
+  the pass and the next one settles; changes after it derive as they apply.
 """
 
 from __future__ import annotations
@@ -39,10 +42,11 @@ from threetears.core.collections.copy_follower import CopyFollower, FollowedTabl
 from threetears.core.collections.copy_follower import _reload_stage as reload_stage  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
+from threetears.core.collections.copy_parts import PartRule  # noqa: E402
 from threetears.core.collections.shared_copy import MARK_TABLE  # noqa: E402
 from threetears.core.testing.published_copy import SharedCopy  # noqa: E402
 from packages.core.tests.copy_workers_support import COPY_WORKERS  # noqa: E402
-from packages.core.tests.unit.collections import copy_query_jobs  # noqa: E402
+from packages.core.tests.unit.collections import copy_hooks, copy_query_jobs  # noqa: E402
 
 _TABLE = "votes"
 _KEY = ("state", "geo_id")
@@ -409,9 +413,17 @@ class _Pointers:
 
 
 async def _replica(
-    l3: _L3, log: _Log, lock: _Seqlock, objects: _Objects, pointers: _Pointers, owner: str
+    l3: _L3,
+    log: _Log,
+    lock: _Seqlock,
+    objects: _Objects,
+    pointers: _Pointers,
+    owner: str,
+    *,
+    shared: SharedCopy | None = None,
 ) -> tuple[SharedCopy, CopyFollower]:
-    shared = await SharedCopy([_FOLLOWED]).started()
+    if shared is None:
+        shared = await SharedCopy([_FOLLOWED]).started()
     tables = [_FOLLOWED]
     checkpoints = CopyCheckpoints(
         name="votes",
@@ -529,3 +541,77 @@ async def test_a_write_in_progress_applies_nothing_on_the_worker_backend() -> No
     lock.version += 1
     assert await follower.catch_up()
     assert shared.rows(_TABLE) == l3.held()
+
+
+# --- the whole settle after a start that read L3 whole ---------------------------------------------------------------
+
+
+async def _totaled() -> SharedCopy:
+    """a copy whose hooks derive :data:`copy_hooks.VOTE_TOTALS` from the votes, change by change and whole."""
+    totals = (copy_hooks.VOTE_TOTALS_SCHEMA, PartRule(copy_hooks.VOTE_TOTALS, ("state",)))
+    return await SharedCopy(
+        [_FOLLOWED],
+        derived={copy_hooks.VOTE_TOTALS: totals},
+        hooks=copy_hooks.VoteTotals(),
+        preload=(copy_hooks.__name__,),
+    ).started()
+
+
+async def test_a_start_that_read_l3_whole_settles_the_copy_whole_on_its_first_pass_through_the_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flips with no whole settle in the start sequence: the start that read L3 whole leaves the backend's hooks
+    deferred, its first pass labelled with a stamp settles every state whole (one ``settle_whole``, after a failed
+    one that failed only the pass), and a change after it derives its state as it applies."""
+    l3, log, lock, objects, pointers = _L3(), _Log(), _Seqlock(), _Objects(), _Pointers()
+    l3.put([("VA", i, 1) for i in range(10)] + [("IL", i, 2) for i in range(5)])
+    log.commit(None)
+    shared, follower = await _replica(l3, log, lock, objects, pointers, "a", shared=await _totaled())
+    backend = shared.copy.backend
+    assert not await follower.start()  # no checkpoint: the start reads L3 whole
+    assert backend.whole_settle_due  # its changes apply with nothing derived until the whole settle
+    settles: list[str] = []
+    settle_whole = backend.settle_whole
+
+    async def failing_once() -> Any:
+        settles.append("asked")
+        if len(settles) == 1:
+            raise RuntimeError("the apply worker died mid-settle")
+        return await settle_whole()
+
+    monkeypatch.setattr(backend, "settle_whole", failing_once)
+    with pytest.raises(RuntimeError, match="mid-settle"):
+        await follower.catch_up()
+    assert backend.whole_settle_due
+    assert shared.rows(copy_hooks.VOTE_TOTALS) == []  # the whole read applied, nothing derived from it
+    assert shared.rows(_TABLE) == l3.held()
+    assert await follower.catch_up()
+    assert settles == ["asked", "asked"]
+    assert not backend.whole_settle_due
+    assert shared.rows(copy_hooks.VOTE_TOTALS) == [("IL", 10, "whole"), ("VA", 10, "whole")]
+    # settled once: a pass after it settles nothing more, and a change derives its own state as it applies
+    l3.put([("IL", 0, 50)])
+    log.commit([("IL", 0)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert settles == ["asked", "asked"]
+    assert shared.rows(copy_hooks.VOTE_TOTALS) == [("IL", 58, "change"), ("VA", 10, "whole")]
+
+
+async def test_a_start_from_a_checkpoint_defers_nothing_and_asks_no_whole_settle() -> None:
+    """Flips if a start wholly from a checkpoint deferred the hooks: its changes derive as they apply."""
+    l3, log, lock, objects, pointers = _L3(), _Log(), _Seqlock(), _Objects(), _Pointers()
+    l3.put([("VA", i, 1) for i in range(4)])
+    log.commit(None)
+    first, writer = await _replica(l3, log, lock, objects, pointers, "a", shared=await _totaled())
+    assert not await writer.start()
+    assert await writer.catch_up()
+    await writer.checkpointed()
+    second, follower = await _replica(l3, log, lock, objects, pointers, "b", shared=await _totaled())
+    assert await follower.start()
+    assert not second.copy.backend.whole_settle_due
+    l3.put([("VA", 0, 9)])
+    log.commit([("VA", 0)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert second.rows(copy_hooks.VOTE_TOTALS) == [("VA", 12, "change")]

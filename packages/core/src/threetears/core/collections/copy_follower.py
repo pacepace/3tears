@@ -1849,6 +1849,33 @@ class PreparesStaged(Protocol):
         ...
 
 
+@runtime_checkable
+class _SettlesWhole(Protocol):
+    """a :class:`FollowerBackend` whose copy holds tables derived from the followed ones, settled whole once after a
+    start that read L3 whole (``copy_stages.SharedCopyStages`` over ``shared_copy.SharedCopyBackend``'s
+    ``WholeHooks``).
+
+    **Why** (reports' ``followed_copy``, moved here with its backend, R-1 of ``design-copy-worker-backend.md``). A
+    start that read L3 whole, or loaded the volume's full, holds no derived row it may serve: a checkpoint's derived
+    rows match no part at its own version, and a cold start holds none. Settled change by change, the start's first
+    change (every row) was the whole copy settled on its own, and then settled whole again (6-7 s at prod's size,
+    FR2b 2026-11-17). So the follower tells the backend at the end of such a start (:meth:`defer_settles_until_whole`):
+    its changes then apply with nothing derived, and once a pass labels the copy with one stamp of every table (the
+    whole reads applied), the follower asks the one whole settle (:meth:`settle_whole`). A backend without these
+    methods derives nothing whole, as before.
+    """
+
+    def defer_settles_until_whole(self) -> bool:
+        """a start read L3 whole: apply each change with nothing derived until :meth:`settle_whole` publishes. Whether
+        a whole settle is due (False: the copy derives nothing whole, and the follower asks for none)."""
+        ...
+
+    async def settle_whole(self) -> Any:
+        """settle the whole copy once, as one publish; every change after it is derived as it applies. A coroutine on
+        the event loop; what it raises fails the pass, and the next pass asks again."""
+        ...
+
+
 class FollowerStages(Protocol):
     """the staging half of a :class:`FollowerBackend`: what a change is staged through beside the copy, page by page,
     before its apply. A full's load from the volume stages through this alone (``volume_fulls.VolumeFulls.stage``).
@@ -2088,6 +2115,9 @@ class CopyFollower:
         self._beat_wake = asyncio.Event()
         #: whether the start is done: until then the beat says ``starting`` (the copy's position is not known yet)
         self._started = False
+        #: whether a whole settle is due (:class:`_SettlesWhole`): set by a start that read L3 whole, cleared once the
+        #: first pass labelled with its stamp has settled the copy whole
+        self._whole_settle = False
         #: when each table was last current in the registry (its mark caught up, nothing behind): a table the registry
         #: falls behind on is resolved from the change notes since then (:meth:`CollectionRegistry
         #: .resolve_behind_from_notes`), never by a warm
@@ -3666,6 +3696,10 @@ class CopyFollower:
             async with self._lock:
                 await self._drained()
                 whole = await self._start_from_checkpoint(staged)
+        # a start not wholly from a checkpoint holds no derived row it may serve: its changes apply with nothing
+        # derived, and the first pass that labels the copy settles it whole (_SettlesWhole's why)
+        if not whole and isinstance(self._backend, _SettlesWhole):
+            self._whole_settle = self._backend.defer_settles_until_whole()
         self._started = True
         self._beat_wake.set()
         return whole
@@ -3921,6 +3955,8 @@ class CopyFollower:
         """
         try:
             done = await self._catch_up()
+            if done and self._whole_settle:
+                await self._settled_whole()
         except asyncio.CancelledError, KeyboardInterrupt:
             raise
         except _StagesLostError as exc:
@@ -3938,6 +3974,24 @@ class CopyFollower:
         self._status.behind_since = None
         _BEHIND_SINCE.set(0)
         return done
+
+    async def _settled_whole(self) -> None:
+        """the whole settle a start that read L3 whole left due (:class:`_SettlesWhole`), once a pass has labelled the
+        copy with one stamp of every table: its whole reads applied, nothing derived yet. A failure raises, failing the
+        pass; the next pass asks again.
+
+        :return: nothing
+        :rtype: None
+        """
+        backend = self._backend
+        assert isinstance(backend, _SettlesWhole)  # noqa: S101 -- due only for a backend that settles whole
+        began = time.monotonic()
+        await backend.settle_whole()
+        self._whole_settle = False
+        log.info(
+            "the copy settled whole after its start: its derived tables hold every scope",
+            extra={"extra_data": {"seconds": round(time.monotonic() - began, 3)}},
+        )
 
     def _failed(self, what: str, exc: BaseException) -> None:
         """count a failed pass: its counter, the status's run of failures and when it began, FAILING at the bound.
