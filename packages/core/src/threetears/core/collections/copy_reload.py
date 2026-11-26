@@ -30,6 +30,11 @@ memory) fails its reload with :class:`ReloadWorkerDied` (the reload's rows went 
 again) and is replaced: the next reload stages in a fresh worker. A worker past ``private_bytes`` after a reload is
 replaced before the next (the pool's own retire).
 
+**Held until told** (``held=True``). A caller that judges a staged reload before it swaps it in (a copy follower's
+reload from the volume, ``copy_stages``: staged outside its pass lock, judged and published under it with the mark it
+takes there) gives the reload held: it stages as any, then waits for :meth:`Reload.publish` before it takes its turn
+in the apply lane, its watch kept from the call that gave it. Never told, it is cancelled.
+
 **Cancellable.** :meth:`Reload.cancel` before the publish's turn publishes nothing: a staging reload stops waiting for
 its worker (the job's result is thrown away), a staged one's turn passes with nothing published. Once its turn has
 started it is not cancelled.
@@ -139,6 +144,7 @@ class Reload:
 
     :ivar tables: the tables it reloads
     :ivar done: what its publish published, or why it did not
+    :ivar released: for a held reload, set by :meth:`publish` with its mark; None for one that publishes once staged
     """
 
     def __init__(
@@ -149,6 +155,8 @@ class Reload:
         scopes: Mapping[str, ReloadScope],
         mark: int | None,
         watch: ChangeWatch,
+        *,
+        held: bool = False,
     ) -> None:
         self._on_cancel = on_cancel
         #: the reload's pages until they are handed to the worker; empty after
@@ -163,6 +171,23 @@ class Reload:
         self.cancelled = False
         self.task: asyncio.Task[None] | None = None
         self.step: ReloadStep | None = None
+        loop = asyncio.get_running_loop()
+        self.released: asyncio.Future[int | None] | None = loop.create_future() if held else None
+
+    def publish(self, mark: int | None) -> asyncio.Future[Applied]:
+        """let a held reload publish, once staged, with ``mark`` (unless a change since published a newer one). On the
+        event loop.
+
+        :param mark: its mark
+        :ptype mark: int | None
+        :return: what its publish published, or why it did not (:attr:`done`)
+        :rtype: asyncio.Future[Applied]
+        :raises RuntimeError: for a reload not given held, or told twice
+        """
+        if self.released is None or self.released.done():
+            raise RuntimeError("only a held reload is told to publish, and once")
+        self.released.set_result(mark)
+        return self.done
 
     def take_pages(self) -> tuple[ChangePage, ...]:
         """the pages, let go here: the staging holds them until the hand-off alone.
@@ -291,6 +316,7 @@ class ReloadLane:
         tables: Collection[str] | None = None,
         scopes: Mapping[str, ReloadScope] = EMPTY,
         mark: int | None = None,
+        held: bool = False,
     ) -> Reload:
         """give a reload: its place in the copy's order is now (changes given after this call to its tables apply over
         it); it stages in the reload worker and publishes through the apply lane. Waits for room while the lane is
@@ -304,6 +330,8 @@ class ReloadLane:
         :ptype scopes: Mapping[str, ReloadScope]
         :param mark: its mark, published with it unless a change since published a newer one
         :ptype mark: int | None
+        :param held: once staged, wait for :meth:`Reload.publish` (its mark given there) before its publish
+        :ptype held: bool
         :return: the reload: await :attr:`Reload.done` for what it published
         :rtype: Reload
         :raises RuntimeError: when the lane is closed
@@ -316,7 +344,7 @@ class ReloadLane:
             raise ValueError("a reload names the tables it reloads")
         # its place in the order: taken before any wait, so a change given after this call is kept for it
         watch = self._lane.watch(named, max_bytes=self._max_replay_bytes)
-        reload = Reload(self._said_cancelled, tuple(pages), named, frozen(scopes.items()), mark, watch)
+        reload = Reload(self._said_cancelled, tuple(pages), named, frozen(scopes.items()), mark, watch, held=held)
         self._open = (*self._open, reload)
         try:
             async with self._changed:
@@ -351,6 +379,11 @@ class ReloadLane:
             await self._let_room_go(reload)
             if reload.cancelled:
                 raise ReloadCancelled("the reload was cancelled as it staged")
+            if reload.released is not None:
+                # held: staged, it waits for its caller's word (a cancel meanwhile cancels this task). The mark is
+                # given now, so it is newer than every change given before: only one given after it keeps its own
+                reload.mark = await reload.released
+                reload.watch.newer_mark = False
             if reload.watch.overrun:
                 raise ReloadOverrun(
                     f"the changes given during the reload of {sorted(reload.tables)} passed the "

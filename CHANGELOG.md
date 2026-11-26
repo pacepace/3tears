@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a copy follower runs on the copy's worker backend
+
+**Added:** `threetears.core.collections.copy_stages.SharedCopyStages`, the step the 3T-2 entry left for later
+(`design-copy-worker-backend.md`): a `CopyFollower`'s backend (`FollowerBackend`, `PreparesStaged`, and
+`copy_checkpoint.CheckpointCopy`) over `SharedCopyBackend`. A stage is its pages, held as the follower gave them (no
+row copied, cast or filtered in the serving process); an apply hands a change's pages to the apply worker through an
+`ApplyLane` in the order staged (each change's keys stage, then its rows stage, as the in-process copy deleted then
+inserted), published as one version with the change's mark. A reload from the volume (`prepare_staged`) stages in a
+`ReloadLane` worker beside every other table's changes and publishes only when the follower's swap applies it, with the
+swap's mark, any change given to its table meanwhile applied over it (decision 52); a reload not staged raises
+`LookupError` at the swap, so the follower reads it again. `start()` publishes an empty first version for the
+follower's reads. `testing.published_copy.SharedCopy` builds one for a test with its query pool, and `copy_rows` reads
+what a store's current version holds (Arrow, no DuckDB); `test_copy_follower.py` and three reload tests of
+`test_copy_follower_reset_from_volume.py` run on it.
+
+**Added:** `shared_copy.LEAVE`, a page of keys a change leaves as the copy holds them (a follower's `unstage_keys`),
+settled in the apply worker; `ChangePage.places`, so neighbouring pages joined by kind cross to the worker as one file
+and are sliced back into the order staged there (a commit of 25,000 keys in pages of 50 was some 1,900 hand-off files,
+past the process's open files). `SharedCopyBackend.schemas`. `ReloadLane.reload(held=True)` with `Reload.publish(mark)`:
+a reload that stages now and publishes when its caller says, its mark given then.
+
+**Changed (breaking for a product's own backend):** `FollowerBackend.apply_staged` and `PreparesStaged.prepare_staged`
+are coroutines the follower awaits on its event loop; the staging methods stay calls on a thread. Why: the apply is
+the apply worker's, reached through the lane on the loop, and a thread parked on it would hold one of the loop's
+threads while the lane's own publish needs one. `PublishedCopy.apply_staged` awaits the DuckDB's apply on a thread.
+
 ### core: a keyed read of the copy compares a key by its type's value
 
 **Fixed:** `CopyQueries.lookup` (and the follower's keyed reads of its copy, `QueriedReads.rows_of_keys`) matched a key

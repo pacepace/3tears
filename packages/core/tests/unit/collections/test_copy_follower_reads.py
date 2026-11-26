@@ -168,7 +168,10 @@ class _PublishedCopy:
     def staged_stages(self) -> list[str]:
         return list(self.backend.staged_stages())
 
-    def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+    async def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        return await asyncio.to_thread(self._applied, changes, mark)
+
+    def _applied(self, changes: Sequence[StagedChange], mark: int | None) -> int:
         rows = int(self.backend.apply_staged(changes, mark=mark))
         with self.backend.read_snapshot() as cursor:
             tables = {
