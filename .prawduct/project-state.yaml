@@ -297,6 +297,8 @@ api_versioning_decided: 2026-11-22 — see design_decisions.api_versioning_appro
 # backlog_prefixes: []
 # backlog_external_imports: []
 # backlog_last_groomed_at:
+# The live backlog is GitHub Issues here since 2026-11-26; .prawduct/backlog.md is frozen history.
+backlog_service_repo: pacepace/3tears
 
 # =============================================================================
 # CHANGE LOG

@@ -1,5 +1,12 @@
 # Backlog — 3tears
 
+> **Frozen history since 2026-11-26.** The live backlog is GitHub Issues in
+> [pacepace/3tears](https://github.com/pacepace/3tears/issues): read it with `/prawduct:backlog`,
+> `prawduct-hook backlog list --repo pacepace/3tears`, or `gh issue list -R pacepace/3tears`.
+> Both items below migrated: MOD-7R2K is #1311 (open) and MOD-4QW9 is #1312 (closed as a duplicate
+> of #776). Nothing here is read any more, and changes made on the tracker are not copied back, so
+> this file will drift from it. File new items on the tracker, never here.
+
 <!-- Structured backlog. Manage it with /prawduct:backlog — pick, add, find <q>, list,
      update ID, migrate. Items move between the three sections below via
      /prawduct:backlog update ID status=...; status is never inferred from build plans
