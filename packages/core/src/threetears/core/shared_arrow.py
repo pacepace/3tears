@@ -1449,8 +1449,8 @@ def _free_in_turns(held: list[Any], loop: asyncio.AbstractEventLoop | None = Non
     needs them merged merges all of them at once, inside the free, the interpreter lock held: one table of an idle
     reader's 2237 lent ones took 25-117 ms to free (one near the end, whichever it is), so the let-go held the loop
     19-33 ms past the host's on every runner the pool scheduled it on (Linux containers on arm64 and x86 hosts), and
-    109 ms on a 24-core x86 host, against the 20 ms bound (test_shared_arrow_let_go_loop.py; already failing at
-    95bdd0c16). ``malloc_trim`` every :data:`_TABLES_A_RELIEF` tables merges them a few at a time, the lock let go:
+    109 ms on a 24-core x86 host, against the 20 ms bound (test_shared_arrow_let_go_loop.py; already failing on the
+    0.95.0 line before this). ``malloc_trim`` every :data:`_TABLES_A_RELIEF` tables merges them a few at a time, the lock let go:
     measured 1.0-3.3 ms past the host, the let-go's whole time a third longer.
 
     :param held: the tables, the one to free first last; emptied
