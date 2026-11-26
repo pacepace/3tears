@@ -8,7 +8,8 @@ title: Model key pool
 A chat model can run on a pool of 1..n API keys for one provider (anthropic, openai or openrouter), each inside an
 operator-set budget per billing period. The pool stays on its active key until that key is exhausted, revoked,
 forbidden, tripped or low on budget, then moves it, durably, for every process sharing the pool. A rate limit means
-retry on the same key; it never moves the key. One key is a normal pool. Requirements: `docs/model-key-pool-requirements.md`; operator guide: `docs/model-key-pool.md`.
+retry on the same key; it never moves the key. A key forbidden for one model is skipped by that model's calls and
+never moves the active key, which every model shares. One key is a normal pool. Requirements: `docs/model-key-pool-requirements.md`; operator guide: `docs/model-key-pool.md`.
 
 - `KeyPool` and `KeySpec` in `threetears.models`: a redacted `Secret`, a label, a USD budget, an optional priority and
   provider account per key. Sticky selection, with priority pull-back when priorities differ, behind a selection

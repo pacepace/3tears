@@ -28,6 +28,7 @@ from threetears.models.key_pool import (
 from .key_pool_support import (
     MODEL,
     OTHER_MODEL,
+    POOL,
     PROVIDER,
     FakeFlakyStore,
     ManualClock,
@@ -95,7 +96,7 @@ class TestMoveLogging:
         [
             (exhausted(), logging.WARNING, "exhausted"),
             (revoked(), logging.WARNING, "revoked"),
-            (forbidden(), logging.WARNING, "forbidden"),
+            (forbidden(VerdictScope.KEY), logging.WARNING, "forbidden"),
         ],
     )
     async def test_each_move_logs_once_naming_pool_labels_and_reason(
@@ -306,6 +307,46 @@ class TestSkipVersusMove:
         await lease.settle(Decimal("9.99"))
         assert await fail_on(pool, exhausted()) == "a"
         assert await serve(pool) == "c"
+
+
+class TestForbiddenForOneModel:
+    """A key forbidden for one model is skipped by that model's calls and never moves the active key,
+    which every model shares (owner, 2026-11-26)."""
+
+    async def test_alternating_models_never_move_and_stay_on_the_success_path(self) -> None:
+        store = FakeFlakyStore()
+        pool = make_pool(spec("primary", priority=0), spec("overflow", priority=1), store=store)
+        assert await fail_on(pool, forbidden(), model_id=MODEL) == "primary"
+        version_after_forbid, _ = await store.inner.read_record(f"key-pool/{PROVIDER}/{POOL}")
+        store.calls.clear()
+        served = []
+        for _ in range(3):
+            served.append(await serve(pool, model_id=MODEL))
+            served.append(await serve(pool, model_id=OTHER_MODEL))
+        assert served == ["overflow", "primary"] * 3
+        assert not pool.counters.moves
+        assert store.calls == ["reserve", "settle"] * 6
+        version_now, _ = await store.inner.read_record(f"key-pool/{PROVIDER}/{POOL}")
+        assert version_now == version_after_forbid
+        status = await pool.status()
+        assert status.active == "primary"
+        assert status.keys[0].forbidden_models == (MODEL,)
+
+    async def test_equal_priorities_leave_the_active_key_for_other_models(self) -> None:
+        pool = make_pool(spec("a"), spec("b"))
+        assert await fail_on(pool, forbidden(), model_id=MODEL) == "a"
+        assert await serve(pool, model_id=MODEL) == "b"
+        assert (await pool.status()).active == "a"
+        assert await serve(pool, model_id=OTHER_MODEL) == "a"
+        assert await serve(pool, model_id=None) == "a"
+        assert not pool.counters.moves
+
+    async def test_a_whole_key_state_still_moves_off_a_key_forbidden_for_one_model(self) -> None:
+        pool = make_pool(spec("a"), spec("b"), spec("c"))
+        await fail_on(pool, forbidden(), model_id=MODEL)
+        assert await fail_on(pool, exhausted(VerdictScope.KEY), model_id=OTHER_MODEL) == "a"
+        assert pool.counters.moves == {("a", "b", MoveReason.EXHAUSTED): 1}
+        assert [await serve(pool, model_id=m) for m in (MODEL, OTHER_MODEL)] == ["b", "b"]
 
 
 class TestPeriodRollover:

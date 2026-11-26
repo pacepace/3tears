@@ -21,8 +21,10 @@ class KeyCandidate:
 
     :ivar label: the key's label
     :ivar priority: its configured priority; lower is preferred, ``None`` ranks after every set one
-    :ivar eligible: whether it can serve now: its state is ``ok`` (for the model, where the call
-        names one), its breaker admits calls, and it has room as far as the pool knows
+    :ivar eligible: whether it can serve now: its state is ``ok``, its breaker admits calls, and it
+        has room as far as the pool knows. For :meth:`SelectionPolicy.active_key` that is the key's
+        whole-key state; for :meth:`SelectionPolicy.serving_key` it also counts a forbid for the
+        call's model
     """
 
     label: str
@@ -40,7 +42,10 @@ class SelectionPolicy(Protocol):
     def active_key(self, candidates: Sequence[KeyCandidate], current: str | None) -> str | None:
         """The key the pool should hold active.
 
-        :param candidates: every key, in preference order
+        The active key is shared by every model the pool serves, so the pool marks a key eligible here
+        by its whole-key state alone: a key forbidden for one model stays eligible.
+
+        :param candidates: every key, in preference order, eligible by whole-key state
         :ptype candidates: Sequence[KeyCandidate]
         :param current: the active key now, ``None`` when there is none (a new pool, or a period
             rollover, which starts the pool over)
@@ -54,7 +59,7 @@ class SelectionPolicy(Protocol):
     def serving_key(self, candidates: Sequence[KeyCandidate], active: str | None, excluded: Set[str]) -> str | None:
         """The key one call should try next.
 
-        :param candidates: every key, in preference order
+        :param candidates: every key, in preference order, eligible for the call's model
         :ptype candidates: Sequence[KeyCandidate]
         :param active: the active key
         :ptype active: str | None
@@ -76,8 +81,8 @@ class StickySelection:
     - When the active key can't serve, the next eligible key after it in preference order takes over,
       wrapping around (KP-D4).
     - With no active key, the most-preferred eligible key is chosen.
-    - A call skips the keys it has tried or found too small, starting from the active key and going on
-      in order, without moving the active key (KP-D3).
+    - A call skips the keys it has tried, found too small, or that are forbidden for its model alone,
+      starting from the active key and going on in order, without moving the active key (KP-D2, D3).
     """
 
     def active_key(self, candidates: Sequence[KeyCandidate], current: str | None) -> str | None:

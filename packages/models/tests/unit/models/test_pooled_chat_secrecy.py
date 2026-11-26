@@ -176,12 +176,12 @@ class TestNoSecretReachesAnySurface:
             for recorded in (
                 fx.ANTHROPIC_BILLING_402,  # exhausted
                 fx.ANTHROPIC_AUTHENTICATION_401,  # revoked
-                fx.ANTHROPIC_PERMISSION_403,  # forbidden
+                fx.ANTHROPIC_PERMISSION_403,  # forbidden for this model: skipped, the active key not moved
                 fx.ANTHROPIC_RATE_LIMIT_429_LONG_WAIT,  # a wait past the threshold: exhausted until it ends
             ):
                 wire.script("a", refusal(recorded))
-                await answer(model)  # a refuses: recorded, moved off, and the call fails over to b
-                await main.reset("a")  # the operator's reset moves the pool back onto a
+                await answer(model)  # a refuses: recorded, and the call fails over to b
+                await main.reset("a")  # the operator's reset clears a, and moves the pool back onto it if it moved
             breakers.get(PROVIDER, credential=_SENTINELS["a"]).record_failure()
             await answer(model)  # a's breaker is open: the pool moves off it, tripped
             monotonic.now += 31
@@ -226,10 +226,10 @@ class TestNoSecretReachesAnySurface:
         await tracker.drain()
 
         # every path above ran
+        # the 403 forbids a for the one model, which skips it there and moves nothing
         assert {reason for _, _, reason in main.counters.moves} >= {
             MoveReason.EXHAUSTED,
             MoveReason.REVOKED,
-            MoveReason.FORBIDDEN,
             MoveReason.TRIPPED,
             MoveReason.PULL_BACK,
             MoveReason.OPERATOR_RESET,
