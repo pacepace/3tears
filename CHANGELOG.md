@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### enforcement, core: two gate facts (Pace 2026-11-27): a migration's stamped write is heard; a reload's call is covered by what it reaches
+
+**Changed (epoch-bypass):** a keyed update (``update_keyed`` / ``update_before``) in a module the migration runner runs
+(``EpochDisciplineConfig.migration_modules``; 3tears names ``packages/*/migrations/v*.py``) that sets ``epoch`` from the
+shared stamp (``CallerTransaction.stamp_for``, ``next_epoch``, or ``rising_stamp`` of one) is not a bypass: the runner
+(``MigrationRunner(announcer=...)``) announces every row stamped within its run's window. An unstamped write in a
+migration, a stamped one outside a migration, and a write stamping other columns but not ``epoch`` are each still
+flagged. agent-acl v011's ``backfill_owner_namespace_ids`` passes on this. The waiver of
+``stamp_tables.backfill_epochs`` stays: it is a shared helper in the runner's own package, no migration module, so
+nothing the gate can see holds it to running inside a run.
+
+**Changed (no_whole_reads):** a declared ``whole-call`` into a function with no hit of its own is covered when every
+function its chain reaches (``WholeReadHit.reached``) holds no undeclared hit and each declared one is declared under
+kinds including the call's; a callee with reads of its own keeps the exact rule. ``recovery`` admits ``whole-delete``
+only as a bare ``DELETE`` of a relation no declared L3 table is (``DECLARED_L1_DELETE_KINDS``). The copy's reload from
+the volume is declared ``recovery`` at its call (``CopyFollower._reload_when_published``'s ``looked``); the reload
+stages its whole change as ``recovery`` (``VolumeFulls.stage(whole_kind=)``, ``WholeKind`` gains it), and
+``DuckDBBackend.apply_staged`` and ``SharedCopyStages.apply_staged`` declare its apply under ``recovery``, proven by
+the reload's proof test (which now also holds that only the reload applies a recovery's whole change) and its speed
+test at 100,000 rows. The gate is at zero.
+
 ### core, enforcement: a recovery is a declared whole-read kind; three of the gate's four findings declared
 
 **Added:** ``whole_read(kind="recovery")`` (Pace 2026-11-27: recovery reloads stay, but are never silent): its call

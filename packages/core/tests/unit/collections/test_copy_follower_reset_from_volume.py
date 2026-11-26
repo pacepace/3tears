@@ -38,7 +38,7 @@ pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
 
 from prometheus_client import REGISTRY  # noqa: E402
-from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.cache.duckdb import DuckDBBackend, StagedChange  # noqa: E402
 from threetears.core.cache.duckdb_binds import run_bound  # noqa: E402
 from threetears.core.collections import CollectionRegistry  # noqa: E402
 import threetears.core.collections.copy_follower as copy_follower  # noqa: E402
@@ -1853,24 +1853,29 @@ async def test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_
 ) -> None:
     """the reload from the volume (CopyFollower._reload_when_published's looked, calling ``_reload_from_volume``: a
     reset, a schema change, or a recovery from a lost epoch log or delta file) is reached only while a table waits for
-    the writer's full, never on a normal pass, however many changes apply from their files. Flips if a pass reloads a
-    table that waits for nothing, or a wait is not answered by a reload."""
-    reloads: list[str] = []
-    real = vars(CopyFollower)["_reload_from_volume"]
-
-    async def reloading(self: CopyFollower, table: str, fulls: VolumeFulls, manifest: Any) -> bool:
-        reloads.append(table)
-        return bool(await real(self, table, fulls, manifest))
-
-    monkeypatch.setattr(CopyFollower, "_reload_from_volume", reloading)
+    the writer's full, never on a normal pass, however many changes apply from their files; and its whole apply
+    (DuckDBBackend.apply_staged, emptying the copy's table under kind recovery) is the reload's alone. Flips if a pass
+    reloads a table that waits for nothing, a wait is not answered by a reload, or a whole change of kind recovery is
+    applied by anything but the reload."""
     world = _World(_volume)
     await world.started()
+    # each whole change the copy's apply_staged is handed from here on, as its table and kind: a reload's whole apply
+    # is the one of kind recovery, the front door the reload ends at
+    applied: list[tuple[str, str | None]] = []
+    real_apply = world.backend.apply_staged
+
+    def apply_staged(changes: Sequence[StagedChange], *, mark: int | None = None) -> Any:
+        applied.extend((change.table, change.whole_kind) for change in changes if change.whole)
+        return real_apply(changes, mark=mark)
+
+    monkeypatch.setattr(world.backend, "apply_staged", apply_staged)
     for geo in range(5):
         world.write(_RESET, [("VA", geo, 500 + geo)])
         world.write(_OTHER, [("IL", geo, 600 + geo)])
         assert await world.follower.catch_up()
     await asyncio.sleep(0.05)  # several polls of the volume's own pace
-    assert reloads == [], "a normal pass reloaded a table from the volume"
+    assert not world.follower.status().waiting_for_full, "a normal pass left a table waiting for a full"
+    assert applied == [], "a normal pass reloaded a table from the volume, or applied anything whole"
     world.l3.reset(_RESET, _AFTER_RESET)
     reset_at = world.log.reset(_RESET)
     world.lock.commit("state:VA", "state:IL", "state:TX")
@@ -1884,7 +1889,7 @@ async def test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_
         },
     )
     await world.reloaded(_RESET)
-    assert reloads and set(reloads) == {_RESET}
+    assert applied == [(_RESET, "recovery")], applied  # the reload's whole apply, and nothing else whole
     world.follower.stop()
 
 

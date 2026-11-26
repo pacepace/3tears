@@ -151,6 +151,7 @@ from threetears.enforcement.no_whole_reads.sql import (
 
 __all__ = [
     "DECLARED_KINDS",
+    "DECLARED_L1_DELETE_KINDS",
     "DECLARED_L1_KINDS",
     "DECLARED_OUTSIDE_KINDS",
     "DECLARED_SPEED_KINDS",
@@ -717,8 +718,11 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     # the delta-files volume, reading nothing from L3, after a lost epoch log or a lost delta file; and the lost-write
     # backstop recording a lost window's whole change (a reset, a run deleted) again. Each is counted
     # (collection_whole_reloads_total{why}), said at WARNING, and fails a replay. Never a read of L3 whole: its call
-    # into the reload, or the change it marks whole
-    "recovery": frozenset({"whole-call", "calls-whole-read", "marks-whole"}),
+    # into the reload, or the change it marks whole; and (Pace 2026-11-27) the reload's apply emptying the in-process
+    # copy's table its full then replaces (DuckDBBackend.apply_staged under the kind that staged the change, as
+    # cold_start, schema_change and rolling_upgrade): one bare DELETE of a relation no declared L3 table is
+    # (DECLARED_L1_DELETE_KINDS guards it)
+    "recovery": frozenset({"whole-call", "calls-whole-read", "marks-whole", "whole-delete"}),
 }
 
 #: the kinds whose declaration names a speed test: they read our own tables at size. A ``backup_verification`` whose
@@ -738,6 +742,11 @@ DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
 #: the kinds whose every statement is a bare ``DELETE FROM`` (no ``WHERE``) of a relation no declared L3 table is: a
 #: process's own L1 copy of a table, emptied whole when the table is dropped (Pace 2026-11-15)
 DECLARED_L1_KINDS: Final[frozenset[str]] = frozenset({"l1_table_drop"})
+
+#: the kinds whose ``whole-delete`` is only a bare ``DELETE FROM`` (no ``WHERE``) of a relation no declared L3 table is:
+#: a process's own L1 copy of a table, emptied before the rows that replace it go in. Their other hits are judged as
+#: any kind's
+DECLARED_L1_DELETE_KINDS: Final[frozenset[str]] = frozenset({"recovery"})
 
 #: the kinds whose relation is never a declared L3 table: a process-local buffer, a warehouse relation
 DECLARED_OUTSIDE_KINDS: Final[frozenset[str]] = frozenset({"drain", "unbounded_by_warehouse"})
@@ -822,6 +831,9 @@ class WholeReadHit:
     :ivar statement: the statement or the call, one line, for the reader
     :ivar reaches: for a ``whole-call``, the functions (path, qualified name) its call reaches when the walk found
         them; empty otherwise. Not part of the hit's identity
+    :ivar reached: for a ``whole-call``, every function (path, qualified name) the call graph reaches from
+        :attr:`reaches`, at any depth, through each call any of whose targets reaches a hit: the functions whose whole
+        reads the call runs. Empty otherwise. Not part of the hit's identity
     """
 
     path: str
@@ -830,6 +842,7 @@ class WholeReadHit:
     symbol: str
     statement: str
     reaches: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+    reached: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
     @property
     def kind(self) -> str:
@@ -8076,6 +8089,14 @@ def _resolve(
             if caller not in reaches and targets and all(target in reaches for target in targets):
                 reaches.add(caller)
                 grew = True
+    # each function onto the functions it calls that reach a hit: a call ANY of whose targets reaches one counts here
+    # (wider than the reach above, which counts a call only when every target does), so the reads a whole-call runs
+    # are over-counted, never missed
+    calls_into: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for call, targets in resolved:
+        calls_into.setdefault((call.path, call.function), set()).update(
+            target for target in targets if target in reaches
+        )
     found: list[WholeReadHit] = []
     marks = {(mark.path, mark.function): mark.mark for mark in operators or [] if mark.mark in _ENTRY_ONLY_MARKS}
     callers = [
@@ -8106,7 +8127,13 @@ def _resolve(
         elif call.whole_named and (not targets or all(target in reaches for target in targets)):
             found.append(
                 WholeReadHit(
-                    call.path, call.line, call.function, f"whole-call {call.name}", call.spelled, tuple(sorted(targets))
+                    call.path,
+                    call.line,
+                    call.function,
+                    f"whole-call {call.name}",
+                    call.spelled,
+                    tuple(sorted(targets)),
+                    _reached_from(targets, calls_into),
                 )
             )
         if call.whole_flags and (not targets or any(target in reaches for target in targets)):
@@ -8115,6 +8142,28 @@ def _resolve(
                 for flag in call.whole_flags
             )
     return found, callers
+
+
+def _reached_from(
+    targets: list[tuple[str, str]], calls_into: dict[tuple[str, str], set[tuple[str, str]]]
+) -> tuple[tuple[str, str], ...]:
+    """every function the call graph reaches from ``targets``, them included, at any depth.
+
+    :param targets: a call's targets
+    :ptype targets: list[tuple[str, str]]
+    :param calls_into: each function onto the functions it calls that reach a hit
+    :ptype calls_into: dict[tuple[str, str], set[tuple[str, str]]]
+    :return: the functions, sorted
+    :rtype: tuple[tuple[str, str], ...]
+    """
+    seen: set[tuple[str, str]] = set(targets)
+    stack = list(targets)
+    while stack:
+        for callee in calls_into.get(stack.pop(), ()):
+            if callee not in seen:
+                seen.add(callee)
+                stack.append(callee)
+    return tuple(sorted(seen))
 
 
 def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str], list[tuple[str, bool]]]:

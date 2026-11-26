@@ -2931,7 +2931,16 @@ class CopyFollower:
                 return True
             try:
                 manifest = await asyncio.to_thread(current_full_manifest, fulls.root)
-                return await self._reload_from_volume(table, fulls, manifest)
+                # the reload replaces the copy's table whole from the writer's full on the volume, never from L3: its
+                # apply (DuckDBBackend.apply_staged, two calls down) is declared there under the kind its stage carries
+                return await whole_read(
+                    self._reload_from_volume(table, fulls, manifest),
+                    kind="recovery",
+                    reason="a table waiting for the writer's full (a reset, a schema change, a lost epoch log or delta file) is reloaded whole from the full on the volume, never from L3",
+                    ruling="Pace 2026-11-27: recovery reloads stay, but are never silent (each counted, collection_whole_reloads_total{why}, said at WARNING; a replay fails on any)",
+                    proof="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_its_full",
+                    speed="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_keeps_its_budget",
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - one failed look leaves the copy as it was; the next looks again
@@ -2994,8 +3003,15 @@ class CopyFollower:
         # outside the lock: the parts read off the volume and staged, and the backend's heavy work done
         try:
             try:
+                # a table staged whole is staged as the recovery it is: its apply empties the table under that
+                # declaration (DuckDBBackend.apply_staged), the one this reload's call is declared under (looked)
                 found = await one.stage(
-                    self._backend, manifest=manifest, stage_name=_reload_stage, states=states, reads=self._copy
+                    self._backend,
+                    manifest=manifest,
+                    stage_name=_reload_stage,
+                    states=states,
+                    reads=self._copy,
+                    whole_kind="recovery",
                 )
             except StatesNotSplitError as exc:
                 # NOSILENT: a full whose parts are not split by state is loaded whole, as before, said in the log
@@ -3011,7 +3027,9 @@ class CopyFollower:
                     after = replace(after, scopes=None)
                     self._set_full_after(table, after)
                 states = None
-                found = await one.stage(self._backend, manifest=manifest, stage_name=_reload_stage)
+                found = await one.stage(
+                    self._backend, manifest=manifest, stage_name=_reload_stage, whole_kind="recovery"
+                )
         except FileNotFoundError as exc:
             # NOSILENT: a newer full swept a part this one names; said in the status, looked for again
             async with self._lock:

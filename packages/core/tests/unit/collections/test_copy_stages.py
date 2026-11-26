@@ -183,11 +183,12 @@ async def test_a_whole_change_replaces_its_table_and_publishes_its_mark() -> Non
     assert shared.rows(MARK_TABLE) == [(5,)]
 
 
-@pytest.mark.parametrize("kind", ["cold_start", "schema_change", "rolling_upgrade"])
+@pytest.mark.parametrize("kind", ["cold_start", "schema_change", "rolling_upgrade", "recovery"])
 async def test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass(kind: str) -> None:
     """the proving test of the whole marks declared in SharedCopyStages.apply_staged: a keyed change (a normal pass)
     marks nothing whole, so every row it does not name is kept; only a change staged whole, under the declared whole
-    read that staged it (a cold start or an operator's reset, a schema change, an older writer's whole record), marks
+    read that staged it (a cold start or an operator's reset, a schema change, an older writer's whole record, a recovery's
+    reload from the volume's full), marks
     its table whole and replaces it. Flips if a keyed pass replaced the table, or a whole change of any kind did not."""
     shared = await _copy()
     copy = shared.copy

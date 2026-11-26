@@ -129,7 +129,9 @@ def _unsanctioned_hits(config: EpochDisciplineConfig, rule: str) -> tuple[list[E
     :return: the hits, and findings about the walk and the primitive list
     :rtype: tuple[list[EpochHit], list[str]]
     """
-    scan: EpochScan = scan_epoch_discipline(config.repo_root, config.src_roots, config.excluded_prefixes)
+    scan: EpochScan = scan_epoch_discipline(
+        config.repo_root, config.src_roots, config.excluded_prefixes, config.migration_modules
+    )
     defects: list[str] = []
     if scan.files_scanned < config.minimum_files_scanned:
         defects.append(
@@ -137,6 +139,9 @@ def _unsanctioned_hits(config: EpochDisciplineConfig, rule: str) -> tuple[list[E
             f"check src_roots, since a walk that reads nothing reports nothing"
         )
     defects.extend(f"excluded prefix {prefix!r} matches no module; delete it" for prefix in scan.unmatched_exclusions)
+    defects.extend(
+        f"migration module glob {glob!r} matches no module; delete or correct it" for glob in scan.unmatched_migrations
+    )
     primitives = config.primitives.get(rule, frozenset())
     defects.extend(
         f"primitive {entry!r} of {rule} names no function or class the walk found; delete or correct it"
