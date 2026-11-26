@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 
 from packages.core.tests.unit.collections.epoch_range_db import (
     EPOCHS,
@@ -300,7 +300,7 @@ async def test_a_lost_delta_file_s_keys_are_recovered_from_the_versions_in_its_b
     record = EpochChange(table=VERSIONED, token="inc:1", keys_unknown=True, noted_between=(_SINCE, _UNTIL))
     sink = _Sink()
 
-    count = await DeltaFolds._noted_keys(folds, table, record, sink)  # type: ignore[arg-type]
+    count = await DeltaFolds._noted_keys(folds, table, record, sink)  # type: ignore[arg-type]  # noqa: SLF001
 
     assert count == 2, count
     written = pa.concat_tables(sink.batches)
@@ -308,5 +308,5 @@ async def test_a_lost_delta_file_s_keys_are_recovered_from_the_versions_in_its_b
     assert sorted(written.column("candidate").to_pylist()) == ["ann", "bob"]
 
     db.run_marker("CA", "run9", _FLOOR + 7)
-    assert await DeltaFolds._noted_keys(folds, table, record, _Sink()) == "whole_table"  # type: ignore[arg-type]
+    assert await DeltaFolds._noted_keys(folds, table, record, _Sink()) == "whole_table"  # type: ignore[arg-type]  # noqa: SLF001
     _assert_bounded(db, tmp_path)

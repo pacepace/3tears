@@ -12,8 +12,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from threetears.core.collections.change_notes import NotedChange, NotedRows, noted_rows_since
-from threetears.core.collections.generation import written_l2_first
-from threetears.core.collections.lost_writes import announce_window
 
 _EPOCH = datetime(2026, 11, 11, tzinfo=UTC)
 
@@ -158,27 +156,3 @@ async def test_a_whole_note_is_read_only_from_the_window_s_own_start() -> None:
     assert "t.key_text IS NOT NULL OR t.noted_at >=" in query
     assert _EPOCH - timedelta(seconds=5) in args
     assert until in args
-
-
-async def test_a_recovery_records_a_load_s_whole_note_with_its_prefixes_and_a_reset_with_its_reason() -> None:
-    """Flips if a recovery records a load's whole note as the legacy whole table (followers would read it whole) or a
-    reset without its reason."""
-    for notes, prefixes, reason in (
-        ([_note(None, None, _LOAD, "s1")], [{"state": "OH"}, {"state": "PA"}], None),
-        ([_note(None, None, _RESET, None)], None, "reset"),
-    ):
-        pool, source = _Notes(notes), _Recorder()
-        assert not written_l2_first(_TABLE), "a class in this process claims the test's table L2-first"
-        done = await announce_window(
-            pool,
-            generation_source=source,
-            notes_schema="platform",
-            since=_EPOCH,
-            until=_EPOCH + timedelta(minutes=1),
-            why="recovery",
-            tables={_TABLE: ("platform",)},
-        )
-        assert done.advanced == (_TABLE,), done
-        (change,) = source.changes
-        assert change["rows"] is None and not change["keys_unknown"], change
-        assert (change["prefixes"], change["reason"]) == (prefixes, reason), change

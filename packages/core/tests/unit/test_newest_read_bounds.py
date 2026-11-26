@@ -493,6 +493,7 @@ class TestEveryOtherRead:
         )
         assert {int(row["id"]): int(row["v"]) for row in page.rows} == {4: 40, 5: 50, 6: 60}
         assert _PINNED.search(reader.statements[-1]), reader.statements[-1]
+
         # the row hash spelled for the DuckDB behind the reader (an L3 reader is PostgreSQL's or YugabyteDB's)
         async def duckdb_dialect(conn: Any) -> Dialect:
             return Dialect.DUCKDB
