@@ -232,7 +232,8 @@ class GroupCascade:
 
 #: the keys the migrations give ``groups`` beyond its primary key (v001_create_acl_tables: ``UNIQUE (group_id)``,
 #: ``uq_groups_customer_name`` (customer_id, name) WHERE customer_id IS NOT NULL, ``uq_groups_platform_name`` (name)
-#: WHERE customer_id IS NULL): a keyset read by name within one customer, or across platform groups, reads every row
+#: WHERE customer_id IS NULL; both among live rows only since v008, AND NOT gone, which every keyset read of a stamped
+#: table adds): a keyset read by name within one customer, or across platform groups, reads every row
 register_table_keys(
     "groups",
     (
@@ -3994,7 +3995,7 @@ register_table_keys(
 )
 
 
-#: the acl migrations' uq_roles_platform_name (name) WHERE customer_id IS NULL and uq_roles_customer_name (customer_id, name) WHERE customer_id IS NOT NULL: the keys a keyset read of ``roles`` may end its order with (run-time refusal,
+#: the acl migrations' uq_roles_platform_name (name) WHERE customer_id IS NULL and uq_roles_customer_name (customer_id, name) WHERE customer_id IS NOT NULL (both among live rows only since v008, which every keyset read of a stamped table reads): the keys a keyset read of ``roles`` may end its order with (run-time refusal,
 #: :func:`threetears.interfaces.keyed.keys.refuse_non_unique_order`), as the database holds them
 register_table_keys(
     "roles",
