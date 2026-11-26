@@ -115,6 +115,8 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "delete_oldest",
         "delete_keyed",
         "update_keyed",
+        # a stamped table's keyed delete, sent as its gone mark: the update_keyed it sends, judged at its callers
+        "mark_gone_keyed",
         "counts_by_relations",
         "aggregate_keyed",
         # :func:`threetears.datasources.query_client.read_counted`: the part of a warehouse relation its filters name,
@@ -1189,7 +1191,7 @@ def _keyed_write(call: ast.Call) -> list[str]:
         pinned, place = _conditions(_by(_argument(call, "by", None)), first=len(keyed) + 1)
         filtered, place = _filters(call, place)
         conditions = [*keyed, *pinned, *filtered]
-        if _name(call) == "update_keyed":
+        if _name(call) in {"update_keyed", "mark_gone_keyed"}:
             return [f"UPDATE {table} SET {_quoted('_')} = ${place}{_where(conditions)}"]
         return [f"DELETE FROM {table}{_where(conditions)}"]
     started = _by(node, "prefix")
@@ -1437,6 +1439,7 @@ _SYNTHESIZERS: Final = {
     "delete_oldest": _delete_oldest,
     "delete_keyed": _keyed_write,
     "update_keyed": _keyed_write,
+    "mark_gone_keyed": _keyed_write,
     "counts_by_relations": _counts_by_relations,
     "aggregate_keyed": _aggregate_keyed,
     "read_counted": _read_counted,
@@ -1484,7 +1487,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
     # keyword-only: no position names it
     "read_counted": ("relation", -1),
     # the keyed writes, and the pure builders a package that may not depend on core sends on its own connection
-    **dict.fromkeys(("delete_keyed", "update_keyed"), ("table", 1)),
+    **dict.fromkeys(("delete_keyed", "update_keyed", "mark_gone_keyed"), ("table", 1)),
     **dict.fromkeys(
         (
             "delete_before",

@@ -274,6 +274,12 @@ _QUOTING_CALLS: Final = frozenset({"quoted_table", "quote_identifier"})
 #: helper there may declare its own parameter a change relation
 _KEYED_PACKAGES: Final = ("threetears/core/keyed/", "threetears/interfaces/keyed/")
 
+#: the keyed helpers that live beside the collections rather than in :data:`_KEYED_PACKAGES`, because they draw their
+#: write's stamp from the caller's transaction (``CallerTransaction``, which imports the keyed package):
+#: ``mark_gone_keyed``, a stamped table's keyed delete sent as its gone mark. Each one's body is judged at its callers,
+#: as a keyed helper's is (:meth:`_ModuleWalk._inside_keyed_helper`)
+_STAMPING_HELPER_MODULES: Final = ("threetears/core/collections/gone_marks.py",)
+
 #: the reads in a table's place every shared keyed read asks (``threetears.core.keyed._filters``), each answering a
 #: relation over the table it is handed (``table``, second) with that table's key and indexes: a versioned table's
 #: newest live versions, a stamped one's live rows (``versions_read``, ``newest_read``); ``live_read`` answers that
@@ -333,6 +339,7 @@ _SCOPE_PAGES: Final = "keyset_scope_pages"
 #: helper's relation parameter there is judged at the helper's call sites (:func:`_helper_relations`)
 _KEYED_HELPER_MODULES: Final = (
     *_KEYED_PACKAGES,
+    *_STAMPING_HELPER_MODULES,
     "threetears/agent/acl/visible_customers.py",
     # a relation's count and key digest (fingerprint_sql), over the relation its caller names: judged at the callers
     # (coordinator ruling 2026-11-14)
@@ -6799,9 +6806,10 @@ class _ModuleWalk(ast.NodeVisitor):
         )
 
     def _inside_keyed_helper(self) -> bool:
-        """whether the walk is in the body of a keyed helper of ``threetears/core/keyed`` each of whose calls it judges
-        as the statements it sends (:data:`JUDGED_BY_STATEMENTS`): a helper whose callers are judged otherwise (a
-        statement builder) has its inner calls judged in its body, as any function's.
+        """whether the walk is in the body of a keyed helper of ``threetears/core/keyed`` (or of
+        :data:`_STAMPING_HELPER_MODULES`) each of whose calls it judges as the statements it sends
+        (:data:`JUDGED_BY_STATEMENTS`): a helper whose callers are judged otherwise (a statement builder) has its inner
+        calls judged in its body, as any function's.
 
         :return: whether it is
         :rtype: bool
@@ -6810,7 +6818,7 @@ class _ModuleWalk(ast.NodeVisitor):
         return (
             function is not None
             and function.name in JUDGED_BY_STATEMENTS
-            and any(package in str(self.path) for package in _KEYED_PACKAGES)
+            and any(package in str(self.path) for package in (*_KEYED_PACKAGES, *_STAMPING_HELPER_MODULES))
         )
 
     def _helper_change_parameter(self, node: ast.expr) -> bool:

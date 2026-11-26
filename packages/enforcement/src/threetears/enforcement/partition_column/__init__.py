@@ -268,6 +268,7 @@ _BY_HELPERS: frozenset[str] = frozenset(
         "delete_keyed",
         "holds_any",
         "keyset_page",
+        "mark_gone_keyed",
         "read_after",
         "read_by",
         "read_nearest",

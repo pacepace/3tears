@@ -38,6 +38,7 @@ from threetears.core.backends.schema_sql import normalize_write_value, render_pa
 from threetears.core.cache.base import UnsupportedL1ColumnError
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.gone_marks import mark_gone_keyed
 from threetears.core.collections.schema_backed import (
     TSVECTOR_TYPE,
     Column,
@@ -47,7 +48,6 @@ from threetears.core.collections.schema_backed import (
     schema_field_types,
     stamped_values,
 )
-from threetears.core.keyed import Fragment, update_keyed
 from threetears.core.ddl.row_epoch import (
     EPOCH_COLUMN,
     GONE_COLUMN,
@@ -347,7 +347,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
 
     async def mark_gone_in_store(self, entity_id: Any, *, conn: Any = None) -> None:
         """mark one stamped row gone in place: one keyed ``UPDATE`` setting its gone flag, its epoch risen past a fresh
-        stamp (:meth:`stamped_values`, drawn from ``conn``'s transaction when it joins one), a row already gone left as
+        stamp (:func:`~threetears.core.collections.gone_marks.mark_gone_keyed`, drawn from ``conn``'s transaction when it joins one), a row already gone left as
         it is. Nothing without an L3 pool.
 
         :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
@@ -363,13 +363,11 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         pool = self.l3_pool if conn is None else conn
         if pool is None:
             return
-        await update_keyed(
+        await mark_gone_keyed(
             pool,
             self.schema.name,
-            values=self.stamped_values({GONE_COLUMN: True}, conn=conn),
             # the table's own key, written where the statement is so the key it binds is the one read
             by=dict(zip(self.schema.pk_columns, self.normalize_pk(entity_id), strict=True)),
-            where=[Fragment(f'NOT "{GONE_COLUMN}"')],
         )
 
     def _rises_epoch(self) -> bool:
