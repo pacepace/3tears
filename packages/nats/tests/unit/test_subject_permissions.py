@@ -2823,7 +2823,7 @@ class TestToolPodObjectStore:
 
 
 class TestToolPodDeltaFileRecreates:
-    """a tool pod whose row opts in asks and serves delta-file recreates (design-pod-delta-files.md decisions 29, 30).
+    """a tool pod whose row opts in asks and serves delta-file recreates (docs/design-pod-delta-files.md decisions 29, 30).
 
     The grant is the ``delta-files`` forward family on publish and subscribe, its family token exact and only the key
     wildcarded, in this namespace; a pod not opted in, and every other principal, holds none of it.

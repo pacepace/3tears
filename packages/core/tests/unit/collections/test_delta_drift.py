@@ -1,6 +1,6 @@
 """the writer's drift sample: random keys of its full read from L3 by key and compared at the same generation.
 
-Decision 32 of ``design-pod-delta-files.md``, check B. The full, the delta files' volume and the keyed read are the real
+Decision 32 of ``docs/design-pod-delta-files.md``, check B. The full, the delta files' volume and the keyed read are the real
 ones; L3 is a DuckDB answering ``fetch`` that records every statement, and the epoch log is a dict of records. The
 contract this pins:
 

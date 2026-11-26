@@ -1,6 +1,6 @@
 """read_state_arrow: one state's rows of a LOCAL copy table, pinned by its declared state column; never L3.
 
-Decision 36 of design-pod-delta-files: a table whose key does not name its state (AP results) has its state's rows
+Decision 36 of docs/design-pod-delta-files.md: a table whose key does not name its state (AP results) has its state's rows
 read by that column only on the pod's own copy. The helper refuses any connection that reads L3.
 """
 

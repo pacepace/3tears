@@ -1,6 +1,6 @@
 """a copy that starts from the volume checks its own rows of each state against the full's fingerprint, never L3.
 
-Decision 32 of ``design-pod-delta-files.md``, check A: each full part's manifest entry carries a fingerprint of its rows
+Decision 32 of ``docs/design-pod-delta-files.md``, check A: each full part's manifest entry carries a fingerprint of its rows
 (``volume_fulls.rows_fingerprint``, one definition both sides use); every pod copy periodically fingerprints its own
 rows of each (table, state) it holds at exactly the part's version and compares. The registry, the follower, the delta
 files and the fulls are the real ones; L3 is a DuckDB that counts the statements it answers for each table. The

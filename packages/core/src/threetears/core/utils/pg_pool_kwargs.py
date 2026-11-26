@@ -152,7 +152,7 @@ DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0
 #: without pgvector loaded keeps it as a placeholder; ybhnsw applies the owner pin inside its scan and returned 10 of 10
 #: either way. Probes: scratchpad a100/hnsw/probe.py, probe_startup.py.
 #:
-#: ``plan_cache_mode = force_custom_plan`` (design-pod-delta-files.md, decision 39): PostgreSQL and YugabyteDB switch a
+#: ``plan_cache_mode = force_custom_plan`` (docs/design-pod-delta-files.md, decision 39): PostgreSQL and YugabyteDB switch a
 #: prepared statement (asyncpg's statement cache) to a generic plan from its sixth run when that plan's estimate is no
 #: worse than the custom plans' average. A keyed read's key arrays are unknown to a generic plan, so composite keyed
 #: reads collapsed from the sixth run: 50,000 keys on PostgreSQL 16 ~90 -> ~440 ms, YugabyteDB 2026.1's Arrow-mode

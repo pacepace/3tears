@@ -1379,7 +1379,7 @@ class CollectionRegistry:
 
         Why: a copy of a table that opts in applies the change from the file, clearing its own rows under each prefix
         the file names and applying the file's rows, so no pod reads the load's rows back from L3
-        (``design-pod-delta-files.md``, decisions 17 and 23).
+        (``docs/design-pod-delta-files.md``, decisions 17 and 23).
 
         :param change: a whole-table record naming its key prefixes and its delta file
         :ptype change: EpochChange
@@ -1436,7 +1436,7 @@ class CollectionRegistry:
 
         Why the file and not the change notes: the notes are short-lived, so a follower restarted from a checkpoint
         older than their coverage could never name the commit's keys and stayed behind; the file is kept as long as
-        any copy may need it, and names exactly the commit's keys (``design-pod-delta-files.md``, decision 21).
+        any copy may need it, and names exactly the commit's keys (``docs/design-pod-delta-files.md``, decision 21).
 
         :param change: a keys-unknown record
         :ptype change: EpochChange

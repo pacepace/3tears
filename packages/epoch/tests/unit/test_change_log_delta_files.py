@@ -1,4 +1,4 @@
-"""The change log's records name their commit's delta file (``design-pod-delta-files.md``, decision 4).
+"""The change log's records name their commit's delta file (``docs/design-pod-delta-files.md``, decision 4).
 
 Every record a write appends for a table names the file, a commit too large for one record included, so a follower
 that reaches any of them has the whole commit; a write naming none appends records byte for byte as before. Every

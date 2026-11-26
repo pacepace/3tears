@@ -4,7 +4,7 @@
 and a restarted copy whose checkpoint was older than the change notes could never learn which rows changed. A table
 that opts in (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`) has every commit's rows
 saved as a file on a volume every pod mounts, so a copy applies the change from the file instead of reading L3, and
-nothing expires on a timer (``design-pod-delta-files.md``, decisions 5, 6, 9, 11 and 12).
+nothing expires on a timer (``docs/design-pod-delta-files.md``, decisions 5, 6, 9, 11 and 12).
 
 **One file per table per commit.** A commit is one epoch of each table it wrote (the broker advances each table once
 for it), so the file holds every row the commit wrote to the table, in the order written, and a delete marker
@@ -133,7 +133,7 @@ _DELTA_FILES_DIR_ENV: Final = "THREETEARS_DELTA_FILES_DIR"
 
 #: what the writer does with a delta file once a full covers it, or once its commit did not land
 #: (:class:`~threetears.core.collections.delta_fold.DeltaFolds`' ``retention``, required, no default): ``"keep"``, never
-#: deleted by anything (``design-pod-delta-files.md`` decision 51: the history a copy that lags its writer still reads,
+#: deleted by anything (``docs/design-pod-delta-files.md`` decision 51: the history a copy that lags its writer still reads,
 #: the front end's time travel; a later plan moves old ones to cold storage), or ``"delete"``, deleted as the fold covers
 #: them. Why no default: which a deployment runs changes what a lagging copy finds on the volume, so each consumer says
 #: it (the reports pod: ``"keep"``)
@@ -192,7 +192,7 @@ _TABLE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: a write id as it may become a file name
 _WRITE_ID: Final = re.compile(r"^[A-Za-z0-9_-]+$")
 #: a write id that names its write's version (:func:`versioned_write_id`): ``v<version>-<unique>``. Why the version in
-#: the name (``design-pod-delta-files.md`` decision 53): a full's manifest then says exactly which files it covers
+#: the name (``docs/design-pod-delta-files.md`` decision 53): a full's manifest then says exactly which files it covers
 #: (every file below a version, but those it lists open), so a recovery after a lost epoch log reads only the files no
 #: full covers, never the whole kept history, and a fold that deletes knows a file is covered from its name alone. An
 #: older file's name (a bare unique id, or ``recovery-<unique>``) has no version: read as before (expand/contract)
@@ -226,7 +226,7 @@ def check_delta_scope(table: str, scope_column: str | None, scope: Any) -> None:
         raise DeltaFileRefusedError(
             f"{table}: its key does not name a row's state, so each delete names the state of the keys it deletes "
             f"(delta_scope=, the value of {scope_column!r} in their rows): its delete markers carry it, and the fold "
-            f"files each under that state's part (design-pod-delta-files.md, decision 27)"
+            f"files each under that state's part (docs/design-pod-delta-files.md, decision 27)"
         )
     if scope_column is None and scope is not None:
         raise ValueError(
@@ -242,7 +242,7 @@ class DeltaFileUnreadableError(ValueError):
     volume itself answered (an ``OSError`` carrying an errno): those are not the file's bytes.
 
     Why one class: a copy that finds a change's file so waits for the writer to recreate it, reading nothing from L3
-    (``design-pod-delta-files.md``, decision 29), and it must tell that apart precisely from a failure it should not
+    (``docs/design-pod-delta-files.md``, decision 29), and it must tell that apart precisely from a failure it should not
     wait on. Measured (2026-11-23, a 2,000-row file, a byte flipped every 23 bytes, one process a flip): without a full
     validation 15 of 509 reads killed the process (a segfault in ``to_pylist`` over a broken offset), the rest raised
     ``MemoryError``, ``UnicodeDecodeError``, ``KeyError`` or ``OSError``; with ``validate(full=True)`` before any row
@@ -1046,7 +1046,7 @@ def read_delta_file_keys(path: Path, *, table: str | None = None) -> DeltaKeys:
 
     Why: a copy hears a commit too big to list (337,000 keys in the 2026-11-23 audit) and a load's keys from the file;
     a Python tuple a key, then a row message a key, cost the event loop a key at a time and left the collector a
-    tuple a key to walk (``design-pod-delta-files.md``, decision 35). Here no key becomes a Python object.
+    tuple a key to walk (``docs/design-pod-delta-files.md``, decision 35). Here no key becomes a Python object.
 
     :param path: the file
     :ptype path: Path
@@ -1231,7 +1231,7 @@ class HeldDeltaRows:
     200,000-row file of 15 text columns) and merging each key's row in a Python loop, every epoch's file held so through
     the pass (2026-11-23 audit, P0). Here a file stays the Arrow it was read as, and the copy holds one at a time.
 
-    The rule, per change (decision 19 of ``design-pod-delta-files.md``): a delete leaves no row; a key not held takes
+    The rule, per change (decision 19 of ``docs/design-pod-delta-files.md``): a delete leaves no row; a key not held takes
     the file's row whole (a column the file lacks is null); a held key takes the file's value of each column its write
     set and keeps every other (its ``date_created`` among them). A key under a prefix the file clears is not held
     before the file's own changes of it. A key's several changes in one file apply in the order written.

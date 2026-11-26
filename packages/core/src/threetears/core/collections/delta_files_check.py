@@ -3,7 +3,7 @@ does not start without it.
 
 **Why.** A table that opts in (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`) refuses
 every commit whose file cannot be saved (:func:`~threetears.core.collections.caller_transaction.save_delta_files`), and
-its copies apply those files off the same directory (``design-pod-delta-files.md`` decisions 7, 12 and 29). A process
+its copies apply those files off the same directory (``docs/design-pod-delta-files.md`` decisions 7, 12 and 29). A process
 started without the directory serves until its first write and then fails every load, and a copy waits on files it
 can never read: found in a test or on the night, not at the deploy. Checked once at the start, a process missing it
 exits before it serves or contends for a write lease, with a message saying what is wrong and how to fix it.

@@ -659,7 +659,7 @@ async def test_a_start_from_a_checkpoint_defers_nothing_and_asks_no_whole_settle
 
 async def test_the_whole_settle_job_runs_once_at_a_start_not_wholly_from_a_checkpoint_never_on_a_pass() -> None:
     """the proving test of the whole settle declared in shared_copy._settle_whole_job (derive_whole, kind cold_start:
-    Pace 2026-11-27, a pod start from the delta-files volume counts as a cold start): it runs once, at the first
+    Pace 2026-11-26, a pod start from the delta-files volume counts as a cold start): it runs once, at the first
     labelled pass after a start not wholly from a checkpoint (here one with no checkpoint: a start from the volume's
     fulls leaves it due the same way, CopyFollower.start), and never on a pass after it; a start wholly from a
     checkpoint never runs it. Its rows say which derived them: ``whole`` by derive_whole, ``change`` by derive."""

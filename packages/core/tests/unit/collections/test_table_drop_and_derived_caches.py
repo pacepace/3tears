@@ -543,7 +543,7 @@ class TestDroppingATable:
 
 
 class TestAPrefixClearDropsOnlyTheRowsUnderIt:
-    """a load's or a clear's reach (key prefixes, decision 23 of design-pod-delta-files) drops only the cached rows
+    """a load's or a clear's reach (key prefixes, decision 23 of docs/design-pod-delta-files.md) drops only the cached rows
     under it: never the table (the whole-drop rule of tests/enforcement/test_epoch_discipline.py)."""
 
     async def test_only_the_rows_under_the_prefix_leave_l1_and_the_rest_stay_served_from_it(

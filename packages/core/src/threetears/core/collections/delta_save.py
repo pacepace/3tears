@@ -1,6 +1,6 @@
 """a write's delta files built and saved in a worker process: the serving process hands Arrow and waits.
 
-**Why.** A commit's delta files are saved before the commit (``design-pod-delta-files.md``, decision 11), and the
+**Why.** A commit's delta files are saved before the commit (``docs/design-pod-delta-files.md``, decision 11), and the
 save is CPU: each part typed as the table's columns, joined, compressed with zstd and hashed (sha256), on top of the
 write's own work. It ran on a thread of the serving process; the 2026-11-23 audit moved it out. Measured
 (2026-11-23, macOS arm64, Python 3.14, a load of 337,000 rows of 179 columns, 527 MiB of Arrow): saved on a thread it

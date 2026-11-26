@@ -2,7 +2,7 @@
 
 **Why.** A table that opts in to delta files (:attr:`~threetears.core.collections.schema_backed.TableSchema.delta_files`)
 keeps every change on the shared volume, and nothing there expires on a timer, so a pod copy can always catch up
-(``design-pod-delta-files.md``). Its starting point, the full, lives on the same volume instead of the pod's NATS
+(``docs/design-pod-delta-files.md``). Its starting point, the full, lives on the same volume instead of the pod's NATS
 Object Store (decision 7): a copy loads the full, then applies every delta newer than each part. L3 is never read
 whole by a copy: with no full on the volume it waits for the writer to publish one (decision 14).
 
@@ -490,7 +490,7 @@ class FullTable:
     :ivar version: the generation token the table as a whole is current to: a state with no part holds no rows at it
     :ivar parts: its parts, one a state
     :ivar folded_below: the write version below which every delta file of the table whose commit landed is folded into
-        this full, but those :attr:`open` names (``design-pod-delta-files.md`` decision 53): a file's name carries its
+        this full, but those :attr:`open` names (``docs/design-pod-delta-files.md`` decision 53): a file's name carries its
         write's version (:func:`~threetears.core.collections.delta_files.delta_file_version`). None for a manifest an
         older writer published, which claims nothing: every file is then read as before
     :ivar open: the delta files below :attr:`folded_below` not folded into this full (told and not yet due, or waiting

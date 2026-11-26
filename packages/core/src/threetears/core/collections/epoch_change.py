@@ -37,14 +37,14 @@ reader ignores a field it does not know (no model here forbids one), so it reads
 from an older writer names no database and every reader walks it as before. Once every writer of a shared log names
 its database, a contract release may treat a record naming none as another database's.
 
-**A record names its commit's delta file** (:attr:`EpochChange.delta_file`; ``design-pod-delta-files.md``, decision
+**A record names its commit's delta file** (:attr:`EpochChange.delta_file`; ``docs/design-pod-delta-files.md``, decision
 4). A table that opts in to delta files (:mod:`~threetears.core.collections.delta_files`) has each commit's rows saved
 as a file on the pods' shared volume before the commit; the commit's record names that file, so a pod fetches exactly
 it and nothing lists the volume. Every record of the commit for the table names it (a commit too large for one record
 is several), so a follower that reaches any of them has the whole commit. Rolled out as :attr:`database` was: the
 field is optional, an older reader ignores it, and a record from an older writer names none.
 
-**A keys-unknown record names the scopes its commit touched** (:attr:`EpochChange.scopes`; ``design-pod-delta-files
+**A keys-unknown record names the scopes its commit touched** (:attr:`EpochChange.scopes`; ``docs/design-pod-delta-files
 .md``, decision 31). A commit too big to list its rows has its keys only in its delta file (decision 21); should that
 file be lost past the change notes' window, nothing else names them. So the record also names the scopes (the states,
 ``state:CA``, as the writer's seqlock names them: :class:`~threetears.core.collections.scope_epochs.ScopeEpochs`) the

@@ -8211,7 +8211,7 @@ def test_a_select_list_joined_from_a_local_list_is_read_as_its_items(tmp_path: P
     assert ("Driver.coverage", "calls-whole-read coverage_sql") in found, sorted(found)
 
 
-#: a local copy's read of one state (decision 36 of design-pod-delta-files): read_state_arrow pinned by a declared
+#: a local copy's read of one state (decision 36 of docs/design-pod-delta-files.md): read_state_arrow pinned by a declared
 #: state column, beside the same read by an undeclared column and a plain ``by=`` read of the declared column
 _DECLARED_SCOPE_READS = """
     from dataclasses import dataclass
@@ -8255,7 +8255,7 @@ def test_a_local_state_read_is_bound_only_by_a_declared_state_column(tmp_path: P
     assert "Copy.scope_by_on_l3" in functions, found
 
 
-#: L3's keyset read of the states a set names (decision 31 of design-pod-delta-files): keyset_scope_pages pinned by a
+#: L3's keyset read of the states a set names (decision 31 of docs/design-pod-delta-files.md): keyset_scope_pages pinned by a
 #: declared state column, beside the same call by an undeclared column and the read it replaces, written by hand
 _DECLARED_SCOPE_PAGES = """
     from dataclasses import dataclass

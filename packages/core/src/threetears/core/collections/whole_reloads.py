@@ -7,7 +7,7 @@ recovery: the copy lost the table's epoch log or a delta file, and the writer's 
 changes it can no longer walk. The writer's lost-write backstop (:mod:`~threetears.core.collections.lost_writes`)
 records whole changes of a dead writer's window again, which every copy then reloads.
 
-Recovery reloads stay, but are never silent (Pace's ruling of 2026-11-27): each is counted here by table and why and
+Recovery reloads stay, but are never silent (Pace's ruling of 2026-11-26): each is counted here by table and why and
 logged at WARNING with both, and a replay fails on any (:attr:`WholeReads.gated` of :data:`WHOLE_RELOADS`). A reset or
 a schema change the replay itself caused is allowed, and named in its report.
 

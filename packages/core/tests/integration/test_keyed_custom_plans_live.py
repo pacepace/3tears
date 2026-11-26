@@ -3,7 +3,7 @@
 PostgreSQL and YugabyteDB switch a prepared statement (asyncpg's statement cache) to a generic plan after five runs
 (``plan_cache_mode = auto``) when its estimate is no worse than the custom plans' average. A keyed read's key arrays are
 unknown to a generic plan (planned for any keys), so a composite keyed read collapsed from the sixth run on
-(design-pod-delta-files.md, decision 39). A platform pool
+(docs/design-pod-delta-files.md, decision 39). A platform pool
 (:func:`~threetears.core.utils.pg_pool_kwargs.create_pool_with_startup_timeout`) starts its sessions with
 ``plan_cache_mode = force_custom_plan``.
 

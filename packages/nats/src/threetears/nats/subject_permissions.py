@@ -106,7 +106,7 @@ __all__ = [
 CROSS_PLATFORM_CACHE_INVALIDATE = "threetears.cache.invalidate"
 
 #: the owner-routed forward family a pod's copy asks its writer replica to recreate a lost or unreadable delta file in
-#: (``threetears.core.collections.delta_recreate``, design-pod-delta-files.md decision 29). Granted to a tool pod whose
+#: (``threetears.core.collections.delta_recreate``, docs/design-pod-delta-files.md decision 29). Granted to a tool pod whose
 #: registry row opts in (``build_permissions(..., delta_files=True)``, decision 30), the way ``object_store`` is.
 DELTA_FILES_FORWARD_FAMILY: Final = "delta-files"
 

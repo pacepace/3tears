@@ -547,7 +547,7 @@ def rail_arrow_types(columns: Sequence[Any]) -> dict[str, Any]:
     return types
 
 
-# what a delta file may hold of a column's database default (design-pod-delta-files.md, decision 20): the file is
+# what a delta file may hold of a column's database default (docs/design-pod-delta-files.md, decision 20): the file is
 # written before the commit, so it holds only what 3tears knows without the database's answer. A plain literal of the
 # column's own type is a fixed value, written into the file's row as the rail answers it; anything else -- a function
 # (now(), gen_random_uuid()), a sequence (nextval), an expression, a literal 3tears does not read exactly -- is the
@@ -1451,13 +1451,13 @@ class TableSchema:
     :cvar delta_keep: the rows of each state a full of the table keeps when the writer folds its delta files
         (:class:`~threetears.core.collections.delta_keep.DeltaKeepRule`, a subclass: it crosses to the fold's worker
         process as its name); None keeps every row. Read only for a table that opts in (:attr:`delta_files`): the
-        same rule the table's copy keeps by, so a full holds what a copy holds (``design-pod-delta-files.md``,
+        same rule the table's copy keeps by, so a full holds what a copy holds (``docs/design-pod-delta-files.md``,
         decision 13)
     :cvar delta_scope: for a table that opts in to delta files and whose key does not name a row's state (AP results,
         keyed by the race, ``office_key``, with the state in ``join_state_code``), the row column holding the state: a
         delete marker carries the key alone otherwise, and fulls are cut per state, so each of the table's deletes
         names the state of the keys it deletes (``delete_rows(..., delta_scope=...)``), the marker carries it in this
-        column, and the fold files the delete under that state's part (``design-pod-delta-files.md``, decision 27). A
+        column, and the fold files the delete under that state's part (``docs/design-pod-delta-files.md``, decision 27). A
         delete naming no state is refused before it reaches L3. None: the key names the state, or the table is not cut
         per state
     :cvar delta_state_scope: for a table that opts in to delta files, the state each row is of as the writer's seqlock
@@ -1466,7 +1466,7 @@ class TableSchema:
         its column a key column, or :attr:`delta_scope` (so every delete marker carries it too). Declared, each commit
         reads the states it wrote off its delta file's rows and its record names every one of them, marked complete
         (:data:`~threetears.core.collections.epoch_change.EVERY_STATE_NAMED`), so a copy that finds the file gone
-        reloads only those states from the full (``design-pod-delta-files.md``, decision 54 (c)). None: a record's
+        reloads only those states from the full (``docs/design-pod-delta-files.md``, decision 54 (c)). None: a record's
         states are never known complete, and a copy reloads the whole table
     :cvar cas_null_safe: opt in to a NULL-safe compare-and-swap fence
         that also covers the FIRST write of a row. default ``False``,
@@ -2272,7 +2272,7 @@ class TableSchema:
     def _refuse_undecided(self) -> dict[str, Any]:
         """refuse a table opting in to delta files when the database decides part of what a write leaves: a column
         whose default it computes, a column a trigger maintains, or a guarded write it may skip. The file is written
-        before the commit and cannot know the database's answer (design-pod-delta-files.md, decision 20), so such a
+        before the commit and cannot know the database's answer (docs/design-pod-delta-files.md, decision 20), so such a
         table is refused where it is declared rather than given a file that guesses.
 
         :return: each column's fixed default, as the rail answers it (:attr:`delta_file_defaults`)

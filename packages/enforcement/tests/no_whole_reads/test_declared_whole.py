@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.core.declared import whole_read
+from threetears.core.declared import whole_read, whole_read_block
 from threetears.enforcement.no_whole_reads import NoWholeReadsConfig, no_whole_reads_findings, use_the_helper_findings
 from threetears.enforcement.no_whole_reads.rewrite import plan_list_rewrites
 
@@ -907,9 +907,9 @@ def test_the_l1_table_drop_kind_is_declared_at_run_time() -> None:
     )
 
 
-# ---- a declared call into a function with no reads of its own: covered by what it reaches (Pace 2026-11-27) ----------
+# ---- a declared call into a function with no reads of its own: covered by what it reaches (Pace 2026-11-26) ----------
 
-_RECOVERY_RULING = "Pace 2026-11-27: recovery reloads stay, but are never silent"
+_RECOVERY_RULING = "Pace 2026-11-26: recovery reloads stay, but are never silent"
 
 
 def _apply_declaring(*kinds: str, extra: str = "") -> str:
@@ -1041,3 +1041,51 @@ def test_a_recovery_empties_only_an_in_process_copy_never_an_l3_table(tmp_path: 
 """
     findings = _findings(tmp_path, {"store.py": module}, _RECOVERY_PROOFS)
     assert any("in apply_staged: whole-delete items" in finding for finding in findings), findings
+
+
+# ---- the statement form: ``with whole_read_block(kind=..., ...):``, its body the declared read --------------------
+
+_BLOCK = """
+    async def fill_into(conn, whole):
+        with whole_read_block(
+            kind="cold_start",
+            reason="an empty copy is filled once at its cold start, nothing in L2",
+            ruling="RULING",
+            proof="tests/test_backup.py::test_fill_into_only_when_empty",
+            speed="tests/test_backup.py::test_fill_into_speed",
+        ):
+            whole.extend(await conn.fetch("SELECT id, body FROM items"))
+        return await conn.fetch("SELECT body FROM items")
+"""
+
+_BLOCK_PROOFS = _PROOFS + textwrap.indent(
+    "\ndef test_fill_into_only_when_empty():\n    assert fill_into\n"
+    "\ndef test_fill_into_speed():\n    assert fill_into\n    budget_problem()\n",
+    "    ",
+)
+
+
+def test_a_block_declaration_covers_its_body_alone(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Flips if the statement form is not a declaration (its body's whole select still reported, nothing printed),
+    if it covers a whole select after its body in the same function, or if the declaring call reads as a whole call."""
+    module = _STORE.replace(
+        "from threetears.core.declared import whole_read\n",
+        "from threetears.core.declared import whole_read, whole_read_block\n",
+    )
+    findings = _findings(tmp_path, {"store.py": module + _BLOCK}, _BLOCK_PROOFS)
+    printed = capsys.readouterr().err
+    assert "declared-whole cold_start src/store.py:30 fill_into" in printed, printed
+    mine = [finding for finding in findings if "fill_into" in finding]
+    assert len(mine) == 1 and "src/store.py:38" in mine[0] and "whole-select items" in mine[0], findings
+
+
+def test_a_block_declaration_is_checked_at_run_time_and_does_nothing() -> None:
+    """Flips if the statement form takes a declaration whole_read refuses, or changes what its body does."""
+    with pytest.raises(ValueError, match="a whole read declares a kind"):
+        whole_read_block(kind="nightly", reason="r", ruling="Pace 2026-11-12", proof="a::b")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="until"):
+        whole_read_block(kind="rolling_upgrade", reason="r", ruling="Pace 2026-11-12", proof="a::b")
+    marked: set[str] = set()
+    with whole_read_block(kind="cold_start", reason="r", ruling="Pace 2026-11-12", proof="a::b"):
+        marked.add("items")
+    assert marked == {"items"}

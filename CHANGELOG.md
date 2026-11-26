@@ -29,6 +29,60 @@ and decoded as before, never read as "no row", which the saver would turn into a
 
 ### enforcement, core: two gate facts (Pace 2026-11-27): a migration's stamped write is heard; a reload's call is covered by what it reaches
 
+### What a consumer must do at this release (agent-acl's migrations, cleanup records, the retry helper, the replay)
+
+**The hub repeats agent-acl v007-v011 in its own migrations.** A deployment whose own migrations create the access
+tables (the hub) runs no agent-acl migration, so it takes each step itself. A deployment with no hub runs agent-acl's
+migrations and has nothing to do. The hub's chain on ``work/hub-line`` already takes every step:
+
+| agent-acl | what it does | the hub's step |
+| --- | --- | --- |
+| v007 | ``namespaces`` keyed by ``namespace_id`` alone, ``row_scope`` moveable, ``threetears_tenant_moves`` | v187 (the moves table), v190 step 3 (``rekey_namespaces``) |
+| v008 | group and role names hold live rows only | v191 (``LIVE_UNIQUE_INDEXES``) |
+| v009 | the grant indexes take the hub's shape and names | none: 3tears takes the hub's own indexes (its v163, v1001) |
+| v010 | live pages read live-only indexes | v195 step 3 (``THREETEARS_LIVE_INDEXES``) |
+| v011 | ``owner_namespace_id``, backfilled; ``idx_namespaces_owner_namespace`` dropped | v199 (``ADD_OWNER_ID_SQL``, ``backfill_owner_namespace_ids``) |
+
+**The hub's broker holds its sessions to the cleanup rules.** A copy now marks a cleanup-floor record applied without
+reading it (``CollectionRegistry.catch_up_generation``). That is safe only while every write such a record names is
+quiet-time cleanup's delete alone. The pod holds its own writes to it: a ``CallerTransaction`` mixing cleanup's delete
+with another write raises the new public ``CleanupMixedWriteError`` (``cleanup_mix_refusal``), and a cleanup-marked
+request that writes by anything but a delete is refused (``cleanup_write_refusal``). The hub's broker must hold its
+sessions to both. It does on ``work/hub-line``: ``aibots.hub.broker.proxy._refuse_cleanup_mix`` calls
+``cleanup_mix_refusal`` and ``_refuse_cleanup_non_delete`` calls ``cleanup_write_refusal``. Do not run a hub without
+them beside pods of this release.
+
+**``retry_serialization_conflicts`` retries deadlocks (40P01) as well as conflicts (40001), for every caller.** Each
+of today's callers (role-assignment ensure, namespace ensure, ``testing.schemas``' ``DROP SCHEMA``) re-runs a whole
+unit on the pool, so a retry is safe. Never call it inside a ``CallerTransaction``: an aborted transaction's statement
+cannot be retried.
+
+**A replay fails on a recovery reload.** It reads the pod's ``whole_reloads`` (``collection_whole_reloads_total``)
+against ``WHOLE_RELOADS.gated``, imported rather than copied. Reports' replay does this on ``work/reports-fold``
+(``replay_night``).
+
+**Reports drops its ``CountedCopyBackend`` wrapper.** The shared copy counts what its hooks let go
+(``shared_copy_let_go_rows_total{table}``, ``SharedCopyBackend.let_go``).
+
+**Also changed:** a versioned table's new version keeps the ``date_created`` its row carries; a keyed read with a live
+guard is hinted to the live-only index over a whole one of the same lead (hub v198 made such pairs); a stream key
+listing reads with a fixed set of readers, never one task a subject.
+
+### agent-acl, core: racing revives of a gone namespace; a statement form for a declared whole read
+
+**Fixed:** ``NamespaceCollection.ensure_namespace`` raised "a unique value it carries ... is already taken by a row
+with another id" in every replica but one when several re-ensured a namespace a delete had marked gone. One replica's
+revive made the row live, and every other replica's revive (``UPDATE ... WHERE gone``) matched nothing, so it skipped
+the read-back. The row is now read back whatever the revive returned, and refused only if it is still missing
+(``test_racing_revives_of_a_gone_namespace_never_raise``, PostgreSQL and YugabyteDB).
+
+**Added:** ``threetears.core.declared.whole_read_block``, the statement form of ``whole_read``. Its ``with`` body is the
+declared read and it takes the same arguments, so a statement returning nothing (``whole.add(table)``) is declared
+without handing ``None`` through an expression and a ``# type: ignore[func-returns-value]``. Both gates read it
+(no_whole_reads, epoch_discipline). ``SharedCopyStages.apply_staged`` and ``lost_writes._changes_of`` use it.
+
+### enforcement, core: two gate facts (Pace 2026-11-26): a migration's stamped write is heard; a reload's call is covered by what it reaches
+
 **Changed (epoch-bypass):** a keyed update (``update_keyed`` / ``update_before``) in a module the migration runner runs
 (``EpochDisciplineConfig.migration_modules``; 3tears names ``packages/*/migrations/v*.py``) that sets ``epoch`` from the
 shared stamp (``CallerTransaction.stamp_for``, ``next_epoch``, or ``rising_stamp`` of one) is not a bypass: the runner
@@ -50,21 +104,18 @@ test at 100,000 rows. The gate is at zero.
 
 ### core, enforcement: a recovery is a declared whole-read kind; three of the gate's four findings declared
 
-**Added:** ``whole_read(kind="recovery")`` (Pace 2026-11-27: recovery reloads stay, but are never silent): its call
+**Added:** ``whole_read(kind="recovery")`` (Pace 2026-11-26: recovery reloads stay, but are never silent): its call
 into a reload from the writer's full, or the change it marks whole; never an L3 read. The lost-write backstop's whole
 changes of a lost window are declared under it (``lost_writes._changes_of``). The shared copy's apply marks a table
 whole under the kind that staged its change, as the in-process copy's apply empties it (``SharedCopyStages
 .apply_staged``: ``cold_start``, ``schema_change`` and ``rolling_upgrade`` now admit ``marks-whole``). The whole settle
-after a start not wholly from a checkpoint is a ``cold_start`` (``shared_copy._settle_whole_job``; Pace 2026-11-27: a
-pod start from the volume counts as a cold start), with its proof and a speed test at 100,000 rows. Still open: the
-copy's reload from the volume (``CopyFollower._reload_when_published``'s call into ``_reload_from_volume``), whose
-whole apply is two calls down in ``DuckDBBackend.apply_staged`` under three kinds, so no one kind can be declared at
-the call.
+after a start not wholly from a checkpoint is a ``cold_start`` (``shared_copy._settle_whole_job``; Pace 2026-11-26: a
+pod start from the volume counts as a cold start), with its proof and a speed test at 100,000 rows.
 
 ### core: every whole reload is counted by why, and a recovery reload is said at WARNING
 
 **Added:** ``collection_whole_reloads_total{table,why}`` (``threetears.core.collections.whole_reloads.WHOLE_RELOADS``)
-counts every table reloaded whole with no L3 read (Pace's ruling of 2026-11-27: recovery reloads stay, but are never
+counts every table reloaded whole with no L3 read (Pace's ruling of 2026-11-26: recovery reloads stay, but are never
 silent). A copy starting from the delta-files volume counts each opted-in table it loads (``cold_start``); a copy
 waiting for the writer's full counts the reload as the wait begins, once a reload, by why: ``reset``,
 ``schema_change``, ``lost_log`` (its epoch log replaced, a record gone, aged out), ``lost_file`` (a delta file lost,
@@ -8672,7 +8723,6 @@ operation) and the gauge read 0 at every scrape. The gauge itself is right: a ca
   a no-op without `prometheus_client` like `InflightRequestsGauge`.
 - `InflightRequestsGauge.registry`: the registry the gauge is served from, for other metrics to share its
   `/metrics` route.
-
 
 ### registry, scheduled-jobs: a starting registry replica takes calls once its loaded copies are routable, and a fire a moment fixes is retried once
 
@@ -21582,7 +21632,6 @@ Full rationale, and which consumer owns which step, in `docs/design-durable-coor
   blocked the `allow_msg_ttl` enable. Differences outside the reconciled set are now always
   reported at WARNING, including when a reconcile also ran.
 
-
 - **`web_fetch` and `parse_document` take an `offset`** and window their result
   instead of cutting it: a long page or document is read in parts, and nothing is
   discarded. `web_fetch`'s result metadata carries `window` (`offset`, `total_chars`,
@@ -24075,7 +24124,6 @@ has no such attribute at 0.35.0.
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 
-
 - `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
   `nats-py` refuses an oversized publish client-side, against the `max_payload`
   the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
@@ -24131,7 +24179,6 @@ has no such attribute at 0.35.0.
   checkout than the lock resolves. Full reasoning is in the module docstring.
   Separately, the identity targets in `docker-bake.hcl` are retagged `-core` /
   `-edge` to match the two images they actually produce.
-
 
 - `enforcement`: **`find_local_src_roots` now finds NESTED packages.** It walked
   `packages/*/src` only, so on a repo that groups packages one level deeper -- as
@@ -24309,7 +24356,6 @@ has no such attribute at 0.35.0.
   declaring a column of that name raises at `initialize()` rather than emitting
   duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
-
 - `channels`: **`RoomFanout.broadcast` documents what it propagates and what
   must not be retried.** It still does not catch, which is correct -- this
   package is not where the decision about a lost room frame is made, and its two
@@ -24384,7 +24430,6 @@ has no such attribute at 0.35.0.
   `ensure_jetstream_stream(name="channels-deliver")`, so `{ns}-channels-deliver`
   is the only name a grant can name. Paired with the hub-side change its
   `_DROPPED_RESOURCES` coupling required.
-
 
 - `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
   below an early return taken whenever there was no catch-up task -- which is
@@ -26012,7 +26057,6 @@ orphaned. Leases are TTL'd coordination state, so the orphans expire on their ow
 rollout a lease held by an old pod is invisible to a new one, so do not roll a deployment that
 relies on lease mutual exclusion while both versions are live.
 
-
 **`3tears-nats` gains a family-scoped owner-routed forward subject, and the grants it needs.**
 NOT a complete repair of the refusal described below, and the residue is stated here rather than
 left for a reader to discover: `threetears.scrape.operator_control` still calls the UNSCOPED
@@ -26057,7 +26101,6 @@ a real nats-server's `authorization` and driving a real `KVLease` through it.
 
 (The suffix that composition starts from is itself corrected in the entry above; before that fix it
 carried the namespace, so the bucket materialised with the namespace twice.)
-
 
 **`3tears-nats` gains a payload-agnostic byte pipe to whichever pod owns a key.** New public API
 on `threetears.nats`, all additive, and the release carrying it must be a MINOR bump for the same
@@ -26126,7 +26169,6 @@ on `NatsClient.overflow_events` -- that counter increments only at the publish b
 client is disconnected or reconnecting with a full pending buffer, so on a healthy connected test
 it reads zero whether or not any credit accounting exists at all.
 
-
 **`3tears-scrape`'s display relay no longer opens its own connection.** `relay_stream` called
 `asyncio.open_connection(host, port)`, which is the single line that made a co-located display
 mandatory: a process terminating the operator's WebSocket had to share a network namespace with
@@ -26151,7 +26193,6 @@ existing relay tests pass unedited, which they do.
 The docstring this replaces framed a bus-backed relay as a costed alternative to be "settled on
 measurements". That trade had two sides only while a co-located display was reachable; where it is
 not, there is nothing to weigh it against.
-
 
 **`3tears-scrape` gains the pod side of that arrangement: a display served over the pipe.** New
 public API on the new module `threetears.scrape.operator_pipe`: `serve_display(nats, claim, tool=,
@@ -26188,7 +26229,6 @@ reaching it, and a video played under sustained load. What that does NOT produce
 bandwidth figure, because the window manager moves an outline rather than window contents, so a
 drag is one repaint on drop rather than continuous load. The window is evidenced against the
 failure it guards, not tuned.
-
 
 **`3tears` gains the namespace vocabulary a human display session is authorized against, and
 nothing that evaluates it.** New public API on `threetears.core.namespaces`, all additive:
@@ -26329,7 +26369,6 @@ submit controls: 947 rows x 9 columns through `parse_form` + `build_form_post`.
 > written, so both kept a `<0.20.0` ceiling while declaring against a 0.20.0 package, and the merge
 > that brought them together is where that was caught and corrected. Any branch that adds an
 > intra-family dependency across a bump has to re-check its own bounds; `--verify` is what says so.
-
 
 **Docs: `per_document`'s cost was documented wrong in seven places, and `geo` had no adoption
 doc.** Both matter to a reader deciding what to spend.

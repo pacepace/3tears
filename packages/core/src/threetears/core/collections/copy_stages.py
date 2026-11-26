@@ -65,7 +65,7 @@ from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
 from threetears.core.collections.copy_follower import is_reload_stage
 from threetears.core.collections.copy_lane import ApplyLane
 from threetears.core.collections.copy_reload import Reload, ReloadLane
-from threetears.core.declared import whole_read
+from threetears.core.declared import whole_read_block
 from threetears.core.collections.shared_copy import (
     KEYS,
     LEAVE,
@@ -420,45 +420,45 @@ class SharedCopyStages:
                 # the table its whole change replaces, marked under the declared whole read that staged it, as the
                 # in-process copy's apply empties it (DuckDBBackend.apply_staged): a StagedChange is whole only with
                 # that kind (its __post_init__), set only where the follower, the checkpoint or the volume's full
-                # declares the read. A keyed change marks nothing. The mark is the declared expression itself (the
-                # gate covers what whole_read wraps), so its None is handed through: hence the type ignores
+                # declares the read. A keyed change marks nothing. The mark is the declared statement itself (the gate
+                # covers a whole_read_block's body)
                 if change.whole_kind == "schema_change":
-                    whole_read(
-                        whole.add(change.table),  # type: ignore[func-returns-value]
+                    with whole_read_block(
                         kind="schema_change",
                         reason="a schema change's complete rows replace the shared copy's table, so it is marked whole",
-                        ruling="Pace 2026-11-12: a schema change reads whole; coordinator 2026-11-27: the shared copy's apply marks it whole under the same kind",
+                        ruling="Pace 2026-11-12: a schema change reads whole; coordinator 2026-11-26: the shared copy's apply marks it whole under the same kind",
                         proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass",
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
-                    )
+                    ):
+                        whole.add(change.table)
                 elif change.whole_kind == "recovery":
-                    whole_read(
-                        whole.add(change.table),  # type: ignore[func-returns-value]
+                    with whole_read_block(
                         kind="recovery",
                         reason="a running copy's reload of one table from the writer's full on the volume replaces the shared copy's table, so it is marked whole",
-                        ruling="Pace 2026-11-27: recovery reloads stay, but are never silent; the shared copy's apply marks the reloaded table whole under the same kind",
+                        ruling="Pace 2026-11-26: recovery reloads stay, but are never silent; the shared copy's apply marks the reloaded table whole under the same kind",
                         proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass",
                         speed="packages/core/tests/unit/collections/test_copy_follower_reset_from_volume.py::test_a_reload_from_the_volume_keeps_its_budget",
-                    )
+                    ):
+                        whole.add(change.table)
                 elif change.whole_kind == "rolling_upgrade":
-                    whole_read(
-                        whole.add(change.table),  # type: ignore[func-returns-value]
+                    with whole_read_block(
                         kind="rolling_upgrade",
                         reason="an older writer's whole record read mid-roll replaces the shared copy's table, so it is marked whole",
                         until="0.96.0",
-                        ruling="Pace 2026-11-12: rolling_upgrade until 0.96.0; coordinator 2026-11-27: the shared copy's apply marks it whole under the same kind",
+                        ruling="Pace 2026-11-12: rolling_upgrade until 0.96.0; coordinator 2026-11-26: the shared copy's apply marks it whole under the same kind",
                         proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass",
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
-                    )
+                    ):
+                        whole.add(change.table)
                 else:
-                    whole_read(
-                        whole.add(change.table),  # type: ignore[func-returns-value]
+                    with whole_read_block(
                         kind="cold_start",
                         reason="a cold start's or an operator's reset's complete rows replace the shared copy's table, so it is marked whole",
-                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-27: the shared copy's apply marks it whole under the same kind, a reset being an operator's action",
+                        ruling="Pace 2026-11-12: the one full load is a true no-data cold start; coordinator 2026-11-26: the shared copy's apply marks it whole under the same kind, a reset being an operator's action",
                         proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass",
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
-                    )
+                    ):
+                        whole.add(change.table)
             elif keys is not None:
                 pages.extend(keys.pages)
             if rows is not None:

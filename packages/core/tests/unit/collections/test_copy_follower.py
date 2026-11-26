@@ -1213,7 +1213,7 @@ async def test_a_restart_from_a_checkpoint_older_than_the_notes_catches_up_from_
     """Flips if a keys-unknown commit whose record names its delta file is still named from the change notes: on
     2026-11-23 a follower restarted from a checkpoint older than the notes' coverage met such an epoch, found its
     notes gone (``notes_not_covered``) and stayed behind. The file never expires, so the restart applies the whole
-    commit from it, rows and deletes, reading neither the notes nor L3 (``design-pod-delta-files.md``, decision 21).
+    commit from it, rows and deletes, reading neither the notes nor L3 (``docs/design-pod-delta-files.md``, decision 21).
     """
     monkeypatch.setenv("THREETEARS_DELTA_FILES_DIR", str(tmp_path))
     l3, log, lock, store, pointers = _L3(), _Log(), _Seqlock(), _Store(), _Pointers()
