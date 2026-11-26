@@ -150,7 +150,8 @@ class TestFewFiles:
         # the table's packs, its schema file and packs index, the version's mark at most
         assert _files(store) <= len(parts) + 3
         assert _arrays(store) <= len(SCHEMA) * (packs + 1) + 2 * 2
-        assert _held(store).equals(_sorted(rows))
+        # 520k rows sorted twice took 0.38 s of loop CPU, over the 0.25 s stall limit: compare off the loop
+        assert await asyncio.to_thread(lambda: _held(store).equals(_sorted(rows)))
 
     async def test_small_changes_keep_the_file_count_under_the_bound(self, store: SharedArrowStore) -> None:
         """Flips if each new small scope stays a file of its own: 60 changes, each bringing a state, left 60 parts a
