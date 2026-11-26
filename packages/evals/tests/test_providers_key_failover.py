@@ -360,6 +360,12 @@ async def test_openais_insufficient_quota_never_fails_over(monkeypatch: pytest.M
         ("openrouter", 400, {"error": {"message": "Your credit balance is too low"}}, False),
         ("anthropic", 401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}, False),
         ("anthropic", 403, {"error": {"type": "permission_error", "message": "not allowed"}}, False),
+        (
+            "openrouter",
+            403,
+            {"error": {"code": 403, "message": "Budget limit exceeded", "metadata": {"limit_source": "x"}}},
+            False,
+        ),
         ("openai", 429, {"error": {"code": "insufficient_quota", "message": "You exceeded your quota."}}, False),
         ("openrouter", 429, {"error": {"message": "Rate limit exceeded"}}, False),
         ("anthropic", 529, {"error": {"type": "overloaded_error", "message": "Overloaded"}}, False),

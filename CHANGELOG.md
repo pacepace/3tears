@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: only an OpenRouter 403 that blocked the request's content is charged to the candidate
+
+**Fixed (#1331):** `ProviderError` charged every OpenRouter 403 to the candidate as moderation. OpenRouter answers a
+403 for three causes, and only one is the candidate's. Its body now decides: a 403 whose `error.metadata` carries a
+guardrail's `patterns`, moderation's `reasons` or `flagged_input`, or an `error_type` of `content_policy_violation` or
+`refusal` is the `candidate`'s, as before. Any other OpenRouter 403 is the `account`'s, as every other provider's 403
+already was, so it stops the run: a spent guardrail, workspace or key budget (`error.metadata.limit_source`, rejected
+before any provider saw the call), a key lacking a permission, and a 403 whose body says none of these, a body that
+is not JSON among them. A spent budget wins over anything else its metadata carries.
+
+**Added:** `ProviderError.resets_at`, when the spent budget of an OpenRouter budget 403 rolls over (its
+`error.metadata.resets_at`, in UTC); `None` for every other answer and for a lifetime budget. Such a 403 is not
+`credit_spent`, so it fails over to no fallback key. The error's text is unchanged: OpenRouter's own message already
+says when the budget resets. Nothing stored carries the new attribute.
+
+**For hosts:** a describer built on `describe_failure` needs no change. A run whose OpenRouter account hits a budget
+or a permission refusal now stops as the account's (`exhausted`) instead of charging each cell to the candidate; a
+host that reads `owner` on a `ProviderError` itself sees `account` there. A host waiting out a spent budget reads
+`resets_at`.
+
 ### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
 
 **Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it

@@ -353,7 +353,10 @@ billed; a resend cut at the time bound may already have been, and its spend is n
 back to carry it.
 `describe_failure` reads the client's one error type, `ProviderError` (the provider, the status and its own message,
 never the body, `after 3 attempts` when it was sent again, and its `owner`: `account` for a refused key or spent
-credit, which stops a run, and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
+credit, which stops a run, OpenRouter's 403 among them unless its body says a guardrail or moderation blocked the
+request's content (`error.metadata` with `patterns`, `reasons` or `flagged_input`, or an `error_type` of
+`content_policy_violation` or `refusal`), which is the candidate's; a spent OpenRouter budget's 403 also says when it
+resets (`ProviderError.resets_at`); and `unserved` for a model the provider does not serve: OpenRouter's 404 for a model it
 has retired and its 400 for a model id it does not know, Anthropic's 404 `not_found_error`, OpenAI's
 `model_not_found`; OpenRouter's other 404s, no endpoint taking the request, stay the candidate's), and an `httpx`
 transport error by the host it was sending to.
