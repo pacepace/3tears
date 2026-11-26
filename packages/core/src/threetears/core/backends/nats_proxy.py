@@ -70,6 +70,7 @@ from threetears.core.backends.broker_generation import (
     named_delta_files,
     note_load_answer,
     note_sent_request,
+    refuse_cleanup_non_delete,
     stamp_fields,
     record_reply_generations,
 )
@@ -411,6 +412,41 @@ _TX_REPLY_GRACE_SECONDS: Final = 2.0
 #: (``note_sent_request``), so cleanup's delete never shares a commit with another write
 _TX_WRITE_DOORS: Final = frozenset({"copy", "delete_prefixes"})
 _TX_STATEMENT_DOORS: Final = frozenset({"execute", "fetchrow", "fetch"})
+
+
+def _statement_verbs(query: str) -> tuple[str, ...]:
+    """the row-changing verb of one statement, as its main clause's label names it (``statement_operation``); none
+    for a read.
+
+    :param query: the statement
+    :ptype query: str
+    :return: its verb, or nothing
+    :rtype: tuple[str, ...]
+    """
+    operation = statement_operation(query)
+    return () if operation == "select" else (operation,)
+
+
+def _tx_request_verbs(door: str, payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """the row-changing verbs one ``l3.tx.*`` request carries: a statement's own; a copy's ``insert``, or ``delete``
+    for an Arrow write of keys to delete (:data:`~threetears.core.backends.arrow_copy.DELETE_FIELD`), ``upsert`` for
+    one with a conflict target; a key-prefix delete's ``delete``, and ``insert`` too for a versioned table's run
+    markers (its ``epoch``).
+
+    :param door: the door, the subject's last part
+    :ptype door: str
+    :param payload: the request
+    :ptype payload: Mapping[str, Any]
+    :return: the verbs, none for a read
+    :rtype: tuple[str, ...]
+    """
+    if door == "copy":
+        if payload.get(DELETE_FIELD) is True:
+            return ("delete",)
+        return ("upsert",) if payload.get(ON_CONFLICT_FIELD) else ("insert",)
+    if door == "delete_prefixes":
+        return ("delete", "insert") if payload.get("epoch") is not None else ("delete",)
+    return _statement_verbs(str(payload.get("query", "")))
 
 
 def _noted_keys_answer(response: Mapping[str, Any], table: str) -> NotedKeysPage | str:
@@ -1582,6 +1618,8 @@ class NatsProxyL3Backend:
             raise ValueError(f"{table}: rows_per_transaction must be at least 1, got {rows_per_transaction}")
         if timeout_ms < 1:
             raise ValueError(f"{table}: timeout_ms must be at least 1, got {timeout_ms}")
+        # a load inserts rows: never marked cleanup's (cleanup_write_refusal)
+        refuse_cleanup_non_delete(("insert",))
         return {
             "correlation_id": str(uuid7()),
             "identity_token": self.forwarded_identity_token(),
@@ -1695,6 +1733,8 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if broker returns error
         """
         ns = namespace or self.default_namespace
+        # a batch marked cleanup's only deletes, every statement of it (cleanup_write_refusal), refused before it is sent
+        refuse_cleanup_non_delete([verb for q in queries for verb in _statement_verbs(q["query"])])
         payload = {
             "correlation_id": str(uuid7()),
             "identity_token": self.forwarded_identity_token(),
@@ -1752,7 +1792,10 @@ class NatsProxyL3Backend:
         :ptype customer_scope: UUID | None
         :return: the request payload
         :rtype: dict[str, Any]
+        :raises CleanupWriteNotDeleteError: for a request marked cleanup's that writes by anything but a delete
         """
+        # a request marked cleanup's only deletes, refused here before it is built and sent (cleanup_write_refusal)
+        refuse_cleanup_non_delete(_statement_verbs(query))
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
             "identity_token": self.forwarded_identity_token(),
@@ -2350,11 +2393,14 @@ class _ProxyConnection:
         :return: nothing
         :rtype: None
         :raises CleanupMixedWriteError: when the transaction refuses it (``cleanup_mix_refusal``)
+        :raises CleanupWriteNotDeleteError: when it is marked cleanup's and writes by anything but a delete
+            (``cleanup_write_refusal``)
         """
         door = subject.rpartition(".")[2]
         if door in _TX_WRITE_DOORS or door in _TX_STATEMENT_DOORS:
-            writes = door in _TX_WRITE_DOORS or statement_operation(str(payload.get("query", ""))) != "select"
-            note_sent_request(self, cleanup=payload.get(CLEANUP_DELETE_FIELD) is True, writes=writes)
+            verbs = _tx_request_verbs(door, payload)
+            refuse_cleanup_non_delete(verbs)
+            note_sent_request(self, cleanup=payload.get(CLEANUP_DELETE_FIELD) is True, writes=bool(verbs))
 
     def transaction(
         self,
