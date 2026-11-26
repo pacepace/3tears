@@ -45,7 +45,7 @@ def test_a_subclass_may_not_override_run() -> None:
     with pytest.raises(TypeError, match="overrides TearsTool.run"):
 
         class _Bad(_Echo):
-            async def run(self, **kwargs: Any) -> ToolResult:  # type: ignore[override]
+            async def run(self, **kwargs: Any) -> ToolResult:
                 return ToolResult(success=True, content="")
 
 

@@ -44,7 +44,7 @@ audit table, and `threetears.agent.audit.persist` is its persister:
 ## Public API
 
 ```python
-from threetears.agent.audit import AuditEvent, publish_audit
+from threetears.agent.audit import AuditEvent, AuditPublishOutcome, audit_publish_failure_count, publish_audit
 ```
 
 - `AuditEvent` -- a `TolerantWireModel` (`extra='ignore'`: a field it does
@@ -54,10 +54,16 @@ from threetears.agent.audit import AuditEvent, publish_audit
   `rbac.assignment.create`). All common identity
   fields are typed columns on the envelope; event-type-specific extras live
   in `details: dict[str, Any]`.
-- `publish_audit(event, nats_client, namespace)` -- fire-and-forget async
-  helper. Serializes the envelope via `model_dump_json()` and awaits one
-  `nats_client.publish` on `{namespace}.audit.{event_type}`. On any publish
-  failure logs at WARN and returns; never raises.
+- `publish_audit(event, nats_client, namespace) -> AuditPublishOutcome` --
+  fire-and-forget async helper. Serializes the envelope via `model_dump_json()`
+  and awaits one JetStream publish on `{namespace}.audit.{event_type}`. It never
+  raises, and answers what it did: `PUBLISHED` (the broker acknowledged it),
+  `SKIPPED` (no NATS client was given) or `FAILED` (logged at WARN, and counted).
+- `audit_publish_failure_count()` -- how many publishes failed in this process,
+  for a server's own status. Where `prometheus_client` is installed, each failure
+  also increments `threetears_audit_publish_failures_total{event_type=...}`. A
+  host whose audit trail must not lose an event keeps its own record beside the
+  publish and reads these, since a failed envelope is not in the audit stream.
 
 ## Erasure: anonymize, never delete
 
@@ -125,8 +131,9 @@ obligation of the hub's responder, is the docstring of `threetears/agent/audit/e
 
 ## Design commitments
 
-- **Fire-and-forget.** Audit publish failures must never break the producing
-  call. The helper catches every exception, logs at WARN, and returns.
+- **Fire-and-forget, never silent.** Audit publish failures must never break the
+  producing call. The helper catches every exception, logs at WARN, counts it, and
+  answers `AuditPublishOutcome.FAILED` to its caller.
 - **Tolerant wire contract.** Unknown fields are ignored, so a consumer older
   than its producer still records the event. Declared fields are validated
   (timezone-aware `timestamp`, closed `outcome`, dotted `event_type`) at

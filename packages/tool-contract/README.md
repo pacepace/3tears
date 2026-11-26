@@ -73,6 +73,7 @@ server = McpServer(..., registry=registry, error_codes=ErrorCodes([...]))
 | a successful `ToolResult` | its `content` as the text of the result; when the tool declares an output schema, the content parsed as a JSON object is the `structuredContent` too |
 | a failed `ToolResult` | `isError`, its `content` (else its `error`) as the text, and its code on the protocol result (`_meta["threetears.mcp/error"]`): `error_code` when set, else `metadata["error_code"]` when it is a string, else `TOOL_ERROR`. A code the server never registered answers `HANDLER_ERROR` |
 | an exception from `run` | `HANDLER_ERROR`, or the code the server mapped the exception to |
+| arguments | checked against the input schema before `run`, as the protocol has them conform: a loose value the schema refuses (an object sent as a JSON string) is `INVALID_ARGUMENTS`, naming it, not coerced. `run`'s coercion still applies to what passes |
 
 The call context reaches `execute` the way it reaches a plain 3tears-mcp handler: an `execute` that declares a
 parameter annotated `CallContext` (from `threetears.mcp`) is passed the call's context in it, as a keyword that

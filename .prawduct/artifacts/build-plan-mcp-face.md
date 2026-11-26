@@ -133,6 +133,11 @@ question and is not built.
   annotated `CallContext` (found as `McpTool` finds a handler's); `TearsTool.run` passes keys outside the input
   schema through unchanged | the same rule a plain handler has, no change to `run`; the parameter's default of
   `None` keeps the tool callable on the mesh, where no context exists]
+- [DECISION: on the MCP face a TearsTool's arguments are checked against its input schema before `run`, so a loose
+  value the schema refuses (an object sent as a JSON string) is `INVALID_ARGUMENTS`, not coerced | the protocol has
+  a call's arguments conform to the tool's input schema, and McpServer checks every tool's the same way; `run`'s
+  coercion still applies to what passes. The mesh face, which does not check first, keeps coercing (measured
+  2026-11-26; pinned by `test_a_loose_value_the_schema_refuses_is_invalid_arguments_not_coerced`)]
 - [DECISION: `publish_audit` returns `AuditPublishOutcome` (`PUBLISHED`, `SKIPPED`, `FAILED`), and every failure
   is counted in-process (`audit_publish_failure_count()`) and as the Prometheus counter
   `threetears_audit_publish_failures_total` | the caller learns of the failure on the call, and a server's own

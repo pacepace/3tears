@@ -14,7 +14,7 @@ from uuid import uuid4, uuid7
 
 import pytest
 
-from threetears.agent.audit import AuditEvent, publish_audit
+from threetears.agent.audit import AuditEvent, AuditPublishOutcome, audit_publish_failure_count, publish_audit
 from threetears.nats import (
     Principal,
     Subject,
@@ -248,3 +248,31 @@ async def test_an_event_whose_details_name_a_person_is_refused_before_anything_i
     with pytest.raises(IdentifyingAuditDetail):
         await publish_audit(event, nats_client=wrapper if nats else None, namespace="dev")
     assert wrapper.jetstream_publish_calls == []
+
+
+async def test_a_failed_publish_is_reported_to_the_caller_and_counted() -> None:
+    """a failure is not only logged: the caller is answered FAILED, and the process count grows by one."""
+    before = audit_publish_failure_count()
+    nats = _FakeWrapper(raise_on_publish=RuntimeError("nats down"))
+    outcome = await publish_audit(_build_event(), nats_client=nats, namespace="dev")
+    assert outcome is AuditPublishOutcome.FAILED
+    assert audit_publish_failure_count() == before + 1
+
+
+async def test_a_published_and_a_skipped_envelope_are_reported_and_not_counted() -> None:
+    before = audit_publish_failure_count()
+    assert await publish_audit(_build_event(), nats_client=_FakeWrapper(), namespace="dev") is (
+        AuditPublishOutcome.PUBLISHED
+    )
+    assert await publish_audit(_build_event(), nats_client=None, namespace="dev") is AuditPublishOutcome.SKIPPED
+    assert audit_publish_failure_count() == before
+
+
+async def test_a_failure_increments_the_prometheus_counter_by_event_type() -> None:
+    prometheus_client = pytest.importorskip("prometheus_client")
+    labels = {"event_type": "custom.tool.call"}
+    name = "threetears_audit_publish_failures_total"
+    before = prometheus_client.REGISTRY.get_sample_value(name, labels) or 0.0
+    nats = _FakeWrapper(raise_on_publish=TimeoutError("broker timeout"))
+    await publish_audit(_build_event("custom.tool.call"), nats_client=nats, namespace="dev")
+    assert prometheus_client.REGISTRY.get_sample_value(name, labels) == before + 1

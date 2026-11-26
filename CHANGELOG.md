@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### tool-contract: a TearsTool served over MCP
+
+**Added:** `threetears.tool_contract.mcp_face.mcp_tool(tool, *, required_permission, name=None, title=None,
+annotations=None)` (the `mcp` extra, `3tears-tool-contract[mcp]`): the `McpTool` that serves a `TearsTool` through
+3tears-mcp's `McpServer`, listed with the tool's description, input and output schema. A successful `ToolResult` is
+its content (and, for a tool with an output schema, its content as `structuredContent`); a failed one is
+`isError` with its content and its code on the protocol result: `error_code`, else `metadata["error_code"]`, else
+`TOOL_ERROR`. An `execute` that declares a `CallContext` parameter is passed the call's context, with `run`
+unchanged. A tool whose `face_mcp` is `False` is refused. Arguments are checked against the input schema before
+`run`, so a loose value the schema refuses is `INVALID_ARGUMENTS`, not coerced.
+
+### agent/audit: a failed publish is reported and counted, not only logged
+
+**Added:** `publish_audit` answers `AuditPublishOutcome` (`PUBLISHED`, `SKIPPED`, `FAILED`), and
+`audit_publish_failure_count()` counts the process's failed publishes, also exported as the Prometheus counter
+`threetears_audit_publish_failures_total` by event type where `prometheus_client` is installed. Publishing still
+never raises.
+
 ### tool-contract (new package): the TearsTool contract installs without the platform
 
 **Added:** `3tears-tool-contract` (`threetears.tool_contract`): `TearsTool`, `ToolResult`, `MCPToolDefinition`, the

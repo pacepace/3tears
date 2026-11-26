@@ -48,7 +48,7 @@ from threetears.agent.audit.erasure import (
     AuditAnonymizeUnavailableError,
     request_audit_anonymization,
 )
-from threetears.agent.audit.publish import publish_audit
+from threetears.agent.audit.publish import AuditPublishOutcome, audit_publish_failure_count, publish_audit
 
 # Version derived from pyproject.toml so the metadata is the single
 # source of truth -- a future release that bumps pyproject without
@@ -80,9 +80,11 @@ __all__ = [
     "AuditAnonymizeRequest",
     "AuditAnonymizeUnavailableError",
     "AuditEvent",
+    "AuditPublishOutcome",
     "IdentifyingAuditDetail",
     "anonymize_details",
     "anonymize_ip",
+    "audit_publish_failure_count",
     "declare_safe_detail_keys",
     "identifying_keys_for",
     "is_classified_detail_key",
