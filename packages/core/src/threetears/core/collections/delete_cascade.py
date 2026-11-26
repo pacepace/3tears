@@ -160,7 +160,7 @@ class _UnappliedCascadeError(RuntimeError):
     gone, so nothing is left half done."""
 
 
-async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> list[CascadedRows]:
+async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any], *, conn: Any = None) -> list[CascadedRows]:
     """the rows each of ``collection``'s declared foreign-key actions will reach when ``parent_keys`` go.
 
     Read before the delete: afterwards a cascade has taken the rows and a ``SET NULL`` has cleared
@@ -171,6 +171,9 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
     :ptype collection: BaseCollection
     :param parent_keys: their pk values, or tuples in declared order
     :ptype parent_keys: Sequence[Any]
+    :param conn: the caller's connection when the delete joins its transaction: every read runs on it, so rows the
+        transaction wrote before the delete are found; None for the collection's L3
+    :ptype conn: Any
     :return: the rows reached, one entry per (cascade, table); empty when nothing is declared, no
         key is given or there is no L3 pool to read
     :rtype: list[CascadedRows]
@@ -180,8 +183,9 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
     if not cascades or not parent_keys or collection.l3_pool is None:
         return found
     registry = collection.registry
+    pool = collection.l3_pool if conn is None else conn
     for cascade in cascades:
-        values = await _parent_values(collection, parent_keys, cascade.parent_column)
+        values = await _parent_values(collection, parent_keys, cascade.parent_column, conn=conn)
         if not values:
             continue
         child = None if registry is None else registry.get_collection(cascade.child_table)
@@ -195,9 +199,7 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
                 )
                 continue
             # cache-bypass: the keys of the rows the action reaches, by the key the table's class declares
-            rows = await _children(
-                collection.l3_pool, cascade.child_table, cascade.child_column, declared, declared, values
-            )
+            rows = await _children(pool, cascade.child_table, cascade.child_column, declared, declared, values)
             keys = tuple(row[declared[0]] if len(declared) == 1 else tuple(row[c] for c in declared) for row in rows)
             if keys:
                 found.append(
@@ -210,7 +212,7 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
         carried = tuple(dict.fromkeys((*columns, *getattr(child, "invalidation_columns", ()))))
         # cache-bypass: the rows a foreign-key action is about to reach, found by the column naming the parent, in
         # pages of the child's key under the L3 rail's row cap (a parent of more children than it is cut past it)
-        rows = await _children(collection.l3_pool, cascade.child_table, cascade.child_column, carried, columns, values)
+        rows = await _children(pool, cascade.child_table, cascade.child_column, carried, columns, values)
         keys = tuple(row[columns[0]] if len(columns) == 1 else tuple(row[c] for c in columns) for row in rows)
         if not keys:
             continue
@@ -224,11 +226,13 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
             )
         )
         if cascade.action == "CASCADE":
-            found.extend(await read_delete_cascade(child, keys))
+            found.extend(await read_delete_cascade(child, keys, conn=conn))
     return found
 
 
-async def _parent_values(collection: Any, parent_keys: Sequence[Any], parent_column: str) -> list[Any]:
+async def _parent_values(
+    collection: Any, parent_keys: Sequence[Any], parent_column: str, *, conn: Any = None
+) -> list[Any]:
     """the values of ``parent_column`` on the rows ``parent_keys`` name.
 
     :param collection: the parent collection
@@ -237,6 +241,8 @@ async def _parent_values(collection: Any, parent_keys: Sequence[Any], parent_col
     :ptype parent_keys: Sequence[Any]
     :param parent_column: the referenced column
     :ptype parent_column: str
+    :param conn: the caller's connection, the rows read as its transaction sees them; None for the collection's L3
+    :ptype conn: Any
     :return: the values, in key order, rows not found left out
     :rtype: list[Any]
     """
@@ -246,13 +252,17 @@ async def _parent_values(collection: Any, parent_keys: Sequence[Any], parent_col
         return [collection.normalize_pk(key)[index] for key in parent_keys]
     values: list[Any] = []
     for key in parent_keys:
-        row = await collection.fetch_from_store(key)
+        row = (
+            await collection.fetch_from_store(key)
+            if conn is None
+            else await collection.fetch_from_store_in_transaction(key, conn=conn)
+        )
         if row is not None and row.get(parent_column) is not None:
             values.append(row[parent_column])
     return values
 
 
-async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any]) -> None:
+async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any], *, conn: Any = None) -> None:
     """refuse, before a stamped parent is marked gone, a delete a declared ``RESTRICT`` / ``NO ACTION`` foreign key
     forbids: the database runs no such guard for a gone mark (an ``UPDATE``), so 3tears runs it. Each declared
     :class:`DeleteRestrict`'s live children are counted by the parents' values, one keyed ``GROUP BY`` through the
@@ -263,6 +273,9 @@ async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any]) 
     :ptype collection: BaseCollection
     :param parent_keys: the keys about to be marked gone
     :ptype parent_keys: Sequence[Any]
+    :param conn: the caller's connection when the delete joins its transaction: children it wrote earlier are
+        counted; None for the collection's L3
+    :ptype conn: Any
     :return: nothing
     :rtype: None
     :raises RestrictedDeleteError: when a child table holds live rows naming a parent
@@ -271,11 +284,13 @@ async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any]) 
     if not restricts or not parent_keys or collection.l3_pool is None:
         return
     for restrict in restricts:
-        values = await _parent_values(collection, parent_keys, restrict.parent_column)
+        values = await _parent_values(collection, parent_keys, restrict.parent_column, conn=conn)
         if not values:
             continue
-        # cache-bypass: whether a child still names the parent, read where the guard would have run (L3)
-        held = await _live_children(collection.l3_pool, restrict.child_table, restrict.child_column, values)
+        # cache-bypass: whether a child still names the parent, read where the guard would have run (L3, or the
+        # caller's transaction)
+        pool = collection.l3_pool if conn is None else conn
+        held = await _live_children(pool, restrict.child_table, restrict.child_column, values)
         if held:
             raise RestrictedDeleteError(collection.table_name, restrict.child_table, restrict.child_column, held)
 

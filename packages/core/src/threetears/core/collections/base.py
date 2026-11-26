@@ -5803,14 +5803,15 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"{type(self).__name__}.delete(conn=...): {self.table_name} writes L2 first or defers its L3 writes, "
                 f"so its delete is no L3 write a caller's transaction can hold"
             )
-        # read before anything is written, as a delete of its own reads them: the row, when its message carries
-        # columns of it, and the rows the foreign-key actions reach while they still name it
-        row = await self._row_before_delete(entity_id)
-        cascaded = await self.delete_cascaded([entity_id])
+        # read before anything is written, as a delete of its own reads them, but on conn: the row, when its message
+        # carries columns of it, and the rows the foreign-key actions reach while they still name it. On the pool a
+        # row or child the transaction wrote before the delete is not there yet, and would be left live
+        row = await self.fetch_from_store_in_transaction(entity_id, conn=conn) if self.invalidation_columns else None
+        cascaded = await self.delete_cascaded([entity_id], conn=conn)
         gone_mark = self._marks_gone()
         if gone_mark:
             # the database's RESTRICT / NO ACTION guard, which a gone mark never runs, refused before any write
-            await refuse_restricted_delete(self, [entity_id])
+            await refuse_restricted_delete(self, [entity_id], conn=conn)
             refuse_unappliable_cascade(self, cascaded)
 
         async def announce() -> None:
@@ -5919,7 +5920,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         raise NotImplementedError(f"{type(self).__name__}: {self.table_name} is not stamped (ROW_STAMPED)")
 
-    async def delete_cascaded(self, entity_ids: Sequence[Any]) -> list[CascadedRows]:
+    async def delete_cascaded(self, entity_ids: Sequence[Any], *, conn: Any = None) -> list[CascadedRows]:
         """the rows of other tables a delete of ``entity_ids`` reaches, read before it: what the database's foreign-key
         actions would take, so a stamped delete (a gone mark, an ``UPDATE`` no foreign key fires on) takes each itself,
         children before the parent in one transaction (:meth:`_mark_gone_after_cascades`), and announces each
@@ -5928,10 +5929,13 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :param entity_ids: the keys about to be deleted
         :ptype entity_ids: Sequence[Any]
+        :param conn: the caller's connection when the delete joins its transaction (``delete(conn=...)``): read on it,
+            so rows the transaction wrote before the delete are found; None for the collection's L3
+        :ptype conn: Any
         :return: the rows reached, one entry per (action, table)
         :rtype: list[CascadedRows]
         """
-        return await read_delete_cascade(self, entity_ids)
+        return await read_delete_cascade(self, entity_ids, conn=conn)
 
     def _marks_gone(self) -> bool:
         """whether this collection's delete marks its row gone in place (a stamped table, ``ROW_STAMPED``) rather than

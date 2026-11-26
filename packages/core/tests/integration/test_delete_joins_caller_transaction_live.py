@@ -126,8 +126,8 @@ def _family(pool: asyncpg.Pool) -> tuple[Any, Any]:
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l3_pool=pool)
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    children = _Children(registry=registry, config=config, nats_client=NO_L2)
-    parents = _Parents(registry=registry, config=config, nats_client=NO_L2)
+    children: Any = _Children(registry=registry, config=config, nats_client=NO_L2)
+    parents: Any = _Parents(registry=registry, config=config, nats_client=NO_L2)
     # each announcement watched, and still made
     children.invalidate_cache_many = AsyncMock(wraps=children.invalidate_cache_many)
     parents.invalidate_cache_many = AsyncMock(wraps=parents.invalidate_cache_many)
@@ -170,3 +170,17 @@ async def test_a_delete_committed_with_its_caller_marks_children_then_parent_and
     parents.invalidate_cache_many.assert_awaited_once_with(["p1"], rows=[None])
     children.invalidate_cache_many.assert_awaited_once()
     assert sorted(children.invalidate_cache_many.await_args.args[0]) == ["c1", "c2"]
+
+
+async def test_a_delete_finds_a_parent_and_child_written_earlier_in_its_transaction(pool: asyncpg.Pool) -> None:
+    parents, children = _family(pool)
+    async with pool.acquire() as conn, CallerTransaction(conn):
+        await conn.execute("INSERT INTO djl_parent VALUES ('p9', 'nine', 1, false, 2)")
+        await conn.execute("INSERT INTO djl_child VALUES ('c9', 'p9', 1, false, 3)")
+        await parents.delete("p9", conn=conn)
+    parent, kids = await _epochs(pool, "djl_parent"), await _epochs(pool, "djl_child")
+    assert parent["p9"][1] and kids["c9"][1], (parent, kids)
+    assert kids["c9"][0] <= parent["p9"][0]
+    parents.invalidate_cache_many.assert_awaited_once_with(["p9"], rows=[None])
+    children.invalidate_cache_many.assert_awaited_once()
+    assert list(children.invalidate_cache_many.await_args.args[0]) == ["c9"]

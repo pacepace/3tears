@@ -400,7 +400,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             }
         return super().create(data)
 
-    async def delete_cascaded(self, entity_ids: Sequence[Any]) -> list[CascadedRows]:
+    async def delete_cascaded(self, entity_ids: Sequence[Any], *, conn: Any = None) -> list[CascadedRows]:
         """the memberships and grants a group delete reaches (:meth:`read_cascade`), for the framework's delete to take.
 
         A group is stamped (``ROW_STAMPED``): its delete marks it gone in place, an ``UPDATE`` the database's ``ON
@@ -412,13 +412,15 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
 
         :param entity_ids: the groups about to be deleted, each ``(row_scope, group_id)``
         :ptype entity_ids: Sequence[Any]
+        :param conn: the caller's connection when the delete joins its transaction: read on it; None for L3
+        :ptype conn: Any
         :return: the memberships and the grants, an entry each when any
         :rtype: list[CascadedRows]
         """
         found: list[CascadedRows] = []
         place = self.primary_key_columns.index("group_id")
         for entity_id in entity_ids:
-            cascade = await self.read_cascade(UUID(f"{self.normalize_pk(entity_id)[place]}"))
+            cascade = await self.read_cascade(UUID(f"{self.normalize_pk(entity_id)[place]}"), conn=conn)
             if cascade.members:
                 found.append(
                     CascadedRows(
@@ -456,21 +458,25 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 )
         return found
 
-    async def read_cascade(self, group_id: UUID) -> GroupCascade:
+    async def read_cascade(self, group_id: UUID, *, conn: Any = None) -> GroupCascade:
         """the memberships and assignments deleting ``group_id`` will cascade away, read before the delete.
 
         :param group_id: the group about to be deleted
         :ptype group_id: UUID
+        :param conn: the caller's connection when the delete joins its transaction, so rows it wrote before the
+            delete are found; None for the collection's L3
+        :ptype conn: Any
         :return: the rows, by key; empty without an L3 pool
         :rtype: GroupCascade
         """
         members: list[Any] = []
         assignments: list[Any] = []
-        if self.l3_pool is not None:
+        pool = self.l3_pool if conn is None else conn
+        if pool is not None:
             # cache-bypass: the rows a cascade is about to remove, the group's own key range a page at a time
             # (group_members' key is (group_id, id)): every one is announced, so every one is read
             members = await keyset_rows(
-                self.l3_pool,
+                pool,
                 "group_members",
                 columns=("member_type", "member_id", "id"),
                 by={"group_id": group_id},
@@ -481,7 +487,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             assignments = [
                 {"row_scope": row["row_scope"], "assignment_id": row["assignment_id"]}
                 for row in await read_by(
-                    self.l3_pool,
+                    pool,
                     "role_assignments",
                     by={"group_id": AnyOf([group_id], cast="uuid")},
                     columns=(

@@ -336,3 +336,35 @@ async def test_a_savepoint_rolled_back_drops_its_steps_and_one_released_hands_th
         outer.after_commit(lambda: step("outer"))
         assert ran == []
     assert ran == ["released", "outer"]
+
+
+class _ElsewherePool(ThreadedDuckDB):
+    """the collection's own L3, a cursor a statement: it sees only what is committed, as a pool beside the caller's
+    connection does."""
+
+    async def answers_from_yugabyte(self) -> bool:
+        return False
+
+
+async def test_a_delete_finds_a_parent_and_child_written_earlier_in_its_transaction(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Flips if delete(conn=) reads its cascade (or its restricts) on the collection's pool instead of the caller's
+    connection: a child the transaction wrote before the delete is not there yet, so it is left live under a gone
+    parent and never announced."""
+    conn = _Pool(db)
+    parents, children = _family(conn)
+    for collection in (parents, children):
+        store = SqlL3Backend(_ElsewherePool(db))
+        store.register_schema(collection.schema.name, collection.schema)
+        collection.l3_pool = store
+    async with CallerTransaction(conn):
+        await conn.execute("INSERT INTO dj_parent VALUES ('p9', 'nine', 1, false, 2)")
+        await conn.execute("INSERT INTO dj_child VALUES ('c9', 'p9', 1, false, 3)")
+        await parents.delete("p9", conn=conn)
+    parent, kids = _epochs(db, "dj_parent"), _epochs(db, "dj_child")
+    assert parent["p9"][1] and kids["c9"][1], (parent, kids)
+    assert kids["c9"][0] <= parent["p9"][0]
+    parents.invalidate_cache_many.assert_awaited_once_with(["p9"], rows=[None])
+    children.invalidate_cache_many.assert_awaited_once()
+    assert list(children.invalidate_cache_many.await_args.args[0]) == ["c9"]
