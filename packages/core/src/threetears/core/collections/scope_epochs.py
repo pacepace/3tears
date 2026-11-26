@@ -283,6 +283,24 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
                 plan_test=f"{_PLANS}::test_the_scopes_moved_past_a_version_are_read_through_the_epoch_index",
                 reason="the scopes a commit moved past the version a reader last read, by epoch then scope",
             ),
+            # WHY (append-only L3, design-append-only-l3.md decision 3, Pace 2026-11-25): a lost change log is rebuilt
+            # from each versioned table's versions since the keeper's mark, a scope at a time; the scopes to read are
+            # the ones a stamped write touched since then, found here by their last_epoch rather than by scanning a
+            # data table. Led by last_epoch in order (range-sharded on YugabyteDB, as the epoch index is), then the
+            # scope, so the read is one range. A data transaction already updates last_epoch on the scopes it touched
+            # (CallerTransaction.before_commit): one index entry a touched scope a transaction
+            Index(
+                f"{name}_last_epoch",
+                "last_epoch",
+                "scope",
+                asc="last_epoch",
+                purpose="packages/core/src/threetears/core/collections/table_restore.py::_changed_scopes",
+                plan_test=(
+                    "packages/core/tests/integration/test_table_restore_plans_live.py::"
+                    "test_a_restore_finds_its_scopes_through_the_last_epoch_index"
+                ),
+                reason="the scopes a stamped write touched since a restore's floor, by last_epoch then scope",
+            ),
         ),
         on_conflict="update",
         tenancy=TENANT_BY_SCHEMA,

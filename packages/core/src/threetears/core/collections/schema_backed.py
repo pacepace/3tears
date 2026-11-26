@@ -146,10 +146,13 @@ from threetears.core.ddl.row_epoch import (
     GONE_COLUMN,
     RowEpoch,
     UnstampedWriteError,
+    restore_declaration,
+    scope_epoch_index_name,
     next_epoch,
     versioned_primary_key_sql,
 )
 from threetears.core.keyset import keyset_pages
+from threetears.core.sql_fragments import quote_identifier
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import resolve_base_type
 from threetears.observe import contain, get_logger
@@ -216,6 +219,13 @@ log = get_logger(__name__)
 #: ``committed_before`` not given (:meth:`SchemaBackedCollection._drop_and_advance`): the change was named by no broker
 #: reply (a reset, a failed load's settle, a key-prefix delete settled after its transaction)
 _NO_REPLY: Final = object()
+
+#: the restore read a versioned table's ``(scope, epoch)`` index serves, and the plan test proving it does
+_RESTORE_READ: Final = "packages/core/src/threetears/core/collections/table_restore.py::_scope_versions"
+_RESTORE_PLAN_TEST: Final = (
+    "packages/core/tests/integration/test_table_restore_plans_live.py::"
+    "test_a_restore_reads_a_scope_through_the_scope_epoch_index"
+)
 
 
 #: a page of more values than this (rows times the schema's columns) is read-coerced on a worker thread taking turns
@@ -1620,9 +1630,9 @@ class TableSchema:
         register_partial_predicates(self.name, (index.where for index in self.indexes if index.where is not None))
 
     def _declare_row_epoch(self) -> None:
-        """give a table that declares a row epoch its epoch column where not declared; refuse what cannot hold beside
-        it. A versioned table's ``(scope, epoch)`` index is declared with the restore read that names it (append-only
-        chunk 5).
+        """give a table that declares a row epoch its epoch column where not declared, and a versioned one its
+        ``(scope, epoch)`` index; refuse what cannot hold beside it. The index is what a restore of a lost change log
+        reads the table by, a scope at a time (:mod:`~threetears.core.collections.table_restore`).
 
         The column is ``BIGINT NOT NULL`` with no default: a write that bypasses 3tears and leaves it out is refused by
         the database. On a versioned table it is part of the stored key, so it is immutable (never in an upsert's
@@ -1685,6 +1695,20 @@ class TableSchema:
                     f"TableSchema(name={self.name!r}): row_versions with {what}: each write keeps its own version of "
                     "a key, so the key alone is unique no longer and one version cannot be fenced against another"
                 )
+        name = scope_epoch_index_name(self.name)
+        if not any(index.name == name for index in self.indexes):
+            # WHY the scope leads, hashed on YugabyteDB (its default for a first column): the epochs rise, so an index
+            # led by them sends every insert to the last tablet; led by the scope, the rising end spreads across scopes,
+            # and a restore reads one scope's versions since X as one range (design-append-only-l3.md, decision 3)
+            restore = Index(
+                name,
+                scope,
+                EPOCH_COLUMN,
+                purpose=_RESTORE_READ,
+                plan_test=_RESTORE_PLAN_TEST,
+                reason="a lost change log is rebuilt from each scope's versions since the keeper's mark",
+            )
+            object.__setattr__(self, "indexes", (*self.indexes, restore))
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
@@ -2103,7 +2127,25 @@ class TableSchema:
             )
             create = create.replace(rendered, ordered)
         indexes = tuple(str(CreateIndex(index).compile(dialect=dialect)) for index in table.indexes)
-        return (create, *indexes)
+        return (create, *indexes, *self._restore_comment())
+
+    def _restore_comment(self) -> tuple[str, ...]:
+        """a versioned table's ``COMMENT ON INDEX`` naming how a restore reads it (:func:`~threetears.core.ddl.
+        row_epoch.restore_declaration`); nothing for any other table.
+
+        WHY in the catalog: the keeper that restores a lost change log runs in the hub, which imports no consumer's
+        table classes; the comment rides with the index the read goes through, created and dropped with it.
+
+        :return: the statement, or nothing
+        :rtype: tuple[str, ...]
+        """
+        declared = self.row_epoch
+        if declared is None or not declared.versions:
+            return ()
+        instants = tuple(name for name in self._pk_columns if self._by_name[name].column_type == DATETIMETZ_TYPE)
+        tenancy = (self.tenancy.kind, self.tenancy.column)
+        text = restore_declaration(declared, self._pk_columns, instants, tenancy).replace("'", "''")
+        return (f"COMMENT ON INDEX {quote_identifier(scope_epoch_index_name(self.name))} IS '{text}'",)
 
     def _live_check(self) -> Any:
         """a versioned table's ``CHECK`` that a live version holds every required column a "gone" marker leaves out

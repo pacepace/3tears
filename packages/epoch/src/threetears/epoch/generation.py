@@ -804,11 +804,12 @@ def _restored_records(changes: Sequence[NotedChange], database: str | None) -> l
                     prefixes=prefixes,
                     reason=change.reason,
                     database=database,
+                    s_min=change.s_min,
                 )
             ]
         elif change.rows:
             bodies = [
-                epoch_change_body(change.table, run, database=database)
+                epoch_change_body(change.table, run, database=database, s_min=change.s_min)
                 for run in changed_row_runs(change.table, change.rows)
             ]
         elif change.bodies:
