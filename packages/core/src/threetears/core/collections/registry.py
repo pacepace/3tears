@@ -1210,6 +1210,19 @@ class CollectionRegistry:
                 # record is bounded (256 KiB, about 4,000 keys), a walk of them is not (150 records of a 600,000-key
                 # commit held the loop seconds in one turn, the loop-stall guard, 2026-11-25)
                 await asyncio.sleep(0)
+            if change.cleanup_floor is not None and not marks.heard_in_full(table_name, change.token):
+                # quiet-time cleanup's own commit costs a copy nothing: every row it removed is stamped below its floor
+                # F, so no reader of this registry loses anything, and its notes are never walked (one l3.noted_keys
+                # read a batch on every pod, and a load overlapping the batch would name its keys in the bracket with
+                # no epoch, each re-read from L3). Safe only because a cleanup commit is ONLY cleanup: a transaction
+                # mixing a cleanup delete with any other write is refused on both sides (CallerTransaction, the hub's
+                # broker; broker_generation.cleanup_mix_refusal)
+                if hole is None:
+                    reached = change.token
+                marks.applied(table_name, change.token)
+                applied_any = True
+                _epochs_applied().labels(table=table_name).inc()
+                continue
             if change.keys_unknown and not marks.heard_in_full(table_name, change.token):
                 # a commit too large to record names its keys in its delta file when its record names one, which
                 # never expires; else in the change notes, read a page at a time

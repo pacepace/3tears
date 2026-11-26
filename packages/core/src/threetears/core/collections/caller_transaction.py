@@ -34,6 +34,15 @@ The names saved are :attr:`delta_files`, for the commit's epoch record; once the
 :attr:`committed_generations` names the generation token it wrote for each table, which the writer folds the files by
 (:meth:`~threetears.core.collections.delta_fold.DeltaFolds.committed`).
 
+**A cleanup commit is only cleanup.** A transaction that sends quiet-time cleanup's delete (a request made inside
+``cleanup_deleting``, :mod:`~threetears.core.collections.quiet_cleanup`) makes no other write, and one that made another
+write sends no such request: the second kind is refused before it is sent (``CleanupMixedWriteError``,
+``broker_generation.cleanup_mix_refusal``; the hub's broker holds its sessions to the same rule). Every record of a
+commit that carried cleanup's delete names its floor F, and a copy applies it by marking it applied, reading nothing
+(``CollectionRegistry.catch_up_generation``): every row it removed is stamped below F. A write beside it would be
+skipped by every copy too. The transaction is told of every statement, copy and key-prefix delete the L3 rail's
+connection sends on it (``note_sent_request``), and of every collection write that joins it.
+
 Evicting rather than writing the committed row is deliberate: it is correct whether the
 transaction committed, rolled back, or rolled back a savepoint that a save joined, with no need to
 know which. A save refuses a ``conn`` no :class:`CallerTransaction` opened, rather than guess.
@@ -61,7 +70,12 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 from asyncpg import PostgresError
 
 from threetears.core.backends.broker_generation import (
+    CleanupMixedWriteError,
     StampedScopes,
+    cleanup_delete_floor,
+    cleanup_mix_refusal,
+    holding_sent_requests,
+    releasing_sent_requests,
     collecting_advanced_generations,
     holding_touched_scopes,
     committed_generations_record,
@@ -528,6 +542,7 @@ class CallerTransaction:
     __slots__ = (
         "_after_commit",
         "_before_commit",
+        "_cleaned",
         "_committed_generations",
         "_deltas",
         "_enrolled",
@@ -536,6 +551,7 @@ class CallerTransaction:
         "_options",
         "_outermost",
         "_reaches",
+        "_request_token",
         "_resets",
         "_restated",
         "_s_max",
@@ -548,6 +564,7 @@ class CallerTransaction:
         "_touched",
         "_transaction",
         "_write_version",
+        "_wrote_other",
         "conn",
     )
 
@@ -619,6 +636,11 @@ class CallerTransaction:
         # map of frozensets replaced whole, owned by the task that runs the transaction; a scope count, never a row's
         self._touched: Mapping[str, frozenset[str]] = MappingProxyType({})
         self._touch_token: Token[Any] | None = None
+        # whether a request marked quiet-time cleanup's (cleanup_deleting) was sent in this transaction, and whether a
+        # write not so marked was: never both (cleanup_mix_refusal, _note_request)
+        self._cleaned = False
+        self._wrote_other = False
+        self._request_token: Token[Any] | None = None
 
     @property
     def delta_files(self) -> Mapping[str, str]:
@@ -821,6 +843,7 @@ class CallerTransaction:
         :rtype: None
         :raises ValueError: when the transaction deleted key prefixes of the table (:meth:`enroll_prefixes`)
         """
+        self._note_write()
         if self._reaches or self._resets:
             self._refuse_keyed_beside_prefixes((collection.table_name,))
         self._enroll_chunk(((collection, entity_id, row),))
@@ -881,6 +904,8 @@ class CallerTransaction:
         :raises ValueError: when the transaction deleted key prefixes of a table they name (:meth:`enroll_prefixes`),
             unless the table is versioned and ``epoch`` is newer than its run markers
         """
+        if enrollments:
+            self._note_write()
         if self._reaches or self._resets:
             self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments}, epoch=epoch)
         self._enroll_chunk(tuple(enrollments))
@@ -1125,6 +1150,7 @@ class CallerTransaction:
         :rtype: None
         :raises ValueError: when the transaction wrote keyed rows of the table
         """
+        self._note_write()
         table = collection.table_name
         if any(enrolled.table_name == table for chunk in self._enrolled for enrolled, _, _ in chunk):
             raise ValueError(_mixed_writes(table) if marker_epoch is None else _marker_after_rows(table))
@@ -1160,6 +1186,7 @@ class CallerTransaction:
         :rtype: None
         :raises ValueError: when the transaction already wrote rows of the table
         """
+        self._note_write()
         table = collection.table_name
         if any(enrolled.table_name == table for chunk in self._enrolled for enrolled, _, _ in chunk):
             raise ValueError(_marker_after_rows(table))
@@ -1167,6 +1194,39 @@ class CallerTransaction:
         self._marker_epochs = MappingProxyType({**self._marker_epochs, table: newest})
         if all(each.table_name != table for each in self._resets):
             self._resets = (*self._resets, collection)
+
+    def _note_write(self) -> None:
+        """note a collection write joining this transaction, marked cleanup's when made inside ``cleanup_deleting``:
+        how a transaction on a connection the L3 rail does not carry (a direct pool) is held to the rule too.
+
+        :return: nothing
+        :rtype: None
+        :raises CleanupMixedWriteError: when it would mix cleanup's delete with another write (:meth:`_note_request`)
+        """
+        self._note_request(cleanup_delete_floor() is not None, True)
+
+    def _note_request(self, cleanup: bool, writes: bool) -> None:
+        """refuse a request that would put quiet-time cleanup's delete beside another write in this transaction, before
+        it is sent (``cleanup_mix_refusal``): its commit's records then name cleanup's floor, and every copy skips them
+        reading nothing, which is right only while the commit is ONLY cleanup. Told of every statement and write the L3
+        rail's connection sends on this transaction (``note_sent_request``) and of every collection write joining it.
+
+        :param cleanup: the request is marked cleanup's
+        :ptype cleanup: bool
+        :param writes: the request writes a table
+        :ptype writes: bool
+        :return: nothing
+        :rtype: None
+        :raises CleanupMixedWriteError: when the transaction already made the other kind of write
+        """
+        # told on the outermost transaction alone: it holds the sink, and every write joins it (join)
+        refusal = cleanup_mix_refusal(cleanup=cleanup, writes=writes, cleaned=self._cleaned, wrote=self._wrote_other)
+        if refusal is not None:
+            raise CleanupMixedWriteError(refusal)
+        if cleanup:
+            self._cleaned = True
+        elif writes:
+            self._wrote_other = True
 
     def _refuse_keyed_beside_prefixes(self, tables: Iterable[str], *, epoch: int | None = None) -> None:
         """refuse a keyed write of a table whose prefixes this transaction deleted (:meth:`enroll_prefixes`), but for
@@ -1249,6 +1309,8 @@ class CallerTransaction:
         if self._outermost is None:
             # the store hands every stamped write made on this connection its scopes here, before it is sent
             self._touch_token = holding_touched_scopes(self.conn, self._take_stamped_scopes)
+            # and tells it of every statement and write it sends, so a cleanup delete never shares a commit
+            self._request_token = holding_sent_requests(self.conn, self._note_request)
         return self
 
     async def __aexit__(
@@ -1342,6 +1404,9 @@ class CallerTransaction:
             if self._saved_delta_files:
                 # a commit that did not land leaves its files orphans, the only files the fold's sweep removes
                 OWN_DELTA_SAVES.settled(list(self._saved_delta_files.values()), landed=landed and exc_type is None)
+            if self._request_token is not None:
+                releasing_sent_requests(self._request_token)
+                self._request_token = None
             if self._touch_token is not None:
                 releasing_touched_scopes(self._touch_token)
                 self._touch_token = None

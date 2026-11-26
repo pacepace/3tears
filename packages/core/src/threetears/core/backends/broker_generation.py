@@ -110,8 +110,13 @@ __all__ = [
     "naming_unconfirmed_delta_files",
     "note_load_answer",
     "note_advanced_generation",
+    "CleanupMixedWriteError",
     "cleanup_delete_floor",
     "cleanup_deleting",
+    "cleanup_mix_refusal",
+    "holding_sent_requests",
+    "note_sent_request",
+    "releasing_sent_requests",
     "note_statement_stamp",
     "record_reply_generations",
     "reply_generations_since",
@@ -526,6 +531,93 @@ def cleanup_delete_floor() -> int | None:
     :rtype: int | None
     """
     return _CLEANUP_FLOOR.get()
+
+
+class CleanupMixedWriteError(ValueError):
+    """a transaction mixed quiet-time cleanup's delete with another write (:func:`cleanup_mix_refusal`)."""
+
+
+def cleanup_mix_refusal(*, cleanup: bool, writes: bool, cleaned: bool, wrote: bool) -> str | None:
+    """the one rule by which a commit that carries quiet-time cleanup's delete is ONLY cleanup: a transaction that sent
+    a request marked cleanup's (:func:`cleanup_deleting`) makes no write not so marked, and one that made such a write
+    sends no marked request. ``CallerTransaction`` holds a pod's transactions to it, the hub's broker its sessions.
+
+    WHY: every record of a commit that carried a cleanup delete names its floor F (``EpochChange.cleanup_floor``), and
+    a copy applies such a record by marking it applied, reading nothing (``CollectionRegistry.catch_up_generation``):
+    every row cleanup removes is stamped below F, so no reader loses anything. A write beside it would be skipped too,
+    and every copy would keep serving what L3 no longer holds.
+
+    :param cleanup: the request now sent is marked cleanup's
+    :ptype cleanup: bool
+    :param writes: the request now sent writes a table
+    :ptype writes: bool
+    :param cleaned: the transaction already sent a marked request
+    :ptype cleaned: bool
+    :param wrote: the transaction already made a write not so marked
+    :ptype wrote: bool
+    :return: the refusal's message, or None when the request may be sent
+    :rtype: str | None
+    """
+    if (cleanup and wrote) or (writes and not cleanup and cleaned):
+        return (
+            "a transaction that carries quiet-time cleanup's delete (cleanup_deleting) makes no other write: its "
+            "commit is recorded as cleanup's, which every copy skips, reading nothing. Send cleanup's deletes in a "
+            "transaction of their own, and every other write in another"
+        )
+    return None
+
+
+#: each connection a transaction is open on in this context that is told of every request sent on it, before it is
+#: sent (:func:`holding_sent_requests`), outermost first. A context variable, as ``_TOUCH_SINKS`` is
+_REQUEST_SINKS: ContextVar[tuple[tuple[Any, Callable[[bool, bool], None]], ...]] = ContextVar(
+    "threetears_sent_request_sinks", default=()
+)
+
+
+def holding_sent_requests(conn: Any, sink: Callable[[bool, bool], None]) -> Token[Any]:
+    """name ``sink`` as what is told of every statement or write request sent on ``conn`` in this context, before it is
+    sent, with whether it is marked cleanup's and whether it writes, until :func:`releasing_sent_requests`. The transaction that will COMMIT them calls it
+    as it opens (``CallerTransaction``), and refuses a request that breaks :func:`cleanup_mix_refusal` by raising.
+
+    :param conn: the connection the transaction is open on
+    :ptype conn: Any
+    :param sink: told ``(cleanup, writes)`` for each request, on the event loop, before it is sent; raises to refuse it
+    :ptype sink: Callable[[bool, bool], None]
+    :return: the token to release it with
+    :rtype: Token
+    """
+    return _REQUEST_SINKS.set((*_REQUEST_SINKS.get(), (conn, sink)))
+
+
+def releasing_sent_requests(token: Token[Any]) -> None:
+    """stop telling the sink :func:`holding_sent_requests` named, as its transaction ends.
+
+    :param token: what :func:`holding_sent_requests` answered
+    :ptype token: Token
+    :return: nothing
+    :rtype: None
+    """
+    _REQUEST_SINKS.reset(token)
+
+
+def note_sent_request(conn: Any, *, cleanup: bool, writes: bool) -> None:
+    """tell the transaction open on ``conn`` in this context (:func:`holding_sent_requests`) of a request about to be
+    sent on it; nothing when none is. The L3 rail's transaction connection calls it for every statement, copy and
+    key-prefix delete it sends.
+
+    :param conn: the connection the request is sent on
+    :ptype conn: Any
+    :param cleanup: whether the request is marked quiet-time cleanup's (:data:`CLEANUP_DELETE_FIELD`)
+    :ptype cleanup: bool
+    :param writes: whether the request writes a table
+    :ptype writes: bool
+    :return: nothing
+    :rtype: None
+    :raises CleanupMixedWriteError: as the transaction's sink refuses (:func:`cleanup_mix_refusal`)
+    """
+    sink = next((taker for held, taker in _REQUEST_SINKS.get() if held is conn), None)
+    if sink is not None:
+        sink(cleanup, writes)
 
 
 def stamp_fields() -> dict[str, Any]:

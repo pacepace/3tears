@@ -307,8 +307,10 @@ class EpochChange(BaseModel):
         before the field
     :ivar cleanup_floor: the record is of quiet-time cleanup's own delete (:mod:`~threetears.core.collections
         .quiet_cleanup`), sent marked with the floor F it was worked out against (``CLEANUP_FLOOR_FIELD`` on the
-        wire): every row it removed is stamped below F, so no follower or restore reads it, and a gate fed by the
-        change log (``LoadGate.from_change_log``) does not hear it as a load. ``None`` for every other write, and from
+        wire): every row it removed is stamped below F, so no follower or restore reads it, a follower applies it by
+        marking it applied, reading nothing (``CollectionRegistry.catch_up_generation``; a cleanup commit carries no
+        other write, ``broker_generation.cleanup_mix_refusal``), and a gate fed by the change log
+        (``LoadGate.from_change_log``) does not hear it as a load. ``None`` for every other write, and from
         a writer built before the field
     """
 
