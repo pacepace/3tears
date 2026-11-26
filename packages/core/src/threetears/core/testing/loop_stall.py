@@ -31,6 +31,16 @@ test (synchronous setup belongs outside the loop, in a sync fixture). There is n
 own limit only with ``@pytest.mark.loop_stall_limit(seconds=..., why="...")``: ``seconds`` above the limit and a
 ``why`` that says why (an issue, a reason), checked at collection -- a marker that does not is a usage error.
 
+**What a test is charged for.** Its own work, never the collector's walk of what earlier tests left. Python's
+automatic full (oldest-generation) collection walks every tracked object the process holds, and in a test process that
+is every earlier test's leftovers: on the testament pool trivial turns "stalled" ~1 s, the collector walking an earlier
+test's heap (0.10 s at ~300k tracked objects, ~1 s on bigger heaps; 2026-11-25). A pod does not pay that: the SDK's
+``settle_before_serving`` freezes its start-up heap once before it serves, so its collections walk only what serving
+made. The guard does the same before each test: a young collection (``gc.collect(0)``: the last test's short-lived
+cycles, not a walk of the heap) and ``gc.freeze()``, so a collection inside the test walks only what the test made.
+It never unfreezes between tests: what an earlier test left that is garbage stays frozen, and is freed with the
+process at the session's end -- a test process's leftovers, bounded by the session.
+
 **Cost.** Nothing outside a test session: the plugin is loaded only through ``pytest_plugins`` (or ``-p``), and wraps
 asyncio's run from ``pytest_configure`` to ``pytest_unconfigure``. In a session: two clock reads and a thread-local
 look a turn, and a watcher thread that wakes every :data:`_SAMPLE_EVERY_SECONDS` and samples only a turn already
@@ -44,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import sysconfig
 import threading
 import time
@@ -373,6 +384,28 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     ]
     if faults:
         raise pytest.UsageError("loop-stall limits that cannot stand:\n  " + "\n  ".join(faults))
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """freeze what the process holds before the test, so a garbage collection in it walks only what the test makes.
+
+    Why: the collector's automatic full collection walks every tracked object, and in a test process that is every
+    earlier test's leftovers -- ~1 s turns charged to trivial frames on the pool (0.10 s at ~300k tracked objects, ~1 s
+    on bigger heaps; 2026-11-25). A pod freezes its heap once after the SDK's ``settle_before_serving``; a test is
+    held to the pod's terms. ``gc.collect(0)`` first lets the last test's young cycles go rather than freezing them;
+    it walks the youngest generation only. Never unfrozen between tests: frozen garbage is freed at the session's end,
+    with the process. A test that calls ``gc.unfreeze()`` itself undoes this for the rest of its own run.
+
+    :param item: the test about to set up
+    :ptype item: pytest.Item
+    :return: nothing
+    :rtype: None
+    """
+    if item.config.stash.get(_GUARD_KEY, None) is None:
+        return
+    gc.collect(0)
+    gc.freeze()
 
 
 @pytest.hookimpl(wrapper=True)
