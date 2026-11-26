@@ -131,8 +131,16 @@ INHERITED_UNFILTERED: dict[str, str] = {
     "delete_from_store": "the L3 leg of delete; must reach the row whatever the filter says",
     "delete_rows": "a bulk delete by key; must reach every named row whatever the filter says",
     "delete_arrow": "delete_rows for keys the caller supplies as an Arrow table; must reach every named row",
+    "delete_from_store_on": "delete_from_store on the caller's transaction; must reach the row whatever the filter says",
+    "mark_gone_in_store": "a stamped table's delete by key, marking the row gone; must reach it whatever the filter says",
+    "delete_cascaded": (
+        "reads the child rows a delete's declared foreign-key actions reach, for that delete to take: every one, "
+        "whatever the filter says, or a child is left behind"
+    ),
     "truncate": "empties the whole table, as an operator's clear; reads and returns no row",
     "reset": "an operator's reset: empties the whole table; reads and returns no row",
+    "reset_table": "a versioned table's reset on the caller's transaction: one reset marker; reads and returns no row",
+    "settle_reset": "drops the caches and advances the generation after a reset_table; reads and returns no row",
     "clear_partition": "a bulk delete of key prefixes; must reach every row of them whatever the filter says",
     "load_files": "a bulk load of files the caller supplies into the table; it returns a count, no stored row",
     "delete_prefixes": "a bulk delete of key prefixes in one statement; must reach every row of them whatever the filter says",
