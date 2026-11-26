@@ -480,34 +480,53 @@ class TestStatementReaders:
         )
         assert sorted((row["state"], row["run_id"]) for row in reached) == sorted(_LIVE)
 
-    async def test_one_statement_walks_chains_and_ranked_joins_refuse_a_stamped_table(
-        self, db: duckdb.DuckDBPyConnection
-    ) -> None:
-        """Flips if a walk in one statement, a link chain or a ranked read joining a stamped table is sent: none names
-        the table's live guard, so each would reach its gone rows (CA r2 here)."""
+    async def test_a_link_chain_refuses_a_stamped_table(self, db: duckdb.DuckDBPyConnection) -> None:
+        """Flips if a link chain of a stamped table is sent: its recursive statement names no live guard, so it would
+        reach its gone rows (CA r2 here)."""
         reader = _L3(db)
         with pytest.raises(ValueError, match="stamped"):
-            await read_reached(
-                reader, _TABLE, start={"state": "CA"}, on="run_id", to="run_id", columns=["run_id"], depth=2
-            )
-        with pytest.raises(ValueError, match="stamped"):
             await read_link_chain(reader, _TABLE, key="run_id", link="run_id", start="r2", most=2, columns=["rows"])
-        with pytest.raises(ValueError, match="stamped"):
-            await read_nearest(
-                _Sent(),
-                "sg_other",
-                by={"state": "CA"},
-                nearest=Nearest("rows", "[1]"),
-                limit=3,
-                columns=["state"],
-                joins=[Joined(_TABLE, on={"state": "state"}, columns={"j_rows": "rows"}, left=True)],
-            )
         assert reader.statements == []
         # a local copy holds live rows alone: its chain is read as it holds
         chained = await read_link_chain(
             ThreadedDuckDB(db), _TABLE, key="run_id", link="run_id", start="r2", most=1, columns=["rows"]
         )
         assert [int(row["rows"]) for row in chained] == [20]
+
+    async def test_a_walk_in_one_statement_reads_a_stamped_tables_live_rows_alone(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a walk in one statement over a stamped table reaches a gone row (CA r2 here, and so the r2 level
+        beyond it): each level reads the table's live rows alone, ``NOT t."gone"`` on its first rows and on every
+        level's join. 3tears' own access tables are stamped, and the visible-customer walk is one statement."""
+        reader = _L3(db)
+        reached = await read_reached(
+            reader, _TABLE, start={"state": "CA"}, on="run_id", to="run_id", columns=["state", "run_id"], depth=2
+        )
+        assert sorted((row["state"], row["run_id"]) for row in reached) == sorted(_LIVE)
+        [sql] = reader.statements
+        assert sql.count('NOT t."gone"') == 2, sql
+        # a local copy holds live rows alone and no gone flag: its walk names none
+        local = await read_reached(
+            ThreadedDuckDB(db), _TABLE, start={"state": "NV"}, on="run_id", to="run_id", columns=["run_id"], depth=1
+        )
+        assert [row["run_id"] for row in local] == ["r1"]
+
+    async def test_a_ranked_read_joining_a_stamped_table_joins_its_live_rows_alone(self) -> None:
+        """Flips if a ranked read joining a stamped table in one statement joins its gone rows: the lookup of the
+        joined table carries its live guard (``NOT j."gone"``)."""
+        reader = _Sent()
+        await read_nearest(
+            reader,
+            "sg_other",
+            by={"state": "CA"},
+            nearest=Nearest("rows", "[1]", similarity="score"),
+            limit=3,
+            columns=["state"],
+            joins=[Joined(_TABLE, on={"state": "state"}, columns={"j_rows": "rows"}, left=True)],
+        )
+        [sql] = reader.statements
+        assert f'FROM "{_TABLE}" AS j WHERE' in sql and 'NOT j."gone"' in sql, sql
 
     async def test_a_read_past_marks_answers_live_rows_alone(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a read of a stamped table's change record past its marks answers a row its delete marked gone

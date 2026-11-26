@@ -100,6 +100,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Iterable, Literal
 from uuid import UUID
@@ -107,6 +108,7 @@ from uuid import UUID
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipKey,
+    GroupNamespaceEntry,
     GroupNamespaceKey,
 )
 from threetears.agent.acl.loader import HeldAssignmentsLoader, ParentGroupsLoader
@@ -806,6 +808,8 @@ async def _group_namespace_contributions(
     role_ids = tuple(_unique_ordered(a.role_id for assignments in held.values() for a in assignments))
     roles = await loader.load_roles(role_ids) if role_ids else {}
     groups = _coerce_groups(await loader.load_groups(missing_groups))
+    computed: dict[GroupNamespaceKey, GroupNamespaceEntry] = {}
+    cached_at = datetime.now(UTC)
     for key, namespace in missing.items():
         assignments = held[(key.group_id, key.namespace_id)]
         actions, trails = _walk_assignments(
@@ -815,8 +819,15 @@ async def _group_namespace_contributions(
             eligible_group_ids=frozenset((key.group_id,)),
             namespace=namespace,
         )
-        cache.put_group_namespace(key, actions, trails, role_ids=frozenset(a.role_id for a in assignments), fence=fence)
+        computed[key] = GroupNamespaceEntry(
+            actions=actions,
+            trails=trails,
+            date_cached=cached_at,
+            role_ids=frozenset(a.role_id for a in assignments),
+        )
         result[key] = (actions, trails)
+    # every computed pair stored at once: the layer's snapshot built once, never once per pair
+    cache.put_group_namespaces(computed, fence=fence)
     return result
 
 

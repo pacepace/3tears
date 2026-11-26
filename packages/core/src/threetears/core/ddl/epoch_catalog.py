@@ -193,13 +193,11 @@ async def tables_carrying_epoch(conn: _Fetching, schema: str, tables: Iterable[s
     return frozenset(str(row["table_name"]) for row in rows)
 
 
-#: TODO(work/0950-stamp-own-tables): set True once that branch has merged. A switched-on table (one whose writes
-#: advance a generation) that carries no epoch is refused at the migration run that declares it
-#: (:func:`refuse_tables_without_epoch`): with the change-note ring retired (append-only L3 chunk 7) nothing records
-#: its writes for a restore, the writers' backstop or a keys-unknown page, so a lost advance of it could never be
-#: announced. Held off only because 3tears' own ten tables do not declare ``ROW_STAMPED`` yet (that branch does it);
-#: ``tests/unit/ddl/test_tables_without_epoch_refused.py`` fails while this is False, so it cannot be forgotten
-REFUSE_TABLES_WITHOUT_EPOCH: Final = False
+#: A switched-on table (one whose writes advance a generation) that carries no epoch is refused at the migration run
+#: that declares it (:func:`refuse_tables_without_epoch`): with the change-note ring retired (append-only L3 chunk 7)
+#: nothing records its writes for a restore, the writers' backstop or a keys-unknown page, so a lost advance of it
+#: could never be announced. 3tears' own ten switched-on tables declare ``ROW_STAMPED`` (work/0950-stamp-own-tables).
+REFUSE_TABLES_WITHOUT_EPOCH: Final = True
 
 
 class TableWithoutEpochError(RuntimeError):

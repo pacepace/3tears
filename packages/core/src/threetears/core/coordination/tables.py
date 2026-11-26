@@ -55,8 +55,10 @@ from threetears.core.collections.base import CasMutation
 from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
+    BOOL_TYPE,
     BYTES_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
@@ -72,7 +74,12 @@ from threetears.core.coordination.flusher import PeriodicFlusher
 from threetears.core.data.schema import ColumnDef, IndexDef as DdlIndexDef, TableDef
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import DataLayerUnavailableError, L2ScopeNotConfiguredError
+from threetears.core.backends.protocol import GoneMarkingStore
+from threetears.core.ddl.row_epoch import ROW_STAMPED, bucket_epoch_index_name
 from threetears.core.keyed.deletes import delete_before
+from threetears.core.keyed.page import keyset_page
+from threetears.interfaces.keyed.filters import Fragment
+from threetears.interfaces.keyed.page import Sort
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 from threetears.core.tenancy import TENANT_BY_SCHEMA
@@ -437,6 +444,13 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
             return 0
         cutoff = now or datetime.now(UTC)
         table = self.table_name
+        if self.schema.stamps_epoch:
+            rows = await self._mark_expired_gone(cutoff, int(batch))
+            log.info(
+                "coordination expiry sweep",
+                extra={"extra_data": {"table": table, "rows_deleted": rows, "cutoff": cutoff.isoformat()}},
+            )
+            return rows
         # the expired rows, oldest first, found through the table's expiry index (each names this sweep its purpose);
         # one page a sweep: the throttle (sweep_expired_if_due) runs it again after the interval
         swept = await delete_before(
@@ -456,6 +470,49 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
             extra={"extra_data": {"table": table, "rows_deleted": rows, "cutoff": cutoff.isoformat()}},
         )
         return rows
+
+    async def _mark_expired_gone(self, cutoff: datetime, batch: int) -> int:
+        """one page of a stamped table's expired rows marked gone in place, never deleted (append-only L3, decision
+        2: a real delete leaves nothing for a restore to find): the oldest ``batch`` live rows whose expiry has passed,
+        read through the table's expiry index (a keyed page, its live rows alone), each marked gone by the store's
+        ``mark_gone`` (one keyed ``UPDATE``, its epoch risen past a fresh stamp) inside :meth:`bypassing_write`, so
+        every cache of them is settled as a deleted row's is. Quiet-time cleanup removes a gone row once it is below
+        the restore window (``stamped_cleanup.clear_stamped_gone``).
+
+        :param cutoff: the moment to compare expiries against
+        :ptype cutoff: datetime
+        :param batch: the most rows to mark in one statement
+        :ptype batch: int
+        :return: the rows marked gone
+        :rtype: int
+        :raises ValueError: when the store cannot mark a key gone
+        """
+        page = await keyset_page(
+            self.required_l3_pool,
+            self.schema.name,
+            columns=("purpose", "key", "expires_at"),
+            by={},
+            where=[Fragment('"expires_at" < $1', (cutoff,))],
+            order=[Sort("expires_at"), Sort("purpose"), Sort("key")],
+            limit=batch,
+            records=True,
+        )
+        keys = [(row["purpose"], row["key"]) for row in page.rows]
+        if not keys:
+            return 0
+        store = self._durable_store()
+        if not isinstance(store, GoneMarkingStore):
+            raise ValueError(f"{self.table_name}: a stamped table's sweep marks keys gone, and its store cannot")
+        async with self.bypassing_write(*keys):
+            await store.mark_gone(
+                self.schema.name,
+                keys,
+                epoch=CallerTransaction.stamp_for(None, self.table_name),
+                scope=None,
+                max_rows=batch,
+                conn=None,
+            )
+        return len(keys)
 
     async def sweep_expired_if_due(self) -> int:
         """run :meth:`sweep_expired` at most once per interval in this process, failures contained.
@@ -572,6 +629,11 @@ class CoordinationRevocationsCollection(CoordinationCollection):
         name="coordination_revocations",
         tenancy=TENANT_BY_SCHEMA,
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads its rows stamped since X a bucket at a time, and an expiry sweep marks a row gone in place
+        # (sweep_expired), so the restore hears it. Stamped, not versioned: a revocation is written in place (its
+        # moment moved on), a key at a time, by no writer that takes a scope's turn. Coordination v007 stamps it
+        row_epoch=ROW_STAMPED,
         primary_key=("purpose", "key"),
         columns=[
             *_common_columns(),
@@ -646,6 +708,7 @@ COORDINATION_TABLE_SCHEMAS: Final[tuple[TableSchema, ...]] = (
 #: collection column-type tag -> the DDL type the SQL builder names. Only the tags these tables
 #: use; an unmapped tag raises rather than guessing a column type into a security table.
 _DDL_TYPES: Final[dict[str, str]] = {
+    BOOL_TYPE: "boolean",
     STRING_TYPE: "text",
     INT_TYPE: "integer",
     BIGINT_TYPE: "bigint",
@@ -717,6 +780,10 @@ def table_def_for(schema: TableSchema) -> TableDef:
             )
     pk = schema.primary_key
     pk_columns = {pk} if isinstance(pk, str) else set(pk)
+    # a stamped table's restore index is on its stored bucket, a generated column the DDL definition cannot carry:
+    # coordination v007 adds the bucket, the index and its declaration (stamp_tables), to a table v001 just created as
+    # to one an older run did
+    restore_index = bucket_epoch_index_name(schema.name)
     return TableDef(
         name=schema.name,
         columns=[
@@ -738,6 +805,7 @@ def table_def_for(schema: TableSchema) -> TableDef:
                 asc=list(index.asc),
             )
             for index in schema.indexes
+            if index.name != restore_index
         ],
     )
 

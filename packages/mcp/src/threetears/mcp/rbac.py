@@ -43,6 +43,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.declared import whole_read
 from threetears.core.entities.base import BaseEntity
 from threetears.core.keyed import Fragment, Sort, keyset_page, read_row
@@ -132,6 +133,13 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         # so LocalGrantAuthorizer follows the table and reads each changed grant by key -- a lost
         # broadcast included -- never every grant again
         write_generation=WRITE_GENERATION,
+        # one row a key, carrying its last write's epoch (append-only L3, decision 3): a restore of a lost change log
+        # reads the grants stamped since X a bucket at a time, and a revoke marks its grant gone in place
+        # (remove_grant, the collection's delete), so the restore hears it. Stamped though the table is append-only
+        # (a grant is inserted once and revoked, never rewritten): a version a write buys nothing over one row a key,
+        # since no key is written twice, and versioning needs a scope its writer takes a turn at (ScopeEpochs), which
+        # the admin write path has none of. mcp v003 stamps the table
+        row_epoch=ROW_STAMPED,
         l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
@@ -305,7 +313,9 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             )
         rows = await whole_read(
             self.l3_pool.fetch(
-                "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants",
+                # live grants alone: a revoked grant is marked gone in place (ROW_STAMPED), never deleted
+                "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants "
+                "WHERE NOT gone",
             ),
             kind="cold_start",
             reason="LocalGrantAuthorizer fills its empty grant cache once at start, and again only when a write changed "

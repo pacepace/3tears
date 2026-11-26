@@ -113,8 +113,10 @@ class TestListToolNamespacesForActor:
                 cache=MagicMock(),
             )
         sql = pool.fetch.await_args.args[0]
-        assert "tool_eligible = TRUE" in sql
-        assert "skill_eligible" not in sql
+        # a stamped table's read names its declared columns (every flag among them): the filter is the WHERE's
+        where = sql.split(" WHERE ", 1)[1]
+        assert "tool_eligible = TRUE" in where
+        assert "skill_eligible" not in where
         assert 't."namespace_type" = $2' in sql and pool.fetch.await_args.args[2] == "tool"
 
     @pytest.mark.asyncio
@@ -266,7 +268,12 @@ class TestNoCallerInputReachesTheEligibilitySql:
         # identical for two different actors: nothing about the caller reaches the text.
         assert tool_sql[0] == tool_sql[1]
         assert skill_sql[0] == skill_sql[1]
-        # the two statements differ in the eligibility column and nothing else.
-        assert tool_sql[0].replace("tool_eligible", "skill_eligible") == skill_sql[0]
-        assert "skill_eligible" not in tool_sql[0]
-        assert "tool_eligible" not in skill_sql[0]
+        # the two statements differ in the eligibility column and nothing else: one projection (a stamped table's read
+        # names its declared columns, both flags among them), and filters that differ in the column alone.
+        tool_projection, tool_where = tool_sql[0].split(" WHERE ", 1)
+        skill_projection, skill_where = skill_sql[0].split(" WHERE ", 1)
+        assert tool_projection == skill_projection
+        assert tool_where.replace("tool_eligible", "skill_eligible") == skill_where
+        # a stamped table's read names its declared columns (both flags among them): each filter is its WHERE's
+        assert "skill_eligible" not in tool_sql[0].split(" WHERE ", 1)[1]
+        assert "tool_eligible" not in skill_sql[0].split(" WHERE ", 1)[1]

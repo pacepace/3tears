@@ -180,7 +180,10 @@ class TestGroupCollectionPages:
         page = await coll.page_all(limit=5)
         assert page.entities == [] and page.next_cursor is None
         sql = pool.fetch.await_args.args[0]
-        assert "WHERE" not in sql and 'ORDER BY t."group_id"' in sql and sql.endswith("LIMIT 6")
+        # every group, its live rows alone (ROW_STAMPED: a deleted group is marked gone): the guard is the one condition
+        assert (
+            ' WHERE (NOT t."gone") ORDER BY t."group_id"' in sql and sql.count("WHERE") == 1 and sql.endswith("LIMIT 6")
+        )
 
 
 class TestGroupCollectionGetMany:
@@ -841,9 +844,11 @@ class TestDeleteByGroupAndScope:
             scope_id=uuid7(),
             managed_by="auto:agent-yaml",
         )
+        # a revoke marks its grants gone in place (ROW_STAMPED), never a DELETE: the gone flag and the risen epoch are
+        # $1 and $2, so the pins follow from $3
         delete = pool.fetch.await_args_list[1]
-        assert delete.args[0].lstrip().upper().startswith("DELETE")
-        assert '"managed_by" = $5' in delete.args[0]
+        assert delete.args[0].lstrip().upper().startswith('UPDATE "ROLE_ASSIGNMENTS" SET "GONE" = $1')
+        assert '"managed_by" = $7' in delete.args[0]
         assert delete.args[-1] == "auto:agent-yaml"
 
 
@@ -1064,7 +1069,7 @@ class TestGroupMemberPageByGroup:
         assert page.entities == [] and page.next_cursor is None
         sql = pool.fetch.await_args.args[0]
         # the pinned group is a constant on every row: the page orders by the key alone
-        assert sql.endswith('WHERE t."group_id" = $1 ORDER BY t."id" ASC LIMIT 11'), sql
+        assert sql.endswith('WHERE t."group_id" = $1 AND (NOT t."gone") ORDER BY t."id" ASC LIMIT 11'), sql
         assert pool.fetch.await_args.args[1:] == (group_id,)
 
 
@@ -1189,7 +1194,7 @@ class _GroupEdges:
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         assert sql == (
             'SELECT t."group_id", t."member_type", t."member_id", t."customer_id" FROM "group_members" AS t'
-            ' WHERE t."member_type" = $1 AND t."member_id" = ANY($2::uuid[])'
+            ' WHERE t."member_type" = $1 AND t."member_id" = ANY($2::uuid[]) AND (NOT t."gone")'
         ), sql
         member_type, member_ids = params
         assert member_type == "group", params

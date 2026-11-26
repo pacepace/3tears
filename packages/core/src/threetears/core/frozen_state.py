@@ -28,6 +28,7 @@ __all__ = [
     "with_entries",
     "with_entry",
     "with_newest",
+    "with_newest_entries",
     "without_entries",
     "without_entry",
 ]
@@ -83,6 +84,32 @@ def with_newest[K, V](mapping: Mapping[K, V], key: K, value: V, *, limit: int | 
     if limit is not None:
         kept = kept[max(0, len(kept) + 1 - limit) :]
     return MappingProxyType({**dict(kept), key: value})
+
+
+def with_newest_entries[K, V](
+    mapping: Mapping[K, V], entries: Mapping[K, V], *, limit: int | None = None
+) -> Mapping[K, V]:
+    """``mapping`` with every entry of ``entries`` set as its newest, in ``entries``' order, the oldest dropped past
+    ``limit``: :func:`with_newest` for a batch, the snapshot built once. WHY: a caller storing n entries one
+    :func:`with_newest` at a time copies the whole snapshot n times (quadratic: an ACL evaluation over 300 namespaces
+    held its loop 0.8-2.5 s storing its pairs); this copies it once.
+
+    :param mapping: the snapshot
+    :ptype mapping: Mapping
+    :param entries: the entries to set, oldest first
+    :ptype entries: Mapping
+    :param limit: the most entries kept; None keeps every one
+    :ptype limit: int | None
+    :return: the new snapshot
+    :rtype: Mapping
+    """
+    if not entries:
+        return mapping
+    kept = [(held, was) for held, was in mapping.items() if held not in entries]
+    kept.extend(entries.items())
+    if limit is not None:
+        kept = kept[max(0, len(kept) - limit) :]
+    return MappingProxyType(dict(kept))
 
 
 def with_entries[K, V](mapping: Mapping[K, V], entries: Mapping[K, V]) -> Mapping[K, V]:

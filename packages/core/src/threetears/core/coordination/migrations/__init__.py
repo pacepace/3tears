@@ -26,6 +26,9 @@ version history:
   backstop from the change notes (:mod:`threetears.core.collections.lost_writes`), with no L3 write a commit. The
   queue's table stays, empty, until the contract release (:data:`~threetears.core.ddl.write_marks
   .WRITE_MARKS_CONTRACT_RELEASE`).
+- v007 -- ``coordination_revocations`` carries its epoch (``ROW_STAMPED``): the epoch backfilled a page of keys a
+  statement, the gone flag, the stored restore bucket, its ``(epoch_bucket, epoch)`` index and declaration, so a
+  restore of a lost change log reads it a bucket at a time and the change-note ring can be retired.
 """
 
 from __future__ import annotations
@@ -40,6 +43,9 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
 from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
 from threetears.core.coordination.migrations.v006_drop_write_mark_triggers import drop_write_mark_triggers
+from threetears.core.coordination.migrations.v007_revocations_carry_their_epoch import (
+    revocations_carry_their_epoch,
+)
 from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -68,6 +74,7 @@ def register(runner: MigrationRunner, *, scope: MigrationScope = MigrationScope.
     pkg.version(4)(index_write_marks_by_table)
     pkg.version(5)(range_expiry_indexes)
     pkg.version(6)(drop_write_mark_triggers)
+    pkg.version(7)(revocations_carry_their_epoch)
     # the revocation list caches absences: it carries its change-note triggers from the run that creates it
     pkg.mark_write_generation(CoordinationRevocationsCollection.schema)
     runner.register(pkg)
@@ -80,4 +87,5 @@ __all__ = [
     "create_collection_write_marks",
     "create_coordination_tables",
     "register",
+    "revocations_carry_their_epoch",
 ]
