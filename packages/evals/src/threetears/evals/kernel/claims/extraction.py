@@ -684,7 +684,8 @@ def _restated(listed: Sequence[_ListedClaim], cell: tuple[Segment, ...]) -> list
             and sought in folded[other]
             and verbatim_span(item.restates, kept[other]) is not None
         ]
-        firsts = sorted({resolved[other][0] if resolved[other][0] is not None else other for other in holders})
+        # Each holder stands for the first claim of its chain, itself where it restates nothing.
+        firsts = sorted({first if (first := resolved[other][0]) is not None else other for other in holders})
         if not firsts:
             resolved[position] = (
                 None,
