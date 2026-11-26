@@ -358,6 +358,7 @@ def declared_versions(text: str | None) -> RowEpoch | None:
     try:
         value = json.loads(text)
     except ValueError:
+        # NOSILENT: an index comment that is not JSON is no restore declaration; the answer None says so
         return None
     if not isinstance(value, dict) or value.get(RESTORE_DECLARATION_MARK) != 1:
         return None

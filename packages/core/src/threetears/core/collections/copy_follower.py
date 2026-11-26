@@ -1872,8 +1872,8 @@ class _SettlesWhole(Protocol):
     **Why** (reports' ``followed_copy``, moved here with its backend, R-1 of ``design-copy-worker-backend.md``). A
     start that read L3 whole, or loaded the volume's full, holds no derived row it may serve: a checkpoint's derived
     rows match no part at its own version, and a cold start holds none. Settled change by change, the start's first
-    change (every row) was the whole copy settled on its own, and then settled whole again (6-7 s at prod's size,
-    FR2b 2026-11-17). So the follower tells the backend at the end of such a start (:meth:`defer_settles_until_whole`):
+    change (every row) was the whole copy settled on its own, and then settled whole again (6-7 s at prod's size, measured
+    2026-11-17). So the follower tells the backend at the end of such a start (:meth:`defer_settles_until_whole`):
     its changes then apply with nothing derived, and once a pass labels the copy with one stamp of every table (the
     whole reads applied), the follower asks the one whole settle (:meth:`settle_whole`). A backend without these
     methods derives nothing whole, as before.

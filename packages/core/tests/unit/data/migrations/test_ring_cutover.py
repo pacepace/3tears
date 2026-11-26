@@ -46,17 +46,17 @@ class _Conn:
         if "pg_advisory_unlock" in query:
             self.locked -= 1
             return [{"released": True}]
+        if "FROM pg_namespace n" in query:
+            ring, names = args
+            held = {s for s, t in self.tables if t == ring} | {s for s, _, g in self.triggers if g in names}
+            return [{"schema": s} for s in sorted(held)]
         if "pg_trigger" in query:
-            names = args[0]
+            schema, names = args
             return [
-                {"table_schema": s, "table_name": t, "trigger_name": g}
-                for s, t, g in sorted(self.triggers)
-                if g in names
+                {"table_name": t, "trigger_name": g} for s, t, g in sorted(self.triggers) if s == schema and g in names
             ]
         if "pg_proc" in query:
             return [{"name": n, "args": a} for n, a, s in sorted(self.functions) if s == args[0]]
-        if "c.relname::text = $1" in query:
-            return [{"schema": s} for s, t in sorted(self.tables) if t == args[0]]
         if "ANY($2::text[])" in query:
             return [{"table_name": t} for s, t in sorted(self.tables) if s == args[0] and t in args[1]]
         raise AssertionError(f"unexpected read: {query}")

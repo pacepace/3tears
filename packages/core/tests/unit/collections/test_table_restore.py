@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,7 +27,7 @@ import pytest
 import sqlalchemy as sa
 
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange
+from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
 from threetears.core.collections.log_keeper import LogKeeper
 from threetears.core.collections.registry import CollectionRegistry
@@ -43,7 +41,6 @@ from threetears.core.collections.schema_backed import (
     stamped_values,
 )
 from threetears.core.collections.scope_epochs import scope_epochs_schema
-from threetears.core.ddl.keeper_marks import MARKS_TABLE
 from threetears.core.ddl.row_epoch import (
     BUCKET_COLUMN,
     EPOCH_COLUMN,
@@ -51,55 +48,35 @@ from threetears.core.ddl.row_epoch import (
     ROW_STAMPED,
     bucket_epoch_index_name,
     restore_floor,
-    row_versions,
 )
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, TABLE_RESET_SCOPE
 from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE, moved_epoch_column, moved_from_column
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
-from threetears.core.tenancy import TENANT_BY_SCHEMA, schema_tenant, tenant_column, value_tenant
+from threetears.core.tenancy import TENANT_BY_SCHEMA, tenant_column, value_tenant
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.enforcement.no_whole_reads.schema import collect_schema
 from threetears.enforcement.no_whole_reads.sql import Reader, judge_sql
 from threetears.epoch import EPOCH_CHANGES_BUCKET, EpochGenerationSource
 from threetears.nats import set_default_namespace
 
-_SCHEMA = "rpt"
-_TABLE = "restore_results"
-_EPOCHS = "restore_epochs"
-_SCOPE = "join_state_code"
-_RING = "ring"
-
-#: the versioned table a consumer declares: its key, its scope, the scope epochs table naming its states
-_RESULTS = TableSchema(
-    name=_TABLE,
-    primary_key=(_SCOPE, "run_id", "candidate"),
-    columns=[
-        Column(_SCOPE, STRING_TYPE),
-        Column("run_id", STRING_TYPE),
-        Column("candidate", STRING_TYPE),
-        Column("votes", BIGINT_TYPE),
-    ],
-    tenancy=TENANT_BY_SCHEMA,
-    row_epoch=row_versions(_SCOPE, epochs=_EPOCHS, scope_prefix="state:"),
-    l1_eviction=Declared(Policy.EVICTABLE, "a test's versioned table"),
+from packages.core.tests.unit.collections.restore_pool import (
+    declaration as _declaration,
+    EPOCHS as _EPOCHS,
+    lost_log as _lost_log,
+    restored_records as _restored_records,
+    RestorePool as _Pool,
+    RESULTS as _RESULTS,
+    RING as _RING,
+    RUNS as _RUNS,
+    SCHEMA as _SCHEMA,
+    SCOPE as _SCOPE,
+    STAMPED_TABLE as _STAMPED_TABLE,
+    TABLE as _TABLE,
 )
 
 #: the restore read the (scope, epoch) index names as its purpose
 _READ = "packages/core/src/threetears/core/collections/table_restore.py::_scope_versions"
-
-_STAMPED_TABLE = "restore_runs"
-
-#: a stamped table a consumer declares (``lsf_runs``' shape): one row a key, updated in place
-_RUNS = TableSchema(
-    name=_STAMPED_TABLE,
-    primary_key=(_SCOPE, "run_id"),
-    columns=[Column(_SCOPE, STRING_TYPE), Column("run_id", STRING_TYPE), Column("rows", BIGINT_TYPE)],
-    tenancy=TENANT_BY_SCHEMA,
-    row_epoch=ROW_STAMPED,
-    l1_eviction=Declared(Policy.EVICTABLE, "a test's stamped table"),
-)
 
 #: the restore read the (bucket, epoch) index names as its purpose
 _STAMPED_READ = "packages/core/src/threetears/core/collections/table_restore.py::_bucket_rows"
@@ -110,161 +87,8 @@ def _namespace() -> None:
     set_default_namespace("tablerestore")
 
 
-def _declaration(schema: TableSchema = _RESULTS) -> str:
-    """the restore declaration the table's DDL gives its restore index, as the catalog then holds it."""
-    [comment] = [statement for statement in schema.create_statements(yugabyte=True) if statement.startswith("COMMENT")]
-    found = re.search(r"IS '(.*)'$", comment)
-    assert found is not None, comment
-    return found.group(1).replace("''", "'")
-
-
-class _Conn:
-    """the keeper's one connection (its install's): the DDL lock and the catalog, answering nothing."""
-
-    def __init__(self, pool: _Pool) -> None:
-        self._pool = pool
-
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
-        yield
-
-    async def fetch(self, query: str, *args: Any) -> list[Any]:
-        self._pool.sent.append((query, args))
-        return []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self._pool.sent.append((query, args))
-        return "OK"
-
-
-class _Pool:
-    """the L3 a keeper reads: its marks and the database's clock, the catalog's restored tables, their scope epochs,
-    versions and run markers. Every statement is recorded with its arguments."""
-
-    def __init__(self, lost: str, now: datetime, marks: list[dict[str, Any]]) -> None:
-        self.sent: list[tuple[str, tuple[Any, ...]]] = []
-        self.now = now
-        self.lost = lost
-        #: the keeper's marks: log_incarnation, seq, at, id
-        self.marks = marks
-        #: (scope, last_epoch) of the scope epochs table
-        self.scopes: list[tuple[str, int | None]] = []
-        #: (state, run, candidate, epoch, gone) of the versioned table
-        self.versions: list[tuple[str, str, str, int, bool]] = []
-        #: (scope, prefix, epoch) of the run-marker table, all of the versioned table
-        self.run_markers: list[tuple[str, str, int]] = []
-        #: the base tables of the keeper's schema, which an older writer's record (naming no database) is judged by
-        self.own: list[str] = []
-        #: the catalog's restore declarations: (table, declaration)
-        self.catalog: list[tuple[str, str]] = [(_TABLE, _declaration())]
-        #: (state, run, bucket, epoch) of the stamped table
-        self.stamped: list[tuple[str, str, int, int]] = []
-
-    @staticmethod
-    def _floor(args: tuple[Any, ...]) -> int:
-        # the epoch floor is the one bound epoch-sized integer (a LIMIT is small)
-        return next(arg for arg in args if isinstance(arg, int) and arg > 1 << 40)
-
-    def _marks(self, query: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:
-        """the marks statements the keeper sends: its newest mark, a log's marks past a position, a window's anchor,
-        and the window's sweep."""
-        if "DELETE" in query:
-            before = next(arg for arg in args if isinstance(arg, datetime))
-            gone = [mark for mark in self.marks if mark["at"] < before]
-            self.marks = [mark for mark in self.marks if mark not in gone]
-            return [{"id": mark["id"]} for mark in gone]
-        if 'ORDER BY t."at" DESC' in query:
-            return sorted(self.marks, key=lambda mark: (mark["at"], str(mark["id"])), reverse=True)[:1]
-        incarnation, position = args[0], args[1]
-        held = [mark for mark in self.marks if mark["log_incarnation"] == incarnation]
-        if 't."seq" < $2' in query:
-            return sorted((mark for mark in held if mark["seq"] < position), key=lambda mark: mark["seq"], reverse=True)
-        return sorted((mark for mark in held if mark["seq"] > position), key=lambda mark: mark["seq"])
-
-    async def fetch(self, query: str, *args: Any) -> list[Any]:
-        self.sent.append((query, args))
-        if query.startswith("SELECT now()"):
-            return [{"now": self.now}]
-        if "pg_description" in query:
-            return [
-                {"table_schema": _SCHEMA, "table_name": table, "declared": declared, "run_markers": True}
-                for table, declared in self.catalog
-            ]
-        if MARKS_TABLE in query:
-            return self._marks(query, args)
-        if f'"{_EPOCHS}"' in query:
-            floor = self._floor(args)
-            return [
-                {"scope": scope, "last_epoch": last}
-                for scope, last in sorted(self.scopes, key=lambda each: (each[1] or 0, each[0]))
-                if last is not None and last >= floor
-            ]
-        if RUN_MARKERS_TABLE in query:
-            floor = self._floor(args)
-            if TABLE_RESET_SCOPE in args:
-                # a table's reset markers, by (table_name, scope): none here
-                return []
-            scopes = next(arg for arg in args if isinstance(arg, list))
-            return [
-                {"scope": scope, "prefix": prefix, "epoch": epoch}
-                for scope, prefix, epoch in sorted(self.run_markers)
-                if scope in scopes and epoch >= floor
-            ]
-        if "information_schema.tables" in query:
-            return [{"table_name": table} for table in self.own]
-        return []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.sent.append((query, args))
-        if query.startswith("INSERT INTO") and MARKS_TABLE in query:
-            incarnation, seq, at = args
-            self.marks.append({"log_incarnation": incarnation, "seq": seq, "at": at, "id": len(self.marks) + 100})
-        return "OK"
-
-    async def copy_from_query(self, query: str, *args: Any, output: Any, **_: Any) -> str:
-        """a scope's versions since the floor, as the restore's fold reads them: the table, the tenant, the key."""
-        self.sent.append((query, args))
-        floor = self._floor(args)
-        tenant = schema_tenant(_SCHEMA)
-        if f'"{_STAMPED_TABLE}"' in query:
-            bucket = next(arg for arg in args if isinstance(arg, int) and arg < RESTORE_BUCKETS)
-            for state, run, held, epoch in self.stamped:
-                if held == bucket and epoch >= floor:
-                    fields = (json.dumps(_STAMPED_TABLE), json.dumps(tenant), json.dumps([state, run]))
-                    line = ",".join('"' + field.replace('"', '""') + '"' for field in fields) + ",\n"
-                    await output(line.encode())
-            return "COPY"
-        state = next(arg for arg in args if isinstance(arg, str))
-        for scope, run, candidate, epoch, _gone in self.versions:
-            if scope == state and epoch >= floor:
-                fields = (json.dumps(_TABLE), json.dumps(tenant), json.dumps([scope, run, candidate]))
-                line = ",".join('"' + field.replace('"', '""') + '"' for field in fields) + ",\n"
-                await output(line.encode())
-        return "COPY"
-
-    @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[_Conn]:
-        yield _Conn(self)
-
-
 def _keeper(pool: _Pool, source: EpochGenerationSource, **kwargs: Any) -> LogKeeper:
     return LogKeeper(pool, schema=_RING, log=source, **kwargs)
-
-
-async def _lost_log() -> tuple[FakeNatsClient, EpochGenerationSource, str]:
-    """a log the keeper saw, then lost as a broker restart loses it."""
-    bus = FakeNatsClient()
-    source = EpochGenerationSource(bus)
-    lost = await source.start_log()
-    bus.change_log(EPOCH_CHANGES_BUCKET).vanish()
-    return bus, source, lost
-
-
-async def _restored_records(source: EpochGenerationSource) -> list[EpochChange]:
-    state = await source.log_state()
-    assert state is not None
-    found = [await source.epoch_at(seq) for seq in range(1, state.last_seq + 1)]
-    return [record for record in found if record is not None]
 
 
 def _versioned_reads(pool: _Pool) -> list[tuple[str, tuple[Any, ...]]]:

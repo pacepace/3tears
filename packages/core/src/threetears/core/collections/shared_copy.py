@@ -3021,7 +3021,7 @@ class SharedCopyBackend:
         """a whole settle follows (a start that read L3 whole, no checkpoint): until :meth:`settle_whole` publishes,
         each change applies with no ``derive``. The whole settle derives every scope from the copy as it then is, so a
         change's own derive before it is work thrown away (reports' first change after such a start is every row of
-        the copy, and its settle was a whole settle of its own: 6-7 s at prod's size, FR2b 2026-11-17).
+        the copy, and its settle was a whole settle of its own: 6-7 s at prod's size, measured 2026-11-17).
 
         :return: nothing
         :rtype: None

@@ -26,15 +26,15 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
-from packages.core.tests.unit.collections.test_table_restore import (
-    _EPOCHS,
-    _RESULTS,
-    _RING,
-    _SCOPE,
-    _TABLE,
-    _lost_log,
-    _Pool,
-    _restored_records,
+from packages.core.tests.unit.collections.restore_pool import (
+    EPOCHS as _EPOCHS,
+    RESULTS as _RESULTS,
+    RING as _RING,
+    SCOPE as _SCOPE,
+    TABLE as _TABLE,
+    RestorePool as _Pool,
+    lost_log as _lost_log,
+    restored_records as _restored_records,
 )
 from threetears.core.backends.arrow_copy import distinct_scopes
 from threetears.core.backends.protocol import LoadFile

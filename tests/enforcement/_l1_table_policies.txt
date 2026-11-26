@@ -39,6 +39,7 @@ packages/core/src/threetears/core/collections/scan_cache.py:_DEPS_TABLE KEEP
 packages/core/src/threetears/core/collections/scan_cache.py:collection_scan_cache EVICTABLE
 packages/core/src/threetears/core/collections/schema_backed.py:self.name PASSED_ON
 packages/core/src/threetears/core/collections/scope_epochs.py:name KEEP
+packages/core/src/threetears/core/collections/tenant_moves.py:TENANT_MOVES_TABLE EVICTABLE
 packages/core/src/threetears/core/collections/versioned_answers.py:table_name EVICTABLE
 packages/core/src/threetears/core/coordination/source_token.py:name EVICTABLE
 packages/core/src/threetears/core/coordination/tables.py:coordination_claims KEEP

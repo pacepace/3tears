@@ -79,9 +79,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final, Protocol, runtime_checkable
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from threetears.core.arrow_keys import key_codes
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.broker_generation import cleanup_deleting
 from threetears.core.backends.dialect import known_on_yugabyte
@@ -442,13 +444,20 @@ def _removable(candidates: pa.Table, versions: pa.Table, key: Sequence[str]) -> 
     :rtype: pyarrow.Table
     """
     names = list(key)
+    stored = versions.select([*names, EPOCH_COLUMN])
+    if not candidates.num_rows or not versions.num_rows:
+        return stored.slice(0, 0)
     gone = pc.cast(pc.fill_null(candidates.column(GONE_COLUMN), False), pa.int64())
-    bounds = candidates.select(names).append_column("bound", pc.add(candidates.column(EPOCH_COLUMN), gone))
-    highest = bounds.group_by(names).aggregate([("bound", "max")])
-    joined = versions.select([*names, EPOCH_COLUMN]).join(highest, keys=names, join_type="inner")
-    return joined.filter(pc.less(joined.column(EPOCH_COLUMN), joined.column("bound_max"))).select(
-        [*names, EPOCH_COLUMN]
-    )
+    bound = np.asarray(pc.add(candidates.column(EPOCH_COLUMN), gone).to_numpy(), dtype=np.int64)
+    # each key coded by Arrow's hash kernels over both sides together, never an Acero plan (test_no_acero_tables)
+    visited, held = key_codes([candidates.select(names), versions.select(names)], names)
+    distinct, group = np.unique(visited, return_inverse=True)
+    highest = np.full(len(distinct), np.iinfo(np.int64).min, dtype=np.int64)
+    np.maximum.at(highest, group, bound)
+    at = np.minimum(np.searchsorted(distinct, held), len(distinct) - 1)
+    epochs = np.asarray(versions.column(EPOCH_COLUMN).to_numpy(), dtype=np.int64)
+    removed = (distinct[at] == held) & (epochs < highest[at])
+    return stored.take(pa.array(np.flatnonzero(removed), pa.int64()))
 
 
 def _decoded(kind: str, text: str) -> Any:
@@ -784,8 +793,9 @@ class QuietCleanup:
             if not paged:
                 last = {name: candidates.column(name)[-1].as_py() for name in candidates.column_names}
                 past = tuple(next_past(self._order(schema), last))
-        if not paged and past is not None:
-            # a load started before the next batch: the scope resumes after the last version visited
+        if not paged and past is not None and self._place is None:
+            # a load started before the next batch: the scope resumes after the last version visited. Only while the
+            # place is still the one this call cleared: a place set during the awaits is newer and is kept
             self._place = _Place(schema.name, value, floor, past)
         finished, runs = await self._clear_runs(schema, value, floor) if paged else (False, 0)
         return finished, removed + runs
