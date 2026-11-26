@@ -1,9 +1,9 @@
-"""A host-contract port answers only with declared types: every type its methods take or return is ``host-contract`` or
-``stable``.
+"""A host-contract port answers only with declared types: every type its methods take or return, and every type its
+data members hold, is ``host-contract`` or ``stable``.
 
 A port is a declared protocol a host's code implements and hands the engine (``port-host-implements`` in
-``tests/fixtures/declared_holdbacks.txt``). A host implementing one writes each type its methods name, as a parameter or
-as what it returns, so a ``provisional`` type there makes a host binding to the contract bind to a name that may move,
+``tests/fixtures/declared_holdbacks.txt``). A host implementing one writes each type its members name, as a method's
+parameter or return or as an attribute it holds, so a ``provisional`` type there makes a host binding to the contract bind to a name that may move,
 and carry an exemption for it. Each type is read from the signatures as written, the walk ``scripts/surface_kinds.py``
 reads for reach, and a type counts as declared when any public root exports it under a declared name.
 """
@@ -13,6 +13,8 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Mapping
 from typing import Any
+
+import pytest
 
 from packages.evals.tests.script_loader import load_script
 
@@ -31,10 +33,11 @@ def host_contract_ports(installed: Mapping[str, Any]) -> list[str]:
 
 
 def undeclared_port_types(installed: Mapping[str, Any]) -> dict[str, set[str]]:
-    """Each host-contract port naming a type no declared name exports, with those types by every name they go by.
+    """Each host-contract port naming a type no declared name exports, as a method's parameter or return or as a data
+    member's type, with those types by every name they go by.
 
     :param installed: ``root.name`` → its surface entry, with its tier (``public_surface.installed_surface()``).
-    :return: Port → the undeclared types its methods take or return; empty when every port is closed.
+    :return: Port → the undeclared types its members name; empty when every port is closed.
     """
     names_of: dict[int, set[str]] = {}
     objects: dict[str, object] = {}
@@ -44,7 +47,7 @@ def undeclared_port_types(installed: Mapping[str, Any]) -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for port in host_contract_ports(installed):
         for position, named in kinds_of.edges(objects[port]):
-            if position not in ("parameter", "return"):
+            if position not in ("parameter", "return", "field"):
                 continue
             names = names_of.get(id(named), set())
             if any(surface.declared(installed[each].tier) for each in names if each in installed):
@@ -74,3 +77,20 @@ def test_the_walk_reads_each_port_and_sees_a_provisional_type() -> None:
     listing = "threetears.evals.schema.ModelListing"
     demoted = {**installed, listing: dataclasses.replace(installed[listing], tier="provisional")}
     assert undeclared_port_types(demoted) == {"threetears.evals.kernel.host.ModelListingReader": {listing}}
+
+
+@pytest.mark.parametrize(
+    ("port", "member_type"),
+    [
+        # An annotated data member: the artifact a candidate kind declares it hands the judge.
+        ("threetears.evals.kernel.CandidateKind", "threetears.evals.schema.JudgedArtifact"),
+        # A property: the normalized stop reason a completion carries.
+        ("threetears.evals.schema.CompletionResult", "threetears.evals.schema.StopReason"),
+    ],
+)
+def test_a_provisional_type_a_port_holds_as_a_member_is_named(port: str, member_type: str) -> None:
+    """A port's data members are part of what a host writes, so each type one holds is named the moment it stopped
+    being declared."""
+    installed = surface.installed_surface()
+    demoted = {**installed, member_type: dataclasses.replace(installed[member_type], tier="provisional")}
+    assert member_type in undeclared_port_types(demoted).get(port, set())

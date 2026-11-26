@@ -429,8 +429,10 @@ your candidate goes somewhere your factory does not build, answer for it instead
 `async model_listing(model, *, role) -> ModelListing | None`, the port `ModelListingReader` declares
 (`threetears.evals.kernel.host`; `ModelListing` from `threetears.evals.schema`; both host-contract), answering for
 `role=None` with the list of the provider your candidates go to, and `None` for a model whose provider keeps no list
-it reads. The engine finds it by `isinstance(factory, ModelListingReader)`, so defining the method is all it takes; a
-factory without it is still a `CompletionClients`, and its models are not checked. A long-lived process is not priced from its first
+it reads. The engine finds it by `isinstance(factory, ModelListingReader)`, so defining the method is all it takes,
+but define it on the factory's class: since Python 3.12 that check looks the method up statically, so a wrapper that
+forwards to another factory through `__getattr__` is not found and its models go unchecked; define `model_listing` on
+the wrapper and forward it by name. A factory without it is still a `CompletionClients`, and its models are not checked. A long-lived process is not priced from its first
 fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
 six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
 completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an

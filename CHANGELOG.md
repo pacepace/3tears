@@ -11,13 +11,16 @@ packages (bumped in lock-step).
 **Changed (#1330):** `ModelListing` (`threetears.evals.schema`), what a client factory's `model_listing` answers, is
 host-contract, and the method itself is declared: `ModelListingReader` (`threetears.evals.kernel.host`, host-contract)
 is the port a factory implements beside `CompletionClients` when it reads its providers' model lists. Launch admission
-finds it by `isinstance(factory, ModelListingReader)`, which reads only that the method is there, so a factory without
-it is still a `CompletionClients` and is not asked, as before. A test now holds every host-contract port to types that
+finds it by `isinstance(factory, ModelListingReader)`, so a factory without the method is still a `CompletionClients`
+and is not asked, as before. A test now holds every host-contract port to types that
 are host-contract or stable, so a provisional type in a port's signature fails at build.
 
 **For hosts:** a host may now import `ModelListing` as host-contract and drop its provisional-import exemption for it.
-Nothing else to change: a factory that defines `model_listing` already is a `ModelListingReader`, and one that does
-not keeps working unchecked. Nothing stored changes.
+The method must be defined on the factory's class: the engine found it with `getattr` before and finds it with
+`isinstance` now, which since Python 3.12 looks it up statically, so a factory that served `model_listing` only through
+`__getattr__` (a wrapper forwarding to another factory) is no longer asked, and its models go unchecked with no notice.
+Such a host defines `model_listing` on the wrapper and forwards it by name. A factory that defines the method on its
+class already is a `ModelListingReader`, and one without it keeps working unchecked. Nothing stored changes.
 
 ### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
 

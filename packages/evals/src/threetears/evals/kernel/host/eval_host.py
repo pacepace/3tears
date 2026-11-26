@@ -88,7 +88,8 @@ class CompletionClients(Protocol):
     **Optional: ``async model_listing(model, *, role)``.** A factory that can read its providers' lists of the models
     they serve also offers this method, declared by :class:`ModelListingReader`, and launch admission asks it of every
     model an arm names. It is not a member of this protocol, so a factory without it still is one: the engine checks
-    ``isinstance(factory, ModelListingReader)`` and, when that is false, makes no served check.
+    ``isinstance(factory, ModelListingReader)`` and, when that is false, makes no served check; the method must be
+    defined on the factory's class, since one reached only through ``__getattr__`` is not found.
     """
 
     def __call__(
@@ -116,8 +117,10 @@ class ModelListingReader(Protocol):
 
     Launch admission asks it of each model an arm names (its candidate, every judge, its simulator) before the arm is
     priced, and refuses an arm naming a model its provider no longer lists. The engine finds it by
-    ``isinstance(factory, ModelListingReader)`` on :attr:`EvalHost.clients`, which reads only that the factory has a
-    ``model_listing`` attribute, so a host opts in by defining the method and declares nothing else. A factory without
+    ``isinstance(factory, ModelListingReader)`` on :attr:`EvalHost.clients`, so a host opts in by defining the method
+    and declares nothing else. The method must be defined on the factory's class (or set on the instance): since Python
+    3.12 that check looks it up statically, so a ``model_listing`` reached only through ``__getattr__``, as a wrapper
+    forwarding to another factory serves it, is not found, and that factory's models go unchecked. A factory without
     it is not asked, and its models are not checked. The shipped ``threetears.evals.providers.Clients`` is one.
     """
 
