@@ -100,8 +100,13 @@ async def test_no_ring_table_or_trigger_exists_after_the_keepers_ddl() -> None:
 
 def test_no_migration_run_gives_a_table_a_trigger() -> None:
     """Flips if the migration run's end gains a step that gives a table a change-note trigger again: its module holds the
-    two refusals alone (a per-row trigger on a versioned table; a switched-on table with no epoch)."""
-    assert sorted(epoch_refusals.__all__) == ["refuse_row_triggers_here", "switched_tables_without_epoch"]
+    three refusals alone (a per-row trigger on a versioned table; a switched-on table with no epoch; a moveable stamped
+    table whose schema holds no moves table)."""
+    assert sorted(epoch_refusals.__all__) == [
+        "refuse_moveable_without_moves_here",
+        "refuse_row_triggers_here",
+        "switched_tables_without_epoch",
+    ]
     for gone in ("give_noted_tables_their_note_trigger", "switched_tables_without_notes"):
         assert not hasattr(epoch_refusals, gone), gone
 

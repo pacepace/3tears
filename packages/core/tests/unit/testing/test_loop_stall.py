@@ -160,3 +160,24 @@ def test_a_collection_walking_an_earlier_tests_heap_is_not_charged_to_the_test(p
     assert "held by: test_subject.hold_the_loop_with_cpu" in out
     held = [float(seconds) for seconds in re.findall(r"collected in ([0-9.]+) s", out)]
     assert len(held) == 1 and held[0] < STALL_LIMIT_SECONDS, out
+
+
+#: a session that loads DuckDB and passes: its process must exit 0 too
+_LOADS_DUCKDB = """
+import duckdb
+
+
+def test_quiet():
+    assert duckdb.execute("SELECT 1").fetchall() == [(1,)]
+"""
+
+
+def test_a_session_that_loaded_duckdb_exits_0(pytester: pytest.Pytester) -> None:
+    """Flips if the guard leaves the heap frozen at the session's end: the interpreter's shutdown then never frees
+    DuckDB's module, and its import cache, destroyed by ``exit()`` after the interpreter, aborts the process
+    (``Fatal Python error: gilstate_tss_set``, exit 134) though every test passed."""
+    pytester.makepyfile(test_subject=_LOADS_DUCKDB)
+    result = pytester.runpytest_subprocess(*_PLUGIN, "-q")
+    result.assert_outcomes(passed=1)
+    assert "Fatal Python error" not in result.stderr.str(), result.stderr.str()
+    assert result.ret == 0, f"the session exited {result.ret}: {result.stderr.str()}"

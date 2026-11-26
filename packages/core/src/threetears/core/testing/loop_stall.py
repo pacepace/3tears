@@ -38,8 +38,16 @@ test's heap (0.10 s at ~300k tracked objects, ~1 s on bigger heaps; 2026-11-25).
 ``settle_before_serving`` freezes its start-up heap once before it serves, so its collections walk only what serving
 made. The guard does the same before each test: a young collection (``gc.collect(0)``: the last test's short-lived
 cycles, not a walk of the heap) and ``gc.freeze()``, so a collection inside the test walks only what the test made.
-It never unfreezes between tests: what an earlier test left that is garbage stays frozen, and is freed with the
-process at the session's end -- a test process's leftovers, bounded by the session.
+It never unfreezes between tests: what an earlier test left that is garbage stays frozen until the session's end,
+where :func:`pytest_unconfigure` unfreezes it -- a test process's leftovers, bounded by the session.
+
+**Unfrozen before the interpreter exits.** The interpreter's shutdown frees what reference cycles hold with the
+collector, and the collector never walks frozen objects: a module kept by a frozen cycle outlives the shutdown, and
+its cleanup never runs. DuckDB's does not: its module's cleanup capsule (``_duckdb._clean_default_connection``) is
+never freed, so its import cache (a C++ static) is destroyed by ``exit()`` after the interpreter has gone, takes the
+interpreter lock to drop its Python objects and aborts the process (``Fatal Python error: gilstate_tss_set``,
+exit 134, Python 3.14.3, DuckDB 1.5.6; ``python -c "import duckdb, gc; gc.freeze()"`` alone does it). Every test
+process that loaded DuckDB exited 134 that way, its tests passed. So the session's end unfreezes the heap.
 
 **Cost.** Nothing outside a test session: the plugin is loaded only through ``pytest_plugins`` (or ``-p``), and wraps
 asyncio's run from ``pytest_configure`` to ``pytest_unconfigure``. In a session: two clock reads and a thread-local
@@ -225,7 +233,7 @@ class _Guard:
         self._watcher.start()
 
     def stop(self) -> None:
-        """put asyncio's run back and stop the watcher."""
+        """put asyncio's run back, stop the watcher and unfreeze what the session froze."""
         self._wrapped.close()
         self._stop.set()
         self._watcher.join(timeout=1.0)
@@ -352,7 +360,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """put asyncio's run back and stop the watcher.
+    """put asyncio's run back, stop the watcher and unfreeze what the session froze.
 
     :param config: the session's config
     :ptype config: pytest.Config
@@ -363,6 +371,10 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     if guard is not None:
         guard.stop()
         del config.stash[_GUARD_KEY]
+        # what pytest_runtest_setup froze goes back to the collector, so the interpreter's shutdown frees it and every
+        # module's cleanup runs while the interpreter is still there (the module's "Unfrozen before the interpreter
+        # exits": a module kept by a frozen cycle aborted the process at exit, 134)
+        gc.unfreeze()
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -394,8 +406,8 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     earlier test's leftovers -- ~1 s turns charged to trivial frames on the pool (0.10 s at ~300k tracked objects, ~1 s
     on bigger heaps; 2026-11-25). A pod freezes its heap once after the SDK's ``settle_before_serving``; a test is
     held to the pod's terms. ``gc.collect(0)`` first lets the last test's young cycles go rather than freezing them;
-    it walks the youngest generation only. Never unfrozen between tests: frozen garbage is freed at the session's end,
-    with the process. A test that calls ``gc.unfreeze()`` itself undoes this for the rest of its own run.
+    it walks the youngest generation only. Never unfrozen between tests: :func:`pytest_unconfigure` unfreezes it at the
+    session's end, so the interpreter's shutdown frees it. A test that calls ``gc.unfreeze()`` itself undoes this for the rest of its own run.
 
     :param item: the test about to set up
     :ptype item: pytest.Item

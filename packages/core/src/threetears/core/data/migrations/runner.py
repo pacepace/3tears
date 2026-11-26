@@ -48,7 +48,11 @@ from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.core.ddl.session import MigrationSession
-from threetears.core.data.migrations.epoch_refusals import refuse_row_triggers_here, switched_tables_without_epoch
+from threetears.core.data.migrations.epoch_refusals import (
+    refuse_moveable_without_moves_here,
+    refuse_row_triggers_here,
+    switched_tables_without_epoch,
+)
 from threetears.core.data.store import DataStore
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
 from threetears.observe import contain, get_logger, traced
@@ -630,6 +634,10 @@ class MigrationRunner:
         # trigger, so no migration, hand-written statement or older replica brings the slow path back (append-only
         # L3, decision 4; threetears.core.ddl.epoch_catalog)
         await refuse_row_triggers_here(store)
+        # every run: a stamped table a write may move between tenants (TableSchema(moveable=...)) has the moves table
+        # its moving writes append to, in its own schema; without it each such write fails at write time
+        # (threetears.core.ddl.tenant_moves, epoch_catalog.refuse_moveable_without_moves)
+        await refuse_moveable_without_moves_here(store)
         return count
 
     async def _announce_run(self, store: DataStore, began: datetime | None, count: int) -> None:
