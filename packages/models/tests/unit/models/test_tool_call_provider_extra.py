@@ -447,10 +447,26 @@ class TestAStructuredOutputStreamCarriesOneCopy:
     the same emit-once check; this pins the outcome against an SDK whose accumulator starts keeping them.
     """
 
+    @pytest.fixture
+    def model(self) -> Any:
+        """the model, built off the loop with the SDK resource its structured-output stream calls already reached.
+
+        langchain_openai streams a ``response_format`` through ``client.beta.chat.completions.stream``, and the
+        openai SDK imports ``openai.resources.beta`` the first time it is reached: 656 modules, 0.59 s of the loop
+        on openai 3.x (the loop-stall guard, 2026-11-25). A server builds its clients before it serves; here a
+        sync fixture reaches it, so the SDK loads its own modules outside the test's loop.
+
+        :return: the chat model
+        :rtype: Any
+        """
+        model = openai_model(
+            ChatCompletionsWire(deltas=_streamed_parallel_calls(), finish="tool_calls"), "gemini-3.5-flash-lite"
+        )
+        assert model.root_async_client.beta.chat.completions.stream is not None
+        return model
+
     @pytest.mark.asyncio
-    async def test_astream_with_response_format(self) -> None:
-        wire = ChatCompletionsWire(deltas=_streamed_parallel_calls(), finish="tool_calls")
-        model = openai_model(wire, "gemini-3.5-flash-lite")
+    async def test_astream_with_response_format(self, model: Any) -> None:
         response_format = {
             "type": "json_schema",
             "json_schema": {"name": "weather", "schema": {"type": "object", "properties": {}}, "strict": False},

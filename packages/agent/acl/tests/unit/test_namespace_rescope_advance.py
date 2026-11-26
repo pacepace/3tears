@@ -65,5 +65,5 @@ async def test_a_failed_advance_carries_the_outcome_after_the_row_was_announced(
         "customer",
         customer_id,
     )
-    announced = [m.ids for m in bus.published if isinstance(m, CacheInvalidationMessage)]
+    announced = [row.ids for m in bus.published if isinstance(m, CacheInvalidationMessage) for row in m.each_row()]
     assert announced == [["platform", f"{namespace_id}"], ["customer", f"{namespace_id}"]]
