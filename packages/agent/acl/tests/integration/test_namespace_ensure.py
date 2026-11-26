@@ -127,17 +127,44 @@ async def test_ensure_refuses_a_row_that_already_means_something_else(pg_pool: a
         await collection.ensure_namespace(**other)  # type: ignore[arg-type]
 
 
-async def test_racing_ensures_never_raise_under_load(pg_pool: asyncpg.Pool) -> None:
-    """One gather of four hid it: the loser of a real race hit the non-arbiter UNIQUE indexes."""
+#: racing ensures of one namespace (a replica each), and the namespaces raced at once, each a lane of rounds
+_RACERS = 8
+_LANES = 6
+_ROUNDS = 200
+
+
+async def test_racing_ensures_never_raise_under_load(
+    pg_pool: asyncpg.Pool, db_container: str, _module_schema: str
+) -> None:
+    """One gather of four hid it: the loser of a real race hit the non-arbiter UNIQUE indexes.
+
+    Flips if a racing insert's YugabyteDB deadlock or conflict reaches the caller: one statement writes the row and each
+    index entry to their own tablets at once, so racers deadlock (40P01) or conflict (40001), which YugabyteDB asks the
+    client to retry. One lane of 200 rounds met it twice in a day of the suite's runs under load; six lanes at once,
+    on a pool of a connection a racer, met it 113 times in 23,280 rounds (2026-11-26), so 1,200 rounds meet it nearly
+    always on the old code. PostgreSQL never raises it.
+    """
     customer, agent = uuid.uuid4(), uuid.uuid4()
     owner = await _owner_row(pg_pool, "agent-owner", customer)
-    pods = [_collection(pg_pool) for _ in range(8)]
-    for _ in range(200):
-        fields = _fields(customer, agent, uuid.uuid4(), owner)
-        fields["name"] = f"ns-{uuid.uuid4().hex}"
-        results = await asyncio.gather(*(pod.ensure_namespace(**fields) for pod in pods), return_exceptions=True)  # type: ignore[arg-type]
-        errors = [r for r in results if isinstance(r, BaseException)]
+    pool = await access_pool(db_container, _module_schema, max_size=_RACERS * _LANES)
+    try:
+        pods = [_collection(pool) for _ in range(_RACERS)]
+
+        async def lane() -> list[BaseException]:
+            for _ in range(_ROUNDS):
+                fields = _fields(customer, agent, uuid.uuid4(), owner)
+                fields["name"] = f"ns-{uuid.uuid4().hex}"
+                ensures = [pod.ensure_namespace(**fields) for pod in pods]  # type: ignore[arg-type]
+                results = await asyncio.gather(*ensures, return_exceptions=True)
+                errors = [r for r in results if isinstance(r, BaseException)]
+                if errors:
+                    return errors
+            return []
+
+        errors = [error for found in await asyncio.gather(*(lane() for _ in range(_LANES))) for error in found]
         assert errors == [], errors[:1]
+    finally:
+        await pool.close()
 
 
 async def test_ensure_refuses_a_row_whose_other_fields_disagree(pg_pool: asyncpg.Pool) -> None:
