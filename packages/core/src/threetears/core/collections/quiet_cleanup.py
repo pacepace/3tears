@@ -13,8 +13,10 @@ is everything the NATS log still holds, and a restore reads every version at or 
 version below F is removed when a newer version of its key exists (it is superseded), and a "gone" marker below F is
 removed together with every older version of its key. A key's newest live version is never removed. A run marker below
 F is removed after every row of its run older than it; until then the marker stays, so no row of a gone run comes back.
-A table's reset marker (``TABLE_RESET_SCOPE``, written before a ``TRUNCATE``) below F is removed by its key: no restore
-reads it, and the rows it says were emptied are gone already.
+A table's reset marker (``TABLE_RESET_SCOPE``: written before a ``TRUNCATE``, or alone in a transaction by
+``SchemaBackedCollection.reset_table``) hides every version of the table older than itself; below F, those versions are
+removed (a scope's walk then starts at the oldest version, each version below the marker removing every version of its
+key below it), and the marker after them, by its key: no restore reads it once its rows are gone.
 
 WHY the window holds for superseded versions too: a restore folds each version it reads into the key and its declared
 invalidation columns, and an older version's columns (a row that moved scope, a group it left) are what a follower
@@ -424,12 +426,16 @@ class _Place:
     past: tuple[Any, ...]
 
 
-def _removable(candidates: pa.Table, versions: pa.Table, key: Sequence[str]) -> pa.Table:
+def _removable(candidates: pa.Table, versions: pa.Table, key: Sequence[str], reset: int | None = None) -> pa.Table:
     """the versions a page of visited versions removes, by their stored key (the key, then the epoch).
 
     Each visited version removes its key's versions older than itself, and a "gone" marker itself too: so a key's bound
     is the highest of its visited versions' ``epoch + gone``, and every version of the key below its bound goes. Never a
     version newer than one visited: whatever order the versions are visited in, no key's newest live version goes.
+
+    A table reset below the floor (``reset``, its newest reset marker's epoch) hides every version older than the
+    marker, so each visited key's bound is at least the marker's epoch: every version of it below the marker goes, the
+    visited one too, and none at or above it (a row its reset's transaction appended after the marker stays).
 
     Pure Arrow, on the caller's thread (cleanup runs it on a worker thread, never the loop).
 
@@ -439,6 +445,8 @@ def _removable(candidates: pa.Table, versions: pa.Table, key: Sequence[str]) -> 
     :ptype versions: pyarrow.Table
     :param key: the key's columns
     :ptype key: Sequence[str]
+    :param reset: the newest reset marker's epoch below the floor; None when the table holds none
+    :ptype reset: int | None
     :return: the stored keys to delete: the key columns and ``epoch``
     :rtype: pyarrow.Table
     """
@@ -448,6 +456,9 @@ def _removable(candidates: pa.Table, versions: pa.Table, key: Sequence[str]) -> 
         return stored.slice(0, 0)
     gone = pc.cast(pc.fill_null(candidates.column(GONE_COLUMN), False), pa.int64())
     bound = np.asarray(pc.add(candidates.column(EPOCH_COLUMN), gone).to_numpy(), dtype=np.int64)
+    if reset is not None:
+        # every version below the reset marker is hidden by it, the visited one too
+        bound = np.maximum(bound, np.int64(reset))
     # each key coded by Arrow's hash kernels over both sides together, never an Acero plan (test_no_acero_tables)
     visited, held = key_codes([candidates.select(names), versions.select(names)], names)
     distinct, group = np.unique(visited, return_inverse=True)
@@ -597,10 +608,15 @@ class QuietCleanup:
         stopped = False
         for schema in self._tables:
             cleaned = await self._cleaned_to(schema.name)
+            # the reset markers below F not yet cleared: the newest hides every version older than itself, which each
+            # scope's walk then removes from its oldest version on, before the markers go
+            resets = await self._resets_below(schema.name, cleaned.get(TABLE_RESET_SCOPE, 0), floor)
+            reset = max((epoch for _, epoch in resets), default=None)
             behind = [value for value in scopes if cleaned.get(value, 0) < floor]
             _BACKLOG.labels(table=schema.name).set(len(behind))
             for left, value in enumerate(behind):
-                finished, count = await self._clean_scope(schema, value, cleaned.get(value, 0), floor)
+                since = 0 if reset is not None else cleaned.get(value, 0)
+                finished, count = await self._clean_scope(schema, value, since, floor, reset)
                 removed += count
                 stopped = not finished
                 if stopped:
@@ -609,7 +625,8 @@ class QuietCleanup:
                 _BACKLOG.labels(table=schema.name).set(len(behind) - left - 1)
             if stopped:
                 break
-            removed += await self._clear_resets(schema.name, cleaned.get(TABLE_RESET_SCOPE, 0), floor)
+            # every scope's versions below the newest marker are gone: the markers go after them
+            removed += await self._clear_resets(schema.name, resets, floor)
         unfinished = False
         if not stopped:
             stopped, unfinished, count = await self._clean_stamped(floor)
@@ -637,7 +654,8 @@ class QuietCleanup:
         unfinished = False
         for schema in self._stamped:
             cleaned = await self._cleaned_to(schema.name)
-            removed += await self._clear_resets(schema.name, cleaned.get(TABLE_RESET_SCOPE, 0), floor)
+            resets = await self._resets_below(schema.name, cleaned.get(TABLE_RESET_SCOPE, 0), floor)
+            removed += await self._clear_resets(schema.name, resets, floor)
             since = cleaned.get(STAMPED_SCOPE, 0)
             _BACKLOG.labels(table=schema.name).set(int(since < floor))
             if since >= floor:
@@ -660,12 +678,10 @@ class QuietCleanup:
                 unfinished = True
         return False, unfinished, removed
 
-    async def _clear_resets(self, table: str, cleaned_to: int, floor: int) -> int:
-        """remove ``table``'s reset markers (:data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE`, an empty
-        prefix) stamped in ``[cleaned_to, floor)``: read by their key ``(table_name, scope)`` and deleted each by its
-        whole key, then recorded under the progress scope :data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE`,
-        so a round whose floor has not moved reads none. A reset marker below F is read by no restore (each reads from
-        its own floor, at or above F), and the rows its ``TRUNCATE`` emptied are gone already, so nothing waits on it.
+    async def _resets_below(self, table: str, cleaned_to: int, floor: int) -> tuple[tuple[str, int], ...]:
+        """``table``'s reset markers (:data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE`, an empty prefix)
+        stamped in ``[cleaned_to, floor)``, each its prefix and epoch: read by their key ``(table_name, scope)``. None
+        for a round whose floor has not moved since they were cleared (:meth:`_clear_resets`).
 
         :param table: the table cleaned
         :ptype table: str
@@ -673,11 +689,11 @@ class QuietCleanup:
         :ptype cleaned_to: int
         :param floor: F
         :ptype floor: int
-        :return: the markers removed
-        :rtype: int
+        :return: each marker's prefix and epoch, read-only
+        :rtype: tuple[tuple[str, int], ...]
         """
         if self._run_markers is None or cleaned_to >= floor:
-            return 0
+            return ()
         # the run-marker table's own columns, spelled as its declaration spells them (RUN_MARKERS_SCHEMA): its key
         # (table_name, scope, prefix, epoch), read a page at a time past the bound (table_name, scope)
         markers = await keyset_rows(
@@ -688,17 +704,32 @@ class QuietCleanup:
             order=(Sort("prefix"), Sort("epoch", cast="bigint")),
             where=[Fragment('t."epoch" >= $1', (cleaned_to,)), Fragment('t."epoch" < $1', (floor,))],
         )
+        return tuple((str(marker["prefix"]), int(marker[EPOCH_COLUMN])) for marker in markers)
+
+    async def _clear_resets(self, table: str, resets: Sequence[tuple[str, int]], floor: int) -> int:
+        """remove ``table``'s reset markers below ``floor`` (:meth:`_resets_below`), each deleted by its whole key, then
+        record the progress scope :data:`~threetears.core.ddl.run_markers.TABLE_RESET_SCOPE` at ``floor``, so a round
+        whose floor has not moved reads none. Only once every version they hide is gone: a versioned table's scopes
+        were each walked from their oldest version this round (:meth:`_clean_to`), and a ``TRUNCATE`` emptied the
+        rest. A reset marker below F is read by no restore (each reads from its own floor, at or above F).
+
+        :param table: the table cleaned
+        :ptype table: str
+        :param resets: its reset markers below ``floor`` not yet cleared, each its prefix and epoch
+        :ptype resets: Sequence[tuple[str, int]]
+        :param floor: F
+        :ptype floor: int
+        :return: the markers removed
+        :rtype: int
+        """
+        if self._run_markers is None:
+            return 0
         removed = 0
-        for marker in markers:
+        for prefix, epoch in resets:
             gone = await delete_keyed(
                 self._pool,
                 self._run_markers,
-                by={
-                    "table_name": table,
-                    "scope": TABLE_RESET_SCOPE,
-                    "prefix": str(marker["prefix"]),
-                    EPOCH_COLUMN: int(marker[EPOCH_COLUMN]),
-                },
+                by={"table_name": table, "scope": TABLE_RESET_SCOPE, "prefix": prefix, EPOCH_COLUMN: epoch},
             )
             removed += gone.count
         _REMOVED.labels(table=table, kind="reset_marker").inc(removed)
@@ -760,7 +791,9 @@ class QuietCleanup:
             floor,
         )
 
-    async def _clean_scope(self, schema: TableSchema, value: str, cleaned_to: int, floor: int) -> tuple[bool, int]:
+    async def _clean_scope(
+        self, schema: TableSchema, value: str, cleaned_to: int, floor: int, reset: int | None = None
+    ) -> tuple[bool, int]:
         """clear one scope of one table to ``floor``: its versions in ``[cleaned_to, floor)`` a batch at a time, then
         its run markers below ``floor``; stopping before a batch when a load started.
 
@@ -772,6 +805,9 @@ class QuietCleanup:
         :ptype cleaned_to: int
         :param floor: F
         :ptype floor: int
+        :param reset: the table's newest reset marker's epoch below ``floor`` not yet cleared: every version below it
+            goes (:func:`_removable`); None for none
+        :ptype reset: int | None
         :return: whether it finished, and the rows it removed
         :rtype: tuple[bool, int]
         """
@@ -786,7 +822,7 @@ class QuietCleanup:
         paged = False
         while not (paged or self._gate.stirred):
             candidates = await self._candidates(schema, value, cleaned_to, floor, past)
-            removed += await self._clear(schema, candidates, floor)
+            removed += await self._clear(schema, candidates, floor, reset)
             paged = candidates.num_rows < self._batch
             if not paged:
                 last = {name: candidates.column(name)[-1].as_py() for name in candidates.column_names}
@@ -869,7 +905,7 @@ class QuietCleanup:
         types = rail_arrow_types([schema.column(name) for name in columns])
         return await l3_fetch_arrow(self._pool, sql, *params, types=types)
 
-    async def _clear(self, schema: TableSchema, candidates: pa.Table, floor: int) -> int:
+    async def _clear(self, schema: TableSchema, candidates: pa.Table, floor: int, reset: int | None = None) -> int:
         """remove what a page of visited versions supersedes: every version below ``floor`` of the keys it names is
         read by the primary key, the versions to remove worked out in Arrow on a thread, and deleted by stored key.
 
@@ -879,6 +915,8 @@ class QuietCleanup:
         :ptype candidates: pyarrow.Table
         :param floor: F
         :ptype floor: int
+        :param reset: the table's newest reset marker's epoch below ``floor``, or None (:func:`_removable`)
+        :ptype reset: int | None
         :return: the versions removed
         :rtype: int
         """
@@ -898,7 +936,7 @@ class QuietCleanup:
             with_gone=True,
         )
         versions = pa.concat_tables(held) if held else pa.schema(list(types.items())).empty_table()
-        doomed = await asyncio.to_thread(_removable, candidates, versions, key)
+        doomed = await asyncio.to_thread(_removable, candidates, versions, key, reset)
         # a versioned table's stored key: its key, then the epoch (a version a write)
         stored = schema.stored_key
         count = 0

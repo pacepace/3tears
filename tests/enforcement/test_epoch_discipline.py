@@ -111,6 +111,8 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection._copy_rows",
             # its delete of whole key prefixes, enrolled with the caller's transaction and settled by those prefixes
             f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.delete_prefixes",
+            # its reset of a versioned table (the reset marker), enrolled with the caller's transaction, settled whole
+            f"{_CORE}/collections/schema_backed.py::SchemaBackedCollection.reset_table",
             # the backends: the SQL they run IS the write a collection asked for
             f"{_CORE}/backends/sql.py::SqlL3Backend",
             f"{_CORE}/backends/git/repos.py::RoutedGitStore",

@@ -701,6 +701,13 @@ def index_hint(index: DeclaredIndex | None, alias: str = "t") -> str:
 #: what a run marker's ``prefix`` joins a prefix's values with, chr(31) (``threetears.core.ddl.run_markers``)
 _PREFIX_SEPARATOR_CODE: Final = 31
 
+#: a table reset marker's ``scope``, chr(30) (``threetears.core.ddl.run_markers.TABLE_RESET_SCOPE``), its ``prefix``
+#: empty: the whole table, emptied at the marker's epoch
+_TABLE_RESET_SCOPE_CODE: Final = 30
+
+#: the lowest ``bigint``: the reset cut of a table no reset marker names, below every epoch
+_NO_RESET: Final = -9_223_372_036_854_775_808
+
 #: a ``timestamptz`` value's text: its UTC instant to the microsecond, never the session's time zone
 _UTC_MICROS: Final[str] = '\'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"\''
 
@@ -745,6 +752,10 @@ class VersionedTable:
     :ivar scope_at: the scope column's place in :attr:`key`: a marker's prefix names it, so it is at least that long
     :ivar texts: the declared type of each leading key column a marker's prefix can name (:func:`prefix_text`), as the
         marker's write casts it
+    :ivar resets: the run-marker table's bare name, in the table's own schema, where the table's reset markers are
+        (``threetears.core.ddl.run_markers.TABLE_RESET_SCOPE``, an empty prefix): every read hides each version older
+        than the newest (:func:`_reset_cut`). None for a table read with no reset cut. Apart from :attr:`markers`: a
+        table whose key names no scope takes no run marker, and is reset all the same
     """
 
     name: str
@@ -754,6 +765,7 @@ class VersionedTable:
     markers: str | None = None
     scope_at: int = 0
     texts: tuple[str, ...] = ()
+    resets: str | None = None
 
     def __post_init__(self) -> None:
         """refuse a declaration naming anything but plain columns, or a marker prefix it cannot spell.
@@ -765,6 +777,8 @@ class VersionedTable:
         for column in (*self.key, self.epoch, self.gone):
             if _COLUMN.fullmatch(column) is None:
                 raise ValueError(f"a versioned table names plain columns only, not {column!r}")
+        if self.resets is not None and _COLUMN.fullmatch(self.resets) is None:
+            raise ValueError(f"the reset markers' table is a plain name, not {self.resets!r}")
         if self.markers is not None:
             if _COLUMN.fullmatch(self.markers) is None:
                 raise ValueError(f"the run-marker table is a plain name, not {self.markers!r}")
@@ -844,8 +858,8 @@ _NEWEST_ROWS_A_READ: Final = 100_000
 _NEWEST_FIRST_KEYS: Final = _NEWEST_ROWS_A_READ // 50
 
 #: the column a fill page's statement answers beside each key's newest version: whether a read keeps it (not a gone
-#: marker, no newer run marker, the read's own filters past the key). The page keeps every key it read to step past
-#: the last, so it learns its cursor and whether more follows from them all
+#: marker, no newer run or reset marker, the read's own filters past the key). The page keeps every key it read to step
+#: past the last, so it learns its cursor and whether more follows from them all
 NEWEST_LIVE: Final = "_newest_live"
 
 #: the column a newest read answers beside each key's newest version when it sizes its next statement: how many
@@ -968,10 +982,49 @@ def _marker_join(table: VersionedTable, row: str, read_as: str) -> str:
     )
 
 
-def _live(table: VersionedTable, row: str) -> str:
-    """the condition a kept newest version passes: not a gone marker, and no newer run marker joined."""
-    gone = f"NOT {row}.{quote_identifier(table.gone)}"
-    return gone if table.markers is None else f"{gone} AND gone_run.table_name IS NULL"
+def _reset_cut(table: VersionedTable, row: str, read_as: str) -> str | None:
+    """the condition a version of ``table`` read as ``row`` passes when no reset marker of the table is newer than it:
+    its epoch at or above the newest reset marker's (a marker hides only what is older than itself, as a run marker
+    does, so rows a transaction appends after its reset, stamped newer, stay). None for a table read with no reset cut
+    (:attr:`VersionedTable.resets`).
+
+    The newest marker is ONE keyed read of the run-marker table, its key's leading ``(table_name, scope, prefix)`` all
+    bound, the newest epoch first (``ORDER BY epoch DESC LIMIT 1``, a backward seek of the primary key that stops at
+    its first entry), uncorrelated, so read once a statement (PostgreSQL's and YugabyteDB's InitPlan), never a row at a
+    time and never a scan. WHY a scalar and not a join as :func:`_marker_join`: the marker is the table's, not a row's
+    prefix's, so one value cuts every row; a table never reset reads no row and cuts nothing (:data:`_NO_RESET`).
+
+    :param table: the declaration
+    :ptype table: VersionedTable
+    :param row: the alias the version is read by
+    :ptype row: str
+    :param read_as: the table as the read names it (``schema.table`` or bare): its reset markers are in its schema
+    :ptype read_as: str
+    :return: the condition, or None
+    :rtype: str | None
+    """
+    if table.resets is None:
+        return None
+    schema = read_as.rsplit(".", 1)[0] + "." if "." in read_as else ""
+    literal = "'" + table.name.replace("'", "''") + "'"
+    newest = (
+        f"(SELECT reset_mark.epoch FROM {quoted_table(schema + table.resets)} AS reset_mark "
+        f"WHERE reset_mark.table_name = {literal} AND reset_mark.scope = chr({_TABLE_RESET_SCOPE_CODE}) "
+        f"AND reset_mark.prefix = '' ORDER BY reset_mark.epoch DESC LIMIT 1)"
+    )
+    return f"{row}.{quote_identifier(table.epoch)} >= coalesce({newest}, {_NO_RESET})"
+
+
+def _live(table: VersionedTable, row: str, read_as: str) -> str:
+    """the condition a kept newest version passes: not a gone marker, no newer run marker joined, and no newer reset
+    marker of the table (:func:`_reset_cut`)."""
+    conditions = [f"NOT {row}.{quote_identifier(table.gone)}"]
+    if table.markers is not None:
+        conditions.append("gone_run.table_name IS NULL")
+    cut = _reset_cut(table, row, read_as)
+    if cut is not None:
+        conditions.append(cut)
+    return " AND ".join(conditions)
 
 
 def _kept(table: VersionedTable, read_as: str, chosen: str, *, flagged: bool) -> str:
@@ -979,8 +1032,8 @@ def _kept(table: VersionedTable, read_as: str, chosen: str, *, flagged: bool) ->
     ``flagged``, every one with :data:`NEWEST_LIVE` saying which."""
     joined = "" if table.markers is None else " " + _marker_join(table, "n", read_as)
     if flagged:
-        return f"SELECT n.*, ({_live(table, 'n')}) AS {quote_identifier(NEWEST_LIVE)} FROM {chosen}{joined}"
-    return f"SELECT n.* FROM {chosen}{joined} WHERE {_live(table, 'n')}"
+        return f"SELECT n.*, ({_live(table, 'n', read_as)}) AS {quote_identifier(NEWEST_LIVE)} FROM {chosen}{joined}"
+    return f"SELECT n.* FROM {chosen}{joined} WHERE {_live(table, 'n', read_as)}"
 
 
 def newest_relation(

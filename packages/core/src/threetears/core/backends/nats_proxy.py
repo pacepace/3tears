@@ -2504,7 +2504,8 @@ class _ProxyConnection:
         :param prefixes: each prefix, the key's leading columns and their values
         :ptype prefixes: Sequence[Mapping[str, Any]]
         :param epoch: a versioned table's delete epoch: the broker writes ONE run marker a prefix at it and deletes
-            nothing (:mod:`~threetears.core.ddl.run_markers`)
+            nothing (:mod:`~threetears.core.ddl.run_markers`); the one empty prefix, alone, is the table's reset marker
+            (``SchemaBackedCollection.reset_table``), its commit recorded as a reset of the whole table
         :ptype epoch: int | None
         :param scope: with ``epoch``, the versioned table's scope column, which every prefix names
         :ptype scope: str | None

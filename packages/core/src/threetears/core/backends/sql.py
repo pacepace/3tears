@@ -82,7 +82,7 @@ from threetears.core.ddl.row_epoch import (
     next_epoch,
     touch_last_epoch_sql,
 )
-from threetears.core.ddl.run_markers import record_table_reset, run_marker_insert_sql
+from threetears.core.ddl.run_markers import record_table_reset, run_marker_insert_sql, table_reset_marker_sql
 from threetears.core.ddl.tenant_moves import moves_returned, note_moves
 from threetears.core.ddl.session import ConnectionSession
 from threetears.core.keyed._filters import binds_native_arrays
@@ -592,6 +592,34 @@ def _prefixes_touched(
         )
     values = [schema_sql.normalize_write_value(column, prefix[declared.scope]) for prefix in prefixes]
     return _touched(declared, values, epoch, epoch)
+
+
+def _reset_prefixes(table: str, prefixes: Sequence[Mapping[str, Any]], *, versioned: bool) -> bool:
+    """whether a key-prefix delete is a versioned table's reset: its one empty prefix, the whole table
+    (:func:`~threetears.core.ddl.run_markers.table_reset_marker_sql`).
+
+    :param table: the table, for the refusal
+    :ptype table: str
+    :param prefixes: the delete's prefixes
+    :ptype prefixes: Sequence[Mapping[str, Any]]
+    :param versioned: whether the table is versioned
+    :ptype versioned: bool
+    :return: whether it is a reset
+    :rtype: bool
+    :raises ValueError: when an empty prefix is named beside others, or for a table that is not versioned
+    """
+    empty = sum(1 for prefix in prefixes if not prefix)
+    if not empty:
+        return False
+    if not versioned:
+        raise ValueError(
+            f"{table}: an empty key prefix is a versioned table's reset (its reset marker); {table} is not versioned"
+        )
+    if len(prefixes) != 1:
+        raise ValueError(
+            f"{table}: a reset (the empty key prefix, the whole table) is named alone, never beside others"
+        )
+    return True
 
 
 def _quote_ident(name: str) -> str:
@@ -2399,8 +2427,13 @@ class SqlL3Backend:
         .epoch_reads`), so nothing else marks the transaction (until 0.95 its statements were marked whole for the
         change-note ring, two statements more and a no-row delete to fire its trigger).
 
+        **A versioned table's one empty prefix is the whole table**: its reset marker
+        (:func:`~threetears.core.ddl.run_markers.table_reset_marker_sql`, ``SchemaBackedCollection.reset_table``), at the
+        delete's epoch; every read then hides each version older than it. It goes alone: no other prefix beside it.
+
         On the L3 rail the broker runs the delete itself: the connection's ``delete_prefixes`` (the
-        ``l3.tx.delete_prefixes`` request), whose commit the broker then records by the prefixes.
+        ``l3.tx.delete_prefixes`` request), whose commit the broker then records by the prefixes (by the whole table,
+        a reset, for the empty prefix).
 
         :param table: the table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
@@ -2430,10 +2463,12 @@ class SqlL3Backend:
         if _stamped_table(schema):
             # a prefix's rows deleted would leave nothing for a restore to find: a stamped table's keys are marked gone
             _refuse_versioned_delete(schema, table)
-        # a versioned table's run markers touch the scopes their prefixes name, in the transaction that commits them
+        reset = _reset_prefixes(table, prefixes, versioned=versioned)
+        # a versioned table's run markers touch the scopes their prefixes name, in the transaction that commits them; a
+        # reset marker names no scope (a restore reads it by its own key, table_restore.table_resets)
         touched = (
             None
-            if not versioned or epoch is None or schema is None
+            if not versioned or epoch is None or schema is None or reset
             else _prefixes_touched(schema, table, prefixes, epoch)
         )
         if self._scope_aware:
@@ -2447,11 +2482,12 @@ class SqlL3Backend:
             with stamped_send(conn, _stamp_of(schema, epoch), touched, table=table):
                 deleted = await conn.delete_prefixes(table, [dict(prefix) for prefix in prefixes], **marking)
             return int(deleted)
-        statements = (
-            self._run_marker_statements(table, prefixes, epoch)
-            if versioned and epoch is not None
-            else self._prefix_deletes(table, prefixes)
-        )
+        if reset and epoch is not None:
+            statements = [(table_reset_marker_sql(), [table, epoch])]
+        elif versioned and epoch is not None:
+            statements = self._run_marker_statements(table, prefixes, epoch)
+        else:
+            statements = self._prefix_deletes(table, prefixes)
         if not statements:
             return 0
         deleted = 0

@@ -185,6 +185,31 @@ class _PrefixSettling(Protocol):
         ...
 
 
+class _ResetSettling(Protocol):
+    """a collection that reset its versioned table on a caller's transaction (its reset marker), settled whole when it
+    ends (:meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.reset_table`).
+    """
+
+    @property
+    def table_name(self) -> str:
+        """the table.
+
+        :return: its name
+        :rtype: str
+        """
+        ...
+
+    async def settle_reset(self) -> None:
+        """settle every cache of the table once the transaction that reset it has ended: the whole table, a reset, the
+        rows it appended after the marker among them.
+
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the table's write generation had to advance and could not
+        """
+        ...
+
+
 #: the shared advances of the transaction settling in this context, by table.
 _SHARED: ContextVar[Mapping[str, SharedAdvance]] = ContextVar("threetears_shared_advances", default={})
 
@@ -486,6 +511,7 @@ class CallerTransaction:
         "_options",
         "_outermost",
         "_reaches",
+        "_resets",
         "_restated",
         "_s_max",
         "_s_min",
@@ -530,6 +556,9 @@ class CallerTransaction:
         # the newest run marker's epoch of each versioned table whose prefixes the transaction deleted, by table: rows
         # appended beside them are taken only stamped newer (enroll_all). Read-only, replaced whole
         self._marker_epochs: Mapping[str, int] = MappingProxyType({})
+        # the versioned tables reset in the transaction (enroll_reset), each collection once: settled whole, as a
+        # reset, never by key or prefix. A tuple replaced whole
+        self._resets: tuple[_ResetSettling, ...] = ()
         self._outermost: CallerTransaction | None = None
         self._token: Token[tuple[CallerTransaction, ...]] | None = None
         self._transaction: Any = None
@@ -763,7 +792,7 @@ class CallerTransaction:
         :rtype: None
         :raises ValueError: when the transaction deleted key prefixes of the table (:meth:`enroll_prefixes`)
         """
-        if self._reaches:
+        if self._reaches or self._resets:
             self._refuse_keyed_beside_prefixes((collection.table_name,))
         self._enroll_chunk(((collection, entity_id, row),))
 
@@ -823,7 +852,7 @@ class CallerTransaction:
         :raises ValueError: when the transaction deleted key prefixes of a table they name (:meth:`enroll_prefixes`),
             unless the table is versioned and ``epoch`` is newer than its run markers
         """
-        if self._reaches:
+        if self._reaches or self._resets:
             self._refuse_keyed_beside_prefixes({collection.table_name for collection, _, _ in enrollments}, epoch=epoch)
         self._enroll_chunk(tuple(enrollments))
 
@@ -1048,6 +1077,32 @@ class CallerTransaction:
         entry = (owner, tuple(kept))
         self._reaches = (*reaches, entry) if at is None else (*reaches[:at], entry, *reaches[at + 1 :])
 
+    def enroll_reset(self, collection: _ResetSettling, *, marker_epoch: int) -> None:
+        """record that ``collection`` reset its versioned table in this transaction (its reset marker at
+        ``marker_epoch``), to be settled whole, as a reset, when it ends: every cache drops the table and every
+        follower reads it again as on a first start, the rows the transaction appends after the marker among them.
+
+        As a run marker is, a reset marker may be followed by appends of the table in the same transaction
+        (:meth:`enroll_all`, each stamped newer than the marker, so none is hidden), never preceded: a marker after the
+        transaction's own rows would hide them. Those rows are settled by the reset, never key by key, and the table
+        owes no delta file: a reset's record names none, by design (a copy and the fold read the table afresh).
+
+        :param collection: the collection that reset it
+        :ptype collection: _ResetSettling
+        :param marker_epoch: the epoch its reset marker carries
+        :ptype marker_epoch: int
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the transaction already wrote rows of the table
+        """
+        table = collection.table_name
+        if any(enrolled.table_name == table for chunk in self._enrolled for enrolled, _, _ in chunk):
+            raise ValueError(_marker_after_rows(table))
+        newest = max(marker_epoch, self._marker_epochs.get(table, marker_epoch))
+        self._marker_epochs = MappingProxyType({**self._marker_epochs, table: newest})
+        if all(each.table_name != table for each in self._resets):
+            self._resets = (*self._resets, collection)
+
     def _refuse_keyed_beside_prefixes(self, tables: Iterable[str], *, epoch: int | None = None) -> None:
         """refuse a keyed write of a table whose prefixes this transaction deleted (:meth:`enroll_prefixes`), but for
         an append of a versioned table stamped newer than its run markers (:meth:`enroll_all`).
@@ -1061,6 +1116,7 @@ class CallerTransaction:
         :raises ValueError: when one of them had prefixes deleted, and the write is no append stamped after its markers
         """
         cleared = {collection.table_name for collection, _ in self._reaches}
+        cleared |= {collection.table_name for collection in self._resets}
         for table in tables:
             if table not in cleared:
                 continue
@@ -1251,14 +1307,16 @@ class CallerTransaction:
         enrolled = tuple(chain.from_iterable(self._enrolled))
         reaches = self._reaches
         deltas = self._deltas
+        # a table reset in the transaction owes no file: its record is a reset, which names none
+        resets = frozenset(collection.table_name for collection in self._resets)
         if not deltas and len(enrolled) < _SETTLE_OFF_LOOP_ROWS:
-            owed = _owed_deltas(enrolled, reaches, deltas)
+            owed = _owed_deltas(enrolled, reaches, deltas, resets)
         elif not deltas and not enrolled:
             owed = {}
         else:
             # a key a row of a commit of 33,786 rows: counted off the loop, as settling groups them, and the states its
             # rows are of read there too
-            owed, self._states = await asyncio.to_thread(_owed_and_states, enrolled, reaches, deltas)
+            owed, self._states = await asyncio.to_thread(_owed_and_states, enrolled, reaches, deltas, resets)
         return await save_delta_files(owed, version=self._write_version)
 
     async def _settle_collecting(
@@ -1293,8 +1351,10 @@ class CallerTransaction:
         :rtype: GenerationUnavailableError | None
         """
         chunks, restated, reaches, count = self._enrolled, self._restated, self._reaches, self._enrolled_count
-        marked = _marked_shapes(reaches, self._marker_epochs)
+        resets = self._resets
+        marked = _marked_shapes(reaches, self._marker_epochs, resets)
         self._enrolled, self._restated, self._reaches, self._enrolled_count = (), (), (), 0
+        self._resets = ()
         self._marker_epochs = MappingProxyType({})
         if count < _SETTLE_OFF_LOOP_ROWS:
             enrolled, by_collection, shared, beside = _grouped_enrollments(chunks, restated, None, marked)
@@ -1313,8 +1373,20 @@ class CallerTransaction:
             failure = await self._settle_each(by_collection)
         finally:
             _SHARED.reset(sharing)
+        reset = frozenset(collection.table_name for collection in resets)
+        for resetting in resets:
+            try:
+                # a table reset in the transaction is settled once, whole, as a reset: its run markers' prefixes and
+                # the rows appended after its marker are all within it
+                await resetting.settle_reset()
+            except GenerationUnavailableError as exc:
+                # logged where the advance failed; the table's caches were dropped
+                if failure is None:
+                    failure = exc
         settled: dict[str, list[dict[str, str]]] = {}
         for collection, prefixes in reaches:
+            if collection.table_name in reset:
+                continue
             reach = _with_rows_reach(collection, prefixes, beside.reach.get(collection.table_name, ()))
             settled[collection.table_name] = reach
             try:
@@ -1325,9 +1397,17 @@ class CallerTransaction:
                 # logged where the advance failed; the table's caches were dropped
                 if failure is None:
                     failure = exc
-        settling = {id(collection) for collection, _ in reaches}
+        settling = {id(collection) for collection, _ in reaches} | {id(collection) for collection in resets}
         for writer in beside.writers:
-            if id(writer) not in settling:
+            if id(writer) in settling:
+                continue
+            if writer.table_name in reset:
+                # another instance that appended beside the reset marker: the reset's record drops the table from
+                # every instance the registry holds; one it does not hold hears no record, so drops its own here
+                registry = writer.registry
+                if registry is None or registry.get_collection(writer.table_name) is not writer:
+                    writer.drop_cached_table()
+            else:
                 # another instance that appended beside the markers drops its own cached rows of the reach; the one
                 # advance above is the table's
                 await writer.drop_cached_prefixes(settled[writer.table_name])
@@ -1368,20 +1448,27 @@ class CallerTransaction:
 
 
 def _marked_shapes(
-    reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]], marker_epochs: Mapping[str, int]
+    reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]],
+    marker_epochs: Mapping[str, int],
+    resets: Sequence[_ResetSettling] = (),
 ) -> _MarkedShapes:
-    """the prefix shapes of each versioned table whose run markers a transaction wrote (``marker_epochs``), each once.
+    """the prefix shapes of each versioned table whose run markers a transaction wrote (``marker_epochs``), each once;
+    a table it reset (``resets``) names none, its rows settled by the reset alone, never by key.
 
     :param reaches: the key prefixes the transaction deleted, by collection
     :ptype reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]]
     :param marker_epochs: the newest run marker's epoch of each such table
     :ptype marker_epochs: Mapping[str, int]
+    :param resets: the collections whose tables the transaction reset
+    :ptype resets: Sequence[_ResetSettling]
     :return: table -> its markers' shapes, each the leading key columns in key order
     :rtype: Mapping[str, tuple[tuple[str, ...], ...]]
     """
-    shapes: dict[str, tuple[tuple[str, ...], ...]] = {}
+    shapes: dict[str, tuple[tuple[str, ...], ...]] = {collection.table_name: () for collection in resets}
     for collection, prefixes in reaches:
-        if collection.table_name not in marker_epochs:
+        if collection.table_name not in marker_epochs or any(
+            each.table_name == collection.table_name for each in resets
+        ):
             continue
         named = shapes.get(collection.table_name, ())
         for prefix in prefixes:
@@ -1443,6 +1530,7 @@ def _owed_and_states(
     enrolled: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
     reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]],
     deltas: Mapping[str, TableDelta],
+    resets: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, TableDelta], frozenset[str] | None]:
     """:func:`_owed_deltas`, and every state the owed deltas' rows are of (None when any one's cannot be told). Pure,
     for a thread.
@@ -1453,11 +1541,13 @@ def _owed_and_states(
     :ptype reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]]
     :param deltas: what its writes recorded, by table
     :ptype deltas: Mapping[str, TableDelta]
+    :param resets: the tables it reset, which owe no file
+    :ptype resets: frozenset[str]
     :return: the owed deltas, and their states
     :rtype: tuple[dict[str, TableDelta], frozenset[str] | None]
     :raises DeltaFileRefusedError: as :func:`_owed_deltas`
     """
-    owed = _owed_deltas(enrolled, reaches, deltas)
+    owed = _owed_deltas(enrolled, reaches, deltas, resets)
     states: frozenset[str] = frozenset()
     for delta in owed.values():
         named = delta.named_states()
@@ -1471,9 +1561,13 @@ def _owed_deltas(
     enrolled: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
     reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]],
     deltas: Mapping[str, TableDelta],
+    resets: frozenset[str] = frozenset(),
 ) -> dict[str, TableDelta]:
     """the delta each table that opts in owes a file for, checked whole: every key a write enrolled for the table is
     a row or delete marker some write recorded, and nothing was recorded that no write enrolled. Pure, for a thread.
+
+    A table the transaction reset (``resets``) owes none: its commit is recorded as a reset, which names no file (a
+    copy and the fold read the table afresh), so what its writes recorded is left out whole.
 
     :param enrolled: the transaction's enrollments
     :ptype enrolled: Sequence[tuple[BaseCollection, Any, dict[str, Any] | None]]
@@ -1481,10 +1575,16 @@ def _owed_deltas(
     :ptype reaches: Sequence[tuple[_PrefixSettling, Sequence[Mapping[str, str]]]]
     :param deltas: what its writes recorded, by table
     :ptype deltas: Mapping[str, TableDelta]
+    :param resets: the tables it reset, which owe no file
+    :ptype resets: frozenset[str]
     :return: table -> its delta, for each table that opts in
     :rtype: dict[str, TableDelta]
     :raises DeltaFileRefusedError: when a table that opts in is not wholly recorded
     """
+    if resets:
+        enrolled = [enrollment for enrollment in enrolled if enrollment[0].table_name not in resets]
+        reaches = [reach for reach in reaches if reach[0].table_name not in resets]
+        deltas = {table: delta for table, delta in deltas.items() if table not in resets}
     # counted, as keys are: an enrolled prefix is its values as text (str), a recorded one as a key names them
     # (prefix_text), and the two spell a time differently; each holds a prefix once
     reached: dict[str, int] = {}

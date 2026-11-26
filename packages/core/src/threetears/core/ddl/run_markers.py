@@ -19,11 +19,15 @@ request carrying the epoch), on a direct connection 3tears' ``SqlL3Backend.delet
 :func:`run_marker_insert_sql`, so the text form of every value is the database's own. Its declaration, the table's DDL
 for Postgres and YugabyteDB, is :data:`threetears.core.collections.run_markers.RUN_MARKERS_SCHEMA`.
 
-**A table reset is one row too** (:func:`_table_reset_marker_sql`). A ``TRUNCATE`` (an operator's reset, a
+**A table reset is one row too** (:func:`table_reset_marker_sql`). A ``TRUNCATE`` (an operator's reset, a
 super-admin's) leaves no row for a restore or the writers' backstop to read ``epoch >= X`` from, and since the
 change-note ring retired (0.95) no note says so. So whatever resets a table that carries an epoch writes, before its
 ``TRUNCATE`` and on the same connection, the table's reset marker: ``scope`` :data:`TABLE_RESET_SCOPE` and an empty
-``prefix``, the whole table, at the reset's epoch. A restore, the backstop and a keys-unknown page read it by the key
+``prefix``, the whole table, at the reset's epoch. A versioned table is also reset with no ``TRUNCATE`` at all: its
+reset marker alone, in a caller's transaction (``SchemaBackedCollection.reset_table``, the store's
+``delete_prefixes`` of the one empty prefix), and every read hides each version older than the table's newest reset
+marker (``threetears.interfaces.keyed.keys.newest_relation``), so the transaction's own rows appended after it are the
+table. A restore, the backstop and a keys-unknown page read it by the key
 ``(table_name, scope)`` (``table_restore.table_resets``) and hear the whole table cleared, as a reset. No run's marker
 takes that key: a run's ``scope`` is a value of the table's scope column, which a scope epochs table names, and
 :data:`TABLE_RESET_SCOPE` is no such value; nor does a read of a row probe it, since every row's prefix names values.
@@ -45,6 +49,7 @@ __all__ = [
     "TABLE_RESET_SCOPE",
     "record_table_reset",
     "run_marker_insert_sql",
+    "table_reset_marker_sql",
 ]
 
 #: the run-marker table, in the same schema as the versioned tables it marks
@@ -104,12 +109,14 @@ def run_marker_insert_sql(declared: Sequence[str], scope_position: int, *, table
     )
 
 
-def _table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
+def table_reset_marker_sql(*, table: str = RUN_MARKERS_TABLE) -> str:
     """the statement that writes one table's reset marker: ``$1`` the table reset, ``$2`` the reset's epoch; its scope
     :data:`TABLE_RESET_SCOPE`, its prefix empty (the whole table).
 
     Written before the reset's ``TRUNCATE``, on its connection (``SqlL3Backend.truncate``; the hub's broker and its
     data-space truncate the same way): a marker whose ``TRUNCATE`` then fails only has followers read the table again.
+    Or, for a versioned table reset with no ``TRUNCATE``, in the caller's transaction (``SqlL3Backend.delete_prefixes``
+    of the one empty prefix), every read then hiding the versions older than it.
 
     :param table: the run-marker table as the statement names it: bare (the session's ``search_path``), or
         ``schema.table`` quoted by the caller, TRUSTED
@@ -142,7 +149,7 @@ WHERE c.oid = to_regclass($1)
 
 
 async def record_table_reset(conn: Any, table: str, epoch: int) -> bool:
-    """write ``table``'s reset marker (:func:`_table_reset_marker_sql`) at ``epoch``, before its ``TRUNCATE``, on the
+    """write ``table``'s reset marker (:func:`table_reset_marker_sql`) at ``epoch``, before its ``TRUNCATE``, on the
     connection that runs it: a restore, the writers' backstop and a keys-unknown page then hear the whole table cleared.
 
     A table that carries no restore declaration is read back by no restore, so nothing is written for it. A table that
@@ -176,5 +183,5 @@ async def record_table_reset(conn: Any, table: str, epoch: int) -> bool:
             f"migration that creates the table, then reset again"
         )
     quoted = '"' + schema.replace('"', '""') + '".' + RUN_MARKERS_TABLE
-    await conn.execute(_table_reset_marker_sql(table=quoted), str(rows[0]["table_name"]), epoch)
+    await conn.execute(table_reset_marker_sql(table=quoted), str(rows[0]["table_name"]), epoch)
     return True

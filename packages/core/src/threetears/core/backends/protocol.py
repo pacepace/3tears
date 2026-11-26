@@ -926,7 +926,8 @@ class PrefixDeletingStore(Protocol):
     ) -> int:
         """Delete every row of ``table`` whose key leads with one of ``prefixes``; return how many rows went. A
         versioned table (``TableSchema.versioned``) is never deleted from: each prefix is ONE run marker at ``epoch``
-        (:mod:`~threetears.core.ddl.run_markers`), and the count returned is the markers written.
+        (:mod:`~threetears.core.ddl.run_markers`), and the count returned is the markers written; its one empty prefix,
+        alone, is the whole table, its reset marker (``SchemaBackedCollection.reset_table``).
 
         :param table: the table; its schema registered with the store
         :ptype table: str
