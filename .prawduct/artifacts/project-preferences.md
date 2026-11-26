@@ -85,6 +85,21 @@ the Direction entry it points at.
 |---|---|---|---|---|
 | Delegation policy: see § Workflow `Delegation` and `Delegate verification` | Critic | — | janitor | "yes light testing for delegates, and if several delegates are running a dedicated integrator subagent should be used" (owner 2026-11-22) |
 | Inner-loop verification: see § Workflow `Inner-loop verification` | Critic | — | janitor | "everything that can run on testament should run on testament" (owner 2026-11-22) |
+| norm lives in `api-contract.md` § Direction (family versions in lockstep, minor-line intra-family bounds) | Test | `tests/enforcement/test_intra_family_version_bounds.py` | janitor | see the Direction entry |
+| norm lives in `api-contract.md` § Direction (an intra-family API addition ships in a minor bump) | Test | `tests/enforcement/test_api_growth_requires_a_minor_bump.py` | janitor | see the Direction entry |
+| norm lives in `api-contract.md` § Direction (a leading underscore is a stability contract) | Test | `tests/enforcement/test_underscore_access.py`, `tests/enforcement/test_private_binding.py`, ruff `SLF` | janitor | see the Direction entry |
+| norm lives in `observability-strategy.md` § Direction (a failure reaches the caller or an operator) | Test | `tests/enforcement/test_no_silent_swallow.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (no agent attribution on any surface) | Test | `scripts/check-attribution.sh` (CI `check` job), `tests/enforcement/test_no_agent_attribution.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (merge commits only, never squash or rebase) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (never force-push) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (sessions never merge a PR) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (a release is cut only by a tag push from `main`) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (medium-or-larger work on a feature branch) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (tests, lint and typecheck through `./scripts/` only) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (pool can't take a run: stop and tell the person) | Critic | — | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (integration suite before any PR) | Critic | `scripts/check-all.sh`; suite completeness by `tests/enforcement/test_integration_suite_selection.py` | janitor | see the Direction entry |
+| norm lives in `operational-spec.md` § Direction (change record as `.prawduct/changes/` fragments) | Critic | — | advisory | see the Direction entry |
+| `threetears/` and `threetears/agent/` never get an `__init__.py`; only leaf packages do (§ Code Style, Imports) | Critic | — | janitor | "Implicit namespace packages need this to work when packages are installed independently." (`CLAUDE.md` § Namespace packages) |
 
 **A filled `Delegation` / `Delegate verification` / `Inner-loop verification` row states a norm, and each takes `Critic`** — a policy stated in prose is judgment-required by construction, so no linter or test can grade it; audit home `janitor`, and the why is the sentence the owner gave for it. One row covers the policy `Delegation` and `Delegate verification` state together; `Inner-loop verification` governs your own loop rather than a delegate's, so it gets its own row. The row is written when the policy is **ratified** — the owner confirms it, and `/prawduct:doctor` proposes a starting point for all three — never shipped here, because this table ships empty.
 

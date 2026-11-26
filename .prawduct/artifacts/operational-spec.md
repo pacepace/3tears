@@ -157,6 +157,65 @@ Testament pool (`.testament.toml`, `docs/testing.md`): manifest version 3, `fall
 
 `docker` and `secrets` tests never reach the pool. `./scripts/test-integration.sh --here -rs` runs them when a change touches scrape, search, the lame-duck handover or a credentialed package (`docs/testing.md`). A skip is not a pass: run with `-rs` and account for every skip.
 
+## Direction
+
+Ratified 2026-11-26 from declarations the owner already made; each Why cites where.
+
+- **Nothing this project produces credits an AI agent, on any surface:** commit messages and
+  metadata, PR titles and bodies, review and issue comments, code comments and docstrings,
+  CHANGELOG entries, docs, release notes and tag annotations. Naming Claude Code as a tool the
+  project uses is fine; the rule is about authorship credit. Already-landed attribution stays
+  landed: history is never rewritten to scrub it.
+  Why: coding agents ship with a default that adds attribution, so it appears unless removed
+  every time. `CLAUDE.md` § No agent attribution: "This is not a style preference. It is not a
+  default you may weigh against others."
+- **Every PR merges with a real merge commit (`gh pr merge --merge`), feature-to-develop and
+  develop-to-main alike; never `--squash`, never `--rebase`.** Cleaner history is made on the
+  branch before the merge, never by the merge step.
+  Why: squashing collapses commit history and can silently drop or corrupt file content relative
+  to what the branch contained, with no diff-review step catching it. `CLAUDE.md` § Git and PR
+  workflow.
+- **Never force-push: no `--force`, no `--force-with-lease`.** Restructure with a new branch and
+  a new PR.
+  Why: a pushed branch is shared (a PR branch here takes commits from more than one session), and
+  rewriting it discards what others built on it. `CLAUDE.md` § Git and PR workflow: "Never
+  force-push."; `scripts/check-attribution.sh`: "never force-push a shared branch".
+- **Sessions push work branches and never merge a PR; the maintainer merges.**
+  Why: owner 2026-11-22, "yes push, but we cannot merge PR's." (`.prawduct/owner-rulings.md`).
+- **A release is cut only by pushing an annotated tag from `main`; `gh workflow run release.yml`
+  is the republish command and never cuts a release.** A green release run is not a release;
+  `git ls-remote --tags origin` confirms one.
+  Why: the tag push is the only thing that creates the GitHub Release; the workflow run publishes
+  to PyPI with no tag and no release. `CLAUDE.md` § Releasing; `docs/releasing.md`.
+- **Medium-or-larger work goes on a feature branch, and merge order respects PR stacking.**
+  Why: `CLAUDE.md` § Git and PR workflow; `develop` and `main` are protected
+  (`project-preferences.md` § Workflow).
+- **Tests, lint and typecheck run through `./scripts/` only; never pytest, ruff or mypy
+  directly.**
+  Why: the scripts carry the testament pool handoff, the CI selection and the suites
+  `check-all.sh` adds; a direct run skips all three. `CLAUDE.md` § Scripts: "Always use the
+  scripts."
+- **When the testament pool can't take a run (`test.sh` exits 2, "testament gave no verdict"),
+  stop and tell the person.** Never rerun a unit-suite package or the whole unit suite with
+  `TESTAMENT=off`, never run `ci-unit-tests.sh` or raw `pytest` to get past it, and never edit
+  `.testament.toml`. Named test files under `TESTAMENT=off` are fine; the integration suite's
+  one-package-at-a-time fallback is the person's to run, and an agent asks first.
+  Why: the manifest is `fallback = "pool-only"`, so a pool that can't take the run fails it rather
+  than running it on this machine. `CLAUDE.md` § Scripts; owner 2026-11-22, "everything that can run on
+  testament should run on testament" (`.prawduct/owner-rulings.md`); `docs/testing.md` § When the
+  pool is down.
+- **Before any PR, the integration suite runs as `./scripts/test-integration.sh -rs`;** a change
+  touching scrape, search, the nats lame-duck handover or a credentialed package also runs
+  `./scripts/test-integration.sh --here -rs`. The report gives the pass count and each skip with
+  its reason.
+  Why: CI's `integration` job covers only core, nats, epoch, scheduled-jobs and agent/acl, and
+  the `docker` and `secrets` tests never reach the pool. `CLAUDE.md` § Scripts: "Neither is
+  optional."
+- **The change record is `.prawduct/changes/`, one fragment per scope; there is no
+  `.prawduct/change-log.md`.**
+  Why: owner 2026-11-22, "Please also make sure change logs are the modern fragment style."
+  (`.prawduct/owner-rulings.md`).
+
 ## Candidate norms (unratified)
 
 | Rule the code enforces | Enforcing file |

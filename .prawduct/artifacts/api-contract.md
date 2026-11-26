@@ -199,6 +199,31 @@ Authentication and authorization belong to `security-model.md`. At the API bound
 - **Events.** Audit is at-least-once with `id` dedup (`envelope.py`). Epoch broadcasts are best-effort with catch-up polling (`packages/epoch/README.md`). Failed subscriber callbacks go to `{ns}.deadletter.{path}` (`packages/nats/README.md`).
 - **Correlation.** `CallContext.correlation_id` crosses the registry hop, and log context rides every line and span (`context.py`; `docs/observability.md`).
 
+## Direction
+
+Ratified 2026-11-26 from declarations the owner already made; each Why cites where.
+
+- **Every `3tears*` package releases at one version, and every intra-family dependency carries
+  the bound `>=X.Y.0,<X.(Y+1).0` matching the declaring package's own version.** A bare sibling
+  name in a `dependencies` list is a bug, not a shorthand.
+  Why: unbounded siblings let pip resolve a mixed family: an install that builds clean and breaks
+  at runtime, or a resolution failure that names the wrong package (both incidents in
+  `docs/releasing.md`). `CLAUDE.md`: "This is a hard rule, not a style preference."; owner
+  2026-11-22, "Yes to the API versioning policy" (`.prawduct/owner-rulings.md`).
+- **An intra-family API addition ships in a MINOR bump.**
+  Why: the minor-line bound above is what tells a consumer which siblings carry a name; an
+  addition in a patch release breaks that promise. `CLAUDE.md` § The package family versions in
+  lockstep; owner 2026-11-22, "Yes to the API versioning policy" (`.prawduct/owner-rulings.md`).
+- **A leading underscore is a stability contract: nothing outside the defining class or module
+  binds to it, in `src/` or in `tests/`, and no public API exists only for a test.** A test
+  reaches an object through its constructor, its fixture or its behaviour. Inline
+  `# noqa: SLF001`, per-file SLF001 ignores for tests, and aliases like `_helper = helper` are
+  banned. Reaching into a third-party library's private members is confined to one module per
+  library, recorded in `tests/enforcement/_underscore_exemptions.txt` with a specific rationale.
+  Why: an underscore name is implementation detail; a binding from outside its owner turns every
+  internal change into a break. Owner ruling 2026-10-01 (`CLAUDE.md` § Leading underscores are a
+  stability contract).
+
 ## Candidate norms (unratified)
 
 - Intra-family dependencies carry a minor-line bound — `tests/enforcement/test_intra_family_version_bounds.py`

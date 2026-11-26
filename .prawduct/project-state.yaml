@@ -314,3 +314,4 @@ distribution: plugin
 # develop..main promotion delta. Written at onboard because origin/HEAD
 # named `develop`. Change it if this repo integrates somewhere else.
 base_branch: develop
+norm_registry_ratified: "2026-11-26 — 15 norms from declarations already in CLAUDE.md and .prawduct/owner-rulings.md; the artifacts' candidate lists await an owner ruling"
