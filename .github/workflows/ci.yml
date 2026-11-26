@@ -326,6 +326,14 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/typecheck.sh
 
+      # The hub and reports read only the CHANGELOG when they re-pin, so a change they must act on (a name a
+      # consumer outside this repo calls, new or changed; a new migration) is refused unless the Unreleased
+      # section names it or a commit in the PR says why. What it holds and cannot see: scripts/check_changelog.py.
+      # tests/enforcement/test_changelog_names_consumer_changes.py fails if this step goes away.
+      - name: Refuse a consumer-facing change the CHANGELOG does not name
+        if: github.event_name == 'pull_request' && steps.scope.outputs.needed == 'true'
+        run: uv run --frozen python scripts/check_changelog.py '${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'
+
       # The unit shards only ever see the OpenTelemetry uv.lock pins, which is always recent, so a
       # declared floor can fall behind the code with everything green. It did: observe imported a
       # name first shipped in opentelemetry-sdk 1.39 while declaring >=1.28, and a consumer pinned
