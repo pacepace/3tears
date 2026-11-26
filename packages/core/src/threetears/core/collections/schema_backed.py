@@ -38,7 +38,7 @@ import asyncio
 import hashlib
 import inspect
 import json
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -77,6 +77,7 @@ from threetears.core.backends.arrow_copy import (
     arrow_python_columns,
     arrow_python_rows,
     with_constant_columns,
+    with_time_filled,
     with_typed_constants,
 )
 from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
@@ -496,6 +497,10 @@ def rail_text(column_type: str) -> bool:
 
 #: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy.deserialize_row``)
 _DATED_PREFIX: Final = "date_"
+
+#: the stamp column a row is created at: an upsert's conflict clause never sets it (immutable), and a versioned table's
+#: append keeps the one a row carries, the key's first version's, which its writer carried forward (``save_rows``)
+_CREATED: Final = "date_created"
 
 
 def rail_arrow_types(columns: Sequence[Any]) -> dict[str, Any]:
@@ -3864,7 +3869,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         Each row is stamped ``date_created`` and ``date_updated`` (when the schema has them) with
         the write's time; an upsert of a row already held keeps its ``date_created``, an immutable
-        column the conflict clause does not set. No CAS fence applies: a bulk write replaces.
+        column the conflict clause does not set. A versioned table's write is an append, with no
+        conflict clause to keep it: a row carrying its ``date_created`` (its writer read the key's
+        version and carries the creation forward) keeps it, and a row with none is stamped with the
+        write's time. No CAS fence applies: a bulk write replaces.
 
         **With** ``copy=True`` **the write inserts and never updates**, for a load into a table just
         emptied (:meth:`truncate`): the rows go to the store's
@@ -3912,10 +3920,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # each row checked, stamped and keyed, and its enrollment made, on a worker thread taking turns with the loop,
         # from the count where a thread costs less than the work: on the loop, 33,786 rows of 179 columns held it 87-103 ms with the
         # collector held (the WD2 bench, 2026-11-16)
+        # a versioned table's append keeps the date_created a row carries: no conflict clause keeps it for it
+        kept = (_CREATED,) if self.schema.versioned and _CREATED in stamps else ()
         stamped, keys, enrollments = (
-            await asyncio.to_thread(self._stamped_rows, rows, stamps, asyncio.get_running_loop())
+            await asyncio.to_thread(self._stamped_rows, rows, stamps, asyncio.get_running_loop(), kept)
             if len(rows) >= self.L1_EVICT_OFF_LOOP_KEYS
-            else self._stamped_rows(rows, stamps)
+            else self._stamped_rows(rows, stamps, kept=kept)
         )
         # enrolled before the write, so a write whose outcome is unknown is settled with the rest; a versioned table's
         # append names its epoch, which the transaction checks against its run markers of the table (enroll_all)
@@ -3967,6 +3977,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         rows: Sequence[dict[str, Any]],
         stamps: Mapping[str, Any],
         loop: asyncio.AbstractEventLoop | None = None,
+        kept: Collection[str] = (),
     ) -> tuple[list[dict[str, Any]], list[Any], list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]]:
         """:meth:`save_rows`' rows checked and stamped, each one's key, and their enrollments; pure, for a thread.
 
@@ -3977,6 +3988,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
             or off any loop (a few rows: no turn taken)
         :ptype loop: asyncio.AbstractEventLoop | None
+        :param kept: the stamp columns a row's own value wins over, when it has one (a versioned table's
+            ``date_created``)
+        :ptype kept: Collection[str]
         :return: the stamped rows, their keys (a value, or a tuple for a key of many columns) and their enrollments
             (:meth:`CallerTransaction.enrollments`), in row order
         :rtype: tuple[list[dict[str, Any]], list[Any], list[tuple[BaseCollection, Any, dict[str, Any] | None]]]
@@ -3998,6 +4012,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             if vectors:
                 _refuse_misfit_vectors(self.schema, row)
             data = {**row, **stamps}
+            for name in kept:
+                if row.get(name) is not None:
+                    data[name] = row[name]
             stamped.append(data)
             key = tuple(data[name] for name in key_columns)
             keys.append(key if len(key) > 1 else key[0])
@@ -4074,8 +4091,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         arrow_store = store if isinstance(store, ArrowWritingStore) else None
         plan = None
         stamped = rows
+        # a versioned table's append keeps the date_created a row carries (save_rows): stamped where a row has none
+        created = (
+            stamps.pop(_CREATED)
+            if self.schema.versioned and _CREATED in stamps and _CREATED in rows.column_names
+            else None
+        )
         if arrow_store is not None:
             stamped = await asyncio.to_thread(with_constant_columns, rows, stamps)
+            if isinstance(created, datetime):
+                stamped = await asyncio.to_thread(with_time_filled, stamped, _CREATED, created)
             plan = arrow_store.arrow_write_plan(
                 self.table_name,
                 stamped.column_names,
