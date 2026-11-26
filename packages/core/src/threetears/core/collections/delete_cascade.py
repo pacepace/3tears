@@ -46,7 +46,7 @@ from threetears.core.collections.generation import (
     primary_key_of_table,
 )
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.keyed import AnyOf, Sort, counts_by, delete_keyed, keyset_rows, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, Sort, counts_by, delete_keyed, keyset_rows, update_keyed
 from threetears.interfaces.keyed.rows import KeyBatch, KeyColumns
 from threetears.observe import get_logger
 
@@ -290,12 +290,44 @@ async def refuse_restricted_delete(collection: Any, parent_keys: Sequence[Any], 
         # cache-bypass: whether a child still names the parent, read where the guard would have run (L3, or the
         # caller's transaction)
         pool = collection.l3_pool if conn is None else conn
-        held = await _live_children(pool, restrict.child_table, restrict.child_column, values)
+        held = await _live_children(
+            pool,
+            restrict.child_table,
+            restrict.child_column,
+            values,
+            itself=_self_reference(collection, restrict, parent_keys),
+        )
         if held:
             raise RestrictedDeleteError(collection.table_name, restrict.child_table, restrict.child_column, held)
 
 
-async def _live_children(pool: Any, table: str, column: str, values: Sequence[Any]) -> int:
+def _self_reference(collection: Any, restrict: DeleteRestrict, parent_keys: Sequence[Any]) -> Fragment | None:
+    """the parents themselves left out of a self-referencing restrict's count, or None for any other restrict.
+
+    A row may name ITSELF through the key (an agent's own namespace is owned by itself: ``owner_namespace_id`` is its
+    own ``namespace_id``). The database's ``NO ACTION`` check never held a row by its own reference, since the row goes
+    with its delete; counted here it would refuse every such delete for ever. Only a single-column key is left out
+    this way (every self-referencing restrict declared today).
+
+    :param collection: the parent collection
+    :ptype collection: BaseCollection
+    :param restrict: the declared restrict
+    :ptype restrict: DeleteRestrict
+    :param parent_keys: the keys about to be marked gone
+    :ptype parent_keys: Sequence[Any]
+    :return: the filter leaving the parents out, or None
+    :rtype: Fragment | None
+    """
+    columns = tuple(collection.primary_key_columns)
+    if restrict.child_table != collection.table_name or len(columns) != 1:
+        return None
+    keys = [collection.normalize_pk(key)[0] for key in parent_keys]
+    return Fragment(f'NOT ("{columns[0]}" = ANY($1))', (keys,))
+
+
+async def _live_children(
+    pool: Any, table: str, column: str, values: Sequence[Any], *, itself: Fragment | None = None
+) -> int:
     """how many live rows of ``table`` name one of ``values`` in ``column``: one keyed ``GROUP BY`` through the
     column's index (:func:`~threetears.core.keyed.counts_by`, a stamped child's gone rows left out by its live guard).
 
@@ -307,12 +339,16 @@ async def _live_children(pool: Any, table: str, column: str, values: Sequence[An
     :ptype column: str
     :param values: the parents' values
     :ptype values: Sequence[Any]
+    :param itself: a self-referencing restrict's filter leaving the parents themselves out (:func:`_self_reference`)
+    :ptype itself: Fragment | None
     :return: the rows
     :rtype: int
     """
     # the table and column are one declared DeleteRestrict's pair, every one of them literal, so the no-whole-reads
     # walk judges this read once per construction (its index on the child column), never as a run-time table
-    counted = await counts_by(pool, table, column=column, values=AnyOf(list(values), cast=None))
+    counted = await counts_by(
+        pool, table, column=column, values=AnyOf(list(values), cast=None), where=() if itself is None else (itself,)
+    )
     return sum(counted.values())
 
 
