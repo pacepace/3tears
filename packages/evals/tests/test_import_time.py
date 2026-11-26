@@ -6,14 +6,21 @@ quick path's ladder (``Eval``, ``Judge``, ``Model``, ...) is served by the root'
 module defining each, so none of it is imported until a name is asked for. The job lease's numbers, which a host's
 config reads to size its database pool, load nothing beyond ``schema``. A host that imports
 :class:`~threetears.evals.providers.ProviderError` only to catch it loads the failure's module and no engine: the
-completion client's root serves each name from its defining module on first read. Each probe runs in a fresh
+completion client's root serves each name from its defining module on first read; nor does it load ``httpx`` or
+pydantic. A host that imports :class:`~threetears.evals.providers.Model` loads the client and the recorded replays it
+takes, and no action or operation: the testing root, like the client's, serves each name from its defining module, so
+the jobs kit's catalogue loads only for a host that asks for the kit. Each probe runs in a fresh
 interpreter, since a module another test imported first would read as loaded.
 """
 
 from __future__ import annotations
 
+import pkgutil
 import subprocess
 import sys
+from collections.abc import Mapping
+from importlib import import_module
+from types import MappingProxyType, ModuleType
 
 import pytest
 
@@ -90,6 +97,29 @@ print(",".join(loaded))
 """
 
 
+#: The third-party modules catching a provider's failure must not load, each for its reason. ``failures.py`` reads a
+#: provider's error body as JSON and names no transport, so none is needed to catch what it defines.
+THIRD_PARTY_A_FAILURE_LOADS_NONE_OF: Mapping[str, str] = MappingProxyType(
+    {
+        "httpx": "the client's transport (~0.13s); a host catching the failure brings its own",
+        "pydantic": "the schema's models; the failure carries plain values, never a model",
+        "pydantic_core": "pydantic's compiled core, which comes with it",
+        "click": "httpx's command line, which importing httpx loads",
+        "rich": "httpx's command line output, which importing httpx loads",
+        "pygments": "httpx's command line highlighting, which importing httpx loads",
+        "zstandard": "httpx's zstd decoder, which importing httpx loads",
+    }
+)
+
+#: Reports which of :data:`THIRD_PARTY_A_FAILURE_LOADS_NONE_OF` are loaded after importing :class:`ProviderError`.
+_THIRD_PARTY_PROBE = """\
+import sys
+{statement}
+names = {names!r}
+print(",".join(sorted(m for m in sys.modules if m.split(".")[0] in names)))
+"""
+
+
 def test_importing_the_client_root_loads_nothing_below_it() -> None:
     loaded = _loaded_after(_PROBE.replace("import threetears.evals\n", "import threetears.evals.providers\n"))
 
@@ -107,6 +137,29 @@ def test_catching_a_provider_failure_loads_its_module_and_nothing_else(statement
     assert loaded == CATCHING_A_FAILURE
 
 
+@pytest.mark.parametrize(
+    "statement",
+    ["import threetears.evals.providers.failures", "from threetears.evals.providers import ProviderError"],
+)
+def test_catching_a_provider_failure_loads_no_heavy_third_party_module(statement: str) -> None:
+    """The engine's own modules are not the only cost: a transport or a model library at ``failures.py``'s top is."""
+    loaded = _loaded_after(
+        _THIRD_PARTY_PROBE.format(statement=statement, names=sorted(THIRD_PARTY_A_FAILURE_LOADS_NONE_OF))
+    )
+
+    assert loaded == []
+
+
+def test_a_planted_third_party_import_in_the_failure_module_is_seen() -> None:
+    """The check above turns red when ``failures.py`` imports the client's transport at its top."""
+    probe = _PLANTED.format(planted="httpx").replace(
+        'loaded = sorted(m for m in sys.modules if m.startswith("threetears.evals."))',
+        f'loaded = sorted(m for m in sys.modules if m.split(".")[0] in {sorted(THIRD_PARTY_A_FAILURE_LOADS_NONE_OF)!r})',
+    )
+
+    assert "httpx" in _loaded_after(probe)
+
+
 @pytest.mark.parametrize("planted", ["threetears.evals.schema", "threetears.evals.negotiation"])
 def test_a_planted_engine_import_in_the_failure_module_is_seen(planted: str) -> None:
     """The check above turns red when ``failures.py`` imports what it used to at its top."""
@@ -116,14 +169,63 @@ def test_a_planted_engine_import_in_the_failure_module_is_seen(planted: str) -> 
     assert loaded != CATCHING_A_FAILURE
 
 
-def test_the_client_root_serves_each_name_from_its_defining_module() -> None:
-    """The lazy root holds every name of ``__all__``, as an eager one did, and refuses any other by name."""
-    assert set(providers.__all__) <= set(dir(providers))
-    for name in providers.__all__:
-        assert getattr(providers, name) is not None
+#: Every public root that serves its names from their defining modules on first read, through a module
+#: ``__getattr__``, rather than importing them as it loads.
+LAZY_ROOTS = ("threetears.evals.providers", "threetears.evals.testing")
+
+
+def _defining_modules(root: ModuleType) -> list[ModuleType]:
+    """Every module below ``root``, imported: the modules the root's names are defined in."""
+    return [import_module(found.name) for found in pkgutil.iter_modules(root.__path__, f"{root.__name__}.")]
+
+
+@pytest.mark.parametrize("root_name", LAZY_ROOTS)
+def test_a_lazy_root_serves_each_name_from_its_defining_module(root_name: str) -> None:
+    """A lazy root holds every name of ``__all__``, as an eager one did, and refuses any other by name."""
+    root = import_module(root_name)
+    below = _defining_modules(root)
+    assert set(root.__all__) <= set(dir(root))
+    for name in root.__all__:
+        served = getattr(root, name)
+        home = getattr(served, "__module__", None)
+        holders = [module for module in below if name in vars(module)]
+        defined = [module for module in holders if module.__name__ == home] or holders
+        assert defined, f"no module below {root_name} defines {name}"
+        assert all(served is vars(module)[name] for module in defined), f"{root_name}.{name} is not its definition"
+    exported = {*root.__all__, *vars(root)}
+    assert [name for name in dir(root) if not name.startswith("_") and name not in exported] == []
+    for name in sorted({name for module in below for name in vars(module) if not name.startswith("_")} - exported):
+        with pytest.raises(AttributeError, match=f"has no attribute {name!r}"):
+            getattr(root, name)
+
+
+def test_the_client_root_refuses_a_name_its_failure_module_defines() -> None:
+    """Non-vacuity for the refusal walk above: a public name below the root, not exported, is refused by name."""
     assert providers.ProviderError.__module__ == "threetears.evals.providers.failures"
     with pytest.raises(AttributeError, match="has no attribute 'error_from_response'"):
         _ = providers.error_from_response  # type: ignore[attr-defined]
+
+
+#: The engine packages building a client must not load: the action catalogue and the operations behind it, which the
+#: testing root's jobs kit names, cost most of a second and a host making one model call uses neither.
+NOT_LOADED_BY_A_MODEL = ("threetears.evals.actions", "threetears.evals.ops")
+
+#: Every module below :data:`NOT_LOADED_BY_A_MODEL`.
+NOT_LOADED_BY_A_MODEL_BELOW = tuple(f"{package}." for package in NOT_LOADED_BY_A_MODEL)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["from threetears.evals.providers import Model\n", "from threetears.evals import Model\nModel.__name__\n"],
+)
+def test_importing_the_client_loads_no_action_or_operation(statement: str) -> None:
+    """A host that builds a model to call it pays for the client and what it records with, not for the job runner."""
+    loaded = _loaded_after(_PROBE.replace("import threetears.evals\n", statement))
+
+    assert "threetears.evals.providers.model" in loaded, "the probe imported no client, so this says nothing"
+    assert [
+        name for name in loaded if name in NOT_LOADED_BY_A_MODEL or name.startswith(NOT_LOADED_BY_A_MODEL_BELOW)
+    ] == []
 
 
 def test_asking_for_a_ladder_name_loads_the_quick_path() -> None:
