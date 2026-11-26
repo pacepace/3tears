@@ -14,7 +14,7 @@ migrations and has nothing to do. The hub's chain on ``work/hub-line`` already t
 
 | agent-acl | what it does | the hub's step |
 | --- | --- | --- |
-| v007 | ``namespaces`` keyed by ``namespace_id`` alone, ``row_scope`` moveable, ``threetears_tenant_moves`` | v187 (the moves table), v190 step 3 (``rekey_namespaces``) |
+| v007 | ``namespaces`` keyed by ``namespace_id`` alone, ``row_scope`` moveable, ``threetears_tenant_moves`` | v187 (the moves table), v190 (stamps ``NAMESPACES``, the table as v007 leaves it; step 3 ``rekey_namespaces``) |
 | v008 | group and role names hold live rows only | v191 (``LIVE_UNIQUE_INDEXES``) |
 | v009 | the grant indexes take the hub's shape and names | none: 3tears takes the hub's own indexes (its v163, v1001) |
 | v010 | live pages read live-only indexes | v195 step 3 (``THREETEARS_LIVE_INDEXES``) |
@@ -40,6 +40,23 @@ against ``WHOLE_RELOADS.gated``, imported rather than copied. Reports' replay do
 
 **Reports drops its ``CountedCopyBackend`` wrapper.** The shared copy counts what its hooks let go
 (``shared_copy_let_go_rows_total{table}``, ``SharedCopyBackend.let_go``).
+
+**The hub stamps the knowledge tables and makes the datasource names live-only with 3tears' own steps.**
+3tears-agent-knowledge runs no migration (the hub owns ``concepts`` and ``playbook_entries``), so the hub calls
+``knowledge_tables_carry_their_epoch`` to stamp them (hub v192). 3tears-datasources' ``datasource_names_hold_live_rows_only``
+makes its natural-name unique indexes hold live rows only (hub v191, beside the hub's own list). Both go through the
+shared ``make_unique_index_live_only``, which raises ``LiveUniqueRefusedError`` for an index that must stay whole: a
+foreign key's target, the primary key, an index that is not unique, or a table with no ``gone`` column. An
+``ON CONFLICT (cols)`` naming such an index's columns must say ``WHERE NOT gone`` too. A whole index satisfies that
+clause as well, so the code may ship before the migration.
+
+**mcp v004 builds ``mcp_tool_grants_live_by_id``**, the live-only index a page of tool grants reads. It is always
+attached and only adds. The hub runs 3tears-mcp's own migrations, so it has nothing to do (its v195 leaves this index
+out for that reason).
+
+**``stamp_existing_table`` stamps a table in a second schema of the same database** (``StampingTable(schema=)``; the
+hub's v187 uses it for its audit table in ``<platform>_audit``). A table with no schema is stamped as before, so a
+caller has nothing to do.
 
 **Also changed:** a versioned table's new version keeps the ``date_created`` its row carries; a keyed read with a live
 guard is hinted to the live-only index over a whole one of the same lead (hub v198 made such pairs); a stream key
