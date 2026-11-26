@@ -56,11 +56,15 @@ import pyarrow.compute as pc
 
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.broker_generation import cleanup_deleting
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import key_array_type
 from threetears.core.collections.schema_backed import TableSchema, rail_arrow_types
 from threetears.core.ddl.row_epoch import BUCKET_COLUMN, EPOCH_COLUMN, GONE_COLUMN, RESTORE_BUCKETS
-from threetears.core.keyed import Fragment, KeyBatch, Sort, delete_keyed
+from threetears.core.keyed import Fragment, KeyBatch, Sort
+from threetears.core.keyed._filters import binds_native_arrays
+from threetears.core.keyed.binding import binder_for
 from threetears.interfaces.keyed import page_statement
+from threetears.interfaces.keyed.writes import delete_keyed_statements
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
@@ -184,18 +188,23 @@ async def _delete_keys(pool: Any, schema: TableSchema, page: pa.Table, floor: in
     :rtype: int
     """
     key = schema.pk_columns
-    # marked cleanup's with its floor, as every cleanup delete is (and bounded by it in its own WHERE): the one delete
-    # of a stamped table keyed.delete_keyed takes (keyed.refuse_in_place)
-    with cleanup_deleting(floor):
-        written = await delete_keyed(
-            pool,
-            schema.name,
-            # the table's own key, written where the delete is so the key it binds is the one deleted by
-            keys=KeyBatch(key, keys=[page.column(name).combine_chunks() for name in key], casts=_casts(schema)),
-            where=(Fragment(f'"{GONE_COLUMN}"'), Fragment(f'"{EPOCH_COLUMN}" < $1', (floor,))),
-            batch=max(1, page.num_rows),
-        )
-    return written.count
+    columns = [page.column(name).combine_chunks() for name in key]
+    casts = _casts(schema)
+    statements = delete_keyed_statements(
+        schema.name,
+        # the table's own key, written where the delete is so the key it binds is the one deleted by
+        keys=KeyBatch(key, keys=columns, casts=casts),
+        where=(Fragment(f'"{GONE_COLUMN}"'), Fragment(f'"{EPOCH_COLUMN}" < $1', (floor,))),
+        batch=max(1, page.num_rows),
+        natively=binds_native_arrays(pool),
+        binder=binder_for(pool, KeyBatch(key, keys=columns, casts=casts)),
+    )
+    deleted = 0
+    for sql, params in statements:
+        # marked cleanup's with its floor, as every cleanup delete is (and bounded by it in its own WHERE)
+        with cleanup_deleting(floor):
+            deleted += parse_rowcount(await pool.execute(sql, *params))
+    return deleted
 
 
 async def _delete_gone(pool: Any, schema: TableSchema, page: pa.Table, floor: int) -> tuple[int, int]:
