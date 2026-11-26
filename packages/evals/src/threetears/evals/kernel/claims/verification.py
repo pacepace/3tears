@@ -19,20 +19,38 @@ across the documents, in their order, each document's best remaining tile per ro
 whole is recorded as truncated. Each step's selection is bounded on its own, so the documents a candidate fetched never
 take the case's share: truth reads the same case passages whatever an arm fetched, given the same claims.
 
-**A citation names a value and its subject, in one sentence or row.** A passage citation quotes at most
+**A citation names a value and its subject, in one sentence or row.** Every citation quotes at most
 :data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, found by
-:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` inside the passage the call was shown and cited (never
-elsewhere in its document), and names, inside that quote, the words that name the claim's subject and the words that
-state the value. Both are found inside the stored quote, and no sentence end (``.``, ``!`` or ``?`` before a space or
-the end) or line break may lie between them. That narrows the neighbouring-value error, a value taken from the sentence
-or row next to the one about this subject, to one sentence or row. Clauses joined by a semicolon count as one
+:func:`~threetears.evals.kernel.claims.verbatim.verbatim_span` inside the evidence the call was shown and cited: a
+passage (never elsewhere in its document), or a key fact's line as shown after its ref (``A key fact about <entity>:
+<fact>``, so the entity it names can stand as the subject of a fact that does not name it). Inside that quote it names
+the words that name the claim's subject and the words that state the value. Both are found inside the stored quote,
+and no sentence end (``.``, ``!`` or ``?`` before a space or the end) or line break may lie between them. That
+narrows the neighbouring-value error, a value taken from the sentence or row next to the one about this subject, to
+one sentence or row. A full stop after an abbreviation ends no sentence: after initials or a dotted acronym ("J. R.
+R. Tolkien", "the U.S. capital"), or after a capitalised token of at most three letters followed by a capitalised word
+or a digit ("Dr. John", "St. Louis", "Vol. 2", "No. 5"). Each break costs a repair round, so the rule takes the
+cheaper error: a real sentence that ends in one of those shapes before a capitalised word or a digit ("printed in
+May. The bound volume followed in 1932", "in the U.S. The ...") is read as one sentence, and its binding is left to
+the model, as within any sentence. The rule is English-shaped: case is read in any cased script, but the shapes are
+how English abbreviates, and a language that capitalises nouns ends more sentences on a short capitalised word. A
+year or any other number before the full stop is always a sentence end, so "The pamphlet appeared in 1931. The bound
+volume followed in 1932." still parts the bound volume from 1931. Clauses joined by a semicolon count as one
 sentence, so a subject and a value either side of one ("members may renew a loan once; doing so costs two dollars")
 pass with no repair; binding across the semicolon is not proved by code. That is the accepted trade-off: fewer forced
 repairs on rule-style sentences, for a weaker code check. Nor does the check prove the value belongs to that subject
 within any sentence: one stating two values for two subjects ("the pamphlet in 1931 and the bound volume in 1932", or
 "the pamphlet appeared in 1931; the bound volume followed in 1932") stays the model's to bind, and calibration
-measures what remains. What is stored is the passage's own slice, never the
-model's strings. A key fact is cited whole, with no quote.
+measures what remains. What is stored is the evidence's own slice, never the model's strings. A key fact is held to
+the rule as a passage is, since its support is what reads ``supported`` first: a reply citing it with no quote, with no
+value, or with a value the fact does not state (the claim's own, where the fact gives another) is asked again. What
+the check cannot catch is a value the fact does state, cited as support for a claim that states another: binding the
+stance to the value stays the model's, as for a passage, and the stored value span shows which words it read. One
+difference: a key fact is about the one entity its heading names (``A key fact about <entity>:``) by construction,
+where a passage may move from one subject to the next. So a subject inside that heading binds to a value in any
+sentence of the fact, and a fact of two sentences can be cited for its second, whose own words may never name the
+entity ("It followed in 1932."). Which of the fact's sentences states the claim's value is then the model's to read,
+as within one sentence. A subject named inside the fact itself takes the one-sentence rule, as in a passage.
 
 **Precedence among case documents.** A case document may override others (``EvidenceDocument.overrides``: house
 rules over a rulebook, an erratum over its text, a policy update over the old policy), following the chain. The truth
@@ -162,9 +180,9 @@ _CITING_RULES: Final = (
     "date, person or place in the same passage) bears on nothing here, even when its value matches the claim's.\n"
     "- An omission contradicts nothing: evidence that does not state the claim's fact, or states other facts about "
     "its subject, is not cited.\n"
-    "- For a passage (S), quote the one sentence or table row that states it, copied exactly as it is written, at most "
-    f"{CLAIM_QUOTE_CHARS} characters, never shortened with an ellipsis. Give subject: the words of that quote that "
-    "name the claim's subject; and value: the words of that quote that state the value at issue.\n"
+    "- Quote the one sentence or table row of the cited evidence that states it, copied exactly as it is written, "
+    f"at most {CLAIM_QUOTE_CHARS} characters, never shortened with an ellipsis. Give subject: the words of that quote "
+    "that name the claim's subject; and value: the words of that quote that state the value at issue.\n"
     "- Cite each piece of evidence at most once for a claim."
 )
 
@@ -174,7 +192,8 @@ _TRUTH_RULES: Final = (
     "it states this same fact about this same subject; contradicts when it states a different value for this same "
     "subject and relation. A contradiction's value is the value the evidence gives instead.\n"
     + _CITING_RULES
-    + "\n- For a key fact (K), give quote, subject and value as null: a key fact is cited whole.\n"
+    + "\n- A key fact (K) is quoted the same way, from its line as shown after its ref: the entity that line names "
+    "may stand as the subject.\n"
     "- suspect: true only when no evidence given bears on the claim and you doubt that it is true; false otherwise. "
     "A claim you cite evidence for is never suspect."
 )
@@ -217,7 +236,13 @@ _GROUND_REPAIR_SYSTEM: Final = (
 
 _USER_TEMPLATE: Final = "# Evidence\n\n{evidence}\n\n# Claims\n\n{claims}"
 
-_FACT_TEMPLATE: Final = "{ref}. A key fact about {entity}: {claim}"
+_FACT_TEMPLATE: Final = "{ref}. {fact}"
+
+#: What a key fact's line says the fact is about, before the fact itself.
+_FACT_HEADING: Final = "A key fact about {entity}:"
+
+#: A key fact as a call is shown it after its ref: the text a key citation quotes.
+_FACT_LINE: Final = _FACT_HEADING + " {claim}"
 
 _PASSAGE_TEMPLATE: Final = "{ref}. From {title}, characters {start} to {end}:\n{text}"
 
@@ -252,20 +277,47 @@ _REPAIR_TEMPLATE: Final = (
 )
 
 #: What breaks one sentence or table row from the next, between a citation's subject and its value: a sentence end
-#: (``.``, ``!`` or ``?`` before a space or the end) or a line break. A semicolon joins clauses of one sentence, and
-#: is no break.
-_SENTENCE_BREAK: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
+#: (``.``, ``!`` or ``?`` before a space or the end) or a line break, unless :func:`_ends_no_sentence` says a full
+#: stop marks an abbreviation. A semicolon joins clauses of one sentence, and is no break.
+_SENTENCE_END: Final = re.compile(r"[.!?](?=\s|$)|[\n\r]")
+
+#: The token a full stop follows: the letters, and full stops between them, up to it.
+_TOKEN_BEFORE: Final = re.compile(r"[^\W\d_](?:[^\W\d_]|\.)*\Z")
+
+#: Initials and dotted acronyms, the full stop after the last letter aside: ``J``, ``U.S``, ``e.g``.
+_INITIALS: Final = re.compile(r"(?:[^\W\d_]\.)*[^\W\d_]")
+
+#: The first character of the word after a full stop and its spaces.
+_NEXT_WORD: Final = re.compile(r"\s+(\S)")
+
+#: The most letters a capitalised abbreviation (``No``, ``St``, ``Vol``) holds.
+_ABBREVIATION_LETTERS: Final = 3
+
+#: The sentence-break rule, by revision and in words: part of the identity, raised with any change to
+#: :func:`_ends_no_sentence` or the patterns above.
+_SENTENCE_RULE: Final = (
+    "sentences-v2: a break is a '.', '!' or '?' before a space or the end, or a line break; a '.' is no break after "
+    "initials or a dotted acronym (single letters, each but the last followed by '.'), whatever follows, nor after a "
+    "token of 2 to 3 letters, the first upper case and the rest lower case, followed by spaces and an upper-case "
+    "letter or a digit"
+)
+
+#: Where a key fact's line takes no sentence-break check, in words: part of the identity.
+_HEADING_RULE: Final = (
+    "headings-v1: a subject inside a key fact's 'A key fact about <entity>:' heading binds to a value anywhere in "
+    "that fact's line, across its sentences; a passage has no heading"
+)
 
 #: Every failure a repair or a full re-ask names to the model, as the templates it is written from: what the judge is
-#: shown, so part of the identity.
+#: shown, so part of the identity. ``{kind}`` names what a quote was cut from: a passage, or a key fact.
 _FAULTS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "twice": "it cites {refs} more than once; cite each piece of evidence once",
         "suspect": "it is marked suspect and cites evidence; suspect means no evidence given bears on the claim",
         "unknown_ref": "it cites {ref}, which is no evidence shown here; cite the refs listed under Evidence",
-        "no_quote": "its citation of {ref} quotes nothing; a passage is cited with the sentence or row that states it",
+        "no_quote": "its citation of {ref} quotes nothing; a {kind} is cited with the sentence or row that states it",
         "not_shown": (
-            "its quote of {ref} is not in passage {ref} as shown; a quote is one unbroken stretch of the passage it "
+            "its quote of {ref} is not in {kind} {ref} as shown; a quote is one unbroken stretch of the {kind} it "
             "cites, copied as it is written"
         ),
         "too_long": "its quote of {ref} runs {length} characters; a quote is one sentence or row of at most {cap}",
@@ -316,6 +368,9 @@ _STEPS: Final[tuple[_Step, ...]] = ("truth", "ground")
 type WebOutcome = Literal["true", "false", "inconclusive", "skipped_cap", "lost"]
 
 type Verdict = Literal["supported", "contradicted", "unverifiable", "true_ungrounded"]
+
+#: What a checked quote was cut from, as a failure names it to the model.
+type QuotedKind = Literal["passage", "key fact"]
 
 
 class _Cited(EvalBaseModel):
@@ -659,9 +714,22 @@ class _Shown:
     def passage(self, ref: str) -> _Passage | None:
         return next((passage for shown, passage in self.passages if shown == ref), None)
 
+    def quotable(self, ref: str) -> tuple[str, QuotedKind, int]:
+        """The text a citation of ``ref`` quotes, what it is, and how many of its first characters say what all of it
+        is about: a key fact's line as shown after its ref, with its heading's length, or a passage's text, with
+        none."""
+        fact = next(((entity, fact) for shown, entity, fact in self.facts if shown == ref), None)
+        if fact is not None:
+            entity, stated = fact
+            return _fact_line(entity, stated), "key fact", len(_FACT_HEADING.format(entity=entity))
+        passage = self.passage(ref)
+        if passage is None:
+            raise KeyError(ref)
+        return passage.document.text[passage.start : passage.end], "passage", 0
+
     def numbered(self) -> str:
         """The facts and passages as a verify prompt numbers them, one block each: evidence, not a tool's result."""
-        lines = [_FACT_TEMPLATE.format(ref=ref, entity=entity, claim=fact.claim) for ref, entity, fact in self.facts]
+        lines = [_FACT_TEMPLATE.format(ref=ref, fact=_fact_line(entity, fact)) for ref, entity, fact in self.facts]
         lines += [
             _PASSAGE_TEMPLATE.format(
                 ref=ref,
@@ -929,6 +997,7 @@ class ClaimVerifier:
                 "templates": [
                     _USER_TEMPLATE,
                     _FACT_TEMPLATE,
+                    _FACT_LINE,
                     _PASSAGE_TEMPLATE,
                     _NO_EVIDENCE,
                     _PRECEDENCE_HEADING,
@@ -947,7 +1016,7 @@ class ClaimVerifier:
                 ],
                 "pages": self.pages.model_dump(mode="json"),
                 "faults": dict(_FAULTS),
-                "sentence_break": _SENTENCE_BREAK.pattern,
+                "sentence_break": _sentence_break_definition(),
                 "selection": [_SELECTION_RULE, _ANCHOR_MIN_CHARS, _WORD.pattern],
                 "batches": _BATCH_RULE,
                 "repairs": self.repairs.model_dump(mode="json"),
@@ -986,7 +1055,7 @@ class ClaimVerifier:
         steps: dict[_Step, str] = {
             "truth": self._evidence_bound(
                 [
-                    _FACT_TEMPLATE.format(ref=f"K{at}", entity=entity, claim=fact.claim)
+                    _FACT_TEMPLATE.format(ref=f"K{at}", fact=_fact_line(entity, fact))
                     for at, (entity, fact) in enumerate(facts, start=1)
                 ],
                 [document for document in given if document.provenance == "case"],
@@ -1311,12 +1380,9 @@ class ClaimVerifier:
             if ref not in shown.refs:
                 faults.append(_FAULTS["unknown_ref"].format(ref=ref))
                 continue
-            passage = shown.passage(ref)
-            if passage is None:
-                # A key fact is cited whole: what a reply quotes of it is not read.
-                citations.append(ClaimCitation(ref=ref, stance=cited.stance))
-                continue
-            citation, fault = _passage_citation(ref, cited, passage)
+            # A key fact's citation is held to the quote a passage's is: its support reads supported before anything
+            # else, so it must name, inside the fact, the words that state the value it is cited for.
+            citation, fault = _quoted_citation(ref, cited, *shown.quotable(ref))
             if fault is not None:
                 faults.append(fault)
             elif citation is not None:
@@ -1460,18 +1526,20 @@ def _read_repair(step: _Step, content: str) -> _Answer:
     return _Answer(citations=[cited.as_cited() for cited in ground.citations], suspect=False)
 
 
-def _passage_citation(ref: str, cited: _Cited, passage: _Passage) -> tuple[ClaimCitation | None, str | None]:
-    """A passage citation checked: its quote a stretch of the passage shown, its subject and value inside that quote
-    and in one sentence or row of it.
+def _fact_line(entity: str, fact: ReferenceFact) -> str:
+    return _FACT_LINE.format(entity=entity, claim=fact.claim)
+
+
+def _quoted_citation(
+    ref: str, cited: _Cited, shown: str, kind: QuotedKind, about: int
+) -> tuple[ClaimCitation | None, str | None]:
+    """A citation checked: its quote a stretch of the text shown under ``ref`` (a passage's, or a key fact's line),
+    its subject and value inside that quote and in one sentence or row of it, or its subject in a key fact's heading.
 
     :return: The stored citation, or the failure named.
     """
     checked, fault = check_quote(
-        ref,
-        quote=cited.quote,
-        subject=cited.subject,
-        value=cited.value,
-        shown=passage.document.text[passage.start : passage.end],
+        ref, quote=cited.quote, subject=cited.subject, value=cited.value, shown=shown, kind=kind, about=about
     )
     if checked is None:
         return None, fault
@@ -1498,25 +1566,37 @@ class CheckedQuote:
 
 
 def check_quote(
-    ref: str, *, quote: str | None, subject: str | None, value: str | None, shown: str
+    ref: str,
+    *,
+    quote: str | None,
+    subject: str | None,
+    value: str | None,
+    shown: str,
+    kind: QuotedKind = "passage",
+    about: int = 0,
 ) -> tuple[CheckedQuote | None, str | None]:
     """Check one quote of a text a call was shown: one unbroken stretch of it, at most
     :data:`~threetears.evals.schema.models.CLAIM_QUOTE_CHARS` characters, with its subject and value inside it and no
-    sentence or row break between them. The rule every quote a claim is decided by follows, a passage's or a web
-    window's.
+    sentence or row break between them. The rule every quote a claim is decided by follows: a passage's, a key fact's
+    (its line as the call was shown it after its ref, ``A key fact about <entity>: <fact>``) or a web window's.
 
-    :param ref: How the call cited the text (``S1``, ``W2``), for the failure named.
+    :param ref: How the call cited the text (``S1``, ``K1``, ``W2``), for the failure named.
     :param quote: The quote, as the model wrote it.
     :param subject: The words of it the model says name the claim's subject.
     :param value: The words of it the model says state the value.
-    :param shown: The text the call was shown under ``ref``, and nothing more of its document.
+    :param shown: The text the call was shown under ``ref``, and nothing more: a passage or window's text, never more
+        of its document, or a key fact's line.
+    :param kind: What ``shown`` is, as a failure names it: ``passage`` (a web window is named one too) or
+        ``key fact``.
+    :param about: How many of ``shown``'s first characters say what all of it is about: a key fact's heading
+        (``A key fact about <entity>:``), or 0. A subject inside them binds to a value anywhere in ``shown``.
     :return: The checked quote, or the failure named, as a repair tells it.
     """
     if quote is None or not quote.strip():
-        return None, _FAULTS["no_quote"].format(ref=ref)
+        return None, _FAULTS["no_quote"].format(ref=ref, kind=kind)
     span = verbatim_span(quote, shown)
     if span is None:
-        return None, _FAULTS["not_shown"].format(ref=ref)
+        return None, _FAULTS["not_shown"].format(ref=ref, kind=kind)
     held = shown[span[0] : span[1]]
     if len(held) > CLAIM_QUOTE_CHARS:
         return None, _FAULTS["too_long"].format(ref=ref, length=len(held), cap=CLAIM_QUOTE_CHARS)
@@ -1528,11 +1608,60 @@ def check_quote(
         if found is None:
             return None, _FAULTS["span_outside"].format(ref=ref, what=what)
         spans[what] = TextSpan(start=found[0], end=found[1])
+    if span[0] + spans["subject"].end <= about:
+        # A key fact is about its one entity by construction, so the entity its heading names is the subject of
+        # every sentence of the fact.
+        return CheckedQuote(quote=held, subject=spans["subject"], value=spans["value"]), None
     first, second = sorted((spans["subject"], spans["value"]), key=lambda found: found.start)
     # The quote is the shown text's own, not a model's: where its sentences break is structure, read by position.
-    if second.start > first.end and _SENTENCE_BREAK.search(held[first.end : second.start]):
+    if _breaks_between(held, first.end, second.start):
         return None, _FAULTS["apart"].format(ref=ref)
     return CheckedQuote(quote=held, subject=spans["subject"], value=spans["value"]), None
+
+
+def _breaks_between(text: str, start: int, end: int) -> bool:
+    """Whether a sentence or row break starts in ``text[start:end]``. Each is read in the whole of ``text``, since
+    what follows a full stop, and whether it marks an abbreviation, may stand in the subject or value span on either
+    side ("Vol. 2", with the value ``2``)."""
+    for found in _SENTENCE_END.finditer(text, start):
+        if found.start() >= end:
+            return False
+        if found.group() != "." or not _ends_no_sentence(text, found.start()):
+            return True
+    return False
+
+
+def _ends_no_sentence(text: str, at: int) -> bool:
+    """Whether the full stop at ``text[at]`` marks an abbreviation rather than a sentence end: it follows initials or
+    a dotted acronym ("J. R. R. Tolkien", "the U.S. capital"), or a capitalised token of at most
+    :data:`_ABBREVIATION_LETTERS` letters before a capitalised word or a digit ("Dr. John", "St. Louis", "Vol. 2",
+    "No. 5"). Case is read by :meth:`str.isupper`, so any cased script takes the rule; the shapes themselves are
+    those of English and the languages that abbreviate as it does. It accepts a real sentence end of the same shapes
+    too: one that ends on a single letter, an acronym or a short capitalised word ("in May. The pamphlet ...")."""
+    token = _TOKEN_BEFORE.search(text, 0, at)
+    if token is None:
+        return False
+    word = token.group()
+    if _INITIALS.fullmatch(word):
+        return True
+    if not (word.isalpha() and len(word) <= _ABBREVIATION_LETTERS and word[0].isupper() and word[1:].islower()):
+        return False
+    after = _NEXT_WORD.match(text, at + 1)
+    return after is not None and (after.group(1).isupper() or after.group(1).isdigit())
+
+
+def _sentence_break_definition() -> list[Any]:
+    """The sentence-break rule as an identity reads it: its revision and a key fact heading's, in words, and the
+    patterns and length it uses."""
+    return [
+        _SENTENCE_RULE,
+        _HEADING_RULE,
+        _SENTENCE_END.pattern,
+        _TOKEN_BEFORE.pattern,
+        _INITIALS.pattern,
+        _NEXT_WORD.pattern,
+        _ABBREVIATION_LETTERS,
+    ]
 
 
 def quote_check_definition() -> dict[str, Any]:
@@ -1540,7 +1669,7 @@ def quote_check_definition() -> dict[str, Any]:
     sentence-break rule, the quote cap and the verbatim fold's identity."""
     return {
         "faults": dict(_FAULTS),
-        "sentence_break": _SENTENCE_BREAK.pattern,
+        "sentence_break": _sentence_break_definition(),
         "quote_chars": CLAIM_QUOTE_CHARS,
         "fold": VERBATIM_FOLD.identity,
     }

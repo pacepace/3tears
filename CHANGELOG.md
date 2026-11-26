@@ -25,6 +25,55 @@ definition. The stored grade is unchanged; `restates` is still the earlier claim
 
 **For hosts:** nothing to change in code. Claims readings from before and after a pin that includes this are two
 definitions, so compare across it only on fresh grades; a repeat of a grade made before it is refused by name.
+### evals: an abbreviation between a citation's subject and its value ends no sentence
+
+**Fixed (#1300):** the claim verifier read every full stop before a space as a sentence end, so a passage or key-fact
+quote with an abbreviation between the claim's subject and its value ("U.S.", "Vol. 2", "St. Louis", "No. 5", "Dr.
+John", "J. R. R. Tolkien") was asked again as subject and value in different sentences, costing a repair round and,
+repeated, the criterion. A full stop now ends no sentence after initials or a dotted acronym, or after a capitalised
+token of at most three letters followed by a capitalised word or a digit. A number before a full stop always ends a
+sentence, so "The pamphlet appeared in 1931. The bound volume followed in 1932." still parts the bound volume from
+1931. The rule is English-shaped: case is read in any cased script, but the shapes are how English abbreviates. Its
+known false accept: a real sentence ending on a single letter, a dotted acronym or a short capitalised word before a
+capitalised word or a digit ("printed in May. The bound volume followed in 1932") reads as one sentence, its binding
+left to the model as within any sentence. Lower-case and longer abbreviations ("vol. 2", "ca. 1500", "Prof. Jane",
+"Sept. 1931"), and a short capitalised one before a lower-case word ("Acme Inc. was"), still end a sentence. `!`, `?`,
+line breaks and the semicolon rule are unchanged.
+
+**Fixed:** a key fact of two sentences could not be cited for its second, whose words need not name the entity ("It
+followed in 1932."): the subject, named only in the line's `A key fact about <entity>:` heading, stood in another
+sentence than the value, so the citation was asked again and, repeated, lost the criterion. A key fact is about its one
+entity by construction, so a subject inside that heading now binds to a value anywhere in the fact's line. Which of
+the fact's sentences states the claim's value is the model's to read, as within one sentence. A subject named inside
+the fact, and every passage, keep the one-sentence rule.
+
+**Changed:** both rules enter the claim verifier's identity and the web step's, so every claims criterion's fingerprint
+moves, and grades made before and after this never pool.
+
+**For hosts:** nothing to change; a host re-judging stored cells with a claims criterion gets a new fingerprint.
+
+### evals: a key fact supports a claim only by naming the value it states
+
+**Fixed (#1322):** the truth step read a planted false claim (an artist's wrong home town) `supported` against the
+case key. A key fact was cited whole, with no quote, so no check bound its support to a value: a reply citing the key
+fact about the artist as support read `supported` whatever town the fact named. A key fact's citation now follows the
+rule a passage's does: it quotes the fact's line as the call is shown it (`A key fact about <entity>: <fact>`, so the
+entity named there can stand as the subject), and names inside that quote the words for the claim's subject and the
+words for the value, in one sentence or row. A citation that quotes nothing, names no value, or names a value the fact
+does not state is asked again within the repair budget, its failure naming a key fact as one (`not in key fact K1
+as shown`), and still failing fails the criterion (`repair_budget_spent`). A key fact stays outside precedence: no document overrules it. What the check leaves to the
+model is a value the fact does state, cited as support for a claim that states another; the stored value span shows
+which words it read. The claim corpus gains an invented, labelled `contradicted` row of that shape
+(`claimset/synthetic.jsonl`, with its key fact in `keys/pointers_synthetic.jsonl`), outside the broadcast counts.
+
+**Changed:** the claim verifier's identity and every claims criterion's fingerprint move (new prompts and checks), so
+grades made before and after this never pool. `RepairBudget`'s docs now count the web step's own repairs: a cell asks
+again at most four times `max_items_per_cell`. A key citation in a new grade stores a `quote`, `subject_span` and
+`value_span`; one in an older grade stores none and reads as before.
+
+**For hosts:** a grade this build writes carries quotes on key citations, in fields an earlier build already reads
+(they were always optional), so rollout and rollback run in either order. A host re-judging stored cells with a claims
+criterion gets a new fingerprint, as for any prompt change.
 
 ### evals: a run a host keeps open is held under a lease, and the names that do it are stable
 

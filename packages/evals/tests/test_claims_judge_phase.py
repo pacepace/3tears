@@ -171,7 +171,7 @@ def _listing(*claims: dict[str, Any]) -> str:
 
 
 def _truth_supported() -> str:
-    cited = {"ref": "K1", "stance": "supports", "quote": None, "subject": None, "value": None}
+    cited = {"ref": "K1", "stance": "supports", "quote": _SENTENCE, "subject": "The Lantern Almanac", "value": "1921"}
     return json.dumps({"claims": [{"claim": 0, "citations": [cited], "suspect": False}]})
 
 
