@@ -33,11 +33,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.data.migrations.backfill import BACKFILL_PAGE
 from threetears.core.data.store import DataStore
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, rising_stamp
 from threetears.core.ddl.session import SessionReader
 from threetears.core.keyed import Fragment, KeyBatch, update_keyed
 from threetears.core.keyset import keyset_pages
+from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
 __all__ = ["ADD_OWNER_ID_SQL", "backfill_owner_namespace_ids", "owner_namespace_by_id"]
@@ -85,7 +88,11 @@ async def backfill_owner_namespace_ids(conn: Any, *, page: int = BACKFILL_PAGE) 
     ``UPDATE`` per owner it names, the id read by name in the statement (:data:`_OWNER_ID_OF_NAME`). A row already
     holding one is left, so a re-run writes nothing.
 
-    No cache is touched: a migration runs in the outage window, before any process reads the table.
+    Each statement stamps the rows it writes with a fresh epoch (``GREATEST(epoch + 1, <stamp>)``, the stamp drawn as
+    every stamped write draws it: ``CallerTransaction.stamp_for``), as a normal write of ``namespaces`` does. WHY: a
+    migration's writes are heard from the rows stamped inside its run's window (``MigrationRunner(announcer=...)``,
+    ``lost_writes.announce_window``), and a restore reads a stamped table's rows by epoch; a row filled and left at its
+    older stamp reaches neither (``tests/integration/test_owner_id_backfill_heard.py``).
 
     :param conn: an asyncpg-shaped reader (``fetch`` / ``execute``) bound where ``namespaces`` resolves
     :ptype conn: Any
@@ -105,7 +112,11 @@ async def backfill_owner_namespace_ids(conn: Any, *, page: int = BACKFILL_PAGE) 
     ):
         for owner, keys in _owners_of_page(rows).items():
             batch = KeyBatch(("namespace_id",), [keys], casts=("uuid",))
-            values = {"owner_namespace_id": Fragment(_OWNER_ID_OF_NAME, (owner,))}
+            stamp = CallerTransaction.stamp_for(conn, "namespaces")
+            values = {
+                "owner_namespace_id": Fragment(_OWNER_ID_OF_NAME, (owner,)),
+                EPOCH_COLUMN: rising_stamp(stamp, quote_identifier(EPOCH_COLUMN)),
+            }
             written += (await update_keyed(conn, "namespaces", values=values, keys=batch)).count
     return written
 
