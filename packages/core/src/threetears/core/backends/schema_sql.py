@@ -24,7 +24,7 @@ import json
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import Annotated, Any, Final, TYPE_CHECKING
 from uuid import UUID
 
 from threetears.interfaces.keyed.filters import quote_identifier
@@ -100,6 +100,7 @@ __all__ = [
     "normalize_write_value",
     "pull_value",
     "render_param",
+    "sql_cast",
     "transport_param",
     "upsert_set_columns",
     "transport_params_bytes",
@@ -119,6 +120,29 @@ _BOOL_TYPE = "bool"
 _NUMERIC_TYPE = "numeric"
 _VECTOR_TYPE = "vector"
 _TSVECTOR_TYPE = "tsvector"
+
+#: the SQL type a column's value is cast to where a statement binds it in an array, or twice in one statement, by its
+#: type tag; ``text`` for every tag not here. Here, not in ``schema_backed`` (which re-exports it), so the statement
+#: builders below reach it without an import cycle
+_SQL_CASTS: Final[Mapping[str, str]] = {
+    _UUID_TYPE: "uuid",
+    _INT_TYPE: "bigint",
+    _BIGINT_TYPE: "bigint",
+    _BOOL_TYPE: "boolean",
+    _NUMERIC_TYPE: "numeric",
+    _DATETIMETZ_TYPE: "timestamptz",
+}
+
+
+def sql_cast(column_type: str) -> str:
+    """the SQL type a value of a column of ``column_type`` is cast to where a statement binds it in an array.
+
+    :param column_type: the column's type tag
+    :ptype column_type: str
+    :return: the SQL type (``uuid``, ``bigint``, ``timestamptz``; ``text`` for a string and every other tag)
+    :rtype: str
+    """
+    return _SQL_CASTS.get(column_type, "text")
 
 
 # ── codec (verbatim from schema_backed) ──────────────────────────────────────────
@@ -534,6 +558,25 @@ def render_param(column: Column, idx: int) -> str:
     return result
 
 
+def _typed_param(column: Column, rendered: str) -> str:
+    """``rendered`` (:func:`render_param`) with an explicit type, so every place a statement binds it deduces the same
+    one: its enum's type for an enum, :func:`sql_cast` for every other bare ``$N``; a placeholder already cast
+    (``::jsonb``, ``::vector``) as it is.
+
+    :param column: column descriptor
+    :ptype column: Column
+    :param rendered: the placeholder :func:`render_param` rendered for it
+    :ptype rendered: str
+    :return: the typed placeholder
+    :rtype: str
+    """
+    if "::" in rendered:
+        return rendered
+    if column.column_type == _ENUM_TYPE and column.enum_name is not None:
+        return f"{rendered}::{column.enum_name}"
+    return f"{rendered}::{sql_cast(column.column_type)}"
+
+
 def copy_writes(column: Column) -> bool:
     """whether a ``COPY`` can write ``column`` from the value an insert would bind for it.
 
@@ -925,8 +968,16 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
     next_idx = len(pk_cols) + 1
     rising = _rises_epoch(schema)
     values: dict[str, str] = {}
+    moveable = _moveable(schema)
+    moves = bool(moveable) and EPOCH_COLUMN in {col.name for col in mutable}
     for col in mutable:
         value = render_param(col, next_idx)
+        if moves and col.name in moveable:
+            # the move's terms bind the value a second time, in an IS DISTINCT FROM (moved_assignments). Bare, the
+            # SET deduces the parameter as the L3 column's own type and the comparison as that type's operator's, which
+            # differ for a varchar (text): Postgres refuses the statement ("inconsistent types deduced for parameter").
+            # One explicit type for both, as stamped_values' keyed update binds it
+            value = _typed_param(col, value)
         values[col.name] = value
         # a stamped table's epoch never goes back (row_epoch): GREATEST(epoch + 1, the new stamp)
         set_parts.append(
@@ -935,8 +986,7 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
             else f"{col.name} = {value}"
         )
         next_idx += 1
-    moveable = _moveable(schema)
-    if moveable and EPOCH_COLUMN in values:
+    if moves:
         # a moveable column the row sets records the tenant the row leaves, in this same statement (tenant_moves): the
         # right-hand sides read the row as it was. Its move's epoch is the row's new one, as the epoch's term sets it
         new_epoch = f"GREATEST({EPOCH_COLUMN} + 1, {values[EPOCH_COLUMN]})"

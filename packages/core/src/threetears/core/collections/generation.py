@@ -72,7 +72,9 @@ __all__ = [
     "note_generation_class",
     "primary_key_of_table",
     "note_l2_first_class",
+    "note_schema_class",
     "note_tenancy_class",
+    "schema_of_table",
     "has_write_generation",
     "written_l2_first",
     "source_reads",
@@ -937,6 +939,46 @@ def written_l2_first(table_name: str) -> bool:
         return True
     report_undeclared_table(table_name, "l2_first")
     return False
+
+
+#: every collection class defined in this process that declares its table's schema on the class (a ``schema``
+#: attribute naming its table), joined by :func:`note_schema_class` and read by :func:`schema_of_table`.
+_SCHEMA_CLASSES: FrozenWeakSet[type] = FrozenWeakSet()
+
+
+def note_schema_class(cls: type) -> None:
+    """record a collection class that declares its table's schema on the class.
+
+    :param cls: the collection class
+    :ptype cls: type
+    :return: nothing
+    :rtype: None
+    """
+    global _SCHEMA_CLASSES
+    with _CLASSES_LOCK:
+        _SCHEMA_CLASSES = _SCHEMA_CLASSES.with_item(cls)
+
+
+def schema_of_table(table_name: str) -> Any | None:
+    """the schema (``TableSchema``) the collection classes defined here declare for ``table_name``.
+
+    For a writer that rewrites rows of a table it holds no collection for (a user merge's repoint,
+    ``merge.repoint_user_rows``) and must still write them as the table's own writes do: a stamped table's epoch
+    risen (``stamped_values``), so a restore and every follower hear the rows.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: the first declaration found; None when no class defined here names the table with one. A table no module
+        listed under the ``threetears.collections`` entry points declares gets None too, and is reported
+        (:func:`~threetears.core.collections.undeclared_tables.report_undeclared_table`). NEXT RELEASE: refused.
+    :rtype: TableSchema | None
+    """
+    for cls in list(_SCHEMA_CLASSES):
+        schema = getattr(cls, "schema", None)
+        if getattr(schema, "name", None) == table_name:
+            return schema
+    report_undeclared_table(table_name, "schema")
+    return None
 
 
 #: every collection class defined in this process that declares a tenancy, joined by

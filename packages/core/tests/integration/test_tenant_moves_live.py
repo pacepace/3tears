@@ -16,6 +16,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -25,7 +26,13 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
-from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, stamped_values
+from threetears.core.collections.schema_backed import (
+    DATETIMETZ_TYPE,
+    STRING_TYPE,
+    Column,
+    TableSchema,
+    stamped_values,
+)
 from threetears.core.collections.table_restore import TableChanges, restored_tables
 from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA, clear_moves
 from threetears.core.ddl.epoch_catalog import refuse_moveable_without_moves
@@ -49,6 +56,27 @@ _WIDGETS = TableSchema(
     row_epoch=ROW_STAMPED,
     moveable=("customer_id", "office"),
     invalidation_columns=("office",),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+_FENCED_TABLE = "tm_scoped"
+
+#: a stamped table written through the fenced ``UPDATE`` (a ``cas_column``), its moveable scope a ``varchar`` in L3 as
+#: ``namespaces.row_scope`` is: the one shape where the update binds the scope's value both as the column's new value
+#: and in the move's comparison
+_FENCED = TableSchema(
+    name=_FENCED_TABLE,
+    primary_key="id",
+    columns=[
+        Column("id", STRING_TYPE),
+        Column("row_scope", STRING_TYPE),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+    tenancy=tenant_column("row_scope"),
+    row_epoch=ROW_STAMPED,
+    moveable=("row_scope",),
+    invalidation_columns=("row_scope",),
+    cas_column="date_updated",
     l1_eviction=TEST_L1_TABLE,
 )
 
@@ -76,11 +104,14 @@ async def held(db_container: str) -> AsyncIterator[_Held]:
         async with pool.acquire() as conn:
             yugabyte = await on_yugabyte(conn)
         # the moves table first: a keeper starting beside this test never sees the moveable table without it
-        for table in (TENANT_MOVES_SCHEMA, _WIDGETS, RUN_MARKERS_SCHEMA):
+        for table in (TENANT_MOVES_SCHEMA, _WIDGETS, _FENCED, RUN_MARKERS_SCHEMA):
             for statement in table.create_statements(yugabyte=yugabyte):
                 await pool.execute(statement)
+        # the scope a varchar, as agent_acl's namespaces holds it (its moved_from stays text, as v007 adds it)
+        await pool.execute(f"ALTER TABLE {_FENCED_TABLE} ALTER COLUMN row_scope TYPE varchar(8)")
         store = SqlL3Backend(pool)
         store.register_schema(_TABLE, _WIDGETS)
+        store.register_schema(_FENCED_TABLE, _FENCED)
         yield _Held(pool=pool, schema=schema, store=store)
     finally:
         await pool.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
@@ -152,6 +183,28 @@ async def test_a_keyed_update_and_a_bulk_upsert_append_their_moves_in_the_same_s
         ("w1", value_tenant("cb"), {"office": "gov", "customer_id": "cb"}),
         ("w2", value_tenant("ca"), {"office": "gov", "customer_id": "ca"}),
     ]
+
+
+async def test_a_fenced_update_that_moves_a_varchar_scope_runs_and_appends_its_move(held: _Held) -> None:
+    """Flips if the fenced ``UPDATE`` that moves a row binds the moveable column's value with two types (its ``SET``
+    deduces the column's ``varchar``, the move's ``IS DISTINCT FROM`` deduces ``text``: Postgres refuses the statement,
+    ``AmbiguousParameterError``), or if it moves the row without appending the move, or appends one when it did not."""
+    first = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+    row = {"id": "n1", "row_scope": "customer", "date_updated": first, EPOCH_COLUMN: next_epoch()}
+    assert await held.store.upsert(_FENCED_TABLE, row) == 1
+
+    second = datetime(2026, 11, 26, 12, 1, tzinfo=UTC)
+    same = {"id": "n1", "row_scope": "customer", "date_updated": second, EPOCH_COLUMN: next_epoch()}
+    assert await held.store.upsert(_FENCED_TABLE, same, cas=first) == 1, "a fenced write that does not move the row"
+
+    third = datetime(2026, 11, 26, 12, 2, tzinfo=UTC)
+    moved = {"id": "n1", "row_scope": "platform", "date_updated": third, EPOCH_COLUMN: next_epoch()}
+    assert await held.store.upsert(_FENCED_TABLE, moved, cas=second) == 1
+
+    stored = await held.pool.fetchrow(f"SELECT row_scope, row_scope_moved_from FROM {_FENCED_TABLE} WHERE id = 'n1'")
+    assert stored is not None and dict(stored) == {"row_scope": "platform", "row_scope_moved_from": "customer"}
+    rows = await held.pool.fetch(f"SELECT keys, tenant FROM {TENANT_MOVES_TABLE} WHERE table_name = '{_FENCED_TABLE}'")
+    assert [(json.loads(r["keys"])[0], r["tenant"]) for r in rows] == [("n1", value_tenant("customer"))]
 
 
 async def test_cleanup_deletes_the_moves_below_its_floor(held: _Held) -> None:

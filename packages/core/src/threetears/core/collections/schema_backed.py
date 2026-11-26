@@ -114,6 +114,7 @@ from threetears.core.backends.schema_sql import (
     insert_columns_for_data,
     key_array_type,
     json_default as _json_default,
+    sql_cast,
     upsert_set_columns,
 )
 from threetears.core.backends.sql import SqlL3Backend
@@ -385,17 +386,6 @@ BIGINT_TYPE = "bigint"
 BOOL_TYPE = "bool"
 VECTOR_TYPE = "vector"
 
-#: the SQL type a column's value is cast to where a statement binds it in an array, by its type tag; ``text`` for
-#: every tag not here
-_SQL_CASTS: Final[Mapping[str, str]] = {
-    UUID_TYPE: "uuid",
-    INT_TYPE: "bigint",
-    BIGINT_TYPE: "bigint",
-    BOOL_TYPE: "boolean",
-    NUMERIC_TYPE: "numeric",
-    DATETIMETZ_TYPE: "timestamptz",
-}
-
 #: the kind of hash (:func:`~threetears.core.ddl.row_epoch.key_hash_sql`) a stamped table's key column of each type tag
 #: feeds its restore bucket; a key column of any other type refuses the table
 _BUCKET_HASH_KINDS: Final[Mapping[str, str]] = {
@@ -481,17 +471,6 @@ def _moved_values(schema: TableSchema, name: str, new: Any, stamp: int) -> dict[
             record=schema.move_record,
         ),
     }
-
-
-def sql_cast(column_type: str) -> str:
-    """the SQL type a value of a column of ``column_type`` is cast to where a statement binds it in an array.
-
-    :param column_type: the column's type tag
-    :ptype column_type: str
-    :return: the SQL type (``uuid``, ``bigint``, ``timestamptz``; ``text`` for a string and every other tag)
-    :rtype: str
-    """
-    return _SQL_CASTS.get(column_type, "text")
 
 
 # the rail's Arrow types live here, beside the type tags, rather than in complete_copy (which re-exports them): a
