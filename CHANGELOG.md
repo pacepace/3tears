@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core (shared Arrow): a reader's let-go no longer holds the serving loop
+
+**Fixed:** a `SharedArrowReader` letting a version or its lent files go held the event loop 19-33 ms past the host
+on every runner the pool scheduled it on, and 109 ms on a 24-core host, against the 20 ms bound of
+`test_shared_arrow_let_go_loop.py` (already failing at 95bdd0c16). The frees' small blocks wait in glibc's fast bins
+and a later free merged them all at once, inside one table's free with the interpreter lock held. The let-go now
+calls `malloc_trim` (where the C library has it) every 64 tables, through `ctypes`, which lets the lock go: measured
+1.0-3.3 ms past the host. The reader also hands its turns to the loop it was made on, where they had been only
+offered (a sleep); `MappedTables.close` and `MappedSegment.close` take `loop=` for it.
+
 ### core, agent/acl: the visible-customer set's fixed Python cost, cut
 
 **Changed:** `Joined` copies its mappings read-only when it is built and carries its `shape`, computed once, which a

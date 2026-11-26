@@ -60,6 +60,10 @@ def test_a_let_go_frees_its_tables_handing_the_lock_over_between_them(
     turns: list[int] = []
 
     class _Turns:
+        def __init__(self, loop: object = None) -> None:
+            # the loop a let-go hands its turns to: none here, the mapping closed off any loop
+            assert loop is None
+
         def take(self) -> None:
             turns.append(1)
 

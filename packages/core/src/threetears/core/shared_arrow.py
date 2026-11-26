@@ -75,6 +75,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import ctypes
 import enum
 import fcntl
 import functools
@@ -1392,9 +1393,42 @@ def _map_pinned(path: str, pin: _Pin | None) -> Any:
     return ipc.open_file(pa.BufferReader(whole)).read_all()
 
 
-def _free_in_turns(held: list[Any]) -> None:
-    """let go of ``held``'s tables one at a time, last first, emptying the list, the thread handing the interpreter
-    lock over whenever it has held it its share (:class:`~threetears.core.loop_turns.LoopTurns`).
+def _serving_loop() -> asyncio.AbstractEventLoop | None:
+    """the event loop running on the calling thread, which a reader made there serves; None off any loop.
+
+    :return: the loop, or None
+    :rtype: asyncio.AbstractEventLoop | None
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        # NOSILENT: a reader made off any loop (a script, a worker) has no loop to hand its turns to; it sleeps them
+        return None
+
+
+def _turns_with(loop: asyncio.AbstractEventLoop | None) -> LoopTurns:
+    """the turns a let-go takes with ``loop``: handed to it from any other thread; slept on its own thread, which a
+    turn handed to itself would only stall (it waits for a callback its own thread cannot run meanwhile).
+
+    :param loop: the serving loop, or None
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the turns
+    :rtype: LoopTurns
+    """
+    return LoopTurns(None if loop is None or _serving_loop() is loop else loop)
+
+
+#: the C library's ``malloc_trim``, where it has one (glibc), called through ``ctypes.CDLL``, which lets the interpreter
+#: lock go for the call; None elsewhere (musl, macOS), where :func:`_free_in_turns` frees without it
+_MALLOC_TRIM: Final[Any] = getattr(ctypes.CDLL(None), "malloc_trim", None)
+
+#: the tables :func:`_free_in_turns` frees between two of its allocator reliefs (:data:`_MALLOC_TRIM`)
+_TABLES_A_RELIEF: Final = 64
+
+
+def _free_in_turns(held: list[Any], loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """let go of ``held``'s tables one at a time, last first, emptying the list, the thread handing the serving loop
+    a turn whenever it has held the interpreter lock its share (:class:`~threetears.core.loop_turns.LoopTurns`).
 
     Freeing a table frees every array it is the last to hold in one cascade of deallocations in C, during which no
     other thread runs; a dictionary of tables freed whole is one cascade for all of them, as long as every array of a
@@ -1406,14 +1440,31 @@ def _free_in_turns(held: list[Any]) -> None:
     the loop 20-31 ms past the host's own lateness, each free 0.05 ms (a 10-core Apple host, 2026-11-21; the bound is
     20 ms). Handed over every half millisecond, no stretch of the let-go held it past 8 ms there.
 
+    WHY the loop (2026-11-26): with no loop to hand to, a turn is a 0.2 ms sleep that only offers the lock, which a
+    loaded host often does not schedule the loop's thread within (:class:`~threetears.core.loop_turns.LoopTurns`). The
+    let-go runs on the store's settling thread or a read's, never the serving loop's own, so the reader passes the loop
+    it serves and each turn is handed: the let-go waits for the loop to have run.
+
+    WHY the allocator's relief (2026-11-26): the frees' small blocks wait in glibc's fast bins, and a later free that
+    needs them merged merges all of them at once, inside the free, the interpreter lock held: one table of an idle
+    reader's 2237 lent ones took 25-117 ms to free (one near the end, whichever it is), so the let-go held the loop
+    19-33 ms past the host's on every runner the pool scheduled it on (Linux containers on arm64 and x86 hosts), and
+    109 ms on a 24-core x86 host, against the 20 ms bound (test_shared_arrow_let_go_loop.py; already failing at
+    95bdd0c16). ``malloc_trim`` every :data:`_TABLES_A_RELIEF` tables merges them a few at a time, the lock let go:
+    measured 1.0-3.3 ms past the host, the let-go's whole time a third longer.
+
     :param held: the tables, the one to free first last; emptied
     :ptype held: list[pa.Table]
+    :param loop: the serving loop to hand the turns to; None to sleep them (no loop to hand to)
+    :ptype loop: asyncio.AbstractEventLoop | None
     :return: nothing
     :rtype: None
     """
-    turns = LoopTurns()
+    turns = _turns_with(loop)
     while held:
         held.pop()
+        if _MALLOC_TRIM is not None and len(held) % _TABLES_A_RELIEF == 0:
+            _MALLOC_TRIM(ctypes.c_size_t(0))
         turns.take()
 
 
@@ -1539,9 +1590,11 @@ class MappedTables:
             connection.execute(f"CREATE VIEW {qualified} AS SELECT * FROM {_quoted(registered)}")
         return connection
 
-    def close(self) -> None:
+    def close(self, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """unmap the files and let the lock go.
 
+        :param loop: the serving loop the tables' let-go hands its turns to (:func:`_free_in_turns`); None for none
+        :ptype loop: asyncio.AbstractEventLoop | None
         :return: nothing
         :rtype: None
         """
@@ -1550,7 +1603,7 @@ class MappedTables:
         held = [*self._by_inode.values(), *self.tables.values()]
         self.tables = EMPTY
         self._by_inode = EMPTY
-        _free_in_turns(held)
+        _free_in_turns(held, loop)
         for mapped in self._maps:
             mapped.close()
         self._maps = []
@@ -2441,14 +2494,16 @@ class MappedSegment(MappedTables):
             {entry.name[: -len(_TABLE_SUFFIX)]: entry for entry in path.iterdir() if entry.name.endswith(_TABLE_SUFFIX)}
         )
 
-    def close(self) -> None:
+    def close(self, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """let the result go: its files are removed at once when no table taken from it is held, else by the first
         sweep after the last is freed. Harmless twice.
 
+        :param loop: the serving loop the tables' let-go hands its turns to; None for none
+        :ptype loop: asyncio.AbstractEventLoop | None
         :return: nothing
         :rtype: None
         """
-        super().close()
+        super().close(loop=loop)
         on_close, self._on_close = self._on_close, None
         if on_close is not None:
             on_close(self.name)
@@ -4292,10 +4347,12 @@ class _HeldVersion:
             raise
         return cursor, made
 
-    def close(self) -> None:
+    def close(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """close the free cursors and the connection, unmap the files and release the lease (whose release retires the
         version when it is not current and nobody else holds it).
 
+        :param loop: the serving loop the mapping's let-go hands its turns to; None for none
+        :ptype loop: asyncio.AbstractEventLoop | None
         :return: nothing
         :rtype: None
         """
@@ -4304,7 +4361,7 @@ class _HeldVersion:
             for cursor, _ in free:
                 cursor.close()
             self.connection.close()
-            self.mapped.close()
+            self.mapped.close(loop=loop)
         finally:
             self.lease.release()
 
@@ -4505,6 +4562,9 @@ class SharedArrowReader:
         self._closed = False
         self._reads = 0
         self._mapped = 0
+        #: the loop the reader serves (the one running where it was made): what it lets go, on the store's settling
+        #: thread or a read's, hands that loop its turns (:func:`_free_in_turns`)
+        self._loop = _serving_loop()
 
     @property
     def reads(self) -> int:
@@ -4577,9 +4637,9 @@ class SharedArrowReader:
                 held.reads -= 1
                 raise
         # what the new version did not take is freed in turns, out of the lock (:func:`_free_in_turns`)
-        _free_in_turns(lent)
+        _free_in_turns(lent, self._loop)
         if let_go is not None:
-            let_go.close()
+            let_go.close(self._loop)
         clean = False
         try:
             yield SharedRead(version=held.name, tables=held.mapped.tables, cursor=cursor, prepared=held.prepared)
@@ -4596,7 +4656,7 @@ class SharedArrowReader:
             if not clean:
                 cursor.close()
             if done:
-                held.close()
+                held.close(self._loop)
 
     def refresh(self) -> None:
         """let go of the version held when another is current now; a read still open keeps it until it ends.
@@ -4617,9 +4677,9 @@ class SharedArrowReader:
                 lent = list(self._lend.values())
                 self._lend = _shared_files(current.path, self._lend)
         # what the current version no longer holds is freed in turns, out of the lock (:func:`_free_in_turns`)
-        _free_in_turns(lent)
+        _free_in_turns(lent, self._loop)
         if let_go is not None:
-            let_go.close()
+            let_go.close(self._loop)
 
     def close(self) -> None:
         """let the version go (when its open reads end) and read no more. Harmless twice.
@@ -4632,9 +4692,9 @@ class SharedArrowReader:
             lent = list(self._lend.values())
             self._lend = EMPTY
             let_go = self._supersede()
-        _free_in_turns(lent)
+        _free_in_turns(lent, self._loop)
         if let_go is not None:
-            let_go.close()
+            let_go.close(self._loop)
 
     def status(self) -> dict[str, Any]:
         """what the reader holds, as plain JSON values.
