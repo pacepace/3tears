@@ -77,6 +77,30 @@ _ARROW_MODULES: dict[str, str] = {
     "threetears.core.collections.copy_queries": (
         "queries over the copy in worker processes: each answer written by its worker as shared Arrow, mapped back"
     ),
+    "threetears.core.collections.copy_reads": (
+        "the copy follower's own reads: keyed reads and a pinned checkpoint's parts as Arrow from its query workers"
+    ),
+    "threetears.core.collections.copy_follower": (
+        "a pod's whole copy in a DuckDB L1 (the snapshot extra): its reads through copy_reads, Arrow end to end"
+    ),
+    "threetears.core.collections.copy_stages": (
+        "the copy follower's stages on shared_copy's worker backend: its changes handed over as Arrow pages"
+    ),
+    "threetears.core.collections.delta_fold": (
+        "the writer's fold of delta files into the full: Arrow rows, and the copy's FollowedTable and typed_text"
+    ),
+    "threetears.core.collections.delta_drift": (
+        "drift checks of the full against L3: the copy's FollowedTable, its parts read as Arrow"
+    ),
+    "threetears.core.collections.delta_recreate": (
+        "the writer's recreation of a missing delta file: the copy's FollowedTable and delta_fold's typed texts"
+    ),
+    "threetears.core.collections.stamped_cleanup": (
+        "quiet-time cleanup of stamped tables' gone rows: pages read as Arrow; run under quiet_cleanup"
+    ),
+    "threetears.core.testing.published_copy": (
+        "test support: a published copy built through shared_copy and copy_stages, its parts written as Arrow IPC"
+    ),
 }
 
 #: a requirement line of ``uv export``: ``name==version`` (with a marker), or ``-e ./packages/<dir>``
