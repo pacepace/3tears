@@ -58,6 +58,7 @@ from threetears.core.collections.copy_queries import CopyQueries  # noqa: E402
 from threetears.core.collections.delta_copy_beats import CopyBeats  # noqa: E402
 from threetears.core.collections.delta_files import TableDelta, write_delta_file  # noqa: E402
 from threetears.core.coordination.lease import KVLease  # noqa: E402
+from threetears.core.testing.calibrate import budget_problem  # noqa: E402
 from threetears.core.testing.kv import FakeNatsClient  # noqa: E402
 import threetears.core.collections.volume_fulls as volume_fulls  # noqa: E402
 from threetears.core.collections.epoch_change import (  # noqa: E402
@@ -1842,3 +1843,103 @@ async def test_a_refused_prefix_record_naming_no_file_is_counted_as_a_partition_
     assert _RESET in world.follower.status().waiting_for_full
     assert _counted(before) == {"partition_refused": 1}
     world.follower.stop()
+
+
+# --- the reload from the volume: reached only while a table waits, within its budget (Pace 2026-11-27) --------------
+
+
+async def test_a_reload_from_the_volume_is_reached_only_while_a_table_waits_for_its_full(
+    _volume: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the reload from the volume (CopyFollower._reload_when_published's looked, calling ``_reload_from_volume``: a
+    reset, a schema change, or a recovery from a lost epoch log or delta file) is reached only while a table waits for
+    the writer's full, never on a normal pass, however many changes apply from their files. Flips if a pass reloads a
+    table that waits for nothing, or a wait is not answered by a reload."""
+    reloads: list[str] = []
+    real = vars(CopyFollower)["_reload_from_volume"]
+
+    async def reloading(self: CopyFollower, table: str, fulls: VolumeFulls, manifest: Any) -> bool:
+        reloads.append(table)
+        return bool(await real(self, table, fulls, manifest))
+
+    monkeypatch.setattr(CopyFollower, "_reload_from_volume", reloading)
+    world = _World(_volume)
+    await world.started()
+    for geo in range(5):
+        world.write(_RESET, [("VA", geo, 500 + geo)])
+        world.write(_OTHER, [("IL", geo, 600 + geo)])
+        assert await world.follower.catch_up()
+    await asyncio.sleep(0.05)  # several polls of the volume's own pace
+    assert reloads == [], "a normal pass reloaded a table from the volume"
+    world.l3.reset(_RESET, _AFTER_RESET)
+    reset_at = world.log.reset(_RESET)
+    world.lock.commit("state:VA", "state:IL", "state:TX")
+    await world.follower.catch_up()
+    publish_full_manifest(
+        _volume,
+        term=2,
+        tables={
+            _RESET: _entry(_volume, _RESET, _AFTER_RESET, reset_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        },
+    )
+    await world.reloaded(_RESET)
+    assert reloads and set(reloads) == {_RESET}
+    world.follower.stop()
+
+
+async def test_a_reload_from_the_volume_keeps_its_budget(_volume: Path) -> None:
+    """the reload from the volume (CopyFollower._reload_when_published's looked) at size: a reset table's reload
+    of 100,000 rows from the writer's full on the volume (_reload_from_volume: its parts read and staged, the swap
+    under the pass lock, the publish) within 2x of staging, applying and publishing the same full straight into a copy
+    of its own that holds the table already (VolumeFulls.stage and apply_staged, the work a reload must do), plus the wait's own fixed cost (the volume's poll
+    and the status look), measured on its own as a one-row reload."""
+    states = [f"S{n:02d}" for n in range(50)]
+    big = [(state, geo, geo) for state in states for geo in range(2000)]
+    world = _World(_volume)
+    await world.started()
+    term = 1
+
+    async def reload_of(rows: list[tuple[str, int, int]]) -> float:
+        nonlocal term
+        term += 1
+        reset_at = world.log.reset(_RESET)
+        world.lock.commit("state:VA")
+        await world.follower.catch_up()
+        # the writer's full written off the loop: building 100,000 rows' parts from Python is the test's, not the copy's
+        tables = {
+            _RESET: await asyncio.to_thread(_entry, _volume, _RESET, rows, reset_at),
+            _OTHER: _entry(_volume, _OTHER, world.l3.held(_OTHER), f"inc:{world.log.count[_OTHER]}"),
+        }
+        began = time.perf_counter()
+        publish_full_manifest(_volume, term=term, tables=tables)
+        await world.reloaded(_RESET)
+        return time.perf_counter() - began
+
+    async def bare() -> float:
+        backend = DuckDBBackend()
+        _OPENED.append(backend.reset)
+        backend.initialize(_metadata())
+        copy = PublishedCopy(backend)
+        fulls = VolumeFulls(_volume, [_followed(_RESET)], poll_seconds=0.01)
+        # it holds the table already, as the reloading copy does: the timed apply replaces its rows, never fills
+        filled = await fulls.stage(copy)
+        assert not isinstance(filled, volume_fulls.FullAbsent), filled
+        await copy.apply_staged(filled.changes, mark=1)
+        began = time.perf_counter()
+        found = await fulls.stage(copy)
+        assert not isinstance(found, volume_fulls.FullAbsent), found
+        await copy.apply_staged(found.changes, mark=2)  # its apply, and the publish of the state it holds
+        return time.perf_counter() - began
+
+    fixed = min([await reload_of([("VA", 0, 1)]) for _ in range(3)])
+    took, baseline = [], []
+    for _ in range(3):
+        took.append(await reload_of(big))
+        baseline.append(await bare())
+    assert len(await asyncio.to_thread(world.copy, _RESET)) == len(big)
+    problem = budget_problem(
+        f"a reset table's reload of {len(big)} rows from the volume", min(took), min(baseline), plus=fixed
+    )
+    world.follower.stop()
+    assert problem is None, problem

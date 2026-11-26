@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, enforcement: a recovery is a declared whole-read kind; three of the gate's four findings declared
+
+**Added:** ``whole_read(kind="recovery")`` (Pace 2026-11-27: recovery reloads stay, but are never silent): its call
+into a reload from the writer's full, or the change it marks whole; never an L3 read. The lost-write backstop's whole
+changes of a lost window are declared under it (``lost_writes._changes_of``). The shared copy's apply marks a table
+whole under the kind that staged its change, as the in-process copy's apply empties it (``SharedCopyStages
+.apply_staged``: ``cold_start``, ``schema_change`` and ``rolling_upgrade`` now admit ``marks-whole``). The whole settle
+after a start not wholly from a checkpoint is a ``cold_start`` (``shared_copy._settle_whole_job``; Pace 2026-11-27: a
+pod start from the volume counts as a cold start), with its proof and a speed test at 100,000 rows. Still open: the
+copy's reload from the volume (``CopyFollower._reload_when_published``'s call into ``_reload_from_volume``), whose
+whole apply is two calls down in ``DuckDBBackend.apply_staged`` under three kinds, so no one kind can be declared at
+the call.
+
 ### core: every whole reload is counted by why, and a recovery reload is said at WARNING
 
 **Added:** ``collection_whole_reloads_total{table,why}`` (``threetears.core.collections.whole_reloads.WHOLE_RELOADS``)

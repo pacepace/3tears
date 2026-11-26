@@ -48,6 +48,11 @@ WholeReadKind = Literal[
     # emptying a process's own L1 copy of a table whole when the table is dropped (Pace 2026-11-15); the gate admits
     # one DELETE with no WHERE of a relation no declared L3 table is
     "l1_table_drop",
+    # a recovery (Pace 2026-11-27: recovery reloads stay, but are never silent): a copy reloading a table from the
+    # writer's full on the delta-files volume after a lost epoch log or a lost delta file, and the lost-write
+    # backstop recording a lost window's whole change again; each counted (collection_whole_reloads_total), said at
+    # WARNING, and a replay fails on any
+    "recovery",
 ]
 
 #: the kinds, for the run-time check
@@ -62,6 +67,7 @@ _KINDS: Final[frozenset[str]] = frozenset(
         "operator_reset",
         "rolling_upgrade",
         "l1_table_drop",
+        "recovery",
     }
 )
 

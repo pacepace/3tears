@@ -183,6 +183,28 @@ async def test_a_whole_change_replaces_its_table_and_publishes_its_mark() -> Non
     assert shared.rows(MARK_TABLE) == [(5,)]
 
 
+@pytest.mark.parametrize("kind", ["cold_start", "schema_change", "rolling_upgrade"])
+async def test_the_apply_marks_a_table_whole_only_for_a_whole_change_never_on_a_keyed_pass(kind: str) -> None:
+    """the proving test of the whole marks declared in SharedCopyStages.apply_staged: a keyed change (a normal pass)
+    marks nothing whole, so every row it does not name is kept; only a change staged whole, under the declared whole
+    read that staged it (a cold start or an operator's reset, a schema change, an older writer's whole record), marks
+    its table whole and replaces it. Flips if a keyed pass replaced the table, or a whole change of any kind did not."""
+    shared = await _copy()
+    copy = shared.copy
+    rows = f"{STAGE_PREFIX}r"
+    await _staged(shared, copy.stage_rows, rows, _TABLE, _rows(("VA", 1, 1), ("VA", 2, 2)), _KEY)
+    await copy.apply_staged([StagedChange(table=_TABLE, key=_KEY, rows=rows)], mark=1)
+    # a normal pass: one row named, the other kept
+    await _staged(shared, copy.stage_rows, rows, _TABLE, _rows(("IL", 3, 3)), _KEY)
+    await copy.apply_staged([StagedChange(table=_TABLE, key=_KEY, rows=rows)], mark=2)
+    assert shared.rows(_TABLE) == [("IL", 3, 3), ("VA", 1, 1), ("VA", 2, 2)]
+    # a whole change: the table replaced
+    await _staged(shared, copy.stage_rows, rows, _TABLE, _rows(("OH", 7, 7)), _KEY)
+    whole = StagedChange(table=_TABLE, key=_KEY, rows=rows, whole=True, whole_kind=kind)  # type: ignore[arg-type]
+    await copy.apply_staged([whole], mark=3)
+    assert shared.rows(_TABLE) == [("OH", 7, 7)]
+
+
 async def test_a_change_whose_stage_is_gone_raises_lookup_error_and_one_that_fails_keeps_its_stages() -> None:
     shared = await _copy()
     copy = shared.copy
@@ -632,6 +654,35 @@ async def test_a_start_from_a_checkpoint_defers_nothing_and_asks_no_whole_settle
     lock.version += 1
     assert await follower.catch_up()
     assert second.rows(copy_hooks.VOTE_TOTALS) == [("VA", 12, "change")]
+
+
+async def test_the_whole_settle_job_runs_once_at_a_start_not_wholly_from_a_checkpoint_never_on_a_pass() -> None:
+    """the proving test of the whole settle declared in shared_copy._settle_whole_job (derive_whole, kind cold_start:
+    Pace 2026-11-27, a pod start from the delta-files volume counts as a cold start): it runs once, at the first
+    labelled pass after a start not wholly from a checkpoint (here one with no checkpoint: a start from the volume's
+    fulls leaves it due the same way, CopyFollower.start), and never on a pass after it; a start wholly from a
+    checkpoint never runs it. Its rows say which derived them: ``whole`` by derive_whole, ``change`` by derive."""
+    l3, log, lock, objects, pointers = _L3(), _Log(), _Seqlock(), _Objects(), _Pointers()
+    l3.put([("VA", i, 1) for i in range(10)] + [("IL", i, 2) for i in range(5)])
+    log.commit(None)
+    shared, follower = await _replica(l3, log, lock, objects, pointers, "a", shared=await _totaled())
+    assert not await follower.start()
+    assert shared.copy.backend.whole_settle_due
+    assert await follower.catch_up()
+    assert shared.rows(copy_hooks.VOTE_TOTALS) == [("IL", 10, "whole"), ("VA", 10, "whole")]
+    for votes in (50, 60):
+        l3.put([("IL", 0, votes)])
+        log.commit([("IL", 0)])
+        lock.version += 1
+        assert await follower.catch_up()
+        assert not shared.copy.backend.whole_settle_due
+    assert shared.rows(copy_hooks.VOTE_TOTALS) == [("IL", 68, "change"), ("VA", 10, "whole")]
+    await follower.checkpointed()
+    second, again = await _replica(l3, log, lock, objects, pointers, "b", shared=await _totaled())
+    assert await again.start()  # wholly from the checkpoint
+    assert not second.copy.backend.whole_settle_due
+    assert await again.catch_up()
+    assert all(how != "whole" for _state, _votes, how in second.rows(copy_hooks.VOTE_TOTALS))
 
 
 def _vote_page(*rows: tuple[str, int, int]) -> ChangePage:

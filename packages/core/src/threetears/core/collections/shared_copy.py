@@ -143,6 +143,7 @@ from threetears.core.collections.copy_parts import (
     tier_of,
     tier_part,
 )
+from threetears.core.declared import whole_read
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
     JobContext,
@@ -2075,7 +2076,14 @@ def _settle_whole_job(context: JobContext, plan: ApplyPlan) -> _Outcome:
             rules=tables.rules,
             schemas=tables.schemas,
         )
-        derived = hooks.derive_whole(applied)
+        derived = whole_read(
+            hooks.derive_whole(applied),
+            kind="cold_start",
+            reason="a start not wholly from a checkpoint (a first start, one at another schema digest, or the delta-files volume's fulls) derives every scope of the pod's own copy once, reading no L3",
+            ruling="Pace 2026-11-27: a pod start from the delta-files volume may rebuild the derived tables whole at every start, a CPU pass over the pod's own copy with no L3 read, counted as a cold start",
+            proof="packages/core/tests/unit/collections/test_copy_stages.py::test_the_whole_settle_job_runs_once_at_a_start_not_wholly_from_a_checkpoint_never_on_a_pass",
+            speed="packages/core/tests/unit/collections/test_copy_settle_hooks.py::test_a_whole_settle_of_100k_rows_keeps_its_budget",
+        )
         let_go = _let_go_by_table(tables, derived.let_go)
         written = {page.table for page in derived.pages} | set(derived.whole)
         both = sorted(written & {table for table, _ in let_go})

@@ -26,6 +26,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from packages.core.tests.unit.collections.epoch_range_db import RESULTS, RUNS, STAMPED, VERSIONED, RangeDb
+import threetears.core.collections.lost_writes as lost_writes_module
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.lost_writes import WriteBackstop, WriterBeats
 from threetears.core.coordination.lease import KVLease
@@ -329,3 +330,35 @@ async def test_a_dead_writer_s_whole_change_recorded_again_is_counted_as_a_lost_
         if record.levelname == "WARNING" and getattr(record, "extra_data", {}).get("why") == "lost_writes"
     ]
     assert said and said[0].extra_data["table"] == VERSIONED  # type: ignore[attr-defined]
+
+
+async def test_only_a_lost_writes_window_reaches_the_whole_changes_and_a_live_writer_never_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the proving test of the whole changes declared in lost_writes._changes_of (kind recovery, Pace 2026-11-27): only
+    a lost write's window reaches it, a dead writer's (the recovery pass) or a migration run's (its announcement);
+    a recovery pass that finds every writer live reads no window and records nothing whole. Flips if a pass with no
+    dead writer reaches it, or a dead writer's window holding a run deleted does not record that change whole."""
+    windows: list[str] = []
+    real = vars(lost_writes_module)["_changes_of"]
+
+    async def reached(*args: Any, **kwargs: Any) -> Any:
+        windows.append(str(kwargs["table"]))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(lost_writes_module, "_changes_of", reached)
+    nats, pool, source = FakeNatsClient(), _RunDeletedPool(), _WholeSource()
+    clock = _Clock()
+    writer = _backstop(nats, "writer", _Clock(), source, pool, WriteLedger(clock=clock))
+    holder = _backstop(nats, "holder", clock, source, pool, WriteLedger(clock=clock))
+    await holder.beat()
+    assert (await holder.recover_pass()).live == 1
+    assert windows == [], "a pass with every writer live reads no window"
+
+    await writer.beat()
+    clock.at += _STALE + 1
+    await holder.beat()  # the holder lives on; the writer died
+    before = _lost_writes_reloads(VERSIONED)
+    assert (await holder.recover_pass()).recovered == ("writer",)
+    assert windows == [VERSIONED]
+    assert _lost_writes_reloads(VERSIONED) == before + 1, "the run deleted in the window is recorded whole again"
