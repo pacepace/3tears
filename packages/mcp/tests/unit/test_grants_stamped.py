@@ -99,7 +99,6 @@ async def test_a_revoke_is_a_gone_mark_never_a_delete() -> None:
 async def test_the_cold_fill_reads_live_grants_alone() -> None:
     pool = RecordingPool()
     collection = _collection(pool)
-    collection.l3_pool = pool
     await collection.load_all_grants()
     [(sql, _)] = pool.sent
     assert sql.endswith("FROM mcp_tool_grants WHERE NOT gone"), sql
