@@ -370,7 +370,7 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
 
 ## The tables the primitives keep their state in
 
-`BaseCollection` is the machinery; these four tables are what the primitives put in it. All in
+`BaseCollection` is the machinery; these six tables are what the primitives put in it. All in
 `threetears.core.coordination.tables`, all keyed `(purpose, key)`.
 
 | Table | Holds | Policy |
@@ -379,6 +379,8 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
 | `coordination_claims` | an idempotency claim and its stored outcome | write-behind, expiring |
 | `coordination_revocations` | the moment a key is revoked from | synchronous, negative-cached, expiring |
 | `coordination_redemptions` | a single-use redemption, presence only | synchronous, expiring |
+| `coordination_ledger_accounts` | a budget ledger's account: spent, the open reservations and the orphaned ones, money as Decimal strings | synchronous, not expiring |
+| `coordination_documents` | a versioned JSON document, swapped by compare-and-set | synchronous, not expiring |
 
 - **`purpose` is what a bucket name used to be.** One process builds many primitives over one
   table -- identity-core has three counters, identity-edge seven route throttles -- and a
@@ -390,17 +392,23 @@ Each gap is a generic enhancement to the primitive, not a store beside it.
   process. A collection with no L3 reports its writes as done rather than raising, because there
   was nothing to write to, and logs that once per table so a wiring gap is not mistaken for the
   deliberate case. But a primitive whose contract is exactly-once -- the redemption ledger, the
-  idempotency store -- refuses a registry with no L2 at construction: the compare-and-swap is the
-  guarantee, and without it two replicas can both be told they were first.
+  idempotency store, the budget ledger -- refuses a registry with no L2 at construction: the
+  compare-and-swap is the guarantee, and without it two replicas can both be told they were first
+  (or both admit a reservation the budget had room for once).
+- **The ledger tables do not expire, and are synchronous.** An account is a billing period's record
+  (the caller puts the period in the account string), so it is kept; the expiry sweep issues no
+  statement against a table that declares no expiry. Each won swap is in L3 before the call returns,
+  so a NATS wipe loses no spend: the next swap on the key finds L2 empty and continues from L3's row.
+  Neither keeps an L1 copy, so a read is answered by L2, the fence every replica writes through.
 - **One declaration, two readers.** The migration renders its DDL from the same `TableSchema` the
   collection reads, so a consumer's table cannot drift from the table the code expects. A
   consumer that cannot run DDL -- an agent or tool pod, whose broker refuses it -- declares the
   same schemas in its data section instead.
-- **The compare-and-swap tables carry the swap's order.** Counters, claims and redemptions add
-  `l2_epoch TIMESTAMPTZ` and `l2_revision BIGINT`, which `l2_cas_mutate` fences every persist on;
-  revocations, written through `save_entity`, do not. Migration v002 adds them to tables v001
-  created before them and backfills existing rows to the floor order, so the fence holds from the
-  first swap after it.
+- **The compare-and-swap tables carry the swap's order.** Counters, claims, redemptions, ledger
+  accounts and documents add `l2_epoch TIMESTAMPTZ` and `l2_revision BIGINT`, which `l2_cas_mutate`
+  fences every persist on; revocations, written through `save_entity`, do not. Migration v002 adds
+  them to tables v001 created before them and backfills existing rows to the floor order, so the
+  fence holds from the first swap after it. Migration v004 creates the two ledger tables with them.
 - **Lifecycle.** A write-behind table's flusher starts on its first write and is stopped by
   `CollectionRegistry.close_collections()` in the process's shutdown path, beside
   `stop_invalidation_listener()`. Without that call the last flush interval is lost on shutdown.
@@ -430,6 +438,10 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
 - **registry and tool runtime** (this repo): the PoP and proxy-assertion guards.
 - **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
 - **scriob**: its login throttle.
+- **the model key pool** (`threetears.models`, a consumer such as Hearsay): `BudgetLedger` is the
+  durable store behind a pool's budgets and shared state. Models depends on neither core nor nats,
+  so the ledger satisfies the pool's `KeyPoolStore` Protocol structurally; the consumer builds it
+  over its own registry and hands it to the pool.
 
 **The live buckets are converted, not abandoned.** The nonce buckets keep their names. Since
 0.66.0 a DECLARING guard (`create_if_missing=True`) owns its bucket: it declares it with

@@ -5,8 +5,8 @@ Two backings, chosen by what a broker restart must cost:
 - **NATS JetStream KV** for state whose whole life is shorter than the next restart matters --
   leases, single-use nonces, token buckets, in-flight counters. Losing it costs a retry.
 - **L3 through a collection**, with L1 and L2 in front, for state a restart must not lose:
-  attempt counters, idempotency claims, standing revocations and single-use redemptions. Those
-  take a registry rather than a NATS client, and their tables live in
+  attempt counters, idempotency claims, standing revocations, single-use redemptions and budget
+  ledgers. Those take a registry rather than a NATS client, and their tables live in
   :mod:`threetears.core.coordination.tables`.
 
 public surface:
@@ -35,6 +35,9 @@ public surface:
 - :class:`WindowedCounter` — generic windowed attempt counter/rate-limiter (fail-open or
   fail-closed, caller's choice), for the "how many times in the last N seconds" shape a bare
   presence test can't express
+- :class:`BudgetLedger` -- a durable budget ledger (fail-closed): a reservation is admitted only while
+  an account's spend and holds stay under the budget passed with it, across every replica, and each
+  change is in L3 before the call returns; plus versioned JSON records swapped by compare-and-set
 - :class:`IdempotencyKeyStore` — claim-once-with-TTL primitive, stores operation result/error
 - :class:`IdempotencyRecord` — one idempotency key's current state
 - :class:`ClaimResult` — outcome of :meth:`IdempotencyKeyStore.claim`
@@ -53,6 +56,7 @@ public surface:
   retry budget is exhausted
 """
 
+from threetears.core.coordination.budget_ledger import BudgetLedger
 from threetears.core.coordination.distributed_counter import (
     DistributedCounter,
     DistributedCounterConflict,
@@ -92,6 +96,7 @@ from threetears.core.coordination.token_bucket import (
 from threetears.core.coordination.windowed_counter import WindowedCounter, WindowState
 
 __all__ = [
+    "BudgetLedger",
     "ClaimResult",
     "DistributedCounter",
     "DistributedCounterConflict",
