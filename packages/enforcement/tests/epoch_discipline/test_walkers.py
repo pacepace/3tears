@@ -35,6 +35,8 @@ def _config(
     allowlists: dict[str, str] | None = None,
     waivers: str = "",
     primitives: dict[str, frozenset[str]] | None = None,
+    module: str = _MODULE,
+    migration_modules: tuple[str, ...] = (),
 ) -> EpochDisciplineConfig:
     """write one synthesised module and its ledgers under ``tmp_path``, and configure the gate over them.
 
@@ -48,12 +50,16 @@ def _config(
     :ptype waivers: str
     :param primitives: rule onto primitive entries
     :ptype primitives: dict[str, frozenset[str]] | None
+    :param module: the module's repo-relative path
+    :ptype module: str
+    :param migration_modules: the globs of the modules the migration runner runs
+    :ptype migration_modules: tuple[str, ...]
     :return: the config
     :rtype: EpochDisciplineConfig
     """
-    module = tmp_path / _MODULE
-    module.parent.mkdir(parents=True, exist_ok=True)
-    module.write_text(source, encoding="utf-8")
+    written = tmp_path / module
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text(source, encoding="utf-8")
     ledgers = tmp_path / "tests"
     ledgers.mkdir(exist_ok=True)
     for rule, body in (allowlists or {}).items():
@@ -64,6 +70,7 @@ def _config(
         src_roots=(tmp_path / "src",),
         ledger_dir=ledgers,
         primitives=primitives or {},
+        migration_modules=migration_modules,
     )
 
 
@@ -399,3 +406,113 @@ def test_a_whole_select_beside_the_declared_one_is_still_a_finding(tmp_path: Pat
     )
     findings = _declared_findings(tmp_path, source)
     assert len(findings) == 1 and "in fill: SELECT others" in findings[0], findings
+
+
+# ---- a migration's stamped write is heard by the runner's announce of its window -------------------------------------
+
+_MIGRATION = "src/pkg/migrations/v011_backfill.py"
+_MIGRATIONS = ("src/*/migrations/v*.py",)
+
+#: v011's shape: the stamp drawn from the caller's transaction, carried into the epoch by rising_stamp, the values bound
+#: to a name the update is handed
+_STAMPED_BY_CALLER = (
+    "async def backfill(conn, keys):\n"
+    "    stamp = CallerTransaction.stamp_for(conn, 'namespaces')\n"
+    "    values = {'owner_id': Fragment('x'), EPOCH_COLUMN: rising_stamp(stamp, '\"epoch\"')}\n"
+    "    await update_keyed(conn, 'namespaces', values=values, keys=keys)\n"
+)
+
+#: stamp_tables' shape: one next_epoch, inline in the values
+_STAMPED_BY_NEXT_EPOCH = (
+    "async def backfill(conn, keys):\n"
+    "    stamp = next_epoch()\n"
+    "    await update_keyed(conn, 'memories', values={EPOCH_COLUMN: stamp}, keys=keys)\n"
+)
+
+
+def _bypasses(tmp_path: Path, source: str, *, module: str = _MIGRATION) -> list[str]:
+    """the epoch-bypass findings of one module beside an empty migration, the repo's migrations
+    ``src/*/migrations/v*.py``.
+
+    :param tmp_path: pytest temporary directory
+    :ptype tmp_path: Path
+    :param source: the module's source
+    :ptype source: str
+    :param module: the module's repo-relative path
+    :ptype module: str
+    :return: the findings
+    :rtype: list[str]
+    """
+    config = _config(tmp_path, source, module=module, migration_modules=_MIGRATIONS)
+    # a migration that writes nothing, so the glob names a module wherever the module under test sits
+    empty = tmp_path / "src/pkg/migrations/v001_create.py"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_text("x = 1\n", encoding="utf-8")
+    return epoch_discipline_findings(config, RULE_EPOCH_BYPASS)
+
+
+@pytest.mark.parametrize("source", [_STAMPED_BY_CALLER, _STAMPED_BY_NEXT_EPOCH], ids=["stamp_for", "next_epoch"])
+def test_a_migration_write_that_stamps_every_row_is_heard(tmp_path: Path, source: str) -> None:
+    """a keyed update in a migration whose epoch is the shared stamp is announced by the runner: no finding."""
+    assert _bypasses(tmp_path, source) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # no epoch at all
+        "async def backfill(conn, keys):\n    await update_keyed(conn, 'namespaces', values={'owner_id': 1}, keys=keys)\n",
+        # other columns stamped, the epoch not: a stamp under another key
+        "async def backfill(conn, keys):\n"
+        "    stamp = next_epoch()\n"
+        "    await update_keyed(conn, 'namespaces', values={'stamped_at': stamp}, keys=keys)\n",
+        # an epoch that is no shared stamp
+        "async def backfill(conn, keys, epoch):\n"
+        "    await update_keyed(conn, 'namespaces', values={EPOCH_COLUMN: epoch}, keys=keys)\n",
+        # rising_stamp of something that is no stamp
+        "async def backfill(conn, keys):\n"
+        "    await update_keyed(conn, 'namespaces', values={EPOCH_COLUMN: rising_stamp(7)}, keys=keys)\n",
+        # a stamp_for of anything but the caller's transaction
+        "async def backfill(conn, keys, other):\n"
+        "    await update_keyed(conn, 'namespaces', values={EPOCH_COLUMN: other.stamp_for(conn, 't')}, keys=keys)\n",
+        # the values rebound after the stamped dict: the walk cannot say which one is written
+        "async def backfill(conn, keys):\n"
+        "    values = {EPOCH_COLUMN: next_epoch()}\n"
+        "    values = {'owner_id': 1}\n"
+        "    await update_keyed(conn, 'namespaces', values=values, keys=keys)\n",
+        # the values built at run time: the walk cannot see an epoch in them
+        "async def backfill(conn, keys, values):\n    await update_keyed(conn, 'namespaces', values=values, keys=keys)\n",
+        # a stamped update beside an unstamped raw write: the raw write is still the bypass
+        _STAMPED_BY_NEXT_EPOCH + "    await conn.execute('UPDATE memories SET body = 1 WHERE id = $1', 1)\n",
+        # a delete stamps nothing
+        "async def prune(conn, keys):\n    await delete_keyed(conn, 'namespaces', keys=keys)\n",
+    ],
+    ids=[
+        "no-epoch",
+        "stamp-not-on-epoch",
+        "epoch-not-a-stamp",
+        "rising-not-a-stamp",
+        "stamp-for-elsewhere",
+        "values-rebound",
+        "values-unseen",
+        "raw-write-beside",
+        "delete",
+    ],
+)
+def test_an_unstamped_migration_write_is_still_a_bypass(tmp_path: Path, source: str) -> None:
+    """a migration write that does not stamp every row it writes with the shared stamp is still a finding."""
+    assert len(_bypasses(tmp_path, source)) == 1
+
+
+@pytest.mark.parametrize("source", [_STAMPED_BY_CALLER, _STAMPED_BY_NEXT_EPOCH], ids=["stamp_for", "next_epoch"])
+def test_a_stamped_write_outside_a_migration_is_still_a_bypass(tmp_path: Path, source: str) -> None:
+    """outside a migration no runner announces the window: a stamped write with no announce is still a finding."""
+    assert len(_bypasses(tmp_path, source, module="src/pkg/backfill.py")) == 1
+    # a module under migrations/ that the globs do not name (the runner's own helpers) is no migration either
+    assert len(_bypasses(tmp_path / "helper", source, module="src/pkg/migrations/stamp_tables.py")) == 1
+
+
+def test_a_migration_glob_naming_no_module_fails(tmp_path: Path) -> None:
+    """a migration glob that matches nothing is stale, and says so."""
+    config = _config(tmp_path, "x = 1\n", migration_modules=("src/gone/migrations/v*.py",))
+    assert any("matches no module" in finding for finding in epoch_discipline_findings(config, RULE_EPOCH_BYPASS))

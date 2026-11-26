@@ -172,6 +172,10 @@ _CONFIG = EpochDisciplineConfig(
         f"{_CORE}/testing/",
     ),
     minimum_files_scanned=900,
+    # the modules the migration runner runs: every package's versioned migrations. A keyed update in one that stamps
+    # every row it writes from the shared stamp is heard by the runner's announce of its run's window
+    # (MigrationRunner(announcer=...)), not a bypass (walkers._stamped_migration_write)
+    migration_modules=("packages/*/migrations/v*.py",),
 )
 
 

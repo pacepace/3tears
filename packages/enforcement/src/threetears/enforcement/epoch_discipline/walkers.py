@@ -15,11 +15,21 @@ epoch-bypass hit in its body moves to every call site, under the caller's functi
 ``bypassing_write`` state (``UPDATE wake_fires via _fenced_update``), so a helper the collection write path alone
 calls is the write path, and the same helper called from anywhere else is the bypass it is. A private writer its
 module never calls keeps its hit in place.
+
+A keyed update in a migration module (one the migration runner runs, ``EpochDisciplineConfig.migration_modules``) that
+stamps every row it writes is heard, not a bypass: its ``values`` (``update_keyed``) or ``set_to`` (``update_before``)
+is a dict literal, inline or bound once in the function, whose ``epoch`` key (``EPOCH_COLUMN`` or ``"epoch"``) holds
+the shared stamp: ``CallerTransaction.stamp_for(...)``, ``next_epoch()``, or ``rising_stamp(<one of those>, ...)``,
+each inline or through a name bound once in the function to one. The runner (``MigrationRunner(announcer=...)``)
+announces every row stamped within its run's window, so such a write reaches every follower. An unstamped write in a
+migration, a stamped one outside a migration, and a write whose values stamp other columns but not ``epoch`` are each
+still the bypass they were.
 """
 
 from __future__ import annotations
 
 import ast
+import fnmatch
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -135,6 +145,20 @@ _L2_PRIMITIVES: Final[frozenset[str]] = frozenset({"_save_to_l2", "_delete_from_
 
 #: the calls that announce an out-of-band change; a function making one may write around the collection.
 _ANNOUNCE_CALLS: Final[frozenset[str]] = frozenset({"announce_change", "advance_with_change"})
+
+#: the keyed updates a migration may stamp, each onto the keyword holding the columns it sets
+_STAMPABLE_UPDATES: Final[dict[str, str]] = {"update_keyed": "values", "update_before": "set_to"}
+
+#: a dict key naming the epoch column: the constant (``row_epoch.EPOCH_COLUMN``) or its text
+_EPOCH_KEY_NAME: Final[str] = "EPOCH_COLUMN"
+_EPOCH_KEY_TEXT: Final[str] = "epoch"
+
+#: the shared stamp's sources, each a fresh stamp every stamped write draws: ``next_epoch()`` and
+#: ``CallerTransaction.stamp_for(...)``; ``rising_stamp(<stamp>, ...)`` carries one into a keyed update's value
+_NEXT_EPOCH: Final[str] = "next_epoch"
+_STAMP_FOR: Final[str] = "stamp_for"
+_STAMP_FOR_OWNER: Final[str] = "CallerTransaction"
+_RISING_STAMP: Final[str] = "rising_stamp"
 
 #: the call that opens a cache-bypassing write whose keys the block names.
 _BYPASSING_WRITE: Final[str] = "bypassing_write"
@@ -318,12 +342,14 @@ class EpochScan:
     :ivar definitions: ``<path>::<qualified name>`` of every function and class seen, so a
         primitive entry naming none is stale
     :ivar unmatched_exclusions: excluded prefixes that matched no module
+    :ivar unmatched_migrations: migration module globs that matched no module
     """
 
     hits: list[EpochHit] = field(default_factory=list)
     files_scanned: int = 0
     definitions: set[str] = field(default_factory=set)
     unmatched_exclusions: list[str] = field(default_factory=list)
+    unmatched_migrations: list[str] = field(default_factory=list)
 
 
 def _strings_bound(body: list[ast.stmt], env: dict[str, str]) -> None:
@@ -534,17 +560,22 @@ def _is_unset(value: ast.expr) -> bool:
 class _ModuleWalk(ast.NodeVisitor):
     """walks one module, recording each rule's hits under their enclosing function."""
 
-    def __init__(self, path: str, tree: ast.Module) -> None:
+    def __init__(self, path: str, tree: ast.Module, *, migration: bool = False) -> None:
         """prepare a walk of one module.
 
         :param path: repo-relative posix path of the module
         :ptype path: str
         :param tree: its parse
         :ptype tree: ast.Module
+        :param migration: whether the module is one the migration runner runs (its stamped keyed updates are heard)
+        :ptype migration: bool
         :return: nothing
         :rtype: None
         """
         self.path = path
+        self._migration = migration
+        #: the functions the walk is inside, innermost last
+        self._function_nodes: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
         self.hits: list[EpochHit] = []
         self.definitions: set[str] = set()
         self._stack: list[str] = []
@@ -661,7 +692,9 @@ class _ModuleWalk(ast.NodeVisitor):
                 _strings_bound([inner], env)
         self._envs.append(env)
         self._announcing.append(self._calls_any(node.body, _ANNOUNCE_CALLS))
+        self._function_nodes.append(node)
         self.generic_visit(node)
+        self._function_nodes.pop()
         self._announcing.pop()
         self._envs.pop()
         self._stack.pop()
@@ -882,13 +915,100 @@ class _ModuleWalk(ast.NodeVisitor):
         elif name in _COPY_CALLS:
             table = _text(node.args[0], self._envs[-1], self._attributes) if node.args else None
             self._hit(RULE_EPOCH_BYPASS, node, f"COPY {table or '?'}")
-        elif name in _KEYED_WRITES and not _handed_a_collection(node, name):
+        elif (
+            name in _KEYED_WRITES
+            and not _handed_a_collection(node, name)
+            and not self._stamped_migration_write(node, name)
+        ):
             verb, position, keyword = _KEYED_WRITES[name]
             argument = node.args[position] if len(node.args) > position else None
             if argument is None:
                 argument = next((each.value for each in node.keywords if each.arg == keyword), None)
             table = _text(argument, self._envs[-1], self._attributes) if argument is not None else None
             self._hit(RULE_EPOCH_BYPASS, node, f"{verb} {table or '{}'}")
+
+    def _stamped_migration_write(self, node: ast.Call, name: str) -> bool:
+        """whether ``node`` is a keyed update in a migration module that stamps every row it writes.
+
+        :param node: the call
+        :ptype node: ast.Call
+        :param name: its final callee name
+        :ptype name: str
+        :return: whether the module is a migration, ``name`` one of :data:`_STAMPABLE_UPDATES`, and the columns it sets
+            are a dict whose ``epoch`` is the shared stamp (:meth:`_is_stamp`)
+        :rtype: bool
+        """
+        if not self._migration or name not in _STAMPABLE_UPDATES:
+            return False
+        handed = next((each.value for each in node.keywords if each.arg == _STAMPABLE_UPDATES[name]), None)
+        columns = self._bound(handed)
+        if not isinstance(columns, ast.Dict):
+            return False
+        epoch = next(
+            (value for key, value in zip(columns.keys, columns.values, strict=True) if _names_epoch(key)), None
+        )
+        return epoch is not None and self._is_stamp(epoch)
+
+    def _bound(self, node: ast.expr | None) -> ast.expr | None:
+        """``node``, or for a bare name the one value the enclosing function binds it to.
+
+        :param node: an expression
+        :ptype node: ast.expr | None
+        :return: the expression; None for a name bound other than exactly once by a plain assignment in the function
+        :rtype: ast.expr | None
+        """
+        if not isinstance(node, ast.Name):
+            return node
+        if not self._function_nodes:
+            return None
+        values: list[ast.expr | None] = []
+        for inner in _own_nodes(self._function_nodes[-1].body):
+            if isinstance(inner, ast.Assign):
+                if any(isinstance(target, ast.Name) and target.id == node.id for target in inner.targets):
+                    values.append(inner.value if len(inner.targets) == 1 else None)
+                elif any(node.id in _target_names(target) for target in inner.targets):
+                    values.append(None)
+            elif isinstance(inner, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+                if node.id in _target_names(inner.target):
+                    values.append(inner.value if isinstance(inner, ast.AnnAssign) else None)
+            elif isinstance(inner, (ast.For, ast.AsyncFor, ast.comprehension)):
+                if node.id in _target_names(inner.target):
+                    values.append(None)
+            elif isinstance(inner, (ast.With, ast.AsyncWith)):
+                if any(
+                    item.optional_vars is not None and node.id in _target_names(item.optional_vars)
+                    for item in inner.items
+                ):
+                    values.append(None)
+        return values[0] if len(values) == 1 else None
+
+    def _is_stamp(self, node: ast.expr) -> bool:
+        """whether ``node`` is the shared stamp: ``CallerTransaction.stamp_for(...)``, ``next_epoch()``, or
+        ``rising_stamp(<a stamp>, ...)``, inline or through a name the function binds once to one.
+
+        :param node: an expression
+        :ptype node: ast.expr
+        :return: whether it is
+        :rtype: bool
+        """
+        value = self._bound(node) if isinstance(node, ast.Name) else node
+        if not isinstance(value, ast.Call):
+            return False
+        func = value.func
+        name = _final_name(value)
+        if name == _NEXT_EPOCH:
+            return True
+        if name == _STAMP_FOR:
+            owner = _segments(dotted(func.value)) if isinstance(func, ast.Attribute) else []
+            return bool(owner) and owner[-1] == _STAMP_FOR_OWNER
+        if name == _RISING_STAMP:
+            stamp = (
+                value.args[0]
+                if value.args
+                else next((each.value for each in value.keywords if each.arg == "stamp"), None)
+            )
+            return stamp is not None and self._is_stamp(stamp)
+        return False
 
     def _calls_own_primitive(self, node: ast.Call, name: str) -> bool:
         """whether ``node`` is a collection calling its own epoch-advancing bulk write.
@@ -993,6 +1113,32 @@ class _ModuleWalk(ast.NodeVisitor):
                 return
 
 
+def _names_epoch(key: ast.expr | None) -> bool:
+    """whether a dict key names the epoch column: ``EPOCH_COLUMN`` (bare or ``row_epoch.EPOCH_COLUMN``) or
+    ``"epoch"``.
+
+    :param key: the key; None for a ``**`` splat
+    :ptype key: ast.expr | None
+    :return: whether it does
+    :rtype: bool
+    """
+    if isinstance(key, ast.Constant):
+        return key.value == _EPOCH_KEY_TEXT
+    segments = _segments(dotted(key)) if isinstance(key, (ast.Name, ast.Attribute)) else []
+    return bool(segments) and segments[-1] == _EPOCH_KEY_NAME
+
+
+def _target_names(target: ast.expr) -> set[str]:
+    """the names an assignment target binds.
+
+    :param target: the target
+    :ptype target: ast.expr
+    :return: the names
+    :rtype: set[str]
+    """
+    return {each.id for each in ast.walk(target) if isinstance(each, ast.Name)}
+
+
 def _handed_a_collection(node: ast.Call, name: str) -> bool:
     """whether a keyed paged write (``delete_before`` / ``update_before``) is handed a collection, whose
     ``bypassing_write`` each page runs in: any ``collection=`` but a literal ``None``.
@@ -1010,10 +1156,12 @@ def _handed_a_collection(node: ast.Call, name: str) -> bool:
     return handed is not None and not (isinstance(handed, ast.Constant) and handed.value is None)
 
 
-_SCANS: BuildOnce[tuple[Path, tuple[Path, ...], tuple[str, ...]], EpochScan] = BuildOnce()
+_SCANS: BuildOnce[tuple[Path, tuple[Path, ...], tuple[str, ...], tuple[str, ...]], EpochScan] = BuildOnce()
 
 
-def _walk(repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple[str, ...]) -> EpochScan:
+def _walk(
+    repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple[str, ...], migration_modules: tuple[str, ...]
+) -> EpochScan:
     """walk every module under ``src_roots`` once and record every rule's hits.
 
     :param repo_root: the repo root; paths are relative to it
@@ -1022,11 +1170,14 @@ def _walk(repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple
     :ptype src_roots: tuple[Path, ...]
     :param excluded_prefixes: repo-relative directory prefixes left unwalked
     :ptype excluded_prefixes: tuple[str, ...]
+    :param migration_modules: repo-relative ``fnmatch`` globs of the modules the migration runner runs
+    :ptype migration_modules: tuple[str, ...]
     :return: the walk
     :rtype: EpochScan
     """
     scan = EpochScan()
     used: set[str] = set()
+    matched: set[str] = set()
     for root in src_roots:
         for path in iter_python_files(root):
             relative = relative_posix_path(path, repo_root)
@@ -1034,19 +1185,25 @@ def _walk(repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple
             used.update(excluded)
             if excluded:
                 continue
+            migrations = [glob for glob in migration_modules if fnmatch.fnmatchcase(relative, glob)]
+            matched.update(migrations)
             tree = parse_python_path(path)
-            walk = _ModuleWalk(relative, tree)
+            walk = _ModuleWalk(relative, tree, migration=bool(migrations))
             walk.visit(tree)
             walk.judged_at_callers()
             scan.hits.extend(walk.hits)
             scan.definitions.update(walk.definitions)
             scan.files_scanned += 1
     scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
+    scan.unmatched_migrations = [glob for glob in migration_modules if glob not in matched]
     return scan
 
 
 def scan_epoch_discipline(
-    repo_root: Path, src_roots: tuple[Path, ...], excluded_prefixes: tuple[str, ...] = ()
+    repo_root: Path,
+    src_roots: tuple[Path, ...],
+    excluded_prefixes: tuple[str, ...] = (),
+    migration_modules: tuple[str, ...] = (),
 ) -> EpochScan:
     """every rule's hits under ``src_roots``.
 
@@ -1059,7 +1216,11 @@ def scan_epoch_discipline(
     :ptype src_roots: tuple[Path, ...]
     :param excluded_prefixes: repo-relative directory prefixes left unwalked
     :ptype excluded_prefixes: tuple[str, ...]
+    :param migration_modules: repo-relative ``fnmatch`` globs of the modules the migration runner runs, whose keyed
+        updates stamping every row they write are heard
+    :ptype migration_modules: tuple[str, ...]
     :return: the walk
     :rtype: EpochScan
     """
-    return _SCANS.get((repo_root, src_roots, excluded_prefixes), lambda: _walk(repo_root, src_roots, excluded_prefixes))
+    key = (repo_root, src_roots, excluded_prefixes, migration_modules)
+    return _SCANS.get(key, lambda: _walk(*key))

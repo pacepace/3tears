@@ -16,7 +16,9 @@ exactly those, and nothing reloads a whole table to be safe.
 - ``epoch-bypass``: no raw ``INSERT`` / ``UPDATE`` / ``DELETE`` / ``TRUNCATE`` / ``COPY`` through a
   backend's ``execute``, no backend bulk write, and no direct put into a collection's L2 bucket,
   outside the collection write path, a ``bypassing_write`` block, or a function that calls
-  ``announce_change``.
+  ``announce_change``. A keyed update in a migration module (one the migration runner runs,
+  :attr:`EpochDisciplineConfig.migration_modules`) that sets ``epoch`` from the shared stamp is heard: the runner
+  (``MigrationRunner(announcer=...)``) announces every row stamped within its run's window.
 - ``whole-reread``: no whole-table read from L3 (a ``SELECT`` with no ``WHERE`` and no ``LIMIT``),
   and no L3 read inside a function whose name says it rebuilds, recovers, reloads, warms or
   re-proves.
@@ -135,6 +137,10 @@ class EpochDisciplineConfig:
         write inside one is the write path, not a bypass of it
     :ivar minimum_files_scanned: the walk must reach at least this many modules, or it reports
         nothing about anything
+    :ivar migration_modules: repo-relative ``fnmatch`` globs of the modules the migration runner runs (a package's
+        versioned migrations); a keyed update in one that stamps every row it writes (``epoch`` set from
+        ``CallerTransaction.stamp_for`` / ``next_epoch``, or ``rising_stamp`` of one) is heard by the runner's announce
+        of its window, not a bypass. Each must match at least one module
     """
 
     repo_root: Path
@@ -145,3 +151,4 @@ class EpochDisciplineConfig:
     excluded_prefixes: tuple[str, ...] = ()
     write_path_hooks: frozenset[str] = _DEFAULT_WRITE_PATH_HOOKS
     minimum_files_scanned: int = 1
+    migration_modules: tuple[str, ...] = ()
