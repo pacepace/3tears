@@ -2937,6 +2937,8 @@ class SharedArrowStore:
             "versions": list(versions),
             "slots_open": len(self._slots),
             "pieces_open": sum(len(each.names) for each in self._pieces.values()),
+            # the bytes open slots, their pieces and hand-offs being written are counted at (each map is replaced whole)
+            "reserved_bytes": sum(self._slots.values()) + sum(self._handing.values()),
             "pieces_used": self._pieces_used,
             "pieces_grown": self._pieces_grown,
             "segments_claimed": len(self._claimed),
@@ -4629,6 +4631,38 @@ def _abandon_submitted(submitting: asyncio.Future[Any]) -> None:
         _off_loop(run.abandon, future, what="an abandoned shared Arrow result could not be discarded")
 
 
+async def _abandoned(run: _Run, future: Future[Any]) -> None:
+    """a run nobody claims (its job raised, its worker died, or its caller stopped waiting): its slot discarded.
+
+    A job already done -- it raised, or its worker died -- has its slot discarded before :meth:`SharedArrowPool.run`
+    raises, on a thread (a discard sweeps the directory). Left to a thread nobody waited on, the caller's next job
+    raced it: a copy's apply lane gives a change whose worker died to a fresh one at once, and that job's hand-off
+    found the dead job's piece still reserved -- the whole 1 GiB store, before pieces were sized to their change -- and
+    was refused ("no room for a 71707-byte hand-off in 1073741824 bytes", 4 of 25 runs of the lane's second-death
+    test, 2026-11-25). A job still running (its caller cancelled) has its slot discarded once its worker is done, and a
+    caller cancelled while the discard runs leaves it to finish on its thread.
+
+    :param run: the run
+    :ptype run: _Run
+    :param future: the job's future
+    :ptype future: Future[Any]
+    :return: nothing
+    :rtype: None
+    """
+    what = "a failed shared Arrow job's result could not be discarded"
+    if not future.done():
+        _off_loop(run.abandon, future, what=what)
+        return
+    discarding = asyncio.ensure_future(asyncio.to_thread(run.abandon, future))
+    try:
+        await asyncio.shield(discarding)
+    except asyncio.CancelledError:
+        discarding.add_done_callback(functools.partial(_said_if_failed, what=what))
+        raise
+    except Exception as exc:  # noqa: BLE001 -- the job's own error is what its caller hears; contained, so it is counted
+        contain(exc, log=log, what=what)
+
+
 def _close_claimed(claiming: asyncio.Future[Any]) -> None:
     """a claim whose caller stopped waiting: once it is done, the result it mapped is closed (its files go).
 
@@ -4855,8 +4889,7 @@ class SharedArrowPool:
             return JobResult(value=value, segment=segment)
         finally:
             if not claimed:
-                # a discard sweeps the directory, and runs at once on a job already done: on a thread, never the loop
-                _off_loop(run.abandon, future, what="a failed shared Arrow job's result could not be discarded")
+                await _abandoned(run, future)
 
     def _submit(
         self,

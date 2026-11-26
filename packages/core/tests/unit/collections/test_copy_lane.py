@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +33,7 @@ from threetears.core.collections.shared_copy import (
     SharedCopyBackend,
     held_parts,
 )
-from threetears.core.shared_arrow import SharedArrowStore, read_version
+from threetears.core.shared_arrow import PiecedSlot, SegmentSlot, SharedArrowStore, read_version
 
 SCHEMA = pa.schema(
     [
@@ -100,6 +102,12 @@ def _mark(store: SharedArrowStore) -> int:
     with read_version(store.root, current.name) as mapped:
         mark: int = mapped.tables[MARK_TABLE]["mark"][0].as_py()
         return mark
+
+
+def _reserved(store: SharedArrowStore) -> tuple[int, int, int, int]:
+    """what the store holds reserved: its open slots, pieces and hand-offs, and the bytes they are counted at."""
+    status = store.status()
+    return status["slots_open"], status["pieces_open"], status["handoffs_open"], status["reserved_bytes"]
 
 
 def _number(version: str) -> int:
@@ -319,4 +327,29 @@ class TestADeadWorker:
             assert _number(after.version) == _number(before.version) + 1
         finally:
             await lane.close()
+            await backend.close()
+
+    async def test_a_dead_workers_piece_and_hand_off_are_let_go_before_its_death_is_heard(
+        self, store: SharedArrowStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the lane gives a change whose worker died to a fresh one at once: a piece the dead job still held then
+        # refused the fresh job's hand-off ("no room for a 71707-byte hand-off in 1073741824 bytes", 2026-11-25). Each
+        # discard is held open a moment, so an apply that raises before its discard is done is seen every time
+        discard = SharedArrowStore.discard
+
+        def slowly(self: SharedArrowStore, slot: SegmentSlot | PiecedSlot) -> None:
+            time.sleep(0.2)
+            discard(self, slot)
+
+        dies = tmp_path / "die"
+        backend = await _backend(store, copy_hooks.DiesWhile(str(dies), once=False))
+        try:
+            await backend.apply([_vote(1)])
+            held = _reserved(store)
+            monkeypatch.setattr(SharedArrowStore, "discard", slowly)
+            dies.touch()
+            with pytest.raises(BrokenProcessPool):
+                await backend.apply([_vote(2)])
+            assert _reserved(store) == held
+        finally:
             await backend.close()
