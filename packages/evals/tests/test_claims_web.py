@@ -534,6 +534,17 @@ async def test_a_web_step_its_repairs_lose_keeps_its_calls_and_the_failure_each_
     ), "the calls kept are the grade's own, in its order"
 
 
+async def test_a_search_port_failing_keeps_the_web_steps_calls_and_never_the_ports_message() -> None:
+    judge = _FakeWebJudge()
+
+    result, trace = await _cell(judge, _FakeWebSearch(failure=ConnectionError("the search is unavailable")))
+
+    assert result.claim_tallies[_CRITERION].web_loss == "port_error"
+    record = trace.claim_losses[_CRITERION]
+    assert [call.step for call in record.calls][-1] == "web", "the call that wrote the search is kept"
+    assert record.failure is None and "unavailable" not in record.model_dump_json(), "the port's message is its own"
+
+
 async def test_web_replies_asked_again_after_they_could_not_be_read_keep_why_they_could_not() -> None:
     judge = _FakeWebJudge(
         script={

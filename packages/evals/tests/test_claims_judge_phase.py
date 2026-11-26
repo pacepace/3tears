@@ -360,6 +360,10 @@ async def test_a_ground_call_failing_costs_groundedness_alone_and_truth_stands(f
     assert tally.ground_loss == expected, "a host's broken client is named as its defect, never a provider's failure"
     assert (counts.asserted, counts.grounded_specific) == (1, 0), "the truth counts stand; nothing is grounded"
     assert trace.claim_grades[_CRITERION].claims[0].verdict == "supported"
+    if isinstance(failure, ConnectionError):
+        # The provider's message is the provider's: the record keeps the calls, and no failure text.
+        record = trace.claim_losses[_CRITERION]
+        assert record.failure is None and "unavailable" not in record.model_dump_json()
     if failure == _DEFECTIVE:
         (row,) = [row for row in result.usage if row.role == "judge"]
         assert row.call_count == 3, "the defective completion is billed, once"
@@ -535,6 +539,10 @@ async def test_a_ground_step_its_repairs_lose_keeps_its_calls_and_the_failure_ea
         ("ground", "repair"),
     ]
     assert calls[-1].reason == "it cites S9, which is no evidence shown here; cite the refs listed under Evidence"
+    assert trace.claim_losses[_CRITERION].failure == (
+        "ground step: the claim verifier would ask 1 ground claim(s) again with 1 of the step's 1 repairs spent: "
+        "ground claim 0: it cites S9, which is no evidence shown here; cite the refs listed under Evidence"
+    )
     grade = trace.claim_grades[_CRITERION]
     assert [ClaimCall.model_validate(call.model_dump(exclude={"step", "reason"})) for call in calls] == list(
         grade.calls
