@@ -32,6 +32,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from threetears.core.collections.bucket import COLLECTIONS_BUCKET_SUFFIX, bind_collections_bucket
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -213,6 +214,12 @@ async def _pods(url: str, pool: asyncpg.Pool) -> AsyncIterator[tuple[_Pod, _Pod]
         await NatsClient.connect(nats_url=url, nats_subject_namespace=namespace, client_name="pod-a") as a_nc,
         await NatsClient.connect(nats_url=url, nats_subject_namespace=namespace, client_name="pod-b") as b_nc,
     ):
+        # the shared L2 bucket as a deployment has it, before either registry is configured: declared by its owner
+        # (as the hub does, with allow_direct) and bound by the other, so an L2 read or eviction probe is the direct
+        # get every process uses, not the body-carried STREAM.MSG.GET a bucket opened lazily without allow_direct falls
+        # back to (bucket.py says why a process refuses that bucket)
+        await a_nc.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX)
+        await bind_collections_bucket(b_nc, component="pod-b")
         pod_a, pod_b = _Pod(a_nc, pool, scope="pod-a"), _Pod(b_nc, pool, scope="pod-b")
         try:
             # the namespace's change log is declared before anyone reads it, as the hub's keeper does at its start
