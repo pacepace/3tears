@@ -76,7 +76,7 @@ from threetears.core.collections.epoch_change import RESET_REASON, keyed_record_
 from threetears.core.collections.scope_epochs import changed_scopes
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN, RESTORE_DECLARATION_MARK, invalidation_columns_of
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, TABLE_RESET_SCOPE
-from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE, key_text_sql
+from threetears.core.ddl.tenant_moves import key_text_sql
 from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, copy_keyed, keyset_page, keyset_rows
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.tenancy import Tenancy, column_tenant_sql, schema_tenant, value_tenant
@@ -485,20 +485,9 @@ def moves_relation(table: StampedTable) -> str:
     :return: ``schema.threetears_tenant_moves``
     :rtype: str
     """
-    return f"{table.schema}.{TENANT_MOVES_TABLE}"
-
-
-def moves_by(table: StampedTable, bucket: int) -> dict[str, Any]:
-    """the moves table's key prefix a bucket of ``table``'s moves are read by: the table and the bucket.
-
-    :param table: the moved table
-    :ptype table: StampedTable
-    :param bucket: the bucket
-    :ptype bucket: int
-    :return: column -> value
-    :rtype: dict[str, Any]
-    """
-    return {"table_name": table.table, "scope": str(bucket)}
+    # spelled here, not by TENANT_MOVES_TABLE: the no-whole-reads walk reads the relation this answers from its own
+    # text, and judges each read of it by the moves table's declared key (test_run_markers_schema holds them equal)
+    return f"{table.schema}.threetears_tenant_moves"
 
 
 async def _bucket_moves(pool: Any, table: StampedTable, bucket: int, floor: int) -> bytes:
@@ -521,10 +510,11 @@ async def _bucket_moves(pool: Any, table: StampedTable, bucket: int, floor: int)
         pool,
         moves_relation(table),
         columns=_move_fold_columns(table),
-        by=moves_by(table, bucket),
-        # the key's own order after its bound table and bucket: one range, no sort
-        order=[Sort(EPOCH_COLUMN, cast="bigint")],
-        where=[Fragment(f't."{EPOCH_COLUMN}" >= $1', (floor,))],
+        # the moves table's key prefix, the table and the bucket, then its own order (its own columns, as
+        # TENANT_MOVES_SCHEMA spells them): one range, no sort
+        by={"table_name": table.table, "scope": str(bucket)},
+        order=[Sort("epoch", cast="bigint")],
+        where=[Fragment('t."epoch" >= $1', (floor,))],
         force_quote=_FOLD_COLUMNS[:3],
     )
 

@@ -9,9 +9,15 @@ test flips when the two spellings part.
 from __future__ import annotations
 
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
+from threetears.core.collections.table_restore import StampedTable, moves_relation
 from threetears.core.collections.tenant_moves import TENANT_MOVES_SCHEMA
 from threetears.core.ddl.run_markers import RUN_MARKER_COLUMNS, RUN_MARKERS_TABLE
-from threetears.core.ddl.tenant_moves import TENANT_MOVE_COLUMNS, TENANT_MOVES_KEY, TENANT_MOVES_TABLE
+from threetears.core.ddl.tenant_moves import (
+    TENANT_MOVE_COLUMNS,
+    TENANT_MOVES_KEY,
+    TENANT_MOVES_TABLE,
+)
+from threetears.core.tenancy import Tenancy
 
 
 def test_the_run_marker_declaration_names_the_table_and_key_its_statements_write() -> None:
@@ -26,3 +32,18 @@ def test_the_moves_declaration_names_the_table_and_key_its_statements_write() ->
     assert TENANT_MOVES_SCHEMA.name == TENANT_MOVES_TABLE
     assert tuple(TENANT_MOVES_SCHEMA.pk_columns) == TENANT_MOVES_KEY
     assert tuple(column.name for column in TENANT_MOVES_SCHEMA.columns) == TENANT_MOVE_COLUMNS
+
+
+def test_a_restore_reads_a_stamped_tables_moves_from_the_moves_table_in_its_schema() -> None:
+    """Flips if ``moves_relation`` names another table than the moves table its statements write, in the moved table's
+    schema."""
+    table = StampedTable(
+        schema="owner",
+        table="runs",
+        bucket="epoch_bucket",
+        buckets=16,
+        keys=("id",),
+        instants=frozenset(),
+        tenancy=Tenancy("undeclared"),
+    )
+    assert moves_relation(table) == f"owner.{TENANT_MOVES_TABLE}"
