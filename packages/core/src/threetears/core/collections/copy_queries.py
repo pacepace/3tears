@@ -80,6 +80,7 @@ import pyarrow.ipc as ipc
 
 from threetears.core.arrow_keys import rows_found
 from threetears.core.collections.shared_copy import INDEX_PREFIXES, MARK_TABLE
+from threetears.core.config import DEFAULT_COPY_QUERY_TIMEOUT_SECONDS
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
     JobContext,
@@ -126,11 +127,6 @@ _QUERY_THREADS: Final = 1
 #: 16 holds at most that many leases, most on the current version, and is several rounds of 3 workers' heavy reads
 #: (seconds each at prod size, inventory section 4): a caller past it waits for room, never the queue growing
 _MAX_WAITING: Final = 16
-
-#: the longest a query may wait and run, by default. The heaviest read over the copy is a report build: 12-17 s on
-#: cobalt prod (reports' ``compute_workers`` docstring); a query still running at 120 s is runaway, and stopping it
-#: frees its worker for the queries behind it
-_TIMEOUT_SECONDS: Final = 120.0
 
 #: a query worker holding more private memory than this after a query is replaced before its next (reports' compute
 #: workers' measured bound, ``COMPUTE_WORKER_PRIVATE_BYTES``: 1 GiB replaced its pool 61 times in 70 minutes of the
@@ -725,7 +721,8 @@ class CopyQueries:
     :ptype declared: Mapping[str, Callable[[duckdb.DuckDBPyConnection, Sequence[Any]], Any]]
     :param max_waiting: the queries admitted beyond those running (:data:`_MAX_WAITING`)
     :ptype max_waiting: int
-    :param timeout: each query's timeout by default, waiting and running (:data:`_TIMEOUT_SECONDS`)
+    :param timeout: each query's timeout by default, waiting and running
+        (:data:`~threetears.core.config.DEFAULT_COPY_QUERY_TIMEOUT_SECONDS`)
     :ptype timeout: float
     :param private_bytes: a worker holding more private memory than this after a query is replaced
     :ptype private_bytes: int
@@ -745,7 +742,7 @@ class CopyQueries:
         prepare: Callable[[Any], object] | None = None,
         declared: Mapping[str, Callable[[Any, Sequence[Any]], Any]] = EMPTY,
         max_waiting: int = _MAX_WAITING,
-        timeout: float = _TIMEOUT_SECONDS,
+        timeout: float = DEFAULT_COPY_QUERY_TIMEOUT_SECONDS,
         private_bytes: int = _QUERY_PRIVATE_BYTES,
         threads: int = _QUERY_THREADS,
         preload: Sequence[str] = (),

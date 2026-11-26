@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 
 __all__ = [
     "DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS",
+    "DEFAULT_COPY_QUERY_TIMEOUT_SECONDS",
     "DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS",
     "DEFAULT_HTTP_TIMEOUT_SECONDS",
     "DEFAULT_L1_LEDGER_DRAIN_TIMEOUT_SECONDS",
@@ -65,6 +66,12 @@ DEFAULT_BRIDGE_LOOP_START_TIMEOUT_SECONDS = 30.0
 # queued when it was called. A hand-off takes microseconds; the bound exists so a ledger thread that stopped is an
 # error naming itself, not a test or a caller hung forever.
 DEFAULT_L1_LEDGER_DRAIN_TIMEOUT_SECONDS = 30.0
+
+# the longest a query over a shared copy may wait and run, by default
+# (:class:`threetears.core.collections.copy_queries.CopyQueries`). The heaviest read over the copy is a report
+# build: 12-17 s on cobalt prod (reports' ``compute_workers`` docstring); a query still running at 120 s is runaway,
+# and stopping it frees its worker for the queries behind it.
+DEFAULT_COPY_QUERY_TIMEOUT_SECONDS = 120.0
 
 
 @runtime_checkable

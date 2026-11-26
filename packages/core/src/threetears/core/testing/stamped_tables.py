@@ -99,17 +99,53 @@ class RecordingPool:
         return [] if self.answer is None else self.answer(folded, params)
 
     async def execute(self, sql: str, *params: Any) -> str:
+        """keep a write; it answers one row.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: asyncpg's status: ``UPDATE 1`` for an update, ``INSERT 0 1`` for anything else
+        :rtype: str
+        """
         self._read(sql, params)
         return "UPDATE 1" if sql.lstrip().upper().startswith("UPDATE") else "INSERT 0 1"
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """keep a read and answer its rows.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: :attr:`answer`'s rows for it
+        :rtype: list[dict[str, Any]]
+        """
         return self._read(sql, params)
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
+        """keep a read and answer its first row.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the first of :attr:`answer`'s rows for it; None for none
+        :rtype: dict[str, Any] | None
+        """
         rows = self._read(sql, params)
         return rows[0] if rows else None
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
+        """keep a read and answer its first row's first value.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: that value; None for no rows
+        :rtype: Any
+        """
         rows = self._read(sql, params)
         return next(iter(rows[0].values())) if rows else None
 
@@ -169,6 +205,15 @@ class MigrationStore:
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
 
     async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """keep a read and answer it: YugabyteDB's version, a backfill's first page of keys, or no rows.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: the rows
+        :rtype: list[dict[str, Any]]
+        """
         folded = " ".join(sql.split())
         self.statements.append((folded, params))
         if folded.startswith("SELECT version()"):
@@ -182,6 +227,15 @@ class MigrationStore:
         return []
 
     async def execute(self, sql: str, *params: Any) -> str:
+        """keep a write; it answers one row.
+
+        :param sql: the statement
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: Any
+        :return: ``UPDATE 1``
+        :rtype: str
+        """
         self.statements.append((" ".join(sql.split()), params))
         return "UPDATE 1"
 
@@ -241,6 +295,15 @@ class _Catalog:
         self.sent: list[tuple[str, tuple[Any, ...]]] = []
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """keep a read and answer the catalog's restore declarations, one row a table.
+
+        :param query: the statement
+        :ptype query: str
+        :param args: its parameters
+        :ptype args: Any
+        :return: each table's schema, name, declaration and whether it runs markers
+        :rtype: list[dict[str, Any]]
+        """
         self.sent.append((query, args))
         rows = []
         for schema in self.schemas:
@@ -257,15 +320,36 @@ class _Catalog:
         return rows
 
     async def copy_from_query(self, query: str, *args: Any, output: Any, **_: Any) -> str:
+        """keep a ``COPY``; it answers no rows.
+
+        :param query: the statement
+        :ptype query: str
+        :param args: its parameters
+        :ptype args: Any
+        :param output: where asyncpg would write the rows; nothing is written
+        :ptype output: Any
+        :return: ``COPY 0``
+        :rtype: str
+        """
         self.sent.append((query, args))
         return "COPY 0"
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[_Catalog]:
+        """the pool as its own connection.
+
+        :return: the connection's ``async with``
+        :rtype: AsyncIterator[_Catalog]
+        """
         yield self
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
+        """a transaction that does nothing.
+
+        :return: the transaction's ``async with``
+        :rtype: AsyncIterator[None]
+        """
         yield
 
 

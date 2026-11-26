@@ -50,7 +50,11 @@ _STORE_BYTES = 1 << 30
 
 
 class _Closes(Protocol):
-    async def close(self) -> None: ...
+    """what :func:`close_published_copies` closes."""
+
+    async def close(self) -> None:
+        """close it."""
+        ...
 
 
 #: the copies made and not yet closed, in order: what :func:`close_published_copies` closes (a test helper's own list,
@@ -114,6 +118,21 @@ class PublishedCopy:
         *,
         unique_keys: bool = False,
     ) -> int:
+        """stage rows in the DuckDB, as :meth:`~threetears.core.cache.duckdb.DuckDBBackend.stage_rows`.
+
+        :param stage: the staging table
+        :ptype stage: str
+        :param table: the table the rows are for
+        :ptype table: str
+        :param rows: the rows
+        :ptype rows: Any
+        :param key: the table's key columns
+        :ptype key: Annotated[Sequence[str], DeclaredKey]
+        :param unique_keys: the rows hold each key once already
+        :ptype unique_keys: bool
+        :return: the rows staged
+        :rtype: int
+        """
         if unique_keys:
             return int(self.backend.stage_rows(stage, table, rows, key, unique_keys=True))
         # called as a follower calls it, so a test that patches the copy's stage_rows patches this call
@@ -122,24 +141,78 @@ class PublishedCopy:
     def stage_keys(
         self, stage: str, table: str, key: Sequence[str], keys: Any, *, rows_stage: str | None = None
     ) -> int:
+        """stage keys in the DuckDB, as :meth:`~threetears.core.cache.duckdb.DuckDBBackend.stage_keys`.
+
+        :param stage: the staging table
+        :ptype stage: str
+        :param table: the table the keys are of
+        :ptype table: str
+        :param key: the key columns, in order
+        :ptype key: Sequence[str]
+        :param keys: the keys
+        :ptype keys: Any
+        :param rows_stage: a staging table of ``table``'s rows to take these keys' rows out of; None for none
+        :ptype rows_stage: str | None
+        :return: the keys staged
+        :rtype: int
+        """
         return int(self.backend.stage_keys(stage, table, key, keys, rows_stage=rows_stage))
 
     def unstage_keys(self, stages: Sequence[str], table: str, key: Sequence[str], keys: Any) -> int:
+        """take keys out of the DuckDB's staging tables, as :meth:`~threetears.core.cache.duckdb.DuckDBBackend.unstage_keys`.
+
+        :param stages: the staging tables
+        :ptype stages: Sequence[str]
+        :param table: the table the stages are of
+        :ptype table: str
+        :param key: the key columns, in order
+        :ptype key: Sequence[str]
+        :param keys: the keys
+        :ptype keys: Any
+        :return: the keys given
+        :rtype: int
+        """
         return int(self.backend.unstage_keys(stages, table, key, keys))
 
     def drop_stage(self, *stages: str) -> None:
+        """drop the DuckDB's staging tables, as :meth:`~threetears.core.cache.duckdb.DuckDBBackend.drop_stage`.
+
+        :param stages: the staging tables
+        :ptype stages: str
+        """
         self.backend.drop_stage(*stages)
 
     def staged_stages(self) -> list[str]:
+        """the DuckDB's staging tables now, as :meth:`~threetears.core.cache.duckdb.DuckDBBackend.staged_stages`.
+
+        :return: their names
+        :rtype: list[str]
+        """
         return list(self.backend.staged_stages())
 
     async def apply_staged(self, changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        """apply the staged changes in the DuckDB (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.apply_staged`), then publish the state it holds.
+
+        :param changes: each table's change
+        :ptype changes: Sequence[StagedChange]
+        :param mark: the mark of the change applied; None leaves it as it was
+        :ptype mark: int | None
+        :return: the rows that went in
+        :rtype: int
+        """
         # the DuckDB's own apply and the publish, on a thread: the follower awaits a backend's apply on its loop
         rows = int(await asyncio.to_thread(self.backend.apply_staged, changes, mark=mark))
         await asyncio.to_thread(self.publish)
         return rows
 
     def schema_digest(self, table: str) -> str:
+        """the DuckDB's digest of a table's columns, as :meth:`~threetears.core.cache.duckdb.DuckDBBackend.schema_digest`.
+
+        :param table: the table
+        :ptype table: str
+        :return: the hex digest
+        :rtype: str
+        """
         return self.backend.schema_digest(table)
 
     async def close(self) -> None:

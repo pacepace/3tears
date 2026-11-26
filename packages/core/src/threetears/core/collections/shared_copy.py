@@ -1449,6 +1449,15 @@ class _Result:
     held: int = 0
 
     def write(self, table: str, part: str, rows: pa.Table) -> None:
+        """write one part's rows into the result, stamped against the version's same part.
+
+        :param table: the table
+        :ptype table: str
+        :param part: the part
+        :ptype part: str
+        :param rows: the part's rows
+        :ptype rows: pa.Table
+        """
         name = f"p{len(self.parts)}"
         # one record batch a file: a reader maps each batch as arrays of its own, and letting a version go frees
         # every array (``_MAX_VERSION_FILES``' why); a pack's scopes, concatenated, were a batch a scope
@@ -1459,6 +1468,13 @@ class _Result:
         self.parts.append((table, part, name))
 
     def drop(self, table: str, part: str) -> None:
+        """take one part out of the version: nothing written, the part recorded as gone.
+
+        :param table: the table
+        :ptype table: str
+        :param part: the part
+        :ptype part: str
+        """
         self.parts.append((table, part, None))
 
     def hold(self, rows: pa.Table) -> str:
@@ -2301,6 +2317,14 @@ class _Checked:
     hooks: Any
 
     def derive(self, applied: AppliedTables) -> Sequence[ChangePage]:
+        """run the product's hooks over the reload's tables as staged, so a reload they refuse fails; drop what they
+        derive.
+
+        :param applied: the tables as the reload staged them
+        :ptype applied: AppliedTables
+        :return: no pages
+        :rtype: Sequence[ChangePage]
+        """
         self.hooks.derive(applied)
         return ()
 
