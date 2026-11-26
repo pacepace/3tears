@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a mark counts an advance's rows without copying every advance waiting behind a gap
+
+**Fixed:** `GenerationMarks` keeps the advances heard past its mark in a `logged()` map (`threetears.core.frozen_state`),
+still immutable to its readers, so a count sets one advance and copies a key about log2(n) times over its life, where a
+frozen `dict` copied whole on every count made hearing W waiting advances O(W^2). A mark already full (it stopped
+recording) is no longer rebuilt on each advance more, and moving past advances unsets only those passed. 20,000 advances
+heard behind one gap in one turn: 0.52 s of the loop before, 0.062 s now; counting each one's last rows 0.88 s before,
+0.060 s now (macOS arm64, Python 3.14). The marks left are the same.
+
 ### core: a follower stopped while it writes a checkpoint makes no reference cycle
 
 **Fixed:** `CopyFollower` lets go of its checkpoint's write once the write is done. Cancelled by `stop()`, the write's

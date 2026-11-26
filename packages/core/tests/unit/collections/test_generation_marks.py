@@ -14,9 +14,12 @@ The contract this pins:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from threetears.core.collections.generation import (
+    _MAX_REMEMBERED_ADVANCES,
     GenerationMarks,
     GenerationVerdict,
     NoWriteGeneration,
@@ -224,3 +227,51 @@ class TestAdoptingAnotherSetOfMarks:
         copy.adopt(_TABLE, GenerationMarks())
         assert copy.follows(_TABLE)
         assert copy.recorded(_TABLE) is None
+
+
+class TestManyWaitingAdvancesHeardInOneTurn:
+    """Flips (through the loop-stall guard, ``threetears.core.testing.loop_stall``) if counting a row of an advance
+    copies every advance waiting behind a gap: hearing W waiting advances is then O(W^2), and 20,000 heard in one turn
+    held it 0.52 s, counting each one's last rows 0.88 s more (macOS arm64, Python 3.14, 2026-11-25). Each stage runs
+    in a turn of its own; the marks it leaves are the ones the copying record left (checked against it)."""
+
+    async def test_twenty_thousand_waiting_advances_hold_no_turn_and_leave_the_same_marks(self) -> None:
+        marks = _followed("inc:0")
+        waiting = range(2, 2 + _MAX_REMEMBERED_ADVANCES)
+        newest = f"inc:{waiting[-1]}"
+        # advance 1 is never heard: every one after it waits behind the gap, past what the mark remembers
+        for count in range(2, 20_002):
+            marks.hear(_TABLE, f"inc:{count}", 3)
+        assert marks.recorded(_TABLE) == "inc:0"
+        assert marks.highest_heard(_TABLE) == newest
+        assert marks.pending(_TABLE) == tuple(f"inc:{count} (1/3)" for count in waiting)
+        assert marks.judge(_TABLE, newest) is GenerationVerdict.MISSED
+        await asyncio.sleep(0)
+
+        for count in range(2, 20_002):
+            marks.hear(_TABLE, f"inc:{count}", 3, rows=2)
+        assert marks.pending(_TABLE) == tuple(f"inc:{count} (3/3)" for count in waiting)
+        # full: an advance past what it remembers is unheard, and none heard in full is vouched for
+        assert not marks.heard_in_full(_TABLE, "inc:2")
+        assert not marks.heard_in_full(_TABLE, "inc:9000")
+        marks.hear(_TABLE, "inc:1", 1)
+        assert marks.recorded(_TABLE) == "inc:0"
+        await asyncio.sleep(0)
+
+        marks.applied(_TABLE, newest)
+        assert marks.heard_in_full(_TABLE, "inc:2")
+        marks.advance_to(_TABLE, "inc:4103")
+        assert marks.recorded(_TABLE) == "inc:4103"
+        assert marks.pending(_TABLE) == ()
+        assert marks.judge(_TABLE, "inc:4103") is GenerationVerdict.CURRENT
+
+    async def test_a_gap_filled_moves_the_mark_past_every_advance_waiting_behind_it(self) -> None:
+        marks = _followed("inc:0")
+        for count in range(2, 4_002):
+            marks.hear(_TABLE, f"inc:{count}", 1)
+        assert len(marks.pending(_TABLE)) == 4_000
+        marks.hear(_TABLE, "inc:1", 1)
+        assert marks.recorded(_TABLE) == "inc:4001"
+        assert marks.pending(_TABLE) == ()
+        assert marks.heard_in_full(_TABLE, "inc:4001")
+        assert marks.judge(_TABLE, "inc:4001") is GenerationVerdict.CURRENT
