@@ -27,8 +27,6 @@ no longer needed. Where L2 is the only store (presence, pod heartbeats), an olde
 write. Where L2 is a table's record (``l2_first``), an entry of another shape is still the committed row: it is counted
 and decoded as before, never read as "no row", which the saver would turn into a delete from L3.
 
-### enforcement, core: two gate facts (Pace 2026-11-27): a migration's stamped write is heard; a reload's call is covered by what it reaches
-
 ### What a consumer must do at this release (agent-acl's migrations, cleanup records, the retry helper, the replay)
 
 **The hub repeats agent-acl v007-v011 in its own migrations.** A deployment whose own migrations create the access
@@ -8723,6 +8721,7 @@ operation) and the gauge read 0 at every scrape. The gauge itself is right: a ca
   a no-op without `prometheus_client` like `InflightRequestsGauge`.
 - `InflightRequestsGauge.registry`: the registry the gauge is served from, for other metrics to share its
   `/metrics` route.
+
 
 ### registry, scheduled-jobs: a starting registry replica takes calls once its loaded copies are routable, and a fire a moment fixes is retried once
 
@@ -21632,6 +21631,7 @@ Full rationale, and which consumer owns which step, in `docs/design-durable-coor
   blocked the `allow_msg_ttl` enable. Differences outside the reconciled set are now always
   reported at WARNING, including when a reconcile also ran.
 
+
 - **`web_fetch` and `parse_document` take an `offset`** and window their result
   instead of cutting it: a long page or document is read in parts, and nothing is
   discarded. `web_fetch`'s result metadata carries `window` (`offset`, `total_chars`,
@@ -24124,6 +24124,7 @@ has no such attribute at 0.35.0.
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 
+
 - `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
   `nats-py` refuses an oversized publish client-side, against the `max_payload`
   the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
@@ -24179,6 +24180,7 @@ has no such attribute at 0.35.0.
   checkout than the lock resolves. Full reasoning is in the module docstring.
   Separately, the identity targets in `docker-bake.hcl` are retagged `-core` /
   `-edge` to match the two images they actually produce.
+
 
 - `enforcement`: **`find_local_src_roots` now finds NESTED packages.** It walked
   `packages/*/src` only, so on a repo that groups packages one level deeper -- as
@@ -24356,6 +24358,7 @@ has no such attribute at 0.35.0.
   declaring a column of that name raises at `initialize()` rather than emitting
   duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
+
 - `channels`: **`RoomFanout.broadcast` documents what it propagates and what
   must not be retried.** It still does not catch, which is correct -- this
   package is not where the decision about a lost room frame is made, and its two
@@ -24430,6 +24433,7 @@ has no such attribute at 0.35.0.
   `ensure_jetstream_stream(name="channels-deliver")`, so `{ns}-channels-deliver`
   is the only name a grant can name. Paired with the hub-side change its
   `_DROPPED_RESOURCES` coupling required.
+
 
 - `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
   below an early return taken whenever there was no catch-up task -- which is
@@ -26057,6 +26061,7 @@ orphaned. Leases are TTL'd coordination state, so the orphans expire on their ow
 rollout a lease held by an old pod is invisible to a new one, so do not roll a deployment that
 relies on lease mutual exclusion while both versions are live.
 
+
 **`3tears-nats` gains a family-scoped owner-routed forward subject, and the grants it needs.**
 NOT a complete repair of the refusal described below, and the residue is stated here rather than
 left for a reader to discover: `threetears.scrape.operator_control` still calls the UNSCOPED
@@ -26101,6 +26106,7 @@ a real nats-server's `authorization` and driving a real `KVLease` through it.
 
 (The suffix that composition starts from is itself corrected in the entry above; before that fix it
 carried the namespace, so the bucket materialised with the namespace twice.)
+
 
 **`3tears-nats` gains a payload-agnostic byte pipe to whichever pod owns a key.** New public API
 on `threetears.nats`, all additive, and the release carrying it must be a MINOR bump for the same
@@ -26169,6 +26175,7 @@ on `NatsClient.overflow_events` -- that counter increments only at the publish b
 client is disconnected or reconnecting with a full pending buffer, so on a healthy connected test
 it reads zero whether or not any credit accounting exists at all.
 
+
 **`3tears-scrape`'s display relay no longer opens its own connection.** `relay_stream` called
 `asyncio.open_connection(host, port)`, which is the single line that made a co-located display
 mandatory: a process terminating the operator's WebSocket had to share a network namespace with
@@ -26193,6 +26200,7 @@ existing relay tests pass unedited, which they do.
 The docstring this replaces framed a bus-backed relay as a costed alternative to be "settled on
 measurements". That trade had two sides only while a co-located display was reachable; where it is
 not, there is nothing to weigh it against.
+
 
 **`3tears-scrape` gains the pod side of that arrangement: a display served over the pipe.** New
 public API on the new module `threetears.scrape.operator_pipe`: `serve_display(nats, claim, tool=,
@@ -26229,6 +26237,7 @@ reaching it, and a video played under sustained load. What that does NOT produce
 bandwidth figure, because the window manager moves an outline rather than window contents, so a
 drag is one repaint on drop rather than continuous load. The window is evidenced against the
 failure it guards, not tuned.
+
 
 **`3tears` gains the namespace vocabulary a human display session is authorized against, and
 nothing that evaluates it.** New public API on `threetears.core.namespaces`, all additive:
@@ -26369,6 +26378,7 @@ submit controls: 947 rows x 9 columns through `parse_form` + `build_form_post`.
 > written, so both kept a `<0.20.0` ceiling while declaring against a 0.20.0 package, and the merge
 > that brought them together is where that was caught and corrected. Any branch that adds an
 > intra-family dependency across a bump has to re-check its own bounds; `--verify` is what says so.
+
 
 **Docs: `per_document`'s cost was documented wrong in seven places, and `geo` had no adoption
 doc.** Both matter to a reader deciding what to spend.
