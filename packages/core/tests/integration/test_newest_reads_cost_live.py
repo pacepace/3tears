@@ -16,7 +16,10 @@ helpers themselves, their statements captured and explained under the bounds eac
 - a fill's pages read each version of the scope once (rows read about the scope's versions, never a re-read a page);
 - on YugabyteDB a keyed batch reads only its keys' versions, in few storage requests;
 - at 50 versions a key a batch's and a page's sorts stay in memory under the read's ``work_mem`` (no external sort)
-  on both engines, where the default 4 MB spills the same batch's sort on YugabyteDB.
+  on both engines, where the default 4 MB spills the same batch's sort on YugabyteDB;
+- a listing's pages (``keyset_page``) read only their own range, each version of the scope about once in all, as a
+  fill's do (their cursor and ``LIMIT`` inside the newest relation), and on YugabyteDB a batch of a key prefix (a
+  state) reads the prefix's scope a range a statement, never its every version in one sort.
 
 It asserts no speed budget. The numbers are logged.
 """
@@ -34,7 +37,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.keyed import KeyBatch, read_keyed
+from threetears.core.keyed import KeyBatch, Sort, keyset_page, read_keyed
 from threetears.core.keyset import read_keyset_pages
 from threetears.interfaces.keyed.keys import NEWEST_FIRST_KEYS, newest_settings, register_versioned_table
 
@@ -257,3 +260,75 @@ async def test_a_50_version_batch_and_page_sort_in_memory(measured: tuple[Any, M
         if "DISTINCT ON" in sql:
             plan = await _explained(conn, script, sql, params, yugabyte, text=True, batch=False)
             assert not _spilled(plan), plan
+
+
+async def test_a_listing_s_pages_and_a_prefix_batch_read_their_range_alone(
+    measured: tuple[Any, ModuleType, bool],
+) -> None:
+    """Flips if a listing's page of a versioned table (keyset_page) reads past its own range (its cursor and LIMIT left
+    outside the newest relation, each page reading the scope again), or, on YugabyteDB, a batch of one key prefix
+    reads the prefix's whole scope in one statement; or either answers other than each key's newest live version."""
+    conn, script, yugabyte = measured
+    versions = 10
+    await script.load(conn, versions, _ROWS, yugabyte)
+    name = f"{script.SCHEMA}.{script.table_name(versions)}"
+    register_versioned_table(script.declaration(versions))
+    expected = [
+        int(row["id"])
+        for row in await conn.fetch(
+            f"SELECT id FROM {name} WHERE state = 's000' AND epoch = $1 AND NOT gone ORDER BY id", versions - 1
+        )
+    ]
+    scope = script.KEYS_A_SCOPE * versions
+    # each version once, give or take the key past each statement, YugabyteDB's one storage request read past a
+    # statement's LIMIT (its default 1,024 rows) and the markers' rows
+    past = 1_024 if yugabyte else versions
+    listing = _Recorder(conn)
+    listed: list[int] = []
+    cursor = None
+    while True:
+        page = await keyset_page(
+            listing,
+            name,
+            columns=["state", "id", "v"],
+            by={"state": "s000"},
+            order=[Sort("id", cast="bigint")],
+            limit=script.PAGE,
+            cursor=cursor,
+        )
+        listed += [int(row["id"]) for row in page.rows]
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+    assert listed == expected
+    statements = [(sql, params) for sql, params in listing.sent if "DISTINCT ON" in sql]
+    assert len(statements) == len(listing.sent) > 1, listing.sent
+    paged = 0
+    for sql, params in statements:
+        paged += script.rows_read(
+            await _explained(conn, script, sql, params, yugabyte, text=False, batch=False), yugabyte
+        )
+    _log.warning("listing of %d versions: %d rows read in %d statements", scope, paged, len(statements))
+    if paged > scope * 1.02 + len(statements) * past + 50:
+        plan_text = await _explained(conn, script, *statements[1], yugabyte, text=True, batch=False)
+        raise AssertionError(f"{paged} rows read for {scope} in {len(statements)} pages; page 2:\n{plan_text}")
+    if not yugabyte:
+        # PostgreSQL reads a prefix batch by its LATERAL DISTINCT ON a prefix (unchanged)
+        return
+    prefix = _Recorder(conn)
+    rows = await read_keyed(
+        prefix, name, keys=KeyBatch(("state",), [["s000"]], ("text",)), columns=["state", "id", "v"], row_cap=1_001
+    )
+    assert sorted(int(row["id"]) for row in rows) == expected
+    assert len(prefix.sent) > 1, prefix.sent
+    batched = 0
+    for sql, params in prefix.sent:
+        assert "LIMIT" in sql and "ANY" not in sql, sql
+        read = script.rows_read(
+            await _explained(conn, script, sql, params, yugabyte, text=False, batch=False), yugabyte
+        )
+        # one statement's keys' versions, give or take the request read past its LIMIT: never the scope's
+        assert read <= 1_000 * versions * 1.1 + past + 50, (read, sql)
+        batched += read
+    _log.warning("prefix batch of %d versions: %d rows read in %d statements", scope, batched, len(prefix.sent))
+    assert batched <= scope * 1.02 + len(prefix.sent) * past + 50, batched

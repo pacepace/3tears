@@ -71,14 +71,17 @@ from typing import Annotated, Any, Final
 from threetears.core.backends.arrow_reply import counted_type, flag_type, l3_fetch_arrow, without_counted
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import L3Page
+from threetears.core.backends.read_bounds import bounded_read
 from threetears.core.keyed._filters import Fragment, narrowing, newest_of, newest_sent
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.interfaces.keyed.keys import (
+    NEWEST_KEPT,
     NEWEST_LIVE,
     NEWEST_VERSIONS,
     VersionedTable,
     key_only,
     newest_relation,
+    newest_settings,
     next_newest_keys,
 )
 from threetears.interfaces.keyed.rows import DeclaredScope
@@ -116,7 +119,7 @@ _logger = get_logger(__name__)
 
 #: the column a versioned fill page's statement answers beside each key it read: whether the page keeps it (its
 #: newest version live, and the read's filters past the key holding of it)
-_KEPT: Final = "_newest_kept"
+_KEPT: Final = NEWEST_KEPT
 
 
 def _next_rows(page: L3Page, rows: int, asked: int) -> int:
@@ -715,12 +718,21 @@ class _Read:
 
 
 async def _sender(l3: Any, statement: _KeysetStatement) -> Any:
-    """what a page's statement is sent through: a versioned page on a direct connection under its read's bounds
+    """what a page's statement is sent through: a versioned page under its read's bounds
     (:func:`~threetears.core.keyed.newest_sent`), any other as the reader itself."""
     newest = statement.newest
     if newest is None:
         return l3
     return newest_sent(l3, newest.table, await known_on_yugabyte(l3), batch=False)
+
+
+async def _page_bounds(l3: Any) -> tuple[tuple[str, int], ...]:
+    """the bounds a versioned fill page read through a paging transport runs under (``work_mem``:
+    :func:`~threetears.interfaces.keyed.keys.newest_settings`), named to it by
+    :func:`~threetears.core.backends.read_bounds.bounded_read`: the store sets them on its direct connection, the rail
+    names them on the request. WHY here: a transport answering pages (``fetch_page``) is sent the page itself, never
+    through :func:`_sender`."""
+    return newest_settings(yugabyte=await known_on_yugabyte(l3), batch=False)
 
 
 def _first_rows(page_size: int, *, shape_newest: _Newest | None) -> int:
@@ -776,7 +788,8 @@ class _DictReads:
     async def _newest_page(self, statement: _KeysetStatement, cursor: Sequence[Any] | None, rows: int) -> _Read:
         """a versioned page: every key it read, the kept ones handed over without the page's own columns."""
         if self._paged:
-            answered = await self._l3.fetch_page(*statement.page(cursor, rows=rows))
+            with bounded_read(await _page_bounds(self._l3)):
+                answered = await self._l3.fetch_page(*statement.page(cursor, rows=rows))
             page, fits = answered.rows, _next_rows(answered, len(answered.rows), rows)
             cut = answered.truncated
         else:
@@ -864,7 +877,8 @@ class _ArrowReads:
         own filter and sum, no row made a Python object)."""
         types = {**self._types, _KEPT: flag_type(), NEWEST_VERSIONS: counted_type()}
         if self._paged:
-            answered = await self._l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=types)
+            with bounded_read(await _page_bounds(self._l3)):
+                answered = await self._l3.fetch_arrow_page(*statement.page(cursor, rows=rows), types=types)
             page, fits, cut = answered.rows, _next_rows(answered, answered.rows.num_rows, rows), answered.truncated
         else:
             sender = await _sender(self._l3, statement)

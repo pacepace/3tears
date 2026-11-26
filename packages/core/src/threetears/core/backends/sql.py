@@ -48,6 +48,7 @@ import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.arrow_copy import arrow_copy_available, planned_write_table, write_type
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.backends.read_bounds import answers_directly, bounded_call, read_bounds
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
     ArrowWritePlan,
@@ -968,10 +969,15 @@ class SqlL3Backend:
     async def fetch(
         self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
     ) -> list[dict[str, Any]]:
-        """Run a SELECT and return all rows as dicts (bound request conn, else the pool)."""
+        """Run a SELECT and return all rows as dicts (bound request conn, else the pool); inside a
+        :func:`~threetears.core.backends.read_bounds.bounded_read` block on a direct connection, in a transaction
+        setting the read's bounds first (on the rail the proxy names them on the request)."""
         target, scope_aware = self._target()
+        bounds = read_bounds()
         with _unmask_asyncpg_release_race():
-            if scope_aware:
+            if bounds and answers_directly(target):
+                rows = await bounded_call(target, bounds, lambda conn: conn.fetch(query, *params))
+            elif scope_aware:
                 rows = await target.fetch(query, *params, namespace=namespace, **kwargs)
             else:
                 rows = await target.fetch(query, *params)
@@ -980,20 +986,28 @@ class SqlL3Backend:
     async def fetchrow(
         self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
     ) -> dict[str, Any] | None:
-        """Run a SELECT and return the first row dict, or ``None`` (bound request conn, else pool)."""
+        """Run a SELECT and return the first row dict, or ``None`` (bound request conn, else pool); under a read's
+        bounds as :meth:`fetch` runs one."""
         target, scope_aware = self._target()
+        bounds = read_bounds()
         with _unmask_asyncpg_release_race():
-            if scope_aware:
+            if bounds and answers_directly(target):
+                row = await bounded_call(target, bounds, lambda conn: conn.fetchrow(query, *params))
+            elif scope_aware:
                 row = await target.fetchrow(query, *params, namespace=namespace, **kwargs)
             else:
                 row = await target.fetchrow(query, *params)
         return dict(row) if row is not None else None
 
     async def fetchval(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> Any:
-        """Run a SELECT and return the first column of the first row (bound request conn, else pool)."""
+        """Run a SELECT and return the first column of the first row (bound request conn, else pool); under a read's
+        bounds as :meth:`fetch` runs one."""
         target, scope_aware = self._target()
+        bounds = read_bounds()
         with _unmask_asyncpg_release_race():
-            if scope_aware:
+            if bounds and answers_directly(target):
+                value = await bounded_call(target, bounds, lambda conn: conn.fetchval(query, *params))
+            elif scope_aware:
                 value = await target.fetchval(query, *params, namespace=namespace, **kwargs)
             else:
                 value = await target.fetchval(query, *params)

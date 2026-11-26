@@ -54,6 +54,7 @@ __all__ = [
     "next_past",
     "order_by_terms",
     "page_statement",
+    "past_condition",
     "seeks_by_row",
 ]
 
@@ -335,6 +336,29 @@ def _past(
     which YugabyteDB seeks inside a hashed bucket by (a row comparison there reads the bucket from its start)."""
     marks, params = _marks(order, values, first)
     return _past_marks(order, marks, by_row=by_row), params
+
+
+def past_condition(
+    order: Sequence[Sort], values: Sequence[Any], first: int, *, by_row: bool = False
+) -> tuple[str, list[Any]]:
+    """the condition naming the rows after the place ``values`` hold in ``order`` (each cast back by its sort), and its
+    parameters numbered from ``first``: what a page past a cursor names, by the row comparison (``by_row``,
+    PostgreSQL) or the leading bound and the expansion (YugabyteDB); :func:`page_statement`'s own. For a statement
+    that writes the condition where it must stand itself (a versioned table's page names it inside its newest
+    relation: ``threetears.interfaces.keyed.keys.newest_page_statement``).
+
+    :param order: the sort
+    :ptype order: Sequence[Sort]
+    :param values: the place's sort values, as :func:`cursor_values` or :func:`next_past` answer them
+    :ptype values: Sequence[Any]
+    :param first: the first parameter's number
+    :ptype first: int
+    :param by_row: compare by the row comparison
+    :ptype by_row: bool
+    :return: the condition, and its parameters
+    :rtype: tuple[str, list[Any]]
+    """
+    return _past(order, values, first, by_row=by_row)
 
 
 def _chained(statements: Sequence[str], order: Sequence[Sort], rows: int) -> str:

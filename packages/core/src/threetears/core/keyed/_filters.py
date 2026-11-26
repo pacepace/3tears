@@ -12,13 +12,16 @@ from typing import Any, Final
 
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
+from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.backends.read_bounds import answers_directly, bounded_call, bounded_read
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.interfaces.keyed.keys import (
     VersionedTable,
     index_hint,
+    key_pins_within,
     newest_relation,
     newest_settings,
     not_null_guards,
@@ -240,7 +243,9 @@ def refuse_versioned(conn: Any, tables: Sequence[Any], read: str) -> None:
         )
 
 
-def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | Derived:
+def newest_read(
+    conn: Any, table: str | Derived, *, lock: Any = None, by: Mapping[str, Any] | None = None
+) -> str | Derived:
     """what a read of ``table`` on ``conn`` reads in its place: a versioned L3 table's newest live versions, a
     :class:`Derived` relation answering one row a key (:func:`~threetears.interfaces.keyed.keys.newest_relation`), so
     the read sees only each key's newest version, never an older one, a key whose newest version is a "gone" marker,
@@ -257,6 +262,10 @@ def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | D
     :ptype table: str | Derived
     :param lock: the row lock the read takes; a versioned table's versions are never locked
     :ptype lock: Lock | None
+    :param by: the read's pins: those on the key's columns alone are named inside the relation's ``DISTINCT ON``
+        (:func:`~threetears.interfaces.keyed.keys.key_pins_within`, bound as the derived relation's own parameters),
+        so it reads only the pinned scope's versions, never left to the planner to push there; none when None
+    :ptype by: Mapping[str, Any] | None
     :return: the relation to read
     :rtype: str | Derived
     :raises ValueError: when a read of a versioned table takes a row lock (``DISTINCT ON`` takes none, and an
@@ -267,26 +276,18 @@ def newest_read(conn: Any, table: str | Derived, *, lock: Any = None) -> str | D
         return table
     if lock is not None:
         raise ValueError(f"{table} is versioned (append-only): its newest versions are read, never locked")
-    return Derived(newest_relation(versioned, table))
+    within, values = key_pins_within(versioned, by or {})
+    return Derived(newest_relation(versioned, table, within=within), tuple(values))
 
 
 class _NewestSettings:
     """a direct connection or pool sending each newest read in a transaction of its own that first sets the read's
-    bounds (:func:`~threetears.interfaces.keyed.keys.newest_settings`, ``SET LOCAL``): they end with the read."""
+    bounds (:func:`~threetears.interfaces.keyed.keys.newest_settings`, ``SET LOCAL``:
+    :func:`~threetears.core.backends.read_bounds.bounded_call`): they end with the read."""
 
-    def __init__(self, conn: Any, settings: Sequence[tuple[str, str]]) -> None:
+    def __init__(self, conn: Any, settings: Sequence[tuple[str, int]]) -> None:
         self._conn = conn
-        # one simple-protocol statement setting them all: one round trip
-        self._set = "; ".join(f"SET LOCAL {name} = '{value}'" for name, value in settings)
-
-    async def _on(self, conn: Any, query: str, params: Sequence[Any]) -> list[Any]:
-        if conn.is_in_transaction():
-            # the caller's transaction: the bounds hold to its end, the read's own statement among its others
-            await conn.execute(self._set)
-            return list(await conn.fetch(query, *params))
-        async with conn.transaction():
-            await conn.execute(self._set)
-            return list(await conn.fetch(query, *params))
+        self._settings = tuple(settings)
 
     async def fetch(self, query: str, *params: Any) -> list[Any]:
         """the statement's rows, read under the bounds.
@@ -298,21 +299,55 @@ class _NewestSettings:
         :return: the rows
         :rtype: list[Any]
         """
-        if isinstance(self._conn, asyncpg.Pool):
-            async with self._conn.acquire() as conn:
-                return await self._on(conn, query, params)
-        return await self._on(self._conn, query, params)
+        return list(await bounded_call(self._conn, self._settings, lambda conn: conn.fetch(query, *params)))
+
+
+class _NewestBounded:
+    """any other L3 reader (the store, the rail's proxy, one of its transactions) sending each newest read inside
+    :func:`~threetears.core.backends.read_bounds.bounded_read`: the reader that talks to the database reads the bounds
+    where it sends, the store setting them on its own direct connection, the rail naming them on the request
+    (``read_settings``) for the hub's broker to set, as it sets the read's ``statement_timeout``."""
+
+    def __init__(self, conn: Any, settings: Sequence[tuple[str, int]]) -> None:
+        self._conn = conn
+        self._settings = tuple(settings)
+
+    async def fetch(self, query: str, *params: Any) -> list[Any]:
+        """the statement's rows, read under the bounds.
+
+        :param query: the statement
+        :ptype query: str
+        :param params: its binds
+        :ptype params: Any
+        :return: the rows
+        :rtype: list[Any]
+        """
+        with bounded_read(self._settings):
+            return list(await self._conn.fetch(query, *params))
+
+    async def fetch_arrow(self, query: str, *params: Any, types: Mapping[str, Any]) -> Any:
+        """the statement's rows as one Arrow table, read under the bounds: the reader's own Arrow read (the rail's
+        proxy parses its reply off the interpreter lock), else its dict rows made the table on a thread.
+
+        :param query: the statement
+        :ptype query: str
+        :param params: its binds
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        with bounded_read(self._settings):
+            return await l3_fetch_arrow(self._conn, query, *params, types=types)
 
 
 def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool, *, batch: bool = True) -> Any:
-    """what a newest read of a versioned table sends its statement through: on a direct asyncpg connection or pool,
-    each statement in a transaction of its own setting the read's bounds first (``work_mem``, and YugabyteDB's
-    ``yb_fetch_row_limit``: :func:`~threetears.interfaces.keyed.keys.newest_settings`), so its sort stays in memory
-    and its storage requests few; any other reader (:func:`sent_by`) as it is.
-
-    WHY not on the L3 rail: the hub's broker refuses ``SET`` and ``set_config`` at the door (its ``sql_safety``), so a
-    pod cannot set a session's bounds itself; the broker applies a request's own settings as it applies its
-    ``statement_timeout`` (the hub half, apart from this one).
+    """what a newest read of a versioned table sends its statement through: each statement under the read's bounds
+    (``work_mem``, and YugabyteDB's ``yb_fetch_row_limit``: :func:`~threetears.interfaces.keyed.keys.newest_settings`),
+    so its sort stays in memory and its storage requests few: on a direct connection set on it
+    (:class:`_NewestSettings`), through any other L3 reader named to it (:class:`_NewestBounded`: the store's direct
+    connection sets them, the L3 rail names them on the request for the hub's broker to set); a read of every row named (``newest`` None) through :func:`sent_by`.
 
     :param conn: the connection or reader the read was handed
     :ptype conn: Any
@@ -325,9 +360,10 @@ def newest_sent(conn: Any, newest: VersionedTable | None, yugabyte: bool, *, bat
     :return: what to send the statement through
     :rtype: Any
     """
-    if newest is not None and isinstance(conn, asyncpg.Connection | PoolConnectionProxy | asyncpg.Pool):
-        return _NewestSettings(conn, newest_settings(yugabyte=yugabyte, batch=batch))
-    return sent_by(conn)
+    if newest is None:
+        return sent_by(conn)
+    settings = newest_settings(yugabyte=yugabyte, batch=batch)
+    return _NewestSettings(conn, settings) if answers_directly(conn) else _NewestBounded(conn, settings)
 
 
 async def reads_yugabyte(conn: Any) -> bool:

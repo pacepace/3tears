@@ -68,6 +68,7 @@ from threetears.core.backends.broker_generation import (
     note_load_answer,
     record_reply_generations,
 )
+from threetears.core.backends.read_bounds import read_setting_fields
 from threetears.core.backends.protocol import (
     L3AnswerCutError,
     L3_RAIL_ROW_CAP,
@@ -1741,6 +1742,8 @@ class NatsProxyL3Backend:
             "query": query,
             "params": [transport_param(p) for p in params],
             "timeout_ms": self.timeout_ms,
+            # the bounds a newest read runs under (read_bounds.bounded_read): the broker sets them for the read
+            **read_setting_fields(),
         }
         if customer_scope is not None:
             # convert at border: NATS l3.query request payload field.
@@ -2387,6 +2390,8 @@ class _ProxyConnection:
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [transport_param(p) for p in (params if loop is None else stepped(params, LoopTurns(loop)))],
+            # the bounds a newest read in the transaction runs under: the broker sets them before the statement
+            **read_setting_fields(),
         }
 
     def statement_request_bytes(self, query: str, params: Sequence[Any]) -> int:
