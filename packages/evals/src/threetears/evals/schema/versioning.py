@@ -543,9 +543,9 @@ CORE_SCHEMA_VERSION: int = 15
 #:   out of the document while unset, so a trace or result carrying
 #:   none is stored byte for byte as before. In no identity, key, label key or digest: ``fingerprint_judged_output``
 #:   reads ``JudgeEvidence`` alone, and the batch read of judge evidence keeps its named fields alone. A trace may carry
-#:   ``EvalTrace.claim_loss_calls`` (criterion -> ``ClaimLossCall``: a ``ClaimCall`` with its ``step`` and the
-#:   ``reason`` it named to the model), every call of each criterion that lost the cell or a step, left out while
-#:   empty. A trace's claims
+#:   ``EvalTrace.claim_losses`` (criterion -> ``ClaimLossRecord``: its ``calls``, each a ``ClaimLossCall``, a
+#:   ``ClaimCall`` with its ``step`` and the ``reason`` it named to the model, and the ``failure`` that lost it), for
+#:   each criterion that lost the cell or a step, left out while empty. A trace's claims
 #:   payload holds at most ``CLAIM_TRACE_BYTES`` (3 MiB), its documents at most ``CLAIM_DOCUMENT_BYTES`` (1 MiB). An
 #:   older build reads such a trace or result under its newer-minor tolerance, keeps the fields and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.

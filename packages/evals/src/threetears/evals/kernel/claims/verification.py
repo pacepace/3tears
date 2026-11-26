@@ -149,7 +149,7 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.capped_completion import call_ceiling
-from threetears.evals.kernel.claims.call_sink import ClaimCallSink, ClaimStep
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink
 from threetears.evals.kernel.claims.extraction import ExtractedClaim, claim_call, echo_chars, filler
 from threetears.evals.kernel.claims.failures import ClaimGradingFailed
 from threetears.evals.kernel.host.apparatus import ApparatusError
@@ -164,6 +164,7 @@ from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import (
     CLAIM_QUOTE_CHARS,
     ClaimCall,
+    ClaimStep,
     ClaimCitation,
     EvidenceDocument,
     EvidenceProvenance,

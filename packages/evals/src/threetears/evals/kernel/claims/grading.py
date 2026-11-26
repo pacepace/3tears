@@ -569,12 +569,14 @@ async def grade_or_loss(
         such a criterion with no search before it asks anything (the run's launch refusal), so a missing one never
         reaches here as a loss.
     :param sink: See :func:`grade_criterion`: the calls a lost criterion made are read from it, never from the loss.
+        It is also told the failure that lost the criterion, or its ground or web step, as the engine named it; a
+        provider's or a search port's failure is not, since its message is the provider's.
     :return: The grade and its tally, or the loss.
     :raises CompletionProtocolDefect: A completion in the extraction or a truth call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call.
     """
     try:
-        return await grade_criterion(
+        outcome = await grade_criterion(
             criterion,
             evidence,
             key=key,
@@ -588,6 +590,8 @@ async def grade_or_loss(
     except ClaimGradingFailed as failed:
         # Recorded, never swallowed: the loss is the criterion's on the cell, which keeps every other reading.
         log.warning("%s lost (%s): %s", what, failed.loss, failed)
+        if sink is not None:
+            sink.failed(str(failed))
         return failed.loss
     except CompletionProtocolDefect, ApparatusError:
         raise
@@ -597,6 +601,28 @@ async def grade_or_loss(
         # NOSILENT: returned as provider_error, which the cell records as the criterion's loss.
         contain(e, log=log, what=f"{what} failed", level="error")
         return "provider_error"
+    if sink is not None and (failure := _step_failures(outcome)) is not None:
+        sink.failed(failure)
+    return outcome
+
+
+#: The step losses whose failure names the provider's or the port's own message, which a loss record never stores.
+_PROVIDERS_LOSSES: Final = frozenset({"provider_error", "port_error"})
+
+
+def _step_failures(outcome: GradedCriterion) -> str | None:
+    """The failure of each step a graded criterion lost, as the engine named it, or None when it lost none or only
+    a provider's or a port's."""
+    grade = outcome.grade
+    parts = [
+        f"{step} step: {failure}"
+        for step, failure, loss in (
+            ("ground", outcome.ground_failure, grade.ground_loss),
+            ("web", outcome.web_failure, grade.web_loss),
+        )
+        if failure is not None and loss not in _PROVIDERS_LOSSES
+    ]
+    return "; ".join(parts) or None
 
 
 def _web_repairs(calls: Sequence[ClaimCall]) -> int:

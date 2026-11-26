@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         ClaimEvidence,
         ClaimGrade,
         ClaimLoss,
+        ClaimLossRecord,
         ClientRequestSettings,
         RoleUsage,
         EvalResult,
@@ -409,6 +410,7 @@ def apply_claim_rejudge(
     *,
     usage: list[RoleUsage],
     cost_usd: float | None,
+    losses: Mapping[str, ClaimLossRecord] | None = None,
 ) -> tuple[EvalResult, EvalTrace | None]:
     """Land a claims re-judge on the result and its trace where the claims phase would have put it.
 
@@ -424,10 +426,13 @@ def apply_claim_rejudge(
         web step finished for each of ``inputs.web_steps``.
     :param usage: The re-judge's judge-role usage rows.
     :param cost_usd: What it cost; ``None`` when any call went unpriced.
+    :param losses: criterion -> the re-judge's own record of its calls and the failure that lost it, for each
+        criterion it graded again that lost the cell or a step again. Each criterion graded again or finished drops
+        the record the trace held for it, which described the grade it replaces, and takes this one where given.
     :return: The result as it now stands, and the trace to store first when a grade moved on it (``None`` when none
         did).
-    :raises ValueError: ``regraded`` does not name exactly the criteria ``inputs`` grades again, or names a loss for
-        a criterion whose web step alone was finished.
+    :raises ValueError: ``regraded`` does not name exactly the criteria ``inputs`` grades again, names a loss for
+        a criterion whose web step alone was finished, or ``losses`` names a criterion it did not grade again.
     """
     if set(regraded) != {*inputs.regrade, *inputs.web_steps}:
         raise ValueError(
@@ -436,6 +441,8 @@ def apply_claim_rejudge(
         )
     if whole := sorted(name for name in inputs.web_steps if isinstance(regraded[name], str)):
         raise ValueError(f"claim criteria {whole} had their web step finished, which never loses a criterion whole")
+    if stray := sorted(set(losses or {}) - set(regraded)):
+        raise ValueError(f"a claims re-judge records losses for claim criteria {stray}, which it did not grade again")
     tallies = dict(result.claim_tallies)
     failures = dict(result.claim_failures)
     lost: dict[str, ClaimLoss] = {}
@@ -450,9 +457,12 @@ def apply_claim_rejudge(
         if name in inputs.web_steps and outcome.tally.web_loss is not None:
             lost[name] = outcome.tally.web_loss
     trace: EvalTrace | None = None
-    if grades or set(regraded) & set(inputs.trace.claim_grades):
+    # A stored record described the grade a criterion graded again replaces, so it goes with it.
+    records = {name: record for name, record in inputs.trace.claim_losses.items() if name not in regraded}
+    records.update(losses or {})
+    if grades or set(regraded) & set(inputs.trace.claim_grades) or records != inputs.trace.claim_losses:
         kept = {name: grade for name, grade in inputs.trace.claim_grades.items() if name not in regraded}
-        trace = inputs.trace.model_copy(update={"claim_grades": {**kept, **grades}})
+        trace = inputs.trace.model_copy(update={"claim_grades": {**kept, **grades}, "claim_losses": records})
     order = [name for name in (criterion.name for criterion in inputs.template.claim_criteria) if name in regraded]
     prior: dict[str, ClaimLoss] = {}
     for name in order:

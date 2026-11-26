@@ -132,7 +132,7 @@ from threetears.evals.schema.models import (
     CellTermination,
     ClaimEvidence,
     ClaimGrade,
-    ClaimLossCall,
+    ClaimLossRecord,
     ClaimTally,
     CLAIM_TRACE_BYTES,
     ConversationStopCause,
@@ -695,8 +695,8 @@ class _ClaimsRecord:
     :ivar grades: criterion -> its grade, for each tallied criterion (``EvalTrace.claim_grades``).
     :ivar fingerprints: criterion -> the fingerprint of its definition, for every criterion the phase was due
         (``EvalResult.claim_fingerprints``).
-    :ivar loss_calls: criterion -> every call it made, for each criterion that lost the cell or lost a step while it
-        ran and made a call (``EvalTrace.claim_loss_calls``).
+    :ivar losses: criterion -> its calls and the failure that lost it, for each criterion that lost the cell or lost a
+        step while it ran and made a call (``EvalTrace.claim_losses``).
     """
 
     evidence: ClaimEvidence | None
@@ -704,7 +704,7 @@ class _ClaimsRecord:
     failures: Mapping[str, KnownClaimLoss]
     grades: Mapping[str, ClaimGrade]
     fingerprints: Mapping[str, str]
-    loss_calls: Mapping[str, tuple[ClaimLossCall, ...]] = field(default_factory=dict)
+    losses: Mapping[str, ClaimLossRecord] = field(default_factory=dict)
 
 
 @dataclass
@@ -775,18 +775,12 @@ class _ClaimsPhase:
             failures=lost,
             grades=grades,
             fingerprints=dict(self.fingerprints),
-            loss_calls={
-                name: tuple(sink.calls)
+            losses={
+                name: record
                 for name, sink in self.sinks.items()
-                if sink.calls and (name in lost or (name in grades and _lost_a_step(grades[name])))
+                if (record := sink.kept(lost=name in lost, grade=grades.get(name))) is not None
             },
         )
-
-
-def _lost_a_step(grade: ClaimGrade) -> bool:
-    """Whether a grade's ground or web step failed while it ran: a ground step never asked, since the evidence
-    declares no documents (``documents_undeclared``), made no call to keep."""
-    return grade.web_loss is not None or grade.ground_loss not in (None, "documents_undeclared")
 
 
 def _judge_record(
@@ -3400,7 +3394,7 @@ def assemble_completed_cell(
             # What the claim criteria read, and each one's grade: what a re-grade and every claim reading rest on.
             claim_evidence=judged.claims.evidence if judged.claims is not None else None,
             claim_grades=dict(judged.claims.grades) if judged.claims is not None else {},
-            claim_loss_calls=dict(judged.claims.loss_calls) if judged.claims is not None else {},
+            claim_losses=dict(judged.claims.losses) if judged.claims is not None else {},
         ),
     )
 
@@ -3560,7 +3554,7 @@ def _cut_short_cell(
         # The claim criteria already graded keep their grades, beside the evidence every criterion read.
         claim_evidence=claims.evidence if claims is not None else None,
         claim_grades=dict(claims.grades) if claims is not None else {},
-        claim_loss_calls=dict(claims.loss_calls) if claims is not None else {},
+        claim_losses=dict(claims.losses) if claims is not None else {},
     )
     return CellOutcome(result, trace)
 

@@ -60,6 +60,7 @@ from threetears.evals.schema import Segment
 from threetears.evals.schema.call_inputs import current_call_inputs
 from threetears.evals.schema.completion import CompletionProtocolDefect, ProviderFailure, ProviderFailureDescriber
 from threetears.evals.schema.models import (
+    CLAIM_LOSS_REASON_CHARS,
     ClaimCall,
     ClaimCriterion,
     ClaimEvidence,
@@ -322,7 +323,7 @@ async def test_a_lost_criterion_keeps_the_rubric_scores_and_never_reads_as_a_jud
     assert result.judge_error is None, "a criterion's loss is never a judge error, which would exclude the trial"
     assert judge.asked == ["judge_reply", "claim_listing", "claim_listing", "claim_listing"], "dims first"
     assert trace.claim_grades == {} and trace.claim_evidence == _EVIDENCE
-    first, *again = trace.claim_loss_calls[_CRITERION]
+    first, *again = trace.claim_losses[_CRITERION].calls
     assert first.reason is None and len(again) == 2, "each listing asked again keeps why the last could not be read"
     assert all(call.step == "extract" and call.reason for call in again)
 
@@ -405,10 +406,15 @@ async def test_the_extractions_repairs_count_against_the_criterions_repair_budge
     judge = _FakeClaimsJudge(script={"claim_listing": [_listing(misquoted)]})
     template = _template(_criterion(repairs=RepairBudget(rounds=2, max_items_per_cell=0)))
 
-    result, _ = await _cell(judge, template, _FakeClaimsKind(_output()))
+    result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
 
     assert result.claim_failures == {_CRITERION: "repair_budget_spent"}
     assert judge.asked == ["claim_listing"], "a budget of no items asks none again"
+    record = trace.claim_losses[_CRITERION]
+    assert [call.reason for call in record.calls] == [None], "the step stopped before it asked anything again"
+    assert record.failure is not None and record.failure.startswith(
+        "the claim extractor would ask 1 claim(s) again with 0 of the step's 0 repairs spent: claim 0: "
+    ), "the failure that spent the budget is kept, naming the claim, though no call carried it"
 
 
 #: A truth answer citing a key fact the step never showed: a fault every repair is asked to fix.
@@ -427,13 +433,66 @@ async def test_a_cell_its_truth_repairs_lose_keeps_every_call_it_made_with_the_f
     result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
 
     assert result.claim_failures == {_CRITERION: "repair_budget_spent"} and trace.claim_grades == {}
-    calls = trace.claim_loss_calls[_CRITERION]
+    calls = trace.claim_losses[_CRITERION].calls
     assert [(call.step, call.role, call.reason) for call in calls] == [
         ("extract", "extract", None),
         ("truth", "truth", None),
         ("truth", "repair", _MISCITED_FAULT),
     ], "the lost cell keeps each call its budget paid for, the repair naming the failure it was asked to fix"
     assert {call.served_model for call in calls} == {_JUDGE}
+    assert trace.claim_losses[_CRITERION].failure == (
+        f"the claim verifier would ask 1 truth claim(s) again with 1 of the step's 1 repairs spent: truth claim 0: "
+        f"{_MISCITED_FAULT}"
+    ), "the step stopped before its next round, and the failure that stopped it is kept"
+
+
+async def test_a_cell_lost_after_its_last_round_keeps_the_failure_of_the_last_answer_not_the_one_repaired() -> None:
+    other = {**_MISCITED, "ref": "K8"}
+    truth = json.dumps({"claims": [{"claim": 0, "citations": [_MISCITED], "suspect": False}]})
+    repaired = json.dumps({"citations": [other], "suspect": False})
+    judge = _FakeClaimsJudge(script={"claim_truth": [truth], "claim_truth_repair": [repaired]})
+    template = _template(_criterion(repairs=RepairBudget(rounds=1, max_items_per_cell=4)))
+
+    result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
+
+    assert result.claim_failures == {_CRITERION: "repair_budget_spent"}
+    record = trace.claim_losses[_CRITERION]
+    assert record.calls[-1].reason == _MISCITED_FAULT, "the repair was asked to fix the first fault"
+    assert record.failure == (
+        "the claim verifier could not repair 1 claim(s) in 1 round(s): truth claim 0: it cites K8, which is no "
+        "evidence shown here; cite the refs listed under Evidence"
+    ), "the failure kept is the repaired answer's own, which no call named"
+
+
+async def test_a_truth_reply_asked_again_after_it_could_not_be_read_keeps_why_it_could_not() -> None:
+    truth = json.dumps({"claims": [{"claim": 0, "citations": [_MISCITED], "suspect": False}]})
+    repaired = json.dumps({"citations": [_MISCITED], "suspect": False})
+    judge = _FakeClaimsJudge(script={"claim_truth": ["not json", truth], "claim_truth_repair": [repaired]})
+    template = _template(_criterion(repairs=RepairBudget(rounds=2, max_items_per_cell=1)))
+
+    result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
+
+    assert result.claim_failures == {_CRITERION: "repair_budget_spent"}
+    first, again = trace.claim_losses[_CRITERION].calls[1:3]
+    assert (first.step, first.role, first.reason) == ("truth", "truth", None)
+    assert (again.step, again.role) == ("truth", "truth") and again.reason, "the reply asked again names why"
+
+
+async def test_a_fault_past_the_records_cap_is_cut_and_the_criterion_keeps_its_own_loss() -> None:
+    # Recording must never change a grade's outcome: a fault longer than the cap is cut, never refused by the record.
+    long = {**_MISCITED, "ref": "K" + "9" * (CLAIM_LOSS_REASON_CHARS + 100)}
+    truth = json.dumps({"claims": [{"claim": 0, "citations": [long], "suspect": False}]})
+    repaired = json.dumps({"citations": [long], "suspect": False})
+    judge = _FakeClaimsJudge(script={"claim_truth": [truth], "claim_truth_repair": [repaired]})
+    template = _template(_criterion(repairs=RepairBudget(rounds=2, max_items_per_cell=1)))
+
+    result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
+
+    assert result.claim_failures == {_CRITERION: "repair_budget_spent"}, "its own loss, never provider_error"
+    record = trace.claim_losses[_CRITERION]
+    reason = record.calls[-1].reason
+    assert reason is not None and len(reason) == CLAIM_LOSS_REASON_CHARS and reason.startswith("it cites K999")
+    assert record.failure is not None and len(record.failure) == CLAIM_LOSS_REASON_CHARS
 
 
 async def test_a_cell_its_re_ask_loses_names_the_re_ask_as_the_step_that_spent_the_budget() -> None:
@@ -449,7 +508,7 @@ async def test_a_cell_its_re_ask_loses_names_the_re_ask_as_the_step_that_spent_t
     result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
 
     assert result.claim_failures == {_CRITERION: "repair_budget_spent"}
-    assert [(call.step, call.role, call.reason) for call in trace.claim_loss_calls[_CRITERION]] == [
+    assert [(call.step, call.role, call.reason) for call in trace.claim_losses[_CRITERION].calls] == [
         ("extract", "extract", None),
         ("truth", "truth", None),
         ("reask", "truth", None),
@@ -468,7 +527,7 @@ async def test_a_ground_step_its_repairs_lose_keeps_its_calls_and_the_failure_ea
     result, trace = await _cell(judge, template, _FakeClaimsKind(_output()))
 
     assert result.claim_failures == {} and result.claim_tallies[_CRITERION].ground_loss == "repair_budget_spent"
-    calls = trace.claim_loss_calls[_CRITERION]
+    calls = trace.claim_losses[_CRITERION].calls
     assert [(call.step, call.role) for call in calls] == [
         ("extract", "extract"),
         ("truth", "truth"),
@@ -482,13 +541,13 @@ async def test_a_ground_step_its_repairs_lose_keeps_its_calls_and_the_failure_ea
     ), "the calls kept are the grade's own, in its order"
 
 
-async def test_a_cell_that_loses_nothing_stores_no_loss_calls() -> None:
+async def test_a_cell_that_loses_nothing_stores_no_loss_record() -> None:
     judge = _FakeClaimsJudge()
 
     _, trace = await _cell(judge, _template(), _FakeClaimsKind(_output()))
 
-    assert trace.claim_grades and trace.claim_loss_calls == {}
-    assert "claim_loss_calls" not in trace.model_dump(mode="json"), "a trace with no loss is stored as before"
+    assert trace.claim_grades and trace.claim_losses == {}
+    assert "claim_losses" not in trace.model_dump(mode="json"), "a trace with no loss is stored as before"
 
 
 async def test_no_input_a_rubric_call_binds_reaches_a_claims_call() -> None:
@@ -588,7 +647,7 @@ async def test_a_deadline_inside_the_claims_of_a_kind_graded_by_code_is_the_crit
     assert result.claim_failures == {_CRITERION: "deadline"}
     assert result.infra_error is None, "a deadline in the claims phase is the criterion's, never the rig's"
     assert trace.claim_evidence == _EVIDENCE
-    assert [(call.step, call.role) for call in trace.claim_loss_calls[_CRITERION]] == [("extract", "extract")], (
+    assert [(call.step, call.role) for call in trace.claim_losses[_CRITERION].calls] == [("extract", "extract")], (
         "a criterion the deadline cut keeps the calls that returned before it"
     )
 
@@ -893,7 +952,7 @@ async def test_undeclared_documents_under_grounded_in_lose_the_ground_step_alone
     assert grade.ground_loss == "documents_undeclared" and grade.claims[0].verdict == "supported"
     (criterion,) = _template().claim_criteria
     assert grade_tally(grade, trace.claim_evidence, criterion, derivation=None) == tally
-    assert trace.claim_loss_calls == {}, "a ground step never asked failed at nothing, so no call is kept for it"
+    assert trace.claim_losses == {}, "a ground step never asked failed at nothing, so no call is kept for it"
 
 
 async def test_a_cell_records_each_due_criterions_fingerprint_whether_it_was_graded_or_lost() -> None:
@@ -1174,6 +1233,48 @@ async def test_a_pending_criterion_whose_trace_was_never_stored_is_lost_once_its
 
     assert rejudged.claim_failures == {_CRITERION: "trace_lost"} and rejudged.claim_tallies == {}
     assert rejudged.claim_rescores == []
+
+
+def _spends_its_truth_repairs(**script: list[Any]) -> _FakeClaimsJudge:
+    """A judge whose truth answers cite a fact never shown, under a budget of one repair: the criterion is lost."""
+    truth = json.dumps({"claims": [{"claim": 0, "citations": [_MISCITED], "suspect": False}]})
+    repaired = json.dumps({"citations": [_MISCITED], "suspect": False})
+    return _FakeClaimsJudge(script={"claim_truth": [truth], "claim_truth_repair": [repaired], **script})
+
+
+_ONE_REPAIR = _criterion(repairs=RepairBudget(rounds=2, max_items_per_cell=1))
+
+
+async def test_a_rejudge_that_grades_a_lost_criterion_drops_its_stale_loss_record() -> None:
+    template = _template(_ONE_REPAIR)
+    host, result, trace = await _stored_cell(_spends_its_truth_repairs(), template, _FakeClaimsJudge())
+    assert result.claim_failures == {_CRITERION: "repair_budget_spent"} and _CRITERION in trace.claim_losses
+
+    rejudged = await rejudge_result(host, result.id, "u")
+
+    assert rejudged.claim_failures == {} and _CRITERION in rejudged.claim_tallies
+    stored = off_loop(host.storage.load_eval_trace, result.id, "u")
+    assert _CRITERION in stored.claim_grades
+    assert stored.claim_losses == {}, "the record described the loss the new grade replaces, so it goes with it"
+
+
+async def test_a_rejudge_that_loses_a_criterion_again_records_what_spent_its_own_budget() -> None:
+    template = _template(_ONE_REPAIR)
+    first = _FakeClaimsJudge(script={"claim_listing": ["not json"]})
+    host, result, trace = await _stored_cell(first, template, _spends_its_truth_repairs())
+    assert result.claim_failures == {_CRITERION: "unreadable"}
+    assert {call.step for call in trace.claim_losses[_CRITERION].calls} == {"extract"}
+
+    rejudged = await rejudge_result(host, result.id, "u")
+
+    assert rejudged.claim_failures == {_CRITERION: "repair_budget_spent"}
+    record = off_loop(host.storage.load_eval_trace, result.id, "u").claim_losses[_CRITERION]
+    assert [(call.step, call.role, call.reason) for call in record.calls] == [
+        ("extract", "extract", None),
+        ("truth", "truth", None),
+        ("truth", "repair", _MISCITED_FAULT),
+    ], "the re-judge's own calls replace the first grade's"
+    assert record.failure is not None and record.failure.startswith("the claim verifier would ask 1 truth claim(s)")
 
 
 async def test_a_lost_criterion_is_graded_again_whole_and_a_completed_grade_is_never_asked_again() -> None:

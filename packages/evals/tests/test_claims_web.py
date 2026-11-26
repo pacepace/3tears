@@ -499,26 +499,56 @@ async def test_a_failed_web_step_is_its_own_loss_and_every_verdict_case_evidence
     assert claim_tally(grade, evidence, grounded_in=None).web_loss == loss, "recomputed from the stored grade, it stays"
 
 
+def _no_window(ref: str) -> str:
+    """What the web step names to the model when an answer cites a window it was not shown."""
+    return f"it cites {ref}, which is no window shown here; cite the refs listed under Windows"
+
+
 async def test_a_web_step_its_repairs_lose_keeps_its_calls_and_the_failure_each_repair_named() -> None:
-    miscited = _verdict(ref="W9")
-    judge = _FakeWebJudge(script={"claim_web_verdict": [miscited], "claim_web_repair": [miscited]})
+    # Each repair's answer fails anew: the record keeps the fault each repair was asked to fix, and the last
+    # answer's own fault as the failure that spent the budget.
+    judge = _FakeWebJudge(
+        script={
+            "claim_web_verdict": [_verdict(ref="W9")],
+            "claim_web_repair": [_verdict(ref="W8"), _verdict(ref="W7")],
+        }
+    )
 
     result, trace = await _cell(judge, _FakeWebSearch())
 
     assert result.claim_failures == {} and result.claim_tallies[_CRITERION].web_loss == "repair_budget_spent"
-    calls = trace.claim_loss_calls[_CRITERION]
-    fault = "it cites W9, which is no window shown here; cite the refs listed under Windows"
-    assert [(call.step, call.role, call.reason) for call in calls] == [
+    record = trace.claim_losses[_CRITERION]
+    assert [(call.step, call.role, call.reason) for call in record.calls] == [
         ("extract", "extract", None),
         ("truth", "truth", None),
         ("web", "web", None),
         ("web", "web", None),
-        ("web", "repair", fault),
-        ("web", "repair", fault),
-    ], "each repair names the failure it was asked to fix, the last one the failure that spent the budget"
-    assert [ClaimCall.model_validate(call.model_dump(exclude={"step", "reason"})) for call in calls] == list(
+        ("web", "repair", _no_window("W9")),
+        ("web", "repair", _no_window("W8")),
+    ], "each repair names the failure it was asked to fix"
+    assert record.failure == (
+        "web step: the web check of claim 0 could not be repaired within the step's repair budget: " + _no_window("W7")
+    ), "the failure kept is the last answer's own, which no call named"
+    assert [ClaimCall.model_validate(call.model_dump(exclude={"step", "reason"})) for call in record.calls] == list(
         trace.claim_grades[_CRITERION].calls
     ), "the calls kept are the grade's own, in its order"
+
+
+async def test_web_replies_asked_again_after_they_could_not_be_read_keep_why_they_could_not() -> None:
+    judge = _FakeWebJudge(
+        script={
+            "claim_web_queries": ["not json", _ANSWERS["claim_web_queries"]],
+            "claim_web_verdict": ["not json", _verdict(ref="W9")],
+            "claim_web_repair": [_verdict(ref="W9")],
+        }
+    )
+
+    result, trace = await _cell(judge, _FakeWebSearch())
+
+    assert result.claim_tallies[_CRITERION].web_loss == "repair_budget_spent"
+    web = [call for call in trace.claim_losses[_CRITERION].calls if call.role == "web"]
+    assert len(web) == 4 and web[0].reason is None and web[2].reason is None, "each first ask names nothing"
+    assert web[1].reason and web[3].reason, "the searches and the reading asked again each name why"
 
 
 async def test_claims_past_the_cells_web_budget_read_skipped_cap_and_unverifiable_never_false() -> None:

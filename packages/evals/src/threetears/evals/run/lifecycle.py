@@ -34,6 +34,7 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.kernel.claims.derived import ClaimDerivation, claim_derivations
+from threetears.evals.kernel.claims.call_sink import ClaimCallSink
 from threetears.evals.kernel.claims.grading import GradedCriterion, finish_web_step, grade_or_loss
 from threetears.evals.kernel.claims.web import SearchBill, query_price, search_bill, send_search
 from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -383,9 +384,14 @@ async def rejudge_result(
         trace = None
         if claim_inputs is not None:
             billing = _BilledClaimsClient(judge_service.default_client(), web=web_search, rates=external_rates)
+            sinks: dict[str, ClaimCallSink] = {}
             try:
                 regraded = await _regrade_claims(
-                    claim_inputs, billing, result_id=result_id, derivations=claim_derivations(host.profile)
+                    claim_inputs,
+                    billing,
+                    result_id=result_id,
+                    derivations=claim_derivations(host.profile),
+                    sinks=sinks,
                 )
             except CompletionProtocolDefect, ApparatusError:
                 log.error(
@@ -397,8 +403,19 @@ async def rejudge_result(
                 )
                 raise
             fold = _claims_fold(billing)
+            losses = {
+                name: record
+                for name, sink in sinks.items()
+                if (
+                    record := sink.kept(
+                        lost=isinstance(outcome := regraded[name], str),
+                        grade=None if isinstance(outcome, str) else outcome.grade,
+                    )
+                )
+                is not None
+            }
             updated, trace = apply_claim_rejudge(
-                updated, claim_inputs, regraded, usage=fold.usage, cost_usd=fold.cost_usd
+                updated, claim_inputs, regraded, usage=fold.usage, cost_usd=fold.cost_usd, losses=losses
             )
     spent = _rejudge_spend(updated, before=result)
     if trace is not None:
@@ -542,10 +559,13 @@ async def _regrade_claims(
     *,
     result_id: str,
     derivations: Mapping[str, ClaimDerivation],
+    sinks: dict[str, ClaimCallSink],
 ) -> dict[str, GradedCriterion | str]:
     """Grade each criterion a claims re-judge grades again, whole, and finish each lost web step, in the template's
     order, beside the grades the trace keeps.
 
+    :param sinks: The caller's: criterion -> where each criterion graded again whole writes its calls and the failure
+        that lost it, as the judge phase's grade does.
     :return: criterion -> its grade, or its loss.
     :raises CompletionProtocolDefect: A completion in an extraction, a truth call or a web call breaks the protocol.
     :raises ApparatusError: The rig could not serve a call or a search.
@@ -577,6 +597,7 @@ async def _regrade_claims(
                 what=f"Re-judge of result {result_id}: claim criterion {name}",
                 derivation=derivations.get(name),
                 search=client.search if criteria[name].web is not None else None,
+                sink=sinks.setdefault(name, ClaimCallSink()),
             )
         regraded[name] = outcome
         if not isinstance(outcome, str):
