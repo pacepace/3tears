@@ -10,7 +10,8 @@ stamped table's 16 ``(epoch_bucket, epoch)`` ranges. What each one does with it 
   unknown with the window as their bracket;
 - the keys-unknown pages (``noted_keys_page``, the hub's ``l3.noted_keys`` door, ``PoolNotedKeysReader``) page every
   key of a bracket, a tenant's own, across pages bounded by rows and by bytes, ``whole_table`` for a run deleted in it;
-- the delta writer's lost-file recovery (``DeltaFolds._noted_keys``) writes every key of the lost record's bracket.
+- the delta writer's lost-file recovery (``DeltaFolds``' noted keys, through ``noted_key_pages``) writes every key of the
+  lost record's bracket.
 
 Each read is keyed: the statement spy holds every data read of a versioned table to its scope and the bracket's
 bounds, and the no-whole-reads rule judges it keyed. The database is ``epoch_range_db``: DuckDB for the data, the
@@ -23,7 +24,6 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -38,9 +38,8 @@ from packages.core.tests.unit.collections.epoch_range_db import (
     RangeDb,
 )
 from threetears.core.collections.change_notes import PoolNotedKeysReader, noted_keys_page
-from threetears.core.collections.delta_fold import DeltaFolds
-from threetears.core.collections.epoch_change import ChangedRow, EpochChange
-from threetears.core.collections.lost_writes import _MAX_NOTED_ROWS, announce_window
+from threetears.core.collections.epoch_change import ChangedRow
+from threetears.core.collections.lost_writes import announce_window
 from threetears.core.collections.noted_keys import NotedKeysPage, noted_key_pages
 from threetears.core.ddl.row_epoch import RESTORE_BUCKETS
 from threetears.core.tenancy import schema_tenant
@@ -56,6 +55,9 @@ _CEILING = ((int(_UNTIL.timestamp() * 1000) + 1) << 15) - 1
 
 #: the platform schema's tenant: every row of the two tables, which are schema-tenancy tables in it
 _TENANT = schema_tenant(SCHEMA)
+
+#: the most rows one announced table's epoch names (``lost_writes``' record bound): one more is recorded keys unknown
+_MAX_NOTED_ROWS = 10_000
 
 #: the read the (scope, epoch) index names as its purpose (the restore's, which these readers share)
 _READ = "packages/core/src/threetears/core/collections/epoch_reads.py::_range_page"
@@ -278,34 +280,28 @@ async def test_a_keys_unknown_page_walks_every_range_by_row_and_byte_bounds_exac
     _assert_bounded(db, tmp_path)
 
 
-class _Sink:
-    def __init__(self) -> None:
-        self.batches: list[pa.Table] = []
-
-    def write(self, batch: pa.Table) -> None:
-        self.batches.append(batch)
-
-
 async def test_a_lost_delta_file_s_keys_are_recovered_from_the_versions_in_its_bracket(tmp_path: Path) -> None:
     """Flips if the delta writer's recovery of a lost file of a commit too big to list reads its keys from anything
     but the table's versions in the record's bracket (it paged the ring's notes): a key missed, one outside the
-    bracket written, or the run deleted in it not answered ``whole_table``."""
+    bracket written, or the run deleted in it not answered ``whole_table``. Read as the recovery reads them
+    (``DeltaFolds``' noted keys): ``noted_key_pages`` over its notes reader, each page's keys as one Arrow batch."""
     db = RangeDb()
     db.version("CA", "r1", "ann", _FLOOR + 5)
     db.version("CA", "r1", "bob", _FLOOR + 6, gone=True)
     db.version("CA", "r1", "cal", _CEILING + 6)
-    folds = SimpleNamespace(_notes=PoolNotedKeysReader(db, notes_schema=SCHEMA, tenant_token=_TENANT))
-    table = SimpleNamespace(name=VERSIONED, key=(SCOPE, "run_id", "candidate"))
-    record = EpochChange(table=VERSIONED, token="inc:1", keys_unknown=True, noted_between=(_SINCE, _UNTIL))
-    sink = _Sink()
+    reader = PoolNotedKeysReader(db, notes_schema=SCHEMA, tenant_token=_TENANT)
+    batches: list[pa.Table] = []
+    async for page in noted_key_pages(reader, VERSIONED, (_SINCE, _UNTIL)):
+        assert isinstance(page, NotedKeysPage) and not page.whole_table, page
+        if page.keys:
+            batches.append(page.key_batch())
 
-    count = await DeltaFolds._noted_keys(folds, table, record, sink)  # type: ignore[arg-type]  # noqa: SLF001
-
-    assert count == 2, count
-    written = pa.concat_tables(sink.batches)
-    assert written.column_names == [SCOPE, "run_id", "candidate"]
-    assert sorted(written.column("candidate").to_pylist()) == ["ann", "bob"]
+    written = pa.concat_tables(batches)
+    assert written.num_rows == 2, written
+    assert written.num_columns == 3, written.column_names
+    assert sorted(written.column(2).to_pylist()) == ["ann", "bob"]
 
     db.run_marker("CA", "run9", _FLOOR + 7)
-    assert await DeltaFolds._noted_keys(folds, table, record, _Sink()) == "whole_table"  # type: ignore[arg-type]  # noqa: SLF001
+    pages = [page async for page in noted_key_pages(reader, VERSIONED, (_SINCE, _UNTIL))]
+    assert isinstance(pages[0], NotedKeysPage) and pages[0].whole_table, pages
     _assert_bounded(db, tmp_path)

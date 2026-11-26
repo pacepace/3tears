@@ -18,6 +18,7 @@ YugabyteDB are the integration pass's (``test_table_restore_plans_live``).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -27,10 +28,11 @@ import pyarrow as pa
 import pytest
 
 from threetears.core.backends import schema_sql
+from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.backends.protocol import L3Reader
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.schema_backed import BIGINT_TYPE, BOOL_TYPE, STRING_TYPE, Column, TableSchema
-from threetears.core.collections.table_restore import StampedTable, _bucket_rows
+from threetears.core.collections.table_restore import StampedTable, TableChanges
 from threetears.core.ddl.row_epoch import (
     BUCKET_COLUMN,
     EPOCH_COLUMN,
@@ -223,7 +225,7 @@ async def test_a_delete_marks_the_row_gone_in_place_and_the_restore_hears_it(db:
     # no read sees them now
     assert await read_by(reader, _TABLE, by={"state": "NV"}, columns=["run_id"]) == []
 
-    # the restore reads bucket 3's rows stamped since X = 101: both deletes come back, each by its key
+    # the restore reads every bucket's rows stamped since X = 101: both deletes come back, each by its key
     table = StampedTable(
         schema="main",
         table=_TABLE,
@@ -233,11 +235,25 @@ async def test_a_delete_marks_the_row_gone_in_place_and_the_restore_hears_it(db:
         instants=frozenset(),
         tenancy=Tenancy("undeclared"),
     )
-    text = await _bucket_rows(reader, table, 3, 101)
-    lines = sorted(text.decode().splitlines())
-    assert lines == ['"""sg_runs""",,"[""CA"",""r1""]",', '"""sg_runs""",,"[""NV"",""r1""]",'], lines
-    # and the read names no live guard: it is the one read that sees gone rows
-    assert f'"{GONE_COLUMN}"' not in reader.statements[-1]
+    sent = len(reader.statements)
+    folder = RestoreFolder()
+    folder.start()
+    try:
+        changes = [change async for change in TableChanges(reader, [table], 101, folder, None)]
+    finally:
+        await folder.close()
+        await folder.closed()
+    restored = sorted(
+        (change.table, change.tenant, tuple(row["ids"]))
+        for change in changes
+        for body in change.bodies
+        for row in json.loads(body)["rows"]
+    )
+    assert restored == [(_TABLE, None, ("CA", "r1")), (_TABLE, None, ("NV", "r1"))], changes
+    # one read a bucket, and none names a live guard: they are the reads that see gone rows
+    reads = reader.statements[sent:]
+    assert len(reads) == RESTORE_BUCKETS, reads
+    assert all(f'"{GONE_COLUMN}"' not in read for read in reads), reads
 
 
 async def test_a_delete_of_a_key_already_gone_leaves_it_as_it_is(db: duckdb.DuckDBPyConnection) -> None:

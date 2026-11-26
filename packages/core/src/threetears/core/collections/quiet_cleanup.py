@@ -112,7 +112,6 @@ from threetears.observe import get_logger
 from threetears.observe.metrics import counter, gauge
 
 __all__ = [
-    "QUIET_AFTER_SECONDS",
     "ChangeLogWindow",
     "CleanupPass",
     "LoadGate",
@@ -191,7 +190,7 @@ async def log_window_floor(log_reader: ChangeLogWindow) -> int | None:
 #: loading. A choice, not a measurement: cleanup deletes only rows stamped below F, never a row a writer writes, so a
 #: resume between two commits of one load costs at most one batch beside it (~80 ms, measured at :data:`_DEFAULT_BATCH`)
 #: before the next record pauses it again; 30 s keeps it from waking between the commits of a load that writes steadily
-QUIET_AFTER_SECONDS: Final = 30.0
+_QUIET_AFTER_SECONDS: Final = 30.0
 
 
 class _EpochsFeed:
@@ -336,7 +335,7 @@ class LoadGate:
         cls,
         on_record: Callable[[Callable[..., None]], Callable[[], None]],
         *,
-        quiet_after: float = QUIET_AFTER_SECONDS,
+        quiet_after: float = _QUIET_AFTER_SECONDS,
     ) -> LoadGate:
         """a gate fed by the change log's records as this process hears them: every record heard pauses cleanup
         before its next batch, and cleanup resumes from where it stopped once the log was silent for
@@ -346,7 +345,7 @@ class LoadGate:
         :param on_record: subscribes a listener to the records this process hears (on the loop; the listener takes the
             record, unread), answering a call that removes it
         :ptype on_record: Callable[[Callable[..., None]], Callable[[], None]]
-        :param quiet_after: seconds of silence before the gate is quiet (:data:`QUIET_AFTER_SECONDS`)
+        :param quiet_after: seconds of silence before the gate is quiet (:data:`_QUIET_AFTER_SECONDS`)
         :ptype quiet_after: float
         :return: the gate
         :rtype: LoadGate

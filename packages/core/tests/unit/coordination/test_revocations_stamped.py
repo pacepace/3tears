@@ -17,12 +17,10 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.base import NO_L2
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.migrations import register
-from threetears.core.coordination.migrations.v007_revocations_carry_their_epoch import (
-    STAMPED_TABLES,
-    revocations_carry_their_epoch,
-)
+from threetears.core.coordination.migrations.v007_revocations_carry_their_epoch import revocations_carry_their_epoch
 from threetears.core.coordination.tables import CoordinationRevocationsCollection
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.data.migrations.stamp_tables import StampingTable
 from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.stamped_tables import (
     MigrationStore,
@@ -31,6 +29,12 @@ from threetears.core.testing.stamped_tables import (
     assert_migration_stamps,
     assert_restore_reads_every_bucket,
     stamps_in,
+)
+
+#: the table coordination v007 stamps, its key as declared at v007 (frozen: a later change of its key is its own
+#: migration)
+STAMPED_TABLES = (
+    StampingTable("coordination_revocations", (("purpose", "text"), ("key", "text")), tenancy=("schema", None)),
 )
 
 _SCHEMA = CoordinationRevocationsCollection.schema

@@ -21,6 +21,7 @@ import re
 import uuid
 from collections.abc import Iterator
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -30,7 +31,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from threetears.nats import Subject
 
-from threetears.core.backends import dialect
+from threetears.core.backends.broker_generation import HUB_CAPABILITIES_FIELD
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.read_bounds import READ_SETTINGS_FIELD, bounded_read, read_bounds, read_setting_fields
 from threetears.core.backends.sql import SqlL3Backend
@@ -64,7 +65,7 @@ from threetears.core.keyed import changed
 from threetears.core.keyset import read_keyset_pages
 from threetears.interfaces.keyed.counts import Dialect
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
-from threetears.interfaces.keyed.keys import NEWEST_FETCH_ROW_LIMIT, NEWEST_WORK_MEM
+from threetears.interfaces.keyed.keys import newest_settings
 
 _TX_ID = str(uuid.UUID("00000000-0000-4000-8000-000000000905"))
 
@@ -87,29 +88,27 @@ _PLAIN_SCHEMA = TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
-_BATCH = {READ_SETTINGS_FIELD: {"work_mem": NEWEST_WORK_MEM, "yb_fetch_row_limit": NEWEST_FETCH_ROW_LIMIT}}
-_FILL = {READ_SETTINGS_FIELD: {"work_mem": NEWEST_WORK_MEM}}
-_SET_BATCH = f"SET LOCAL work_mem = {NEWEST_WORK_MEM}; SET LOCAL yb_fetch_row_limit = {NEWEST_FETCH_ROW_LIMIT}"
+#: a newest read's bounds (``keys.newest_settings``): a keyed batch's on YugabyteDB, and a fill's (``work_mem`` alone)
+_BATCH_BOUNDS = newest_settings(yugabyte=True, batch=True)
+_FILL_BOUNDS = newest_settings(yugabyte=True, batch=False)
+_BATCH = {READ_SETTINGS_FIELD: dict(_BATCH_BOUNDS)}
+_FILL = {READ_SETTINGS_FIELD: dict(_FILL_BOUNDS)}
+_SET_BATCH = "; ".join(f"SET LOCAL {name} = {value}" for name, value in _BATCH_BOUNDS)
 
 
-@pytest.fixture
-def engine(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, bool]]:
-    """the engine a reader that is no asyncpg connection says it answers from (asked once a reader, as the rail's
-    proxy is asked): YugabyteDB unless a test says otherwise."""
-    said = {"yugabyte": True}
-
-    async def answers(l3: Any) -> bool:
-        return said["yugabyte"]
-
-    monkeypatch.setattr(dialect, "_l3_on_yugabyte", answers)
-    yield said
+#: the reads a reader asks of its database which engine it is (``dialect.known_on_yugabyte``): the rail's proxy asks
+#: the broker's capabilities with a read touching no table, a connection on it asks ``version()``
+_ASKS_THE_ENGINE = ("SELECT 1 AS one", "SELECT version() AS v")
 
 
 class _Broker:
-    """answers each request with rows naming one key's newest version, and keeps each request's body."""
+    """answers each request with rows naming one key's newest version, and keeps each request's body. Asked which
+    engine it reads from, it says YugabyteDB, or PostgreSQL when made with ``yugabyte=False``.
+    """
 
-    def __init__(self) -> None:
+    def __init__(self, *, yugabyte: bool = True) -> None:
         self.sent: list[tuple[str, dict[str, Any]]] = []
+        self._yugabyte = yugabyte
 
     async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
         del timeout
@@ -120,6 +119,12 @@ class _Broker:
             return json.dumps({"success": True, "tx_id": _TX_ID}).encode()
         if path.endswith(("l3.tx.commit", "l3.tx.rollback")):
             return json.dumps({"success": True}).encode()
+        if body.get("query") == _ASKS_THE_ENGINE[0]:
+            named = ["dialect:yugabyte"] if self._yugabyte else []
+            return json.dumps({"success": True, "rows": [{"one": 1}], HUB_CAPABILITIES_FIELD: named}).encode()
+        if body.get("query") == _ASKS_THE_ENGINE[1]:
+            version = "PostgreSQL 15.12-YB-2026.1.0.0-b0" if self._yugabyte else "PostgreSQL 16.4"
+            return json.dumps({"success": True, "rows": [{"v": version}]}).encode()
         row = {"state": "CA", "id": 1, "v": 3, "_newest_versions": 3, "_newest_kept": True, "_newest_live": True}
         return json.dumps({"success": True, "rows": [row]}).encode()
 
@@ -132,7 +137,12 @@ class _Broker:
 
     def reads(self) -> list[dict[str, Any]]:
         """each read's body, as the broker receives it."""
-        return [body for path, body in self.sent if path.endswith(("l3.query", "l3.tx.fetch", "l3.tx.fetchrow"))]
+        return [
+            body
+            for path, body in self.sent
+            if path.endswith(("l3.query", "l3.tx.fetch", "l3.tx.fetchrow"))
+            and body.get("query") not in _ASKS_THE_ENGINE
+        ]
 
 
 def _keys() -> KeyBatch:
@@ -157,19 +167,16 @@ class TestTheField:
 
 class TestOnTheRail:
     @pytest.mark.parametrize("yugabyte", [True, False])
-    async def test_a_keyed_batch_through_the_store_names_its_bounds(
-        self, engine: dict[str, bool], yugabyte: bool
-    ) -> None:
+    async def test_a_keyed_batch_through_the_store_names_its_bounds(self, yugabyte: bool) -> None:
         """Flips if a keyed batch of a versioned table over the rail reaches the broker without its bounds (the
         broker refuses SET, so they are the request's or none), or names YugabyteDB's fetch limit on PostgreSQL."""
-        engine["yugabyte"] = yugabyte
-        broker = _Broker()
+        broker = _Broker(yugabyte=yugabyte)
         store = SqlL3Backend(broker.proxy())
         await read_keyed(store, _TABLE, keys=_keys(), columns=["state", "id", "v"])
         [body] = broker.reads()
         assert {READ_SETTINGS_FIELD: body.get(READ_SETTINGS_FIELD)} == (_BATCH if yugabyte else _FILL)
 
-    async def test_an_arrow_batch_through_the_proxy_names_its_bounds(self, engine: dict[str, bool]) -> None:
+    async def test_an_arrow_batch_through_the_proxy_names_its_bounds(self) -> None:
         """Flips if a keyed batch read as Arrow over the rail drops its bounds."""
         broker = _Broker()
         types = {"state": pa.string(), "id": pa.int64(), "v": pa.int64()}
@@ -177,7 +184,7 @@ class TestOnTheRail:
         [body] = broker.reads()
         assert body[READ_SETTINGS_FIELD] == _BATCH[READ_SETTINGS_FIELD]
 
-    async def test_a_read_in_a_rail_transaction_names_its_bounds(self, engine: dict[str, bool]) -> None:
+    async def test_a_read_in_a_rail_transaction_names_its_bounds(self) -> None:
         """Flips if a newest read sent as an l3.tx statement drops its bounds."""
         broker = _Broker()
         proxy = broker.proxy()
@@ -187,7 +194,7 @@ class TestOnTheRail:
         assert broker.sent[1][0].endswith("l3.tx.fetch")
         assert body[READ_SETTINGS_FIELD] == _BATCH[READ_SETTINGS_FIELD]
 
-    async def test_a_fill_page_through_the_paging_proxy_names_its_bounds(self, engine: dict[str, bool]) -> None:
+    async def test_a_fill_page_through_the_paging_proxy_names_its_bounds(self) -> None:
         """Flips if a fill page sent through a transport that answers pages (fetch_page) drops its bounds."""
         broker = _Broker()
         await read_keyset_pages(
@@ -201,7 +208,7 @@ class TestOnTheRail:
         assert broker.reads()
         assert all(body[READ_SETTINGS_FIELD] == _FILL[READ_SETTINGS_FIELD] for body in broker.reads())
 
-    async def test_a_read_of_a_plain_table_names_none(self, engine: dict[str, bool]) -> None:
+    async def test_a_read_of_a_plain_table_names_none(self) -> None:
         """Flips if a read of a table that keeps one row a key carries settings (every request but a newest read's
         is as it was)."""
         assert _PLAIN_SCHEMA.name == _PLAIN
@@ -222,6 +229,10 @@ class _DirectConnection(asyncpg.Connection):  # type: ignore[misc]  # asyncpg is
 
     def is_closed(self) -> bool:
         return False
+
+    def get_settings(self) -> Any:
+        """the settings a YugabyteDB server sends at startup: its version names it."""
+        return SimpleNamespace(server_version="15.12-YB-2026.1.0.0-b0")
 
     def is_in_transaction(self) -> bool:
         return False
@@ -248,9 +259,7 @@ class _DirectConnection(asyncpg.Connection):  # type: ignore[misc]  # asyncpg is
 
 
 class TestOnTheStoresDirectConnection:
-    async def test_a_keyed_batch_through_the_store_sets_its_bounds_in_its_own_transaction(
-        self, engine: dict[str, bool]
-    ) -> None:
+    async def test_a_keyed_batch_through_the_store_sets_its_bounds_in_its_own_transaction(self) -> None:
         """Flips if the store over a direct connection sends a newest read with no SET LOCAL (its reads were never
         wrapped), or sets them outside the read's own transaction."""
         conn = _DirectConnection.__new__(_DirectConnection)
@@ -285,11 +294,16 @@ def db() -> Iterator[duckdb.DuckDBPyConnection]:
 
 class _L3:
     """an L3 reader answering from DuckDB (it names no dialect, so the helpers take it for L3), keeping every
-    statement it was sent."""
+    statement it was sent. It stands in front of the DuckDB as a reader in front of another does, saying which engine
+    it answers for (``answers_from_yugabyte``): PostgreSQL, or YugabyteDB when made with ``yugabyte=True``."""
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+    def __init__(self, conn: duckdb.DuckDBPyConnection, *, yugabyte: bool = False) -> None:
         self._inner = ThreadedDuckDB(conn)
+        self._yugabyte = yugabyte
         self.statements: list[str] = []
+
+    async def answers_from_yugabyte(self) -> bool:
+        return self._yugabyte
 
     async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
         self.statements.append(query)
@@ -305,11 +319,10 @@ _INSIDE = re.compile(r"SELECT DISTINCT ON \(.*WHERE .*t\.\"id\"\)? > \(?\$\d+.* 
 
 class TestKeyOrderedListings:
     async def test_a_page_past_its_cursor_reads_its_range_inside_the_relation(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+        self, db: duckdb.DuckDBPyConnection
     ) -> None:
         """Flips if a key-ordered page of a versioned table leaves its LIMIT or cursor outside the newest relation
         (the planner then bounds it, or does not: a big scope sorted a page), or answers an older or gone version."""
-        engine["yugabyte"] = False
         reader = _L3(db)
         order = [Sort("id", cast="integer")]
         read: dict[int, int] = {}
@@ -329,11 +342,8 @@ class TestKeyOrderedListings:
         # nothing bounds the page outside the relation: its outer statement ends at its order
         assert all(re.search(r"\) AS t ORDER BY t\.\"id\"$", statement) for statement in reader.statements)
 
-    async def test_keyset_rows_reads_a_range_a_statement(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
-    ) -> None:
+    async def test_keyset_rows_reads_a_range_a_statement(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a listing read to its end reads its scope in a statement whose LIMIT is outside the relation."""
-        engine["yugabyte"] = False
         reader = _L3(db)
         rows = await keyset_rows(
             reader, _TABLE, columns=["state", "id", "v"], by={"state": "CA"}, order=[Sort("id", cast="integer")], page=1
@@ -345,13 +355,12 @@ class TestKeyOrderedListings:
 
 class TestPrefixBatches:
     async def test_a_yugabyte_prefix_batch_reads_one_prefix_a_range_at_a_time(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+        self, db: duckdb.DuckDBPyConnection
     ) -> None:
         """Flips if a batch of key prefixes on YugabyteDB names several prefixes' whole scopes in one sorted
         statement (its first named the batch's first 2,000), rather than one prefix pinned, its keys a range a
         statement under the read's LIMIT; or answers other than each key's newest live version."""
-        engine["yugabyte"] = True
-        reader = _L3(db)
+        reader = _L3(db, yugabyte=True)
         keys = KeyBatch(("state",), [["CA", "NV"]], ("text",))
         rows = await read_keyed(reader, _TABLE, keys=keys, columns=["state", "id", "v"], batch=2, row_cap=3)
         assert {(row["state"], int(row["id"])): int(row["v"]) for row in rows} == {
@@ -365,11 +374,10 @@ class TestPrefixBatches:
         assert all(re.search(r"DESC LIMIT [12]\) AS n", statement) for statement in reader.statements)
 
     async def test_an_arrow_prefix_batch_reads_one_prefix_a_range_at_a_time(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+        self, db: duckdb.DuckDBPyConnection
     ) -> None:
         """Flips as the dict read does, for the Arrow read: no row a Python object, the same rows."""
-        engine["yugabyte"] = True
-        reader = _L3(db)
+        reader = _L3(db, yugabyte=True)
         keys = KeyBatch(("state",), [["CA"]], ("text",))
         types = {"state": pa.string(), "id": pa.int32(), "v": pa.int32()}
         tables = await read_keyed_arrow(reader, _TABLE, keys=keys, types=types, row_cap=3)
@@ -380,15 +388,14 @@ class TestPrefixBatches:
         assert all(re.search(r"DESC LIMIT [12]\) AS n", statement) for statement in reader.statements)
 
     async def test_a_batch_of_prefixes_reads_each_under_its_own_limit_and_pages_a_big_one(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
+        self, db: duckdb.DuckDBPyConnection
     ) -> None:
         """Flips if a batch of several prefixes (sized by a small first prefix's versions) is one batched DISTINCT ON
         with no LIMIT inside, which sorts a big prefix's whole scope beside the rest, rather than each prefix under
         its own LIMIT and the one that fills it read alone a range at a time; or answers other than each key's newest
         live version."""
-        engine["yugabyte"] = True
         db.execute(f"INSERT INTO {_TABLE} (state, id, v, epoch, gone) VALUES ('AK', 1, 5, 10, false)")
-        reader = _L3(db)
+        reader = _L3(db, yugabyte=True)
         keys = KeyBatch(("state",), [["AK", "CA", "NV"]], ("text",))
         expected = {
             ("AK", 1): 5,
@@ -405,7 +412,7 @@ class TestPrefixBatches:
         for statement in reader.statements:
             assert statement.count("DISTINCT ON") == len(re.findall(r"DESC LIMIT [12]\) AS n", statement)), statement
         types = {"state": pa.string(), "id": pa.int32(), "v": pa.int32()}
-        reader = _L3(db)
+        reader = _L3(db, yugabyte=True)
         read = pa.concat_tables(await read_keyed_arrow(reader, _TABLE, keys=keys, types=types, batch=3, row_cap=3))
         assert read.column_names == ["state", "id", "v"]
         assert {(row["state"], row["id"]): row["v"] for row in read.to_pylist()} == expected
@@ -431,7 +438,7 @@ class _BoundsSeen(_L3):
             bounds for statement, bounds in zip(self.statements, self.bounds, strict=True) if f'"{_TABLE}"' in statement
         ]
         assert read, self.statements
-        assert all(bounds == (("work_mem", NEWEST_WORK_MEM),) for bounds in read), (self.statements, self.bounds)
+        assert all(bounds == _FILL_BOUNDS for bounds in read), (self.statements, self.bounds)
 
 
 #: a read's key pin named inside the newest relation's DISTINCT ON, never left to the planner to push there
@@ -442,12 +449,9 @@ class TestEveryOtherRead:
     """counts, aggregates, point reads, marks reads and changed reads of a versioned table run under a newest read's
     bounds (``work_mem``), their key pins inside the newest relation where they pin the key."""
 
-    async def test_point_reads_are_bounded_and_pin_inside(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
-    ) -> None:
+    async def test_point_reads_are_bounded_and_pin_inside(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if read_by, read_row or read_value of a versioned table is sent with no bounds, or leaves its key pins
         outside the relation (the planner then bounds it, or does not)."""
-        engine["yugabyte"] = False
         reader = _BoundsSeen(db)
         rows = await read_by(reader, _TABLE, by={"state": "CA"}, columns=["id", "v"])
         assert {int(row["id"]): int(row["v"]) for row in rows} == _NEWEST_CA
@@ -457,12 +461,9 @@ class TestEveryOtherRead:
         reader.check()
         assert all(_PINNED.search(statement) for statement in reader.statements), reader.statements
 
-    async def test_counts_and_aggregates_are_bounded_and_pin_inside(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool]
-    ) -> None:
+    async def test_counts_and_aggregates_are_bounded_and_pin_inside(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a bounded count, a probe, a keyed count, an aggregate or an empty-table probe of a versioned table
         is sent with no bounds, or a pinned one leaves its key pins outside the relation."""
-        engine["yugabyte"] = False
         reader = _BoundsSeen(db)
         counted = await count_at_most(reader, _TABLE, at_most=10, order=["state", "id"], by={"state": "CA"})
         assert counted.count == 5
@@ -480,11 +481,10 @@ class TestEveryOtherRead:
         reader.check()
 
     async def test_marks_and_changed_reads_are_bounded(
-        self, db: duckdb.DuckDBPyConnection, engine: dict[str, bool], monkeypatch: pytest.MonkeyPatch
+        self, db: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Flips if a read past marks, a page after an id or a changed read's group hashes of a versioned table is
         sent with no bounds, or a page after an id leaves its key pins outside the relation."""
-        engine["yugabyte"] = False
         reader = _BoundsSeen(db)
         moved = await read_past_marks(reader, _TABLE, columns=["state", "id", "v", "epoch"], marks={"epoch": 15})
         assert {(row["state"], int(row["id"])) for row in moved.rows} == {("CA", 1)}

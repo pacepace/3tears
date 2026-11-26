@@ -26,7 +26,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
-from threetears.core.ddl.epoch_catalog import PerRowTriggerError, refuse_row_triggers
+from threetears.core.ddl.epoch_catalog import refuse_row_triggers
 from threetears.core.ddl.row_epoch import row_versions
 from threetears.core.entities.base import BaseEntity
 from threetears.core.eviction import Declared, Policy
@@ -82,10 +82,6 @@ class _Catalog(FakeDataStore):
             # the per-row triggers on versioned tables (epoch_catalog._ROW_TRIGGERS_SQL)
             self.queried.append((sql, params))
             return [{"table_schema": s, "table_name": t, "trigger_name": g} for s, t, g in self.row_triggers]
-        if "pg_description" in sql:
-            # the versioned tables among those named (epoch_catalog._VERSIONED_AMONG_SQL)
-            self.queried.append((sql, params))
-            return [{"table_name": _TABLE}] if _TABLE in params[3] else []
         if "information_schema.tables" in sql:
             self.queried.append((sql, params))
             return [{"table_name": name} for name in params[0]]
@@ -107,9 +103,9 @@ async def test_a_per_row_trigger_on_a_versioned_table_is_refused_by_the_migratio
     package.version(1)(nothing)
     runner.register(package)
     store = _Catalog(triggers=(("rpt", _TABLE, "results_audit"),))
-    with pytest.raises(PerRowTriggerError) as refused:
+    with pytest.raises(RuntimeError, match="PER-ROW TRIGGER") as refused:
         await runner.apply_for_platform_schema(store)
-    assert refused.value.found == (f"rpt.{_TABLE}: results_audit",)
+    assert f"  - rpt.{_TABLE}: results_audit\n" in str(refused.value)
     assert "How to fix" in str(refused.value)
     assert "DROP TRIGGER" in str(refused.value)
 
@@ -142,9 +138,9 @@ class _Pool:
 async def test_the_keeper_s_refusal_judges_every_schema_and_names_each_trigger() -> None:
     """Flips if the start's refusal judges one schema only, or reads stamped tables' declarations as versioned."""
     pool = _Pool([{"table_schema": "agent_x", "table_name": "rows", "trigger_name": "threetears_change_note"}])
-    with pytest.raises(PerRowTriggerError) as refused:
+    with pytest.raises(RuntimeError, match="PER-ROW TRIGGER") as refused:
         await refuse_row_triggers(pool)
-    assert refused.value.found == ("agent_x.rows: threetears_change_note",)
+    assert "  - agent_x.rows: threetears_change_note\n" in str(refused.value)
     ((query, args),) = pool.asked
     declared, stamped, schema = args
     assert declared == '{"threetears_restore":%' and stamped == '%"kind":"stamped"%' and schema is None

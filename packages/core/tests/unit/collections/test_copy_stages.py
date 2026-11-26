@@ -22,9 +22,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import sys
 import threading
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from types import FrameType
@@ -41,7 +43,6 @@ from threetears.core.collections import CollectionRegistry  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.copy_checkpoint import CopyCheckpoints  # noqa: E402
 from threetears.core.collections.copy_follower import CopyFollower, FollowedTable, is_reload_stage  # noqa: E402
-from threetears.core.collections.copy_follower import _reload_stage as reload_stage  # noqa: E402
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange, EpochWalk, walk_by_count  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column  # noqa: E402
 from threetears.core.collections.copy_parts import PartRule  # noqa: E402
@@ -57,6 +58,14 @@ _COLUMNS = (
     Column(name="geo_id", column_type=BIGINT_TYPE),
     Column(name="votes", column_type=BIGINT_TYPE),
 )
+
+
+def reload_stage(table: str) -> str:
+    """the stage a running copy's reload of ``table`` stages in, as the follower names it: a backend tells it by
+    ``is_reload_stage`` alone, which each test asserts of it."""
+    return f"{STAGE_PREFIX}{table}__full"
+
+
 _FOLLOWED = FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))
 
 _OPENED: list[Callable[[], None]] = []
@@ -203,7 +212,11 @@ async def test_a_prepared_reload_stages_in_the_reload_worker_and_publishes_only_
     stage = reload_stage(_TABLE)
     assert is_reload_stage(stage)
     await _staged(shared, copy.stage_rows, stage, _TABLE, pa.table({}), _KEY)
-    await _staged(shared, copy.stage_rows, stage, _TABLE, _rows(("VA", 1, 10), ("IL", 2, 20)), _KEY)
+    reloaded = _rows(("VA", 1, 10), ("IL", 2, 20))
+    # the reload's page, watched: once handed to the reload worker nothing in this process holds it, its stage neither
+    page = weakref.ref(reloaded)
+    await _staged(shared, copy.stage_rows, stage, _TABLE, reloaded, _KEY)
+    del reloaded
     change = StagedChange(table=_TABLE, key=_KEY, rows=stage, whole=True, whole_kind="cold_start")
     await copy.prepare_staged([change])
     # the reload stages beside the copy; nothing of it is published, and its stage holds no pages
@@ -213,7 +226,9 @@ async def test_a_prepared_reload_stages_in_the_reload_worker_and_publishes_only_
         await asyncio.sleep(0.01)
     assert copy.reloads.status().queued == 0
     assert shared.rows(_TABLE) == [("VA", 1, 1)]
-    assert copy._stages[stage].pages == ()  # noqa: SLF001 -- the stage lets its pages go to the reload lane
+    gc.collect()
+    assert page() is None, "the stage still holds the page it let go to the reload lane"
+    assert copy.staged_stages() == [stage]
     # a change given while it stages applies at once, and again over the reload as it publishes (decision 52)
     await _staged(shared, copy.stage_rows, rows, _TABLE, _rows(("TX", 3, 3)), _KEY)
     await copy.apply_staged([StagedChange(table=_TABLE, key=_KEY, rows=rows)], mark=2)

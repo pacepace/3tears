@@ -36,8 +36,8 @@ from threetears.interfaces.keyed.rows import PLAIN_KEYS, key_chunks, read_keyed_
 #: a batch whose column arrives as Arrow: a serving path's keys, bound in Arrow mode
 _ARROW_KEYS = KeyBatch(("k",), [pa.array(["a"])])
 
-#: the fewest keys the binder makes distinct in its worker process (``binding._INLINE_DISTINCT_KEYS``), read by name
-_INLINE_DISTINCT_KEYS: int = getattr(binding, "_INLINE_DISTINCT_KEYS")
+#: the fewest keys the binder makes distinct in its worker process (``binding``'s bound, ``key_chunks_off_loop``)
+_INLINE_DISTINCT_KEYS = 10_000
 
 #: keys a real-size read names: a page of a night's changed rows
 _REAL_KEYS = 50_000

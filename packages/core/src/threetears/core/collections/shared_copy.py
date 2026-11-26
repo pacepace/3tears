@@ -17,17 +17,17 @@ its own (never between a change and the pages that show it, its merge job); ever
 (:data:`~threetears.core.collections.copy_parts.WHOLE_PART`). A table whose held parts are not the shape its rule
 names now (it crossed the floor) is rewritten whole in the new shape. A split table keyed without its scope column is
 found through its locator (:class:`~threetears.core.collections.copy_parts.Locator`), published in the version beside
-it as ``__located__<table>`` (:data:`LOCATED_PREFIX`), so the worker reads it with the parts and the serving process
+it as ``__located__<table>`` (:data:`_LOCATED_PREFIX`), so the worker reads it with the parts and the serving process
 holds no copy of it.
 
 **Few, large files a version** (decision 2b). A split table's scope values under ``copy_parts.PACK_BELOW_BYTES``
 share packs (``copy_parts.pack_name``) filled to ``copy_parts.PACK_TARGET_BYTES``, named in the version beside it as
-``__packed__<table>`` (:data:`PACKED_PREFIX`: each packed scope value's part name and its pack). A row of a packed
+``__packed__<table>`` (:data:`_PACKED_PREFIX`: each packed scope value's part name and its pack). A row of a packed
 scope lands in its pack, whatever its run; every other row as above. A whole change cuts the table afresh, packed; a
 change rewrites the packs and parts it lands in alone, a pack grown past ``PACK_TARGET_BYTES + PACK_BELOW_BYTES``
 re-cut as it is rewritten; and the small parts a change leaves (a new small scope, a pack emptied) are packed by
 :meth:`SharedCopyBackend.merge`, a publish of its own, like a tier merge. A version holding more files than its bound
-(:data:`MAX_VERSION_FILES`) makes a merge due, which then packs every scope under ``PACK_TARGET_BYTES``.
+(:data:`_MAX_VERSION_FILES`) makes a merge due, which then packs every scope under ``PACK_TARGET_BYTES``.
 
 A whole change of a per-run table (a cold start, a reload) lands in the tiers its :class:`MergePolicy`'s merges would
 leave, never a part a run (:func:`_merged_tiers`). A part's name is its scope value's (``copy_parts.part_name``):
@@ -114,6 +114,12 @@ from threetears.core.arrow_keys import (
     rows_named,
     stored_instants,
 )
+from threetears.core.collections.copy_pieces import (
+    APPLY_PIECE_BYTES,
+    APPLY_PIECE_MINIMUM_BYTES,
+    apply_piece_bytes,
+    reload_piece_bytes,
+)
 from threetears.core.collections.copy_parts import (
     PACK_BELOW_BYTES,
     PACK_TARGET_BYTES,
@@ -149,10 +155,7 @@ __all__ = [
     "INDEX_PREFIXES",
     "KEYS",
     "LEAVE",
-    "LOCATED_PREFIX",
     "MARK_TABLE",
-    "MAX_VERSION_FILES",
-    "PACKED_PREFIX",
     "ROWS",
     "RUNS_SCHEMA",
     "Applied",
@@ -178,8 +181,6 @@ __all__ = [
     "apply_job",
     "file_name",
     "held_parts",
-    "apply_piece_bytes",
-    "reload_piece_bytes",
 ]
 
 log = get_logger(__name__)
@@ -200,14 +201,14 @@ _PART_SEPARATOR: Final = "@"
 _TABLE_SUFFIX: Final = ".arrow"
 
 #: a split table's locator is published beside it as this prefix and its name, one part (:data:`WHOLE_PART`)
-LOCATED_PREFIX: Final = "__located__"
+_LOCATED_PREFIX: Final = "__located__"
 
 #: a split table's packs index is published beside it as this prefix and its name, one part (:data:`WHOLE_PART`): each
 #: packed scope value's part name and its pack (``copy_parts.pack_name``)
-PACKED_PREFIX: Final = "__packed__"
+_PACKED_PREFIX: Final = "__packed__"
 
 #: the prefixes of the tables a version holds beside the copy's own (a locator, a packs index): no query sees them
-INDEX_PREFIXES: Final = (LOCATED_PREFIX, PACKED_PREFIX)
+INDEX_PREFIXES: Final = (_LOCATED_PREFIX, _PACKED_PREFIX)
 
 #: the most files a version of the copy holds before a merge is due to pack its small parts (every table's parts, its
 #: schema file, its locator and packs index, the mark). A version over it makes a merge due (:meth:`SharedCopyBackend.
@@ -220,7 +221,7 @@ INDEX_PREFIXES: Final = (LOCATED_PREFIX, PACKED_PREFIX)
 #: small scopes no longer add a file each, so a version is its tables' schema files and big parts: a quarter of the
 #: replay's count at most, and a fifth of its stall. The let-go lateness test on the Linux pool is the proof at size
 #: (``test_shared_arrow_let_go_loop``).
-MAX_VERSION_FILES: Final = 512
+_MAX_VERSION_FILES: Final = 512
 
 #: the one-row table each change's mark is published as (``mark``, int64): a reader of a version reads the mark of
 #: the rows it maps, never a newer one. Moved from reports (``follower_parts.MARK_TABLE``)
@@ -230,53 +231,6 @@ MARK_TABLE: Final = "__staged_mark__"
 #: (``follower_parts.FAN_OUT``): a scope of N runs holds about ``FAN_OUT * log10(N)`` parts and each row is rewritten
 #: once a level
 _FAN_OUT: Final = 10
-
-#: the most one file of a change's, a merge's or a reload's result may take: the most a piece grows to for a file of
-#: its own (``SharedArrowStore.reserve_pieces``' ``grow_to``), and the most one is reserved at. Moved from reports
-#: (``shared_backend.SHARED_COPY_RESULT_BYTES``): a fixed 1 GiB slot refused every change of a store with less room.
-#: A piece is reserved at what its job is expected to write as one file (:func:`apply_piece_bytes`,
-#: :func:`reload_piece_bytes`), never at this: it grows here only for a file that needs it
-_APPLY_PIECE_BYTES: Final = 1 << 30
-
-#: the least room a change's piece is reserved at: one part's bound, a piece holding each file whole. Moved from
-#: reports (``shared_backend.SHARED_COPY_PIECE_MINIMUM_BYTES``): the largest file a change wrote in its 2026-11-03
-#: replay's cold start was a few MiB (a 123 MB table in 53 parts)
-_APPLY_PIECE_MINIMUM_BYTES: Final = 16 << 20
-
-#: a reload's result piece is reserved at its largest table's bytes and this share more (an IPC file's padding and
-#: metadata, its locator and packs index), at :data:`_APPLY_PIECE_MINIMUM_BYTES` at least
-_RELOAD_PIECE_SLACK_DIVISOR: Final = 8
-
-#: a change's result piece is reserved at the largest file it may rewrite and this share more (the IPC file's
-#: padding and metadata, a scope's rows cut again), at :data:`_APPLY_PIECE_MINIMUM_BYTES` more at least
-#: (:func:`apply_piece_bytes`)
-_APPLY_PIECE_SLACK_DIVISOR: Final = 8
-
-#: a change's result piece is reserved at most at this share of the store's ``max_bytes`` (a file that needs more
-#: grows its piece, up to :data:`_APPLY_PIECE_BYTES`, while the store has the room).
-#:
-#: **Why** (``test_copy_lane``'s second-death test, refused "no room for a hand-off in a 1 GiB store", 2026-11-25).
-#: An apply reserved a piece of :data:`_APPLY_PIECE_BYTES` (1 GiB), or all the room a smaller store had, for as long
-#: as it applied, whatever the change: a change is a few MiB on a busy night (``copy_reload._MAX_REPLAY_BYTES``) and
-#: rewrites only the parts it lands in (the largest file the 2026-11-03 replay's cold start wrote was a few MiB, its
-#: 123 MB table in 53 parts), so the GiB held was almost all room nobody wrote, and a reload staging or a hand-off
-#: beside it found none. Now a piece is reserved at the largest file of the change's tables the version holds (a part,
-#: its locator, its packs index) plus the change's own rows of that table and an eighth: the most one rewritten file
-#: can hold, unless a hook derives a table or a whole rewrite cuts parts afresh, and then the file grows its piece. It
-#: is never past a quarter of the store, beside a reload's quarter (:data:`_RELOAD_STORE_SHARE`): half the store
-#: (4 GiB of reports' 8 GiB, ``values.yaml``' ``maxBytes``) stays for versions and hand-offs
-_APPLY_STORE_SHARE: Final = 4
-
-#: a reload's result piece takes at most this share of the store's ``max_bytes``.
-#:
-#: **Why** (inventory ``apply_staged`` / ``reserve_pieces``, 2026-11-25). A reload stages in its own worker for as long
-#: as its rows take, holding its open piece's room all the while; at :data:`_APPLY_PIECE_BYTES` (1 GiB) every reload
-#: took a GiB, or all the room a smaller store had, and a change's apply beside it found less than its 16 MiB minimum
-#: and was refused. A reload's largest file is one part of one table, never more than that table's rows, so its piece
-#: is sized to its largest table (most reloads are a state's: a few MiB; the largest table the 2026-11-03 replay's
-#: cold start wrote was 123 MB, in 53 parts), and never past a quarter of the store, leaving the applies three
-#: quarters (2 GiB of reports' 8 GiB store, ``values.yaml``' ``maxBytes``)
-_RELOAD_STORE_SHARE: Final = 4
 
 #: an apply worker holding more private memory than this after a change is replaced before the next, so what a
 #: change's scratch copies allocated goes back to the system. Judged by private (anonymous) memory
@@ -704,10 +658,10 @@ class Reloaded:
 
     :ivar table: the table
     :ivar parts: each part staged and its file in the store (a claimed result's, held until the publish)
-    :ivar located: its locator's file (:data:`LOCATED_PREFIX`); None for none
+    :ivar located: its locator's file (:data:`_LOCATED_PREFIX`); None for none
     :ivar scope: the scope values it replaces; None for the whole table
     :ivar rule: the rule it was cut by
-    :ivar packed: its packs index's file (:data:`PACKED_PREFIX`), a whole reload's; None for none
+    :ivar packed: its packs index's file (:data:`_PACKED_PREFIX`), a whole reload's; None for none
     """
 
     table: str
@@ -788,7 +742,7 @@ class _MergePlan:
     schemas: tuple[tuple[str, pa.Schema], ...] = ()
     pack_below: int = PACK_BELOW_BYTES
     pack_target: int = PACK_TARGET_BYTES
-    max_files: int = MAX_VERSION_FILES
+    max_files: int = _MAX_VERSION_FILES
     run_times: RunTimes | None = None
 
 
@@ -1109,7 +1063,7 @@ def _run_parts(
     return named
 
 
-#: a packs index's columns (:data:`PACKED_PREFIX`): each packed scope value's part name and its pack, a locator's shape
+#: a packs index's columns (:data:`_PACKED_PREFIX`): each packed scope value's part name and its pack, a locator's shape
 _INDEX: Final = Locator().located.schema
 _INDEX_SCOPE: Final = _INDEX.names[0]
 _INDEX_PACK: Final = _INDEX.names[1]
@@ -1117,7 +1071,7 @@ _INDEX_PACK: Final = _INDEX.names[1]
 
 def _index_of(files: Mapping[str, Any], table: str) -> pa.Table:
     """a split table's packs index as a version holds it; empty for none."""
-    held = _parts_of(files, f"{PACKED_PREFIX}{table}")
+    held = _parts_of(files, f"{_PACKED_PREFIX}{table}")
     return _map(held[WHOLE_PART]).cast(_INDEX) if WHOLE_PART in held else _INDEX.empty_table()
 
 
@@ -1173,7 +1127,7 @@ def _cut(
     index: pa.Table | None = None,
 ) -> Mapping[str, pa.Table]:
     """rows by part, each part's rows a slice in their order in ``rows``: one stable sort of each row's part's name
-    and one run-end encoding (``copy_parts.split_parts``' cut, by tier for a per-run table); with ``merges`` (a whole
+    and one run-end encoding (a scope's part, or its tier for a per-run table); with ``merges`` (a whole
     change), the tiers those merges leave; with ``index``, a packed scope's rows in its pack."""
     if not rows.num_rows:
         return EMPTY
@@ -1455,7 +1409,7 @@ class _Result:
     def write(self, table: str, part: str, rows: pa.Table) -> None:
         name = f"p{len(self.parts)}"
         # one record batch a file: a reader maps each batch as arrays of its own, and letting a version go frees
-        # every array (``MAX_VERSION_FILES``' why); a pack's scopes, concatenated, were a batch a scope
+        # every array (``_MAX_VERSION_FILES``' why); a pack's scopes, concatenated, were a batch a scope
         held = self.base.get(file_name(table, part))
         wrote = self.step({name: stamped(rows.combine_chunks(), None if held is None else held.path)})
         self.written_bytes += wrote
@@ -1519,8 +1473,8 @@ def _apply_table(
     rule, schema = tables.rules[table], tables.schemas[table]
     key = rule.key
     held = _parts_of(files, table)
-    located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
-    packed = f"{PACKED_PREFIX}{table}"
+    located = _parts_of(files, f"{_LOCATED_PREFIX}{table}")
+    packed = f"{_PACKED_PREFIX}{table}"
     index = _index_of(files, table) if rule.split else _INDEX.empty_table()
     locator = _locator_of(files, table, locators)
     named = change.named if change.named.num_rows else None
@@ -1552,9 +1506,9 @@ def _apply_table(
         located_rows = rows if rule.locator is not None and rule.split else None
         fresh = Locator() if located_rows is None else Locator().extended(rule, located_rows)
         if fresh.located.num_rows:
-            result.write(f"{LOCATED_PREFIX}{table}", WHOLE_PART, fresh.located)
+            result.write(f"{_LOCATED_PREFIX}{table}", WHOLE_PART, fresh.located)
         elif located:
-            result.drop(f"{LOCATED_PREFIX}{table}", WHOLE_PART)
+            result.drop(f"{_LOCATED_PREFIX}{table}", WHOLE_PART)
         return _TableApplied(frozen(after), _concat(schema, gone), touched)
     by_part = _cut(rule, change.rows, held, index=index)
     #: the index pairs of packs this change made new or cut again
@@ -1599,7 +1553,7 @@ def _apply_table(
         kept = index.filter(pc.invert(pc.is_in(index[_INDEX_PACK], value_set=pa.array(repacked, pa.string()))))
         _write_index(result, packed, pa.concat_tables([kept, *recut]))
     if rule.locator is not None and rule.split and written is not None:
-        result.write(f"{LOCATED_PREFIX}{table}", WHOLE_PART, locator.extended(rule, change.rows).located)
+        result.write(f"{_LOCATED_PREFIX}{table}", WHOLE_PART, locator.extended(rule, change.rows).located)
     return _TableApplied(frozen(after), _concat(schema, gone), touched)
 
 
@@ -1697,7 +1651,7 @@ def _locator_of(files: Mapping[str, Any], table: str, locators: Mapping[str, Loc
     """a table's locator: ``locators``' (a per-scope reload's), else the version's file's, else none."""
     if table in locators:
         return locators[table]
-    located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
+    located = _parts_of(files, f"{_LOCATED_PREFIX}{table}")
     return Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
 
 
@@ -1945,7 +1899,7 @@ def _let_go_split_parts(
     if rule.scope_column in columns:
         scopes = parts_of_keys(rule, gone)
     elif rule.locator is not None and rule.locator in columns:
-        located = _parts_of(files, f"{LOCATED_PREFIX}{table}")
+        located = _parts_of(files, f"{_LOCATED_PREFIX}{table}")
         locator = Locator(_map(located[WHOLE_PART])) if WHOLE_PART in located else Locator()
         scopes = parts_of_keys(rule, gone.select([rule.locator]), locator)
     if scopes is None:
@@ -1988,7 +1942,7 @@ def _let_go_table(tables: _Tables, table: str, gone: pa.Table, files: Mapping[st
     if emptied:
         index = _index_of(files, table)
         kept = index.filter(pc.invert(pc.is_in(index[_INDEX_PACK], value_set=pa.array(emptied, pa.string()))))
-        _write_index(result, f"{PACKED_PREFIX}{table}", kept)
+        _write_index(result, f"{_PACKED_PREFIX}{table}", kept)
     return lost
 
 
@@ -2346,8 +2300,8 @@ def _reloaded(tables: _Tables, files: Mapping[str, Any], reloads: Sequence[Reloa
         table, scope = reload.table, reload.scope
         rule, schema = tables.rules[table], tables.schemas[table]
         held = _parts_of(files, table)
-        located_name = f"{LOCATED_PREFIX}{table}"
-        packed_name = f"{PACKED_PREFIX}{table}"
+        located_name = f"{_LOCATED_PREFIX}{table}"
+        packed_name = f"{_PACKED_PREFIX}{table}"
         if scope is not None and rule != reload.rule:
             raise ReloadStale(
                 f"{table} is held by another rule than its reload was staged by; the reload is read again"
@@ -2565,7 +2519,7 @@ def _pack_job(context: JobContext, plan: _MergePlan, files: Mapping[str, Any]) -
             written.append((part, f"m{at}"))
         if fresh.num_rows:
             step({"i": fresh})
-    held_index = WHOLE_PART in _parts_of(files, f"{PACKED_PREFIX}{table}")
+    held_index = WHOLE_PART in _parts_of(files, f"{_PACKED_PREFIX}{table}")
     return _MergeOutcome(
         table=table,
         written=tuple(written),
@@ -2621,10 +2575,10 @@ async def _staged(
         Reloaded(
             table=table,
             parts=tuple(sorted(staged.get(table, ()))),
-            located=dict(staged.get(f"{LOCATED_PREFIX}{table}", ())).get(WHOLE_PART),
+            located=dict(staged.get(f"{_LOCATED_PREFIX}{table}", ())).get(WHOLE_PART),
             scope=scopes.get(table),
             rule=rule,
-            packed=dict(staged.get(f"{PACKED_PREFIX}{table}", ())).get(WHOLE_PART),
+            packed=dict(staged.get(f"{_PACKED_PREFIX}{table}", ())).get(WHOLE_PART),
         )
         for table, rule in sorted(rules.items())
     )
@@ -2671,7 +2625,7 @@ class SharedCopyBackend:
     :ptype pack_below: int
     :param pack_target: a pack is filled to this many bytes (``copy_parts.PACK_TARGET_BYTES``)
     :ptype pack_target: int
-    :param max_files: a version holding more files than this makes a merge due (:data:`MAX_VERSION_FILES`)
+    :param max_files: a version holding more files than this makes a merge due (:data:`_MAX_VERSION_FILES`)
     :ptype max_files: int
     :param run_times: where the runs' times and models are held (:class:`RunTimes`), so ``merges`` sees them; None
         for none (``MergePolicy.due`` is given None)
@@ -2702,7 +2656,7 @@ class SharedCopyBackend:
         canonical: Mapping[str, Mapping[str, str]] = EMPTY,
         pack_below: int = PACK_BELOW_BYTES,
         pack_target: int = PACK_TARGET_BYTES,
-        max_files: int = MAX_VERSION_FILES,
+        max_files: int = _MAX_VERSION_FILES,
         run_times: RunTimes | None = None,
         declared: PartDeclaration | None = None,
         columns: ColumnHooks | None = None,
@@ -2893,8 +2847,8 @@ class SharedCopyBackend:
                 read=False if base is None else base,
                 tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
                 result_pieces=apply_piece_bytes(self._store.max_bytes, sent, self._held_largest(base, sent)),
-                result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
-                result_grow_to=_APPLY_PIECE_BYTES,
+                result_minimum=APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=APPLY_PIECE_BYTES,
             )
             outcome: _Outcome = done.value
             version = f"c-{self._next}"
@@ -2952,9 +2906,9 @@ class SharedCopyBackend:
                 plan,
                 read=version,
                 # as a merge: a piece of the least, each rewritten file growing its own, never a GiB held for the run
-                result_pieces=_APPLY_PIECE_MINIMUM_BYTES,
-                result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
-                result_grow_to=_APPLY_PIECE_BYTES,
+                result_pieces=APPLY_PIECE_MINIMUM_BYTES,
+                result_minimum=APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=APPLY_PIECE_BYTES,
             )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the change is published; what it let go waits for a later settle
             contain(
@@ -3052,10 +3006,10 @@ class SharedCopyBackend:
                 replace(self._plan((), ()), hooks=hooks),
                 read=current.name,
                 # which derived tables it writes is the hooks' to find: a piece of the least, each file growing its
-                # own (:data:`_APPLY_STORE_SHARE`'s why), never a GiB held for the settle's whole run
-                result_pieces=_APPLY_PIECE_MINIMUM_BYTES,
-                result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
-                result_grow_to=_APPLY_PIECE_BYTES,
+                # own (:data:`~threetears.core.collections.copy_pieces._APPLY_STORE_SHARE`'s why), never a GiB held for the settle's whole run
+                result_pieces=APPLY_PIECE_MINIMUM_BYTES,
+                result_minimum=APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=APPLY_PIECE_BYTES,
             )
             outcome: _Outcome = done.value
             version = f"c-{self._next}"
@@ -3093,7 +3047,7 @@ class SharedCopyBackend:
         return frozen(
             (
                 table,
-                self._store.largest_file_bytes(base, (table, f"{LOCATED_PREFIX}{table}", f"{PACKED_PREFIX}{table}")),
+                self._store.largest_file_bytes(base, (table, f"{_LOCATED_PREFIX}{table}", f"{_PACKED_PREFIX}{table}")),
             )
             for table in sorted({page.table for page in pages})
         )
@@ -3160,8 +3114,8 @@ class SharedCopyBackend:
             read=False,
             tables={f"p{at}": page.rows for at, page in enumerate(sent)} or None,
             result_pieces=reload_piece_bytes(self._store.max_bytes, sent),
-            result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
-            result_grow_to=_APPLY_PIECE_BYTES,
+            result_minimum=APPLY_PIECE_MINIMUM_BYTES,
+            result_grow_to=APPLY_PIECE_BYTES,
         )
         return _staged(running, rules, frozen(scopes))
 
@@ -3190,9 +3144,9 @@ class SharedCopyBackend:
         return len(held), (EMPTY if self._declared is None else _table_bytes(held, self._schemas))
 
     def _schema_of(self, table: str) -> pa.Schema:
-        if table.startswith(LOCATED_PREFIX):
+        if table.startswith(_LOCATED_PREFIX):
             return Locator().located.schema
-        if table.startswith(PACKED_PREFIX):
+        if table.startswith(_PACKED_PREFIX):
             return _INDEX
         return self._schemas[table]
 
@@ -3226,9 +3180,9 @@ class SharedCopyBackend:
                 read=current.name,
                 # which table merges is the worker's to find: a piece of the least, each merged file growing its own
                 # to its rows (a pack's target, a tier's parts), never a GiB held for the merge's whole run
-                result_pieces=_APPLY_PIECE_MINIMUM_BYTES,
-                result_minimum=_APPLY_PIECE_MINIMUM_BYTES,
-                result_grow_to=_APPLY_PIECE_BYTES,
+                result_pieces=APPLY_PIECE_MINIMUM_BYTES,
+                result_minimum=APPLY_PIECE_MINIMUM_BYTES,
+                result_grow_to=APPLY_PIECE_BYTES,
             )
             if done.value is None:
                 if done.segment is not None:
@@ -3248,7 +3202,7 @@ class SharedCopyBackend:
                 tables: dict[str, Parts] = {table: Parts(self._schemas[table], parts)}
                 if outcome.index is not None or outcome.index_dropped:
                     index = None if outcome.index is None else segment.files[outcome.index]
-                    tables[f"{PACKED_PREFIX}{table}"] = Parts(_INDEX, {WHOLE_PART: index})
+                    tables[f"{_PACKED_PREFIX}{table}"] = Parts(_INDEX, {WHOLE_PART: index})
                 await asyncio.to_thread(self._store.publish, version, tables, base=current.name)
                 files = await asyncio.to_thread(lambda: len(version_files(self._store.root, version)))
             finally:
@@ -3330,51 +3284,6 @@ def _canonical_keys(
         if columns:
             found.append((table, tuple(sorted(columns.items()))))
     return tuple(found)
-
-
-def apply_piece_bytes(max_bytes: int, pages: Sequence[ChangePage], held: Mapping[str, int] = EMPTY) -> int:
-    """the bytes a change's result piece is reserved at: over the tables it changes, the largest of a table's largest
-    file the version holds and the change's rows of that table, and an eighth more, at least
-    ``_APPLY_PIECE_MINIMUM_BYTES`` (16 MiB) more, at most ``_APPLY_PIECE_BYTES`` (1 GiB) and a quarter of the store
-    (:data:`_APPLY_STORE_SHARE`'s why). A file that needs more grows its piece. Arrow ``nbytes``, no row read.
-
-    :param max_bytes: the store's bound
-    :ptype max_bytes: int
-    :param pages: the change's pages
-    :ptype pages: Sequence[ChangePage]
-    :param held: each changed table's largest file in the version the change applies to; empty for none
-    :ptype held: Mapping[str, int]
-    :return: bytes
-    :rtype: int
-    """
-    by_table: dict[str, int] = {}
-    for page in pages:
-        by_table[page.table] = by_table.get(page.table, 0) + page.rows.nbytes
-    largest = max((held.get(table, 0) + rows for table, rows in by_table.items()), default=0)
-    wanted = largest + largest // _APPLY_PIECE_SLACK_DIVISOR + _APPLY_PIECE_MINIMUM_BYTES
-    bound = min(_APPLY_PIECE_BYTES, max(_APPLY_PIECE_MINIMUM_BYTES, max_bytes // _APPLY_STORE_SHARE))
-    return max(_APPLY_PIECE_MINIMUM_BYTES, min(wanted, bound))
-
-
-def reload_piece_bytes(max_bytes: int, pages: Sequence[ChangePage]) -> int:
-    """the most one piece of a reload's result may take: its largest table's bytes and an eighth more, at least
-    ``_APPLY_PIECE_MINIMUM_BYTES`` (16 MiB), at most ``_APPLY_PIECE_BYTES`` (1 GiB) and a quarter of the store
-    (:data:`_RELOAD_STORE_SHARE`'s why). Arrow ``nbytes``, no row read.
-
-    :param max_bytes: the store's bound
-    :ptype max_bytes: int
-    :param pages: the reload's pages
-    :ptype pages: Sequence[ChangePage]
-    :return: bytes
-    :rtype: int
-    """
-    by_table: dict[str, int] = {}
-    for page in pages:
-        by_table[page.table] = by_table.get(page.table, 0) + page.rows.nbytes
-    largest = max(by_table.values(), default=0)
-    wanted = largest + largest // _RELOAD_PIECE_SLACK_DIVISOR + _APPLY_PIECE_MINIMUM_BYTES
-    bound = min(_APPLY_PIECE_BYTES, max(_APPLY_PIECE_MINIMUM_BYTES, max_bytes // _RELOAD_STORE_SHARE))
-    return max(_APPLY_PIECE_MINIMUM_BYTES, min(wanted, bound))
 
 
 def _check_computed(schemas: Mapping[str, pa.Schema], rules: Mapping[str, PartRule], columns: ColumnHooks) -> None:

@@ -626,7 +626,7 @@ class MigrationRunner:
         # still under the run's DDL lock: every switched-on table these packages create carries its epoch, the
         # table's switch (threetears.core.collections.lost_writes.tables_switched_by_epoch) and what every reader of
         # what it changed reads (a restore, the writers' backstop, a keys-unknown page). One that does not is refused,
-        # naming why, once the refusal is on (epoch_catalog.REFUSE_TABLES_WITHOUT_EPOCH, held for 3tears' own tables)
+        # naming why (epoch_catalog.refuse_tables_without_epoch)
         tables = sorted({name for package in ordered for name in package.write_generation_tables})
         if tables:
             await switched_tables_without_epoch(store, tables)

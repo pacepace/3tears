@@ -153,21 +153,22 @@ class TestLetGo:
         not, and only the part holding them is rewritten."""
         gone = (("VA", "G", 3), ("VA", "G", 4))
         backend = await _backend(store, [("results", SCHEMA, BY_STATE)], hooks=copy_hooks.LetsGo("results", _KEY, gone))
-        # the change's own version, read as its let-go starts (a superseded version is let go once unheld)
+        # each version as the store publishes it, read before the next one supersedes it (a superseded version is let
+        # go once unheld): the change's own, then the let-go's
         seen: list[tuple[str, int]] = []
-        let_go_after = vars(SharedCopyBackend)["_let_go_after"]
+        publish = store.publish
 
-        async def reading(self: SharedCopyBackend, version: str, *args: Any) -> Any:
-            current = store.current
-            assert current is not None
-            seen.append((current.name, _held(store, "results", SCHEMA, current.name).num_rows))
-            return await let_go_after(self, version, *args)
+        def reading(version: str, tables: Any, *, base: str | None = None) -> Any:
+            published = publish(version, tables, base=base)
+            seen.append((version, _held(store, "results", SCHEMA, version).num_rows))
+            return published
 
-        monkeypatch.setattr(SharedCopyBackend, "_let_go_after", reading)
+        monkeypatch.setattr(store, "publish", reading)
         try:
             rows = pa.concat_tables([_rows(state, 10) for state in _STATES])
             applied = await backend.apply([ChangePage(ROWS, "results", rows)])
-            assert seen == [(applied.version, 50)]
+            assert applied.let_go is not None
+            assert seen == [(applied.version, 50), (applied.let_go.version, 48)]
             assert applied.let_go is not None and applied.let_go.version is not None
             assert store.current is not None and store.current.name == applied.let_go.version
             assert applied.let_go.version != applied.version

@@ -26,7 +26,8 @@ from prometheus_client import REGISTRY
 from threetears.core.collections import load_declared_collections
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import advance_for_write
-from threetears.core.collections.lost_writes import _tenancy_of, _tenants, tables_switched_by_epoch
+from threetears.core.collections.lost_writes import tables_switched_by_epoch
+from threetears.core.collections.recovery_tenants import recovery_tenants
 from threetears.core.ddl.row_epoch import EPOCH_COLUMN
 from threetears.core.tenancy import TENANCY_UNDECLARED, TENANT_BY_SCHEMA, schema_tenant
 
@@ -114,7 +115,7 @@ async def _announced(triggered: set[tuple[str, str]], table: str = _TABLE) -> li
     the loop-stall guard's limit (threetears.core.testing.loop_stall)."""
     await asyncio.to_thread(load_declared_collections)
     schemas = [schema for schema, name in sorted(triggered) if name == table]
-    return list(_tenants(_tenancy_of(table, TENANCY_UNDECLARED), schemas, platform_schema="platform", schema=None))
+    return list(recovery_tenants(table, TENANCY_UNDECLARED, schemas, platform_schema="platform", schema=None))
 
 
 def _undeclared_count(table: str) -> float:

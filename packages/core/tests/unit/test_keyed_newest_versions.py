@@ -70,7 +70,7 @@ from threetears.core.keyed import (
 from threetears.core.keyed import rows as keyed_rows
 from threetears.core.keyset import keyset_arrow_pages, keyset_scope_pages, keyset_scope_values, read_keyset_pages
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
-from threetears.interfaces.keyed.keys import NEWEST_ROWS_A_READ, next_newest_keys, versioned_table
+from threetears.interfaces.keyed.keys import next_newest_keys, versioned_table
 
 _TABLE = "nv_results"
 _GONE_ONLY = "nv_gone_only"
@@ -98,6 +98,9 @@ _NEWEST = {("CA", 1): 3, ("CA", 3): 30, ("NV", 2): 60}
 _EVERY_KEY = [("CA", 1), ("CA", 2), ("CA", 3), ("NV", 1), ("NV", 2), ("TX", 1), ("OR", 1)]
 
 _DDL = "(state VARCHAR, id INTEGER, v INTEGER, epoch BIGINT, gone BOOLEAN NOT NULL DEFAULT false, PRIMARY KEY (state, id, epoch))"
+
+#: the most versions one newest read's statement reads (``keys``' bound a statement's keys are sized by)
+_NEWEST_ROWS_A_READ = 100_000
 
 
 @pytest.fixture
@@ -397,10 +400,10 @@ class TestEngineForms:
 
     def test_a_batch_is_sized_by_the_versions_its_last_read(self) -> None:
         """Flips if a batch's keys are not sized by the versions the batch before read a key."""
-        assert next_newest_keys(0, 0, 5_000) == NEWEST_ROWS_A_READ // 50
-        assert next_newest_keys(5_000, 250_000, 5_000) == NEWEST_ROWS_A_READ // 50
+        assert next_newest_keys(0, 0, 5_000) == _NEWEST_ROWS_A_READ // 50
+        assert next_newest_keys(5_000, 250_000, 5_000) == _NEWEST_ROWS_A_READ // 50
         assert next_newest_keys(1_000, 1_000, 5_000) == 5_000
-        assert next_newest_keys(10, 10 * NEWEST_ROWS_A_READ, 5_000) == 1
+        assert next_newest_keys(10, 10 * _NEWEST_ROWS_A_READ, 5_000) == 1
 
 
 class TestFillPages:

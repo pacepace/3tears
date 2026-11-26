@@ -55,18 +55,15 @@ from threetears.interfaces.keyed.point import (
     TextRank,
     read_by_statement,
     read_nearest_statement,
-    read_row_beside_statement,
     read_row_statement,
     then_terms,
 )
 from threetears.interfaces.keyed.rows import DeclaredScope
-from threetears.interfaces.keyed.steps import Step
 
 __all__ = [
     "read_by",
     "read_nearest",
     "read_row",
-    "read_row_beside",
     "read_state_arrow",
     "read_value",
 ]
@@ -218,58 +215,6 @@ async def read_row(
     if not rows:
         return None
     return rows[0] if records else dict(rows[0])
-
-
-async def read_row_beside(
-    conn: Any,
-    table: str,
-    *,
-    by: Mapping[str, Any],
-    columns: Sequence[str | Selected],
-    beside: Step,
-    limit: int,
-    present: str,
-    first: str | None = None,
-) -> list[Any]:
-    """the first row of ``table`` the pins name and, beside it, up to ``limit`` rows of a step reading that row's
-    columns as ``r."col"``, in one statement: one round trip, and one snapshot for the row and the rows it decides
-    (:func:`~threetears.interfaces.keyed.read_row_beside_statement`). Each answered row is the table's row's columns,
-    then ``present`` (TRUE; NULL on the row alone when the step holds none), then the step's columns, as records.
-
-    :param conn: anything with an asyncpg-shaped ``fetch(query, *params)``
-    :ptype conn: Any
-    :param table: the table, a TRUSTED identifier
-    :ptype table: str
-    :param by: as :func:`read_by`'s; at least one
-    :ptype by: Mapping[str, Any]
-    :param columns: the row's columns, as :func:`read_by`'s; each one the step reads among them
-    :ptype columns: Sequence[str | Selected]
-    :param beside: the step (:mod:`threetears.core.keyed.steps`), its conditions on the row written ``r."col"``
-    :ptype beside: Step
-    :param limit: the most step rows read
-    :ptype limit: int
-    :param present: the name of the column TRUE on a step row, a TRUSTED identifier
-    :ptype present: str
-    :param first: given, the name of a column TRUE on one answered row alone: the table's row's columns come back on
-        that row (or on the row alone) and NULL on the rest, rather than repeated on every step row
-        (:func:`~threetears.interfaces.keyed.read_row_beside_statement`); the rows come in no particular order
-    :ptype first: str | None
-    :return: the rows, empty when the pins name no row
-    :rtype: list[Any]
-    :raises ValueError: when nothing is pinned, or for a limit under one row
-    """
-    read_from, where = live_read(conn, table, by=by)
-    sql, params = read_row_beside_statement(
-        read_from,
-        by=by,
-        columns=columns,
-        beside=beside,
-        limit=limit,
-        present=present,
-        first=first,
-        where=where,
-    )
-    return list(await bounded_sent(conn, table).fetch(sql, *params))
 
 
 async def read_value(

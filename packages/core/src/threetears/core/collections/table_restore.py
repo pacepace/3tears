@@ -11,7 +11,7 @@ too much only re-evicts a key, missing one is the only failure.
 **Which tables, from the catalog.** The keeper runs in the hub, which imports no consumer's table classes. Each
 versioned table's ``(scope, epoch)`` index carries the table's restore declaration as its comment
 (:func:`~threetears.core.ddl.row_epoch.restore_declaration`, written by ``TableSchema.create_statements``): the scope
-column, the key, the scope epochs table and prefix, the tenancy. :func:`versioned_tables` reads them in one catalog
+column, the key, the scope epochs table and prefix, the tenancy. :func:`restored_tables` reads them in one catalog
 statement.
 
 **Which scopes, from ScopeEpochs.** Never by scanning a data table: a stamped write records its highest stamp as
@@ -57,7 +57,7 @@ a move since X left evict the key, as the ring's old-row note had them do. A row
 C) is two moves, so A's followers and B's both hear it.
 
 **A table reset is heard whole.** A ``TRUNCATE`` leaves no row, so whatever resets a table that carries an epoch writes
-its reset marker into the run-marker table first (:func:`~threetears.core.ddl.run_markers.table_reset_marker_sql`), at
+its reset marker into the run-marker table first (:func:`~threetears.core.ddl.run_markers._table_reset_marker_sql`), at
 the reset's epoch. Each table's reset markers since X are read by their key (:func:`table_resets`) and come back as the
 whole table, a reset (:data:`~threetears.core.collections.epoch_change.RESET_REASON`): every follower clears it.
 """
@@ -98,7 +98,6 @@ __all__ = [
     "restored_tables",
     "run_marker_changes",
     "table_resets",
-    "versioned_tables",
 ]
 
 log = get_logger(__name__)
@@ -299,15 +298,6 @@ async def restored_tables(pool: Any) -> list[RestoredTable]:
     ]
 
 
-async def versioned_tables(pool: Any) -> list[VersionedTable]:
-    """every versioned table the database holds (:func:`restored_tables`, the stamped ones left out).
-
-    :param pool: the keeper's L3 pool
-    :ptype pool: Any
-    :return: the tables, in schema and name order
-    :rtype: list[VersionedTable]
-    """
-    return [table for table in await restored_tables(pool) if isinstance(table, VersionedTable)]
 
 
 def _literal(text: str) -> str:
@@ -521,7 +511,7 @@ async def _bucket_moves(pool: Any, table: StampedTable, bucket: int, floor: int)
 
 async def table_resets(pool: Any, table: RestoredTable, floor: int, ceiling: int | None = None) -> list[NotedChange]:
     """``table`` reset (emptied by a ``TRUNCATE``) at ``floor`` or later (to ``ceiling``, when named): its reset markers
-    (:func:`~threetears.core.ddl.run_markers.table_reset_marker_sql`), read by the run-marker table's key
+    (:func:`~threetears.core.ddl.run_markers._table_reset_marker_sql`), read by the run-marker table's key
     ``(table_name, scope)``, as ONE whole-table change, a reset, under the table's tenant (``_all`` for a column
     tenancy, whose every tenant it clears).
 

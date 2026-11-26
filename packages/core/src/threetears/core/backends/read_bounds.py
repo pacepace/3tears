@@ -36,18 +36,15 @@ from asyncpg.pool import PoolConnectionProxy
 
 __all__ = [
     "READ_SETTINGS_FIELD",
-    "READ_SETTING_NAMES",
-    "ReadSettings",
     "answers_directly",
     "bounded_call",
     "bounded_read",
     "read_bounds",
     "read_setting_fields",
-    "set_local_statement",
 ]
 
 #: a read's settings: each name and its value in the setting's base unit, in the order set
-ReadSettings = tuple[tuple[str, int], ...]
+_ReadSettings = tuple[tuple[str, int], ...]
 
 #: the request field naming the settings a read runs under: ``{"work_mem": 65536, "yb_fetch_row_limit": 10000}``,
 #: each value an integer in the setting's base unit. Sent on an ``l3.query`` or ``l3.tx`` statement request only
@@ -57,10 +54,10 @@ ReadSettings = tuple[tuple[str, int], ...]
 READ_SETTINGS_FIELD: Final = "read_settings"
 
 #: the settings a read may name: the bounds of a newest read, and nothing else
-READ_SETTING_NAMES: Final = frozenset({"work_mem", "yb_fetch_row_limit"})
+_READ_SETTING_NAMES: Final = frozenset({"work_mem", "yb_fetch_row_limit"})
 
 #: the settings the read being sent in this context runs under (:func:`bounded_read`); none outside one
-_BOUNDS: ContextVar[ReadSettings] = ContextVar("threetears_read_bounds", default=())
+_BOUNDS: ContextVar[_ReadSettings] = ContextVar("threetears_read_bounds", default=())
 
 _T = TypeVar("_T")
 
@@ -75,12 +72,12 @@ def bounded_read(settings: Sequence[tuple[str, int]]) -> Iterator[None]:
     :ptype settings: Sequence[tuple[str, int]]
     :return: a context in which the reads run under them
     :rtype: Iterator[None]
-    :raises ValueError: for a setting no read names (:data:`READ_SETTING_NAMES`), or a value no positive integer
+    :raises ValueError: for a setting no read names (:data:`_READ_SETTING_NAMES`), or a value no positive integer
     """
-    held: ReadSettings = tuple((name, value) for name, value in settings)
+    held: _ReadSettings = tuple((name, value) for name, value in settings)
     for name, value in held:
-        if name not in READ_SETTING_NAMES:
-            raise ValueError(f"a read names only {sorted(READ_SETTING_NAMES)}, not {name!r}")
+        if name not in _READ_SETTING_NAMES:
+            raise ValueError(f"a read names only {sorted(_READ_SETTING_NAMES)}, not {name!r}")
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"a read's {name} is a positive integer in its base unit, got {value!r}")
     token = _BOUNDS.set(held)
@@ -90,11 +87,11 @@ def bounded_read(settings: Sequence[tuple[str, int]]) -> Iterator[None]:
         _BOUNDS.reset(token)
 
 
-def read_bounds() -> ReadSettings:
+def read_bounds() -> _ReadSettings:
     """the settings the read being sent runs under, as the enclosing :func:`bounded_read` named them; none outside one.
 
     :return: each setting's name and value
-    :rtype: ReadSettings
+    :rtype: _ReadSettings
     """
     return _BOUNDS.get()
 
@@ -112,18 +109,18 @@ def read_setting_fields() -> dict[str, Any]:
     return {READ_SETTINGS_FIELD: {name: value for name, value in held}}
 
 
-def set_local_statement(settings: Sequence[tuple[str, int]]) -> str:
+def _set_local_statement(settings: Sequence[tuple[str, int]]) -> str:
     """the one simple-protocol statement setting ``settings`` for the transaction it runs in (one round trip).
 
-    :param settings: each setting's name and its integer value (names are :data:`READ_SETTING_NAMES`')
+    :param settings: each setting's name and its integer value (names are :data:`_READ_SETTING_NAMES`')
     :ptype settings: Sequence[tuple[str, int]]
     :return: the statement
     :rtype: str
     :raises ValueError: for a name no read sets
     """
     for name, _ in settings:
-        if name not in READ_SETTING_NAMES:
-            raise ValueError(f"a read sets only {sorted(READ_SETTING_NAMES)}, not {name!r}")
+        if name not in _READ_SETTING_NAMES:
+            raise ValueError(f"a read sets only {sorted(_READ_SETTING_NAMES)}, not {name!r}")
     return "; ".join(f"SET LOCAL {name} = {int(value)}" for name, value in settings)
 
 
@@ -152,7 +149,7 @@ async def bounded_call(conn: Any, settings: Sequence[tuple[str, int]], call: Cal
     :return: what the read answers
     :rtype: _T
     """
-    statement = set_local_statement(settings)
+    statement = _set_local_statement(settings)
 
     async def on(connection: Any) -> _T:
         if connection.is_in_transaction():

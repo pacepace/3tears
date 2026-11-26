@@ -95,7 +95,6 @@ __all__ = [
     "COLD_START",
     "SCHEMA_CHANGE",
     "Checkpoint",
-    "CheckpointCopy",
     "CheckpointTable",
     "CopyCheckpoints",
     "StagedCheckpoint",
@@ -236,7 +235,7 @@ def _decode_part(data: bytes) -> Any:
     return ipc.open_stream(data).read_all()
 
 
-class CheckpointCopy(Protocol):
+class _CheckpointCopy(Protocol):
     """what a checkpoint loads into and records beside its parts: the copy's stages (a load stages each part, applied
     by the follower) and each table's schema digest. A follower's backend (``copy_follower.FollowerBackend``), never a
     read of the copy: a write reads its parts in query workers over the pinned state (``copy_reads.PinnedCopy``).
@@ -270,7 +269,7 @@ class CheckpointTable:
     """one table in a checkpoint: the mark its rows are at, the schema they were written with, and its parts.
 
     :ivar mark: the table's epoch mark
-    :ivar digest: :meth:`CheckpointCopy.schema_digest` of the table that wrote it
+    :ivar digest: :meth:`_CheckpointCopy.schema_digest` of the table that wrote it
     :ivar parts: each part's object name, scope (None for a table with no scope) and rows, in order
     :ivar derived: a table the copy derives from the followed ones (no epoch mark): it holds what they hold at the
         checkpoint's stamp, so it loads only with every followed table from the same checkpoint
@@ -554,7 +553,7 @@ class CopyCheckpoints:
     :param tables: the tables the copy holds
     :ptype tables: Sequence[FollowedTable]
     :param backend: the copy (each table's schema digest is recorded beside its parts)
-    :ptype backend: CheckpointCopy
+    :ptype backend: _CheckpointCopy
     :param store: the Object Store: ``put``, ``get``, ``list_names``, and ``require_room`` (a write asks it for all its
         new parts' room before it puts the first: :meth:`threetears.nats.object_store.NatsObjectStore.require_room`)
     :ptype store: Any
@@ -579,7 +578,7 @@ class CopyCheckpoints:
         *,
         name: str,
         tables: Sequence[FollowedTable],
-        backend: CheckpointCopy,
+        backend: _CheckpointCopy,
         store: Any,
         pointers: Any,
         retire: Callable[[list[str]], Awaitable[Any]],

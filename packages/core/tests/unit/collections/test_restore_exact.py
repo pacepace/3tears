@@ -32,7 +32,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.epoch_change import RESET_REASON
 from threetears.core.collections.epoch_reads import epoch_keys_page, epoch_range, range_rows
-from threetears.core.collections.lost_writes import _changes_of
+from threetears.core.collections.lost_writes import announce_window
 from threetears.core.collections.noted_change import NotedChange
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema
 from threetears.core.collections.table_restore import TableChanges, restored_tables
@@ -247,6 +247,34 @@ def _records(changes: list[NotedChange]) -> list[tuple[str, str | None, tuple[st
     return sorted(found, key=repr)
 
 
+class _Recorded:
+    """a generation source that records each advance's table, rows, keys-unknown flag and reason."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, Any, bool, str | None]] = []
+
+    async def current(self, table_name: str) -> str:
+        return "inc:0"
+
+    async def advance(self, table_name: str) -> str:
+        raise AssertionError("a recording source is advanced with its change")
+
+    async def advance_with_change(
+        self,
+        table_name: str,
+        rows: Any,
+        *,
+        keys_unknown: bool = False,
+        tenant: str | None = None,
+        noted_between: Any = None,
+        prefixes: Any = None,
+        partition: Any = None,
+        reason: str | None = None,
+    ) -> str:
+        self.records.append((table_name, rows, keys_unknown, reason))
+        return f"inc:{len(self.records)}"
+
+
 def _bracket() -> tuple[datetime, datetime, int]:
     now = datetime.now(UTC)
     since, until = now - timedelta(minutes=1), now + timedelta(minutes=1)
@@ -332,19 +360,18 @@ async def test_a_reset_after_x_is_heard_whole_by_the_restore_and_the_backstop() 
 
     tables = {table.table: table for table in await restored_tables(db)}
     for name in (STAMPED, VERSIONED):
-        advances = await _changes_of(
+        source = _Recorded()
+        announced = await announce_window(
             db,
-            platform_schema=SCHEMA,
-            table=name,
-            relations=[tables[name]],
+            generation_source=source,
+            notes_schema=SCHEMA,
             since=since,
             until=until,
-            tenants=(None,),
+            why="recovery",
+            tables={name: (tables[name],)},
         )
-        wholes = [advance.whole for advance in advances if advance.whole is not None]
-        assert [(each.table, each.whole_table, each.reason) for each in wholes] == [(name, True, RESET_REASON)], (
-            advances
-        )
+        assert announced.advanced == (name,) and not announced.failed, announced
+        assert source.records == [(name, None, False, RESET_REASON)], source.records
         page = await epoch_keys_page(
             db,
             table=name,

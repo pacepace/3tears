@@ -35,10 +35,7 @@ from threetears.core.coordination.migrations.v003_create_collection_write_marks 
 from threetears.core.coordination.migrations.v004_index_write_marks_by_table import index_write_marks_by_table
 from threetears.core.coordination.migrations.v006_drop_write_mark_triggers import drop_write_mark_triggers
 from threetears.core.coordination.migrations.v005_range_expiry_indexes import range_expiry_indexes
-from threetears.core.coordination.migrations.v007_revocations_carry_their_epoch import (
-    STAMPED_TABLES,
-    revocations_carry_their_epoch,
-)
+from threetears.core.coordination.migrations.v007_revocations_carry_their_epoch import revocations_carry_their_epoch
 from threetears.core.coordination.tables import (
     COORDINATION_TABLE_SCHEMAS,
     CoordinationClaimsCollection,
@@ -49,9 +46,16 @@ from threetears.core.coordination.tables import (
     table_def_for,
 )
 from threetears.core.data.migrations import MigrationRunner, MigrationScope
-from threetears.core.data.migrations.stamp_tables import bucket_statements
+from threetears.core.data.migrations.stamp_tables import StampingTable, bucket_statements
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
+
+
+#: the table coordination v007 stamps, its key as declared at v007 (frozen: a later change of its key is its own
+#: migration)
+STAMPED_TABLES = (
+    StampingTable("coordination_revocations", (("purpose", "text"), ("key", "text")), tenancy=("schema", None)),
+)
 
 
 def _running_flush_loops() -> list[asyncio.Task[Any]]:

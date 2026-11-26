@@ -55,14 +55,12 @@ __all__ = [
     "is_pack",
     "pack_name",
     "Locator",
-    "Part",
     "PartDeclaration",
     "PartRule",
     "part_rules",
     "part_name",
     "parts_of_keys",
     "scope_of_part",
-    "split_parts",
     "tier_of",
     "tier_part",
 ]
@@ -213,18 +211,6 @@ class PartRule:
         :rtype: bool
         """
         return self.scope_column is not None
-
-
-@dataclass(frozen=True, slots=True)
-class Part:
-    """one part's rows.
-
-    :ivar name: the part: its scope value's name (:func:`part_name`), or :data:`WHOLE_PART`
-    :ivar rows: its rows: a slice of the one sorted copy :func:`split_parts` makes, or the rows themselves when whole
-    """
-
-    name: str
-    rows: pa.Table
 
 
 class TableShape(Protocol):
@@ -491,40 +477,6 @@ def _scope_text(rule: PartRule, column: pa.ChunkedArray | pa.Array) -> pa.Array:
     if values.null_count:
         raise ValueError(f"{rule.table}: {values.null_count} rows hold no {rule.scope_column}, so no part")
     return _part_names(pc.cast(values, pa.string()))
-
-
-def split_parts(rule: PartRule, rows: pa.Table) -> tuple[Part, ...]:
-    """``rows`` cut into the parts ``rule`` names, each part's rows in their order in ``rows``.
-
-    One stable sort of the scope column and one run-end encoding of it; each part a slice of the sorted rows.
-
-    :param rule: the table's rule
-    :ptype rule: PartRule
-    :param rows: the rows, holding the scope column when the table is split
-    :ptype rows: pa.Table
-    :return: the parts, by name ascending; none for no rows
-    :rtype: tuple[Part, ...]
-    :raises ValueError: for a row whose scope column is null, or a per-run table (its rows' parts are the tiers the
-        copy holds: ``shared_copy`` cuts it)
-    """
-    if rule.run_column is not None:
-        raise ValueError(f"{rule.table}: a per-run table's parts are the tiers the copy holds, not its scope's alone")
-    if not rows.num_rows:
-        return ()
-    if rule.scope_column is None:
-        return (Part(WHOLE_PART, rows),)
-    names = _scope_text(rule, rows[rule.scope_column])
-    order = pc.sort_indices(names)
-    ordered = rows.take(order)
-    runs = pc.run_end_encode(names.take(order))
-    ends = runs.run_ends.to_numpy()
-    values = runs.values
-    parts: list[Part] = []
-    start = 0
-    for at, end in enumerate(ends):
-        parts.append(Part(str(values[at].as_py()), ordered.slice(start, int(end) - start)))
-        start = int(end)
-    return tuple(parts)
 
 
 @dataclass(frozen=True, slots=True)

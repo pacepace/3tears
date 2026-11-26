@@ -21,11 +21,7 @@ import pytest
 
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
-from threetears.core.ddl.epoch_catalog import (
-    MovesTableMissingError,
-    moveable_without_moves,
-    refuse_moveable_without_moves,
-)
+from threetears.core.ddl.epoch_catalog import refuse_moveable_without_moves
 from threetears.core.ddl.row_epoch import ROW_STAMPED
 from threetears.core.ddl.tenant_moves import TENANT_MOVES_TABLE
 from threetears.core.eviction import Declared, Policy
@@ -98,12 +94,11 @@ async def test_a_moveable_table_without_the_moves_table_is_refused_naming_the_ta
     """Flips if a moveable stamped table whose schema lacks the moves table passes the start check, or if the error
     does not name the table, the schema's missing moves table and the call that creates it."""
     catalog = _Catalog((("agent_reports", _MOVEABLE),), holding=frozenset())
-    with pytest.raises(MovesTableMissingError) as refused:
+    with pytest.raises(RuntimeError, match="REFUSED: a moveable stamped table") as refused:
         await refuse_moveable_without_moves(catalog)
-    assert refused.value.found == ("agent_reports.mv_widgets (moveable: customer_id)",)
-    assert refused.value.schemas == ("agent_reports",)
     text = str(refused.value)
-    assert f"agent_reports.{TENANT_MOVES_TABLE}" in text
+    assert "  - agent_reports.mv_widgets (moveable: customer_id)\n" in text
+    assert f"Missing:\n  - agent_reports.{TENANT_MOVES_TABLE}\n" in text
     assert "TENANT_MOVES_SCHEMA.create_statements(yugabyte=" in text
     assert "How to fix" in text
     assert len(catalog.asked) == 1, "one catalog read"
@@ -117,14 +112,14 @@ async def test_a_moveable_table_beside_the_moves_table_passes_and_a_fixed_one_ne
         holding=frozenset({"agent_reports"}),
     )
     await refuse_moveable_without_moves(catalog)
-    assert await moveable_without_moves(catalog) == ()
 
 
 async def test_the_check_judges_one_schema_when_given_one() -> None:
     """Flips if a schema-scoped check refuses another schema's table."""
     catalog = _Catalog((("agent_other", _MOVEABLE),), holding=frozenset())
     await refuse_moveable_without_moves(catalog, "agent_reports")
-    assert await moveable_without_moves(catalog, "agent_other") == (("agent_other", "mv_widgets", ("customer_id",)),)
+    with pytest.raises(RuntimeError, match=r"  - agent_other\.mv_widgets \(moveable: customer_id\)\n"):
+        await refuse_moveable_without_moves(catalog, "agent_other")
 
 
 class _Store(FakeDataStore):
@@ -154,7 +149,7 @@ async def test_the_migration_run_refuses_a_moveable_table_without_the_moves_tabl
         made.register(package)
         return made
 
-    with pytest.raises(MovesTableMissingError, match=r"rpt\.mv_widgets"):
+    with pytest.raises(RuntimeError, match=r"rpt\.mv_widgets"):
         await runner().apply_for_platform_schema(_Store(_Catalog((("rpt", _MOVEABLE),), holding=frozenset())))
     assert (
         await runner().apply_for_platform_schema(_Store(_Catalog((("rpt", _MOVEABLE),), holding=frozenset({"rpt"}))))
