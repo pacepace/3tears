@@ -99,7 +99,7 @@ _PAGE = WebPage(
 )
 
 
-def _listed(segment: int, text: str, *, restates: int | None = None) -> dict[str, Any]:
+def _listed(segment: int, text: str, *, restates: str | None = None) -> dict[str, Any]:
     return {
         "segment": segment,
         "claim": text,
@@ -515,7 +515,7 @@ async def test_claims_past_the_cells_web_budget_read_skipped_cap_and_unverifiabl
 
 
 async def test_a_restatement_takes_its_originals_web_outcome_from_the_one_check_made() -> None:
-    listing = _listing(_listed(0, _FIRST), {**_listed(2, _FIRST), "excerpt": _FIRST.rstrip("."), "restates": 0})
+    listing = _listing(_listed(0, _FIRST), {**_listed(2, _FIRST), "restates": _FIRST.rstrip(".")})
     contradiction = _verdict("false", quote="The Lantern Almanac was first printed in 1931.", value="1931")
     page = WebPage(url="https://example.org/almanac", title="", text="The Lantern Almanac was first printed in 1931.")
     judge = _FakeWebJudge(script={"claim_listing": [listing], "claim_web_verdict": [contradiction]})

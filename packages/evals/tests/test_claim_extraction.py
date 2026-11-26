@@ -2,9 +2,12 @@
 
 Every behaviour is driven through a client that answers from a script and records what it was sent, so nothing is
 spent and each reply is chosen. The claims come back ordered by segment, each excerpt the segment's own slice at
-offsets the verbatim check found, ``restates`` resolved to the first claim of its chain and renumbered with the order.
+offsets the verbatim check found, ``restates`` resolved from its quote of an earlier claim's excerpt to the first claim
+of its chain and renumbered with the order. A quote names the claim whose excerpt holds it, never a counted place: a
+line said word for word in two segments resolves to the first, and a position given in its place is unreadable.
 Repair, not refusal: a reply that will not parse is asked again in full naming why; an item that fails a check (an
-excerpt not in its segment, a ``restates`` pointing forward or nowhere) is asked again alone with its failure named,
+excerpt not in its segment, a ``restates`` quote no earlier excerpt holds, or that excerpts of different facts hold)
+is asked again alone with its failure named,
 for two rounds, then the extraction raises. Every claim carries a scope, ``world`` or ``session``: a back-announce
 line splits into a session claim and a world claim, and a ``restates`` crossing scopes is repaired; a cut-short reply raises at once. The failure is ``ClaimGradingFailed``,
 no ``ApparatusError``. Every completion is billed to the ``judge`` ledger. A cell's units are numbered 0..n-1 with no
@@ -102,7 +105,7 @@ def _item(
     hedged: bool = False,
     attributed: bool = False,
     scope: str = "world",
-    restates: int | None = None,
+    restates: str | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "claim": claim,
@@ -263,8 +266,16 @@ async def test_a_restates_crossing_scopes_is_asked_again() -> None:
         [
             _listing(
                 _item(0, "The tour just visited the Varn Bridge.", "That was the Varn Bridge", scope="session"),
-                _item(1, "The tour just visited the Varn Bridge.", "as we just saw", scope="session", restates=0),
-                _item(1, "The Varn Bridge spans the harbour.", "spans the harbour", restates=0),
+                _item(
+                    1,
+                    "The tour just visited the Varn Bridge.",
+                    "as we just saw",
+                    scope="session",
+                    restates="That was the Varn Bridge",
+                ),
+                _item(
+                    1, "The Varn Bridge spans the harbour.", "spans the harbour", restates="That was the Varn Bridge"
+                ),
             ),
             _repair("The Varn Bridge spans the harbour.", "spans the harbour", restates=None),
         ]
@@ -275,7 +286,7 @@ async def test_a_restates_crossing_scopes_is_asked_again() -> None:
     assert [(claim.scope, claim.restates) for claim in claims] == [("session", None), ("session", 0), ("world", None)]
     repair = client.calls[1]
     assert "position 2" in repair["user"]
-    assert "its restates names claim 0, a session claim, and this one is a world claim" in repair["user"]
+    assert "no world claim listed before it has an excerpt holding those words" in repair["user"]
 
 
 async def test_a_repair_that_changes_a_targets_scope_sends_its_restatement_to_repair() -> None:
@@ -288,12 +299,22 @@ async def test_a_repair_that_changes_a_targets_scope_sends_its_restatement_to_re
             _listing(
                 # Claim 0 fails on its excerpt; claim 1 restates it, both world claims, so claim 1 passes at first.
                 _item(0, "The tour just visited the Varn Bridge.", "That was the bridge"),
-                _item(1, "The tour just visited the Varn Bridge.", "the one we just crossed", restates=0),
+                _item(
+                    1,
+                    "The tour just visited the Varn Bridge.",
+                    "the one we just crossed",
+                    restates="That was the bridge",
+                ),
                 _item(1, "The Varn Bridge opened in 1894.", "opened in 1894"),
             ),
             # The repair fixes the excerpt and corrects the scope to session: claim 1 now restates across scopes.
             _repair("The tour just visited the Varn Bridge.", "That was the Varn Bridge", scope="session"),
-            _repair("The tour just crossed the Varn Bridge.", "the one we just crossed", scope="session", restates=0),
+            _repair(
+                "The tour just crossed the Varn Bridge.",
+                "the one we just crossed",
+                scope="session",
+                restates="That was the Varn Bridge",
+            ),
         ]
     )
 
@@ -303,7 +324,7 @@ async def test_a_repair_that_changes_a_targets_scope_sends_its_restatement_to_re
     assert len(client.calls) == 3
     second_round = client.calls[2]["user"]
     assert "position 1" in second_round
-    assert "its restates names claim 0, a session claim, and this one is a world claim" in second_round
+    assert 'its restates quotes "That was the bridge", and no world claim listed before it' in second_round
 
 
 async def test_a_segments_tags_never_reach_a_prompt() -> None:
@@ -328,7 +349,9 @@ async def test_the_claims_are_ordered_by_segment_and_restates_is_renumbered_with
                 _MILL_BUILDER,
                 _BRIDGE_BUILDER,
                 # The mill line restates the builder, listed out of order: position 1 appears first.
-                _item(2, "Hela Orsk built the mill.", "Hela Orsk built this too", restates=1),
+                _item(
+                    2, "Hela Orsk built the mill.", "Hela Orsk built this too", restates="built in 1894 by Hela Orsk"
+                ),
             )
         ]
     )
@@ -346,8 +369,9 @@ async def test_a_restates_chain_is_resolved_to_its_first_claim() -> None:
         [
             _listing(
                 _BRIDGE_BUILDER,
-                _item(2, "Hela Orsk built the Varn Bridge.", "Hela Orsk built this too", restates=0),
-                _item(2, "Hela Orsk built the Varn Bridge.", "Hela Orsk", restates=1),
+                _item(2, "Hela Orsk built the Varn Bridge.", "Hela Orsk built this too", restates="by Hela Orsk"),
+                # It quotes the restatement, whose own quote names the first claim: the chain resolves to that one.
+                _item(2, "Hela Orsk built the Varn Bridge.", "Hela Orsk", restates="Hela Orsk built this too"),
             )
         ]
     )
@@ -355,6 +379,145 @@ async def test_a_restates_chain_is_resolved_to_its_first_claim() -> None:
     claims = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
     assert [claim.restates for claim in claims] == [None, 0, 0]
+
+
+#: A tour whose last stop repeats its first line word for word, and whose two first-stop facts are cut from one
+#: sentence: the shapes a quote must tell apart.
+_LOOP = (
+    Segment(text="The Varn Bridge opened in 1894, built by Hela Orsk.", unit=0),
+    Segment(text="The mill is older.", unit=1),
+    Segment(text="Back where we began: the Varn Bridge opened in 1894.", unit=2),
+    Segment(text="The Varn Bridge opened in 1894. Hela Orsk again.", unit=3),
+)
+_OPENED = _item(0, "The Varn Bridge opened in 1894.", "The Varn Bridge opened in 1894")
+_BUILT_BY = _item(0, "Hela Orsk built the Varn Bridge.", "built by Hela Orsk")
+_OLDER = _item(1, "The mill is older than the Varn Bridge.", "The mill is older")
+
+
+async def test_a_text_identical_restatement_in_another_segment_resolves_to_the_first_saying() -> None:
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _OPENED,
+                _BUILT_BY,
+                _OLDER,
+                # Said word for word again: only the first saying is listed before it, so the quote names that one.
+                _item(
+                    2,
+                    "The Varn Bridge opened in 1894.",
+                    "the Varn Bridge opened in 1894",
+                    restates="The Varn Bridge opened in 1894",
+                ),
+                # A third saying: both earlier sayings hold the quote, and both stand for the first.
+                _item(
+                    3,
+                    "The Varn Bridge opened in 1894.",
+                    "The Varn Bridge opened in 1894",
+                    restates="the Varn Bridge opened in 1894",
+                ),
+                # One of two facts cut from one sentence: its excerpt, not the sentence, is what the quote finds.
+                _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="by Hela Orsk"),
+            )
+        ]
+    )
+
+    claims = await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
+
+    assert [claim.restates for claim in claims] == [None, None, None, 0, 0, 1]
+    assert len(client.calls) == 1, "every quote named one claim: nothing is asked again"
+
+
+async def test_a_quote_names_the_claim_whose_excerpt_holds_it_never_a_counted_place() -> None:
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _OPENED,
+                _BUILT_BY,
+                _OLDER,
+                _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="built by Hela Orsk"),
+            )
+        ]
+    )
+
+    claims = await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[3].restates == 1
+    assert claims[claims[3].restates].excerpt == "built by Hela Orsk", "the target is the claim the quote names"
+
+
+async def test_a_position_given_for_restates_is_unreadable_and_asked_again_in_full() -> None:
+    """A counted place, the shape a miscounted pointer took, never passes as a quote: the whole reply is asked again."""
+    by_place = {**_item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again"), "restates": 0}
+    client = _FakeScriptedClient(
+        [
+            _listing(_OPENED, _BUILT_BY, by_place),
+            _listing(
+                _OPENED,
+                _BUILT_BY,
+                _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="built by Hela Orsk"),
+            ),
+        ]
+    )
+
+    claims = await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[2].restates == 1, "the corrected quote names the builder, which the counted place 0 did not"
+    assert "It could not be used: it is not the shape the response format states" in client.calls[1]["user"]
+    restates = client.calls[0]["response_format"]["json_schema"]["schema"]["properties"]["claims"]["items"]
+    assert restates["properties"]["restates"] == {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    assert "Never a number: the excerpt is what names the claim." in client.calls[0]["system"]
+
+
+async def test_an_ambiguous_quote_is_asked_again_naming_the_excerpts_that_hold_it() -> None:
+    client = _FakeScriptedClient(
+        [
+            _listing(
+                _OPENED,
+                _BUILT_BY,
+                _OLDER,
+                # A letter every earlier excerpt holds names no one of them.
+                _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="e"),
+            ),
+            _repair("Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates="built by Hela Orsk"),
+        ]
+    )
+
+    claims = await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
+
+    assert claims[3].restates == 1
+    failure = client.calls[1]["user"]
+    assert 'its restates quotes "e", which the excerpts of 3 earlier world claims stating different facts hold' in (
+        failure
+    )
+    assert '"The Varn Bridge opened in 1894"; "built by Hela Orsk"; "The mill is older"' in failure
+    assert "- excerpt: built by Hela Orsk\n  claim: Hela Orsk built the Varn Bridge.\n  scope: world" in failure
+
+
+@pytest.mark.parametrize(
+    ("quote", "named"),
+    [
+        pytest.param("e", "which the excerpts of 3 earlier world claims stating different facts hold", id="ambiguous"),
+        pytest.param("built by Ida Venn", "and no world claim listed before it has an excerpt", id="absent"),
+    ],
+)
+async def test_a_quote_naming_no_single_claim_after_the_repair_rounds_fails_the_grading(quote: str, named: str) -> None:
+    restating = _item(3, "Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates=quote)
+    client = _FakeScriptedClient(
+        [
+            _listing(_OPENED, _BUILT_BY, _OLDER, restating),
+            _repair("Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates=quote),
+            _repair("Hela Orsk built the Varn Bridge.", "Hela Orsk again", restates=quote),
+        ]
+    )
+
+    with pytest.raises(
+        ClaimGradingFailed, match=r"could not repair 1 claim\(s\) in 2 rounds: claim 3: its restates"
+    ) as raised:
+        await _extractor(client).extract(_LOOP, ledger=RoleUsageLedger(role="judge"))
+
+    assert named in str(raised.value)
+    assert raised.value.loss == "repair_budget_spent"
+    assert len(client.calls) == 3
 
 
 async def test_an_excerpt_not_in_its_segment_is_asked_again_alone_with_the_failure_named() -> None:
@@ -380,7 +543,11 @@ async def test_an_excerpt_not_in_its_segment_is_asked_again_alone_with_the_failu
     assert "its excerpt is not in segment 2" in repair["user"]
     assert _CELL[2].text in repair["user"]
     assert _CELL[1].text not in repair["user"], "a failing item is asked about alone, with its own segment"
-    assert "0: The Varn Bridge was built in 1894." in repair["user"], "the claims listed before it are shown"
+    assert (
+        "- excerpt: the Varn Bridge, built in 1894\n  claim: The Varn Bridge was built in 1894.\n  scope: world"
+        in repair["user"]
+    ), "the claims listed before it are shown by their excerpts, the words a restates copies, never by a number"
+    assert "0:" not in repair["user"]
     assert "segment" not in repair["response_format"]["json_schema"]["schema"]["properties"]
     (row,) = ledger.rows()
     assert row.call_count == 2
@@ -410,11 +577,17 @@ async def test_an_excerpt_through_an_ellipsis_the_text_holds_is_kept() -> None:
     assert len(client.calls) == 1
 
 
-async def test_a_restates_pointing_forward_is_asked_again_and_the_correction_is_kept() -> None:
+async def test_a_restates_quoting_a_later_claim_is_asked_again_and_the_correction_is_kept() -> None:
     client = _FakeScriptedClient(
         [
             _listing(
-                _item(1, "Hela Orsk built the Varn Bridge.", "built in 1894 by Hela Orsk", restates=1), _MILL_BUILDER
+                _item(
+                    1,
+                    "Hela Orsk built the Varn Bridge.",
+                    "built in 1894 by Hela Orsk",
+                    restates="Hela Orsk built this too",
+                ),
+                _MILL_BUILDER,
             ),
             _repair("Hela Orsk built the Varn Bridge.", "built in 1894 by Hela Orsk", restates=None),
         ]
@@ -424,13 +597,20 @@ async def test_a_restates_pointing_forward_is_asked_again_and_the_correction_is_
 
     assert [claim.restates for claim in claims] == [None, None]
     repair = client.calls[1]
-    assert "its restates names claim 1, which appears after it" in repair["user"]
+    assert 'its restates quotes "Hela Orsk built this too", and no world claim listed before it' in repair["user"]
     assert "position 0" in repair["user"]
     assert "# Claims listed before it\n\nnone" in repair["user"]
 
 
-@pytest.mark.parametrize("restates", [7, -1, 0])
-async def test_a_restates_naming_no_other_claim_is_asked_again(restates: int) -> None:
+@pytest.mark.parametrize(
+    "restates",
+    [
+        pytest.param("built in 1893 by Hela Orsk", id="held-by-no-excerpt"),
+        pytest.param("built in 1894 by Hela Orsk", id="its-own-excerpt"),
+        pytest.param("  ", id="blank"),
+    ],
+)
+async def test_a_restates_naming_no_other_claim_is_asked_again(restates: str) -> None:
     client = _FakeScriptedClient(
         [
             _listing(_item(1, "Hela Orsk built the Varn Bridge.", "built in 1894 by Hela Orsk", restates=restates)),
@@ -441,7 +621,7 @@ async def test_a_restates_naming_no_other_claim_is_asked_again(restates: int) ->
     (claim,) = await _extractor(client).extract(_CELL, ledger=RoleUsageLedger(role="judge"))
 
     assert claim.restates is None
-    assert f"its restates names claim {restates}, and the list has no such other claim" in client.calls[1]["user"]
+    assert "and no world claim listed before it has an excerpt holding those words" in client.calls[1]["user"]
 
 
 async def test_an_item_still_failing_after_two_repair_rounds_raises_naming_it_and_every_call_is_billed() -> None:
@@ -633,7 +813,11 @@ async def test_the_hosts_guidance_reaches_both_prompts() -> None:
 #: The identity of :func:`_extractor` over a client of :data:`_MODEL`, from the shipped prompts, schemas, fold and
 #: budgets. Produced by ``ClaimExtractor.identity`` itself; it moves with any change to them, and with the fold's
 #: tables or Unicode version, which is a new definition: write the new value here deliberately.
-_PINNED_IDENTITY = "scripted/claims|claims:b326c9108c71"
+_PINNED_IDENTITY = "scripted/claims|claims:9916791814e3"
+
+#: The identity the same extractor had while ``restates`` named its original by position in the list. Grades listed
+#: under it never pool with grades whose restatements were named by quote.
+_POSITION_POINTER_IDENTITY = "scripted/claims|claims:b326c9108c71"
 
 
 def test_the_identity_names_the_model_and_moves_with_the_guidance() -> None:
@@ -641,6 +825,7 @@ def test_the_identity_names_the_model_and_moves_with_the_guidance() -> None:
     base = _extractor(client)
 
     assert base.identity == _PINNED_IDENTITY
+    assert base.identity != _POSITION_POINTER_IDENTITY, "naming the original by quote is a new definition"
     assert base.identity == _extractor(_FakeScriptedClient([])).identity
     others = {
         _extractor(client, guidance="A dated restoration counts as a claim.").identity,
