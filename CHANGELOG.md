@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an idle worker lets a superseded shared Arrow version go as the next is published
+
+**Changed:** a pool worker's kept mapping (``read_version``) is moved onto each newer version as soon as the store
+publishes it, on a thread of the worker's own: the files the two versions share are taken over as they are, only the
+changed ones mapped, and the superseded version is let go by every process and retired. Before, an idle worker kept it
+until its next job or until the store ran short of room, so every pod held one superseded version more than it read.
+A worker busy on a version as it is superseded moves on as its job ends, before the job's lease goes. The
+least-recently-used eviction is gone (there is nothing kept to choose among); a write short of room now waits for a
+let-go still in flight before it is refused. ``threetears_cache_evictions_total`` counts those waits, and
+``threetears_cache_evicted_age_seconds`` reports how long the version had been superseded. ``SharedArrowStore.settle``
+also waits for the let-gos its sweep started.
+
 ### core: a keyed update of a stamped table writes its live rows alone
 
 **Changed (breaking):** ``update_keyed``, ``update_from`` and ``update_keyed_statements`` add a stamped L3 table's live

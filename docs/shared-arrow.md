@@ -20,7 +20,7 @@ and that work reads, or produces, more data than you want copied per process.
 | Layout | `versions/<name>/` holds a version's `MANIFEST` (the files it names) and its lock file; the files live in `parts/<one directory per publish>/`, never written again. Read a version's files with `version_files(root, version)`, never by listing its directory. |
 | Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
-| Eviction | A store short of room first lets go of what is only cached -- a superseded version an idle worker keeps mapped for its next read -- least recently used first, then refuses only when what it must keep alone does not fit. Every kind of entry declares its policy (`EVICTABLE` or `KEEP`, with why; no default): `threetears.core.eviction.policies_declared(Tier.SHARED)` lists them. |
+| Eviction | An idle worker keeps the version it read last mapped for its next job, and moves that mapping onto each newer version as it is published (only the changed files mapped, the rest reused), so a superseded version goes as soon as no job reads it. A store short of room waits for a let-go still in flight, then refuses only when what it must keep alone does not fit. Every kind of entry declares its policy (`EVICTABLE` or `KEEP`, with why; no default): `threetears.core.eviction.policies_declared(Tier.SHARED)` lists them. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it, and a part file when the last version naming it goes; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds, part files no kept version names among it. |
 | Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `settle`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, and a segment's `close` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` names the base's files it does not rewrite: they exist once, the store counts them once, and the publish touches none of them. |
@@ -89,7 +89,8 @@ async def on_change(epochs: dict[str, int]) -> None:
 A table given as `Parts` is one file per part (a state's rows, say). Publish the next version from the current one
 with `base=`, naming only the parts that changed: every other part, and every table not named, is the base's own file,
 named in the new version's manifest, so a change costs one part's write and one part's memory, at 60 parts or 6,000. Its first read maps only those parts too: a
-worker's kept version takes every file the two versions share from the mapping it had.
+worker's kept version is moved onto it as it is published, taking every file the two versions share from the mapping it
+had, and the superseded version is let go.
 
 ```python
 import pyarrow as pa
@@ -418,8 +419,8 @@ the L1 and the L2), one `name` per store (`SharedArrowStore(..., name=)`, the di
 |---|---|
 | `threetears_cache_budget_bytes{tier="shared",name}` | the store's `max_bytes` |
 | `threetears_cache_held_bytes{tier="shared",name,policy}`, `threetears_cache_held_entries` | what it holds, in bytes and entries: `policy="keep"` must stay, `policy="evictable"` is only cached |
-| `threetears_cache_evictions_total`, `threetears_cache_evicted_bytes_total` | cached versions let go for room, and their bytes |
-| `threetears_cache_evicted_age_seconds` | how long the last evicted version had gone unused: small means the budget is too small |
+| `threetears_cache_evictions_total`, `threetears_cache_evicted_bytes_total` | superseded versions a write short of room waited for idle workers to let go, and their bytes |
+| `threetears_cache_evicted_age_seconds` | how long the last of those had been superseded when it went: large means a worker was slow to move on |
 | `threetears_cache_hits_total`, `threetears_cache_misses_total` | jobs whose worker found its version kept, or mapped it |
 | `threetears_cache_refusals_total` | writes refused (`SharedArrowFullError`): what it must keep alone left no room |
 | `threetears_cache_serving_fallbacks_total{tier="shared",name=<what>}` | work a consumer ran in its serving process (`serving_fallback_counted`) |

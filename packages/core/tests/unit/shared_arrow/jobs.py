@@ -435,3 +435,30 @@ def hammer_version(root: str, version: str, table: str, column: str, signals: st
             torn.append(f"{type(exc).__name__}: {exc}")
         (here / "started").touch()
     return {"whole": whole, "missed": missed, "sums": sorted(sums), "torn": torn[:5]}
+
+
+def mapped_identities(context: JobContext) -> dict[str, Any]:
+    """this worker's process id, and each file of its mapped version by its identity (its manifest line) with the id of
+    the table it is mapped as: the same id across two jobs is the same table object, taken over as it was, never
+    mapped again.
+
+    :return: ``pid`` and ``tables``: identity -> table id
+    :rtype: dict[str, Any]
+    """
+    return {
+        "pid": os.getpid(),
+        "tables": {str(identity): id(table) for identity, table in _version(context).by_inode.items()},
+    }
+
+
+def identities_on_signal(context: JobContext, signals: str) -> dict[str, Any]:
+    """:func:`mapped_identities`, after saying it has mapped its version (``signals``/``started``) and waiting for the
+    test's go (``signals``/``go``): a worker busy on a version while the next is published.
+
+    :return: as :func:`mapped_identities`
+    :rtype: dict[str, Any]
+    """
+    where = Path(signals)
+    (where / "started").touch()
+    _wait_for(where / "go")
+    return mapped_identities(context)
