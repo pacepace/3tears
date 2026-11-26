@@ -3446,6 +3446,11 @@
       "signature": "MemberActsOn(members: tuple[tuple[str, str], ...])",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.host.ModelListingReader": {
+      "kind": "protocol",
+      "signature": "ModelListingReader{model_listing(self, model: str, *, role: CompletionRole | None) -> ModelListing | None}",
+      "tier": "host-contract"
+    },
     "threetears.evals.kernel.host.obligations": {
       "kind": "function",
       "signature": "",

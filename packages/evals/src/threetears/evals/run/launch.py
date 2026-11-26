@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.build_stamp import package_rev, package_version
-from threetears.evals.kernel.host.eval_host import CompletionRole, EvalHost
+from threetears.evals.kernel.host.eval_host import CompletionRole, EvalHost, ModelListingReader
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.schema.completion import ModelListing
 from threetears.evals.schema.web_search import WebSearch
@@ -2847,8 +2847,9 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
 async def _served_checks(host: LaunchHost, launchable: LaunchableKind, plan: ArmPlan) -> tuple[ServedCheck, ...]:
     """What each provider's model list, read now, says of the models an arm names: its candidate, judges, simulator.
 
-    Asked of the host's client factory through its optional ``model_listing(model, *, role)``
-    (:class:`~threetears.evals.schema.ModelListing`); the shipped ``Clients`` reads OpenRouter's list, the price
+    Asked of the host's client factory through its optional ``model_listing(model, *, role)``, found by
+    ``isinstance(clients, ModelListingReader)`` (:class:`~threetears.evals.kernel.host.ModelListingReader`, answering a
+    :class:`~threetears.evals.schema.ModelListing`); the shipped ``Clients`` reads OpenRouter's list, the price
     catalogue its models share, so the read serves the pricing that follows. A factory without the method is not
     asked, and a judge or simulator model its factory reads no list for (it answers ``None``) is not checked.
 
@@ -2864,9 +2865,9 @@ async def _served_checks(host: LaunchHost, launchable: LaunchableKind, plan: Arm
     :raises ValueError: The factory's ``model_listing`` answered something other than a ``ModelListing`` or ``None``.
     """
     clients = host.eval_host.clients
-    listing = getattr(clients, "model_listing", None) if clients is not None else None
-    if not callable(listing):
+    if not isinstance(clients, ModelListingReader):
         return ()
+    listing = clients.model_listing
     asked: list[tuple[ServedRole, str, CompletionRole | None]] = [
         ("candidate", plan.candidate_model, launchable.candidate_role)
     ]
@@ -2876,7 +2877,8 @@ async def _served_checks(host: LaunchHost, launchable: LaunchableKind, plan: Arm
         asked.append(("simulator", plan.simulator_model, "simulator"))
     checks: list[ServedCheck] = []
     for role, model, client_role in dict.fromkeys(asked):
-        found = await listing(model, role=client_role)
+        # Typed as anything: a host's factory is read at runtime, and an answer of another type is its defect.
+        found: object = await listing(model, role=client_role)
         if found is None and role == "candidate" and client_role is None:
             checks.append(
                 ServedCheck(
