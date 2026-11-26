@@ -136,13 +136,9 @@ def test_a_namespace_row_with_the_face_flags_round_trips_through_l1() -> None:
         "face_mcp": False,
         "face_platform_tool": True,
     }
-    backend.upsert("namespaces", row, primary_key=("row_scope", "namespace_id"))
+    backend.upsert("namespaces", row, primary_key=("namespace_id",))
 
-    stored = backend.select_by_id(
-        "namespaces",
-        ("platform", namespace_id),
-        primary_key=("row_scope", "namespace_id"),
-    )
+    stored = backend.select_by_id("namespaces", namespace_id, primary_key=("namespace_id",))
     assert stored is not None
     assert stored["tool_eligible"] is True
     assert stored["face_api"] is True

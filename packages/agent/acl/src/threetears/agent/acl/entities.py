@@ -15,11 +15,12 @@ dataclasses at the loader boundary. the entity subclasses exist purely
 so callers have a canonical place to read / write / cache rows via the
 standard three-tier collection api.
 
-four of the five tables use composite primary keys post-row_scope
+three of the five tables use composite primary keys post-row_scope
 partitioning: ``(row_scope, group_id)`` for ``groups``,
-``(row_scope, assignment_id)`` for ``role_assignments``,
-``(row_scope, namespace_id)`` for ``namespaces``, and
-``(group_id, id)`` for ``group_members``.
+``(row_scope, assignment_id)`` for ``role_assignments``, and
+``(group_id, id)`` for ``group_members``. ``namespaces`` is keyed by
+``namespace_id`` alone (agent_acl v007): its ``row_scope`` is a
+moveable column a rescope changes in place.
 
 no entity overrides ``_id``. :class:`BaseEntity` derives it from the
 owning collection's declared ``primary_key_columns``, so
@@ -58,16 +59,16 @@ __all__ = [
 def row_scope_for_customer(customer_id: UUID | None) -> str:
     """map an owning customer to the ``row_scope`` partition value.
 
-    ``groups`` and ``namespaces`` both partition on ``row_scope``, and
+    ``groups`` and ``namespaces`` both carry ``row_scope``, and
     both derive it from the same fact: a row with no customer is
     platform-scoped, a row with one is customer-scoped. the database
     CHECK constraint pins that biconditional
     (``row_scope='platform' <-> customer_id IS NULL``), so the rule is
     not a convention a caller may reinterpret.
 
-    it is public because a CALLER needs it, not only the entities. both
-    tables are keyed on the composite ``(row_scope, <entity>_id)``, so
-    anyone addressing a row through
+    it is public because a CALLER needs it, not only the entities.
+    ``groups`` is keyed on the composite ``(row_scope, group_id)``, so
+    anyone addressing a group through
     :meth:`~threetears.core.collections.base.BaseCollection.get` /
     ``delete`` / ``ensure`` has to supply the partition value alongside
     the id -- and the only way to work it out is this rule. stating it
@@ -241,7 +242,8 @@ class RoleAssignmentEntity(BaseEntity):
 class NamespaceEntity(BaseEntity):
     """row in ``namespaces``.
 
-    composite primary key ``(row_scope, namespace_id)``. namespace rows
+    primary key ``namespace_id`` (agent_acl v007; ``row_scope`` a moveable
+    column a rescope changes in place). namespace rows
     are the target side of every authorization check;
     ``namespace_type`` carries the resource-type discriminator
     (``workspace`` / ``agent`` / ``shared`` / ``system`` / ...) the

@@ -1152,21 +1152,18 @@ class Column:
         bleed class of bug.
 
         **A partition column whose value is DERIVED from another column
-        can move, and no generated statement can move it.** ``namespaces
-        .row_scope`` is the live example -- it is ``platform`` exactly
-        when ``customer_id IS NULL`` -- so a row that gains a customer
-        changes its own primary key. :func:`~threetears.core.backends
-        .schema_sql.build_insert_sql` nominates the PK as its ``ON
-        CONFLICT`` arbiter, which then does not name the stored row,
-        while any SECONDARY unique index on the bare entity id still
-        does: the write becomes an unretryable ``UniqueViolationError``
-        rather than a conflict the upsert resolves. Such a move has to
-        be an explicit, deliberate method on the owning Collection
-        (:meth:`~threetears.agent.acl.NamespaceCollection.rescope`) --
-        it is deliberately NOT handled here, because a generic
-        "reconcile a conflicting id into whatever partition the writer
-        asked for" is precisely the cross-partition bleed the composite
-        key exists to prevent.
+        can move, and no generated statement can move it.** A row that
+        gains the other value changes its own primary key:
+        :func:`~threetears.core.backends.schema_sql.build_insert_sql`
+        nominates the PK as its ``ON CONFLICT`` arbiter, which then does
+        not name the stored row, while any SECONDARY unique index on the
+        bare entity id still does: the write becomes an unretryable
+        ``UniqueViolationError`` rather than a conflict the upsert
+        resolves. A column that must move is no partition column: key
+        the table by the entity id and declare the column moveable
+        (``TableSchema.moveable``, :mod:`~threetears.core.ddl.tenant_moves`),
+        as ``namespaces.row_scope`` is since agent_acl v007
+        (:meth:`~threetears.agent.acl.NamespaceCollection.rescope`).
     :cvar nullable: when ``True``, missing values default to ``None``;
         ignored when ``partition=True`` (partition columns must be
         non-null by construction)

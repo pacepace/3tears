@@ -118,9 +118,6 @@ def _within(column: str, placeholder: str, *, platform_rows: bool) -> str:
 _USER: Final[Const] = Const("user")
 _GROUP: Final[Const] = Const("group")
 
-#: the partitions a namespace is written in: a namespace grant's namespace is read by its id in either
-_NAMESPACE_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
-
 #: the partitions a group is written in: a grant's group is read by its id in either
 _GROUP_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
 
@@ -159,10 +156,10 @@ _WALK_JOINS: Final[tuple[Joined, ...]] = (
         columns={"group_customer_id": "customer_id", "group_row_id": "group_id"},
         left=True,
     ),
+    # the grant's namespace, by its key (agent_acl v007: namespace_id alone)
     Joined(
         "namespaces",
         on={"namespace_id": "scope_namespace_id"},
-        by={"row_scope": AnyOf(_NAMESPACE_SCOPES, cast=None)},
         columns={"namespace_customer_id": "customer_id", "namespace_type": "namespace_type"},
         left=True,
     ),

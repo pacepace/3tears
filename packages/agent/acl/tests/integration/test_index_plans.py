@@ -755,7 +755,7 @@ async def test_assignments_scope_namespace(conn: asyncpg.Connection) -> None:
     await assignments.list_scoped_to_namespace(namespaces[3])
     assert plan_uses_index(recorder.plans[0], "idx_role_assignments_scope_namespace"), recorder.plans[0].plan
     held, cascading = _recorded(acl.NamespaceCollection, conn)
-    found = await read_delete_cascade(held, [("customer", namespaces[3])])
+    found = await read_delete_cascade(held, [namespaces[3]])
     plan = cascading.plans[0]
     granted = await conn.fetchval("SELECT count(*) FROM role_assignments WHERE scope_namespace_id = $1", namespaces[3])
     assert granted and [len(rows.keys) for rows in found] == [granted], found
@@ -858,9 +858,13 @@ async def test_namespace_ids_page_by_key(conn: asyncpg.Connection) -> None:
         row["namespace_id"] for row in await conn.fetch("SELECT namespace_id FROM namespaces")
     )
     for plan in recorder.plans:
-        # the partition's key (row_scope, namespace_id), or the id's own unique key walked in order with the partition
-        # as a filter: either way a key in order, under the page's LIMIT
-        keyed = plan_uses_index(plan, "namespaces_pkey") or plan_uses_index(plan, "uq_namespaces_namespace_id")
+        # the scope's index (row_scope, namespace_id) (agent_acl v007), or the id's own key walked in order with the
+        # scope as a filter: either way a key in order, under the page's LIMIT
+        keyed = (
+            plan_uses_index(plan, "idx_namespaces_scope_id")
+            or plan_uses_index(plan, "namespaces_pkey")
+            or plan_uses_index(plan, "uq_namespaces_namespace_id")
+        )
         assert keyed and plan.rows_scanned <= 2 * (100 + 1), json.dumps(plan.plan)[:3000]
 
 
