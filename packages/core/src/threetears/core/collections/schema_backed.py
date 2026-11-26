@@ -83,6 +83,7 @@ from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
     AnalyzingStore,
+    ArrowGoneMarkingStore,
     ArrowWritingStore,
     BulkDeletingStore,
     ManyKeyReadingStore,
@@ -5138,7 +5139,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         statement under the transaction's statement timeout (:meth:`save_arrow` has the measure).
 
         As :meth:`delete_rows`: on the caller's transaction only, every key leaving L1 now and settled with the rest
-        when the transaction ends. The keys become Python only for the enrolment and the eviction. **Falls back to**
+        when the transaction ends. The keys become Python only for the enrolment and the eviction. A stamped table's
+        keys are marked gone in place from their Arrow columns (the store's ``mark_gone_arrow``). **Falls back to**
         :meth:`delete_rows` when the store has no Arrow door or declines the keys
         (:meth:`~threetears.core.backends.sql.SqlL3Backend.arrow_write_plan`), and for a collection that declares
         :attr:`invalidation_columns`, whose messages need each row read as it goes.
@@ -5186,8 +5188,20 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         named, entity_keys, enrollments = await asyncio.to_thread(
             self._arrow_delete_enrollments, keys, asyncio.get_running_loop()
         )
-        # a stamped table's keys are marked gone in place by keyed UPDATEs (delete_rows), never the door's DELETE
+        # a stamped table's keys are marked gone in place by keyed UPDATEs, never the door's DELETE: from their Arrow
+        # columns where the store takes them so (mark_gone_arrow), no Python object a key bound
         stamped = self.schema.stamps_epoch and not self.schema.versioned
+        if stamped and isinstance(store, ArrowGoneMarkingStore) and not self.invalidation_columns:
+            transaction.enroll_all(enrollments)
+            transaction.record_deletes(self, named, scope=delta_scope)
+            await self._evict_l1_many_off_loop(entity_keys)
+            return await store.mark_gone_arrow(
+                self.table_name,
+                keys.select(key_columns),
+                epoch=self._epoch_stamp(conn, "delete_arrow")[EPOCH_COLUMN],
+                max_rows=max_rows if max_rows is not None else self.BULK_MAX_ROWS,
+                conn=conn,
+            )
         arrow_store = (
             store if isinstance(store, ArrowWritingStore) and not self.invalidation_columns and not stamped else None
         )

@@ -47,6 +47,7 @@ __all__ = [
     "CopyingStore",
     "DurableStore",
     "FileLoad",
+    "ArrowGoneMarkingStore",
     "GoneMarkingStore",
     "KeyLedReadingStore",
     "L3AnswerCutError",
@@ -974,6 +975,33 @@ class GoneMarkingStore(Protocol):
         :param conn: the caller's transaction handle; a failing append fails it whole
         :ptype conn: Any
         :return: the markers appended
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class ArrowGoneMarkingStore(Protocol):
+    """A durable store that marks a stamped table's (``ROW_STAMPED``) keys gone in place from Arrow key columns, on the
+    caller's transaction: the seam
+    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_arrow` deletes a stamped table's
+    keys through, the keys never a Python object each. No method takes SQL.
+    """
+
+    async def mark_gone_arrow(self, table: str, keys: Any, *, epoch: int, max_rows: int, conn: Any) -> int:
+        """Mark each key's row of the stamped ``table`` gone at ``epoch``; return how many keys were named.
+
+        :param table: the stamped table; its schema registered with the store
+        :ptype table: str
+        :param keys: the keys, a column for each of the table's key columns (others are not sent)
+        :ptype keys: pyarrow.Table
+        :param epoch: the delete's stamp
+        :ptype epoch: int
+        :param max_rows: the most keys one statement names
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; a failing statement fails it whole
+        :ptype conn: Any
+        :return: the keys named
         :rtype: int
         """
         ...

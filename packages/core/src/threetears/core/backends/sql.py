@@ -2273,12 +2273,7 @@ class SqlL3Backend:
             binds it by
         """
         table = schema.name
-        casts: list[str] = []
-        for name in schema.pk_columns:
-            kind = schema_sql.key_array_type(schema, name)
-            if kind is None:
-                raise ValueError(f"{table}: key column {name!r} has no array type a gone mark binds a batch of keys by")
-            casts.append(kind.removesuffix("[]"))
+        casts = self._gone_casts(schema)
         # the keys bound as a delete binds them and laid out a column each, on a thread past a few (as _planned_delete
         # binds them): never on the loop for a large delete
         columns = (
@@ -2286,14 +2281,96 @@ class SqlL3Backend:
             if len(keys) * len(schema.pk_columns) > _STATEMENT_ON_THREAD_PARAMS
             else self._gone_key_columns(table, keys, max_rows)
         )
-        batch = KeyBatch(columns=tuple(schema.pk_columns), keys=columns, casts=tuple(casts))
+        await self._update_stamped_gone(schema, columns, casts, epoch=epoch, max_rows=max_rows, conn=conn)
+        _logger.debug("stamped rows marked gone", extra={"extra_data": {"table": table, "keys": len(keys)}})
+        return len(keys)
+
+    async def mark_gone_arrow(self, table: str, keys: Any, *, epoch: int, max_rows: int, conn: Any) -> int:
+        """:meth:`mark_gone` of a stamped table's keys held as Arrow (``SchemaBackedCollection.delete_arrow``): each
+        key column handed to the keyed ``UPDATE`` as its Arrow array, bound as one text a column in Arrow's kernels
+        (``threetears.core.keyed.binding``), never a Python object a key.
+
+        :param table: the stamped table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param keys: the keys, a column for each of the table's key columns (others are not sent)
+        :ptype keys: pyarrow.Table
+        :param epoch: the delete's stamp
+        :ptype epoch: int
+        :param max_rows: the most keys one statement names; at least one
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle
+        :ptype conn: Any
+        :return: the keys named
+        :rtype: int
+        :raises ValueError: when no stamped schema is registered, ``max_rows`` is under one, the keys lack a key
+            column, or a key column has no array type a batch binds it by
+        """
+        schema = self._schemas.get(table)
+        if schema is None or not _stamped_table(schema):
+            raise ValueError(f"mark_gone_arrow needs the schema of stamped table {table!r} registered")
+        if max_rows < 1:
+            raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
+        missing = [name for name in schema.pk_columns if name not in keys.column_names]
+        if missing:
+            raise ValueError(f"{table}: the keys have no key column {missing[0]!r}")
+        if not keys.num_rows:
+            return 0
+        columns = [keys.column(name).combine_chunks() for name in schema.pk_columns]
+        await self._update_stamped_gone(
+            schema, columns, self._gone_casts(schema), epoch=epoch, max_rows=max_rows, conn=conn
+        )
+        _logger.debug("stamped rows marked gone", extra={"extra_data": {"table": table, "keys": keys.num_rows}})
+        return int(keys.num_rows)
+
+    @staticmethod
+    def _gone_casts(schema: TableSchema) -> list[str]:
+        """each key column's SQL type, a stamped gone mark's key batch cast back to it.
+
+        :param schema: the stamped table's schema
+        :ptype schema: TableSchema
+        :return: the types, in key order
+        :rtype: list[str]
+        :raises ValueError: when a key column has no array type a batch binds it by
+        """
+        casts: list[str] = []
+        for name in schema.pk_columns:
+            kind = schema_sql.key_array_type(schema, name)
+            if kind is None:
+                raise ValueError(
+                    f"{schema.name}: key column {name!r} has no array type a gone mark binds a batch of keys by"
+                )
+            casts.append(kind.removesuffix("[]"))
+        return casts
+
+    async def _update_stamped_gone(
+        self, schema: TableSchema, columns: Sequence[Any], casts: Sequence[str], *, epoch: int, max_rows: int, conn: Any
+    ) -> None:
+        """the keyed ``UPDATE`` marking a stamped table's keys gone: the flag set and the epoch risen past the
+        delete's stamp, a row already gone left as it is, ``max_rows`` keys a statement.
+
+        :param schema: the stamped table's schema
+        :ptype schema: TableSchema
+        :param columns: each key column's values (a list, or an Arrow array), in key order
+        :ptype columns: Sequence[Any]
+        :param casts: each key column's SQL type
+        :ptype casts: Sequence[str]
+        :param epoch: the delete's stamp
+        :ptype epoch: int
+        :param max_rows: the most keys one statement names
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle, or None for the pool
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        """
+        batch = KeyBatch(columns=tuple(schema.pk_columns), keys=list(columns), casts=tuple(casts))
         epoch_column = quote_identifier(EPOCH_COLUMN)
         gone = quote_identifier(GONE_COLUMN)
         # every row carries the delete's one stamp, and each statement says so
         with stamping_write(_stamp_of(schema, epoch)):
             await update_keyed(
                 self._pool if conn is None else conn,
-                table,
+                schema.name,
                 values={
                     GONE_COLUMN: True,
                     EPOCH_COLUMN: Fragment(f"GREATEST({epoch_column} + 1, $1::bigint)", (epoch,)),
@@ -2302,8 +2379,6 @@ class SqlL3Backend:
                 where=[Fragment(f"NOT {gone}")],
                 batch=max_rows,
             )
-        _logger.debug("stamped rows marked gone", extra={"extra_data": {"table": table, "keys": len(keys)}})
-        return len(keys)
 
     def _gone_key_columns(self, table: str, keys: Sequence[Sequence[Any]], max_rows: int) -> list[list[Any]]:
         """:meth:`_mark_stamped_gone`'s keys bound as a delete binds them (:meth:`_keys_to_delete`), one list a key

@@ -46,6 +46,7 @@ from threetears.core.backends.arrow_copy import (
 from threetears.core.backends.broker_generation import COMMIT_S_MIN_FIELD
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.schema_sql import build_bulk_insert_sql
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections import schema_backed
@@ -819,3 +820,30 @@ async def test_a_delete_of_a_stamped_tables_keys_marks_their_rows_gone_in_place_
     assert "DELETE" not in query and f'NOT "{GONE_COLUMN}"' in query
     params = statement["params"]
     assert params[0] is True and _fresh(int(params[1]))
+
+
+async def test_an_arrow_delete_of_a_stamped_table_sends_its_keys_as_arrow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if delete_arrow of a stamped table falls back to delete_rows' Python tuples (a tuple a key bound, the store's
+    mark_gone of a list of keys) instead of handing the store its Arrow key columns, or marks them otherwise than one
+    keyed UPDATE setting the flag and raising the epoch."""
+    hub = _Hub(write_arrow=True)
+
+    async def refused(*args: Any, **kwargs: Any) -> int:
+        raise AssertionError("delete_arrow of a stamped table went through the tuple path")
+
+    monkeypatch.setattr(schema_backed.SchemaBackedCollection, "delete_rows", refused)
+    monkeypatch.setattr(SqlL3Backend, "mark_gone", refused)
+    table = pa.table({"office_key": ["sn_NC1", "sn_NC1"], "geo_id": ["00001", "00002"]})
+
+    async def step(collection: Any, conn: Any) -> int:
+        return int(await collection.delete_arrow(table, conn=conn))
+
+    assert await _stamped_on_rail(hub, step) == 2
+    assert hub.arrow_requests() == []
+    [statement] = hub.statements()
+    query = statement["query"]
+    assert query.startswith(
+        f'UPDATE "stamped_results" SET "{GONE_COLUMN}" = $1, "{EPOCH_COLUMN}" = GREATEST("{EPOCH_COLUMN}" + 1, '
+    ), query
+    assert "DELETE" not in query and f'NOT "{GONE_COLUMN}"' in query
+    assert statement["params"][0] is True and _fresh(int(statement["params"][1]))
