@@ -18,6 +18,8 @@ from threetears.core.collections.asyncpg_init import (
 )
 from threetears.core.collections.delete_cascade import (
     CascadedRows,
+    DeleteRestrict,
+    RestrictedDeleteError,
     announce_delete_cascade,
     read_delete_cascade,
 )
@@ -115,6 +117,8 @@ __all__ = [
     "BaseCollection",
     "CascadedRows",
     "DeleteCascade",
+    "DeleteRestrict",
+    "RestrictedDeleteError",
     "ScanReadTicket",
     "BypassingWrite",
     "CacheInvalidationMessage",

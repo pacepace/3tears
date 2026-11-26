@@ -37,10 +37,16 @@ class _Pool:
             return list(self.members)
         # the group's assignments by group, through the read the grant load shares
         assert sql.startswith('SELECT t."row_scope", t."assignment_id"') and 'FROM "role_assignments"' in sql, sql
-        assert sql.endswith('WHERE t."group_id" = ANY($1::uuid[])'), sql
+        assert sql.endswith('WHERE t."group_id" = ANY($1::uuid[]) AND (NOT t."gone")'), sql
         (group_ids,) = params
         assert len(group_ids) == 1, params
         return list(self.assignments)
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """the gone marks a stamped group's delete leaves on its memberships and grants (ROW_STAMPED: the database's
+        cascade never runs for a row marked gone in place)."""
+        del sql, params
+        return "UPDATE 1"
 
 
 class _Source:

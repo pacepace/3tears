@@ -68,7 +68,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from threetears.core.frozen_state import EMPTY, frozen, with_newest, without_entries, without_entry
+from threetears.core.frozen_state import EMPTY, frozen, with_newest, with_newest_entries, without_entries, without_entry
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
 from threetears.agent.acl.types import GroupMembership, Trail
 from threetears.observe import get_logger
@@ -360,17 +360,19 @@ class AclCache:
         with self._lock:
             return self._evictions
 
-    def _fence_moved(self, fence: int | None) -> bool:
+    def _fence_moved(self, fence: int | None, stores: int = 1) -> bool:
         """whether an eviction landed since ``fence`` was taken. caller holds the lock.
 
         :param fence: from :meth:`read_fence`, or ``None`` when the caller took none
         :ptype fence: int | None
+        :param stores: the entries the caller would store, each counted as skipped when it moved
+        :ptype stores: int
         :return: ``True`` when the entry must not be stored
         :rtype: bool
         """
         moved = fence is not None and fence != self._evictions
         if moved:
-            self._fence_skipped_stores += 1
+            self._fence_skipped_stores += stores
             log.debug(
                 "acl cache entry not stored: an eviction landed while it was being computed",
                 extra={"extra_data": {"fence_skipped_stores": self._fence_skipped_stores}},
@@ -527,12 +529,31 @@ class AclCache:
             date_cached=datetime.now(UTC),
             role_ids=role_ids,
         )
-        with self._lock:
-            if self._trusted_locked() and not self._fence_moved(fence):
-                self._group_namespace = with_newest(
-                    self._group_namespace, key, entry, limit=_ACL_CACHE_LAYER_MAX_ENTRIES
-                )
+        self.put_group_namespaces({key: entry}, fence=fence)
         return entry
+
+    def put_group_namespaces(
+        self, entries: Mapping[GroupNamespaceKey, GroupNamespaceEntry], *, fence: int | None = None
+    ) -> None:
+        """insert or replace many per-namespace entries, the layer's snapshot built once and replaced whole.
+
+        WHY a batch: an evaluation over many namespaces computes a pair per (group, namespace), and storing each with
+        its own :meth:`put_group_namespace` copied the whole layer per pair (quadratic: 300 namespaces held the loop
+        0.8-2.5 s). One copy for the batch keeps it linear.
+
+        :param entries: each pair's entry, in the order computed (the last newest)
+        :ptype entries: Mapping[GroupNamespaceKey, GroupNamespaceEntry]
+        :param fence: :meth:`read_fence` as taken before the rows were read; nothing is stored when an eviction has
+            landed since
+        :ptype fence: int | None
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            if entries and self._trusted_locked() and not self._fence_moved(fence, len(entries)):
+                self._group_namespace = with_newest_entries(
+                    self._group_namespace, entries, limit=_ACL_CACHE_LAYER_MAX_ENTRIES
+                )
 
     def invalidate_group_namespace(self, key: GroupNamespaceKey) -> None:
         """drop a single per-namespace entry.

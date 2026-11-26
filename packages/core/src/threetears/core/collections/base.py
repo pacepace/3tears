@@ -57,8 +57,12 @@ from threetears.core.collections.epoch_change import (
 )
 from threetears.core.collections.delete_cascade import (
     DeleteCascade,
+    DeleteRestrict,
     announce_delete_cascade,
+    apply_delete_cascade,
     read_delete_cascade,
+    refuse_restricted_delete,
+    refuse_unappliable_cascade,
 )
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy, rows_with_tenants, schema_tenant
@@ -124,6 +128,7 @@ __all__ = [
     "BaseCollection",
     "CasMutation",
     "DeleteCascade",
+    "DeleteRestrict",
     "EntityT",
     "NoL2",
     "ScanReadTicket",
@@ -698,6 +703,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: ages, so :meth:`delete` reads the rows each one will reach before deleting and invalidates
     #: them through their own collections after (:mod:`~threetears.core.collections.delete_cascade`).
     delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = ()
+
+    #: Each foreign key that points at this table with ``ON DELETE RESTRICT`` or ``NO ACTION``. A stamped table's
+    #: delete marks its row gone (an ``UPDATE``), so the database's guard never runs: :meth:`delete` refuses itself
+    #: while a child table holds live rows naming the row
+    #: (:func:`~threetears.core.collections.delete_cascade.refuse_restricted_delete`).
+    delete_restricts: ClassVar[tuple[DeleteRestrict, ...]] = ()
 
     #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
     #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
@@ -5575,10 +5586,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         row = await self._row_before_delete(entity_id)
         # the rows the database's foreign-key actions will rewrite, read while they still name it
         cascaded = await read_delete_cascade(self, [entity_id])
+        # a stamped table's delete marks its row gone in place: no foreign-key action runs in the database, so 3tears
+        # takes each declared one itself once the row is marked (refused before, when one cannot be taken)
+        gone_mark = self._marks_gone()
+        if gone_mark:
+            # nor does the database's RESTRICT / NO ACTION guard: a row its live children name is refused here
+            await refuse_restricted_delete(self, [entity_id])
+            refuse_unappliable_cascade(self, cascaded)
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         with self._naming_changed([self.changed_row(entity_id, row)]):
             await self.delete_from_store(entity_id)
+        if gone_mark:
+            await apply_delete_cascade(self, cascaded)
         bump = await self._bump_generation([self.changed_row(entity_id, row)])
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
@@ -5592,6 +5612,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         if bump.failure is not None:
             raise bump.failure
         return True
+
+    def _marks_gone(self) -> bool:
+        """whether this collection's delete marks its row gone in place (a stamped table, ``ROW_STAMPED``) rather than
+        deleting it, so no foreign-key action of the database runs for it.
+
+        :return: whether it does
+        :rtype: bool
+        """
+        schema = getattr(self, "schema", None)
+        return bool(getattr(schema, "stamps_epoch", False)) and not getattr(schema, "versioned", False)
 
     @traced()
     async def l2_cas_mutate(
