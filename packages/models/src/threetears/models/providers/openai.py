@@ -35,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+import openai
 from langchain_core.messages import BaseMessage, convert_to_messages
 from langchain_core.prompt_values import PromptValue
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -42,6 +43,7 @@ from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.providers._key_errors_unretried import mark_unretried
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
 from threetears.models.providers._tool_call_provider_extra import (
@@ -234,6 +236,35 @@ def _input_messages(input_: Any) -> list[BaseMessage]:
     return []
 
 
+def _mark_unretried(response: Any) -> None:  # noqa: ANN401 -- an httpx or httpx2 response, per the SDK
+    """the sync HTTP client's response hook for :func:`create_openai_chat`'s ``unretried_key_errors``."""
+    mark_unretried(response.status_code, response.headers)
+
+
+async def _amark_unretried(response: Any) -> None:  # noqa: ANN401 -- an httpx or httpx2 response, per the SDK
+    """the async HTTP client's response hook for :func:`create_openai_chat`'s ``unretried_key_errors``."""
+    mark_unretried(response.status_code, response.headers)
+
+
+def _hooked(client: Any, hook: Any) -> Any:  # noqa: ANN401 -- an httpx or httpx2 client, per the SDK
+    """``client`` with ``hook`` among its response event hooks, once.
+
+    The SDK runs its retry loop over this client's responses, and an ``httpx`` client runs its
+    response hooks before it hands a response back, so the hook's mark is what the SDK reads.
+
+    :param client: the caller's HTTP client
+    :ptype client: Any
+    :param hook: the response hook
+    :ptype hook: Any
+    :return: the same client
+    :rtype: Any
+    """
+    hooks = client.event_hooks
+    if hook not in hooks["response"]:
+        client.event_hooks = {**hooks, "response": [*hooks["response"], hook]}
+    return client
+
+
 def create_openai_chat(
     model_name: str,
     api_key: str,
@@ -242,6 +273,7 @@ def create_openai_chat(
     timeout: int = 120,
     max_retries: int = 2,
     stream_usage: bool = True,
+    unretried_key_errors: bool = False,
     **extra_kwargs: Any,
 ) -> ChatOpenAI:
     """creates a configured ``ChatOpenAI`` for OpenAI-compatible providers.
@@ -263,6 +295,15 @@ def create_openai_chat(
     :ptype max_retries: int
     :param stream_usage: enable streaming usage metadata (token counts)
     :ptype stream_usage: bool
+    :param unretried_key_errors: when ``True``, a refusal that belongs to the key -- 401, 402, 403
+        or 429 -- reaches the caller on its first occurrence instead of being retried on the same key
+        (a key pool's mode, KP-H4); 5xx and connection failures keep ``max_retries``. It works through
+        the HTTP clients' response hooks: a caller's own ``http_client`` / ``http_async_client``
+        gains the hook (so share one only among models in this mode), and where the caller passes
+        none the model gets the SDK's default client with the hook, in place of LangChain's -- which
+        drops LangChain's TCP keepalive socket options for that model. ``False``, the default, leaves
+        the SDK's own retry policy, which retries a 429
+    :ptype unretried_key_errors: bool
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenAI``
     :ptype extra_kwargs: Any
     :return: configured ``ChatOpenAI`` (the name-translating subclass)
@@ -278,6 +319,15 @@ def create_openai_chat(
     if base_url is not None:
         kwargs["base_url"] = base_url
     kwargs.update(extra_kwargs)
+    if unretried_key_errors:
+        sync_client = kwargs.get("http_client")
+        async_client = kwargs.get("http_async_client")
+        if sync_client is None:
+            sync_client = openai.DefaultHttpxClient()
+        if async_client is None:
+            async_client = openai.DefaultAsyncHttpxClient()
+        kwargs["http_client"] = _hooked(sync_client, _mark_unretried)
+        kwargs["http_async_client"] = _hooked(async_client, _amark_unretried)
 
     model: ChatOpenAI = _NameTranslatingChatOpenAI(**kwargs)
     return model

@@ -780,6 +780,7 @@ def create_openrouter_chat(
     *,
     timeout: int = 120,
     max_retries: int = 2,
+    unretried_key_errors: bool = False,
     **extra_kwargs: Any,
 ) -> ChatOpenRouter:
     """creates a configured ``ChatOpenRouter`` for OpenRouter-routed models.
@@ -798,6 +799,12 @@ def create_openrouter_chat(
     :ptype timeout: int
     :param max_retries: maximum retry attempts for failed requests
     :ptype max_retries: int
+    :param unretried_key_errors: whether a refusal that belongs to the key -- 401, 402, 403 or 429 --
+        must reach the caller on its first occurrence (a key pool's mode, KP-H4). The ``openrouter``
+        SDK already guarantees it either way: its chat calls retry only 5xx statuses and connection
+        failures (``chat.send``'s retry codes are ``["5XX"]``), so nothing changes for ``True``. It is
+        accepted so a pool asks every provider factory the same way
+    :ptype unretried_key_errors: bool
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenRouter``
     :ptype extra_kwargs: Any
     :return: configured ``ChatOpenRouter`` (the name-translating subclass)
@@ -807,6 +814,8 @@ def create_openrouter_chat(
     # that builds an OpenRouter model, and a class that moved fails this call, not the package import.
     declare_served_provider()
     _declare_reasoning_budget()
+    # The SDK never retries a key-moving status, so the mode asks nothing of this model.
+    del unretried_key_errors
 
     # langchain-openrouter 0.1.0 defaults app_title="langchain" and forwards
     # it as `x_title` to the underlying openrouter SDK. openrouter 0.8+
