@@ -75,9 +75,10 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 
-from threetears.core.arrow_keys import rows_named
+from threetears.core.arrow_keys import numeric_texts, rows_named, stored_instants
 from threetears.core.collections.shared_copy import LOCATED_PREFIX, MARK_TABLE
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.core.shared_arrow import (
@@ -304,14 +305,15 @@ class _Query:
     :ivar declared: the declared query's function; None for SQL
     :ivar binds: the scalar binds
     :ivar prepare: the copy's prepare hook; None for none
-    :ivar lookup: a keyed lookup's table and key columns (its keys handed as :data:`_KEYS`); None for a query
+    :ivar lookup: a keyed lookup's table, key columns and each key column's SQL type (``(column, type)`` pairs:
+        :func:`_compared`); its keys handed as :data:`_KEYS`. None for a query
     """
 
     sql: str | None
     declared: Callable[[Any, Sequence[Any]], Any] | None
     binds: tuple[Any, ...]
     prepare: Callable[[Any], object] | None
-    lookup: tuple[str, tuple[str, ...]] | None = None
+    lookup: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]] | None = None
 
 
 def _connected(context: JobContext, threads: int, prepare: Callable[[Any], object] | None) -> Any:
@@ -403,9 +405,50 @@ def _write_answer(context: JobContext, batches: pa.RecordBatchReader) -> int:
     return rows
 
 
-def _found(rows: pa.Table, keys: pa.Table, key: Sequence[str]) -> pa.Table:
+#: the SQL types (``FollowedTable.key_cast``) whose values a key column held as text compares by, not by their text:
+#: a NUMERIC's (and an integer's held as text) by its value's one spelling (``arrow_keys.numeric_texts``), a UUID's by
+#: its lower case
+_BY_NUMBER: Final = frozenset({"numeric", "bigint"})
+_BY_LOWER: Final = frozenset({"uuid"})
+
+
+def _compared(
+    column: pa.ChunkedArray | pa.Array, cast: str | None, held: pa.DataType, *, asked: bool
+) -> pa.ChunkedArray | pa.Array:
+    """a key column as a lookup compares it: an asked key's or a held row's, the same way on both sides.
+
+    A column held typed (an integer, a decimal, a boolean) is compared as it is held, the asked keys cast to its type
+    (``arrow_keys.rows_named``, Arrow's cast). A column held as text whose type is not text is compared by value, as
+    the copy's read by key compared it in SQL, both sides cast to the column's type (``FollowedTable.held_key``): a
+    NUMERIC's text by :func:`~threetears.core.arrow_keys.numeric_texts` (``1.50`` is ``1.5``), a UUID's lower-cased,
+    and an instant's asked text in the copy's stored spelling (``arrow_keys.stored_instants``; the copy keeps its rows'
+    so already, so the held side is compared as it is). In Arrow's kernels alone, never a Python object a key.
+
+    :param column: the column
+    :ptype column: pa.ChunkedArray | pa.Array
+    :param cast: the column's SQL type; None compares it as it is
+    :ptype cast: str | None
+    :param held: the copy's Arrow type of the column
+    :ptype held: pa.DataType
+    :param asked: whether the column is the asked keys' (else the copy's rows')
+    :ptype asked: bool
+    :return: the column as compared
+    :rtype: pa.ChunkedArray | pa.Array
+    """
+    if cast is None or not (pa.types.is_string(held) or pa.types.is_large_string(held)):
+        return column
+    if cast in _BY_NUMBER:
+        return numeric_texts(column)
+    if cast in _BY_LOWER:
+        return pc.utf8_lower(pc.cast(column, pa.string()))
+    if cast == "timestamptz" and asked:
+        return stored_instants(column)
+    return column
+
+
+def _found(rows: pa.Table, keys: pa.Table, key: Sequence[str], casts: Mapping[str, str] = EMPTY) -> pa.Table:
     """the rows of ``rows`` whose key ``keys`` names, in their order in ``rows`` (Arrow's hash kernels, no Python
-    object a key).
+    object a key), each key column compared as :func:`_compared` compares it.
 
     :param rows: the rows looked in
     :ptype rows: pa.Table
@@ -413,15 +456,25 @@ def _found(rows: pa.Table, keys: pa.Table, key: Sequence[str]) -> pa.Table:
     :ptype keys: pa.Table
     :param key: the key's columns
     :ptype key: Sequence[str]
-    :return: the rows found
+    :param casts: each key column's SQL type, for a column held as text compared by value; others as they are
+    :ptype casts: Mapping[str, str]
+    :return: the rows found, as the copy holds them
     :rtype: pa.Table
     """
-    return rows.take(pa.array(rows_named(rows, keys, key)))
+    held = rows.select(list(key))
+    asked = keys.select(list(key))
+    for at, column in enumerate(key):
+        kind = held.schema.field(column).type
+        held = held.set_column(at, column, _compared(held.column(column), casts.get(column), kind, asked=False))
+        asked = asked.set_column(at, column, _compared(asked.column(column), casts.get(column), kind, asked=True))
+    return rows.take(pa.array(rows_named(held, asked, key)))
 
 
-def _lookup_in_worker(context: JobContext, table: str, key: Sequence[str]) -> int:
-    """a keyed lookup in its worker: the version's table probed by the handed keys, the rows found written as the
-    answer.
+def _lookup_in_worker(
+    context: JobContext, table: str, key: Sequence[str], casts: Sequence[tuple[str, str]] = ()
+) -> int:
+    """a keyed lookup in its worker: the version's table probed by the handed keys (each key column compared as
+    :func:`_found` compares it), the rows found written as the answer.
 
     :param context: the job's context
     :ptype context: JobContext
@@ -429,6 +482,8 @@ def _lookup_in_worker(context: JobContext, table: str, key: Sequence[str]) -> in
     :ptype table: str
     :param key: the key's columns
     :ptype key: Sequence[str]
+    :param casts: each key column's SQL type, ``(column, type)`` pairs
+    :ptype casts: Sequence[tuple[str, str]]
     :return: the rows found
     :rtype: int
     :raises LookupError: when the version holds no such table
@@ -438,7 +493,7 @@ def _lookup_in_worker(context: JobContext, table: str, key: Sequence[str]) -> in
     rows = context.version.tables.get(table)
     if rows is None:
         raise LookupError(f"the copy's version {context.version.name} holds no table {table!r}")
-    return _write_answer(context, _batches(_found(rows, context.tables.tables[_KEYS], key)))
+    return _write_answer(context, _batches(_found(rows, context.tables.tables[_KEYS], key, dict(casts))))
 
 
 def query_job(context: JobContext, ticket: int, query: _Query) -> tuple[int, int]:
@@ -1138,9 +1193,16 @@ class CopyQueries:
         version: str | None = None,
         timeout: float | None = None,
         reader: bool = True,
+        casts: Mapping[str, str] = EMPTY,
     ) -> QueryAnswer:
         """the rows of ``table`` whose key ``keys`` names, by Arrow's hash kernels, in a query worker, however few the
         keys.
+
+        Each key column is compared as the copy holds it, the asked keys cast to its type there; one the copy holds as
+        text though its type is not (a ``NUMERIC``, a UUID, an instant: ``schema_backed.rail_text``) is compared by
+        value when ``casts`` names its SQL type (``FollowedTable.key_cast``), both sides spelled one way in the worker
+        (:func:`_compared`), as the copy's read by key compared them cast in SQL: a key spelled ``1.5`` finds the row
+        held as ``1.50``.
 
         Why no inline path (Pace, 2026-11-25): a lookup in the serving process lost to the worker's round trip at every
         key count and table size measured (``scripts/measure-copy-lookup-cutoff.py``, 2026-11-25, macOS arm64, CPU ms
@@ -1161,6 +1223,9 @@ class CopyQueries:
         :ptype timeout: float | None
         :param reader: as :meth:`run`
         :ptype reader: bool
+        :param casts: key column -> its SQL type, for the columns compared by value (:func:`_compared`); a column
+            not named is compared as the copy holds it
+        :ptype casts: Mapping[str, str]
         :return: the rows found, in their order in each part; the caller closes it
         :rtype: QueryAnswer
         :raises LookupError: when nothing is published, the version named is gone, or it holds no such table
@@ -1170,7 +1235,8 @@ class CopyQueries:
         if missing:
             raise KeyError(f"a lookup's keys lack its key columns: {missing}")
         named = keys.select(list(key))
-        query = _Query(sql=None, declared=None, binds=(), prepare=None, lookup=(table, tuple(key)))
+        compared = tuple((column, casts[column]) for column in key if column in casts)
+        query = _Query(sql=None, declared=None, binds=(), prepare=None, lookup=(table, tuple(key), compared))
         return await self._answer(query, {_KEYS: named}, version, timeout, reader, True)
 
     async def close(self) -> None:

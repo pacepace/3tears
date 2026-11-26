@@ -26,15 +26,14 @@ publish retires it meanwhile).
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import pyarrow as pa
 
-from threetears.core.arrow_keys import stored_instants
 from threetears.core.cache.duckdb_binds import KEYS
 from threetears.core.collections.copy_queries import CopyQueries, CopyVersion
+from threetears.core.collections.schema_backed import rail_text
 from threetears.core.collections.volume_fulls import rows_fingerprint
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
@@ -232,28 +231,24 @@ def _fingerprinted(connection: Any, args: Sequence[Any]) -> pa.Table:
     return pa.table({_FINGERPRINT: pa.array([rows_fingerprint(rows, kinds)], pa.string())})
 
 
-def _spelled(table: FollowedTable, columns: Sequence[str], keys: Any) -> pa.Table:
-    """``keys``' ``columns``, an instant key column's values in the copy's one stored spelling
-    (``arrow_keys.stored_instants``, as the copy keeps its rows'), so a key in any ISO spelling finds its row by
-    value. Arrow's kernels alone.
+def _key_casts(table: FollowedTable, columns: Sequence[str]) -> dict[str, str]:
+    """the SQL type of each of ``columns`` the copy holds as text though its type is not text
+    (:func:`~threetears.core.collections.schema_backed.rail_text`: a ``NUMERIC``, a UUID, an instant), which a lookup
+    compares by value (``CopyQueries.lookup``'s ``casts``), as the copy's read by key compared them cast in SQL
+    (``FollowedTable.held_key``).
 
     :param table: the table
     :ptype table: FollowedTable
     :param columns: the key columns named
     :ptype columns: Sequence[str]
-    :param keys: the keys, as text
-    :ptype keys: pyarrow.Table
-    :return: the keys
-    :rtype: pa.Table
+    :return: column -> its SQL type
+    :rtype: dict[str, str]
     """
-    named = keys.select(list(columns))
-    instants = table.instant_keys
-    return pa.table(
-        {
-            column: stored_instants(named.column(column)) if column in instants else named.column(column)
-            for column in columns
-        }
-    )
+    return {
+        column: table.key_cast(column)
+        for column in columns
+        if table.key_cast(column) != "text" and rail_text(table.kind(column))
+    }
 
 
 class _QueriedPinned:
@@ -332,9 +327,10 @@ class QueriedReads:
         return _QueriedPinned(self._queries, await self._queries.current())
 
     async def rows_of_keys(self, table: FollowedTable, columns: Sequence[str], keys: Any, out: Sequence[str]) -> Any:
-        spelled = await asyncio.to_thread(_spelled, table, columns, keys)
-        # a client waits on a pass's keys: given the next free worker ahead of a checkpoint's or a drift check's job
-        answer = await self._queries.lookup(table.name, spelled, columns, reader=True)
+        # a client waits on a pass's keys: given the next free worker ahead of a checkpoint's or a drift check's job.
+        # Each key column compared as the copy holds it; a NUMERIC, a UUID or an instant held as text by value, spelled
+        # one way on both sides in the worker (an instant's asked text in the copy's stored spelling)
+        answer = await self._queries.lookup(table.name, keys, columns, reader=True, casts=_key_casts(table, columns))
         found = answer.table.select(list(out))
         await answer.aclose()
         return found

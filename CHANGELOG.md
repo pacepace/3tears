@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a keyed read of the copy compares a key by its type's value
+
+**Fixed:** `CopyQueries.lookup` (and the follower's keyed reads of its copy, `QueriedReads.rows_of_keys`) matched a key
+column the copy holds as text exactly, where the copy's old SQL read cast both sides to the column's type: a `NUMERIC`
+key held as `1.50` missed a change record's `1.5`, and a UUID missed in another case. `lookup(casts=)` names each key
+column's SQL type (`FollowedTable.key_cast`); in the query worker a `NUMERIC` held as text is compared by
+`arrow_keys.numeric_texts` (its value's one spelling) on both sides, a UUID lower-cased, an instant's asked text in the
+copy's stored spelling, and a typed column by the asked keys cast to its type, all in Arrow's kernels. The row comes
+back as the copy holds it. The instants' respelling moved from a serving-process thread into the worker.
+
 ### core: no engine slots: every read of the copy is a query worker's
 
 **Removed** (step 3T-8 of `design-copy-worker-backend.md`, decision 4): the serving process's DuckDB reads of the shared

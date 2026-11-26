@@ -35,7 +35,15 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-__all__ = ["distinct_keys", "key_codes", "last_rows", "rows_named", "rows_not_named", "stored_instants"]
+__all__ = [
+    "distinct_keys",
+    "key_codes",
+    "last_rows",
+    "numeric_texts",
+    "rows_named",
+    "rows_not_named",
+    "stored_instants",
+]
 
 #: the most distinct keys a combined code may count before the next column is folded in: past it the codes so far are
 #: coded again (their own dictionary), so the mixed-radix number never passes an int64
@@ -326,3 +334,40 @@ def stored_instants(values: pa.ChunkedArray | pa.Array) -> pa.Array:
     )
     stored: pa.Array = pc.if_else(pc.fill_null(real, False), spelled, text)
     return stored
+
+
+#: the rewrites that spell a NUMERIC's text one way, in order (RE2, Arrow's ``replace_substring_regex``): a leading
+#: ``+`` dropped, a fraction's trailing zeros and then a bare point dropped, the whole part's leading zeros dropped, a
+#: fraction with no whole part given its ``0``, and a negative zero made zero
+_NUMERIC_REWRITES: Final = (
+    (r"^\+", ""),
+    (r"^(-?[0-9]*\.[0-9]*?)0+$", r"\1"),
+    (r"^(-?[0-9]*)\.$", r"\1"),
+    (r"^(-?)0+([0-9])", r"\1\2"),
+    # RE2 names a group by one digit: ``\10.`` is group 1, then ``0.``
+    (r"^(-?)\.", r"\10."),
+    (r"^-0$", "0"),
+)
+
+
+def numeric_texts(values: pa.ChunkedArray | pa.Array) -> pa.Array:
+    """a column of NUMERIC values as text, each in one spelling of its value (``1.50``, ``01.5`` and ``+1.5`` are all
+    ``1.5``; ``-0.0`` is ``0``), so two texts of one value are equal. In Arrow's kernels alone, never a Python object a
+    value.
+
+    **Why.** The rail answers a ``NUMERIC`` as its digits at the column's scale (``1.50``), and a change record names a
+    key as ``key_text`` spells the value it was given (``1.5``): matched as text, the key never found its row. The
+    copy's read by key compared them in SQL cast to ``numeric`` (``FollowedTable.held_key``); a keyed lookup in
+    Arrow's hash kernels (``collections.copy_queries``) compares them so spelled. A text in exponent form (``1E+2``)
+    or one that is no number is kept as it is (trimmed): neither is a ``NUMERIC``'s text the rail or L3 writes.
+
+    :param values: the column, as text (or any type cast to text)
+    :ptype values: pa.ChunkedArray | pa.Array
+    :return: the column, each value in its one spelling; a null stays null
+    :rtype: pa.Array
+    """
+    column = values.combine_chunks() if isinstance(values, pa.ChunkedArray) else values
+    text: pa.Array = pc.utf8_trim_whitespace(pc.cast(column, pa.string()))
+    for pattern, replacement in _NUMERIC_REWRITES:
+        text = pc.replace_substring_regex(text, pattern=pattern, replacement=replacement)
+    return text
