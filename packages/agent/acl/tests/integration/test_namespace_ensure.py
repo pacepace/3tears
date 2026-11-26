@@ -16,64 +16,41 @@ from datetime import UTC, datetime
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from threetears.agent.acl import NamespaceCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import next_epoch
 
-pytestmark = pytest.mark.integration
+from .access_schema import access_pool, access_schema, empty_tables, name_owner_key
 
-#: the hub's table shape, as ``test_namespace_owned_by`` carries it (composite key, partition CHECK,
-#: the unique name index and the owner_namespace foreign key onto it).
-_NAMESPACES_DDL = """
-CREATE TABLE namespaces (
-    row_scope varchar(8) NOT NULL,
-    namespace_id uuid NOT NULL,
-    name varchar(255) NOT NULL,
-    namespace_type varchar(20) NOT NULL,
-    owner_agent_id uuid,
-    owner_namespace varchar(255),
-    customer_id uuid,
-    schema_name varchar(100),
-    metadata jsonb DEFAULT '{}'::jsonb,
-    tool_eligible boolean NOT NULL DEFAULT true,
-    skill_eligible boolean NOT NULL DEFAULT false,
-    face_api boolean NOT NULL DEFAULT false,
-    face_mcp boolean NOT NULL DEFAULT false,
-    face_platform_tool boolean NOT NULL DEFAULT true,
-    face_rest boolean NOT NULL DEFAULT false,
-    face_rest_declaration jsonb,
-    date_created timestamptz NOT NULL,
-    date_updated timestamptz NOT NULL,
-    CONSTRAINT namespaces_row_scope_ck CHECK (row_scope IN ('platform', 'customer')),
-    CONSTRAINT namespaces_row_scope_customer_ck CHECK (
-        (row_scope = 'platform' AND customer_id IS NULL
-            AND namespace_type IN ('system', 'model', 'tool', 'tool_provider', 'shared', 'knowledge'))
-     OR (row_scope = 'customer' AND customer_id IS NOT NULL)),
-    CONSTRAINT namespaces_pkey PRIMARY KEY (row_scope, namespace_id)
-)
-"""
+# one schema the acl migrations built, for the module's tests (each starts from empty tables)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
-@pytest.fixture
-async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    from threetears.core.collections import init_connection
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _module_schema(db_container: str) -> AsyncIterator[str]:
+    """a schema of the module's own holding the namespaces the acl migrations build, with the hub's owner_namespace
+    foreign key; built once, as a build is slow on YugabyteDB. Its name.
+    """
+    async with access_schema(db_container, "nsensure") as schema:
+        pool = await access_pool(db_container, schema, max_size=1)
+        try:
+            await name_owner_key(pool)
+        finally:
+            await pool.close()
+        yield schema
 
-    pool: asyncpg.Pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, init=init_connection)
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def pg_pool(db_container: str, _module_schema: str) -> AsyncIterator[asyncpg.Pool]:
+    """a pool on the module's schema, its access tables emptied for this test."""
+    pool = await access_pool(db_container, _module_schema, max_size=4)
     try:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS namespaces")
-            await conn.execute(_NAMESPACES_DDL)
-            await conn.execute("CREATE UNIQUE INDEX namespaces_id_unique ON namespaces (namespace_id)")
-            await conn.execute("CREATE UNIQUE INDEX idx_namespaces_name ON namespaces (name)")
-            await conn.execute(
-                "ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_fkey"
-                " FOREIGN KEY (owner_namespace) REFERENCES namespaces(name)"
-            )
+        await empty_tables(pool)
         yield pool
     finally:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS namespaces")
         await pool.close()
 
 
@@ -89,11 +66,12 @@ async def _owner_row(pool: asyncpg.Pool, name: str, customer_id: uuid.UUID) -> N
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, "
-            "date_created, date_updated) VALUES ('customer', $1, $2, 'agent', $3, $4, $4)",
+            "date_created, date_updated, epoch) VALUES ('customer', $1, $2, 'agent', $3, $4, $4, $5)",
             uuid.uuid4(),
             name,
             customer_id,
             now,
+            next_epoch(),
         )
 
 

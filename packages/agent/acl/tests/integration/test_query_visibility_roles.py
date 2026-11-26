@@ -23,6 +23,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from threetears.agent.acl import (
     RoleCollection,
@@ -30,15 +31,17 @@ from threetears.agent.acl import (
     visible_customers,
 )
 from threetears.agent.acl.types import action_acts_on_sql, decode_role_permissions, permissions_act_on
-from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import set_default_namespace
 
-from .access_tables_ddl import ACCESS_TABLE_NAMES, ACCESS_TABLES_DDL
+from .access_schema import access_pool, access_schema, empty_tables
 
-pytestmark = pytest.mark.integration
+# one schema the acl migrations built, for the module's tests (each starts from empty tables): built once, as a schema
+# a test is slow to build on YugabyteDB
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 #: the listed entity's namespace type.
 _LISTED = "thing"
@@ -46,26 +49,41 @@ _LISTED = "thing"
 _LISTED_DDL = "CREATE TABLE listed_things (thing_id uuid PRIMARY KEY, customer_id uuid)"
 
 
-@pytest.fixture
-async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    """per-test pool over the access tables and one listed table.
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _module_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
+    """a pool on a schema of the module's own: the access tables as the acl migrations build them, group-in-group
+    memberships allowed (the hub's platform schema takes them; acl v001's check names users and agents only), and one
+    listed table.
 
     :param db_container: the test database
     :ptype db_container: str
     :return: the pool
     :rtype: AsyncIterator[asyncpg.Pool]
     """
-    pool: asyncpg.Pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, init=init_connection)
-    try:
-        async with pool.acquire() as conn:
-            for table in ("listed_things", *ACCESS_TABLE_NAMES):
-                await conn.execute(f"DROP TABLE IF EXISTS {table}")
-            for ddl in ACCESS_TABLES_DDL:
-                await conn.execute(ddl)
-            await conn.execute(_LISTED_DDL)
-        yield pool
-    finally:
-        await pool.close()
+    async with access_schema(db_container, "visroles") as schema:
+        pool = await access_pool(db_container, schema)
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute("ALTER TABLE group_members DROP CONSTRAINT group_members_member_type_check")
+                await conn.execute(_LISTED_DDL)
+            yield pool
+        finally:
+            await pool.close()
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def pg_pool(_module_pool: asyncpg.Pool) -> asyncpg.Pool:
+    """the module's pool, its tables emptied for this test.
+
+    :param _module_pool: the module's pool
+    :ptype _module_pool: asyncpg.Pool
+    :return: the pool
+    :rtype: asyncpg.Pool
+    """
+    await empty_tables(
+        _module_pool, "listed_things", "role_assignments", "group_members", "groups", "roles", "namespaces"
+    )
+    return _module_pool
 
 
 async def _role(conn: asyncpg.Connection, permissions: Any, *, double_encoded: bool = False) -> uuid.UUID:
@@ -83,10 +101,11 @@ async def _role(conn: asyncpg.Connection, permissions: Any, *, double_encoded: b
     role_id = uuid.uuid4()
     encoded = json.dumps(json.dumps(permissions) if double_encoded else permissions)
     await conn.execute(
-        "INSERT INTO roles (role_id, name, permissions) VALUES ($1, $2, $3::text::jsonb)",
+        "INSERT INTO roles (role_id, name, description, permissions, epoch) VALUES ($1, $2, '', $3::text::jsonb, $4)",
         role_id,
         f"role-{role_id.hex}",
         encoded,
+        next_epoch(),
     )
     return role_id
 
@@ -106,19 +125,21 @@ async def _holder(conn: asyncpg.Connection, role_id: uuid.UUID, **scope: Any) ->
     user_id, group_id = uuid.uuid4(), uuid.uuid4()
     # the group's row, a platform group's: a grant counts only through its group's row, as the evaluator resolves it
     await conn.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
         group_id,
         f"g{group_id.hex}",
+        next_epoch(),
     )
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, 'user', $3)",
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, 'user', $3, $4)",
         uuid.uuid4(),
         group_id,
         user_id,
+        next_epoch(),
     )
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
-        " scope_namespace_type, scope_customer_id) VALUES ('platform', $1, $2, $3, $4, $5, $6, $7)",
+        " scope_namespace_type, scope_customer_id, epoch) VALUES ('platform', $1, $2, $3, $4, $5, $6, $7, $8)",
         uuid.uuid4(),
         role_id,
         group_id,
@@ -126,6 +147,7 @@ async def _holder(conn: asyncpg.Connection, role_id: uuid.UUID, **scope: Any) ->
         scope.get("scope_namespace_id"),
         scope.get("scope_namespace_type"),
         scope.get("scope_customer_id"),
+        next_epoch(),
     )
     return user_id
 
@@ -145,11 +167,12 @@ async def _namespace(conn: asyncpg.Connection, customer_id: uuid.UUID, namespace
     namespace_id = uuid.uuid4()
     await conn.execute(
         "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created,"
-        " date_updated) VALUES ('customer', $1, $2, $3, $4, now(), now())",
+        " date_updated, epoch) VALUES ('customer', $1, $2, $3, $4, now(), now(), $5)",
         namespace_id,
         f"ns-{namespace_id.hex}",
         namespace_type,
         customer_id,
+        next_epoch(),
     )
     return namespace_id
 
@@ -702,11 +725,12 @@ async def _seed_chain(
         """
         group_id = uuid.uuid4()
         await conn.execute(
-            "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ($1, $2, $3, $4, $5)",
             "platform" if letter is None else "customer",
             group_id,
             customer(letter),
             f"group-{group_id.hex}",
+            next_epoch(),
         )
         return group_id
 
@@ -725,12 +749,14 @@ async def _seed_chain(
         :rtype: None
         """
         await conn.execute(
-            "INSERT INTO group_members (id, group_id, member_type, member_id, customer_id) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO group_members (id, group_id, member_type, member_id, customer_id, epoch)"
+            " VALUES ($1, $2, $3, $4, $5, $6)",
             uuid.uuid4(),
             group_id,
             member_type,
             member_id,
             customer(letter),
+            next_epoch(),
         )
 
     user_id = uuid.uuid4()
@@ -742,16 +768,18 @@ async def _seed_chain(
         await member(granting, "group", bottom, chain["nested"])
     role_id = uuid.uuid4()
     await conn.execute(
-        "INSERT INTO roles (role_id, name, permissions, customer_id) VALUES ($1, $2, $3::text::jsonb, $4)",
+        "INSERT INTO roles (role_id, name, description, permissions, customer_id, epoch)"
+        " VALUES ($1, $2, '', $3::text::jsonb, $4, $5)",
         role_id,
         f"role-{role_id.hex}",
         json.dumps({"*": ["read"]}),
         customer(chain["role"]),
+        next_epoch(),
     )
     namespace_id = await _namespace(conn, customers["A"], "shared_agent") if scope == "namespace" else None
     await conn.execute(
         "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
-        " scope_namespace_type, scope_customer_id) VALUES ('platform', $1, $2, $3, $4, $5, $6, $7)",
+        " scope_namespace_type, scope_customer_id, epoch) VALUES ('platform', $1, $2, $3, $4, $5, $6, $7, $8)",
         uuid.uuid4(),
         role_id,
         granting,
@@ -759,6 +787,7 @@ async def _seed_chain(
         namespace_id,
         _LISTED if scope == "type_customer" else None,
         customers["A"] if scope == "type_customer" else None,
+        next_epoch(),
     )
     return user_id
 

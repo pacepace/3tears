@@ -25,6 +25,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import pytest_asyncio
 from pydantic import BaseModel
 
 from threetears.agent.acl import (
@@ -53,12 +54,10 @@ from threetears.epoch import (
 )
 from threetears.nats import set_default_namespace
 
-from .access_tables_ddl import ACCESS_TABLE_NAMES, ACCESS_TABLES_DDL
+from .access_schema import ACCESS_TABLE_NAMES, access_pool, access_schema, empty_tables, loosen_parents
 
-pytestmark = pytest.mark.integration
-
-_DDL = ACCESS_TABLES_DDL
-_TABLES = ACCESS_TABLE_NAMES
+# one schema the acl migrations built, for the module's tests (each starts from empty tables)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
 @pytest.fixture(autouse=True)
@@ -66,23 +65,30 @@ def _namespace() -> None:
     set_default_namespace("aclgen")
 
 
-@pytest.fixture
-async def pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    from threetears.core.collections import init_connection
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _module_schema(db_container: str) -> AsyncIterator[str]:
+    """a schema of the module's own holding the access tables the acl migrations built, their parents' foreign keys
+    dropped: the tests write memberships and grants of groups, roles and namespaces they never create; built once, as a
+    build is slow on YugabyteDB. Its name.
+    """
+    async with access_schema(db_container, "aclgen") as schema:
+        pool = await access_pool(db_container, schema, max_size=1)
+        try:
+            await loosen_parents(pool)
+        finally:
+            await pool.close()
+        yield schema
 
-    pg: asyncpg.Pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, init=init_connection)
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def pool(db_container: str, _module_schema: str) -> AsyncIterator[asyncpg.Pool]:
+    """a pool on the module's schema, its access tables emptied for this test."""
+    pool = await access_pool(db_container, _module_schema, max_size=4)
     try:
-        async with pg.acquire() as conn:
-            for table in _TABLES:
-                await conn.execute(f"DROP TABLE IF EXISTS {table}")
-            for ddl in _DDL:
-                await conn.execute(ddl)
-        yield pg
+        await empty_tables(pool)
+        yield pool
     finally:
-        async with pg.acquire() as conn:
-            for table in _TABLES:
-                await conn.execute(f"DROP TABLE IF EXISTS {table}")
-        await pg.close()
+        await pool.close()
 
 
 class _Lossy(FakeNatsClient):
@@ -186,7 +192,7 @@ def bus() -> _Lossy:
 async def _pods(pool: asyncpg.Pool, bus: _Lossy) -> tuple[_Writer, _Follower]:
     writer, follower = _Writer(pool, bus), _Follower(bus)
     # each table's generation exists before the follower first looks, as on a running platform
-    for table in _TABLES:
+    for table in ACCESS_TABLE_NAMES:
         await writer.registry.generation_source.advance(table)  # type: ignore[union-attr]
     await follower.start()
     return writer, follower
@@ -398,7 +404,7 @@ class TestOneCallBindsAndFollows:
         self, pool: asyncpg.Pool, bus: _Lossy
     ) -> None:
         writer = _Writer(pool, bus)
-        for table in _TABLES:
+        for table in ACCESS_TABLE_NAMES:
             await writer.registry.generation_source.advance(table)  # type: ignore[union-attr]
         registry = CollectionRegistry()
         registry.configure(l2_client=bus, kv_key_scope="pod")

@@ -28,6 +28,7 @@ from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.row_epoch import next_epoch
 from threetears.core.testing.same_results import Seeded, assert_same_results
 
 pytestmark = pytest.mark.integration
@@ -42,7 +43,8 @@ _NAMESPACES = (uuid.uuid5(_NS, "namespace-0"), uuid.uuid5(_NS, "namespace-1"))
 _T0 = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 _PROVENANCES = ("manual", "auto:agent-yaml")
 _COLUMNS = ("row_scope", "assignment_id", "role_id", "group_id", "scope_type", "scope_namespace_id", "managed_by")
-_STATE = f"SELECT {', '.join(_COLUMNS)} FROM role_assignments"
+#: the table as its readers see it: its live rows (a stamped table's delete marks its row gone in place, acl v006)
+_STATE = f"SELECT {', '.join(_COLUMNS)} FROM role_assignments WHERE NOT gone"
 
 #: the frozen statements
 _WINNER_SQL = (
@@ -87,18 +89,18 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         register_tools_platform(runner, depends_on=("agent_acl",))
         await runner.apply_for_platform_schema(_Store(connection))
         await connection.executemany(
-            "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
-            [(group, f"g{n}") for n, group in enumerate(_GROUPS)],
+            "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
+            [(group, f"g{n}", next_epoch()) for n, group in enumerate(_GROUPS)],
         )
         await connection.executemany(
-            "INSERT INTO roles (role_id, customer_id, name, description, permissions)"
-            " VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb)",
-            [(role, f"r{n}") for n, role in enumerate(_ROLES)],
+            "INSERT INTO roles (role_id, customer_id, name, description, permissions, epoch)"
+            " VALUES ($1, NULL, $2, 'r', '{\"*\": [\"read\"]}'::jsonb, $3)",
+            [(role, f"r{n}", next_epoch()) for n, role in enumerate(_ROLES)],
         )
         await connection.executemany(
             "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created,"
-            " date_updated) VALUES ('customer', $1, $2, 'tool', gen_random_uuid(), now(), now())",
-            [(namespace, f"tool.n{n}") for n, namespace in enumerate(_NAMESPACES)],
+            " date_updated, epoch) VALUES ('customer', $1, $2, 'tool', gen_random_uuid(), now(), now(), $3)",
+            [(namespace, f"tool.n{n}", next_epoch()) for n, namespace in enumerate(_NAMESPACES)],
         )
         yield connection
     finally:

@@ -24,6 +24,8 @@ from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.ddl.epoch_catalog import tables_carrying_epoch
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, next_epoch
 
 pytestmark = pytest.mark.integration
 
@@ -82,44 +84,94 @@ async def pool(schema_url: tuple[str, str]) -> AsyncIterator[asyncpg.Pool]:
         await created.close()
 
 
-async def _migrate(pool: asyncpg.Pool) -> int:
+#: acl v005 (the grant's customer) and v006 onward: the access tables stamped (v006), namespaces keyed by id (v007),
+#: names held by live rows (v008), the hub's grant index shape (v009)
+_V005 = 5
+
+
+async def _migrate(pool: asyncpg.Pool, target: int | None = None) -> int:
+    """the migrations after v004, to ``target`` (every one when None).
+
+    :param pool: the schema's pool
+    :ptype pool: asyncpg.Pool
+    :param target: the last acl version to apply, or None for all
+    :ptype target: int | None
+    :return: how many applied
+    :rtype: int
+    """
     async with pool.acquire() as conn:
-        applied: int = await _runner().apply_for_platform_schema(_Store(conn))
+        applied: int = await _runner().apply_for_platform_schema(_Store(conn), target=target)
     return applied
+
+
+async def _insert(pool: asyncpg.Pool, table: str, row: dict[str, Any]) -> None:
+    """write one row by hand as the schema's shape takes it: stamped with a fresh epoch once v006 has stamped the
+    table (its epoch is NOT NULL with no default), as it stands before v006 otherwise.
+
+    :param pool: the schema's pool
+    :ptype pool: asyncpg.Pool
+    :param table: the TRUSTED table name
+    :ptype table: str
+    :param row: column -> value; a value of ``now()`` is the database's clock
+    :ptype row: dict[str, Any]
+    :return: nothing
+    :rtype: None
+    """
+    async with pool.acquire() as conn:
+        schema = await conn.fetchval("SELECT current_schema()")
+        if await tables_carrying_epoch(conn, schema, [table]):
+            row = {**row, EPOCH_COLUMN: next_epoch()}
+        values = [value for value in row.values() if value != "now()"]
+        marks, index = [], 0
+        for value in row.values():
+            if value == "now()":
+                marks.append("now()")
+            else:
+                index += 1
+                marks.append(f"${index}")
+        await conn.execute(
+            f"INSERT INTO {table} ({', '.join(row)}) VALUES ({', '.join(marks)})",  # noqa: S608 - trusted test names
+            *values,
+        )
 
 
 async def _group(pool: asyncpg.Pool, customer: uuid.UUID | None) -> uuid.UUID:
     group_id = uuid.uuid4()
-    await pool.execute(
-        "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ($1, $2, $3, $4)",
-        "platform" if customer is None else "customer",
-        group_id,
-        customer,
-        f"g-{group_id.hex}",
+    await _insert(
+        pool,
+        "groups",
+        {
+            "row_scope": "platform" if customer is None else "customer",
+            "group_id": group_id,
+            "customer_id": customer,
+            "name": f"g-{group_id.hex}",
+        },
     )
     return group_id
 
 
 async def _role(pool: asyncpg.Pool) -> uuid.UUID:
     role_id = uuid.uuid4()
-    await pool.execute(
-        "INSERT INTO roles (role_id, name, description, permissions) VALUES ($1, $2, 'r', '[]')",
-        role_id,
-        f"r-{role_id.hex}",
+    await _insert(
+        pool, "roles", {"role_id": role_id, "name": f"r-{role_id.hex}", "description": "r", "permissions": "[]"}
     )
     return role_id
 
 
 async def _namespace(pool: asyncpg.Pool, customer: uuid.UUID | None) -> uuid.UUID:
     namespace_id = uuid.uuid4()
-    await pool.execute(
-        "INSERT INTO namespaces (row_scope, namespace_id, name, namespace_type, customer_id, date_created, "
-        "date_updated) VALUES ($1, $2, $3, $4, $5, now(), now())",
-        "platform" if customer is None else "customer",
-        namespace_id,
-        f"ns.{namespace_id.hex}",
-        "tool" if customer is None else "agent",
-        customer,
+    await _insert(
+        pool,
+        "namespaces",
+        {
+            "row_scope": "platform" if customer is None else "customer",
+            "namespace_id": namespace_id,
+            "name": f"ns.{namespace_id.hex}",
+            "namespace_type": "tool" if customer is None else "agent",
+            "customer_id": customer,
+            "date_created": "now()",
+            "date_updated": "now()",
+        },
     )
     return namespace_id
 
@@ -129,17 +181,19 @@ async def _grant(
 ) -> uuid.UUID:
     """a grant written by hand without its customer, as one made before v005 is."""
     assignment_id = uuid.uuid4()
-    await pool.execute(
-        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id, "
-        "scope_namespace_type, scope_customer_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        scope.get("row_scope", "customer"),
-        assignment_id,
-        role_id,
-        group_id,
-        scope_type,
-        scope.get("namespace_id"),
-        scope.get("namespace_type"),
-        scope.get("customer_id"),
+    await _insert(
+        pool,
+        "role_assignments",
+        {
+            "row_scope": scope.get("row_scope", "customer"),
+            "assignment_id": assignment_id,
+            "role_id": role_id,
+            "group_id": group_id,
+            "scope_type": scope_type,
+            "scope_namespace_id": scope.get("namespace_id"),
+            "scope_namespace_type": scope.get("namespace_type"),
+            "scope_customer_id": scope.get("customer_id"),
+        },
     )
     return assignment_id
 
@@ -173,7 +227,10 @@ async def test_the_backfill_fills_every_existing_grants_customer_across_pages(po
         )
         expected[await _grant(pool, platform_group, role, "all", row_scope="platform")] = None
 
-    assert await _migrate(pool) == 1
+    assert await _migrate(pool, target=_V005) == 1
+    assert await _customers(pool) == dict.fromkeys(expected)
+    # the collection reads and writes the release's shape: the backfill runs once every pod does, after v006 onward
+    await _migrate(pool)
     assert await _customers(pool) == dict.fromkeys(expected)
     collection = _collection(pool)
     cursor: str | None = None
@@ -189,7 +246,7 @@ async def test_the_backfill_fills_every_existing_grants_customer_across_pages(po
 async def test_a_grant_without_its_customer_is_still_written_during_the_rollout(pool: asyncpg.Pool) -> None:
     """Flips if v005 refuses a grant a pod of the previous release writes without the column (the expand step holds
     no CHECK: one would fail that pod's writes until the rollout ends)."""
-    await _migrate(pool)
+    await _migrate(pool, target=_V005)
     customer = uuid.uuid4()
     group, role = await _group(pool, customer), await _role(pool)
     typed = await _grant(pool, group, role, "type_customer", namespace_type="agent", customer_id=customer)

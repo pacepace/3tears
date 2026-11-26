@@ -49,8 +49,7 @@ from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.epoch import EpochGenerationReader, EpochGenerationSource, generation_catchup_tick
 from threetears.nats import set_default_namespace
 
-from .access_tables_ddl import ACCESS_TABLE_NAMES as _TABLES
-from .access_tables_ddl import ACCESS_TABLES_DDL as _DDL
+from .access_schema import access_pool, access_schema, loosen_parents
 
 pytestmark = pytest.mark.integration
 
@@ -64,21 +63,15 @@ def _namespace() -> None:
 
 @pytest.fixture
 async def pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    from threetears.core.collections import init_connection
-
-    pg: asyncpg.Pool = await asyncpg.create_pool(db_container, min_size=1, max_size=4, init=init_connection)
-    try:
-        async with pg.acquire() as conn:
-            for table in _TABLES:
-                await conn.execute(f"DROP TABLE IF EXISTS {table}")
-            for ddl in _DDL:
-                await conn.execute(ddl)
-        yield pg
-    finally:
-        async with pg.acquire() as conn:
-            for table in _TABLES:
-                await conn.execute(f"DROP TABLE IF EXISTS {table}")
-        await pg.close()
+    """a pool on a schema of its own holding the access tables the acl migrations built, their parents' foreign keys
+    dropped: the tests write memberships and grants of groups, roles and namespaces they never create."""
+    async with access_schema(db_container, "shapegen") as schema:
+        pg = await access_pool(db_container, schema)
+        try:
+            await loosen_parents(pg)
+            yield pg
+        finally:
+            await pg.close()
 
 
 def _config() -> DefaultCoreConfig:

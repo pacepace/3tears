@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from threetears.agent.acl import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
@@ -36,117 +37,92 @@ from threetears.agent.acl.types import (
     MIN_CONFIGURABLE_GROUP_NESTING_LEVELS,
     RETIRED_MAX_GROUP_MEMBERSHIP_DEPTH_ENV,
 )
+from threetears.core.ddl.row_epoch import next_epoch
 
-pytestmark = pytest.mark.integration
+from .access_schema import access_pool, access_schema, empty_tables
+
+# one schema the acl migrations built, for the module's tests (each starts from empty tables)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 #: the one role every grant here binds: it carries an action on the listed type, so the role half of
 #: the clause admits it and these tests measure the membership walk alone. the probe seeds the same id.
 READER_ROLE_ID = uuid.UUID("5f0c2d4e-7a1b-4c3d-9e8f-0a1b2c3d4e5f")
 
 
-_DDL = (
-    """
-    CREATE TABLE roles (
-        role_id uuid PRIMARY KEY,
-        permissions jsonb NOT NULL,
-        customer_id uuid
-    )
-    """,
-    """
-    CREATE TABLE groups (
-        group_id uuid PRIMARY KEY,
-        customer_id uuid
-    )
-    """,
-    """
-    CREATE TABLE role_assignments (
-        assignment_id uuid PRIMARY KEY,
-        role_id uuid NOT NULL,
-        group_id uuid NOT NULL,
-        scope_type varchar(16) NOT NULL,
-        scope_namespace_id uuid,
-        scope_namespace_type varchar(255),
-        scope_customer_id uuid
-    )
-    """,
-    """
-    CREATE TABLE group_members (
-        id uuid PRIMARY KEY,
-        group_id uuid NOT NULL,
-        member_type varchar(10) NOT NULL,
-        member_id uuid NOT NULL,
-        customer_id uuid
-    )
-    """,
-    """
-    CREATE TABLE namespaces (
-        namespace_id uuid PRIMARY KEY,
-        namespace_type varchar(20),
-        customer_id uuid
-    )
-    """,
-    """
-    CREATE TABLE listed_things (
-        thing_id uuid PRIMARY KEY,
-        customer_id uuid
-    )
-    """,
-)
+_LISTED_DDL = "CREATE TABLE listed_things (thing_id uuid PRIMARY KEY, customer_id uuid)"
 
 
-@pytest.fixture
-async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    """per-test pool over the six tables the visibility clause touches, the reader role seeded."""
-    from threetears.core.collections import init_connection
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _module_schema(db_container: str) -> AsyncIterator[str]:
+    """a schema of the module's own: the access tables as the acl migrations build them, group-in-group memberships
+    allowed (the hub's platform schema takes them; acl v001's check names users and agents only), and the listed
+    table. Its name.
+    """
+    async with access_schema(db_container, "visnest") as schema:
+        pool = await access_pool(db_container, schema, max_size=1)
+        try:
+            await pool.execute("ALTER TABLE group_members DROP CONSTRAINT group_members_member_type_check")
+            await pool.execute(_LISTED_DDL)
+        finally:
+            await pool.close()
+        yield schema
 
-    pool: asyncpg.Pool = await asyncpg.create_pool(
-        db_container,
-        min_size=1,
-        max_size=2,
-        init=init_connection,
-    )
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def pg_pool(db_container: str, _module_schema: str) -> AsyncIterator[asyncpg.Pool]:
+    """per-test pool over the module's schema, its tables emptied, the reader role seeded."""
+    pool = await access_pool(db_container, _module_schema, max_size=2)
     try:
-        async with pool.acquire() as conn:
-            for table in ("listed_things", "namespaces", "group_members", "groups", "role_assignments", "roles"):
-                await conn.execute(f"DROP TABLE IF EXISTS {table}")
-            for ddl in _DDL:
-                await conn.execute(ddl)
-            await conn.execute(
-                "INSERT INTO roles (role_id, permissions) VALUES ($1, $2::text::jsonb)",
-                READER_ROLE_ID,
-                json.dumps({"thing": ["read"]}),
-            )
+        await empty_tables(pool, "listed_things", "role_assignments", "group_members", "groups", "roles", "namespaces")
+        await pool.execute(
+            "INSERT INTO roles (role_id, name, description, permissions, epoch) VALUES ($1, 'reader', '', $2::text::jsonb, $3)",
+            READER_ROLE_ID,
+            json.dumps({"thing": ["read"]}),
+            next_epoch(),
+        )
         yield pool
     finally:
         await pool.close()
 
 
+async def _seed_group(conn: asyncpg.Connection, group_id: uuid.UUID) -> None:
+    """seed a platform group's row, once: a membership's group and a grant's group each name one (their foreign keys)."""
+    await conn.execute(
+        "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)"
+        " ON CONFLICT (group_id) DO NOTHING",
+        group_id,
+        f"g{group_id.hex}",
+        next_epoch(),
+    )
+
+
 async def _seed_grant(conn: asyncpg.Connection, *, group_id: uuid.UUID, customer_id: uuid.UUID) -> None:
     """seed one type_customer assignment of the reader role held by ``group_id`` over ``customer_id``, and the group's
     row (a platform group): the clause counts a grant only through its group's row, as the evaluator resolves it."""
+    await _seed_group(conn, group_id)
     await conn.execute(
-        "INSERT INTO groups (group_id, customer_id) VALUES ($1, NULL) ON CONFLICT (group_id) DO NOTHING", group_id
-    )
-    await conn.execute(
-        "INSERT INTO role_assignments (assignment_id, role_id, group_id, scope_type, scope_customer_id,"
-        " scope_namespace_type) VALUES ($1, $2, $3, 'type_customer', $4, 'thing')",
+        "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_customer_id,"
+        " scope_namespace_type, epoch) VALUES ('platform', $1, $2, $3, 'type_customer', $4, 'thing', $5)",
         uuid.uuid4(),
         READER_ROLE_ID,
         group_id,
         customer_id,
+        next_epoch(),
     )
 
 
 async def _seed_member(
     conn: asyncpg.Connection, *, group_id: uuid.UUID, member_type: str, member_id: uuid.UUID
 ) -> None:
-    """seed one membership row."""
+    """seed one membership row, its group's row first."""
+    await _seed_group(conn, group_id)
     await conn.execute(
-        "INSERT INTO group_members (id, group_id, member_type, member_id) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO group_members (id, group_id, member_type, member_id, epoch) VALUES ($1, $2, $3, $4, $5)",
         uuid.uuid4(),
         group_id,
         member_type,
         member_id,
+        next_epoch(),
     )
 
 
@@ -243,7 +219,7 @@ _PROBE = Path(__file__).with_name("depth_agreement_probe.py")
     "levels", range(MIN_CONFIGURABLE_GROUP_NESTING_LEVELS, MAX_CONFIGURABLE_GROUP_NESTING_LEVELS + 1)
 )
 async def test_the_evaluator_and_the_clause_agree_at_every_configured_nesting(
-    pg_pool: asyncpg.Pool, db_container: str, levels: int
+    pg_pool: asyncpg.Pool, db_container: str, _module_schema: str, levels: int
 ) -> None:
     """configured to any nesting, the visibility clause admits a chain exactly when the evaluator grants through it.
 
@@ -262,6 +238,7 @@ async def test_the_evaluator_and_the_clause_agree_at_every_configured_nesting(
         sys.executable,
         str(_PROBE),
         db_container,
+        _module_schema,
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

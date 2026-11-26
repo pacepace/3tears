@@ -21,6 +21,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import pytest_asyncio
 from sqlalchemy import MetaData
 
 from threetears.agent.acl import NamespaceCollection
@@ -28,86 +29,32 @@ from threetears.agent.acl.collections import NamespaceRescopeRefused
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.ddl.row_epoch import next_epoch
 
-pytestmark = pytest.mark.integration
+from .access_schema import access_pool, access_schema, empty_tables
 
-
-#: the real shape, as agent_acl v007 leaves it: the primary key on
-#: ``namespace_id``, the unique index on it the foreign key references, the
-#: derived-scope CHECK that ties ``row_scope`` to whether ``customer_id`` is
-#: null, the row's epoch and gone flag (ROW_STAMPED), and the moveable scope's
-#: two L3-only columns.
-_NAMESPACES_DDL = """
-CREATE TABLE namespaces (
-    row_scope varchar(8) NOT NULL,
-    namespace_id uuid NOT NULL,
-    name varchar(255) NOT NULL,
-    namespace_type varchar(20) NOT NULL,
-    owner_agent_id uuid,
-    owner_namespace varchar(255),
-    customer_id uuid,
-    schema_name varchar(100),
-    metadata jsonb DEFAULT '{}'::jsonb,
-    tool_eligible boolean NOT NULL DEFAULT true,
-    skill_eligible boolean NOT NULL DEFAULT false,
-    face_api boolean NOT NULL DEFAULT false,
-    face_mcp boolean NOT NULL DEFAULT false,
-    face_platform_tool boolean NOT NULL DEFAULT true,
-    face_rest boolean NOT NULL DEFAULT false,
-    face_rest_declaration jsonb,
-    date_created timestamptz NOT NULL,
-    date_updated timestamptz NOT NULL,
-    epoch bigint NOT NULL DEFAULT 0,
-    gone boolean NOT NULL DEFAULT false,
-    row_scope_moved_from text,
-    row_scope_moved_epoch bigint,
-    CONSTRAINT namespaces_row_scope_ck CHECK (row_scope IN ('platform', 'customer')),
-    CONSTRAINT namespaces_row_scope_customer_ck CHECK (
-        (row_scope = 'platform' AND customer_id IS NULL
-            AND namespace_type IN ('system', 'model', 'tool', 'tool_provider', 'shared', 'knowledge'))
-     OR (row_scope = 'customer' AND customer_id IS NOT NULL)),
-    CONSTRAINT namespaces_pkey PRIMARY KEY (namespace_id),
-    CONSTRAINT uq_namespaces_namespace_id UNIQUE (namespace_id)
-)
-"""
-
-_ROLE_ASSIGNMENTS_DDL = """
-CREATE TABLE role_assignments (
-    row_scope varchar(8) NOT NULL,
-    assignment_id uuid NOT NULL,
-    scope_namespace_id uuid,
-    managed_by varchar(32),
-    CONSTRAINT role_assignments_pkey PRIMARY KEY (row_scope, assignment_id),
-    CONSTRAINT role_assignments_scope_namespace_id_fkey
-        FOREIGN KEY (scope_namespace_id) REFERENCES namespaces(namespace_id) ON DELETE CASCADE
-)
-"""
+# one schema the acl migrations built, for the module's tests (each starts from empty tables)
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
-@pytest.fixture
-async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
-    """per-test pool over a fresh ``namespaces`` + ``role_assignments`` pair."""
-    from threetears.core.collections import init_connection
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _module_schema(db_container: str) -> AsyncIterator[str]:
+    """a schema of the module's own holding the access tables as the acl migrations build them (v007's ``namespaces``
+    keyed by ``namespace_id``, ``role_assignments.scope_namespace_id`` onto it ``ON DELETE CASCADE``); built once, as a
+    build is slow on YugabyteDB. Its name.
+    """
+    async with access_schema(db_container, "nsrescope") as schema:
+        yield schema
 
-    pool: asyncpg.Pool = await asyncpg.create_pool(
-        db_container,
-        min_size=1,
-        max_size=4,
-        init=init_connection,
-    )
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def pg_pool(db_container: str, _module_schema: str) -> AsyncIterator[asyncpg.Pool]:
+    """a pool on the module's schema, its access tables emptied for this test."""
+    pool = await access_pool(db_container, _module_schema, max_size=4)
     try:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS role_assignments")
-            await conn.execute("DROP TABLE IF EXISTS namespaces")
-            await conn.execute(_NAMESPACES_DDL)
-            await conn.execute("CREATE UNIQUE INDEX namespaces_id_unique ON namespaces (namespace_id)")
-            await conn.execute("CREATE UNIQUE INDEX idx_namespaces_name ON namespaces (name)")
-            await conn.execute(_ROLE_ASSIGNMENTS_DDL)
+        await empty_tables(pool)
         yield pool
     finally:
-        async with pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS role_assignments")
-            await conn.execute("DROP TABLE IF EXISTS namespaces")
         await pool.close()
 
 
@@ -210,24 +157,41 @@ async def _seed_platform_tool(
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO namespaces"
-            " (row_scope, namespace_id, name, namespace_type, customer_id, date_created, date_updated)"
-            " VALUES ('platform', $1, $2, 'tool', NULL, $3, $3)",
+            " (row_scope, namespace_id, name, namespace_type, customer_id, date_created, date_updated, epoch)"
+            " VALUES ('platform', $1, $2, 'tool', NULL, $3, $3, $4)",
             namespace_id,
             name,
             now,
+            next_epoch(),
         )
 
 
 async def _grant_on(pool: asyncpg.Pool, namespace_id: uuid.UUID, *, managed_by: str = "manual") -> uuid.UUID:
-    """bind one namespace-scoped assignment to the row, as an operator's grant."""
-    assignment_id = uuid.uuid4()
+    """bind one namespace-scoped assignment to the row, as an operator's grant: a platform group of its own holding a
+    role of its own (the grant's foreign keys name both)."""
+    assignment_id, group_id, role_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO role_assignments (row_scope, assignment_id, scope_namespace_id, managed_by)"
-            " VALUES ('platform', $1, $2, $3)",
+            "INSERT INTO groups (row_scope, group_id, customer_id, name, epoch) VALUES ('platform', $1, NULL, $2, $3)",
+            group_id,
+            f"g{group_id.hex}",
+            next_epoch(),
+        )
+        await conn.execute(
+            "INSERT INTO roles (role_id, name, description, permissions, epoch) VALUES ($1, $2, '', '{}'::jsonb, $3)",
+            role_id,
+            f"r{role_id.hex}",
+            next_epoch(),
+        )
+        await conn.execute(
+            "INSERT INTO role_assignments (row_scope, assignment_id, role_id, group_id, scope_type, scope_namespace_id,"
+            " managed_by, epoch) VALUES ('platform', $1, $2, $3, 'namespace', $4, $5, $6)",
             assignment_id,
+            role_id,
+            group_id,
             namespace_id,
             managed_by,
+            next_epoch(),
         )
     return assignment_id
 
@@ -261,10 +225,14 @@ class TestTheHazardItself:
         self,
         pg_pool: asyncpg.Pool,
     ) -> None:
-        """a row registered platform-scoped, re-emitted WITH a customer, refuses.
+        """a row registered platform-scoped, re-emitted WITH a customer, refuses, and the row stays where it was.
 
-        this is the bug: the conflict arbiter is the composite key, which no
-        longer matches, while the bare-``namespace_id`` unique index does.
+        since agent_acl v007 the upsert's conflict arbiter is ``namespace_id``,
+        so it finds the row; it carries the new derived ``row_scope`` while
+        ``customer_id`` is immutable (an upsert never sets it), and the
+        derived-scope CHECK refuses the row that would result. Only
+        :meth:`~threetears.agent.acl.collections.NamespaceCollection.rescope`
+        moves a row.
         """
         collection, _nats, l1 = _build_collection(pg_pool)
         namespace_id = uuid.uuid4()
@@ -276,8 +244,15 @@ class TestTheHazardItself:
                 is_new=True,
                 collection=collection,
             )
-            with pytest.raises(asyncpg.exceptions.UniqueViolationError):
+            with pytest.raises(asyncpg.exceptions.CheckViolationError, match="namespaces_row_scope_customer_check"):
                 await collection.save_entity(entity)
+            async with pg_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT row_scope, customer_id, row_scope_moved_from FROM namespaces WHERE namespace_id = $1",
+                    namespace_id,
+                )
+            assert row is not None
+            assert (row["row_scope"], row["customer_id"], row["row_scope_moved_from"]) == ("platform", None, None)
         finally:
             l1.reset()
 
