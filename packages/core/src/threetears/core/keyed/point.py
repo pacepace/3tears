@@ -29,9 +29,11 @@ from threetears.core.keyed._filters import (
     Selected,
     live_read,
     reads_l3,
-    refuse_append_only,
+    refuse_versioned,
     sent_by,
+    stamped_names,
 )
+from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import yugabyte_index_hint
@@ -363,9 +365,11 @@ async def read_nearest(
     # by its rank, which only each key's newest version holds; a LIMIT inside would cut keys before they are ranked.
     # The pins inside bound its scope, and work_mem holds its sort
     sender = bounded_sent(conn, table)
-    refuse_append_only(conn, [join.table for join in joins], f"a ranked read of {table} joining")
+    # a versioned table's every version is refused; a stamped one's lookups are guarded in place (NOT j."gone")
+    refuse_versioned(conn, [join.table for join in joins], f"a ranked read of {table} joining")
+    guarded = stamped_names(conn, [join.table for join in joins])
     if isinstance(nearest, PatternCount):
-        sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins)
+        sql, params = _pattern_count_statement(read_from, by, nearest, limit, columns, where, joins, guarded)
         rows = list(await sender.fetch(sql, *params))
         return rows if records and not joins else [dict(row) for row in rows]
     if not joins:
@@ -393,7 +397,7 @@ async def read_nearest(
         # within_memory 5.81 / 5.73 / 5.69; semantic 39.9 ms against the old 1567; YugabyteDB at most 1.14x the bare
         # read. Guarded by packages/core/tests/integration/test_nearest_join_leg_speed_live.py (2x the bare read, one
         # statement a read).
-        joined_sql, joined_params = _joined_nearest_statement(sql, list(params), nearest, joins)
+        joined_sql, joined_params = _joined_nearest_statement(sql, list(params), nearest, joins, guarded)
         rows = [dict(row) for row in await sender.fetch(joined_sql, *joined_params)]
         for row in rows:
             for column in hidden:
@@ -411,6 +415,7 @@ def _pattern_count_statement(
     columns: Sequence[str | Selected] | None,
     where: Sequence[Fragment],
     joins: Sequence[Joined],
+    guarded: frozenset[str] = frozenset(),
 ) -> tuple[str, list[Any]]:
     """the rows ``by`` (and ``where``) name of ``table`` that match any of ``rank``'s patterns, each ``LEFT`` joined to
     the rows of each joined table its columns name, best first by how many patterns a row matches, then by ``then``,
@@ -428,7 +433,8 @@ def _pattern_count_statement(
     The joins are plain ``LEFT JOIN``s, inside the ranked read: a field a join adds ranks the row before the limit
     cuts, so the joined rows are read beside the pinned ones (the planner's hash join of each joined table), never
     after them as :func:`_joined_nearest_statement`'s ``LATERAL`` lookups of the ranked few are. A join's ``on``
-    names a column of the row or a name an earlier join adds; its ``by`` pins its own columns.
+    names a column of the row or a name an earlier join adds; its ``by`` pins its own columns. A joined table in
+    ``guarded`` (a stamped L3 table) joins its live rows alone, ``NOT jN."gone"`` in its ``ON``.
 
     :return: the statement and its binds
     :rtype: tuple[str, list[Any]]
@@ -458,6 +464,9 @@ def _pattern_count_statement(
         ]
         pinned, values = by_conditions(join.by or {}, first=len(params) + 1, alias=alias)
         params += values
+        if join.table in guarded:
+            # in the ON clause, so a row whose joined row is gone keeps its place with the join's columns NULL
+            pinned = [*pinned, f"NOT {alias}.{quote_identifier(GONE_COLUMN)}"]
         joined.append(f" LEFT JOIN {quoted_table(join.table)} AS {alias} ON {' AND '.join([*on, *pinned])}")
         for name, column in join.columns.items():
             selected.append(f"{alias}.{quote_identifier(column)} AS {quote_identifier(name)}")
@@ -498,7 +507,11 @@ def _ranked_by(nearest: Nearest | TextRank) -> str | None:
 
 
 def _joined_nearest_statement(
-    ranked_sql: str, params: list[Any], nearest: Nearest | TextRank, joins: Sequence[Joined]
+    ranked_sql: str,
+    params: list[Any],
+    nearest: Nearest | TextRank,
+    joins: Sequence[Joined],
+    guarded: frozenset[str] = frozenset(),
 ) -> tuple[str, list[Any]]:
     """the ranked statement (:func:`~threetears.interfaces.keyed.read_nearest_statement`'s) as a derived table, each
     of its rows ``LEFT JOIN LATERAL``-ed to the rows of each joined table its columns name (``j1."media_id" =
@@ -513,13 +526,15 @@ def _joined_nearest_statement(
     :ptype nearest: Nearest | TextRank
     :param joins: the joins, each a plain LEFT one
     :ptype joins: Sequence[Joined]
+    :param guarded: the joined tables read as stamped L3 tables, each lookup guarded to its live rows
+    :ptype guarded: frozenset[str]
     :return: the statement and its binds
     :rtype: tuple[str, list[Any]]
     """
     ranked = _ranked_by(nearest)
     assert ranked is not None
     binds = list(params)
-    joined, laterals = lateral_joins(joins, binds)
+    joined, laterals = lateral_joins(joins, binds, guarded=guarded)
     selected = ["r.*", *joined]
     sql = (
         f"SELECT {', '.join(selected)} FROM ({ranked_sql}) AS r{laterals}"

@@ -88,6 +88,7 @@ __all__ = [
     "versions_read",
     "refuse_versioned",
     "refuse_append_only",
+    "stamped_names",
     "one_use_each",
     "refuse_in_place",
     "renumbered",
@@ -282,6 +283,23 @@ def refuse_append_only(conn: Any, tables: Sequence[Any], read: str) -> None:
             f"{read} names the stamped table(s) {', '.join(map(str, named))}, whose gone rows it would read: read them "
             "by keyed reads (read_keyed, read_by), which see live rows alone"
         )
+
+
+def stamped_names(conn: Any, tables: Sequence[Any]) -> frozenset[str]:
+    """the tables among ``tables`` a read on ``conn`` reads as stamped L3 tables (``ROW_STAMPED``), which a statement
+    naming them inside one statement (a join, a recursive walk) guards in place by their live guard
+    (``NOT <alias>."gone"``), so it answers no row a delete marked gone. Empty for a read that does not go to L3 (a
+    local copy holds only live rows).
+
+    :param conn: the connection or reader the read was handed
+    :ptype conn: Any
+    :param tables: the tables the statement names
+    :ptype tables: Sequence[Any]
+    :return: the stamped ones, by name
+    :rtype: frozenset[str]
+    """
+    l3 = reads_l3(conn)
+    return frozenset(str(table) for table in tables if stamped_table(table, l3=l3) is not None)
 
 
 def versions_read(
