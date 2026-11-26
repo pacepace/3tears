@@ -126,6 +126,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>values: `'transcript'`, `'document'`, `'unjudged'`
 - **`JudgeEvidence`** · model · Everything a judge reads about one cell's candidate, rendered by the kind that ran it.
 - **`LatencyMetrics`** · model · Per-result latency decomposition: harvested OTel spans, plus what they miss.
+- **`ModelListing`** · *host contract* · dataclass · What a provider's own list of the models it serves said of one model, read as a launch was admitted.
 - **`OutOfRunSpend`** · model · One call the engine made outside any run, as it was admitted and as the provider reported it.
 - **`Precondition`** · model · One thing a template presumes about the world before the subject's first turn.
 - **`ProviderFailure`** · dataclass · What eval is allowed to know about a completion call that raised.
@@ -379,6 +380,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`MeasureRegistrationError`** · exception · A measure declaration contradicts what this registry promises.
 - **`MeasureRegistry`** · *host contract* · class · One host's declared measures, validated at construction.
 - **`MemberActsOn`** · *host contract* · dataclass · Name the measure each listed ENTRY of an overlay map is supposed to move — `ActsOn` per member.
+- **`ModelListingReader`** · *host contract* · protocol · A completion-client factory that also reads its providers' lists of the models they serve: the optional half of `CompletionClients`.
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`PassThreshold`** · *host contract* · dataclass · The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
 - **`ReplayMiss`** · *host contract* · exception · A recording that cannot serve this run, so the run fails.

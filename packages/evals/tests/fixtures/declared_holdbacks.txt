@@ -24,6 +24,7 @@ threetears.evals.kernel.Recordable | port-host-implements
 threetears.evals.kernel.ResultStore | protocol-engine-provides
 threetears.evals.kernel.RunStore | protocol-engine-provides
 threetears.evals.kernel.host.CompletionClients | port-host-implements
+threetears.evals.kernel.host.ModelListingReader | port-host-implements
 threetears.evals.kernel.host.TemplateCaseFields | protocol-engine-provides
 threetears.evals.providers.Pricer | port-host-implements
 threetears.evals.run.CellExecutor | port-host-implements

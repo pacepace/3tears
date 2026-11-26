@@ -1088,8 +1088,8 @@
     },
     "threetears.evals.schema.ModelListing": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "ModelListing(provider: str, listed: bool | None, detail: str)",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
@@ -3444,6 +3444,11 @@
     "threetears.evals.kernel.host.MemberActsOn": {
       "kind": "dataclass",
       "signature": "MemberActsOn(members: tuple[tuple[str, str], ...])",
+      "tier": "host-contract"
+    },
+    "threetears.evals.kernel.host.ModelListingReader": {
+      "kind": "protocol",
+      "signature": "ModelListingReader{model_listing(self, model: str, *, role: CompletionRole | None) -> ModelListing | None}",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.obligations": {

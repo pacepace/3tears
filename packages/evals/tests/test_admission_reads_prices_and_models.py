@@ -54,6 +54,7 @@ from threetears.evals.ops import (
     sweep_launch,
 )
 from threetears.evals.ops.lenses import estimate_text
+from threetears.evals.kernel.host import CompletionRole, ModelListingReader
 from threetears.evals.providers import Catalogue, Clients, Model
 from threetears.evals.run import (
     ArmPrice,
@@ -376,6 +377,69 @@ async def test_a_package_routed_candidate_off_the_list_is_refused() -> None:
 
     assert arm.outcome == "refused"
     assert f"candidate model {_FLASH!r} is not on openrouter's list" in arm.refusal
+
+
+def _with_clients(process: _Process, clients: Any) -> None:
+    """``process`` with its host's client factory replaced by ``clients``."""
+    process.host = dataclasses.replace(
+        process.host, eval_host=dataclasses.replace(process.host.eval_host, clients=clients)
+    )
+
+
+# parity-with: threetears.evals.kernel.host.eval_host.CompletionClients
+class _FakeForwardingClients:
+    """A factory that wraps the shipped one and reaches its other members only through ``__getattr__``."""
+
+    def __init__(self, inner: Clients) -> None:
+        self._inner = inner
+
+    def __call__(self, role: CompletionRole, model: str | None, *, temperature: float | None = None) -> Any:
+        return self._inner(role, model, temperature=temperature)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def test_a_model_listing_reached_only_through_getattr_is_not_found_so_nothing_is_checked() -> None:
+    # The engine finds the port by isinstance, which since Python 3.12 looks the method up on the class, never through
+    # __getattr__: a factory wrapping another defines model_listing itself to keep the check (adopting-a-host.md).
+    process = off_loop(_Process, _FakeOpenRouter([_OTHER_ROW]), enforced=False)
+    forwarding = _FakeForwardingClients(process.clients)
+    _with_clients(process, forwarding)
+    assert callable(forwarding.model_listing), "the wrapped factory's method is reachable by name"
+    assert not isinstance(forwarding, ModelListingReader)
+
+    arm = await process.estimate(None)
+
+    assert (arm.outcome, arm.plan.served_checks) == ("uncapped", ()), "an off-list model, and nobody was asked"
+
+
+# parity-with: threetears.evals.kernel.host.eval_host.CompletionClients
+class _FakeMisansweringClients:
+    """A factory whose ``model_listing`` answers a word instead of a ``ModelListing``."""
+
+    def __init__(self, inner: Clients) -> None:
+        self._inner = inner
+
+    def __call__(self, role: CompletionRole, model: str | None, *, temperature: float | None = None) -> Any:
+        return self._inner(role, model, temperature=temperature)
+
+    async def model_listing(self, model: str, *, role: CompletionRole | None) -> object:
+        return "listed"
+
+
+async def test_a_model_listing_answering_anything_but_a_listing_refuses_the_launch_as_the_factory_s_defect() -> None:
+    process = off_loop(_Process, _FakeOpenRouter([_FLASH_ROW]), enforced=False)
+    _with_clients(process, _FakeMisansweringClients(process.clients))
+
+    with pytest.raises(ValueError) as refused:
+        await process.estimate(None)
+
+    assert str(refused.value) == (
+        f"the host's client factory answered model_listing({_FLASH!r}) with a str; it answers a ModelListing, or "
+        "None for a model whose provider it reads no list of"
+    )
+    assert process.stored_runs() == []
 
 
 # =============================================================================

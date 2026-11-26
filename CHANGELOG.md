@@ -6,6 +6,164 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: importing `ProviderError` loads none of the engine
+
+**Fixed (#1332):** `from threetears.evals.providers import ProviderError` took over a second cold, since the client's
+root imported its model, which imports `threetears.evals.testing` and through it `actions`, `ops` and the report
+stack. The root now serves each name from its defining module on first read, and the failure's module imports nothing
+of the engine at load, so catching a provider's failure costs about 0.04s. `describe_failure` moves to its own module
+below the root; it is still imported from `threetears.evals.providers`, and every public name and signature is
+unchanged. Importing `Model` still loads the engine.
+
+**For hosts:** nothing to change. A process that imports `ProviderError` only to catch it no longer pays the engine's
+import. `describe_failure` is imported from `threetears.evals.providers`; its old module path, `providers.failures`,
+no longer has it. A strict type checker still sees each name's real type, and refuses one the root does not export.
+
+### evals: only an OpenRouter 403 that blocked the request's content is charged to the candidate
+
+**Fixed (#1331):** `ProviderError` charged every OpenRouter 403 to the candidate as moderation. OpenRouter answers a
+403 for three causes, and only one is the candidate's. Its body now decides: a 403 whose `error.metadata` carries a
+guardrail's `patterns`, moderation's `reasons` or `flagged_input`, or an `error_type` of `content_policy_violation` or
+`refusal` is the `candidate`'s, as before. Any other OpenRouter 403 is the `account`'s, as every other provider's 403
+already was, so it stops the run: a spent guardrail, workspace or key budget (`error.metadata.limit_source`, rejected
+before any provider saw the call), a key lacking a permission, and a 403 whose body says none of these, a body that
+is not JSON among them. A spent budget wins over anything else its metadata carries. A 403 for the key's own spent
+limit (`limit_source` `openrouter_key_limit`) fails over to the next key in `<VARIABLE>_FALLBACKS`, as spent credit
+does, since another key has its own limit; a guardrail's or a workspace's budget, or a `limit_source` the errors page
+does not name, stops the run, since every key under the account shares it.
+
+**Added:** `ProviderError.resets_at`, when the spent budget of an OpenRouter budget 403 rolls over (its
+`error.metadata.resets_at`, in UTC); `None` for every other answer and for a lifetime budget. `credit_spent` is now
+also true for the key's own spent limit. The error's text is unchanged: OpenRouter's own message already says when
+the budget resets. Nothing stored carries the new attribute.
+
+**For hosts:** a describer built on `describe_failure` needs no change. A run whose OpenRouter account hits a budget
+or a permission refusal now stops as the account's (`exhausted`) instead of charging each cell to the candidate; a
+host that reads `owner` on a `ProviderError` itself sees `account` there. `resets_at` is on `ProviderError` only, for
+a host that calls the client directly and catches the error: `describe_failure` does not carry it, so a run's failure
+record never holds it, and nothing in the engine reads it yet.
+
+### evals: a host-contract port answers only with host-contract types
+
+**Changed (#1330):** `ModelListing` (`threetears.evals.schema`), what a client factory's `model_listing` answers, is
+host-contract, and the method itself is declared: `ModelListingReader` (`threetears.evals.kernel.host`, host-contract)
+is the port a factory implements beside `CompletionClients` when it reads its providers' model lists. Launch admission
+finds it by `isinstance(factory, ModelListingReader)`, so a factory without the method is still a `CompletionClients`
+and is not asked, as before. A test now holds every host-contract port to types that
+are host-contract or stable, so a provisional type in a port's signature fails at build.
+
+**For hosts:** a host may now import `ModelListing` as host-contract and drop its provisional-import exemption for it.
+The method must be defined on the factory's class: the engine found it with `getattr` before and finds it with
+`isinstance` now, which since Python 3.12 looks it up statically, so a factory that served `model_listing` only through
+`__getattr__` (a wrapper forwarding to another factory) is no longer asked, and its models go unchecked with no notice.
+Such a host defines `model_listing` on the wrapper and forwards it by name. A factory that defines the method on its
+class already is a `ModelListingReader`, and one without it keeps working unchecked. Nothing stored changes.
+
+### evals: a doubted claim a key fact about its subject contradicts reads contradicted, with or without the web
+
+**Fixed (#1326):** the truth call is shown every key fact, but no check can make the model cite one. A world claim it
+answered with no citation and marked suspect, though a key fact contradicted it, went to the web, which is never shown
+the key: with the web off, past the cell's web budget or inconclusive, a planted false claim read `unverifiable`, not
+`contradicted`, understating the false rate. Every such claim that names a key entity is now asked again before the
+web, all of them in one call per cell (the re-ask), each listed with the refs of its own entities' facts and checked
+against those alone, with every check a truth answer takes. The re-ask has its own prompt: it asks whether any listed
+fact states the claim true or false, and says nothing of the earlier answer. A cited contradiction reads
+`contradicted`, a cited support `supported`, both graded against the case; an answer citing nothing leaves the claim
+nominated for the web as before. Code decides which facts a claim is listed with: those of each key entity whose name,
+or one of its aliases, stands in the claim's proposition or a restatement's as whole words in order. So a key entity
+whose name only shares words with the subject (an entity "Ann Lee's brother", "Annabel Lee" or "Lee Ann", against
+"Ann Lee moved to York") is never listed. A restatement takes its original's outcome.
+
+The known limits. The match reads the key entity, never the fact: a fact filed under Ann Lee's own entry that is about
+someone else ("Her brother moved to York.") is listed for "Ann Lee moved to York", and cited as support it passes every
+code check, so only the model's reading stands between it and a false `supported`. Likewise a fact about another
+attribute of the subject ("Ann Lee was born in Leeds", against "Ann Lee lives in York") cited as a contradiction reads
+`contradicted`. The re-ask's prompt says such facts bear on nothing. A claim naming its subject only by a pronoun or
+an unlisted description, or in a script written without spaces, is asked nothing again; a short name or alias inside a
+longer one ("Lee" for Ann Lee) matches every claim naming the longer.
+
+**Fixed:** a "!" followed by spaces and then "(" or a lower-case letter, or a "?" followed by spaces and a lower-case
+letter, no longer ends a sentence, so a key fact such as "Revolting Cocks were a Wax Trax! (Chicago) act." keeps its
+subject and value in one sentence and needs no repair. Before a capitalised word, a digit or a line break either still
+does ("He left! Then ...", "He left? No."), and so does a "?" before a bracket ("Did Ann Lee stay? (Her brother moved
+to York.)"). The accepted cost: an exclamation before a bracketed sentence reads as one sentence with it ("Wow! (Her
+brother moved to York.)"). Separately, a sentence end followed by closing quotes or brackets (`."`, `.)`, `!'`) is now
+a sentence end, so 'Ann Lee said, "I stay in Leeds." Her brother moved to York.' no longer binds Ann Lee to York; an
+abbreviation inside quotes or brackets ("the U.S.", "(Dr.) John") keeps the abbreviation rule.
+
+**Changed:** the re-ask adds one truth call per cell whose key states a fact, asked again in full only when its reply
+cannot be read (at most three calls), whatever the number of claims doubted; the price ceiling prices it so, at every
+key fact. Its failing items are repaired within the truth step's `max_items_per_cell`, as a truth batch's are, so
+`RepairBudget`'s arithmetic is unchanged. A re-ask reply cut short, unreadable in its attempts, failed by the provider
+or breaking the protocol fails the claims criterion as any truth call does, never as an `unverifiable` claim. The re-ask
+rule, its prompt and the sentence rule (now `sentences-v3`) enter the claim verifier's identity and the web step's, so
+every claims criterion's fingerprint moves, and grades made before and after this never pool. No stored shape changes.
+
+**For hosts:** nothing to change in code. A claims criterion over a case key is priced one call higher (three attempts)
+per cell. Re-judging stored cells gives a new fingerprint.
+
+### evals: a claim names the claim it restates by quoting it, so a miscounted pointer cannot lend it a wrong verdict
+
+**Fixed (#1321):** the claims extractor tagged a restatement with the position, in its own list, of the claim it
+repeats, and checked only that the position was earlier and of the same scope. Lists run to a hundred claims and the
+model miscounts, so a wrong target passed, and since a restatement is never asked about on its own it took that
+claim's verdict. A restatement now quotes the earlier claim's whole excerpt, and the extractor resolves the quote among
+the excerpts of the earlier claims of its scope: an excerpt equal to the quote names its claim ahead of a longer one
+that holds it, and a quote equal to none names a claim only where it could name no other. A number, a fragment, a quote
+no earlier excerpt matches, or one that could name claims of different facts is asked again with the excerpts shown;
+where two facts share the excerpt, the repair offers null, which leaves the claim to be checked on its own. A quote
+still naming no single claim fails the cell's criterion as `repair_budget_spent`. A sentence said word for word in two
+segments resolves to its first saying.
+
+**Changed:** the extractor's prompts and reply schema change, so every claims criterion's fingerprint moves: grades
+made before this never pool with grades made after it, and a repeat of an older grade is refused as another
+definition. The stored grade is unchanged; `restates` is still the earlier claim's place among the grade's claims.
+
+**For hosts:** nothing to change in code. Claims readings from before and after a pin that includes this are two
+definitions, so compare across it only on fresh grades; a repeat of a grade made before it is refused by name.
+### evals: an abbreviation between a citation's subject and its value ends no sentence
+
+**Fixed (#1300):** the claim verifier read every full stop before a space as a sentence end, so a passage or key-fact
+quote with an abbreviation between the claim's subject and its value ("U.S.", "Vol. 2", "St. Louis", "No. 5", "Dr.
+John", "J. R. R. Tolkien") was asked again as subject and value in different sentences, costing a repair round and,
+repeated, the criterion. A full stop now ends no sentence after initials or a dotted acronym, or after a capitalised
+token of at most three letters followed by a capitalised word or a digit. A number before a full stop always ends a
+sentence, so "The pamphlet appeared in 1931. The bound volume followed in 1932." still parts the bound volume from
+1931. The rule is English-shaped: case is read in any cased script, but the shapes are how English abbreviates. Its
+known false accept: a real sentence ending on a single letter, a dotted acronym or a short capitalised word before a
+capitalised word or a digit ("printed in May. The bound volume followed in 1932") reads as one sentence, its binding
+left to the model as within any sentence. Lower-case and longer abbreviations ("vol. 2", "ca. 1500", "Prof. Jane",
+"Sept. 1931"), and a short capitalised one before a lower-case word ("Acme Inc. was"), still end a sentence. `!`, `?`,
+line breaks and the semicolon rule are unchanged.
+
+**Changed:** the rule enters the claim verifier's identity and the web step's, so every claims criterion's fingerprint
+moves, and grades made before and after this never pool.
+
+**For hosts:** nothing to change; a host re-judging stored cells with a claims criterion gets a new fingerprint.
+
+### evals: a key fact supports a claim only by naming the value it states
+
+**Fixed (#1322):** the truth step read a planted false claim (an artist's wrong home town) `supported` against the
+case key. A key fact was cited whole, with no quote, so no check bound its support to a value: a reply citing the key
+fact about the artist as support read `supported` whatever town the fact named. A key fact's citation now follows the
+rule a passage's does: it quotes the fact's line as the call is shown it (`A key fact about <entity>: <fact>`, so the
+entity named there can stand as the subject), and names inside that quote the words for the claim's subject and the
+words for the value, in one sentence or row. A citation that quotes nothing, names no value, or names a value the fact
+does not state is asked again within the repair budget, its failure naming a key fact as one (`not in key fact K1
+as shown`), and still failing fails the criterion (`repair_budget_spent`). A key fact stays outside precedence: no document overrules it. What the check leaves to the
+model is a value the fact does state, cited as support for a claim that states another; the stored value span shows
+which words it read. The claim corpus gains an invented, labelled `contradicted` row of that shape
+(`claimset/synthetic.jsonl`, with its key fact in `keys/pointers_synthetic.jsonl`), outside the broadcast counts.
+
+**Changed:** the claim verifier's identity and every claims criterion's fingerprint move (new prompts and checks), so
+grades made before and after this never pool. `RepairBudget`'s docs now count the web step's own repairs: a cell asks
+again at most four times `max_items_per_cell`. A key citation in a new grade stores a `quote`, `subject_span` and
+`value_span`; one in an older grade stores none and reads as before.
+
+**For hosts:** a grade this build writes carries quotes on key citations, in fields an earlier build already reads
+(they were always optional), so rollout and rollback run in either order. A host re-judging stored cells with a claims
+criterion gets a new fingerprint, as for any prompt change.
+
 ### evals: a run a host keeps open is held under a lease, and the names that do it are stable
 
 **Changed:** `RUN_JOB` and `JobFenced` (`threetears.evals.kernel`) and `JobRecorder` (`threetears.evals.run`) move

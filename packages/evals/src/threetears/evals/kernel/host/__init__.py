@@ -52,6 +52,7 @@ from threetears.evals.kernel.host.eval_host import (
     CompletionRole,
     EvalHost,
     IgnoresTemplateFields,
+    ModelListingReader,
     TemplateCaseFields,
     TemplateChecks,
 )
@@ -167,6 +168,7 @@ __all__ = [
     "MeasureRereadRequest",
     "MeasureRereader",
     "MemberActsOn",
+    "ModelListingReader",
     "Ordinal",
     "Outcome",
     "ProductionDepartureReader",

@@ -35,9 +35,9 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 
 - `Answer`: What a candidate returns to report its own spend beside its answer. Taught in [cost-and-budgets](cost-and-budgets.md).
 
-## The host's contract: 90 names a host implements or hands the engine
+## The host's contract: 92 names a host implements or hands the engine
 
-### Ports a host implements (18)
+### Ports a host implements (19)
 
 - `schema.AsyncDocumentStore`: `DocumentStore`, every method awaited: the port for a host whose database driver is async.
 - `schema.AsyncStoreClock`: `StoreClock` for an `AsyncDocumentStore`: the store's own time, awaited.
@@ -54,14 +54,16 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `kernel.DeliverySeam`: One asynchronous tool of a kind, as the cassette lane records and replays its background work.
 - `kernel.Recordable`: The two members the cassette layer uses on whatever it records: an action result or a delivered payload.
 - `kernel.host.CompletionClients`: The host's completion-client factory: one client per role, model and temperature.
+- `kernel.host.ModelListingReader`: A completion-client factory that also reads its providers' lists of the models they serve: the optional half of `CompletionClients`.
 - `run.CellExecutor`: Runs a run's cells, at most `width` at once, starting them in the order given.
 - `run.KindFactory`: Builds the candidate kind for one cell.
 - `providers.Pricer`: What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 
-### What a host builds and hands the engine (72)
+### What a host builds and hands the engine (73)
 
 - `schema.CellTrace`: What one cell's tracing yielded — filled by the sink, read by the engine.
 - `schema.EvalBaseModel`: Base model for the eval engine's own Pydantic models.
+- `schema.ModelListing`: What a provider's own list of the models it serves said of one model, read as a launch was admitted.
 - `schema.ProviderFailure`: What eval is allowed to know about a completion call that raised.
 - `schema.RunDisclosure`: What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
 - `kernel.default_job_timeout`: Enforce a job budget with `asyncio.timeout` and nothing else.
@@ -800,12 +802,12 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | Kind | Names | Who meets it |
 |---|---|---|
 | `typed` | 12 | a newcomer writes it in an eval file |
-| `bound` | 96 | a host implements it or hands it to the engine |
+| `bound` | 98 | a host implements it or hands it to the engine |
 | `action` | 17 | the function behind a catalogue action, which an agent or operator invokes by name |
 | `invoked` | 94 | a function a host's own code calls, to make the engine act or do one step its way |
 | `received` | 263 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
-| all | 499 | |
+| all | 501 | |
 
 Of these, 22 await demotion and 4 need a shipped example
 (issue #1199), each listed in its register's section above.
@@ -822,7 +824,7 @@ lists every declared name the tree alone does not hold; `tests/test_declared_hol
 
 | Reason | What holds the name | Names |
 |---|---|---|
-| `port-host-implements` | A protocol a host implements and hands the engine | 18 |
+| `port-host-implements` | A protocol a host implements and hands the engine | 19 |
 | `protocol-engine-provides` | A protocol the engine implements and hands a host, or its storage satisfies | 10 |
 | `unreached` | Nothing | 0 |
 

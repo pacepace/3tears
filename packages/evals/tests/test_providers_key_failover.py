@@ -14,6 +14,7 @@ import logging
 import types
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -338,6 +339,32 @@ async def test_openrouters_402_out_of_credit_fails_over(monkeypatch: pytest.Monk
     assert server.keys == [key["OPENROUTER_API_KEY"], key["OPENROUTER_API_KEY_SPARE"]]
 
 
+async def test_openrouters_403_for_the_keys_own_spent_limit_fails_over(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = chain(monkeypatch, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_SPARE")
+    spent = (403, router_budget("openrouter_key_limit"))
+    server = KeyedServer({key["OPENROUTER_API_KEY"]: spent, key["OPENROUTER_API_KEY_SPARE"]: chat("on the spare")})
+
+    completion = await routed("deepseek/deepseek-v4-flash", server).generate(system="Be brief.", user="Hi.")
+
+    assert completion.content == "on the spare"
+    assert server.keys == [key["OPENROUTER_API_KEY"], key["OPENROUTER_API_KEY_SPARE"]]
+
+
+@pytest.mark.parametrize("limit_source", ["openrouter_workspace_budget", "openrouter_guardrail_budget", "unnamed"])
+async def test_openrouters_403_for_a_budget_every_key_shares_never_fails_over(
+    monkeypatch: pytest.MonkeyPatch, limit_source: str
+) -> None:
+    key = chain(monkeypatch, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_SPARE")
+    spent = (403, router_budget(limit_source))
+    server = KeyedServer({key["OPENROUTER_API_KEY"]: spent, key["OPENROUTER_API_KEY_SPARE"]: chat()})
+
+    with pytest.raises(ProviderError) as raised:
+        await routed("deepseek/deepseek-v4-flash", server).generate(system="Be brief.", user="Hi.")
+
+    assert (raised.value.owner, raised.value.resets_at) == ("account", datetime(2026, 10, 12, tzinfo=UTC))
+    assert server.keys == [key["OPENROUTER_API_KEY"]]
+
+
 async def test_openais_insufficient_quota_never_fails_over(monkeypatch: pytest.MonkeyPatch) -> None:
     key = chain(monkeypatch, "OPENAI_API_KEY", "OPENAI_API_KEY_SPARE")
     quota = (429, {"error": {"code": "insufficient_quota", "message": "You exceeded your current quota."}})
@@ -350,6 +377,17 @@ async def test_openais_insufficient_quota_never_fails_over(monkeypatch: pytest.M
     assert server.keys == [key["OPENAI_API_KEY"]]
 
 
+def router_budget(limit_source: str) -> dict[str, Any]:
+    """OpenRouter's 403 for a spent budget, as its errors page shows one, naming ``limit_source``."""
+    return {
+        "error": {
+            "code": 403,
+            "message": "Budget limit exceeded (weekly limit). $52.00 of $50.00 used; resets 2026-10-12T00:00:00.000Z.",
+            "metadata": {"limit_source": limit_source, "resets_at": "2026-10-12T00:00:00.000Z"},
+        }
+    }
+
+
 @pytest.mark.parametrize(
     ("provider", "status", "body", "spent"),
     [
@@ -360,6 +398,12 @@ async def test_openais_insufficient_quota_never_fails_over(monkeypatch: pytest.M
         ("openrouter", 400, {"error": {"message": "Your credit balance is too low"}}, False),
         ("anthropic", 401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}, False),
         ("anthropic", 403, {"error": {"type": "permission_error", "message": "not allowed"}}, False),
+        # OpenRouter's spent budget (a 403): the key's own limit is that key's, so another key may serve the call; a
+        # guardrail's or a workspace's budget, or a source the errors page does not name, is every key's.
+        ("openrouter", 403, router_budget("openrouter_key_limit"), True),
+        ("openrouter", 403, router_budget("openrouter_workspace_budget"), False),
+        ("openrouter", 403, router_budget("openrouter_guardrail_budget"), False),
+        ("openrouter", 403, router_budget("openrouter_some_new_budget"), False),
         ("openai", 429, {"error": {"code": "insufficient_quota", "message": "You exceeded your quota."}}, False),
         ("openrouter", 429, {"error": {"message": "Rate limit exceeded"}}, False),
         ("anthropic", 529, {"error": {"type": "overloaded_error", "message": "Overloaded"}}, False),

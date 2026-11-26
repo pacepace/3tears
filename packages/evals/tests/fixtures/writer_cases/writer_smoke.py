@@ -55,8 +55,7 @@ from threetears.evals.ops.report_writer.writer_bank import WriterCaseMint, Write
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, EffortWord, WriterArm, writer_scoring_rubric
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.ops.analyst import report_snapshot_restore
-from threetears.evals.providers import Model
-from threetears.evals.providers.failures import describe_failure
+from threetears.evals.providers import Model, describe_failure
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import CaseSetRef, EvalRun
 from threetears.evals.schema.turns import ToolTurnClient, TurnText

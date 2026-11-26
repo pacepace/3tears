@@ -1755,16 +1755,16 @@ class PageBudget(EvalDocumentModel, CoreShapeModel):
 class RepairBudget(EvalDocumentModel, CoreShapeModel):
     """How many items a criterion asks again, and how often, past which the cell is the criterion's loss.
 
-    Held per step, each on its own: the extraction, the truth step and the ground step each have the whole budget.
-    So a ground step that spends its repairs on the candidate's own documents never costs truth one, and the most a
-    cell asks again is three times ``max_items_per_cell``.
+    Held per step, each on its own: the extraction, the truth step, the ground step and the web step each have the
+    whole budget. So a ground or web step that spends its repairs never costs truth one, and the most a cell asks again
+    is four times ``max_items_per_cell``.
     """
 
     rounds: int = Field(default=2, ge=0, description="How many rounds a failing item is asked again alone, per step.")
     max_items_per_cell: int = Field(
         ge=0,
         description="The most items one step of one cell may ask again, over every round: the extraction, the truth "
-        "step and the ground step each have this many, separately.",
+        "step, the ground step and the web step each have this many, separately.",
     )
 
 
@@ -6345,8 +6345,9 @@ class ClaimCitation(CoreShapeModel):
         default=None,
         min_length=1,
         max_length=CLAIM_QUOTE_CHARS,
-        description="The sentence or row quoted, verbatim in the cited text; None for a key fact, which is quoted "
-        "whole.",
+        description="The sentence or row quoted, verbatim in the cited text: a passage's, or a key fact's line as "
+        "the call was shown it (`A key fact about <entity>: <fact>`). None for a key fact a grade cited whole, as "
+        "builds that did not quote key facts stored it.",
     )
     subject_span: TextSpan | None = Field(default=None, description="Where the quote names the claim's subject.")
     value_span: TextSpan | None = Field(default=None, description="Where the quote states the value at issue.")

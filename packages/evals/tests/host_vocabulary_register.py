@@ -424,7 +424,8 @@ CEILINGS: dict[str, dict[str, int]] = {
     # moves them; no other host term is allowed in the tree.
     "providers/__init__.py": {"openrouter": 5},
     "providers/catalogue.py": {"openrouter": 4},
-    "providers/failures.py": {"openrouter": 3},
+    "providers/describe.py": {},
+    "providers/failures.py": {"openrouter": 4},
     "providers/model.py": {"openrouter": 12},
     "providers/pricing.py": {},
     "providers/retry.py": {},
