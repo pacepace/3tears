@@ -114,8 +114,8 @@ def tripping_registry() -> tuple[CircuitBreakerRegistry, ManualMonotonic]:
     return CircuitBreakerRegistry(failure_threshold=1, recovery_timeout_seconds=30.0, clock=monotonic), monotonic
 
 
-def exhausted(scope: VerdictScope = VerdictScope.ACCOUNT) -> Verdict:
-    return Verdict(VerdictKind.EXHAUSTED, scope, may_have_billed=False)
+def exhausted(scope: VerdictScope = VerdictScope.ACCOUNT, until: datetime | None = None) -> Verdict:
+    return Verdict(VerdictKind.EXHAUSTED, scope, may_have_billed=False, until=until)
 
 
 def revoked() -> Verdict:
@@ -128,6 +128,10 @@ def forbidden(scope: VerdictScope = VerdictScope.KEY_AND_MODEL) -> Verdict:
 
 def rate_limited(until: datetime | None = None, scope: VerdictScope = VerdictScope.KEY) -> Verdict:
     return Verdict(VerdictKind.RATE_LIMITED, scope, may_have_billed=False, until=until)
+
+
+def oversized() -> Verdict:
+    return Verdict(VerdictKind.OVERSIZED, VerdictScope.KEY, may_have_billed=False)
 
 
 def not_key_related(*, billed: bool) -> Verdict:

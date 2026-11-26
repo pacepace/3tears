@@ -28,7 +28,7 @@ reported as orphaned: counting it as spend is the conservative choice.
 **Records.** A record is a JSON-safe document under a name, with a version that starts at 0 for an absent
 record and rises by one on every write. :meth:`KeyPoolStore.compare_and_set_record` writes only over the
 version the caller read, so two processes moving a pool's active key at once agree: the loser is handed
-the winner's version and document to adopt. The pool keeps its active key, key states, holds,
+the winner's version and document to adopt. The pool keeps its active key, key states,
 fingerprints and configured budgets in records.
 
 Money is :class:`decimal.Decimal` throughout: budgets are compared by value at the line, where float

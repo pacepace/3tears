@@ -177,7 +177,7 @@ class TestNoSecretReachesAnySurface:
                 fx.ANTHROPIC_BILLING_402,  # exhausted
                 fx.ANTHROPIC_AUTHENTICATION_401,  # revoked
                 fx.ANTHROPIC_PERMISSION_403,  # forbidden
-                fx.ANTHROPIC_RATE_LIMIT_429,  # rate-limited
+                fx.ANTHROPIC_RATE_LIMIT_429_LONG_WAIT,  # a wait past the threshold: exhausted until it ends
             ):
                 wire.script("a", refusal(recorded))
                 await answer(model)  # a refuses: recorded, moved off, and the call fails over to b
@@ -186,6 +186,9 @@ class TestNoSecretReachesAnySurface:
             await answer(model)  # a's breaker is open: the pool moves off it, tripped
             monotonic.now += 31
             await answer(model)  # a's breaker lets a probe through: the pool pulls back to a
+            wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+            await expect(model.ainvoke("hello", config), anthropic.RateLimitError)  # a rate limit: no move
+            monotonic.now += 31  # these breakers open on one failure: a's per-model one admits a probe again
             wire.script("a", partial_then("rate_limit_error", "Rate limited"))
             await expect(read_stream(model), anthropic.APIStatusError)  # failed after a chunk: no retry
             await main.reset("a")
@@ -227,7 +230,6 @@ class TestNoSecretReachesAnySurface:
             MoveReason.EXHAUSTED,
             MoveReason.REVOKED,
             MoveReason.FORBIDDEN,
-            MoveReason.RATE_LIMITED,
             MoveReason.TRIPPED,
             MoveReason.PULL_BACK,
             MoveReason.OPERATOR_RESET,
@@ -236,7 +238,6 @@ class TestNoSecretReachesAnySurface:
             MoveReason.EXHAUSTED,
             MoveReason.REVOKED,
             MoveReason.FORBIDDEN,
-            MoveReason.RATE_LIMITED,
         }
         assert main.counters.no_key_available >= 1
         assert main.counters.store_failures["settle"] == 1 and sum(main.counters.store_failures.values()) >= 3

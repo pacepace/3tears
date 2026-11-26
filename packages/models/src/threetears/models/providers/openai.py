@@ -33,6 +33,7 @@ json matching this schema". Dispatch across providers lives in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import openai
@@ -43,7 +44,7 @@ from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
-from threetears.models.providers._key_errors_unretried import mark_unretried
+from threetears.models.providers._key_errors_unretried import BODY_READ_STATUS, UnretriedRule, mark_unretried
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
 from threetears.models.providers._tool_call_provider_extra import (
@@ -236,14 +237,37 @@ def _input_messages(input_: Any) -> list[BaseMessage]:
     return []
 
 
-def _mark_unretried(response: Any) -> None:  # noqa: ANN401 -- an httpx or httpx2 response, per the SDK
-    """the sync HTTP client's response hook for :func:`create_openai_chat`'s ``unretried_key_errors``."""
-    mark_unretried(response.status_code, response.headers)
+@dataclass(frozen=True)
+class _MarkUnretried:
+    """the sync HTTP client's response hook for :func:`create_openai_chat`'s ``unretried_key_errors``.
+
+    Reads a 429's body for the rule, and no other response's: a 2xx may be a stream still to be read.
+    Equal for one rule, so a client shared by models on one rule carries the hook once.
+
+    :ivar rule: which responses to mark
+    """
+
+    rule: UnretriedRule
+
+    def __call__(self, response: Any) -> None:  # noqa: ANN401 -- an httpx or httpx2 response, per the SDK
+        body = response.read() if response.status_code == BODY_READ_STATUS else None
+        mark_unretried(self.rule, response.status_code, response.headers, body)
 
 
-async def _amark_unretried(response: Any) -> None:  # noqa: ANN401 -- an httpx or httpx2 response, per the SDK
-    """the async HTTP client's response hook for :func:`create_openai_chat`'s ``unretried_key_errors``."""
-    mark_unretried(response.status_code, response.headers)
+@dataclass(frozen=True)
+class _AMarkUnretried:
+    """the async HTTP client's response hook for :func:`create_openai_chat`'s ``unretried_key_errors``.
+
+    As :class:`_MarkUnretried`, reading a 429's body asynchronously.
+
+    :ivar rule: which responses to mark
+    """
+
+    rule: UnretriedRule
+
+    async def __call__(self, response: Any) -> None:  # noqa: ANN401 -- an httpx or httpx2 response, per the SDK
+        body = await response.aread() if response.status_code == BODY_READ_STATUS else None
+        mark_unretried(self.rule, response.status_code, response.headers, body)
 
 
 def _hooked(client: Any, hook: Any) -> Any:  # noqa: ANN401 -- an httpx or httpx2 client, per the SDK
@@ -273,7 +297,7 @@ def create_openai_chat(
     timeout: int = 120,
     max_retries: int = 2,
     stream_usage: bool = True,
-    unretried_key_errors: bool = False,
+    unretried_key_errors: UnretriedRule | None = None,
     **extra_kwargs: Any,
 ) -> ChatOpenAI:
     """creates a configured ``ChatOpenAI`` for OpenAI-compatible providers.
@@ -295,15 +319,17 @@ def create_openai_chat(
     :ptype max_retries: int
     :param stream_usage: enable streaming usage metadata (token counts)
     :ptype stream_usage: bool
-    :param unretried_key_errors: when ``True``, a refusal that belongs to the key -- 401, 402, 403
-        or 429 -- reaches the caller on its first occurrence instead of being retried on the same key
-        (a key pool's mode, KP-H4); 5xx and connection failures keep ``max_retries``. It works through
+    :param unretried_key_errors: a rule naming the responses that belong to the key -- revoked, out of
+        credit, forbidden, a quota a 429 reports, a rate limit whose wait is too long -- which then
+        reach the caller on their first occurrence instead of being retried on the same key (a key
+        pool's mode, KP-H4; the pool's ``KeyPool.refuses_retry``). A rate limit the rule leaves, 5xx
+        and connection failures keep ``max_retries``. It works through
         the HTTP clients' response hooks: a caller's own ``http_client`` / ``http_async_client``
         gains the hook (so share one only among models in this mode), and where the caller passes
         none the model gets the SDK's default client with the hook, in place of LangChain's -- which
-        drops LangChain's TCP keepalive socket options for that model. ``False``, the default, leaves
-        the SDK's own retry policy, which retries a 429
-    :ptype unretried_key_errors: bool
+        drops LangChain's TCP keepalive socket options for that model. ``None``, the default, leaves
+        the SDK's own retry policy
+    :ptype unretried_key_errors: UnretriedRule | None
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenAI``
     :ptype extra_kwargs: Any
     :return: configured ``ChatOpenAI`` (the name-translating subclass)
@@ -319,15 +345,15 @@ def create_openai_chat(
     if base_url is not None:
         kwargs["base_url"] = base_url
     kwargs.update(extra_kwargs)
-    if unretried_key_errors:
+    if unretried_key_errors is not None:
         sync_client = kwargs.get("http_client")
         async_client = kwargs.get("http_async_client")
         if sync_client is None:
             sync_client = openai.DefaultHttpxClient()
         if async_client is None:
             async_client = openai.DefaultAsyncHttpxClient()
-        kwargs["http_client"] = _hooked(sync_client, _mark_unretried)
-        kwargs["http_async_client"] = _hooked(async_client, _amark_unretried)
+        kwargs["http_client"] = _hooked(sync_client, _MarkUnretried(unretried_key_errors))
+        kwargs["http_async_client"] = _hooked(async_client, _AMarkUnretried(unretried_key_errors))
 
     model: ChatOpenAI = _NameTranslatingChatOpenAI(**kwargs)
     return model

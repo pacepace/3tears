@@ -30,6 +30,7 @@ from .key_pool_support import (
     forbidden,
     lines,
     make_pool,
+    oversized,
     rate_limited,
     revoked,
     serve,
@@ -47,7 +48,7 @@ async def _every_key_out(clock: ManualClock) -> tuple[KeyPool, NoKeyAvailableErr
     await fail_on(pool, exhausted(VerdictScope.KEY))
     await fail_on(pool, revoked())
     await fail_on(pool, forbidden())
-    await fail_on(pool, rate_limited(until=clock.now + timedelta(seconds=20)))
+    await fail_on(pool, exhausted(VerdictScope.KEY, until=clock.now + timedelta(seconds=20)))
     registry.get(PROVIDER, credential=pool.keys[4].secret.reveal()).record_failure()
     drained = await pool.acquire(MODEL, Decimal("1"))
     assert drained.label == "f"
@@ -65,18 +66,17 @@ class TestNoKeyAvailable:
             ("a", KeyState.EXHAUSTED),
             ("b", KeyState.REVOKED),
             ("c", KeyState.FORBIDDEN),
-            ("d", KeyState.RATE_LIMITED),
+            ("d", KeyState.EXHAUSTED),
             ("e", KeyState.TRIPPED),
             ("f", KeyState.NO_ROOM),
         ]
         text = str(error)
-        rate_until = (clock.now + timedelta(seconds=20)).isoformat()
         trip_until = (clock.now + timedelta(seconds=30)).isoformat()
         for part in (
             "a: exhausted",
             "b: revoked",
             "c: forbidden",
-            f"d: rate_limited until {rate_until}",
+            "d: exhausted",
             f"e: tripped until {trip_until}",
             "f: no room: 0 of 1",
             f"pool {POOL!r}",
@@ -188,8 +188,6 @@ class TestStoreDown:
         pool = make_pool(spec("a"), spec("b"), store=store, clock=clock)
         await serve(pool)
         clock.advance(minutes=2)  # the sweep and the record read are both due
-        if operation == "compare_and_set_record":
-            await fail_on(pool, rate_limited())
         store.failing[operation] = ConnectionError("unreachable")
         with pytest.raises(KeyPoolStoreError):
             await (fail_on(pool, exhausted()) if operation == "compare_and_set_record" else serve(pool))
@@ -296,7 +294,13 @@ class TestSecrecy:
         await big.release()
         await pool.acquire(MODEL, Decimal("0.49"))  # left open: the sweep orphans it
         clock.advance(minutes=2)
-        for verdict in (rate_limited(), forbidden(), revoked(), exhausted()):
+        for verdict in (
+            rate_limited(),
+            oversized(),
+            forbidden(),
+            revoked(),
+            exhausted(until=clock.now + timedelta(hours=1)),
+        ):
             await pool.reset("s")
             await pool.reset("t")
             await fail_on(pool, verdict)

@@ -100,6 +100,8 @@ if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
     from langchain_core.outputs import ChatResult as LcChatResult
 
+    from threetears.models.providers._key_errors_unretried import UnretriedRule
+
 __all__ = [
     "OPENROUTER_PROVIDER_NAME",
     "create_openrouter_chat",
@@ -780,7 +782,7 @@ def create_openrouter_chat(
     *,
     timeout: int = 120,
     max_retries: int = 2,
-    unretried_key_errors: bool = False,
+    unretried_key_errors: UnretriedRule | None = None,
     **extra_kwargs: Any,
 ) -> ChatOpenRouter:
     """creates a configured ``ChatOpenRouter`` for OpenRouter-routed models.
@@ -799,12 +801,13 @@ def create_openrouter_chat(
     :ptype timeout: int
     :param max_retries: maximum retry attempts for failed requests
     :ptype max_retries: int
-    :param unretried_key_errors: whether a refusal that belongs to the key -- 401, 402, 403 or 429 --
-        must reach the caller on its first occurrence (a key pool's mode, KP-H4). The ``openrouter``
-        SDK already guarantees it either way: its chat calls retry only 5xx statuses and connection
-        failures (``chat.send``'s retry codes are ``["5XX"]``), so nothing changes for ``True``. It is
-        accepted so a pool asks every provider factory the same way
-    :ptype unretried_key_errors: bool
+    :param unretried_key_errors: a rule naming the responses that belong to the key, which must reach
+        the caller on their first occurrence (a key pool's mode, KP-H4). The ``openrouter`` SDK already
+        guarantees it for every response: its chat calls retry only 5xx statuses and connection
+        failures (``chat.send``'s retry codes are ``["5XX"]``), never a 429, so the rule asks nothing of
+        this model; a key pool retries an OpenRouter rate limit itself. It is accepted so a pool asks
+        every provider factory the same way
+    :ptype unretried_key_errors: UnretriedRule | None
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenRouter``
     :ptype extra_kwargs: Any
     :return: configured ``ChatOpenRouter`` (the name-translating subclass)
@@ -814,7 +817,7 @@ def create_openrouter_chat(
     # that builds an OpenRouter model, and a class that moved fails this call, not the package import.
     declare_served_provider()
     _declare_reasoning_budget()
-    # The SDK never retries a key-moving status, so the mode asks nothing of this model.
+    # The SDK never retries a 4xx, so the rule asks nothing of this model.
     del unretried_key_errors
 
     # langchain-openrouter 0.1.0 defaults app_title="langchain" and forwards

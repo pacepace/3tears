@@ -22,9 +22,11 @@ __all__ = ["KeyPoolCounters", "KeyPoolObserver", "MoveReason"]
 class MoveReason(enum.StrEnum):
     """Why the pool moved its active key (KP-D7), or why a call failed over to another key (KP-K1).
 
-    A failover inside a call has one of the first five: the four key-moving verdicts, or ``tripped``
-    for a key whose breaker refused the call after the pool chose it. Moves and failovers share this
-    one vocabulary, so a dashboard reads both counters on one reason axis.
+    A failover inside a call has one of the first five: the three key-moving verdicts, ``tripped`` for
+    a key whose breaker refused the call after the pool chose it, or ``low_room`` for a request the
+    provider said is larger than the key may spend. Moves and failovers share this one vocabulary, so
+    a dashboard reads both counters on one reason axis. A rate limit is neither: it is retried on the
+    same key (owner, 2026-11-26).
     """
 
     #: the active key's credit or spend limit is used up (logged at WARNING)
@@ -33,11 +35,10 @@ class MoveReason(enum.StrEnum):
     REVOKED = "revoked"
     #: the active key may not use the model (logged at WARNING)
     FORBIDDEN = "forbidden"
-    #: the active key is rate-limited (logged at INFO)
-    RATE_LIMITED = "rate_limited"
     #: the active key's circuit breaker is open in this process (logged at INFO)
     TRIPPED = "tripped"
-    #: the active key's room fell below ``min_headroom`` (logged at INFO)
+    #: the active key's room fell below ``min_headroom`` (logged at INFO); as a failover, the provider
+    #: said one request costs more than the key may spend, so the call went to another key
     LOW_ROOM = "low_room"
     #: a more-preferred key, by distinct priority, can serve again (logged at INFO)
     PULL_BACK = "pull_back"
@@ -75,7 +76,8 @@ class KeyPoolObserver(Protocol):
 
         :param pool: the pool's name
         :ptype pool: str
-        :param reason: why the key refused it: a key-moving verdict's kind, or ``tripped``
+        :param reason: why the key refused it: a key-moving verdict's kind, ``tripped``, or
+            ``low_room`` for an oversized request
         :ptype reason: MoveReason
         """
         ...

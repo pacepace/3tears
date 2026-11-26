@@ -13,20 +13,25 @@ breakers and its label on every usage record. A call:
    reservation as spend (KP-E3, J5).
 
 **Failover** (KP-H). A failure is read by the pool's classifier. One that is the key's -- exhausted,
-revoked, forbidden, rate-limited -- is recorded on the key, which moves the pool off it, and the call
-runs again on the next key; any other failure closes the reservation as the classifier says and
-propagates unchanged (KP-E4, H3). A key is tried once per call, with one exception: a key that refused
-the call for a rate limit may serve it once more, after its hold, when the pool waits for holds (its
-``max_rate_limit_wait``). That is the wait a single key's SDK made before the pool turned its retries
-off (Q4), and with the default cap of 0 the pool raises at once instead. A key whose breaker refused
-the call (it opened after the pool chose the key) is released, since nothing was sent, and counts as
-tried. Once a stream has handed the caller a chunk, nothing is retried (KP-H5): the failure is recorded,
-the reservation settled as the classifier says, and the provider's error raised.
+revoked, forbidden -- is recorded on the key, which moves the pool off it, and the call runs again on
+the next key. A request the provider says is larger than the key may spend at all skips the key for
+this call only, recording nothing. A key is tried once per call. A key whose breaker refused the call
+(it opened after the pool chose the key) is released, since nothing was sent, and counts as tried. Once
+a stream has handed the caller a chunk, nothing is retried (KP-H5): the failure is recorded, the
+reservation settled as the classifier says, and the provider's error raised.
+
+**A rate limit means retry** (owner, 2026-11-26). It never moves the key and records nothing. Each
+key's SDK retries it with the caller's ``max_retries``, honouring ``retry-after``; the pool only stops
+the SDK retrying a response that is the key's (``KeyPool.refuses_retry``). Where the provider's SDK
+never retries a rate limit (OpenRouter's), the pool retries the call on the same key itself, through
+its injected sleep (``KeyPool.wait_to_retry``). After those retries the provider's error reaches the
+caller unchanged, its reservation released. Any other failure that is not the key's closes the
+reservation as the classifier says and propagates unchanged too (KP-E4, H3).
 
 Each failover is counted by the pool (``KeyPool.record_failover``, KP-K1) when the call's next attempt
-runs on another key, by why the key refused it: the verdict's kind, or ``tripped`` for its breaker. A
-retry on the same key after its rate-limit hold is not a failover, and nor is a refusal that ends the
-call in ``NoKeyAvailableError``.
+runs on another key, by why the key refused it: the verdict's kind, ``tripped`` for its breaker, or
+``low_room`` for an oversized request. A retry on the same key after a rate limit is not a failover,
+and nor is a refusal that ends the call in ``NoKeyAvailableError``.
 
 **Re-binding** (KP-J2). ``bind_tools``, ``with_structured_output``, ``bind``, ``with_config``,
 ``with_retry``, ``with_types`` -- any method of the model that returns a runnable -- is applied to every
@@ -91,12 +96,13 @@ logger = get_logger(__name__)
 #: The per-call keyword that bounds a call's output, which its reservation prices (KP-E1).
 _MAX_TOKENS: Final = "max_tokens"
 
-#: The failover reason each key-moving verdict gives (KP-K1).
+#: The failover reason each verdict that tries another key gives (KP-K1).
 _FAILOVER_REASON: Final = {
     VerdictKind.EXHAUSTED: MoveReason.EXHAUSTED,
     VerdictKind.REVOKED: MoveReason.REVOKED,
     VerdictKind.FORBIDDEN: MoveReason.FORBIDDEN,
-    VerdictKind.RATE_LIMITED: MoveReason.RATE_LIMITED,
+    # the provider said one request costs more than the key may spend: a room refusal it reported
+    VerdictKind.OVERSIZED: MoveReason.LOW_ROOM,
 }
 
 
@@ -457,7 +463,8 @@ class _Call:
         self._capabilities = capabilities
         self._amount = amount
         self._tried: set[str] = set()
-        self._rate_limited: set[str] = set()
+        # retries on the same key after a rate limit the provider's SDK doesn't retry
+        self._rate_limit_retries = 0
         self._last: Exception | None = None
         self._attempts = 0
         # the key the last attempt's refusal moved the call off, and why, until the next attempt's key
@@ -533,21 +540,22 @@ class _Call:
             self._refused = (lease.label, MoveReason.TRIPPED)
             return True
         verdict = self._pool.classify(exc, stream_started=stream_started)
-        if not verdict.moves_key:
+        if not verdict.tries_another_key:
             if meter.reported:
                 # the provider answered and reported what it billed; what failed came after
                 await lease.settle(meter.cost(lease.amount))
             else:
                 await lease.fail(verdict)
-            return False
+            if stream_started or not await self._pool.wait_to_retry(verdict, self._rate_limit_retries):
+                return False
+            # a rate limit the provider's SDK doesn't retry: again on the same key, which the pool
+            # neither tried off nor moved
+            self._rate_limit_retries += 1
+            return True
         await lease.fail(verdict)
         if stream_started:
             return False
-        if verdict.kind is VerdictKind.RATE_LIMITED and lease.label not in self._rate_limited:
-            # it may serve once more, after its hold, if the pool waits for holds (Q4)
-            self._rate_limited.add(lease.label)
-        else:
-            self._tried.add(lease.label)
+        self._tried.add(lease.label)
         self._refused = (lease.label, _FAILOVER_REASON[verdict.kind])
         return True
 
@@ -558,7 +566,9 @@ class _Call:
 
     async def abandoned(self, lease: KeyPoolLease, meter: _Meter) -> None:
         """Close the lease of an attempt that ended neither served nor failed -- cancelled, or a stream
-        its caller stopped reading: it may have been billed, so at no less than its reservation."""
+        its caller stopped reading. It may have been billed: it settles at the cost the provider
+        reported when every model run reported its usage, and otherwise at no less than its
+        reservation (:meth:`_Meter.cost`)."""
         await lease.settle(meter.cost(lease.amount))
 
 

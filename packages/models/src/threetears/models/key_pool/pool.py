@@ -2,8 +2,15 @@
 
 A :class:`KeyPool` hands each call a :class:`KeyPoolLease` on its **active key**: the key every call
 starts on, held in the shared store so every process sharing the pool starts on the same one. The
-active key moves only when it can't serve -- exhausted, revoked, forbidden, rate-limited, tripped or
-low on room -- and the move is recorded once, so later calls don't rediscover a dead key (KP-D).
+active key moves only when it can't serve -- exhausted, revoked, forbidden, tripped or low on room --
+and the move is recorded once, so later calls don't rediscover a dead key (KP-D).
+
+**A rate limit is not a key state** (owner, 2026-11-26). It never moves the active key and is never
+recorded: the call is retried on the same key, by the provider's SDK where it retries one (the pool
+only stops it retrying what is the key's, :meth:`KeyPool.refuses_retry`), and by the pool where it
+doesn't (:meth:`KeyPool.wait_to_retry`). After those retries the rate limit reaches the caller. Only a
+rate limit whose wait runs past ``rate_limit_exhaustion_wait`` is the key's: it is read as exhaustion
+until the wait ends.
 
 **The success path is two store operations** (KP-G6): the reservation an acquire makes, and the
 settle (or release) that closes it. The pool's record -- the active key and every key's state -- is
@@ -25,22 +32,22 @@ the winner's active key (KP-D4). Its layout::
             "0": {
               "fingerprint": "<16 hex>",
               "revoked": false,
-              "exhausted": "2026-11",   # the period it was exhausted in, or null
+              "exhausted": {            # or null
+                "period": "2026-11",    # the period it was exhausted in
+                "until": null           # when the provider said it resets; null: the period's end
+              },
               "low_room": null,         # the period its room fell below min_headroom in, or null
-              "forbidden": ["*"],       # "*" for every model, else model ids
-              "holds": {                # rate-limit holds: "*" for the key, else per model
-                "*": {"until": "2026-11-26T12:00:30+00:00", "seconds": 30.0}
-              }
+              "forbidden": ["*"]        # "*" for every model, else model ids
             }
           }
         }
       }
     }
 
-A hold is both the rate limit (the key is held while ``until`` is ahead) and the history its doubling
-reads (KP-C3): a key held again within ``rate_limit_window`` of its last hold ending is held twice as
-long, up to ``rate_limit_cap``. A breaker's ``tripped`` state is never stored; it is read live from the
-pool's :class:`~threetears.models.circuit_breaker.CircuitBreakerRegistry`, with no side effects (KP-C6).
+An exhausted key is held until the reset the provider named (an OpenRouter budget's ``resets_at``, the
+end of a long rate-limit wait), or else until its billing period ends. A breaker's ``tripped`` state is
+never stored; it is read live from the pool's
+:class:`~threetears.models.circuit_breaker.CircuitBreakerRegistry`, with no side effects (KP-C6).
 
 **Fingerprints and generations** (KP-B2). Each secret's fingerprint is an HMAC-SHA256 of it, keyed by
 the provider and pool name, truncated to 64 bits: the same in every process, and not reversible. The
@@ -76,7 +83,7 @@ import logging
 import re
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Sequence, Set
+from collections.abc import Awaitable, Callable, Mapping, Sequence, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -113,7 +120,7 @@ logger = get_logger(__name__)
 #: The record layout this module reads and writes.
 _LAYOUT: Final = 1
 
-#: A hold or a forbid that covers the whole key, not one model.
+#: A forbid that covers the whole key, not one model.
 _WHOLE_KEY: Final = "*"
 
 #: Compare-and-set rounds a write gets before the pool gives up and fails the call closed. A round is
@@ -140,6 +147,14 @@ _RESERVE_CONTRACT: Final[tuple[type[Exception], ...]] = (ValueError,)
 _CLOSE_CONTRACT: Final[tuple[type[Exception], ...]] = (LookupError, ValueError)
 _NO_CONTRACT: Final[tuple[type[Exception], ...]] = ()
 
+#: How many times a call is retried on the same key after a rate limit its provider's SDK doesn't retry
+#: (owner, 2026-11-26: two), before the rate limit reaches the caller.
+_RATE_LIMIT_RETRIES: Final = 2
+
+#: The first wait of such a retry when the provider named none, doubled for the next: the backoff the
+#: Stainless SDKs start from.
+_RATE_LIMIT_BACKOFF_SECONDS: Final = 0.5
+
 #: Moves logged at WARNING (KP-D7): a key that won't serve again this period without an operator or a
 #: new secret. The rest pass on their own and are logged at INFO.
 _WARNING_REASONS: Final = frozenset({MoveReason.EXHAUSTED, MoveReason.REVOKED, MoveReason.FORBIDDEN})
@@ -149,7 +164,6 @@ _MOVE_REASON: Final = {
     KeyState.EXHAUSTED: MoveReason.EXHAUSTED,
     KeyState.REVOKED: MoveReason.REVOKED,
     KeyState.FORBIDDEN: MoveReason.FORBIDDEN,
-    KeyState.RATE_LIMITED: MoveReason.RATE_LIMITED,
     KeyState.TRIPPED: MoveReason.TRIPPED,
     KeyState.NO_ROOM: MoveReason.LOW_ROOM,
 }
@@ -159,7 +173,6 @@ _VERDICT_REASON: Final = {
     VerdictKind.EXHAUSTED: MoveReason.EXHAUSTED,
     VerdictKind.REVOKED: MoveReason.REVOKED,
     VerdictKind.FORBIDDEN: MoveReason.FORBIDDEN,
-    VerdictKind.RATE_LIMITED: MoveReason.RATE_LIMITED,
 }
 
 
@@ -292,10 +305,11 @@ class KeyPoolLease:
     async def fail(self, verdict: Verdict) -> None:
         """Close the lease for a failed call, by what the classifier said about it.
 
-        A key-moving verdict is recorded first: the key's state (its account's every key, for an
-        account-scoped one), and a move of the active key if it can no longer serve. Then the
-        reservation is settled at its full amount when the provider may have billed the attempt, and
-        released when it can't have (KP-E4).
+        A key-moving verdict (exhausted, revoked, forbidden) is recorded first: the key's state (its
+        account's every key, for an account-scoped one), and a move of the active key if it can no
+        longer serve. A rate limit, an oversized request and a failure that isn't the key's record
+        nothing. Then the reservation is settled at its full amount when the provider may have billed
+        the attempt, and released when it can't have (KP-E4).
 
         :param verdict: the classifier's verdict on the failure
         :ptype verdict: Verdict
@@ -335,17 +349,12 @@ class KeyPool:
         pool moves off it; 0 or more and below 1. A reservation that doesn't fit on a key with more
         room than this skips the key for that call only (KP-D3)
     :ptype min_headroom: Decimal
-    :param rate_limit_floor: how long a rate limit holds a key when the provider says nothing (KP-C3)
-    :ptype rate_limit_floor: timedelta
-    :param rate_limit_window: a key held again within this of its last hold ending is held twice as long
-    :ptype rate_limit_window: timedelta
-    :param rate_limit_cap: the longest a doubled hold gets; a provider's own longer wait is still kept
-    :ptype rate_limit_cap: timedelta
+    :param rate_limit_exhaustion_wait: the longest wait a rate limit may ask for and still be one: a
+        rate limit whose ``retry-after`` (or reset) is further off is read as exhaustion until then, so
+        the call moves to the next key rather than wait (owner, 2026-11-26). Positive
+    :ptype rate_limit_exhaustion_wait: timedelta
     :param refresh_interval: how stale the cached record may get before a call reads it again (KP-D1)
     :ptype refresh_interval: timedelta
-    :param max_rate_limit_wait: how long one acquire may wait for the earliest hold to end when every key
-        it may still try is only rate-limited; 0 (the default) raises at once (Q4)
-    :ptype max_rate_limit_wait: timedelta
     :param reservation_margin: how long past a call's deadline its reservation is kept before the sweep
         may settle it as orphaned; a call with no deadline gets this from when it started (KP-E5)
     :ptype reservation_margin: timedelta
@@ -363,7 +372,7 @@ class KeyPool:
     :ptype observer: KeyPoolObserver | None
     :param clock: the current time, timezone-aware; defaults to the UTC wall clock
     :ptype clock: Callable[[], datetime] | None
-    :param sleep: waits a number of seconds; defaults to ``asyncio.sleep``
+    :param sleep: waits a number of seconds, for :meth:`wait_to_retry`; defaults to ``asyncio.sleep``
     :ptype sleep: Callable[[float], Awaitable[None]] | None
     :raises ValueError: for zero keys, duplicate labels, duplicate secrets, a Claude subscription token,
         a provider with no classifier, an invalid name, or an invalid setting
@@ -378,11 +387,8 @@ class KeyPool:
         *,
         anchor_day: int = 1,
         min_headroom: Decimal = Decimal("0.01"),
-        rate_limit_floor: timedelta = timedelta(seconds=30),
-        rate_limit_window: timedelta = timedelta(minutes=10),
-        rate_limit_cap: timedelta = timedelta(minutes=15),
+        rate_limit_exhaustion_wait: timedelta = timedelta(seconds=120),
         refresh_interval: timedelta = timedelta(seconds=5),
-        max_rate_limit_wait: timedelta = timedelta(0),
         reservation_margin: timedelta = timedelta(minutes=10),
         sweep_interval: timedelta = timedelta(minutes=1),
         classifier: KeyErrorClassifier | None = None,
@@ -404,20 +410,14 @@ class KeyPool:
         self._anchor_day = anchor_day
         _check_settings(
             min_headroom=min_headroom,
-            floor=rate_limit_floor,
-            window=rate_limit_window,
-            cap=rate_limit_cap,
+            exhaustion_wait=rate_limit_exhaustion_wait,
             refresh=refresh_interval,
-            wait=max_rate_limit_wait,
             margin=reservation_margin,
             sweep=sweep_interval,
         )
         self._min_headroom = min_headroom
-        self._floor = rate_limit_floor
-        self._window = rate_limit_window
-        self._cap = rate_limit_cap
+        self._exhaustion_wait = rate_limit_exhaustion_wait
         self._refresh = refresh_interval
-        self._max_wait = max_rate_limit_wait
         self._margin = reservation_margin
         self._sweep_interval = sweep_interval
         self._specs = _checked_keys(keys)
@@ -511,7 +511,64 @@ class KeyPool:
         :return: the verdict, for :meth:`KeyPoolLease.fail`
         :rtype: Verdict
         """
-        return self._classifier.classify(exc, now=self._clock_now(), stream_started=stream_started)
+        return self._classifier.classify(
+            exc, now=self._clock_now(), stream_started=stream_started, exhaustion_wait=self._exhaustion_wait
+        )
+
+    def refuses_retry(self, status: int, headers: Mapping[str, str], body: bytes | None) -> bool:
+        """Whether a provider's SDK must raise a response at once instead of retrying it on the same key.
+
+        The rule a key's model hands its SDK hook (``unretried_key_errors``): a response that is the
+        key's -- revoked, out of credit, forbidden, a quota a 429 reports, a rate limit whose wait runs
+        past ``rate_limit_exhaustion_wait`` -- reaches the pool on its first occurrence, so the call
+        moves to the next key. A rate limit with a short wait stays the SDK's to retry. It reads a
+        response as :meth:`classify` reads the error raised from it.
+
+        :param status: the response's HTTP status
+        :ptype status: int
+        :param headers: the response's headers
+        :ptype headers: Mapping[str, str]
+        :param body: the response's body for a 429, ``None`` for any other status
+        :ptype body: bytes | None
+        :return: ``True`` to raise the response at once
+        :rtype: bool
+        """
+        return self._classifier.refuses_retry(
+            status, headers, body, now=self._clock_now(), exhaustion_wait=self._exhaustion_wait
+        )
+
+    async def wait_to_retry(self, verdict: Verdict, retries: int) -> bool:
+        """Wait out a rate limit the provider's SDK doesn't retry; whether to retry the call on the same key.
+
+        A rate limit means retry (owner, 2026-11-26). Where the provider's SDK retries one itself, it
+        already has, so this returns ``False`` at once. Otherwise the call is retried on the same key up
+        to two times, each after the provider's ``retry-after`` (never more than
+        ``rate_limit_exhaustion_wait``), or a short backoff when it named none; then this returns
+        ``False`` and the rate limit reaches the caller. A retry is not a failover, and nothing about
+        the key changes.
+
+        :param verdict: the verdict on the failed attempt; anything but a rate limit returns ``False``
+        :ptype verdict: Verdict
+        :param retries: how many times the call has already been retried this way
+        :ptype retries: int
+        :return: ``True``, after the wait, to run the call again on the same key
+        :rtype: bool
+        :raises ValueError: when ``retries`` is negative
+        """
+        if retries < 0:
+            raise ValueError(f"retries must not be negative, got {retries}")
+        if (
+            verdict.kind is not VerdictKind.RATE_LIMITED
+            or self._classifier.sdk_retries_rate_limits
+            or retries >= _RATE_LIMIT_RETRIES
+        ):
+            return False
+        if verdict.until is not None:
+            pause = (verdict.until - self._clock_now()).total_seconds()
+        else:
+            pause = _RATE_LIMIT_BACKOFF_SECONDS * 2**retries
+        await self._sleep(min(max(pause, 0.0), self._exhaustion_wait.total_seconds()))
+        return True
 
     def record_failover(self, reason: MoveReason) -> None:
         """Count one call that a key refused running its next attempt on another key (KP-K1).
@@ -542,12 +599,10 @@ class KeyPool:
 
         The call starts on the active key. A key the call has tried, or whose room the reservation
         doesn't fit, is skipped for this call only; a key that can't serve at all moves the active key
-        first (KP-D2, D3). When every key the call may still try is only rate-limited and the earliest
-        hold ends within ``max_rate_limit_wait``, the pool waits for it; otherwise it raises, before any
-        network call.
+        first (KP-D2, D3). When no key can serve, it raises, before any network call.
 
-        :param model_id: the model the call is for; its per-model states (forbidden, a per-model rate
-            limit, the per-model breaker) count. ``None`` counts only the key's own
+        :param model_id: the model the call is for; its per-model states (forbidden, the per-model
+            breaker) count. ``None`` counts only the key's own
         :ptype model_id: str | None
         :param amount: the money to reserve: the call's estimate (``reservation_estimate``)
         :ptype amount: Decimal
@@ -570,7 +625,6 @@ class KeyPool:
         await self._ready(now)
         await self._sweep_if_due(now)
         skipped: set[str] = set()
-        waited = 0.0
         while True:
             now = self._clock_now()
             view = await self._ready(now)
@@ -579,12 +633,7 @@ class KeyPool:
             blocks = self._all_blocks(view.doc, model_id, now)
             label = self._policy.serving_key(self._candidates(blocks), _active(view.doc), set(tried) | skipped)
             if label is None:
-                pause = self._rate_limit_pause(blocks, tried, skipped, now, waited, deadline)
-                if pause is None:
-                    raise await self._no_key_available(view, model_id, blocks, tried, skipped, now)
-                await self._sleep(pause)
-                waited += pause
-                continue
+                raise await self._no_key_available(view, model_id, blocks, tried, skipped, now)
             lease = await self._reserve_on(self._by_label[label], model_id, amount, now, deadline)
             if lease is not None:
                 return lease
@@ -648,11 +697,6 @@ class KeyPool:
                     budget=key.spec.budget,
                     active=key.label == active,
                     forbidden_models=tuple(m for m in generation.get("forbidden", []) if m != _WHOLE_KEY),
-                    rate_limited_models=tuple(
-                        (scope, end)
-                        for scope, end in sorted(_holds_until(generation).items())
-                        if scope != _WHOLE_KEY and end > now
-                    ),
                 )
             )
         return KeyPoolStatus(pool=self._name, provider=self._provider, period=period, active=active, keys=tuple(keys))
@@ -660,8 +704,7 @@ class KeyPool:
     async def reset(self, label: str) -> None:
         """Clear a key's stored state, as an operator does once its cause is fixed.
 
-        Clears exhausted, revoked, forbidden, rate-limit holds and low room for every secret the label
-        has held, and resets the key's breakers in this process. Spend is untouched: it is the ledger's.
+        Clears exhausted, revoked, forbidden and low room for every secret the label has held, and resets the key's breakers in this process. Spend is untouched: it is the ledger's.
         With distinct priorities, a reset key the pool prefers takes over again (KP-D5), as does a reset
         key when the active key can't serve; that move's reason is ``operator_reset``, logged at INFO,
         not the active key's state, so an operator's reset never reads as a new exhaustion.
@@ -716,6 +759,7 @@ class KeyPool:
             targets = [key]
         scope = model_id if verdict.scope is VerdictScope.KEY_AND_MODEL and model_id is not None else _WHOLE_KEY
         period = period_id(now, self._anchor_day)
+        until = verdict.until.isoformat() if verdict.until is not None else None
         changed: list[str] = []
 
         def record(doc: dict[str, Any]) -> bool:
@@ -724,15 +768,11 @@ class KeyPool:
                 generation = self._writable_generation(doc, target)
                 previous = copy.deepcopy(generation)
                 if verdict.kind is VerdictKind.EXHAUSTED:
-                    generation["exhausted"] = period
+                    generation["exhausted"] = {"period": period, "until": until}
                 elif verdict.kind is VerdictKind.REVOKED:
                     generation["revoked"] = True
                 elif verdict.kind is VerdictKind.FORBIDDEN:
                     generation["forbidden"] = sorted({*generation["forbidden"], scope})
-                elif verdict.kind is VerdictKind.RATE_LIMITED:
-                    holds = self._live_holds(generation["holds"], now)
-                    holds[scope] = self._hold(holds.get(scope), verdict.until, now)
-                    generation["holds"] = holds
                 if generation != previous:
                     changed.append(target.label)
             return False
@@ -811,14 +851,11 @@ class KeyPool:
         blocks: list[_Block] = []
         if generation.get("revoked"):
             blocks.append(_Block(KeyState.REVOKED, None))
-        if generation.get("exhausted") == period:
-            blocks.append(_Block(KeyState.EXHAUSTED, rollover))
+        exhausted_until = _exhausted_until(generation, period, rollover)
+        if exhausted_until is not None and exhausted_until > now:
+            blocks.append(_Block(KeyState.EXHAUSTED, exhausted_until))
         if any(scope in generation.get("forbidden", []) for scope in scopes):
             blocks.append(_Block(KeyState.FORBIDDEN, None))
-        holds = _holds_until(generation)
-        held = [holds[scope] for scope in scopes if scope in holds and holds[scope] > now]
-        if held:
-            blocks.append(_Block(KeyState.RATE_LIMITED, max(held)))
         wait = self._breaker_wait(key, model_id)
         if wait > 0:
             blocks.append(_Block(KeyState.TRIPPED, now + timedelta(seconds=wait)))
@@ -836,35 +873,6 @@ class KeyPool:
             if (breaker := self._breakers.peek(self._provider, credential=credential, model=model)) is not None
         ]
         return max(waits, default=0.0)
-
-    def _rate_limit_pause(
-        self,
-        blocks: dict[str, list[_Block]],
-        tried: Set[str],
-        skipped: Set[str],
-        now: datetime,
-        waited: float,
-        deadline: datetime | None,
-    ) -> float | None:
-        """How long to wait for a key, when every key the call may still try is only rate-limited (Q4).
-
-        ``None`` when the pool should raise instead: the cap is 0, a key is out for anything but a rate
-        limit, or the wait would pass the cap or the deadline.
-        """
-        cap = self._max_wait.total_seconds()
-        waiting = [key.label for key in self._keys if key.label not in tried]
-        if cap <= 0 or not waiting or any(label in skipped for label in waiting):
-            return None
-        ends: list[datetime] = []
-        for label in waiting:
-            reasons = blocks[label]
-            if not reasons or any(block.state is not KeyState.RATE_LIMITED for block in reasons):
-                return None
-            ends.extend(block.until for block in reasons if block.until is not None)
-        pause = max((min(ends) - now).total_seconds(), 0.0)
-        if waited + pause > cap or (deadline is not None and now + timedelta(seconds=pause) >= deadline):
-            return None
-        return pause
 
     # -- reservations ----------------------------------------------------------------------------
 
@@ -1120,27 +1128,6 @@ class KeyPool:
                 del generations[str(stale)]
         return generation
 
-    def _hold(self, previous: dict[str, Any] | None, until: datetime | None, now: datetime) -> dict[str, Any]:
-        """A rate-limit hold (KP-C3): the provider's wait, or the floor when it named none; doubled, up
-        to the cap, when the key's last hold ended within the window; never shorter than a hold still
-        running."""
-        seconds = max((until - now).total_seconds(), 0.0) if until is not None else self._floor.total_seconds()
-        if previous is not None:
-            previous_until = datetime.fromisoformat(previous["until"])
-            previous_seconds = float(previous["seconds"])
-            if previous_until > now:
-                end = max(previous_until, now + timedelta(seconds=seconds))
-                return {"until": end.isoformat(), "seconds": max(previous_seconds, seconds)}
-            if now - previous_until <= self._window:
-                seconds = max(seconds, min(previous_seconds * 2, self._cap.total_seconds()))
-        return {"until": (now + timedelta(seconds=seconds)).isoformat(), "seconds": seconds}
-
-    def _live_holds(self, holds: dict[str, Any], now: datetime) -> dict[str, Any]:
-        """``holds`` without those whose doubling window has passed."""
-        return {
-            scope: hold for scope, hold in holds.items() if now - datetime.fromisoformat(hold["until"]) <= self._window
-        }
-
     # -- money -----------------------------------------------------------------------------------
 
     def _account(self, key: _Key, period: str) -> str:
@@ -1313,11 +1300,8 @@ def _checked_keys(keys: Sequence[KeySpec]) -> tuple[KeySpec, ...]:
 def _check_settings(
     *,
     min_headroom: Decimal,
-    floor: timedelta,
-    window: timedelta,
-    cap: timedelta,
+    exhaustion_wait: timedelta,
     refresh: timedelta,
-    wait: timedelta,
     margin: timedelta,
     sweep: timedelta,
 ) -> None:
@@ -1325,14 +1309,16 @@ def _check_settings(
         raise ValueError(
             f"min_headroom must be a Decimal fraction of the budget, 0 or more and below 1, got {min_headroom!r}"
         )
-    for what, value in (("rate_limit_floor", floor), ("refresh_interval", refresh), ("reservation_margin", margin)):
+    positive = (
+        ("rate_limit_exhaustion_wait", exhaustion_wait),
+        ("refresh_interval", refresh),
+        ("reservation_margin", margin),
+    )
+    for what, value in positive:
         if value <= timedelta(0):
             raise ValueError(f"{what} must be positive, got {value}")
-    for what, value in (("rate_limit_window", window), ("max_rate_limit_wait", wait), ("sweep_interval", sweep)):
-        if value < timedelta(0):
-            raise ValueError(f"{what} must not be negative, got {value}")
-    if cap < floor:
-        raise ValueError(f"rate_limit_cap ({cap}) must not be below rate_limit_floor ({floor})")
+    if sweep < timedelta(0):
+        raise ValueError(f"sweep_interval must not be negative, got {sweep}")
 
 
 def _check_amount(what: str, amount: Decimal) -> None:
@@ -1354,11 +1340,19 @@ def _no_change(doc: dict[str, Any]) -> bool:
 
 
 def _cleared_state() -> dict[str, Any]:
-    return {"revoked": False, "exhausted": None, "low_room": None, "forbidden": [], "holds": {}}
+    return {"revoked": False, "exhausted": None, "low_room": None, "forbidden": []}
 
 
-def _holds_until(generation: dict[str, Any]) -> dict[str, datetime]:
-    return {scope: datetime.fromisoformat(hold["until"]) for scope, hold in generation.get("holds", {}).items()}
+def _exhausted_until(generation: dict[str, Any], period: str, rollover: datetime) -> datetime | None:
+    """When a key's exhaustion ends: the reset the provider named, else the end of the period it was
+    exhausted in; ``None`` when it isn't exhausted, or was in an earlier period with no reset named."""
+    exhausted = generation.get("exhausted")
+    if not isinstance(exhausted, dict):
+        return None
+    until = exhausted.get("until")
+    if until is not None:
+        return datetime.fromisoformat(until)
+    return rollover if exhausted.get("period") == period else None
 
 
 def _money_of(snapshot: AccountSnapshot, budget: Decimal) -> tuple[Decimal, Decimal, Decimal]:

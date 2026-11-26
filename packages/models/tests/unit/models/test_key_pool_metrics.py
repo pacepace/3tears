@@ -66,18 +66,18 @@ class TestCounters:
 
     async def test_a_failover_is_counted_by_reason(self, registry: CollectorRegistry, metrics: KeyPoolMetrics) -> None:
         pool = _pool(metrics, spec("a"), spec("b"))
-        pool.record_failover(MoveReason.RATE_LIMITED)
-        pool.record_failover(MoveReason.RATE_LIMITED)
+        pool.record_failover(MoveReason.REVOKED)
+        pool.record_failover(MoveReason.REVOKED)
         pool.record_failover(MoveReason.TRIPPED)
         failovers = "threetears_key_pool_failovers_total"
-        assert _sample(registry, failovers, pool=POOL, reason="rate_limited") == 2
+        assert _sample(registry, failovers, pool=POOL, reason="revoked") == 2
         assert _sample(registry, failovers, pool=POOL, reason="tripped") == 1
-        assert pool.counters.failovers == {MoveReason.RATE_LIMITED: 2, MoveReason.TRIPPED: 1}
+        assert pool.counters.failovers == {MoveReason.REVOKED: 2, MoveReason.TRIPPED: 1}
 
     async def test_a_failover_reason_outside_the_enum_is_refused(self, metrics: KeyPoolMetrics) -> None:
         pool = _pool(metrics, spec("a"))
         with pytest.raises(TypeError, match="MoveReason"):
-            pool.record_failover("rate_limited")  # type: ignore[arg-type]
+            pool.record_failover("revoked")  # type: ignore[arg-type]
         assert not pool.counters.failovers
 
     async def test_a_reservation_too_big_for_a_key_counts_a_refusal_for_room(
@@ -181,6 +181,7 @@ class TestGauges:
             for sample in family.samples
         }
         assert shown == {str(state) for state in KeyState} - {"tried"}
+        assert "rate_limited" not in shown  # a rate limit is retried, never a key's state
 
     async def test_refresh_returns_the_snapshot_it_showed(self, metrics: KeyPoolMetrics) -> None:
         pool = _pool(metrics, spec("a"), spec("b"))
@@ -196,7 +197,7 @@ class TestGauges:
             assert _sample(registry, "threetears_key_pool_room_refusals_total", pool=POOL, key=key) == 0
             assert _sample(registry, "threetears_key_pool_orphaned_reservations_total", pool=POOL, key=key) == 0
         assert _sample(registry, "threetears_key_pool_no_key_available_total", pool=POOL) == 0
-        failover_reasons = ("exhausted", "revoked", "forbidden", "rate_limited", "tripped")
+        failover_reasons = ("exhausted", "revoked", "forbidden", "tripped", "low_room")
         for reason in failover_reasons:
             assert _sample(registry, "threetears_key_pool_failovers_total", pool=POOL, reason=reason) == 0
         for reason in {str(reason) for reason in MoveReason} - set(failover_reasons):

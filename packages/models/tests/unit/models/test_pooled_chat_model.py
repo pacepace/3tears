@@ -293,12 +293,12 @@ class TestServingKeyCallbacks:
     def test_the_caller_s_callbacks_see_every_attempt(self) -> None:
         pool = make_pool(spec("a"), spec("b"))
         wire = KeyedWire("a", "b")
-        wire.script("a", refusal(fx.ANTHROPIC_RATE_LIMIT_429))
+        wire.script("a", refusal(fx.ANTHROPIC_AUTHENTICATION_401))
         log = EventLog()
         extra = EventLog()
         with wire.serve() as url:
             pooled_model(pool, url, extra_callbacks=[extra]).invoke("hello", {"callbacks": [log]})
-        assert log.events == ["start", "error:AnthropicRateLimitError", "start", "end"]
+        assert log.events == ["start", "error:AnthropicAuthenticationError", "start", "end"]
         assert extra.events == log.events
 
 

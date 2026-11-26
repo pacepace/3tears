@@ -238,7 +238,8 @@ def create_chat_model(
         provider refuses that key, and settles the cost it reported. the pool's provider must be
         the model's. each key's model takes its breakers from ``key_pool.breaker_registry``, so
         ``breaker`` and ``breaker_registry`` are refused with it, and reaches the pool on a
-        key's refusal unretried (``unretried_key_errors``), which the factory sets. the model
+        key's refusal unretried (``unretried_key_errors``, the pool's rule), which the factory
+        sets; a rate limit is still retried as on an ``api_key=`` model. the model
         must have an input and an output price registered
     :ptype key_pool: KeyPool | None
     :param provider: optional explicit provider name (overrides registry)
@@ -362,8 +363,9 @@ def _pooled_chat_model(
 
     one model per key, each built as an ``api_key=`` model is -- the same provider settings,
     tracker and extra callbacks -- with that key's breakers from the pool's registry, its label on
-    every usage record, and the provider's key refusals unretried, so the pool sees each on its
-    first occurrence (KP-H4).
+    every usage record, and the pool's rule (``KeyPool.refuses_retry``) telling its SDK which
+    responses are the key's, so the pool sees each on its first occurrence while the SDK still
+    retries a rate limit (KP-H4).
 
     :param model_id: model identifier
     :ptype model_id: str
@@ -416,7 +418,7 @@ def _pooled_chat_model(
             provider_name=provider_name,
             model_name=model_id,
             api_key=secret,
-            provider_kwargs={**provider_kwargs, "unretried_key_errors": True},
+            provider_kwargs={**provider_kwargs, "unretried_key_errors": key_pool.refuses_retry},
         )
         callbacks = _build_callbacks(
             model_id=model_id,

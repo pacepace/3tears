@@ -38,7 +38,7 @@ from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
-from threetears.models.providers._key_errors_unretried import mark_unretried
+from threetears.models.providers._key_errors_unretried import BODY_READ_STATUS, UnretriedRule, mark_unretried
 from threetears.models.providers._langchain_anthropic_internals import SdkMiddlewareChatAnthropic
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import StructuredOutputSchemaError
@@ -214,12 +214,19 @@ _DEFAULT_MAX_RETRIES = 2
 
 
 class _KeyErrorsUnretried(anthropic.Middleware):
-    """Marks a key-moving response (401, 402, 403, 429) so the SDK raises it on its first occurrence.
+    """Marks a response the key pool's rule says is the key's, so the SDK raises it on its first occurrence.
 
     Runs inside the SDK's retry loop, once per HTTP attempt, and sees every response, error statuses
-    included; the SDK then reads the ``x-should-retry`` it set. Both hooks, because one instance
-    reaches the model's sync and async clients alike.
+    included; the SDK then reads the ``x-should-retry`` it set. A 429's body is read for the rule, and
+    no other response's: the SDK raises from the cached body. Both hooks, because one instance reaches
+    the model's sync and async clients alike.
+
+    :param rule: which responses to mark
+    :ptype rule: UnretriedRule
     """
+
+    def __init__(self, rule: UnretriedRule) -> None:
+        self._rule = rule
 
     def handle(self, request: anthropic.APIRequest, call_next: anthropic.CallNext) -> anthropic.APIResponse[Any]:
         """send the attempt, and mark its response when it belongs to the key.
@@ -232,7 +239,9 @@ class _KeyErrorsUnretried(anthropic.Middleware):
         :rtype: anthropic.APIResponse[Any]
         """
         response = call_next(request)
-        mark_unretried(response.status_code, response.http_response.headers)
+        http_response = response.http_response
+        body = http_response.read() if http_response.status_code == BODY_READ_STATUS else None
+        mark_unretried(self._rule, http_response.status_code, http_response.headers, body)
         return response
 
     async def handle_async(
@@ -248,7 +257,9 @@ class _KeyErrorsUnretried(anthropic.Middleware):
         :rtype: anthropic.AsyncAPIResponse[Any]
         """
         response = await call_next(request)
-        mark_unretried(response.status_code, response.http_response.headers)
+        http_response = response.http_response
+        body = await http_response.aread() if http_response.status_code == BODY_READ_STATUS else None
+        mark_unretried(self._rule, http_response.status_code, http_response.headers, body)
         return response
 
 
@@ -259,7 +270,7 @@ def create_anthropic_chat(
     base_url: str | None = None,
     timeout: int = 120,
     max_retries: int | None = None,
-    unretried_key_errors: bool = False,
+    unretried_key_errors: UnretriedRule | None = None,
     **extra_kwargs: Any,
 ) -> BaseChatModel:
     """creates a configured ``ChatAnthropic`` for Anthropic models.
@@ -283,12 +294,13 @@ def create_anthropic_chat(
         :data:`_DEFAULT_MAX_RETRIES`. On a subscription token it is forwarded only when set, as the
         Claude CLI's own retry count, so the CLI's default stands otherwise
     :ptype max_retries: int | None
-    :param unretried_key_errors: when ``True``, a refusal that belongs to the key -- 401, 402, 403
-        or 429 -- reaches the caller on its first occurrence instead of being retried on the same key
-        (a key pool's mode, KP-H4); 5xx and connection failures keep ``max_retries``. ``False``, the
-        default, leaves the SDK's own retry policy, which retries a 429. Not available on a
-        subscription token
-    :ptype unretried_key_errors: bool
+    :param unretried_key_errors: a rule naming the responses that belong to the key -- revoked, out of
+        credit, forbidden, a quota a 429 reports, a rate limit whose wait is too long -- which then
+        reach the caller on their first occurrence instead of being retried on the same key (a key
+        pool's mode, KP-H4; the pool's ``KeyPool.refuses_retry``). A rate limit the rule leaves, 5xx
+        and connection failures keep ``max_retries``. ``None``, the default, leaves the SDK's own retry
+        policy. Not available on a subscription token
+    :ptype unretried_key_errors: UnretriedRule | None
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatAnthropic``
     :ptype extra_kwargs: Any
     :return: configured ``ChatAnthropic`` (the name-translating subclass), or a Claude
@@ -302,7 +314,7 @@ def create_anthropic_chat(
     # (``sk-ant-api…``) takes the ChatAnthropic path below. The subscription path needs the optional
     # ``claude-cli`` extra, and building that model without it raises an ImportError naming the extra.
     if is_subscription_token(api_key):
-        if unretried_key_errors:
+        if unretried_key_errors is not None:
             raise ValueError("unretried_key_errors needs an API key; a subscription token's retries are the CLI's")
         if max_retries is not None:
             extra_kwargs["max_retries"] = max_retries
@@ -318,8 +330,8 @@ def create_anthropic_chat(
     }
     if cleaned_base_url is not None:
         kwargs["base_url"] = cleaned_base_url
-    if unretried_key_errors:
-        kwargs["sdk_middleware"] = [_KeyErrorsUnretried()]
+    if unretried_key_errors is not None:
+        kwargs["sdk_middleware"] = [_KeyErrorsUnretried(unretried_key_errors)]
     kwargs.update(extra_kwargs)
 
     model: ChatAnthropic = _NameTranslatingChatAnthropic(**kwargs)
