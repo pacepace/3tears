@@ -78,8 +78,8 @@ async def test_grants_live_page(conn: asyncpg.Connection) -> None:
     )
     await conn.execute("ANALYZE mcp_tool_grants")
     recorder = PlanRecorder(conn)
-    grants = McpToolGrantCollection(registry=CollectionRegistry(), config=DefaultCoreConfig())  # type: ignore[call-arg]
-    grants.l3_pool = recorder  # type: ignore[assignment]
+    grants = McpToolGrantCollection(registry=CollectionRegistry(), config=DefaultCoreConfig())
+    grants.l3_pool = recorder
     page = await grants.list_grants_page(limit=_LIVE_PAGE)
     assert len(page) == _LIVE_PAGE
     (plan,) = recorder.plans
