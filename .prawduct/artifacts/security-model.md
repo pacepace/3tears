@@ -176,6 +176,21 @@ The code contains no prompt-injection filter and no content-trust labelling of t
 - Commits carry no agent attribution, checked in CI by `scripts/check-attribution.sh` and `tests/enforcement/test_no_agent_attribution.py`.
 - Consumers pin the whole family to one exact version (`CLAUDE.md`).
 
+## Direction
+
+Ratified 2026-11-26 from the test-backed candidates below, which the owner approved in bulk once
+duplicates were removed ("Yes to all recommendations"). The candidates with no gate await the
+owner's ruling one at a time and are not ratified.
+
+- **A JWS is verified with a pinned algorithm: reject on the declared header algorithm before a
+  key is selected, then pass a literal single-element list to `decode`.**
+  Why: reading the algorithm off the token admits `alg: none` and the asymmetric-confusion
+  downgrade. Gate: `tests/enforcement/test_jwt_alg_pinning.py`.
+- **Every audit `details` key a package publishes is classified as safe or personal.**
+  Why: erasure masks unclassified keys on its own; the gate keeps the classification from falling
+  behind the code, so no key is masked or kept without a decision. Gate:
+  `tests/enforcement/test_audit_details_keys_are_classified.py`.
+
 ## Candidate norms (unratified)
 
 - Verify JWS with a pinned algorithm; never read it from the header. `tests/enforcement/test_jwt_alg_pinning.py`

@@ -282,6 +282,35 @@ An audit record is never deleted by erasure and no id on it changes. Every erasu
 | Superseded snapshot chunks | Deleted by the bucket's declarer, in bounded batches | `docs/design-scoped-snapshot.md` |
 | Write marks | Drained and deleted by the reconciler | `write_marks.py` |
 
+## Direction
+
+Ratified 2026-11-26 from the test-backed candidates below, which the owner approved in bulk once
+duplicates were removed ("Yes to all recommendations"); each Why names its gate. (The KV
+memory-only rule is homed in `architecture.md` § Direction, the lockstep bound in
+`api-contract.md` § Direction, and audit-key classification in `security-model.md` § Direction.)
+
+- **Every datetime column is `TIMESTAMPTZ` (`DATETIMETZ_TYPE`).**
+  Why: timezone-naive columns were removed from the platform; an instant without its zone reads
+  back wrong. Gate: `packages/core/tests/enforcement/test_no_datetime_type_columns.py`.
+- **Every SQL statement touching a partitioned table names its partition column.**
+  Why: the partition column is the structural defense against cross-partition bleed, such as one
+  conversation seeing another's context on a shared pod. Gate:
+  `packages/core/tests/enforcement/test_partition_column_enforcement.py`.
+- **Migrations are idempotent, replay-guarded, and never mix DDL and DML.**
+  Why: migrations must run safely on Yugabyte and survive a replay. Gate:
+  `packages/core/tests/enforcement/test_migration_yugabyte_safety.py`.
+- **jsonb values are bound natively through `encode_jsonb`, never pre-encoded.**
+  Why: the registered codec already runs `json.dumps`, so pre-encoding double-encodes the cell
+  into a JSON string, a corruption that once shipped green. Gate:
+  `packages/core/tests/enforcement/test_jsonb_native_binding.py`.
+- **A collection's write-generation switch agrees with its `TableSchema`'s declaration.**
+  Why: a mismatch advances a generation no trigger marks, or marks writes nothing advances. Gate:
+  `tests/enforcement/test_write_generation_is_declared_on_the_schema.py`.
+- **A collection that caches absences writes L3 only through the framework's write paths.**
+  Why: only `save_entity` and `l2_cas_mutate` advance the write generation, so any other write
+  commits a row that recorded absences keep hiding until their max age lapses. Gate:
+  `packages/core/tests/enforcement/test_negative_cache_write_paths.py`.
+
 ## Candidate norms (unratified)
 
 - Every datetime column is `TIMESTAMPTZ` (`packages/core/tests/enforcement/test_no_datetime_type_columns.py`).

@@ -162,6 +162,33 @@ Not applicable to this repo as a service. Hosts get the same surface through `He
 | Contained programming errors fail tests | Teardown tripwire for `TypeError`, `AttributeError`, `NameError`, `AssertionError` | `tests/contain_tripwire.py`, `tests/enforcement/test_contain_tripwire.py` |
 | Middleware stays framework-free | `test_middleware_does_not_import_framework` | `middleware.py` |
 
+## Direction
+
+Ratified 2026-11-26 from declarations the owner already made; each Why cites where.
+
+- **A failure either reaches the caller, or it is recorded where an operator will see it, never
+  neither.** `except Exception` re-raises or calls `threetears.observe.contain(exc, log=...,
+  what=...)`; `suppress(Exception)` is `with contained(...)`; `except CancelledError` re-raises,
+  and another task is stopped with `await cancel_and_wait(task)`. An expected condition catches
+  its specific type. A log line or a `# NOSILENT` comment does not excuse a broad handler.
+  Why: a handler that logs and then returns `None`, `[]` or a partial result has still lied to
+  its caller, and a soft-fail wrapper hides the failure from both caller and operator.
+  `CLAUDE.md` § Exceptions; `docs/exceptions.md`.
+
+- **A narrow handler whose body is only `pass`, `return None`, `continue` or `break` logs,
+  re-raises, or carries `# NOSILENT: <reason>`.**
+  Why: the same failure-visibility rule as above, applied where a handler is narrow enough to be
+  legitimate but still drops the failure. Gate: `tests/enforcement/test_no_silent_swallow.py`.
+  Owner 2026-11-26 bulk ratification.
+- **The OpenTelemetry floor 3tears declares is one floor, and CI tests the code at it.**
+  Why: the `otel` extra once declared `>=1.28` while the code needed 1.39; the suite only ran the
+  locked 1.43, and a consumer pinned at 1.36 resolved cleanly and failed at import. Gate:
+  `tests/enforcement/test_otel_floor.py`. Owner 2026-11-26 bulk ratification.
+- **Logger calls pass no structlog-style keywords (`log.info("msg", key=value)`).**
+  Why: `get_logger` returns a `logging.Logger`, so the keyword raises `TypeError`, and only at a
+  level the suite never runs, so it fails first in production. Gate:
+  `tests/enforcement/test_logger_call_kwargs.py`. Owner 2026-11-26 bulk ratification.
+
 ## Candidate norms (unratified)
 
 | Rule the code enforces | Enforcing file |

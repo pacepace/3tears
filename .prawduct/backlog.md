@@ -1,5 +1,12 @@
 # Backlog — 3tears
 
+> **Frozen history since 2026-11-26.** The live backlog is GitHub Issues in
+> [pacepace/3tears](https://github.com/pacepace/3tears/issues): read it with `/prawduct:backlog`,
+> `prawduct-hook backlog list --repo pacepace/3tears`, or `gh issue list -R pacepace/3tears`.
+> Both items below migrated: MOD-7R2K is #1311 (open) and MOD-4QW9 is #1312 (closed as a duplicate
+> of #776). Nothing here is read any more, and changes made on the tracker are not copied back, so
+> this file will drift from it. File new items on the tracker, never here.
+
 <!-- Structured backlog. Manage it with /prawduct:backlog — pick, add, find <q>, list,
      update ID, migrate. Items move between the three sections below via
      /prawduct:backlog update ID status=...; status is never inferred from build plans
@@ -79,14 +86,6 @@
   `providers/openrouter.py`: raise the provider error for a `finish_reason: "error"` chunk, with a test on the
   documented shape.
 
-- **[MOD-4QW9]** OpenRouter `max_retries=0` does not turn retries off
-  `effort: S · impact: M · area: models · source: builder · added: 2026-11-26 · status: open`
-
-  With `max_retries=0` langchain-openrouter sets no retry config, so the SDK's default applies: 5xx and connection
-  errors retried for up to an hour. A caller-supplied `client=` ignores `max_retries` entirely. A test run hung on
-  it while building the key pool (chunk 03). Fix in `providers/openrouter.py`: map `max_retries=0` to an explicit
-  no-retry config, with a test that a 5xx surfaces after one request.
-
 ## Promoted
 
 <!-- Items currently being addressed in an active build plan. /prawduct:backlog pick
@@ -95,3 +94,15 @@
 ## Archive
 
 <!-- Shipped and dropped items, kept for searchability. Never deleted. -->
+
+- **[MOD-4QW9]** OpenRouter `max_retries=0` does not turn retries off
+  `effort: S · impact: M · area: models · source: builder · added: 2026-11-26 · status: dropped · reviewed: 2026-11-26`
+
+  With `max_retries=0` langchain-openrouter sets no retry config, so the SDK's default applies: 5xx and connection
+  errors retried for up to an hour. A caller-supplied `client=` ignores `max_retries` entirely. A test run hung on
+  it while building the key pool (chunk 03). Fix in `providers/openrouter.py`: map `max_retries=0` to an explicit
+  no-retry config, with a test that a 5xx surfaces after one request.
+
+  Dropped 2026-11-26: duplicate of pacepace/3tears#776, which tracks the same defect. The one fact this item adds
+  (a caller-supplied `client=` ignores `max_retries`) is posted on #776.
+

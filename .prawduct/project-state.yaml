@@ -297,6 +297,8 @@ api_versioning_decided: 2026-11-22 — see design_decisions.api_versioning_appro
 # backlog_prefixes: []
 # backlog_external_imports: []
 # backlog_last_groomed_at:
+# The live backlog is GitHub Issues here since 2026-11-26; .prawduct/backlog.md is frozen history.
+backlog_service_repo: pacepace/3tears
 
 # =============================================================================
 # CHANGE LOG
@@ -314,3 +316,4 @@ distribution: plugin
 # develop..main promotion delta. Written at onboard because origin/HEAD
 # named `develop`. Change it if this repo integrates somewhere else.
 base_branch: develop
+norm_registry_ratified: "2026-11-26 — 50 norms from declarations in CLAUDE.md and .prawduct/owner-rulings.md, and the artifacts' test-backed candidates (owner 2026-11-26); security-model rules with no gate await rulings"

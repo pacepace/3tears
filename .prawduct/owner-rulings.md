@@ -5,6 +5,28 @@
      reverses an earlier one is a new entry naming the one it replaces. Plain prose; nothing
      parses this file. -->
 
+**2026-11-26.** On the governance advisories report: "Yes to all recommendations." That covered:
+- Ratify the strategy artifacts' test-backed candidate norms in bulk, once duplicates are removed. Security-model
+  rules with no gate are not ratified; each goes to the owner for its own ruling.
+- Ratify the test-fakes rule, with the why "a fake that names no protocol can drift from production and pass
+  against an API production lacks".
+- Keep the force-push why as ratified on 2026-11-26.
+- From `CLAUDE.md` § Conventions, ratify only "uv only, no poetry"; the rest stays descriptive, held by config.
+- Do not ratify "consumers pin the whole family to one exact version" here: it binds downstream repos.
+- Record and ratify two earlier rulings that lived only in a session's notes (below, at their own dates).
+- Migrate the markdown backlog to GitHub Issues in `pacepace/3tears` with the approved batch (MOD-7R2K, MOD-4QW9),
+  the cutover landing on #1305's branch.
+Landed in the `## Direction` sections of the strategy artifacts, the `project-preferences.md` Enforcement table,
+`.prawduct/artifacts/migration-scrub-decisions.md` and `project-state.yaml` `backlog_service_repo`.
+
+**2026-10-28** (recorded 2026-11-26). Pricing is the host's: the engine reports tokens and models, the host injects
+prices, and 3tears ships only a swappable dev default. The owner rejected a rate table inside the engine as too
+monolithic: "for all we know the consumer has a special deal with OpenAI". Landed in `architecture.md` § Direction.
+
+**2026-10-19** (recorded 2026-11-26). The maintainer sets versions at release; a work PR never pre-picks one. Given
+after v0.71.0 shipped without the evals stack that had pre-claimed 0.71.0, forcing a re-version of three stacked PRs.
+Landed in `operational-spec.md` § Direction.
+
 **2026-11-22.** On the untracked notes in the `evals/main` worktree's `.prawduct/artifacts/`: "yes to
 your recommendations, and move those discodon-*.md files to the discodon repo's docs for its own
 agent to sort out", then "yes commit" for the four dated analyses. The design notes and analyses

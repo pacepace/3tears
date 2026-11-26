@@ -201,6 +201,58 @@ Scale targets belong in `nonfunctional-requirements.md`; none are recorded yet (
 | Sidecar versioned outside the lockstep | family version | it can signal a break without a framework release | `docs/sidecar-http-contract.md` §3 |
 | Day-long NATS JWT plus kick | short TTL renewals | each renewal was a handover with its own risk | `docs/nats-credential-renewal.md` (2026-09-30) |
 
+## Direction
+
+Ratified 2026-11-26 from the test-backed candidates below, which the owner approved in bulk once
+duplicates were removed ("Yes to all recommendations"); each Why names its gate or the ruling
+behind it.
+
+- **Every NATS KV bucket is memory-backed; durability belongs to L3.**
+  Why: L2 is a cache, and the rule carries no exemption mechanism. Gate:
+  `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`.
+- **Every package reaches NATS through `threetears.nats.NatsClient`; only `3tears-nats` imports
+  `nats`.**
+  Why: the wrapper holds reconnect policy, subject namespacing and the KV helpers; a direct import
+  opts out of all three. Gate: `tests/enforcement/test_nats_wrapper_usage.py`.
+- **`kv_key_scope_for` is the only producer of an L2 key scope.**
+  Why: the scope is the isolation boundary between principals, and an interpolated name through a
+  non-injective sanitizer can collide two principals into one scope. Gate:
+  `tests/enforcement/test_l2_scope_discipline.py`.
+- **A KV bucket opens only through the reconcile primitive in `kv.py`.**
+  Why: a direct opener gets none of the reconciliation and silently carries another caller's
+  configuration (a second opener once asked for a different TTL against a live bucket). Gate:
+  `tests/enforcement/test_kv_bucket_open_discipline.py`.
+- **A KV grant names the bucket its opener actually creates.**
+  Why: the grant string becomes real JWT permissions, and a wrong name fails silently in both
+  directions. Gate: `tests/enforcement/test_kv_bucket_grant_naming.py`.
+- **Each principal's subject grants equal the subjects its code receives and publishes on, in
+  both directions.**
+  Why: a refused subscribe is a subscription that receives nothing (a silently stale cache), and a
+  grant with no site outlives the code that needed it. Gate:
+  `tests/enforcement/test_subject_grants_match_the_code.py`.
+- **Every NATS receiver declares how it authenticates the sender of what it receives.**
+  Why: a subject proves nothing about its sender; any connection can have its bytes delivered on
+  any subject. Gate: `tests/enforcement/test_subscribers_declare_sender_posture.py`.
+- **No code bypasses epochs or degrades quietly.**
+  Why: an epoch is its change set, and every pod applies exactly those rows; a whole-table drop, a
+  swallowed L2 failure, a TTL standing in for an epoch or a raw L3 write breaks that. Gate:
+  `tests/enforcement/test_epoch_discipline.py`.
+- **Every collection with a `TableSchema` hands back, from every tier, exactly what was written.**
+  Why: a tier that changes a type or loses precision serves the changed value on every read it
+  answers. Gate: `tests/enforcement/test_tier_parity.py`.
+- **Every persisted entity id is a UUIDv7, never a uuid4.**
+  Why: cursor-paged queries order by the primary key, and a uuid4 makes them skip rows or return
+  them out of creation order. Gate: `tests/enforcement/test_uuidv7_enforcement.py`.
+- **A package imports only what its own `pyproject.toml` declares.**
+  Why: the workspace masks undeclared dependencies until a standalone install of one package
+  fails in a consumer. Gates: `tests/enforcement/test_imports_declared.py`,
+  `tests/enforcement/test_dependency_alignment.py`.
+
+- **Pricing is the host's: the engine reports tokens and models, the host injects prices, and
+  3tears ships only a swappable dev default.**
+  Why: a consumer may have special deals, BYOK, subscriptions or local models; a rate table in the
+  engine would be wrong for them. Owner 2026-10-28 (`.prawduct/owner-rulings.md`).
+
 ## Candidate norms (unratified)
 
 - Every NATS KV bucket is memory-backed — `packages/core/tests/enforcement/test_kv_buckets_are_memory_only.py`
