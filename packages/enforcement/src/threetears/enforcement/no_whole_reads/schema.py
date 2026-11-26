@@ -75,6 +75,9 @@ COPY_PREFIX: Final[str] = "copy."
 #: relation_producers``): judged by the keys the declaration names, as a declared table is by its own
 PRODUCED_PREFIX: Final[str] = "produced."
 
+#: the package 3tears' modules are imported from: a ``ROW_STAMPED`` imported from one is its stamped declaration
+_THREETEARS_PACKAGE: Final[str] = "threetears."
+
 #: the directories an environment installs packages into: a tree under one is installed, never the repo's own source
 _INSTALLED_PARTS: Final[frozenset[str]] = frozenset({"site-packages", "dist-packages"})
 
@@ -391,6 +394,9 @@ class _DeclaredTable:
     references: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     origins: list[str] = field(default_factory=list)
     threetears: bool = False
+    #: whether a ``TableSchema(row_epoch=ROW_STAMPED)`` declares it: 3tears' shared keyed reads of it on L3 then add
+    #: its live guard (``NOT gone``) beside their filters (``threetears.core.keyed.live_read``)
+    stamped: bool = False
 
 
 @dataclass
@@ -447,6 +453,33 @@ class SchemaCatalog:
         :rtype: None
         """
         self.tables.setdefault(table, _DeclaredTable(table)).threetears = True
+
+    def mark_stamped(self, table: str) -> None:
+        """mark a table as stamped (``TableSchema(row_epoch=ROW_STAMPED)``): 3tears registers it so, and its shared
+        keyed reads of it on L3 answer only its live rows (:meth:`stamped`).
+
+        :param table: the bare table
+        :ptype table: str
+        :return: nothing
+        :rtype: None
+        """
+        self.tables.setdefault(table, _DeclaredTable(table)).stamped = True
+
+    def stamped(self, name: str) -> bool:
+        """whether the L3 table a read names is stamped, as 3tears' ``stamped_table`` answers it at run time: a
+        declared stamped table read by its own name, never a local copy (which holds only live rows and no gone flag)
+        nor a relation named at run time.
+
+        :param name: the relation as written
+        :ptype name: str
+        :return: whether it is
+        :rtype: bool
+        """
+        bare = bare_table(name)
+        if bare is None or bare.startswith((COPY_PREFIX, PRODUCED_PREFIX)) or _own_schema(name) or "{" in name:
+            return False
+        declared = self.tables.get(bare)
+        return declared is not None and declared.stamped
 
     def outside(self, name: str, template: _DeclaredTable | None = None) -> bool:
         """whether a relation is outside 3tears' declarations when only those are data tables: a table no 3tears
@@ -1288,6 +1321,11 @@ class _Values:
         }
         self.index_aliases: set[str] = set(_INDEX_CALLS)
         self.table_schema_aliases: set[str] = {"TableSchema"}
+        #: the names the module binds to 3tears' ``ROW_STAMPED`` (``from threetears.core.ddl.row_epoch import
+        #: ROW_STAMPED``), and those it binds to a 3tears module (``from threetears.core.ddl import row_epoch``), whose
+        #: ``.ROW_STAMPED`` is that declaration
+        self.stamped_aliases: set[str] = set()
+        self.threetears_modules: set[str] = set()
         bodies: list[list[ast.stmt]] = [tree.body]
         while bodies:
             for statement in bodies.pop():
@@ -1299,14 +1337,42 @@ class _Values:
                     target, value = statement.target, statement.value
                 elif isinstance(statement, ast.ClassDef):
                     bodies.append(statement.body)
+                elif isinstance(statement, ast.Import):
+                    for alias in statement.names:
+                        if alias.name.startswith(_THREETEARS_PACKAGE):
+                            self.threetears_modules.add(alias.asname or alias.name)
                 elif isinstance(statement, ast.ImportFrom):
                     for alias in statement.names:
+                        if (statement.module or "").startswith(_THREETEARS_PACKAGE):
+                            if alias.name == "ROW_STAMPED":
+                                self.stamped_aliases.add(alias.asname or alias.name)
+                            else:
+                                self.threetears_modules.add(alias.asname or alias.name)
                         if alias.name in _INDEX_CALLS and alias.asname:
                             self.index_aliases.add(alias.asname)
                         if alias.name == "TableSchema" and alias.asname:
                             self.table_schema_aliases.add(alias.asname)
                 if isinstance(target, ast.Name) and value is not None:
                     self.names.setdefault(target.id, value)
+
+    def stamped(self, node: ast.expr | None) -> bool:
+        """whether a ``row_epoch=`` is 3tears' ``ROW_STAMPED``: the name the module imports it as, or the attribute
+        of a 3tears module it imports (``row_epoch.ROW_STAMPED``). A name of the module's own of that spelling, or any
+        other value, is not.
+
+        :param node: the ``row_epoch=`` value
+        :ptype node: ast.expr | None
+        :return: whether it is
+        :rtype: bool
+        """
+        if isinstance(node, ast.Name):
+            return node.id in self.stamped_aliases
+        if isinstance(node, ast.Attribute) and node.attr == "ROW_STAMPED":
+            root = dotted(node.value)
+            return root is not None and root.split(".", 1)[0] in {
+                module.split(".", 1)[0] for module in self.threetears_modules
+            }
+        return False
 
     def text(self, node: ast.expr | None, depth: int = 0) -> str | None:
         """a string the expression statically is.
@@ -1739,6 +1805,8 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
                 table = bare_table(table_text) if table_text is not None else None
                 if table is not None:
                     catalog.mark_threetears(table)
+                    if values.stamped(_keyword(call, "row_epoch")):
+                        catalog.mark_stamped(table)
                 key = values.texts(_keyword(call, "primary_key"))
                 if table is not None and key:
                     catalog.add_key(table, key, origin)

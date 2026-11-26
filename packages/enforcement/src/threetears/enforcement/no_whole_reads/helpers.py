@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import Final
@@ -66,6 +66,7 @@ __all__ = [
     "REVIEWED_ACL_MODULE",
     "REVIEWED_VISIBLE_RECEIVER",
     "helper_statements",
+    "live_guarded",
     "narrows",
     "pager_order",
     "templated",
@@ -574,6 +575,8 @@ def _read_keyed(call: ast.Call) -> list[str]:
         # an interpolated table read by literal columns: the walk cannot match the columns to any table's key
         raise _Unseen("table")
     pinned, _ = _conditions(_by(_argument(call, "by", None)), first=len(keys) + 1, alias="t")
+    # a stamped table's live guard after them, as the helper sends it (:func:`live_guarded`)
+    pinned += _guard(call)
     unnested = ", ".join(f"${index + 1}" for index in range(len(keys)))
     named = ", ".join(f"k{index}" for index in range(len(keys)))
     joined = " AND ".join(f"t.{column} = k.k{index}" for index, column in enumerate(keys))
@@ -747,7 +750,8 @@ def _visible_columns(call: ast.Call) -> list[str]:
 
 
 def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
-    """a helper's ``where=`` fragments as written (``Fragment("t.due_at <= $1", (now,))``), renumbered past ``first``.
+    """a helper's ``where=`` fragments as written (``Fragment("t.due_at <= $1", (now,))``), renumbered past ``first``,
+    then the live guard :func:`live_guarded` gave the call, as the helper sends it beside them.
 
     A fragment the walk cannot read (a run-time list, a ``Fragment`` of run-time text) only narrows: every helper ANDs
     each fragment after its pins inside its own parentheses (``threetears.core.keyed._filters.narrowing``), so it can
@@ -755,7 +759,7 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
     they pin nothing. A fragment the walk reads is judged with them, as it may pin a key itself."""
     node = _argument(call, "where", None)
     if node is None or not isinstance(node, ast.Tuple | ast.List):
-        return [], first
+        return _guard(call), first
     written = []
     place = first
     for element in node.elts:
@@ -772,7 +776,77 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
         # the walk cannot see, in its own parentheses: its pins key nothing, the helper's still do
         written.append("({})" if holds_bare_interpolation(renumbered) else "(" + renumbered + ")")
         place += max(numbers, default=0)
-    return written, place
+    return [*written, *_guard(call)], place
+
+
+#: the keyword :func:`live_guarded` hands a call its live guard under: no identifier, so no call written in source
+#: carries it
+_LIVE_GUARD: Final = "\x00live"
+
+#: the shared keyed reads that read a stamped L3 table's live rows alone, adding its live guard beside their own
+#: filters at run time (``threetears.core.keyed.live_read`` / ``live_only``, ``counts_by`` through
+#: ``counts_by_relations``), each statement :func:`_filters` (or :func:`_read_keyed`) writes the guard into. Those
+#: taking ``with_gone`` leave it out when it is anything but a literal False (:data:`_WITH_GONE`). A pure builder
+#: (``read_by_statement``) adds none: its caller sends what it builds as it is
+_LIVE_GUARDED: Final[frozenset[str]] = frozenset(
+    {
+        "read_by",
+        "read_row",
+        "read_value",
+        "read_nearest",
+        "read_keyed",
+        "read_keyed_arrow",
+        "keyset_page",
+        "keyset_rows",
+        "copy_keyed",
+        "counts_by",
+    }
+)
+
+#: the guarded reads that take ``with_gone=``: read as stored (no guard) when it is True
+_WITH_GONE: Final[frozenset[str]] = frozenset({"read_keyed_arrow", "keyset_page", "keyset_rows", "copy_keyed"})
+
+
+def _guard(call: ast.Call) -> list[str]:
+    """the live guard :func:`live_guarded` gave the call, as the helper writes it (``NOT "gone"``); none when it gave
+    none."""
+    node = _argument(call, _LIVE_GUARD, None)
+    return [f"(NOT {_quoted(node.value)})"] if isinstance(node, ast.Constant) and isinstance(node.value, str) else []
+
+
+def live_guarded(call: ast.Call, stamped: Callable[[str], bool], gone: str) -> ast.Call:
+    """the keyed read with the live guard 3tears adds to it at run time, when it reads a stamped L3 table: a read of
+    :data:`_LIVE_GUARDED` whose table is a literal the catalog declares ``ROW_STAMPED`` (``stamped``), not read
+    ``with_gone`` (a literal False, or none given), answers only the rows no delete marked gone, ``NOT <gone>``
+    beside its own filters (``threetears.core.keyed.live_read``), so a live-only partial index (``WHERE NOT gone``)
+    holds every row it asks. The call as given for any other: a table named at run time, a derived relation, a pure
+    builder, a ``with_gone`` the walk cannot read as False.
+
+    :param call: a keyed helper call, its arguments resolved
+    :ptype call: ast.Call
+    :param stamped: whether a relation, as written, is a stamped L3 table
+    :ptype stamped: Callable[[str], bool]
+    :param gone: the column a stamped table's delete sets
+    :ptype gone: str
+    :return: the call, with the guard when it reads one
+    :rtype: ast.Call
+    """
+    helper = _name(call)
+    if helper not in _LIVE_GUARDED or any(given.arg == _LIVE_GUARD for given in call.keywords):
+        return call
+    if helper in _WITH_GONE:
+        with_gone = _argument(call, "with_gone", None)
+        if with_gone is not None and not (isinstance(with_gone, ast.Constant) and with_gone.value is False):
+            return call
+    table = _argument(call, "table", 1)
+    if not (isinstance(table, ast.Constant) and isinstance(table.value, str) and stamped(table.value)):
+        return call
+    return ast.copy_location(
+        ast.Call(
+            func=call.func, args=call.args, keywords=[*call.keywords, ast.keyword(_LIVE_GUARD, ast.Constant(gone))]
+        ),
+        call,
+    )
 
 
 def _shifted(number: int, *, by: int) -> int:
