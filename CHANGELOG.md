@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a copy follower keeps a versioned table one row a logical key
+
+**Added** (append-only L3, chunk 4): `FollowedTable` refuses a versioned L3 table (`TableSchema(row_epoch=row_versions(...))`)
+keyed by anything but its logical key: L3 stores a version of a key a write (its primary key the key, then the
+epoch), and the copy one row a key. `FollowedTable.of(schema)` already took the logical key (`schema.primary_key`); a
+table built by hand with L3's `stored_key` would have held a row a version, and now fails at its declaration.
+
+**Pinned** (`test_copy_follower_versions.py`): every L3 read the follower makes (the noted keys' `read_keyed_arrow`, a
+prefix's or a run's pages, a cold start's or a reset's whole read, all passing `table=`) answers each key's newest
+live version, so a newest "gone" marker reaches the copy as a delete (the key's delete stages, no row comes back), a
+run marker newer than a key's version deletes every key under its prefix (its record names the prefix, as a restore
+from the tables rebuilds it), a noted key that reads back empty leaves the copy, a rewrite replaces the copy's row
+(newest by epoch, never by arrival) with no second row, and a cold start over five versions a key holds one row a key.
+No row the copy holds is a marker. Each fails with the newest reads switched off.
+
 ### core: the copy's apply worker keeps column tokens, and reads an unsplit part by scope
 
 **Fixed:** `shared_copy` wrote every part unstamped, so `shared_arrow.file_tokens` gave none and a product's memo
