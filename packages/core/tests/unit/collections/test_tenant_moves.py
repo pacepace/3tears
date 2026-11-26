@@ -153,6 +153,9 @@ def test_a_move_is_recorded_in_the_same_statement_that_moves_the_row() -> None:
     epoch_param = re.search(r"epoch = GREATEST\(epoch \+ 1, (\$\d+(?:::\w+)?)\)", fenced)
     assert tenant_param is not None and epoch_param is not None, fenced
     new, stamp = tenant_param.group(1), epoch_param.group(1)
+    # one declared type for the value in its SET and in the move's IS DISTINCT FROM: bare, Postgres deduces a varchar
+    # column's two differently and refuses the statement (test_tenant_moves_live's fenced varchar move)
+    assert new.endswith("::uuid"), fenced
     assert (
         f"{_MOVED_FROM} = CASE WHEN {_TENANT} IS DISTINCT FROM {new} THEN {_TENANT} ELSE {_MOVED_FROM} END"
     ) in fenced, fenced
