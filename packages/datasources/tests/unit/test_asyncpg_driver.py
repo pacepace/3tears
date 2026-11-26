@@ -17,8 +17,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
+import pyarrow as pa
 import pytest
 
+from threetears.datasources.reply_arrow import rows_table
 from threetears.datasources.config import (
     BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
@@ -1185,6 +1187,64 @@ class TestFetchAtMost:
         driver = AsyncpgDriver(agent_internal_config, external_pool=_build_mock_pool())
         with pytest.raises(ValueError, match="max_rows"):
             await driver.fetch_at_most("SELECT 1", max_rows=0)
+
+
+class _Record(tuple[Any, ...]):
+    """an asyncpg ``Record`` as the Arrow build reads one: its values when iterated, its names from ``keys()``."""
+
+    names: tuple[str, ...] = ("n", "name")
+
+    def keys(self) -> tuple[str, ...]:
+        return self.names
+
+
+class TestFetchArrow:
+    """a read asked as Arrow: the cursor's records made one table on a thread, a column at a time."""
+
+    @staticmethod
+    def _driver(config: BorrowedPoolConnectionConfig, pages: list[list[_Record]]) -> tuple[AsyncpgDriver, AsyncMock]:
+        external = _build_mock_pool()
+        conn = external.recorded_conn
+        cursor = MagicMock(name="MockCursor")
+        cursor.fetch = AsyncMock(side_effect=pages)
+
+        async def open_cursor(*args: Any) -> Any:
+            return cursor
+
+        conn.cursor = MagicMock(side_effect=lambda *args: open_cursor(*args))
+
+        @asynccontextmanager
+        async def transaction() -> Any:
+            yield None
+
+        conn.transaction = MagicMock(side_effect=transaction)
+        return AsyncpgDriver(config, external_pool=external), cursor.fetch
+
+    @pytest.mark.asyncio
+    async def test_at_most_reads_no_more_than_asked_into_the_asked_types(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        schema = pa.schema([("n", pa.int64()), ("name", pa.string())])
+        driver, fetch = self._driver(agent_internal_config, [[_Record((index, f"p{index}")) for index in range(3)]])
+
+        table = await driver.fetch_arrow_at_most("SELECT n, name FROM big", schema=schema, max_rows=3)
+
+        assert table.schema.equals(schema)
+        assert table.to_pydict() == {"n": [0, 1, 2], "name": ["p0", "p1", "p2"]}
+        fetch.assert_awaited_once_with(3)
+
+    @pytest.mark.asyncio
+    async def test_within_pages_until_the_cut(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
+        schema = pa.schema([("n", pa.int64()), ("name", pa.string())])
+        rows = [_Record((index, f"precinct-{index:05d}")) for index in range(1_000)]
+        cap = rows_table(["n", "name"], rows[:250], schema).nbytes
+        driver, fetch = self._driver(agent_internal_config, [rows[:100], rows[100:1_000]])
+
+        within = await driver.fetch_arrow_within("SELECT n, name FROM big", schema=schema, max_bytes=cap, page_rows=100)
+
+        assert (within.table.num_rows, within.truncated) == (250, True)
+        assert within.table.column("n").to_pylist() == list(range(250))
+        assert fetch.await_count == 2
 
 
 class TestABorrowedPoolThatHasNoConnectionToSpare:

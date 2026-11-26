@@ -23,6 +23,7 @@ from threetears.core.keyed import Dialect
 from threetears.datasources.arrow_rows import relation_columns_sql, warehouse_arrow_types
 from threetears.datasources.query_client import (
     DATASOURCE_BUSY,
+    REPLY_NOT_ARROW,
     DatasourceQueryClient,
     DatasourceQueryError,
     DatasourceQueryRequest,
@@ -125,6 +126,27 @@ async def test_a_refusal_raises_the_hubs_code() -> None:
         await _client(nats).query_arrow("ds", "SELECT 1 AS race", types={"race": pa.int64()})
 
     assert raised.value.error_code == "ACCESS_DENIED"
+
+
+@pytest.mark.parametrize("framed", [False, True], ids=["json", "arrow-envelope"])
+async def test_the_hubs_refusal_of_a_value_not_of_its_type_raises_as_the_json_parse_did(framed: bool) -> None:
+    """Flips if the hub's own refusal of a column's type (it builds the table from the warehouse's values) reaches a
+    caller as anything but ReplyNotArrowError, which a reader answers by reading its types again."""
+    refusal = DatasourceQueryResponse(
+        success=False,
+        error_code=REPLY_NOT_ARROW,
+        error_message="column 'race': its values are not of the type asked for",
+    )
+    nats = _RawNats(_arrow_refusal(refusal) if framed else refusal.model_dump_json().encode())
+
+    with pytest.raises(ReplyNotArrowError, match="column 'race'"):
+        await _client(nats).query_arrow("ds", "SELECT race FROM t", types={"race": pa.int64()})
+
+
+def _arrow_refusal(refusal: DatasourceQueryResponse) -> bytes:
+    """a refusal as a hub answering an Arrow ask frames it: the magic, the envelope's length, the envelope."""
+    head = refusal.model_dump_json(exclude={"rows"}).encode()
+    return b"".join((b"L3ARROW1", struct.pack("!I", len(head)), head))
 
 
 async def test_a_busy_hub_is_asked_again(monkeypatch: pytest.MonkeyPatch) -> None:
