@@ -6,8 +6,8 @@ version itself -- the query workers map it -- but each query's answer (:attr:`Qu
 result files the worker wrote) and each lease a reader pins (:meth:`CopyQueries.current`). A page handler closes its
 answer (:meth:`QueryAnswer.aclose`, its files' close on a thread) and returns, dropping the table on the loop: the
 answer's arrays are freed there, and its mapping goes with the last of them. A version superseded by later changes is
-the serving process's no more once the last lease on it is released (an idle query worker may keep it mapped until the
-store needs its room, ``SharedArrowStore._evict_one``).
+the serving process's no more once the last lease on it is released (an idle query worker moves its kept mapping onto
+the current version as it is published, ``shared_arrow._KeptVersions``).
 
 The contract: at a realistic shape -- a split table of 200 columns (reports' parts: candidates 195, geographies 201,
 snapshots 197) over many scopes, the small ones packed (decision 2b) and a few big ones in parts of their own -- the

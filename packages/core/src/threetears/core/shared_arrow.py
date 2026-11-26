@@ -114,7 +114,6 @@ from threetears.core.eviction import (
     Policy,
     Tier,
     policy_declare,
-    policy_lookup,
 )
 from threetears.core.loop_turns import LoopTurns
 from threetears.core.processes import exit_with_parent, name_process, start_worker_server
@@ -207,13 +206,13 @@ _LOCK_FILE: Final = ".lock"
 
 #: the file in each version's directory a reader that keeps the version mapped only for its next read (an idle
 #: worker, :class:`_KeptVersions`) holds a shared ``flock`` on in place of :data:`_LOCK_FILE`: what tells a sweep the
-#: version is held only as a cache, which the store may let go when it is short of room. Its modification time is the
-#: version's last use (each lease and each kept mapping stamps it), the order eviction takes them in
+#: version is held only as a cache, which the store revokes as soon as the version is superseded
+#: (:meth:`SharedArrowStore.sweep`). Its modification time is when it stopped being current (:func:`_stamp_superseded`)
 _CACHED_FILE: Final = ".cached"
 
-#: the file in each version's directory the store holds an exclusive ``flock`` on while the version may stay cached;
-#: each reader keeping it mapped runs a thread waiting for a shared lock on it, and lets the mapping go when it gets
-#: one: the store's eviction is closing its lock (:meth:`SharedArrowStore._evict_one`)
+#: the file in each version's directory the store holds an exclusive ``flock`` on while the version is current; each
+#: reader keeping it mapped runs a thread waiting for a shared lock on it, and moves its mapping onto the current
+#: version when it gets one: the store closes its lock once a sweep finds the version superseded and held only cached
 _REVOKE_FILE: Final = ".revoke"
 
 #: the file in the versions directory naming the current version
@@ -250,7 +249,7 @@ _EVICTION: Final[Mapping[_Entry, Declared]] = MappingProxyType(
         _Entry.VERSION_BEING_PUBLISHED: Declared(Policy.KEEP, "its writer is mid-publish; it becomes current next"),
         _Entry.VERSION_IN_USE: Declared(Policy.KEEP, "a lease or a read holds it, and reads it as complete"),
         _Entry.VERSION_CACHED: Declared(
-            Policy.EVICTABLE, "superseded, held only by idle workers to save remapping their next read: a miss refills"
+            Policy.EVICTABLE, "superseded, held only by idle workers until they move onto the current version"
         ),
         _Entry.VERSION_UNHELD: Declared(
             Policy.EVICTABLE, "superseded and nobody holds it: retired at once by the sweep"
@@ -1601,8 +1600,8 @@ class MappedVersion(MappedTables):
 
     def park(self) -> bool:
         """hold the version as a cache between reads: its cached lock taken, then its read lock let go. A sweep then
-        sees a version held only for a next read, which the store may evict. Its last use is not stamped here: a
-        version is parked only while current, and the store stamps it as it stops being current (:func:`_stamp_used`).
+        sees a version held only for a next read, which the store revokes once it is superseded
+        (:class:`_KeptVersions`).
 
         :return: whether it was parked; False when it holds no read lock, or the version has no cached lock file (one
             written before eviction), and then it keeps its read lock as it is
@@ -1636,35 +1635,66 @@ class MappedVersion(MappedTables):
         return True
 
 
-def _stamp_used(path: Path) -> None:
-    """stamp a version's last use, the order eviction takes cached versions in (least recently used first): its
-    cached lock file's modification time, one ``utime`` (no lock, no write of the version), read only when the store
-    is short of room. Stamped as the version stops being current (every job reads the current version, so that is its
-    last use as such) and at each lease of it after, never per read: no lock and no syscall on a job's hot path.
+def _stamp_superseded(path: Path) -> None:
+    """stamp the moment a version stops being current: its cached lock file's modification time, one ``utime`` (no
+    lock, no write of the version), read only when a write short of room waits for the version's let-go, for the age
+    it reports (``threetears_cache_evicted_age_seconds``).
 
     :param path: the version's directory
     :ptype path: Path
     :return: nothing
     :rtype: None
     """
-    with contextlib.suppress(FileNotFoundError):  # NOSILENT: a version written before eviction, or retired: no order
+    with contextlib.suppress(FileNotFoundError):  # NOSILENT: a version written before eviction, or retired: no age
         os.utime(path / _CACHED_FILE)
 
 
+def _current_name(root: str) -> str | None:
+    """the version a store's directory names current (:meth:`SharedArrowStore._write_current`), read by a worker.
+
+    :param root: the store's directory
+    :ptype root: str
+    :return: the version; None when nothing is current (the store restarted, or is gone)
+    :rtype: str | None
+    """
+    try:
+        return (Path(root) / _VERSIONS_DIR / _CURRENT_FILE).read_text().strip() or None
+    except FileNotFoundError:
+        # NOSILENT: nothing current (the store restarted): the caller keeps nothing
+        return None
+
+
+#: how often a switch onto the current version tries again when the version it read as current was retired before it
+#: was mapped (superseded twice meanwhile): each try reads the newer name
+_SWITCH_TRIES: Final = 3
+
+
 class _KeptVersions:
-    """a worker process's mapped version per store directory: the one it read last, kept between reads as a cache the
-    store may take back.
+    """a worker process's mapped version per store directory: the one it read last, kept between reads, and moved
+    onto each newer version as soon as the store publishes it.
 
     Kept, a mapping holds its version's cached lock, not its read lock (:meth:`MappedVersion.park`), and a thread of
-    this process waits for the store to revoke it (:data:`_REVOKE_FILE`): when the store is short of room it lets the
-    least recently used cached version go, and each process keeping it closes its mapping as its thread wakes. A
-    mapping taken back for a read holds its read lock again first, so a version a job reads is never evicted.
+    this process waits for the store to revoke it (:data:`_REVOKE_FILE`). The store revokes a version as soon as a
+    sweep finds it superseded and held only cached (:meth:`SharedArrowStore.sweep`); the thread then maps the current
+    version, taking every file the two share from the kept mapping (``reuse``), so it maps only the files that changed,
+    and lets the superseded one go. A mapping taken back for a read holds its read lock again first, so a version a
+    job reads is never revoked from under it; a mapping a job held while it was superseded is moved on as the job
+    ends (:meth:`give_back`), before its lease goes.
 
-    What it costs, measured on macOS 2026-11-15 (``scratchpad/au1/bench.py``, a 50-table version, best of 7 x 2000):
-    a lease and a kept read 80 us before, 106 us now -- the six syscalls of moving between the two locks (5 us each on
-    macOS, about 1 on Linux) -- against a pool job's 325 us round trip; a lease alone 62 us before and now. The
-    alternative, telling idle from busy holders by the serving process's own leases, costs nothing per job but blocks
-    an eviction behind any reader that holds no lease, for as long as it reads.
+    Why move at once (Pace, 2026-11-26), not only when the store is short of room as before (e1c5cacb4): an idle
+    worker kept the version it read last until its next job or an eviction, so every pod held one superseded version
+    more than it reads -- the files of every change since that worker's last job, bounded by nothing but the store's
+    budget. Moved at once, a pod holds only what is current and what a job is reading. The move costs the worker what
+    its next job's map would have cost anyway (the changed files; the rest reused), paid on its own thread while it is
+    idle: measured on macOS 2026-11-26 (``scratchpad/letgo/bench.py``, a version of 2240 files of 20 columns, one
+    part changed, median of 7), the move maps in 8.7 ms and the superseded mapping closes in 1.2 ms, against 502 ms to
+    map the version afresh -- what the next job paid before whenever a busy worker's superseded mapping was let go.
+
+    What a kept read costs, measured on macOS 2026-11-15 (``scratchpad/au1/bench.py``, a 50-table version, best of
+    7 x 2000): a lease and a kept read 80 us before, 106 us now -- the six syscalls of moving between the two locks (5
+    us each on macOS, about 1 on Linux) -- against a pool job's 325 us round trip; a lease alone 62 us before and now.
+    The alternative, telling idle from busy holders by the serving process's own leases, costs nothing per job but
+    blocks a let-go behind any reader that holds no lease, for as long as it reads.
 
     :ivar hits: reads that found their version kept
     :ivar misses: reads that mapped it (another version, or none, was kept)
@@ -1674,6 +1704,10 @@ class _KeptVersions:
         #: a read-only snapshot replaced whole under ``_lock`` (decision 41); one entry per store
         self._kept: Mapping[str, MappedVersion] = EMPTY
         self._lock = threading.Lock()
+        #: held by a read taking its mapping and by a thread moving a kept mapping onto the current version, so a job
+        #: arriving mid-move waits for the moved mapping instead of mapping the version a second time. Taken before
+        #: ``_lock``, never while holding it
+        self._switching = threading.Lock()
         #: the kept mappings a thread waits to revoke, each once however often it is kept again; held weakly, replaced
         #: whole under ``_lock``
         self._watched: FrozenWeakSet[MappedVersion] = FrozenWeakSet()
@@ -1691,26 +1725,33 @@ class _KeptVersions:
         :rtype: MappedVersion
         :raises LookupError: when the version is gone
         """
-        with self._lock:
-            kept = self._kept.get(root)
-            self._kept = without_entries(self._kept, (root,))
-            if kept is not None and kept.name == version and kept.unpark():
-                self.hits += 1
-                return kept
-            self.misses += 1
-        if kept is not None and kept.name != version:
-            # the new version's files that are the kept one's are taken from it, never mapped again
-            try:
-                return MappedVersion(root, version, reuse=kept.by_inode)
-            finally:
+        with self._switching:
+            with self._lock:
+                kept = self._kept.get(root)
+                self._kept = without_entries(self._kept, (root,))
+                if kept is not None and kept.name == version and kept.unpark():
+                    self.hits += 1
+                    return kept
+                self.misses += 1
+            if kept is not None and kept.name != version:
+                # the new version's files that are the kept one's are taken from it, never mapped again
+                try:
+                    return MappedVersion(root, version, reuse=kept.by_inode)
+                finally:
+                    kept.close()
+            if kept is not None:
+                # the same version, but its read lock could not be taken again (it is being retired)
                 kept.close()
-        if kept is not None:
-            # the same version, but its read lock could not be taken again (it is being retired)
-            kept.close()
-        return MappedVersion(root, version)
+            return MappedVersion(root, version)
 
     def give_back(self, root: str, mapped: MappedVersion) -> None:
-        """keep ``mapped`` for the next read while it is the current version; let it go otherwise.
+        """keep ``mapped`` for the next read while it is the current version. One a job read as it was superseded is
+        moved onto the current version here, as the job ends (:meth:`_switch`): before the job's lease goes, so the
+        sweep its release runs retires the superseded version at once. Let go when nothing is current.
+
+        The move is paid on the job's way out, not by the next job: it maps only the changed files where the next job
+        would have mapped the whole version afresh (nothing was kept), and frees what the let-go of the superseded
+        mapping freed here before.
 
         :param root: the store's directory
         :ptype root: str
@@ -1719,17 +1760,35 @@ class _KeptVersions:
         :return: nothing
         :rtype: None
         """
-        try:
-            current: str | None = (Path(root) / _VERSIONS_DIR / _CURRENT_FILE).read_text().strip()
-        except FileNotFoundError:
-            # NOSILENT: nothing current (the store restarted): nothing kept is worth holding
-            current = None
+        current = _current_name(root)
+        if current is not None and current != mapped.name:
+            with self._switching:
+                self._switch(root, mapped)
+            return
+        self._keep(root, mapped, current)
+
+    def _keep(self, root: str, mapped: MappedVersion, current: str | None) -> None:
+        """park ``mapped`` and watch it for its revoke, kept for the next read; let it go when nothing is current, or
+        another mapping is kept already.
+
+        :param root: the store's directory
+        :ptype root: str
+        :param mapped: the mapping, holding its read lock
+        :ptype mapped: MappedVersion
+        :param current: the version the store names current, as read by the caller
+        :ptype current: str | None
+        :return: nothing
+        :rtype: None
+        """
         with self._lock:
-            keep = current == mapped.name and root not in self._kept
+            keep = current is not None and root not in self._kept
             # parked and watched under the lock the revoking thread takes, so it never sees a mapping half kept;
-            # a version with no cached lock file (written before eviction) is kept holding its read lock, as before
-            if keep and mapped.park() and not self._watch(root, mapped):
-                keep = False
+            # the current version with no cached lock file (written before eviction) is kept holding its read lock,
+            # as before, and a superseded one is let go (nothing would move it on)
+            if keep:
+                parked = mapped.park()
+                if (parked and not self._watch(root, mapped)) or (not parked and current != mapped.name):
+                    keep = False
             if keep:
                 self._kept = with_entries(self._kept, {root: mapped})
         if not keep:
@@ -1745,8 +1804,8 @@ class _KeptVersions:
             return self.hits, self.misses
 
     def _watch(self, root: str, mapped: MappedVersion) -> bool:
-        """start the thread that lets ``mapped`` go when the store revokes its version, once per mapping. Called under
-        ``_lock``.
+        """start the thread that moves ``mapped`` on when the store revokes its version, once per mapping. Called
+        under ``_lock``.
 
         :param root: the store's directory
         :ptype root: str
@@ -1780,8 +1839,9 @@ class _KeptVersions:
         return True
 
     def _revoked(self, descriptor: int, root: str, ref: weakref.ref[MappedVersion]) -> None:
-        """wait until the store revokes a kept version (lets go of its exclusive lock on the revoke file: an eviction,
-        or the version's retirement), then let its mapping go if it is still kept. The kept mapping's thread.
+        """wait until the store revokes a kept version (lets go of its exclusive lock on the revoke file: the version
+        superseded, or the store gone), then, if the mapping is still kept, move it onto the current version
+        (:meth:`_switch`). The kept mapping's thread, in the worker's process: the mapping is never the event loop's.
 
         :param descriptor: the open revoke file
         :ptype descriptor: int
@@ -1802,13 +1862,51 @@ class _KeptVersions:
         mapped = ref()
         if mapped is None:
             return
-        with self._lock:
-            kept = self._kept.get(root) is mapped
+        with self._switching:
+            with self._lock:
+                kept = self._kept.get(root) is mapped
+                if kept:
+                    self._kept = without_entries(self._kept, (root,))
+                self._watched = self._watched.without_item(mapped)
             if kept:
-                self._kept = without_entries(self._kept, (root,))
-            self._watched = self._watched.without_item(mapped)
-        if kept:
-            mapped.close()
+                try:
+                    self._switch(root, mapped)
+                except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
+                    contain(exc, log=log, what="a kept shared Arrow version could not move onto the current one")
+
+    def _switch(self, root: str, old: MappedVersion) -> None:
+        """move a kept mapping onto the version the store names current: the current version mapped, every file the
+        two share taken from ``old`` as it is (``reuse``), the new mapping kept in its place (:meth:`_keep`), and only
+        then ``old`` let go. ``old`` is only let go when nothing else is current (the store gone or restarted).
+        Called under ``_switching``, with ``old`` no longer kept.
+
+        The new mapping is parked before ``old``'s cached lock goes, so the store's sweep after the let-go
+        (:meth:`SharedArrowStore._await_let_go`) sees it held only cached: were it published over meanwhile, that sweep
+        revokes it in turn, where one that found it read-held mid-map would have left it kept.
+
+        :param root: the store's directory
+        :ptype root: str
+        :param old: the superseded mapping, parked
+        :ptype old: MappedVersion
+        :return: nothing
+        :rtype: None
+        """
+        moved: MappedVersion | None = None
+        try:
+            for _ in range(_SWITCH_TRIES):
+                current = _current_name(root)
+                if current is None or current == old.name:
+                    break
+                try:
+                    moved = MappedVersion(root, current, reuse=old.by_inode)
+                    break
+                except LookupError:
+                    # NOSILENT: superseded again and retired between the name's read and its map: read the newer one
+                    continue
+            if moved is not None:
+                self._keep(root, moved, moved.name)
+        finally:
+            old.close()
 
 
 #: the versions this worker process keeps mapped between reads
@@ -1818,8 +1916,9 @@ _KEPT_VERSIONS = _KeptVersions()
 @contextlib.contextmanager
 def read_version(root: Path | str, version: str) -> Iterator[MappedVersion]:
     """a worker's read of a version: the mapping it kept from its last read when that is the version, else a fresh
-    one (the kept one let go). After the block the mapping is kept for the next read unless another version is
-    current, so an idle worker never holds a superseded version past its next read.
+    one (the kept one's files reused, and it let go). After the block the mapping is kept for the next read, and
+    moved onto each newer version the store publishes as it is published (:class:`_KeptVersions`), so an idle worker
+    holds only the current version.
 
     The serving process must hold a lease on the version (:meth:`SharedArrowStore.lease`) until the read is done, so
     it is not retired between the hand-off and the mapping. One read at a time per process and store.
@@ -2706,6 +2805,33 @@ def _close_all(revoke_files: _RevokeFiles) -> None:
             os.close(descriptor)
 
 
+def _await_cached(descriptor: int, name: str, awaited: weakref.WeakMethod[Callable[[str, bool], None]]) -> None:
+    """a revoked version's let-go awaited: block until no idle worker holds its cached lock (each has moved its
+    mapping onto the current version, :class:`_KeptVersions`), then have the store sweep it away. The store's thread
+    for the version (:meth:`SharedArrowStore._await_let_go`); it holds the store weakly, so a store let go meanwhile is
+    collected.
+
+    :param descriptor: the version's open cached lock file
+    :ptype descriptor: int
+    :param name: the version
+    :ptype name: str
+    :param awaited: the store's :meth:`SharedArrowStore._awaited`, held weakly
+    :ptype awaited: weakref.WeakMethod[Callable[[str, bool], None]]
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        # blocks until the last idle worker keeping it lets go; a worker that dies lets go too
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as exc:
+        contain(exc, log=log, what="a superseded shared Arrow version's let-go wait failed; the next sweep retires it")
+    finally:
+        os.close(descriptor)
+    told = awaited()
+    if told is not None:
+        told(name, True)
+
+
 class SharedArrowStore:
     """the serving process's shared-memory Arrow: the versions it publishes for workers to read, and the results
     workers hand back. One store per directory, in one process.
@@ -2780,8 +2906,8 @@ class SharedArrowStore:
         # weakly: the tally is the store's, so a bound method there made the two a reference cycle, which only a full
         # collection frees once the store is let go
         self._held.on_view = _weakly(self._held_changed)
-        #: each version's revoke lock, held exclusive while it may stay cached (:data:`_REVOKE_FILE`): closed to evict
-        #: it, and as it is retired
+        #: each version's revoke lock, held exclusive while it is current (:data:`_REVOKE_FILE`): closed once a sweep
+        #: finds it superseded and held only cached, and as it is retired
         self._revokers = _RevokeFiles()
         weakref.finalize(self, _close_all, self._revokers)
         #: the versions held only cached (EVICTABLE: :data:`_Entry.VERSION_CACHED`) as of the last sweep, with the bytes
@@ -2802,6 +2928,11 @@ class SharedArrowStore:
         self._settling = threading.Condition()
         self._settle_due = False
         self._settler: threading.Thread | None = None
+        #: superseded versions revoked whose idle workers are letting them go, each awaited by a thread of its own
+        #: (:meth:`_await_let_go`), and those threads still running (their sweep included): replaced whole, and
+        #: counted, under ``_settling``, which :meth:`settle` and a write short of room wait on
+        self._letting_go: frozenset[str] = frozenset()
+        self._awaiting = 0
         with contextlib.suppress(FileNotFoundError):  # NOSILENT: nothing current is the start's state either way
             (self._versions / _CURRENT_FILE).unlink()
         self._load_manifests()
@@ -3039,8 +3170,8 @@ class SharedArrowStore:
                     published = self._described(target)
                     self._write_current(name)
                     if self._current is not None and self._current.name != name:
-                        # its last use as current is now: the recency an idle worker keeping it is evicted by
-                        _stamp_used(self._current.path)
+                        # superseded now: the age a write short of room reports, should it wait for its let-go
+                        _stamp_superseded(self._current.path)
                     self._current = published
                     self._published += 1
             finally:
@@ -3114,13 +3245,8 @@ class SharedArrowStore:
                     raise LookupError(f"shared Arrow version {version!r} is not held")
             # under the state lock, which every retirement takes: the version cannot go between the check and this
             descriptor = _locked(held.path, fcntl.LOCK_SH, verify=False)
-            superseded = held is not self._current
         if descriptor is None:
             raise LookupError(f"shared Arrow version {held.name!r} is being retired")
-        if superseded:
-            # a lease of a superseded version is a use: one leased since another cached one's last use is evicted
-            # after it. The current version is stamped as it stops being current, never per lease (one utime each)
-            _stamp_used(held.path)
         return SharedLease(held, descriptor, on_release)
 
     def reserve(self, max_bytes: int) -> SegmentSlot:
@@ -3572,8 +3698,10 @@ class SharedArrowStore:
         with self._state:
             retired, cached = self._sweep_versions(gone)
             revokers = self._revokers.held
-            self._revokers.held = without_entries(revokers, retired)
-            for name in retired:
+            # a superseded version held only cached is revoked now, its idle workers moving onto the current one
+            # (:class:`_KeptVersions`): closed with the retired versions' locks
+            self._revokers.held = without_entries(revokers, [*retired, *cached])
+            for name in (*retired, *cached):
                 revoker = revokers.get(name)
                 if revoker is not None:
                     os.close(revoker)
@@ -3614,21 +3742,86 @@ class SharedArrowStore:
                 if each not in self._claimed and not (self._segments / each).exists()
             ]
             self._claimed_bytes = without_entries(self._claimed_bytes, gone_claims)
+        if cached:
+            self._await_let_go(cached)
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
 
     def settle(self) -> None:
-        """wait until the sweep a publish left to the store's thread has run: its readers told, superseded versions
-        retired and their files removed (:meth:`publish`). What the directory holds is then what the store's state
-        says it may: a caller that asks right after a publish (a test, a measure) reads that, not the step before.
+        """wait until the sweep a publish left to the store's thread has run, and every superseded version it revoked
+        has been let go by its idle workers and swept: its readers told, superseded versions retired and their files
+        removed (:meth:`publish`). What the directory holds is then what the store's state says it may: a caller that
+        asks right after a publish (a test, a measure) reads that, not the step before.
 
         :return: nothing
         :rtype: None
         """
         with self._settling:
-            while self._settler is not None:
+            while self._settler is not None or self._awaiting:
                 self._settling.wait()
+
+    def _await_let_go(self, names: Sequence[str]) -> None:
+        """for each superseded version just revoked (:meth:`sweep`), a thread that waits until its idle workers have
+        let it go -- the version's cached lock free, each worker's mapping moved onto the current version
+        (:class:`_KeptVersions`) -- and then sweeps, retiring it. One thread a version, however many sweeps find it.
+
+        :param names: the versions held only cached
+        :ptype names: Sequence[str]
+        :return: nothing
+        :rtype: None
+        """
+        with self._settling:
+            new = [name for name in names if name not in self._letting_go]
+            self._letting_go = self._letting_go | frozenset(new)
+            self._awaiting += len(new)
+        for name in new:
+            try:
+                descriptor = os.open(self._versions / name / _CACHED_FILE, os.O_RDONLY)
+            except FileNotFoundError:
+                # NOSILENT: retired since the sweep, which is what was awaited
+                self._awaited(name, False)
+                continue
+            waiter = threading.Thread(
+                target=_await_cached,
+                args=(descriptor, name, weakref.WeakMethod(self._awaited)),
+                name="shared-arrow-let-go",
+                daemon=True,
+            )
+            try:
+                waiter.start()
+            except RuntimeError as exc:
+                # NOSILENT: no thread to be had (the interpreter shutting down): the next sweep retires it
+                os.close(descriptor)
+                contain(exc, log=log, what="a superseded shared Arrow version's let-go could not be awaited")
+                self._awaited(name, False)
+
+    def _awaited(self, name: str, sweep: bool) -> None:
+        """a superseded version's let-go awaited (:func:`_await_cached`): it is no longer being awaited, ``sweep``
+        retires it, and then :meth:`settle` and a write short of room are told.
+
+        :param name: the version
+        :ptype name: str
+        :param sweep: whether to sweep (it was awaited; not when its wait could not start)
+        :ptype sweep: bool
+        :return: nothing
+        :rtype: None
+        """
+        with self._settling:
+            # out of the set before the sweep, so a sweep that finds it cached again (a worker took it meanwhile)
+            # awaits it again
+            self._letting_go = self._letting_go - {name}
+        try:
+            if sweep:
+                self.sweep()
+        except Exception as exc:  # noqa: BLE001 -- a thread has no caller to raise to; contained, so it is counted
+            contain(
+                exc, log=log, what="a shared Arrow sweep after a version's let-go failed; the next sweep retries it"
+            )
+        finally:
+            with self._settling:
+                self._awaiting -= 1
+                self._settling.notify_all()
 
     def _settle_soon(self) -> None:
         """have the store's thread tell the readers and sweep, after the caller returns: one thread at a time, a
@@ -3972,95 +4165,77 @@ class SharedArrowStore:
 
     def _with_room[T](self, reserved: Callable[[], T | None]) -> T | None:
         """``reserved()`` under ``_state`` -- a room check and what it reserves, in one hold -- and while it finds no
-        room, the least recently used cached version evicted and it asked again: a write is refused only when what is
-        in use alone does not fit.
+        room and a superseded version is being let go, that let-go waited for and it asked again: a write is refused
+        only when what is in use alone does not fit.
 
         :param reserved: checks the room and reserves; None when there is none
         :ptype reserved: Callable[[], T | None]
-        :return: what it reserved; None when there was no room with nothing cached left to evict
+        :return: what it reserved; None when there was no room with nothing superseded left to let go
         :rtype: T | None
         """
         while True:
             with self._state:
                 made = reserved()
-            if made is not None or not self._evict_one():
+            if made is not None or not self._let_go_for_room():
                 return made
 
-    def _evict_one(self) -> bool:
-        """let go of the cached version used longest ago: its revoke lock closed, so each idle worker keeping it maps
-        lets it go (:class:`_KeptVersions`), then, once none holds it, swept away like any version nobody holds.
+    def _let_go_for_room(self) -> bool:
+        """wait for every superseded version held only cached to be let go (:meth:`_await_let_go`) and retired, for a
+        write short of room: a sweep first revokes any the store's thread has not swept yet. What is left is what a
+        lease or a read holds, or the current version, none of which is let go.
 
-        Safe across processes by the locks alone: a version a lease or a read holds is never a candidate, and one a
-        lease takes after it was picked is not retired by the sweep (its read lock refuses the sweep's), so a job is
-        given a version whole; a reader of another process that races it gets it whole or a clean miss
-        (:func:`_locked`). Blocking: it waits for the keeping workers' threads to let go, each a few syscalls.
+        Safe across processes by the locks alone: a version a lease or a read holds is never retired (its read lock
+        refuses the sweep's), so a job is given a version whole; a reader of another process that races the
+        retirement gets it whole or a clean miss (:func:`_locked`). Blocking: it waits for the idle workers' threads
+        to move their mappings on, each the changed files' maps (:class:`_KeptVersions`).
 
-        Why evict this way: a superseded version an idle worker keeps saves that worker mapping the next version's
-        files afresh (most are the kept one's, :class:`MappedVersion`'s ``reuse``) -- worth keeping while there is
-        room, worth nothing against a change refused for room (cobalt prod, 2026-11-04: every change refused from
-        14:16Z). The alternative, letting every superseded version go at once, would remap each worker's version after
-        every publish whether room was short or not.
+        Why evict this way: every superseded version is revoked as a sweep finds it held only cached
+        (:meth:`sweep`), so there is no choice of which to let go and nothing kept for later to let go first: what
+        e1c5cacb4 evicted here, least recently used first, is now let go at every publish (Pace, 2026-11-26). What is
+        left of eviction is this wait: a write that arrives while idle workers are still moving onto the version
+        published just before it (cobalt prod, 2026-11-04: every change refused from 14:16Z for room superseded
+        versions held) waits for the let-go in flight instead of being refused.
 
-        :return: whether a cached version was let go (or tried); False when nothing is cached
+        :return: whether a version was retired meanwhile, so the room is worth asking again; False when none was
         :rtype: bool
         """
+        self.sweep()
         with self._state:
-            picked = self._least_recent()
-            if picked is None:
+            nbytes = self._evictable
+        with self._settling:
+            # a version whose let-go just ended is out of _letting_go before its thread's sweep retires it: awaited
+            # by what the sweep found cached, and waited for by the threads' count, which drops after their sweeps
+            awaited = self._letting_go | frozenset(nbytes)
+            if not awaited and not self._awaiting:
                 return False
-            name, used_ns, nbytes = picked
-            revoker = self._revokers.held[name]
-            self._revokers.held = without_entries(self._revokers.held, (name,))
-        os.close(revoker)
-        path = self._versions / name
-        try:
-            waiting = os.open(path / _CACHED_FILE, os.O_RDONLY)
-        except FileNotFoundError:
-            # NOSILENT: retired meanwhile, which is what was wanted
-            waiting = None
-        if waiting is not None:
-            try:
-                # every keeping worker's thread closes its mapping as the revoke lock goes; this waits for the last
-                fcntl.flock(waiting, fcntl.LOCK_EX)
-            finally:
-                os.close(waiting)
-        if name in self.sweep():
-            age = max(0.0, (time.time_ns() - used_ns) / 1e9)
+        with self._state:
+            awaited = frozenset(name for name in awaited if name in self._manifests)
+        superseded_ns: dict[str, int] = {}
+        for name in awaited:
+            with contextlib.suppress(FileNotFoundError):  # NOSILENT: retired meanwhile: no age to report
+                superseded_ns[name] = os.stat(self._versions / name / _CACHED_FILE).st_mtime_ns
+        with self._settling:
+            while self._awaiting:
+                self._settling.wait()
+        # the awaiting threads sweep as each let-go ends; swept here too, so what they retired is gone on return
+        self.sweep()
+        with self._state:
+            gone = [name for name in awaited if name not in self._manifests]
+        now_ns = time.time_ns()
+        for name in gone:
+            freed = nbytes.get(name, 0)
+            age = max(0.0, (now_ns - superseded_ns.get(name, now_ns)) / 1e9)
             with self._state:
                 self._evictions += 1
-                self._evicted_bytes += nbytes
+                self._evicted_bytes += freed
             EVICTIONS.labels(tier=_TIER, name=self._name).inc()
-            EVICTED_BYTES.labels(tier=_TIER, name=self._name).inc(nbytes)
+            EVICTED_BYTES.labels(tier=_TIER, name=self._name).inc(freed)
             EVICTED_AGE_SECONDS.labels(tier=_TIER, name=self._name).set(age)
             log.info(
-                "shared Arrow cached version evicted for room",
-                extra={"extra_data": {"version": name, "bytes": nbytes, "unused_seconds": round(age, 3)}},
+                "shared Arrow superseded version let go for room",
+                extra={"extra_data": {"version": name, "bytes": freed, "superseded_seconds": round(age, 3)}},
             )
-        return True
-
-    def _least_recent(self) -> tuple[str, int, int] | None:
-        """the cached version used longest ago that the store may revoke: held only by idle workers as of the last
-        sweep, neither current nor being published. Its last use is its cached lock file's time
-        (:func:`_stamp_used`), read here only, when room is short. Called under ``_state``.
-
-        :return: (its name, its last use in ns, the bytes it alone holds), or None
-        :rtype: tuple[str, int, int] | None
-        """
-        if not policy_lookup(Tier.SHARED, _Entry.VERSION_CACHED.value).evictable:
-            return None
-        current = None if self._current is None else self._current.name
-        best: tuple[str, int, int] | None = None
-        for name, nbytes in self._evictable.items():
-            if name in (current, self._pending) or name not in self._revokers.held:
-                continue
-            try:
-                used = os.stat(self._versions / name / _CACHED_FILE).st_mtime_ns
-            except FileNotFoundError:
-                # NOSILENT: retired since the sweep: not a candidate
-                continue
-            if best is None or used < best[1]:
-                best = (name, used, nbytes)
-        return best
+        return bool(gone)
 
     def _only_named(self, name: str) -> int:
         """the bytes a version's eviction would free: its own directory's and the part files no other version names.
@@ -4226,10 +4401,10 @@ class SharedArrowStore:
 
         def reclaim(fits: Callable[[], bool]) -> None:
             # what a publish left to the store's thread may not have gone yet: swept now, then counted again; then
-            # what is only cached, least recently used first, until the write fits or nothing cached is left
+            # the superseded versions idle workers are still letting go, waited for until the write fits or none is
             self.sweep()
             counted()
-            while not fits() and self._evict_one():
+            while not fits() and self._let_go_for_room():
                 counted()
 
         counted()

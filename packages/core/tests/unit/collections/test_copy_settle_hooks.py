@@ -193,9 +193,11 @@ class TestLetGo:
         try:
             rows = pa.concat_tables([_run_rows(state, run, 20) for state in ("AZ", "GA", "VA") for run in (1, 2, 3)])
             applied = await backend.apply([ChangePage(ROWS, "by_run", rows)], whole={"by_run"})
-            parts = held_parts(store.root, applied.version, "by_run")
-            assert len(parts) == 1 and all(is_pack(part) for part in parts), sorted(parts)
-            assert _held(store, "by_run", RUN_SCHEMA, applied.version).num_rows == 180
+            # the applied version is superseded by the let-go's publish inside apply, and goes as soon as the apply
+            # worker moves onto that (nothing holds it): what it held is read from what the apply says it wrote
+            parts = applied.parts["by_run"]
+            assert len(parts) == 1 and all(is_pack(part) and written for part, written in parts.items()), parts
+            assert applied.rows == 180
             assert applied.let_go is not None
             assert applied.let_go.parts == {"by_run": {next(iter(parts)): True}}
             assert applied.let_go.rows == {"by_run": 20}
