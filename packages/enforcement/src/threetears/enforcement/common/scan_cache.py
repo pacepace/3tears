@@ -183,7 +183,7 @@ def _exclusive_temporary(directory: Path, prefix: str) -> tuple[int, str]:
         path = directory / f"{prefix}{os.getpid()}-{threading.get_ident()}-{next(_TEMPORARIES)}.tmp"
         try:
             return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644), str(path)
-        except FileExistsError:
+        except FileExistsError:  # NOSILENT: a name a dead writer left behind is taken; the next number is tried
             continue
 
 
