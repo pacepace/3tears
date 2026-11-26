@@ -122,8 +122,14 @@ _PRIMITIVES: dict[str, frozenset[str]] = {
             # the writer ledger's connection class: it passes each statement (a COPY included) to asyncpg as it was
             # sent, noting only when it began; the write is its caller's, judged where that caller sends it
             f"{_CORE}/utils/write_ledger.py::write_ledger_connection_class",
-            # the epoch machinery's own ledgers: the scope epochs and the source fence
+            # the epoch machinery's own ledger: the scope epochs
             f"{_CORE}/collections/scope_epochs.py::ScopeEpochs",
+            # a stamped table's keyed delete, its gone mark: the update it sends IS the delete its caller asked for,
+            # judged at each call site by the table it hands it (walkers._KEYED_WRITES)
+            f"{_CORE}/collections/gone_marks.py::mark_gone_keyed",
+            # the source fence, a stamped table (ROW_STAMPED) no collection serves and no cache holds: its advance rises
+            # the row's epoch and its clear marks rows gone, each stamped from the caller's CallerTransaction and sent
+            # stamped (stamping_write), so the broker committing it advances the table as for every stamped write
             f"{_CORE}/coordination/source_token.py::SourceTokenFence",
             f"{_CORE}/coordination/source_token.py::clear_signals",
             # the log keeper's own marks of the change log in L3 (installed, marked, swept by the log's window)

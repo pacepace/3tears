@@ -38,16 +38,15 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
-from threetears.core.ddl.row_epoch import GONE_COLUMN
 from threetears.core.collections.epoch_change import ChangedRow, key_text
+from threetears.core.collections.gone_marks import mark_gone_keyed
 from threetears.core.collections.generation import (
     advance_for_write,
     has_write_generation,
     primary_key_of_table,
 )
 from threetears.core.exceptions import GenerationUnavailableError
-from threetears.core.keyed import AnyOf, Fragment, Sort, counts_by, delete_keyed, keyset_rows, update_keyed
-from threetears.interfaces.keyed.filters import quote_identifier
+from threetears.core.keyed import AnyOf, Sort, counts_by, delete_keyed, keyset_rows, update_keyed
 from threetears.interfaces.keyed.rows import KeyBatch, KeyColumns
 from threetears.observe import get_logger
 
@@ -376,13 +375,7 @@ async def apply_delete_cascade(collection: Any, cascaded: Sequence[CascadedRows]
                 keys=KeyBatch(columns, keys=values, casts=casts),
             )
         elif stamped:
-            await update_keyed(
-                pool,
-                schema.name,
-                values=child.stamped_values({GONE_COLUMN: True}, conn=conn),
-                keys=KeyBatch(columns, keys=values, casts=casts),
-                where=[Fragment(f"NOT {quote_identifier(GONE_COLUMN)}")],
-            )
+            await mark_gone_keyed(pool, schema.name, keys=KeyBatch(columns, keys=values, casts=casts))
         else:
             await delete_keyed(pool, schema.name, keys=KeyBatch(columns, keys=values, casts=casts))
         log.info(

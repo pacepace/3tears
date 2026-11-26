@@ -106,6 +106,8 @@ _BACKEND_ROW_WRITES: Final[frozenset[str]] = frozenset({"upsert", "delete", "ins
 _KEYED_WRITES: Final[dict[str, tuple[str, int, str]]] = {
     "update_keyed": ("UPDATE", 1, "table"),
     "delete_keyed": ("DELETE", 1, "table"),
+    # a stamped table's keyed delete, sent as its gone mark (threetears.core.collections.gone_marks)
+    "mark_gone_keyed": ("UPDATE", 1, "table"),
     "update_from": ("UPDATE", 1, "table"),
     "apply_stage": ("INSERT", 1, "target"),
     "delete_matching": ("DELETE", 1, "table"),

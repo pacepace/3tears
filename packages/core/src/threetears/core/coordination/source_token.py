@@ -19,6 +19,14 @@ condition against its latest version, so two replicas given the same token at th
 accept it exactly once. The work the token starts runs inside the same transaction
 (:meth:`SourceTokenFence.advancing`): if starting it fails, the transaction rolls back and the token
 is not spent, so the producer's retry is accepted rather than refused as a repeat.
+
+**Stamped** (``ROW_STAMPED``, append-only L3): the fence table carries its epoch like every table its owner keeps.
+An advance rises the row's epoch (``GREATEST(epoch + 1, <stamp>)``) and revives a cleared row (``gone = false``); a
+clear marks its rows gone in place (:func:`~threetears.core.collections.gone_marks.mark_gone_keyed`), never a
+``DELETE``, so a restore of a lost change log hears both, and every read sees live rows alone. The stamp is drawn from
+the caller's :class:`~threetears.core.collections.caller_transaction.CallerTransaction` (an SDK pod's
+``provider_transaction`` opens one), so its commit names it as its ``s_min``; each statement says it stamps on the
+wire (``stamping_write``), so the broker that commits it records the change as every stamped write's.
 """
 
 from __future__ import annotations
@@ -32,6 +40,10 @@ from typing import Any, Final
 from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.observe import get_logger
 
+from threetears.core.backends.broker_generation import stamping_write
+from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.gone_marks import mark_gone_keyed
+from threetears.core.ddl.row_epoch import EPOCH_COLUMN, GONE_COLUMN, ROW_STAMPED, rising_epoch_assignment
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
@@ -42,7 +54,6 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.keyed.point import read_row
-from threetears.core.keyed.writes import delete_keyed
 from threetears.core.eviction import Declared, Policy
 
 __all__ = [
@@ -73,7 +84,8 @@ def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
     """the fence table, for the owner to declare among its tables: one row per signal.
 
     It lives among its owner's tables, in the owner's own schema, so its tenancy is that schema
-    (``TENANT_BY_SCHEMA``): a change record of it belongs to that owner alone.
+    (``TENANT_BY_SCHEMA``): a change record of it belongs to that owner alone. Stamped (``ROW_STAMPED``): one row a
+    signal, updated in place, carrying its last write's epoch, a clear marking it gone (the module's docstring).
 
     :param name: the table's name
     :ptype name: str
@@ -93,6 +105,8 @@ def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
         ],
         on_conflict="update",
         tenancy=TENANT_BY_SCHEMA,
+        # every table carries an epoch (Pace): an advance rises it, a clear marks the row gone in place
+        row_epoch=ROW_STAMPED,
         indexes=(
             # the signals a prefix names (a job's rows, ``refresh_ready/<job>``) in code-point order, a range on
             # YugabyteDB: the key's own index is in the database's collation, which a prefix range cannot seek
@@ -115,20 +129,23 @@ def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
 
 
 async def clear_signals(conn: Any, table: str, *, signal: str | None = None, prefix: str | None = None) -> list[str]:
-    """delete a fence's rows: the one ``signal`` names, and every one whose name starts with ``prefix``.
+    """clear a fence's rows: the one ``signal`` names, and every one whose name starts with ``prefix``, each marked
+    gone in place (:func:`~threetears.core.collections.gone_marks.mark_gone_keyed`), never deleted: the fence is
+    stamped (:func:`source_tokens_schema`), so a restore hears the clear, and the next token is accepted as a first.
 
-    In the caller's transaction (a reset of a ready signal: its job-less row and each job's, ``refresh_ready/<job>``).
+    In the caller's transaction (a reset of a ready signal: its job-less row and each job's, ``refresh_ready/<job>``),
+    whose :class:`~threetears.core.collections.caller_transaction.CallerTransaction` the marks draw their stamp from.
     The prefix's rows are a code-point range read through the fence's ``COLLATE "C"`` index
     (:func:`source_tokens_schema`), never the table: a name that only begins like it (``refresh_ready_other`` for
-    ``refresh_ready/``) is no row of it.
+    ``refresh_ready/``) is no row of it. A row already gone is left as it is, and named by neither.
 
     :param conn: the caller's connection, in its transaction (anything with an asyncpg-shaped ``fetch``)
     :ptype conn: Any
     :param table: the fence's table
     :ptype table: str
-    :param signal: the one row deleted by its name; none when None
+    :param signal: the one row cleared by its name; none when None
     :ptype signal: str | None
-    :param prefix: the rows deleted whose name starts with it; none when None
+    :param prefix: the rows cleared whose name starts with it; none when None
     :ptype prefix: str | None
     :return: the names cleared, sorted
     :rtype: list[str]
@@ -136,12 +153,14 @@ async def clear_signals(conn: Any, table: str, *, signal: str | None = None, pre
     """
     if signal is None and prefix is None:
         raise ValueError("a fence clear names its signal, or the prefix its rows share")
+    # the table's declaration registers it stamped, so its marks and reads know it whoever built the table list
+    source_tokens_schema(table)
     cleared: list[str] = []
     if signal is not None:
-        named = await delete_keyed(conn, table, by={"signal": signal}, returning=(_SIGNAL,))
+        named = await mark_gone_keyed(conn, table, by={_SIGNAL: signal}, returning=(_SIGNAL,))
         cleared += [str(row[_SIGNAL]) for row in named.rows]
     if prefix is not None:
-        started = await delete_keyed(conn, table, prefix={"signal": prefix}, returning=(_SIGNAL,))
+        started = await mark_gone_keyed(conn, table, prefix={_SIGNAL: prefix}, returning=(_SIGNAL,))
         cleared += [str(row[_SIGNAL]) for row in started.rows]
     return sorted(cleared)
 
@@ -218,6 +237,8 @@ class SourceTokenFence:
         #: the table's key (:func:`source_tokens_schema`): a fence's row is read by it
         self._key_column: KeyColumn = _SIGNAL
         self._signal = signal
+        # the table's declaration registers it stamped, so its reads see live rows alone whoever built the table list
+        source_tokens_schema(table)
 
     @asynccontextmanager
     async def advancing(self, token: SourceToken) -> AsyncIterator[Advance]:
@@ -225,7 +246,11 @@ class SourceTokenFence:
 
         Accepted, the token is the last accepted once the block ends without raising; a block that
         raises rolls the advance back, so the token can be signalled again. Refused, nothing changes
-        and the block is told which token stood.
+        and the block is told which token stood. A cleared (gone) row stands for no token: any token
+        is accepted over it, and revives it.
+
+        The row's epoch rises past a stamp drawn from the transaction (``CallerTransaction.stamp_for``),
+        and the statement says it stamps (``stamping_write``), as every stamped write does.
 
         :param token: the token signalled
         :ptype token: SourceToken
@@ -234,17 +259,23 @@ class SourceTokenFence:
         """
         async with self._transaction() as conn:
             previous = await self._read(conn)
-            row = await conn.fetchrow(
-                f"INSERT INTO {self._table} ({_SIGNAL}, {_RUN_ID}, {_AS_OF}, accepted_at, date_created, date_updated) "  # noqa: S608 - the owner's own table
-                "VALUES ($1, $2, $3, now(), now(), now()) "
-                f"ON CONFLICT ({_SIGNAL}) DO UPDATE SET {_RUN_ID} = EXCLUDED.{_RUN_ID}, {_AS_OF} = EXCLUDED.{_AS_OF}, "
-                "accepted_at = now(), date_updated = now() "
-                f"WHERE {self._table}.{_RUN_ID} < EXCLUDED.{_RUN_ID} AND {self._table}.{_AS_OF} <= EXCLUDED.{_AS_OF} "
-                f"RETURNING {_RUN_ID}",
-                self._signal,
-                token.run_id,
-                token.as_of,
-            )
+            stamp = CallerTransaction.stamp_for(conn, self._table_name)
+            with stamping_write(stamp):
+                row = await conn.fetchrow(
+                    f"INSERT INTO {self._table} ({_SIGNAL}, {_RUN_ID}, {_AS_OF}, accepted_at, date_created, "  # noqa: S608 - the owner's own table
+                    f"date_updated, {EPOCH_COLUMN}) VALUES ($1, $2, $3, now(), now(), now(), $4) "
+                    f"ON CONFLICT ({_SIGNAL}) DO UPDATE SET {_RUN_ID} = EXCLUDED.{_RUN_ID}, "
+                    f"{_AS_OF} = EXCLUDED.{_AS_OF}, accepted_at = now(), date_updated = now(), {GONE_COLUMN} = false, "
+                    f"{rising_epoch_assignment(self._table)} "
+                    # a cleared row stands for no token: any token is accepted over it
+                    f"WHERE {self._table}.{GONE_COLUMN} OR ({self._table}.{_RUN_ID} < EXCLUDED.{_RUN_ID} "
+                    f"AND {self._table}.{_AS_OF} <= EXCLUDED.{_AS_OF}) "
+                    f"RETURNING {_RUN_ID}",
+                    self._signal,
+                    token.run_id,
+                    token.as_of,
+                    stamp,
+                )
             # refused: the token that stands, which a racing advance may have written since the read above
             last = previous if row is not None else await self._read(conn)
             advance = Advance(accepted=row is not None, last=last)
@@ -275,7 +306,7 @@ class SourceTokenFence:
 
         :param conn: the transaction's connection
         :ptype conn: Any
-        :return: the token, None when no token was accepted
+        :return: the token, None when no token was accepted or its row was cleared (gone: the read sees live rows)
         :rtype: SourceToken | None
         """
         row = await read_row(
