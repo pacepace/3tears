@@ -12,6 +12,10 @@ or of a batch of keys) names its rows by a leading part of a key, as a keyed rea
 expression (a :class:`~threetears.interfaces.keyed.Fragment`: ``now()``) or an :class:`Increment`. A write names a
 key: one with neither ``by``, ``keys`` nor ``prefix`` is refused, never a write of every row.
 
+A write of a stamped L3 table (``ROW_STAMPED``) by key writes its live rows alone, as every shared keyed read reads
+them: its live guard (``NOT "gone"``) is added beside ``where``, so an update never changes a row a delete marked gone.
+A write meant for gone rows (a revive of a gone key, a migration's backfill of every row) says so (``with_gone=True``).
+
 Pure: :func:`update_keyed_statements` and :func:`delete_keyed_statements` write each statement and its binds;
 ``threetears.core.keyed.update_keyed`` / ``delete_keyed`` run them, and a writer with no 3tears core runs them on its
 own connection (``execute``; ``fetch`` for its ``RETURNING`` rows).
@@ -34,7 +38,7 @@ from threetears.interfaces.keyed.filters import (
     quoted_table,
     renumbered,
 )
-from threetears.interfaces.keyed.keys import stated_literals
+from threetears.interfaces.keyed.keys import live_guard, stamped_table, stated_literals
 from threetears.interfaces.keyed.rows import (
     DEFAULT_KEY_BATCH,
     PLAIN_KEYS,
@@ -51,6 +55,7 @@ __all__ = [
     "StageMode",
     "StageWrite",
     "delete_keyed_statements",
+    "live_written",
     "update_keyed_statements",
 ]
 
@@ -248,6 +253,56 @@ def _patterns(
     ]
 
 
+def live_written(
+    table: str,
+    values: Mapping[str, Any],
+    where: Sequence[Fragment],
+    *,
+    with_gone: bool = False,
+    l3: bool = True,
+    row: str | None = None,
+) -> tuple[Fragment, ...]:
+    """a keyed update's guards, with a stamped L3 table's live guard beside them (``NOT "gone"``,
+    :func:`~threetears.interfaces.keyed.keys.live_guard`): the update then writes live rows alone, never one a delete
+    marked gone, as every shared keyed read reads them. Unchanged for a write ``with_gone`` (a revive, a backfill of
+    every row), one that does not go to L3 (a local copy holds only live rows), or a table no stamped declaration names.
+
+    WHY at the write, not at each caller: a write by key that names a gone row changes it in place (its epoch risen,
+    its columns rewritten) and one setting the flag false revives it, so the guard is the write's own, as it is a read's
+    (``threetears.core.keyed.live_only``); a guard the caller already states (``mark_gone_keyed``'s) is sent once.
+
+    :param table: the table written, as its schema names it
+    :ptype table: str
+    :param values: the columns the update sets
+    :ptype values: Mapping[str, Any]
+    :param where: the update's own guards
+    :ptype where: Sequence[Fragment]
+    :param with_gone: the update writes gone rows too (a revive, a backfill of every row)
+    :ptype with_gone: bool
+    :param l3: whether the update goes to L3
+    :ptype l3: bool
+    :param row: how the statement names the row written (the quoted table, beside a joined source); None for its
+        columns unqualified
+    :ptype row: str | None
+    :return: the guards to write by
+    :rtype: tuple[Fragment, ...]
+    :raises ValueError: when an update of a stamped table's live rows sets the gone flag false: a revive, which writes
+        gone rows and says so (``with_gone=True``), never a no-op
+    """
+    declared = stamped_table(table, l3=l3)
+    if declared is None or with_gone:
+        return tuple(where)
+    if declared.gone in values and values[declared.gone] is False:
+        raise ValueError(
+            f"an update of {table} sets {declared.gone!r} false: a revive of a gone row, which a write of live rows "
+            "alone never finds; name it with_gone=True"
+        )
+    guard = live_guard(declared, row)
+    if any(fragment.sql == guard and not fragment.params for fragment in where):
+        return tuple(where)
+    return (*where, Fragment(guard))
+
+
 def update_keyed_statements(
     table: str,
     *,
@@ -260,6 +315,8 @@ def update_keyed_statements(
     prefix: Mapping[str, str] | None = None,
     natively: bool = False,
     binder: KeyBinder = PLAIN_KEYS,
+    with_gone: bool = False,
+    l3: bool = True,
 ) -> list[tuple[str, list[Any]]]:
     """every statement setting ``values`` on the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name, and
     its binds: what ``threetears.core.keyed.update_keyed`` sends.
@@ -287,10 +344,15 @@ def update_keyed_statements(
     :ptype natively: bool
     :param binder: how the key columns bind (``PLAIN_KEYS``, or ``threetears.core.keyed``'s Arrow binder)
     :ptype binder: KeyBinder
+    :param with_gone: write a stamped table's gone rows too (a revive, a backfill of every row); its live rows alone
+        when False (:func:`live_written`)
+    :ptype with_gone: bool
+    :param l3: whether the statements go to L3, where a stamped table's gone rows are (a local copy holds none)
+    :ptype l3: bool
     :return: each statement and its binds, one a batch of keys (one for ``by`` alone); none for an empty batch
     :rtype: list[tuple[str, list[Any]]]
-    :raises ValueError: when ``values`` is empty, neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix
-        is empty or not text
+    :raises ValueError: when ``values`` is empty, neither ``by``, ``keys`` nor ``prefix`` names a column, a prefix is
+        empty or not text, or an update of a stamped table's live rows sets its gone flag false (:func:`live_written`)
     """
     if not values:
         raise ValueError(f"an update of {table} sets at least one column")
@@ -312,7 +374,7 @@ def update_keyed_statements(
         params,
         keys=keys,
         by=by or {},
-        where=where,
+        where=live_written(table, values, where, with_gone=with_gone, l3=l3),
         returning=returning,
         batch=batch,
         prefix=prefix,

@@ -34,6 +34,9 @@ class _Pool:
         self.sent: list[str] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        if sql == "SELECT version() AS v":
+            # the engine a keyed read's index hint asks once (backends.dialect.known_on_yugabyte): PostgreSQL here
+            return [{"v": "PostgreSQL 16.4"}]
         if sql.startswith(
             'SELECT t."member_type", t."member_id", t."id" FROM "group_members" AS t WHERE t."group_id" = $1'
         ):

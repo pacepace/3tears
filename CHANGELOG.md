@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a keyed update of a stamped table writes its live rows alone
+
+**Changed (breaking):** ``update_keyed``, ``update_from`` and ``update_keyed_statements`` add a stamped L3 table's live
+guard (``NOT "gone"``) beside ``where``, as every shared keyed read does: an update by key never changes, counts or
+revives a row a delete marked gone (its count is 0 for it). A guard the caller already states is sent once. An update
+meant for gone rows says so with ``with_gone=True``: a revive (acl ``_revive_gone_grant``, ``_revive_gone_namespace``),
+``repoint_user_rows`` (a merge moves the user's gone rows too, their flag left set) and a migration's ``backfill_pages``
+(the page reads the table as stored). An update setting the gone flag false without ``with_gone`` is refused
+(``ValueError``) before anything is sent, never a revive that finds nothing. A local copy and a table no stamped
+declaration names are written as before; a versioned table's in-place update stays refused, ``with_gone`` or not.
+``update_keyed_statements`` takes ``l3=`` (True by default) for a writer that knows its statements do not go to L3.
+Keyed writes carry no index hint, so no hint changes; on PostgreSQL a live-only partial index (``WHERE NOT gone``) can
+now serve such an update, as it serves the reads.
+
 ### core: the source-token fence carries its epoch
 
 **Changed (breaking):** ``source_tokens_schema()`` declares ``ROW_STAMPED``: the fence table gains ``epoch``, ``gone``

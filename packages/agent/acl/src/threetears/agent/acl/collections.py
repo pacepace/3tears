@@ -2199,6 +2199,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     },
                     where=[Fragment('"gone"')],
                     returning=("assignment_id", "row_scope"),
+                    # a revive: the gone row is the one written (keyed.update_keyed writes live rows alone otherwise)
+                    with_gone=True,
                 )
             ).row
             if row is None:
@@ -2883,6 +2885,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                     by={"namespace_id": namespace_id},
                     where=[Fragment('"gone"')],
                     returning=("namespace_id",),
+                    # a revive: the gone row is the one written (keyed.update_keyed writes live rows alone otherwise)
+                    with_gone=True,
                 )
             ).row
             if row is None:

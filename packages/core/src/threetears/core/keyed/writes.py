@@ -10,7 +10,9 @@ or of a batch of keys) names its rows by a leading part of a key, as a keyed rea
 names a batch of keys (a :class:`~threetears.core.keyed.KeyBatch`, ``batch`` keys a statement); ``where`` adds the
 write's own guards (a status it must still hold, a fence value), each a fragment written as ``"col"`` from ``$1``; a
 value set may be an expression (a :class:`~threetears.core.keyed.Fragment`: ``now()``) or an :class:`Increment`. A
-write names a key: one with neither ``by`` nor ``keys`` is refused, never a write of every row.
+write names a key: one with neither ``by`` nor ``keys`` is refused, never a write of every row. An update of a stamped
+L3 table (``ROW_STAMPED``) writes its live rows alone (``NOT "gone"`` beside ``where``), as every shared keyed read reads
+them; a write meant for its gone rows (a revive, a migration's backfill of every row) says so (``with_gone=True``).
 
 :func:`update_from` sets a table's columns from a keyed derived select joined on the key; :func:`apply_stage` writes a
 stage relation (a change set loaded beside the table) into it by the stage's key: replace, upsert or only the rows
@@ -35,6 +37,7 @@ from threetears.core.keyed._filters import (
     by_conditions,
     quoted_table,
     narrowing,
+    reads_l3,
     refuse_in_place,
 )
 from threetears.core.keyed.counts import rows_affected
@@ -48,6 +51,7 @@ from threetears.interfaces.keyed.writes import (
     StageMode,
     StageWrite,
     delete_keyed_statements,
+    live_written,
     update_keyed_statements,
 )
 
@@ -95,8 +99,11 @@ async def update_keyed(
     returning: Sequence[str] = (),
     batch: int = DEFAULT_KEY_BATCH,
     prefix: Mapping[str, str] | None = None,
+    with_gone: bool = False,
 ) -> KeyedWrite:
-    """set ``values`` on the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name.
+    """set ``values`` on the rows of ``table`` that ``keys`` and ``by`` (and ``where``) name: a stamped L3 table's live
+    rows alone (its live guard beside ``where``,
+    :func:`~threetears.interfaces.keyed.writes.live_written`), unless ``with_gone``.
 
     :param conn: anything with an asyncpg-shaped ``execute`` (and ``fetch`` when ``returning``)
     :ptype conn: Any
@@ -121,10 +128,14 @@ async def update_keyed(
         (:func:`~threetears.core.keyed._filters.prefix_conditions`: it reads by a C-ordered index on the column, an
         ASC one on YugabyteDB); none when None
     :ptype prefix: Mapping[str, str] | None
+    :param with_gone: write a stamped table's gone rows too: a revive of a gone key (its gone flag set false), a
+        backfill of every row. Its live rows alone when False, a gone row left as it is and not counted
+    :ptype with_gone: bool
     :return: the count written, and the rows returned
     :rtype: KeyedWrite
-    :raises ValueError: when ``values`` is empty, neither ``by``, ``keys`` nor ``prefix`` names a column, or a prefix
-        is empty or not text
+    :raises ValueError: when ``values`` is empty, neither ``by``, ``keys`` nor ``prefix`` names a column, a prefix is
+        empty or not text, or an update of a stamped table's live rows sets its gone flag false (a revive names
+        ``with_gone=True``)
     :raises AppendOnlyWriteError: when ``table`` is a versioned L3 table
     """
     refuse_in_place(conn, table, "update")
@@ -143,6 +154,8 @@ async def update_keyed(
         prefix=prefix,
         natively=binds_native_arrays(conn),
         binder=binder_for(conn, keys),
+        with_gone=with_gone,
+        l3=reads_l3(conn),
     )
     # a stamped table's update (its epoch a RisingStamp, stamped_values) says so on the wire with its stamp as s_min,
     # as every stamped write does; its stamp was noted as the statement's own when it was drawn (stamp_for)
@@ -243,9 +256,11 @@ async def update_from(
     columns: Sequence[str],
     by: Mapping[str, Any] | None = None,
     returning: Sequence[str] = (),
+    with_gone: bool = False,
 ) -> KeyedWrite:
     """set ``columns`` of ``table``'s rows from a keyed derived select, joined on ``key``:
-    ``UPDATE t SET "c" = s."c" FROM (<source>) AS s WHERE t."k" = s."k" AND <by>``.
+    ``UPDATE t SET "c" = s."c" FROM (<source>) AS s WHERE t."k" = s."k" AND <by>``; a stamped L3 table's live rows
+    alone (``AND NOT t."gone"``), unless ``with_gone``, as :func:`update_keyed` writes them.
 
     The source names the rows written (its own text keyed where it is written: a ``SELECT`` by a key batch, a
     stage's rows), so the update reads the table only by its key.
@@ -267,6 +282,8 @@ async def update_from(
     :ptype by: Mapping[str, Any] | None
     :param returning: the table's columns the written rows return; none when empty
     :ptype returning: Sequence[str]
+    :param with_gone: write a stamped table's gone rows too, as :func:`update_keyed` takes it
+    :ptype with_gone: bool
     :return: the count written, and the rows returned
     :rtype: KeyedWrite
     :raises ValueError: when ``key`` or ``columns`` is empty
@@ -278,7 +295,9 @@ async def update_from(
     joined = [f"{target}.{quote_identifier(column)} = s.{quote_identifier(column)}" for column in key]
     stepped = list(source.params)
     pinned, params = by_conditions(by or {}, first=len(stepped) + 1, alias=target)
-    clause = " AND ".join([*joined, *pinned])
+    # a stamped table's live rows alone, as update_keyed writes them (live_written)
+    live = live_written(table, {}, (), with_gone=with_gone, l3=reads_l3(conn), row=target)
+    clause = " AND ".join([*joined, *pinned, *(fragment.sql for fragment in live)])
     selected = ", ".join(f"{target}.{quote_identifier(column)}" for column in returning)
     tail = f" RETURNING {selected}" if returning else ""
     sql = f"UPDATE {target} SET {assignments} FROM ({source.sql}) AS s WHERE {clause}{tail}"

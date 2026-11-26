@@ -898,6 +898,19 @@ class TestCountsSinceMarks:
             await counts_by_relations(conn, {"ra": "ra"}, column="state", values=AnyOf(["S1"], "text"), max_of=["src"])
 
 
+async def test_a_plain_table_is_written_as_it_holds_whatever_its_columns(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if an update of a table no stamped declaration names carries a live guard, even when it holds a column
+    named as the gone flag is, or with_gone changes its statement: only a declared stamped table's writes are live."""
+    db.execute("ALTER TABLE t ADD COLUMN gone BOOLEAN DEFAULT true")
+    reader = _Recording(db)
+    written = await update_keyed(reader, "t", values={"v": -1}, by={"a": "k1"})
+    assert written.count == 10
+    plain = reader.statements[-1][0]
+    assert "gone" not in plain, plain
+    await update_keyed(reader, "t", values={"v": -1}, by={"a": "k1"}, with_gone=True)
+    assert reader.statements[-1][0] == plain
+
+
 def test_a_none_assignment_is_the_literal_null_and_binds_nothing() -> None:
     """Flips if a keyed write's ``SET`` binds a None (a bind the driver must type by its column: asyncpg refuses
     YugabyteDB's built-in ``vector`` there), or a None pin in ``by`` stops reading as ``IS NULL``.
