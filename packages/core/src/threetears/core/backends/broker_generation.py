@@ -65,12 +65,13 @@ keeps the two answers the same.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
 
+from threetears.core.ddl.row_epoch import UntouchedScopesError
 from threetears.core.exceptions import GenerationNotCommittedError, GenerationUnavailableError
 from threetears.core.frozen_state import EMPTY, frozen
 from threetears.observe import BuildOnce, get_logger
@@ -109,7 +110,11 @@ __all__ = [
     "note_advanced_generation",
     "record_reply_generations",
     "reply_generations_since",
+    "StampedScopes",
+    "holding_touched_scopes",
+    "releasing_touched_scopes",
     "stamp_fields",
+    "stamped_send",
     "stamping_write",
 ]
 
@@ -426,6 +431,89 @@ def stamp_fields() -> dict[str, Any]:
     if s_min is None:
         return {STAMPS_EPOCH_FIELD: False}
     return {STAMPS_EPOCH_FIELD: True, STAMP_S_MIN_FIELD: s_min}
+
+
+@dataclass(frozen=True, slots=True)
+class StampedScopes:
+    """what one stamped write of a versioned table's rows touch: the scope epochs scopes they name and their stamps.
+
+    Read off the rows by the store, never named by the writer (``ddl.row_epoch``'s "Every scope a stamped write's rows
+    name is touched"), and handed to the transaction the write joins (:func:`stamped_send`), which raises each scope's
+    ``last_epoch`` to its highest stamp just before its COMMIT.
+
+    :ivar epochs: the scope epochs table the scopes are rows of (``RowEpoch.epochs``), as the connection names it
+    :ivar scopes: the scopes, ``scope_prefix + value``, distinct and sorted
+    :ivar s_min: the rows' lowest stamp
+    :ivar s_max: the rows' highest stamp
+    """
+
+    epochs: str
+    scopes: tuple[str, ...]
+    s_min: int
+    s_max: int
+
+
+#: each connection a transaction is open on in this context that a stamped write's scopes are handed to, with what takes
+#: them (:func:`holding_touched_scopes`), outermost first. A context variable, as ``CallerTransaction``'s own register of
+#: open transactions is: a task started inside the transaction still finds it, one started outside never does
+_TOUCH_SINKS: ContextVar[tuple[tuple[Any, Callable[[StampedScopes], None]], ...]] = ContextVar(
+    "threetears_touched_scope_sinks", default=()
+)
+
+
+def holding_touched_scopes(conn: Any, sink: Callable[[StampedScopes], None]) -> Token[Any]:
+    """name ``sink`` as what takes the scopes of every stamped write made on ``conn`` in this context, until
+    :func:`releasing_touched_scopes`. The transaction that will COMMIT them calls it as it opens (``CallerTransaction``).
+
+    :param conn: the connection the transaction is open on
+    :ptype conn: Any
+    :param sink: what takes each write's scopes, on the event loop, before the write is sent
+    :ptype sink: Callable[[StampedScopes], None]
+    :return: the token to release it with
+    :rtype: Token
+    """
+    return _TOUCH_SINKS.set((*_TOUCH_SINKS.get(), (conn, sink)))
+
+
+def releasing_touched_scopes(token: Token[Any]) -> None:
+    """stop handing scopes to the sink :func:`holding_touched_scopes` named, as its transaction ends.
+
+    :param token: what :func:`holding_touched_scopes` answered
+    :ptype token: Token
+    :return: nothing
+    :rtype: None
+    """
+    _TOUCH_SINKS.reset(token)
+
+
+@contextmanager
+def stamped_send(conn: Any, s_min: int | None, touched: StampedScopes | None = None) -> Iterator[None]:
+    """send a stamped write's requests (:func:`stamping_write`), its scopes first handed to the transaction open on
+    ``conn`` that commits it: the one path every write the store makes of a table that declares a row epoch goes through,
+    so no writer can leave a scope its rows name untouched (``ddl.row_epoch``).
+
+    :param conn: the connection the write is sent on; None for the store's own pool
+    :ptype conn: Any
+    :param s_min: the rows' lowest stamp; None for a write that stamps none
+    :ptype s_min: int | None
+    :param touched: a versioned table's write's scopes and stamps, read off its rows; None for any other write
+    :ptype touched: StampedScopes | None
+    :return: a context in which the requests say they stamp
+    :rtype: Iterator[None]
+    :raises UntouchedScopesError: when the write names scopes and no transaction open on ``conn`` takes them: nothing
+        would touch them before its COMMIT, and a restore would never hear its rows
+    """
+    if touched is not None and touched.scopes:
+        sink = next((taker for held, taker in _TOUCH_SINKS.get() if held is conn), None) if conn is not None else None
+        if sink is None:
+            raise UntouchedScopesError(
+                f"a stamped write of {len(touched.scopes)} scopes of {touched.epochs} joins no transaction to touch "
+                f"them in before its COMMIT (a restore finds changed scopes by last_epoch alone): write it on a "
+                f"CallerTransaction's connection"
+            )
+        sink(touched)
+    with stamping_write(s_min):
+        yield
 
 
 #: where the advances made while a commit settles in this context note the token each wrote, by table

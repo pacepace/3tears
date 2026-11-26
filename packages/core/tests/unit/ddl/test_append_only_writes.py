@@ -19,6 +19,7 @@ from sqlalchemy import MetaData
 
 from threetears.core.backends.schema_sql import build_bulk_insert_sql, build_insert_sql
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.run_markers import RUN_MARKERS_SCHEMA
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
@@ -35,9 +36,41 @@ from threetears.core.ddl.row_epoch import (
     AppendOnlyWriteError,
     UnstampedWriteError,
     row_versions,
+    wall_clock_ms,
 )
 from threetears.core.ddl.run_markers import RUN_MARKERS_TABLE, run_marker_insert_sql
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+
+#: a stamp of now, as a transaction's clock draws one: a commit whose lowest stamp is older than W is refused
+_NOW = wall_clock_ms() << 15
+
+
+def _held(conn: MagicMock) -> MagicMock:
+    """``conn``, with a transaction a CallerTransaction opens on it: a versioned table's write joins one, which touches
+    the scopes its rows name before its COMMIT (refused on a connection none holds).
+
+    :param conn: the mock connection
+    :ptype conn: MagicMock
+    :return: it
+    :rtype: MagicMock
+    """
+    opened = MagicMock()
+    opened.__aenter__ = AsyncMock(return_value=None)
+    opened.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=opened)
+    return conn
+
+
+def _touches(conn: MagicMock) -> list[tuple[Any, ...]]:
+    """the stamp and scopes of each scope epochs touch sent on ``conn``.
+
+    :param conn: the mock connection
+    :ptype conn: MagicMock
+    :return: each touch's parameters
+    :rtype: list[tuple[Any, ...]]
+    """
+    return [tuple(call.args[1:]) for call in conn.execute.await_args_list if "SET last_epoch" in call.args[0]]
+
 
 _CANDIDATES = TableSchema(
     name="ve_results",
@@ -189,22 +222,25 @@ def test_an_arrow_plan_of_a_versioned_table_appends_its_versions_and_its_gone_ma
 
 async def test_an_arrow_append_goes_through_the_door_as_an_append() -> None:
     store = _store(_CANDIDATES)
-    conn = MagicMock(write_arrow=True)
+    conn = _held(MagicMock(write_arrow=True))
     conn.write_arrow_rows = AsyncMock(return_value=1)
+    conn.execute = AsyncMock(return_value="INSERT 0 1")
     rows = pa.table(
         {
             "office_key": ["sn_NC1"],
             "candidate": ["a"],
             "join_state_code": ["NC"],
-            EPOCH_COLUMN: pa.array([1], pa.int64()),
+            EPOCH_COLUMN: pa.array([_NOW + 1], pa.int64()),
             GONE_COLUMN: [True],
         }
     )
     plan = store.arrow_write_plan("ve_results", rows.column_names, rows.schema.types, kind="gone", conn=conn)
     assert plan is not None
-    await store.write_arrow("ve_results", rows, plan, conn=conn)
+    async with CallerTransaction(conn):
+        await store.write_arrow("ve_results", rows, plan, conn=conn)
     kwargs = conn.write_arrow_rows.await_args.kwargs
     assert kwargs["append"] is True and kwargs["delete"] is False and kwargs["conflict_columns"] == ()
+    assert _touches(conn) == [(_NOW + 1, ["NC"])]
 
 
 # -- a delete appends a gone marker, never a DELETE -------------------------------------------------------------------
@@ -224,18 +260,20 @@ async def test_a_versioned_table_is_never_deleted_from() -> None:
 
 
 async def test_a_gone_marker_is_an_insert_of_the_key_the_scope_and_a_newer_epoch() -> None:
-    conn = MagicMock()
+    conn = _held(MagicMock())
     conn.execute = AsyncMock(return_value="INSERT 0 2")
     store = _store(_CANDIDATES)
-    appended = await store.mark_gone(
-        "ve_results", [("sn_NC1", "a"), ("sn_NC1", "b")], epoch=9 << 31, scope="NC", max_rows=10, conn=conn
-    )
-    assert appended == 2
-    [call] = conn.execute.await_args_list
+    async with CallerTransaction(conn):
+        appended = await store.mark_gone(
+            "ve_results", [("sn_NC1", "a"), ("sn_NC1", "b")], epoch=_NOW + 9, scope="NC", max_rows=10, conn=conn
+        )
+        assert appended == 2
+        [call] = conn.execute.await_args_list
+    assert _touches(conn) == [(_NOW + 9, ["NC"])]
     sql, *params = call.args
     assert sql.startswith("INSERT INTO ve_results (office_key, candidate, join_state_code, epoch, gone) VALUES ($1")
     assert "ON CONFLICT" not in sql and "DELETE" not in sql
-    assert params == ["sn_NC1", "a", "NC", 9 << 31, True, "sn_NC1", "b", "NC", 9 << 31, True]
+    assert params == ["sn_NC1", "a", "NC", _NOW + 9, True, "sn_NC1", "b", "NC", _NOW + 9, True]
     with pytest.raises(ValueError, match="name the deletes' scope"):
         await store.mark_gone("ve_results", [("sn_NC1", "a")], epoch=1, scope=None, max_rows=10, conn=conn)
 
@@ -253,27 +291,26 @@ def test_a_run_marker_casts_its_prefix_to_text_by_the_database() -> None:
 
 
 async def test_a_whole_run_of_a_versioned_table_deleted_is_one_run_marker_a_prefix() -> None:
-    conn = MagicMock()
+    conn = _held(MagicMock())
     conn.execute = AsyncMock(return_value="INSERT 0 1")
     conn.fetchrow = AsyncMock(return_value={"whole": None, "reach": None, "guard": "g", "noted": None})
     store = _store(_PROJECTIONS)
-    marked = await store.delete_prefixes(
-        "ve_projections",
-        [
-            {"join_state_code": "PA", "run_id": 7},
-            {"join_state_code": "PA", "run_id": 8},
-            {"join_state_code": "PA", "run_id": 7},
-        ],
-        conn=conn,
-        epoch=3 << 31,
-    )
+    async with CallerTransaction(conn):
+        marked = await store.delete_prefixes(
+            "ve_projections",
+            [
+                {"join_state_code": "PA", "run_id": 7},
+                {"join_state_code": "PA", "run_id": 8},
+                {"join_state_code": "PA", "run_id": 7},
+            ],
+            conn=conn,
+            epoch=_NOW + 3,
+        )
     assert marked == 2
+    assert _touches(conn) == [(_NOW + 3, ["PA"])]
     statements = [call.args for call in conn.execute.await_args_list]
     inserts = [args for args in statements if args[0].startswith("INSERT INTO threetears_run_markers")]
-    assert [args[1:] for args in inserts] == [
-        ("ve_projections", 3 << 31, "PA", 7),
-        ("ve_projections", 3 << 31, "PA", 8),
-    ]
+    assert [args[1:] for args in inserts] == [("ve_projections", _NOW + 3, "PA", 7), ("ve_projections", _NOW + 3, "PA", 8)]
     # nothing deleted: the one statement on the table is the no-row one that leaves its whole note
     assert [args[0] for args in statements if "ve_projections" in args[0] and args[0].startswith("DELETE")] == [
         "DELETE FROM ve_projections WHERE FALSE"

@@ -651,6 +651,17 @@ async def test_an_arrow_write_of_a_versioned_table_on_a_transaction_that_took_no
 # -- append-only: a versioned table's writes append, its deletes are gone markers, a whole run one run marker ----------
 
 
+def _writes(hub: _Hub) -> list[dict[str, Any]]:
+    """each statement but the scope epochs touch the transaction sends before its COMMIT (every versioned write's rows
+    have their scopes touched, ``stamped_send``): the versioned table's own statements."""
+    return [statement for statement in hub.statements() if "SET last_epoch" not in statement["query"]]
+
+
+def _touched(hub: _Hub) -> list[list[Any]]:
+    """the scopes of each scope epochs touch the transaction sent before its COMMIT."""
+    return [statement["params"][1] for statement in hub.statements() if "SET last_epoch" in statement["query"]]
+
+
 async def _on_rail(hub: _Hub, step: Any, *, version: int = 17) -> Any:
     collection = _collection(_VERSIONED)
     proxy = hub.proxy()
@@ -664,8 +675,9 @@ async def test_a_rewrite_of_a_versioned_table_as_python_rows_is_a_copy_that_appe
     hub = _Hub(write_arrow=True)
     rows = [{"office_key": "sn_NC1", "geo_id": f"{n:05d}", "votes": n} for n in range(40)]
     await _on_rail(hub, lambda collection, conn: collection.save_rows(rows, conn=conn))
-    # no statement at all, so no ON CONFLICT: one copy request saying it appends
-    assert hub.statements() == []
+    # no statement of the table at all, so no ON CONFLICT: one copy request saying it appends; its one scope touched
+    assert _writes(hub) == []
+    assert _touched(hub) == [["sn_NC1"]]
     [(envelope, sent, _size)] = hub.arrow_requests()
     assert envelope[APPEND_FIELD] is True
     assert ON_CONFLICT_FIELD not in envelope and DELETE_FIELD not in envelope
@@ -683,7 +695,8 @@ async def test_an_arrow_delete_of_a_versioned_table_appends_a_gone_marker_a_key_
 
     await _on_rail(hub, step)
     (_, written, _), (envelope, markers, _) = hub.arrow_requests()
-    assert hub.statements() == []
+    assert _writes(hub) == []
+    assert _touched(hub) == [["sn_NC1"]]
     assert envelope[APPEND_FIELD] is True and DELETE_FIELD not in envelope
     assert markers.column_names == ["office_key", "geo_id", EPOCH_COLUMN, GONE_COLUMN]
     assert markers.column(GONE_COLUMN).to_pylist() == [True, True]
@@ -696,7 +709,8 @@ async def test_a_delete_of_a_versioned_tables_keys_appends_gone_markers_and_dele
     await _on_rail(
         hub, lambda collection, conn: collection.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00002")], conn=conn)
     )
-    [statement] = hub.statements()
+    [statement] = _writes(hub)
+    assert _touched(hub) == [["sn_NC1"]]
     assert statement["query"].startswith("INSERT INTO versioned_results (office_key, geo_id, epoch, gone) VALUES")
     assert "DELETE" not in statement["query"] and "ON CONFLICT" not in statement["query"]
 

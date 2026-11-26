@@ -29,9 +29,16 @@ from threetears.core.backends.broker_generation import (
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.protocol import LoadFile
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.schema_backed import INT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.collections.scope_epochs import scope_epochs_schema
-from threetears.core.ddl.row_epoch import EPOCH_COLUMN, ROW_STAMPED, UnstampedWriteError, row_versions
+from threetears.core.ddl.row_epoch import (
+    EPOCH_COLUMN,
+    ROW_STAMPED,
+    UnstampedWriteError,
+    row_versions,
+    wall_clock_ms,
+)
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _TX_ID = str(uuid.UUID("00000000-0000-4000-8000-000000000903"))
@@ -62,7 +69,9 @@ _PROJECTIONS = TableSchema(
 #: a table that stamps nothing, with a BIGINT NOT NULL column named epoch: the catalog cannot tell it from a stamped one
 _SCOPE_EPOCHS = scope_epochs_schema()
 
-_LOW, _HIGH = (1 << 50) + 7, (1 << 50) + 99
+#: stamps of now, as a transaction's clock draws them: a commit whose lowest stamp is older than W is refused
+_LOW = (wall_clock_ms() << 15) + 7
+_HIGH = _LOW + 92
 
 
 class _Broker:
@@ -103,6 +112,18 @@ def _stamp(body: dict[str, Any]) -> tuple[Any, Any]:
     return body.get(STAMPS_EPOCH_FIELD), body.get(STAMP_S_MIN_FIELD)
 
 
+def _touches(broker: _Broker) -> list[dict[str, Any]]:
+    """each scope epochs touch the transaction sent before its COMMIT (a versioned table's write joins a
+    CallerTransaction, which touches the scopes its rows name)."""
+    return [body for body in broker.bodies("l3.tx.execute") if "SET last_epoch" in json.dumps(body)]
+
+
+def _writes(broker: _Broker, suffix: str) -> list[dict[str, Any]]:
+    """each request on ``suffix`` but the transaction's touches."""
+    touches = _touches(broker)
+    return [body for body in broker.bodies(suffix) if body not in touches]
+
+
 _BEGIN = {"success": True, "tx_id": _TX_ID}
 _BEGIN_ARROW = {"success": True, "tx_id": _TX_ID, WRITE_ARROW_FIELD: True}
 _DONE = {"success": True, "row_count": 1}
@@ -133,16 +154,18 @@ async def test_a_bulk_upsert_names_its_rows_lowest_stamp_on_every_statement() ->
 
 
 async def test_a_copy_names_its_rows_lowest_stamp_on_tx_copy() -> None:
-    broker = _Broker(_BEGIN, _DONE, _COMMIT)
+    broker = _Broker(_BEGIN, _DONE, _DONE, _COMMIT)
     proxy = broker.proxy()
     rows = [
         {"join_state_code": "NC", "run_id": 1, "geo_id": g, "value": 1, EPOCH_COLUMN: e}
         for g, e in (("a", _HIGH), ("b", _LOW))
     ]
-    async with proxy.transaction() as conn:
+    async with proxy.acquire() as conn, CallerTransaction(conn):
         await _store(proxy).copy_many("projections", rows, max_rows=10, max_bytes=1 << 20, conn=conn, append=True)
     [body] = broker.bodies("l3.tx.copy")
     assert _stamp(body) == (True, _LOW)
+    [touch] = _touches(broker)
+    assert touch["params"] == [_HIGH, ["NC"]]
 
 
 async def test_an_arrow_write_names_its_rows_lowest_stamp_through_the_door() -> None:
@@ -187,21 +210,25 @@ async def test_scope_epochs_through_the_door_says_it_stamps_nothing() -> None:
 
 
 async def test_a_gone_marker_names_the_deletes_stamp() -> None:
-    broker = _Broker(_BEGIN, _DONE, _COMMIT)
+    broker = _Broker(_BEGIN, _DONE, _DONE, _COMMIT)
     proxy = broker.proxy()
-    async with proxy.transaction() as conn:
+    async with proxy.acquire() as conn, CallerTransaction(conn):
         await _store(proxy).mark_gone("projections", [("NC", 1, "a")], epoch=_LOW, scope=None, max_rows=10, conn=conn)
-    [body] = broker.bodies("l3.tx.execute")
+    [body] = _writes(broker, "l3.tx.execute")
     assert _stamp(body) == (True, _LOW)
+    [touch] = _touches(broker)
+    assert touch["params"] == [_LOW, ["NC"]]
 
 
 async def test_a_run_marker_names_the_deletes_stamp_on_delete_prefixes() -> None:
-    broker = _Broker(_BEGIN, _DONE, _COMMIT)
+    broker = _Broker(_BEGIN, _DONE, _DONE, _COMMIT)
     proxy = broker.proxy()
-    async with proxy.transaction() as conn:
+    async with proxy.acquire() as conn, CallerTransaction(conn):
         await _store(proxy).delete_prefixes("projections", [{"join_state_code": "NC"}], conn=conn, epoch=_LOW)
     [body] = broker.bodies("l3.tx.delete_prefixes")
     assert _stamp(body) == (True, _LOW)
+    [touch] = _touches(broker)
+    assert touch["params"] == [_LOW, ["NC"]]
 
 
 async def test_a_prefix_delete_of_a_stamped_table_stamps_nothing() -> None:

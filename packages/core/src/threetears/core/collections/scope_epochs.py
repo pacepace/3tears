@@ -879,10 +879,11 @@ class ScopeEpochs:
         # the transaction's delta files are named by this version (decision 53): a full then covers them exactly
         transaction.note_write_version(version)
         await self._mark_pending(version, named, conn=conn)
-        if named:
-            # the highest row epoch the transaction stamps, on the scopes it touched, just before its COMMIT: the next
-            # writer's begin moves its clock past it (the module's "Newest-wins across writers")
-            transaction.before_commit(lambda on, s_max: self._raise_last_epoch(on, named, s_max))
+        # the highest row epoch the transaction stamps, on the scopes it touched, just before its COMMIT: the next
+        # writer's begin moves its clock past it (the module's "Newest-wins across writers"). Named to the transaction's
+        # one touch, which the store also hands the scopes its rows name (stamped_send): a scope both name is one
+        # index entry, and one the writer leaves out here is still touched
+        transaction.touch_scopes(self.table_name, named)
 
     async def _mark_pending(self, version: int, scopes: list[str], *, conn: Any) -> None:
         """mark ``scopes`` pending on the caller's transaction, a batch of statements at a time.
