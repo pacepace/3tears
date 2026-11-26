@@ -165,6 +165,9 @@ _RELATION: Final[re.Pattern[str]] = re.compile(rf"\s*({_IDENTIFIER})(?:\s*\.\s*(
 #: a partial index's predicate that one column is not NULL
 _NOT_NULL: Final[re.Pattern[str]] = re.compile(r'\s*\(?\s*"?(\w+)"?\s+IS\s+NOT\s+NULL\s*\)?\s*', re.IGNORECASE)
 
+#: a partial index's predicate that one boolean column is false: a stamped table's live rows (``NOT gone``)
+_NOT_FLAG: Final[re.Pattern[str]] = re.compile(r'\s*\(?\s*NOT\s+"?(\w+)"?\s*\)?\s*', re.IGNORECASE)
+
 #: a partial index's predicate that one column is NULL
 _NULL: Final[re.Pattern[str]] = re.compile(r'\s*\(?\s*"?(\w+)"?\s+IS\s+NULL\s*\)?\s*', re.IGNORECASE)
 
@@ -308,6 +311,10 @@ class DeclaredIndex:
         index
     :ivar guarded: the columns a partial index's predicate holds ``IS NOT NULL`` (``WHERE alias IS NOT NULL``,
         :func:`partial_predicate`): it serves only a read whose own guards state exactly that of each; empty for none
+    :ivar live: the flag columns a partial index's predicate holds false (``WHERE NOT gone``: a stamped table's unique
+        index among live rows only, :func:`partial_predicate`): it serves only a read answering live rows alone, which
+        states ``NOT gone`` (every shared keyed read of a stamped L3 table); never a read of the table as stored
+        (``with_gone``), which it would answer without its gone rows; empty for none
     :ivar unique: whether no two rows share every value of its columns (a unique index or ``UNIQUE`` constraint): a
         read binding each of its columns, a set of values allowed (``AnyOf``), reads one row a value
     """
@@ -319,6 +326,7 @@ class DeclaredIndex:
     stated: frozenset[tuple[str, str]] = frozenset()
     guarded: frozenset[str] = frozenset()
     unique: bool = False
+    live: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         """refuse an index naming anything but plain columns, or a name a hint could not carry unquoted.
@@ -327,7 +335,8 @@ class DeclaredIndex:
         """
         if not self.columns:
             raise ValueError(f"index {self.name!r} names at least one column")
-        for name in (self.name, *self.columns, *self.descending, *(column for column, _ in self.stated), *self.guarded):
+        stated = (column for column, _ in self.stated)
+        for name in (self.name, *self.columns, *self.descending, *stated, *self.guarded, *self.live):
             if not isinstance(name, str) or _COLUMN.fullmatch(name) is None:
                 raise ValueError(f"a declared index names plain identifiers only, not {name!r}")
         stray = self.descending - set(self.columns)
@@ -350,10 +359,19 @@ _NOT_NULL_GUARD: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def partial_predicate(where: str) -> tuple[frozenset[tuple[str, str]], frozenset[str]] | None:
-    """a partial index's predicate as the ``(column, text)`` pairs it names and the columns it holds ``IS NOT NULL``,
-    when it is nothing but ``column = 'text'`` and ``column IS NOT NULL`` conjuncts; None for any other predicate,
-    which no keyed read is judged to state.
+def partial_predicate(
+    where: str,
+) -> tuple[frozenset[tuple[str, str]], frozenset[str], frozenset[str]] | None:
+    """a partial index's predicate as the ``(column, text)`` pairs it names, the columns it holds ``IS NOT NULL`` and
+    the flag columns it holds false (``NOT gone``), when it is nothing but ``column = 'text'``, ``column IS NOT NULL``
+    and ``NOT column`` conjuncts; None for any other predicate, which no keyed read is judged to state.
+
+    WHY ``NOT gone`` (live-only unique indexes, Pace 2026-11-25; coordinator ruling 2026-11-26): a stamped table's
+    unique names hold its live rows only (``core.data.migrations.live_unique``), and every shared keyed read of a
+    stamped L3 table answers live rows alone (``live_only`` adds ``NOT t."gone"``), so it states that predicate. Left
+    unstateable, datasources' live-only ``idx_datasources_name`` was never named to YugabyteDB, and schema priming's
+    set of names was hinted to the status index again: 4,900 rows read for 2 names (the D8 regression back). A read of
+    the table as stored (``with_gone``) states no such guard and is never served by it (:func:`_states`).
 
     WHY ``IS NOT NULL`` (D7, coordinator ruling 2026-11-15): left out, ``ix_memories_user_alias (agent_id, user_id,
     alias) WHERE alias IS NOT NULL`` was never named to YugabyteDB, so a user merge's alias-collision lock (pinning the
@@ -363,21 +381,25 @@ def partial_predicate(where: str) -> tuple[frozenset[tuple[str, str]], frozenset
 
     :param where: the predicate, as declared
     :ptype where: str
-    :return: the pairs and the guarded columns, or None
-    :rtype: tuple[frozenset[tuple[str, str]], frozenset[str]] | None
+    :return: the pairs, the guarded columns and the flag columns held false, or None
+    :rtype: tuple[frozenset[tuple[str, str]], frozenset[str], frozenset[str]] | None
     """
     pairs: set[tuple[str, str]] = set()
     guarded: set[str] = set()
+    live: set[str] = set()
     for conjunct in re.split(r"\s+AND\s+", where, flags=re.IGNORECASE):
         equal = _STATED_EQUALITY.fullmatch(conjunct)
         held = None if equal is not None else _NOT_NULL.fullmatch(conjunct)
+        flag = None if equal is not None or held is not None else _NOT_FLAG.fullmatch(conjunct)
         if equal is not None:
             pairs.add((equal.group(1).lower(), equal.group(2).replace("''", "'")))
         elif held is not None:
             guarded.add(held.group(1).lower())
+        elif flag is not None:
+            live.add(flag.group(1).lower())
         else:
             return None
-    return (frozenset(pairs), frozenset(guarded)) if pairs or guarded else None
+    return (frozenset(pairs), frozenset(guarded), frozenset(live)) if pairs or guarded or live else None
 
 
 def not_null_guards(guards: Iterable[str]) -> frozenset[str]:
@@ -448,17 +470,25 @@ def _with_stated(
     return known
 
 
-def _states(index: DeclaredIndex, by: Mapping[Any, Any], guarded: frozenset[str] = frozenset()) -> bool:
+def _states(
+    index: DeclaredIndex,
+    by: Mapping[Any, Any],
+    guarded: frozenset[str] = frozenset(),
+    live: frozenset[str] = frozenset(),
+) -> bool:
     """whether a read pinning ``by`` states ``index``'s partial predicate: each of its columns pinned to exactly its
-    text (a whole index's empty predicate is stated by every read).
+    text, each column it holds ``IS NOT NULL`` among the read's ``guarded`` and each flag it holds false among the
+    read's ``live`` (a whole index's empty predicate is stated by every read).
 
     WHY: a partial index holds only the rows its predicate admits; named to YugabyteDB for a read that does not state
     it, the read would miss every other row. Stated, the index holds every row asked for (identity's pending queue:
     ``(agent_id, user_id, date_created) WHERE status = 'proposed'``; unhinted, YugabyteDB read 400 rows and
     sorted them for a page of 10, 3tears #98).
     """
-    return index.guarded <= guarded and all(
-        isinstance(by.get(column), str) and by[column] == text for column, text in index.stated
+    return (
+        index.guarded <= guarded
+        and index.live <= live
+        and all(isinstance(by.get(column), str) and by[column] == text for column, text in index.stated)
     )
 
 
@@ -541,6 +571,7 @@ def _unordered_serving(
     by: Mapping[Any, Any],
     guarded: frozenset[str] = frozenset(),
     sets: frozenset[str] = frozenset(),
+    live: frozenset[str] = frozenset(),
 ) -> DeclaredIndex | None:
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
     more of the pins than the primary key (the one binding most, then the one binding more leading columns, then the
@@ -560,7 +591,7 @@ def _unordered_serving(
     set, none): naming it there would miss every other row. At equal binding the index binding more leading columns
     wins (it narrows inside the index too; the earlier contract, test_keyed_index_hint's
     ``o88_conv_agent_user_status``)."""
-    indexes = [index for named, index in _INDEXES if named == relation and _states(index, by, guarded)]
+    indexes = [index for named, index in _INDEXES if named == relation and _states(index, by, guarded, live)]
     primary = next((index for index in indexes if index.primary), None)
     floor = _leading_held(primary, pinned) if primary is not None else 0
     if primary is not None and floor == len(primary.columns):
@@ -586,7 +617,12 @@ def _unordered_serving(
 
 
 def serving_index(
-    table: Any, by: Mapping[Any, Any], order: Sequence[Sort], *, guarded: frozenset[str] = frozenset()
+    table: Any,
+    by: Mapping[Any, Any],
+    order: Sequence[Sort],
+    *,
+    guarded: frozenset[str] = frozenset(),
+    live: frozenset[str] = frozenset(),
 ) -> DeclaredIndex | None:
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
 
@@ -603,6 +639,11 @@ def serving_index(
     :param guarded: the columns the read's own guards hold ``IS NOT NULL`` (:func:`not_null_guards`), which a
         ``column IS NOT NULL`` partial index needs stated
     :ptype guarded: frozenset[str]
+    :param live: the flag columns the read holds false: a stamped table's gone flag when the read answers live rows
+        alone (``live_only``), which a live-only partial index (``WHERE NOT gone``) needs stated; empty for a read of
+        the table as stored (``with_gone``) and for a caller that does not say (quiet cleanup), which no live-only
+        index then serves
+    :ptype live: frozenset[str]
     :return: the index, or None
     :rtype: DeclaredIndex | None
     """
@@ -613,7 +654,7 @@ def serving_index(
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
     sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
     if not sorts:
-        return _unordered_serving(relation, pinned, by, guarded, sets)
+        return _unordered_serving(relation, pinned, by, guarded, sets, live)
     if any(sort.expression is not None for sort in sorts):
         # WHY an order by an expression names the index binding most pins (D5 via the coordinator, 2026-11-15): no
         # plain B-tree index holds such an order, so the read sorts whatever rows it reads and the fewest is the best
@@ -626,12 +667,12 @@ def serving_index(
         # provider, by status / type / dates) read v160's (provider_id, <sort>, id) indexes, which its TableSchema
         # does not declare; named its declared idx_gw_models_provider_model instead, YugabyteDB read 333 and 1,021
         # rows for a page of 21 (YB1, 2026-11-16). The primary key stays unnamed (the planner's own choice).
-        fallback = _unordered_serving(relation, pinned, by, guarded, sets)
+        fallback = _unordered_serving(relation, pinned, by, guarded, sets, live)
         return None if fallback is None or fallback.primary else fallback
     ranked = [
         (rank, index)
         for named, index in _INDEXES
-        if named == relation and _states(index, by, guarded) and (rank := _rank(index, pinned, sorts)) is not None
+        if named == relation and _states(index, by, guarded, live) and (rank := _rank(index, pinned, sorts)) is not None
     ]
     if not ranked:
         return None

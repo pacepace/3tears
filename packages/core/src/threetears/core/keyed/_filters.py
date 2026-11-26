@@ -616,6 +616,7 @@ async def yugabyte_index_hint(
     *,
     alias: str = "t",
     where: Sequence[Fragment] = (),
+    live: bool = False,
 ) -> str:
     """the hint a keyed read of ``table`` pinning ``by`` in ``order`` starts with on YugabyteDB: the declared index
     that serves it (:func:`~threetears.interfaces.keyed.keys.serving_index`), named to pg_hint_plan
@@ -640,10 +641,19 @@ async def yugabyte_index_hint(
         ``col IS NOT NULL`` partial index (:func:`~threetears.interfaces.keyed.keys.not_null_guards`; WHY at
         :func:`~threetears.interfaces.keyed.keys.partial_predicate`)
     :ptype where: Sequence[Fragment]
+    :param live: the read answers live rows alone (it carries :func:`live_only`'s guard, as every shared keyed read
+        of a stamped L3 table does): a stamped table's live-only index (``WHERE NOT gone``) then serves it. False for
+        a read of the table as stored (``with_gone``: the restore, quiet cleanup), which no live-only index serves: it
+        holds none of the gone rows such a read answers (WHY at
+        :func:`~threetears.interfaces.keyed.keys.partial_predicate`)
+    :ptype live: bool
     :return: the hint and a space, or the empty string
     :rtype: str
     """
-    index = serving_index(table, by, order, guarded=not_null_guards(fragment.sql for fragment in where))
+    declared = stamped_table(table, l3=reads_l3(conn)) if live else None
+    flags = frozenset() if declared is None else frozenset({declared.gone})
+    guarded = not_null_guards(fragment.sql for fragment in where)
+    index = serving_index(table, by, order, guarded=guarded, live=flags)
     if index is None or index.primary or not reads_l3(conn):
         return ""
     return index_hint(index, alias) if await known_on_yugabyte(conn) else ""

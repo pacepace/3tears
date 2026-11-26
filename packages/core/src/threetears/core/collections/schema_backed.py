@@ -1337,10 +1337,10 @@ def _servable_index(
     """
     if not plain:
         return None
-    predicate = (frozenset(), frozenset()) if where is None else partial_predicate(where)
+    predicate = (frozenset(), frozenset(), frozenset()) if where is None else partial_predicate(where)
     if predicate is None:
         return None
-    stated, guarded = predicate
+    stated, guarded, live = predicate
     return DeclaredIndex(
         name,
         tuple(column for column, _ in columns),
@@ -1348,6 +1348,7 @@ def _servable_index(
         stated=stated,
         guarded=guarded,
         unique=unique,
+        live=live,
     )
 
 

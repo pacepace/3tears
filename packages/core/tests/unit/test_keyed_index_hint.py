@@ -38,7 +38,8 @@ from threetears.core.keyed import (
     read_by,
     serving_index,
 )
-from threetears.interfaces.keyed.keys import stated_literals
+from threetears.core.ddl.row_epoch import ROW_STAMPED
+from threetears.interfaces.keyed.keys import partial_predicate, stated_literals
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 from packages.core.tests.optional_support import present
@@ -135,6 +136,19 @@ TableSchema(
     columns=[Column("id", UUID_TYPE), Column("name", STRING_TYPE), Column("status", STRING_TYPE)],
     indexes=(Index("d7_ds_status", "status"),),
     unique_constraints=(UniqueConstraint("d7_ds_name", "name"),),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: datasources as declared since live-only names (Pace 2026-11-25): stamped, the name unique among live rows only
+#: (``WHERE NOT gone``), and an index of the status
+_LIVE_NAMED = "lu_hint_datasources"
+
+TableSchema(
+    name=_LIVE_NAMED,
+    primary_key="id",
+    columns=[Column("id", UUID_TYPE), Column("name", STRING_TYPE), Column("status", STRING_TYPE)],
+    indexes=(Index("lu_ds_name", "name", unique=True, where="NOT gone"), Index("lu_ds_status", "status")),
+    row_epoch=ROW_STAMPED,
     l1_eviction=TEST_L1_TABLE,
 )
 
@@ -517,3 +531,59 @@ class TestASetOfAUniqueKeyIsBound:
         assert single is not None and single.name == "d7_ds_name", single
         other = serving_index(_NAMED, {"id": AnyOf([1]), "status": "active"}, [])
         assert other is not None and other.name == "d7_ds_status", other
+
+
+class TestALiveOnlyIndexServesLiveReadsOnly:
+    """A stamped table's unique index among live rows only (``WHERE NOT gone``, core ``make_unique_index_live_only``)
+    holds no gone row. Every shared keyed read of a stamped L3 table answers live rows alone (``live_only`` adds
+    ``NOT t."gone"``), so it states that predicate; a read of the table as stored (``with_gone``: the restore,
+    quiet cleanup) does not, and named to it would miss every gone row.
+
+    WHY (datasources' schema priming on YugabyteDB, 2026-11-26): with ``idx_datasources_name`` live-only, the predicate
+    was no shape a read could state, so the name index was never named and the read was hinted to the status index
+    again, every active datasource read and filtered (4,900 rows for 2 names), the D8 regression back."""
+
+    def test_the_predicate_is_the_live_rows_guard(self) -> None:
+        """Flips if ``NOT gone`` (alone, or beside an equality or a guard) is not read as the live-rows guard."""
+        assert partial_predicate("NOT gone") == (frozenset(), frozenset(), frozenset({"gone"}))
+        assert partial_predicate("(customer_id IS NOT NULL) AND (NOT gone)") == (
+            frozenset(),
+            frozenset({"customer_id"}),
+            frozenset({"gone"}),
+        )
+        assert partial_predicate("status = 'a' AND NOT \"gone\"") == (
+            frozenset({("status", "a")}),
+            frozenset(),
+            frozenset({"gone"}),
+        )
+
+    def test_served_to_a_live_read_never_to_a_with_gone_one(self) -> None:
+        """Flips if a set of names read live is not served by the live-only unique name index, or a read stating no
+        live guard (with_gone, quiet cleanup) is served by it."""
+        by = {"name": AnyOf(["a", "b"]), "status": "active"}
+        live = serving_index(_LIVE_NAMED, by, [], live=frozenset({"gone"}))
+        assert live is not None and live.name == "lu_ds_name" and live.unique, live
+        stored = serving_index(_LIVE_NAMED, by, [])
+        assert stored is not None and stored.name == "lu_ds_status", stored
+        assert serving_index(_LIVE_NAMED, {"name": "a"}, [], live=frozenset({"other"})) is None or (
+            present(serving_index(_LIVE_NAMED, {"name": "a"}, [], live=frozenset({"other"}))).name != "lu_ds_name"
+        )
+
+    async def test_a_live_read_is_hinted_to_it_a_with_gone_read_never(self) -> None:
+        """Flips if read_by (live) of a set of names is not hinted on YugabyteDB to the live-only name index, or a
+        keyset page read with_gone names it, or any hint is sent on PostgreSQL."""
+        for reader, hinted in ((_yugabyte(), True), (_postgres(), False)):
+            await read_by(reader, _LIVE_NAMED, by={"name": AnyOf(["a", "b"]), "status": "active"})
+            await keyset_page(
+                reader,
+                _LIVE_NAMED,
+                columns=("id",),
+                by={"name": AnyOf(["a", "b"]), "status": "active"},
+                order=[Sort("id", cast="uuid")],
+                limit=5,
+                with_gone=True,
+            )
+            live, stored = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+            assert live.startswith("/*+ IndexOnlyScan(t lu_ds_name) */ ") is hinted, live
+            assert 'NOT t."gone"' in live, live
+            assert "lu_ds_name" not in stored and '"gone"' not in stored.split("WHERE", 1)[-1], stored

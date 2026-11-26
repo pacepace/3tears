@@ -166,7 +166,8 @@ async def keyset_page(
     read_from, where = (table, tuple(where)) if with_gone else live_read(conn, table, where, lock=lock, by=by)
     by_row = past is not None and await _steps_by_row(conn, order)
     legs = past is not None and lock is None and await _seeks_by_legs(conn, order)
-    hint = await yugabyte_index_hint(conn, table, by, order)
+    # a live read states a live-only index's NOT gone; one read with_gone does not
+    hint = await yugabyte_index_hint(conn, table, by, order, live=not with_gone)
     sql, params = page_statement(
         read_from,
         columns,
@@ -380,7 +381,7 @@ async def keyset_rows(
     past: list[Any] | None = None
     by_row: bool | None = None
     legs = False
-    hint = await yugabyte_index_hint(conn, table, by, order)
+    hint = await yugabyte_index_hint(conn, table, by, order, live=True)
     while True:
         sql, params = page_statement(
             read_from,

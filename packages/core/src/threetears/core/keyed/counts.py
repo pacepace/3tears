@@ -510,7 +510,7 @@ async def _counts_paged(
     counted: dict[Any, int] = {}
     last: Any = None
     # the index holding (by, column) in the column's order, named to YugabyteDB (_COUNTED's why)
-    hint = await yugabyte_index_hint(conn, table, by, [Sort(column)], alias="r")
+    hint = await yugabyte_index_hint(conn, table, by, [Sort(column)], alias="r", live=True)
     read_from = versions_read(conn, table, by=by)
     sender = bounded_sent(conn, table)
     while True:
@@ -537,7 +537,7 @@ async def _counts_paged(
     nulls = {**by, column: None}
     conditions, params = by_conditions(nulls)
     conditions += _live(conn, table)
-    hint = await yugabyte_index_hint(conn, table, nulls, [], alias="r")
+    hint = await yugabyte_index_hint(conn, table, nulls, [], alias="r", live=True)
     rows = await sender.fetch(
         f"{hint}SELECT count(*) AS held FROM {relation(versions_read(conn, table, by=nulls), 'r', params)} "
         f"WHERE {' AND '.join(conditions)}",
@@ -767,7 +767,7 @@ async def counts_by_relations(
     hint = ""
     if len(labels) == 1:
         served = {**pinned, **own.get(labels[0], {}), **({} if values is None else {column: _COUNTED})}
-        hint = await yugabyte_index_hint(conn, tables[labels[0]], served, [], alias="r")
+        hint = await yugabyte_index_hint(conn, tables[labels[0]], served, [], alias="r", live=True)
     for chunk in chunks:
         conditions, params = by_conditions({**pinned, **chunk})
         for fragment in where:

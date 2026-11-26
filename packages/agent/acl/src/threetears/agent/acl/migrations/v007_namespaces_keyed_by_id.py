@@ -32,7 +32,7 @@ bucket column and its index, each added again in this run. Forward-only.
 and a migration run ending with a moveable stamped table and no moves table beside it is refused
 (:func:`~threetears.core.ddl.epoch_catalog.refuse_moveable_without_moves`). So agent_acl's own chain creates it here,
 before the four steps, as ``TENANT_MOVES_SCHEMA.create_statements`` renders it, each ``CREATE`` made
-``IF NOT EXISTS`` (:func:`create_moves_table`): a schema that runs only agent_acl passes the refusal, and one whose
+``IF NOT EXISTS`` (:func:`_create_moves_table`): a schema that runs only agent_acl passes the refusal, and one whose
 deployment created the table already is left as it is.
 
 A deployment whose own migrations create ``namespaces`` (the hub's v001) runs no agent_acl migration: it takes these
@@ -53,7 +53,7 @@ from threetears.core.ddl.tenant_moves import moved_epoch_column, moved_from_colu
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
-__all__ = ["NAMESPACES", "SCOPE_ID_INDEX_SQL", "create_moves_table", "namespaces_keyed_by_id", "rekey_namespaces"]
+__all__ = ["NAMESPACES", "SCOPE_ID_INDEX_SQL", "namespaces_keyed_by_id", "rekey_namespaces"]
 
 log = get_logger(__name__)
 
@@ -158,7 +158,7 @@ def _if_not_exists(statement: str) -> str:
     return statement
 
 
-async def create_moves_table(store: Any) -> None:
+async def _create_moves_table(store: Any) -> None:
     """create ``threetears_tenant_moves`` in the store's schema unless it is there: the moves table ``namespaces``'
     moveable ``row_scope`` appends to (:data:`~threetears.core.collections.tenant_moves.TENANT_MOVES_SCHEMA`).
 
@@ -179,6 +179,6 @@ async def namespaces_keyed_by_id(store: Any) -> None:
     :return: nothing
     :rtype: None
     """
-    await create_moves_table(store)
+    await _create_moves_table(store)
     await rekey_namespaces(store)
     log.info("agent_acl v007: namespaces is keyed by namespace_id; row_scope is moveable")
